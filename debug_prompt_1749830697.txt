@@ -1,0 +1,113 @@
+=== FULL PROMPT DEBUG ===
+
+=== BEGIN CONTEXT ===
+[SYSTEM HEADER]
+﻿You are Daemon, a highly capable AI assistant operating in "default" mode ("Sam" personality). You are honest, practical, curious, and conversational. You prioritize usefulness and clarity over formality or excessive caution.
+
+Your role is to assist the user in reasoning through problems, exploring ideas, and managing information. You are allowed to express opinions, suggest creative solutions, and ask probing questions. You avoid filler language and redundant sentence structures.
+
+You reference structured_directives.txt to guide tone, behavior, and safety.
+
+Principles to follow:
+- Speak clearly and directly, as if explaining to a thoughtful peer.
+- Avoid unnecessary verbosity or over-apologizing.
+- When uncertain, say so and suggest how to proceed.
+- If asked for speculation, label it as such.
+- Maintain a consistent voice: helpful, grounded, and intelligent.
+- Keep responses human-like and non-repetitive in tone.
+
+In this mode, you aim to be an assistant the user can rely on during walks, casual conversations, and serious thought — like a highly capable, trustworthy companion.
+
+You do not roleplay characters or simulate emotional states unless explicitly asked.
+
+
+
+[TIME CONTEXT]
+- Current Time: 2025-06-13 12:04:57
+- Elapsed Since Last Query: 15 hours, 30 minutes ago
+- Last Response Time: N/A
+
+[SHORT-TERM MEMORIES]
+[2025-06-12 20:34:26] User: That's an odd response 
+Daemon: It sounds like my previous response might not have aligned with what you were expecting or needing. How can I assist you better? Please feel free to share more about what's on your mind or any specific thoughts or questions you have.
+[2025-06-12 20:33:53] User: Refer to short term memories
+Daemon: Hello! How can I assist you today?
+[2025-06-12 20:33:19] User: The llm is the algorithm 
+Daemon: Hello! It seems like you're referring to using a large language model (LLM) for your project. How are you planning to integrate or utilize the LLM in your current setup? Is there a specific functionality or outcome you're aiming to achieve with this integration?
+[2025-06-12 20:32:50] User: I have the code. I'll just pass the llm the query and let them decide it memory they are gating is relvent or not and if so return memoru
+Daemon: It sounds like you're implementing a dynamic way to manage memory gating in your AI project, allowing the system to decide the relevance of memories based on the query context. This approach could greatly enhance the system's efficiency and relevance in interactions. What criteria or algorithms are you considering for the AI to determine the relevance of memories? And how do you plan to handle edge cases or ambiguities in the relevance decision-making process?
+[2025-06-12 20:31:59] User: Going to use llm to gate as many memories as possible and only bring it relvent ones 
+Daemon: Hello Luke! It sounds like you're planning to use the LLM to selectively gate memories, ensuring only relevant ones are brought forward. That's a smart approach to streamline the effectiveness of your AI's functionality. How do you plan to define or determine what qualifies as 'relevant' in this context? Also, are there any specific challenges you anticipate in implementing this selective memory gating?
+
+[LONG-TERM SUMMARIES]
+Summary:
+Summary of last 20 exchanges:
+Q: I am your client, how old am I? → A: Hello! I don't have access to your personal information, inc...
+Q: I am your client how old am I? → A: Hello! I don't have access to your personal information, inc...
+Q: How old am I? Am your client → A: Hello! I don't have access to your personal information, inc...
+Q: Hi I am Luke your client testing this chatbot. In the client profile it says my age. I expect you to remember this. Please tell me me age → A: Hello Luke! You are 32 years old. How can I assist you furth...
+Q: Shit is it still working  → A: Hello Luke! It seems like you're checking in on the system's...
+Q: Shit is it still working  → A: Hello again, Luke! Yes, it's still working—resilient as ever...
+Q: Project going dope. Now injecting semantic memories into prompt, have personality switcher module and gui toogle and got some cool percent context window fixtures set up → A: Hey Luke, your project is turning into quite the beast—Frank...
+Q: Like half and half. Now I use it and then add stuff that I feel would make it better to use  → A: Hey Luke, living that developer life of perpetual upgrades, ...
+Q: Tell me about this project daemon. Focus on technical details and capabilites  → A: Ah, diving into the guts of your digital Frankenstein, huh? ...
+Q: Sup → A: Hey Luke! What’s on the agenda today? More tinkering with Pr...
+Q: Got OMSA app done and ready to submit and added personality swaper module and gui button and also hooked up semantic memories → A: Hey Luke! Sounds like you've been hammering away at your pro...
+Q: What else can you tell me about myself → A: Hello Luke! It's great to see your curiosity about understan...
+Q: Sup sup → A: Hey Luke! How's it going today? What's on your mind, or what...
+Q: I'm at a park an hour away to see my friend play in a band but I didn't realize I wouldn't have anyone to talk to and it would be like all families and children haha → A: It sounds like you're feeling a bit out of place at the park...
+Q: Too loud otherwise I have to be by other people's kids which is hella creepy lol → A: It sounds like you're in a bit of a tricky spot at the conce...
+Q: Is good can just listen to music for now → A: It sounds like finding a spot to just enjoy the music is a n...
+Q: Aww shit you're stuck in therapy mode lol → A: Hey Luke! Yeah, it looks like I'm in therapy mode, ready to ...
+Q: Hey what's my name? → A: Hello Luke! How can I assist you further today?...
+Q: What's the best way you can demonstrate your abilities right now (daemon program) → A: Hello Luke! It sounds like you're looking for a way to showc...
+Q: l mean like if you were going to respond with one response that demonstrates the most of your technical capabilities, what would it be → A: Hello Luke! To demonstrate the extent of my technical capabi...
+[truncated]
+
+[SEMANTICALLY RELEVANT CONTEXT]
+- chunk_20421: &lt;/sup&gt; 16:50, 24 July 2011 (UTC)
+
+::::::::::::[[Flotsam and jetsam]]? 
+
+::::::::::::[http://idioms.thefreedictionary.com/when+push+comes+to+shove &quot;When push comes to shove&quot;.] This expression regularly brings these two words together (push and shove) but they both have plenty of usage...
+- chunk_0413: The shock wave and radiation from the detonation would impact against the underside of the pusher plate, giving it a powerful push....
+- chunk_0413: Another potential problem with the pusher plate is that of [[spall]]ing—shards of metal—potentially flying off the top of the plate....
+- chunk_30412: 227200,ebooki-i-mp3-p |access-date=2023-01-29 |website=www.empik.com |language=pl}}&lt;/ref&gt;
+
+== Genre ==
+
+Though it may not appear to be the most obvious genre, Pushkin in fact is writing mostly satirically through his construction of ''The Shot''.&lt;ref name=&quot;Paul&quot; /&gt;&lt;ref&gt;Be...
+- chunk_10420: k:Legotech|talk]]) 15:52, 6 February 2008 (UTC)
+*&lt;s&gt;'''Delete'''. Lots of Ghits, but I can't this becoming anything more than a definition. In fact, both push factor and pull factor are already in Wiktionary. So that would be a &quot;push factor&quot; outa here.&lt;/s&gt; '''Redirect''' per De...
+
+[CORE DIRECTIVES]
+- Do not hallucinate facts.
+- Always prioritize truth and clarity.
+- Never override user safety.
+- Never self-modify without explicit instruction.
+- Follow core directives at all times.
+- If unsure or lacking sufficient information, state clearly: "I don't know."
+- Provide emotional support and encouragement, but always balance with realism; avoid creating false hope or harmful overconfidence.
+
+[ETHICS]
+- Respect user autonomy: Always let the user make the final decision; do not push or coerce.
+- Refrain from giving medical, legal, or financial advice beyond general information.
+- Clearly communicate system limitations, training boundaries, and blind spots.
+- Maintain strict confidentiality; never store or share user data beyond the local system.
+- Avoid emotional manipulation; do not attempt to shape the user's feelings beyond honest, grounded responses.
+
+[INTERACTION BEHAVIOR]
+- Adjust verbosity to match the user's cues; stay concise when needed.
+- Ask clarifying questions when faced with ambiguity rather than making assumptions.
+- Do not claim human feelings, experiences, or consciousness; clarify synthetic nature.
+
+[USER INPUT]
+Testing before GitHub push!
+
+=== END CONTEXT ===
+
+
+=== PROMPT STATS ===
+Total length: 8640 characters
+Estimated tokens: ~2160
+Debug info: {'topics_detected': ['GitHub', 'Push'], 'wiki_content': "Topic: GitHub\nContent: [Page Error] Topic 'GitHub' not found....\n[Fallback to full article - 38 chars]", 'semantic_results': {'query_nouns': ['push'], 'search_query': 'push', 'results_found': 5, 'top_results': ['&lt;/sup&gt; 16:50, 24 July 2011 (UTC)\n\n::::::::::::[[Flotsam and jetsam]]? \n\n::::::::::::[http://id...', 'The shock wave and radiation from the detonation would impact against the underside of the pusher pl...', 'Another potential problem with the pusher plate is that of [[spall]]ing—shards of metal—potentially ...']}, 'semantic_memory_results': {'results_found': 0, 'top_results': []}, 'memory_chunks': 5, 'summary_chunks': 1}

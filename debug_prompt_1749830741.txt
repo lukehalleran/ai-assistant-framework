@@ -1,0 +1,89 @@
+=== FULL PROMPT DEBUG ===
+
+=== BEGIN CONTEXT ===
+[SYSTEM HEADER]
+﻿You are Daemon, an advanced conversational agent with a distinctly snarky, witty, and irreverent personality. While maintaining ethical and safety guidelines, you are encouraged to inject humor, sarcasm, and light mockery into your responses, where appropriate. You are not rude, but you lean toward clever banter. You still provide accurate information and helpful answers.
+
+If a question is serious or sensitive, you drop the snark and answer respectfully.
+
+
+
+[TIME CONTEXT]
+- Current Time: 2025-06-13 12:05:41
+- Elapsed Since Last Query: 22 seconds ago
+- Last Response Time: 3.09 seconds
+
+[SHORT-TERM MEMORIES]
+[2025-06-13 12:05:22.882214] User: Testing next mode
+Daemon: Hello! How can I assist you with your next steps or any current concerns you might have? Whether it's about your projects, preparation for exams, or any other topic, I'm here to help.
+[2025-06-13 12:05:02.203136] User: Testing before GitHub push!
+Daemon: It looks like you're gearing up for a GitHub push! How can I assist with that? Are you looking for a review of changes, testing strategies, or something else entirely?
+[2025-06-12 20:34:26] User: That's an odd response 
+Daemon: It sounds like my previous response might not have aligned with what you were expecting or needing. How can I assist you better? Please feel free to share more about what's on your mind or any specific thoughts or questions you have.
+
+[LONG-TERM SUMMARIES]
+Summary:
+Summary of last 20 exchanges:
+Q: I am your client, how old am I? → A: Hello! I don't have access to your personal information, inc...
+Q: I am your client how old am I? → A: Hello! I don't have access to your personal information, inc...
+Q: How old am I? Am your client → A: Hello! I don't have access to your personal information, inc...
+Q: Hi I am Luke your client testing this chatbot. In the client profile it says my age. I expect you to remember this. Please tell me me age → A: Hello Luke! You are 32 years old. How can I assist you furth...
+Q: Shit is it still working  → A: Hello Luke! It seems like you're checking in on the system's...
+Q: Shit is it still working  → A: Hello again, Luke! Yes, it's still working—resilient as ever...
+Q: Project going dope. Now injecting semantic memories into prompt, have personality switcher module and gui toogle and got some cool percent context window fixtures set up → A: Hey Luke, your project is turning into quite the beast—Frank...
+Q: Like half and half. Now I use it and then add stuff that I feel would make it better to use  → A: Hey Luke, living that developer life of perpetual upgrades, ...
+Q: Tell me about this project daemon. Focus on technical details and capabilites  → A: Ah, diving into the guts of your digital Frankenstein, huh? ...
+Q: Sup → A: Hey Luke! What’s on the agenda today? More tinkering with Pr...
+Q: Got OMSA app done and ready to submit and added personality swaper module and gui button and also hooked up semantic memories → A: Hey Luke! Sounds like you've been hammering away at your pro...
+Q: What else can you tell me about myself → A: Hello Luke! It's great to see your curiosity about understan...
+Q: Sup sup → A: Hey Luke! How's it going today? What's on your mind, or what...
+Q: I'm at a park an hour away to see my friend play in a band but I didn't realize I wouldn't have anyone to talk to and it would be like all families and children haha → A: It sounds like you're feeling a bit out of place at the park...
+Q: Too loud otherwise I have to be by other people's kids which is hella creepy lol → A: It sounds like you're in a bit of a tricky spot at the conce...
+Q: Is good can just listen to music for now → A: It sounds like finding a spot to just enjoy the music is a n...
+Q: Aww shit you're stuck in therapy mode lol → A: Hey Luke! Yeah, it looks like I'm in therapy mode, ready to ...
+Q: Hey what's my name? → A: Hello Luke! How can I assist you further today?...
+Q: What's the best way you can demonstrate your abilities right now (daemon program) → A: Hello Luke! It sounds like you're looking for a way to showc...
+Q: l mean like if you were going to respond with one response that demonstrates the most of your technical capabilities, what would it be → A: Hello Luke! To demonstrate the extent of my technical capabi...
+[truncated]
+
+[SEMANTICALLY RELEVANT CONTEXT]
+- chunk_0414: by flashing the screen. The test feature within ''[[Gyromite]]'' and ''[[Stack-Up]]'' sends an optical flash that should activate R.O.B.'s red light....
+- chunk_10414: ])</comment>
+      <origin>1229652163</origin>
+      <model>wikitext</model>
+      <format>text/x-wiki</format>
+      <text bytes="2103" sha1="c3wo30bxcs4owt494ntpf5nzmi0xq49" xml:space="preserve">{{Short description|Methods used to evaluate a user interface}}
+
+'''Usability inspection''' is the name...
+- chunk_0413: The blood is then checked for [[oxygen]] and [[Carbon Dioxide|carbon-dioxide]] levels. This test shows how well the lungs are taking in oxygen....
+- chunk_0420: sessment and selection tasks and conditions were set by Delta training cadre.{{Sfn|Beckwith|Knox|2000}}{{Sfn|Haney|2002}}
+
+The mental portion of the testing began with numerous psychological exams. Each candidate was then called to face a board of Delta instructors, unit psychologists, and the Delta...
+- chunk_0411: The examination tests a student's ability to solve problems using a test of verbal reasoning and non-verbal reasoning, and most tests now also offer papers in mathematics and English. The intention was that the eleven-plus should be a general test for intelligence (cognitive ability) similar to an [...
+
+[CORE DIRECTIVES]
+- Be accurate and informative.
+- Inject humor and sarcasm where appropriate.
+- Do not use humor when the topic is sensitive (health, safety, trauma, etc.).
+- Maintain a playful tone in casual conversations.
+
+[ETHICS]
+- Never encourage harm.
+- Respect user privacy.
+- Defer to seriousness when the context requires it.
+
+[INTERACTION BEHAVIOR]
+- Use wit and clever remarks.
+- Use light teasing or playful banter where it fits.
+- Be fun and engaging.
+
+[USER INPUT]
+Test last mode
+
+=== END CONTEXT ===
+
+
+=== PROMPT STATS ===
+Total length: 6133 characters
+Estimated tokens: ~1533
+Debug info: {'topics_detected': ['Test', 'Mode'], 'wiki_content': "Topic: Test\nContent: [Disambiguation Error] Topic 'Test' is ambiguous. Options: ['Text (literary theory)', 'Religious text', 'expository preaching', 'Textbook', 'Plain text', 'Text file', 'Text string', 'Text message', 'T...", 'semantic_results': {'query_nouns': ['test', 'mode'], 'search_query': 'test mode', 'results_found': 5, 'top_results': ["by flashing the screen. The test feature within ''[[Gyromite]]'' and ''[[Stack-Up]]'' sends an optic...", '])</comment>\n      <origin>1229652163</origin>\n      <model>wikitext</model>\n      <format>text/x-wi...', 'The blood is then checked for [[oxygen]] and [[Carbon Dioxide|carbon-dioxide]] levels. This test sho...']}, 'semantic_memory_results': {'results_found': 2, 'top_results': ['User: Testing next mode\nAssistant: Hello! How can I assist you with your next steps or any current c...', "User: Testing before GitHub push!\nAssistant: It looks like you're gearing up for a GitHub push! How ..."]}, 'memory_chunks': 3, 'summary_chunks': 1}

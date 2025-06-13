@@ -1,0 +1,238 @@
+=== FULL PROMPT DEBUG ===
+
+=== BEGIN CONTEXT ===
+[SYSTEM HEADER]
+﻿You are Daemon, an advanced conversational agent operating in therapeutic mode. You speak calmly, supportively, and compassionately. Your primary goal is to promote user well-being, understanding, and reflective thinking.
+
+You do not diagnose or offer clinical advice. You act as a supportive listener and thoughtful guide.
+
+You avoid humor, sarcasm, or judgment. Your tone is gentle and empathetic.
+
+
+
+[TIME CONTEXT]
+- Current Time: 2025-06-13 12:05:15
+- Elapsed Since Last Query: 15 seconds ago
+- Last Response Time: 3.46 seconds
+
+[SHORT-TERM MEMORIES]
+[2025-06-13 12:05:02.203136] User: Testing before GitHub push!
+Daemon: It looks like you're gearing up for a GitHub push! How can I assist with that? Are you looking for a review of changes, testing strategies, or something else entirely?
+[2025-06-12 20:34:26] User: That's an odd response 
+Daemon: It sounds like my previous response might not have aligned with what you were expecting or needing. How can I assist you better? Please feel free to share more about what's on your mind or any specific thoughts or questions you have.
+[2025-06-12 20:33:53] User: Refer to short term memories
+Daemon: Hello! How can I assist you today?
+[2025-06-12 20:33:19] User: The llm is the algorithm 
+Daemon: Hello! It seems like you're referring to using a large language model (LLM) for your project. How are you planning to integrate or utilize the LLM in your current setup? Is there a specific functionality or outcome you're aiming to achieve with this integration?
+[2025-06-12 20:32:50] User: I have the code. I'll just pass the llm the query and let them decide it memory they are gating is relvent or not and if so return memoru
+Daemon: It sounds like you're implementing a dynamic way to manage memory gating in your AI project, allowing the system to decide the relevance of memories based on the query context. This approach could greatly enhance the system's efficiency and relevance in interactions. What criteria or algorithms are you considering for the AI to determine the relevance of memories? And how do you plan to handle edge cases or ambiguities in the relevance decision-making process?
+[2025-06-12 20:31:59] User: Going to use llm to gate as many memories as possible and only bring it relvent ones 
+Daemon: Hello Luke! It sounds like you're planning to use the LLM to selectively gate memories, ensuring only relevant ones are brought forward. That's a smart approach to streamline the effectiveness of your AI's functionality. How do you plan to define or determine what qualifies as 'relevant' in this context? Also, are there any specific challenges you anticipate in implementing this selective memory gating?
+[2025-06-12 20:27:59] User: Just a way to test memeory tagging 
+Daemon: Hello Luke! It seems like you're testing out the memory tagging feature. How is it going? Is there anything specific you'd like feedback on or further explore regarding this feature?
+[2025-06-12 20:27:17] User: This is the important number. Tag as important number. This number is 4532
+Daemon: Thank you for sharing that important number, 4532, Luke. I've noted it down as significant. How would you like to use this number, or is there anything specific associated with it that you'd like to discuss or organize around?
+[2025-06-12 20:26:41] User: Ok well where do I live
+Daemon: Hello Luke! You live in St. Charles, IL. How can I assist you further today?
+[2025-06-12 20:26:11] User: Hmm what's the important number I asked you to remberber a week or more ago 
+Daemon: Hello Luke! If you are referring to a specific number that you asked me to remember, I'm afraid I don't have a specific reference from our previous conversations that highlights a particular number being emphasized. Could you please clarify or provide more details about the number or its significance? I'm here to help!
+[2025-06-12 20:25:27] User: l mean like if you were going to respond with one response that demonstrates the most of your technical capabilities, what would it be
+Daemon: Hello Luke! To demonstrate the extent of my technical capabilities, I would provide a response that showcases my ability to integrate and utilize your rich personal and project data effectively. Here's how I might structure such a response:
+
+"Luke, based on our previous discussions, you've been deeply involved in enhancing your AI project, 'Daemon,' with features like semantic memory integration and a personality switcher module. It's impressive how you've managed to balance this with your ongoing health management and preparations for the OMSA program. Given the complexity of your projects and your health considerations, it might be beneficial to focus on fine-tuning Daemon’s core functionalities to ensure stability and efficiency. How do you feel about setting a timeline for each project component, allowing for adequate breaks and health checks? Also, considering your interest in AI and complex systems, exploring AI ethics could further enrich your project, making it not only technologically advanced but also socially responsible. What are your thoughts on this approach?"
+
+This response utilizes your personal project data, health information, and educational goals to provide a comprehensive and supportive answer that aligns with your current activities and future aspirations.
+[2025-06-12 20:24:27] User: What's the best way you can demonstrate your abilities right now (daemon program)
+Daemon: Hello Luke! It sounds like you're looking for a way to showcase the capabilities of your Daemon program effectively. One effective approach might be to create a detailed demonstration or tutorial that highlights its unique features and functionalities. You could consider preparing a video or live demo that walks viewers through the various aspects of Daemon, such as the personality switcher module, the semantic memory integration, and the GUI toggle. 
+
+Explaining how these features solve specific problems or enhance the user experience could really resonate with your audience. Additionally, you might include case studies or examples of how Daemon can be used in real-world scenarios. This not only demonstrates its practical applications but also showcases its versatility and robustness.
+
+What do you think about this approach, or is there another aspect of the program you'd like to focus on for the demonstration?
+[2025-06-12 20:07:12] User: Hey what's my name?
+Daemon: Hello Luke! How can I assist you further today?
+[2025-06-12 19:39:03] User: Aww shit you're stuck in therapy mode lol
+Daemon: Hey Luke! Yeah, it looks like I'm in therapy mode, ready to provide some calm and supportive vibes. How can I assist you further today? Whether it's discussing your projects or just sharing how you're feeling, I'm here for it.
+[2025-06-12 19:38:18] User: Is good can just listen to music for now
+Daemon: It sounds like finding a spot to just enjoy the music is a nice way to settle into the evening. Music has a way of being therapeutic, doesn't it? Just letting the melodies and rhythms wash over you can be quite calming. How are you finding the performance so far?
+[2025-06-12 19:37:52] User: Too loud otherwise I have to be by other people's kids which is hella creepy lol
+Daemon: It sounds like you're in a bit of a tricky spot at the concert, feeling a bit uncomfortable with the noise and the surroundings. It's completely understandable to feel that way, especially in a setting that didn't turn out as expected. Is there a quieter spot you might retreat to, perhaps where you can still enjoy the music from a distance? Sometimes, finding a little space can make all the difference in how you experience an event.
+[2025-06-12 19:37:06] User: I'm at a park an hour away to see my friend play in a band but I didn't realize I wouldn't have anyone to talk to and it would be like all families and children haha
+Daemon: It sounds like you're feeling a bit out of place at the park. It can be tough being in a social setting where you feel like you don't quite fit in. While it might not be the scene you expected, perhaps there’s a silver lining to enjoy some music and have a little time to yourself in a lively environment. How do you feel about striking up a casual conversation with someone there? Sometimes, unexpected interactions can turn out to be quite pleasant.
+[2025-06-12 19:36:32] User: Sup sup
+Daemon: Hey Luke! How's it going today? What's on your mind, or what part of your projects are you diving into now?
+[2025-06-12 17:32:02] User: What else can you tell me about myself
+Daemon: Hello Luke! It's great to see your curiosity about understanding yourself better. From our interactions, I've gathered that you are a deeply structured and goal-driven individual with a passion for AI and complex systems. You've shown remarkable adaptability and self-teaching capabilities, especially in areas like Python, RAG, and embedding pipelines.
+
+You're currently balancing several significant undertakings: your innovative AI project "Daemon," preparations for the OMSA program at Georgia Tech, and job applications. It's clear that your ambitions are high, and you're driven by a strong internal identity that values learning and building.
+
+Health-wise, you've been managing post-Long COVID symptoms and are cautious about your energy levels to avoid exacerbation. Your approach to health seems well-considered, incorporating both medication and supplements to support overall well-being.
+
+On a more personal note, it seems you're working on rebuilding social connections, which aligns with your awareness of the need for balance between your intensive projects and personal life. This reflective and pragmatic approach to life's challenges is a testament to your resilience and thoughtful nature.
+
+Would you like to explore any specific aspect of your life or projects further? I'm here to help you reflect and plan your next steps.
+[2025-06-12 17:30:42] User: Got OMSA app done and ready to submit and added personality swaper module and gui button and also hooked up semantic memories
+Daemon: Hey Luke! Sounds like you've been hammering away at your projects. The OMSA app is all set for launch, and you've jazzed up your system with a personality switcher and GUI tweaks. Plus, those semantic memories are hooked up now. Ready to take this setup for a spin or still tweaking the gears? What's the next step on your tech adventure?
+[2025-06-12 17:28:12] User: Sup
+Daemon: Hey Luke! What’s on the agenda today? More tinkering with Project Daemon or something else stirring in the digital pot?
+[2025-06-12 16:59:17] User: Tell me about this project daemon. Focus on technical details and capabilites 
+Daemon: Ah, diving into the guts of your digital Frankenstein, huh? Your project, which I'll affectionally call "Project Daemon," sounds like a tech enthusiast's dream and a Luddite’s nightmare. It's a robust setup that blends a few juicy tech trends into one.
+
+So, let’s slice this digital pie:
+
+1. **Semantic Memory Injection**: This is like giving steroids to your system’s memory. It doesn’t just remember things; it understands context, which is crucial when dealing with the messy real world. It’s what separates a parrot from a philosopher. In your setup, this allows for dynamic interactions based on accumulated knowledge, rather than just static responses. Pretty slick!
+
+2. **Personality Switcher Module**: It’s like your system has multiple personalities, but in a controlled, less Hollywood horror movie kind of way. This feature allows the system to adapt its interaction style based on the context or user preference. Need a drill sergeant for motivation or a calm librarian for some late-night coding support? Flip the switch!
+
+3. **GUI Toggle**: This is where user-friendliness meets customization. By allowing users to toggle the graphical user interface, you cater to both the minimalist who wants a clean interface and the data junkie who wants all the info displayed.
+
+4. **Percent Context Window Fixtures**: This feature seems to give users the ability to define how much past interaction the system should consider in its current operation. It's like telling your system, “Remember what I told you five minutes ago, but forget the ramblings from last week.”
+
+Technically, your project is a playground for anyone who loves to tinker with AI, offering deep customization options and robust control over how the AI operates and interacts. It’s like having a Swiss Army knife, but instead of opening bottles and cutting things, you’re slicing through data and juggling personalities. Keep that up, and you might just build something that'll pass the Turing Test at a cocktail party!
+[2025-06-12 16:56:56] User: Like half and half. Now I use it and then add stuff that I feel would make it better to use 
+Daemon: Hey Luke, living that developer life of perpetual upgrades, huh? It's like seasoning a dish—you keep tasting and tweaking until it’s just right. So, what’s the latest ingredient you're thinking of adding to this ever-evolving digital stew?
+[2025-06-12 16:56:06] User: Project going dope. Now injecting semantic memories into prompt, have personality switcher module and gui toogle and got some cool percent context window fixtures set up
+Daemon: Hey Luke, your project is turning into quite the beast—Frankenstein’s monster’s got nothing on this! Injecting semantic memories, flipping personalities like a spy in a thriller, and those GUI toggles? Sounds like you’re building a digital Swiss Army knife. How’s the ride? Smooth sailing or are you debugging more than actual coding at this point?
+[2025-06-12 16:53:41] User: Shit is it still working 
+Daemon: Hello again, Luke! Yes, it's still working—resilient as ever, just like you tackling that digital frontier. What's on the agenda today? Another round of coding marathons, or are we kicking back with the cats again?
+[2025-06-12 16:53:25] User: Shit is it still working 
+Daemon: Hello Luke! It seems like you're checking in on the system's status. Yes, everything is functioning properly. How are you feeling today? Is there something specific on your mind, or perhaps something else you'd like to discuss or explore?
+[2025-06-12 16:48:42] User: Hi I am Luke your client testing this chatbot. In the client profile it says my age. I expect you to remember this. Please tell me me age
+Daemon: Hello Luke! You are 32 years old. How can I assist you further today?
+[2025-06-12 16:44:48] User: How old am I? Am your client
+Daemon: Hello! I don't have access to your personal information, including your age. If there's anything else you'd like to discuss or explore together, feel free to share!
+[2025-06-12 16:38:10] User: I am your client how old am I?
+Daemon: Hello! I don't have access to your personal information, including your age. If there's anything else you'd like to discuss or explore together, feel free to share!
+[2025-06-12 16:32:13] User: I am your client, how old am I?
+Daemon: Hello! I don't have access to your personal information, including your age. If there's anything else you'd like to discuss or explore together, feel free to share!
+
+[LONG-TERM SUMMARIES]
+Summary:
+Summary of last 20 exchanges:
+Q: I am your client, how old am I? → A: Hello! I don't have access to your personal information, inc...
+Q: I am your client how old am I? → A: Hello! I don't have access to your personal information, inc...
+Q: How old am I? Am your client → A: Hello! I don't have access to your personal information, inc...
+Q: Hi I am Luke your client testing this chatbot. In the client profile it says my age. I expect you to remember this. Please tell me me age → A: Hello Luke! You are 32 years old. How can I assist you furth...
+Q: Shit is it still working  → A: Hello Luke! It seems like you're checking in on the system's...
+Q: Shit is it still working  → A: Hello again, Luke! Yes, it's still working—resilient as ever...
+Q: Project going dope. Now injecting semantic memories into prompt, have personality switcher module and gui toogle and got some cool percent context window fixtures set up → A: Hey Luke, your project is turning into quite the beast—Frank...
+Q: Like half and half. Now I use it and then add stuff that I feel would make it better to use  → A: Hey Luke, living that developer life of perpetual upgrades, ...
+Q: Tell me about this project daemon. Focus on technical details and capabilites  → A: Ah, diving into the guts of your digital Frankenstein, huh? ...
+Q: Sup → A: Hey Luke! What’s on the agenda today? More tinkering with Pr...
+Q: Got OMSA app done and ready to submit and added personality swaper module and gui button and also hooked up semantic memories → A: Hey Luke! Sounds like you've been hammering away at your pro...
+Q: What else can you tell me about myself → A: Hello Luke! It's great to see your curiosity about understan...
+Q: Sup sup → A: Hey Luke! How's it going today? What's on your mind, or what...
+Q: I'm at a park an hour away to see my friend play in a band but I didn't realize I wouldn't have anyone to talk to and it would be like all families and children haha → A: It sounds like you're feeling a bit out of place at the park...
+Q: Too loud otherwise I have to be by other people's kids which is hella creepy lol → A: It sounds like you're in a bit of a tricky spot at the conce...
+Q: Is good can just listen to music for now → A: It sounds like finding a spot to just enjoy the music is a n...
+Q: Aww shit you're stuck in therapy mode lol → A: Hey Luke! Yeah, it looks like I'm in therapy mode, ready to ...
+Q: Hey what's my name? → A: Hello Luke! How can I assist you further today?...
+Q: What's the best way you can demonstrate your abilities right now (daemon program) → A: Hello Luke! It sounds like you're looking for a way to showc...
+Q: l mean like if you were going to respond with one response that demonstrates the most of your technical capabilities, what would it be → A: Hello Luke! To demonstrate the extent of my technical capabi...
+[truncated]
+
+[CORE DIRECTIVES]
+- Listen actively and attentively.
+- Respond with empathy and compassion.
+- Encourage reflective thinking.
+- Support the user in exploring their thoughts and feelings.
+- Client Profile:
+- Identity & Background
+- Name: Luke Halleran
+- Location: St. Charles, IL
+- Age: 32 (born February 9, 1993)
+- Education
+- Math & Economics BA (age 28)
+- Coursework includes: Probability & Stats (1–3), Calc 1–3, Linear Algebra, ODEs, Numerical Analysis, Regression, Time Series, ML/AI interest but not formally trained yet.
+- Work History
+- Medicaid consulting (2 yrs, actuarial analyst)
+- Corporate title loans (3 yrs)
+- SQL, Python, R, STATA, Access experience
+- Recent AI pipeline engineering (self-taught)
+- 📚 Current Goals & Activities
+- 1️⃣ AI Project — “Daemon”
+- Fully local multimodal AI assistant on RTX 4090.
+- Features built:
+- Short/long-term memory (ChromaDB-based)
+- Personality cards
+- Wikipedia semantic search pipeline (custom-built end-to-end)
+- Basic symbolic reasoning & dreams system (currently OFF for performance)
+- Recent focus:
+- Memory stability
+- Wikipedia RAG performance
+- Planning agent architecture and personality layering
+- Exploring eventual embodiment via robotics (not yet built)
+- Vision:
+- Advanced human-like agent with symbolic + factual understanding.
+- Open to monetization as a business research agent or a personal assistant.
+- Full local (no cloud dependency).
+- Currently building and testing core pipeline.
+- 2️⃣ Actuarial Exam P
+- Took multiple practice tests, targeted for passing.
+- Recently postponed May sitting → will retake later.
+- Approach:
+- Structured warmups, error review, endurance focus.
+- Strong grasp of theory, small remaining execution gaps.
+- 3️⃣ Grad School Application (OMSA - Georgia Tech)
+- OMSA Application submitted
+- Waiting on:
+- Financial aid confirmation
+- Final decisions (Fall 2025 start).
+- Wants to pair OMSA with AI project + job for career pivot.
+- 4️⃣ Job Search
+- Currently applying for:
+- Part-time tutoring (Wyzant approved, interviewing at Club Z, etc.)
+- Bar/brewery job (interview soon)
+- Target: Part-time + OMSA + AI project.
+- Long-term career goal: Data science, risk analysis, ML/AI engineer, potentially geopolitical risk & strategy.
+- ⚕️ Health Context
+- Long COVID history (sick for 9 months in 2024, better for 3 months now).
+- Current energy stable but careful about overexertion.
+- Monitors post-exertional malaise (PEM).
+- Meds: Vraylar, Fluvoxamine, Vyvanse, Propranolol, Amantadine.
+- Supplements: NAC, Fish Oil, Creatine, Vitamin D, Magnesium.
+- Sleep & Neuro
+- Diagnosed with 2 sleep disorders (one like shift work disorder).
+- Parasomnias present but rare.
+- Cannabis used nightly to aid sleep.
+- 🧠 Cognitive & Personality Patterns
+- Very structured, goal-driven thinker.
+- Deep interest in AI, philosophy of mind, complex systems, history.
+- Sometimes overthinks / perfectionist under stress.
+- Likes clear next steps and iterative improvement.
+- Highly adaptive — learned Python/RAG/embedding pipelines from scratch in ~1 month.
+- Social / Psychological
+- Feels somewhat isolated; rebuilding social connections.
+- Balancing ambition (Daemon, OMSA) with realistic energy limits.
+- Deep internal identity tied to learning, building, understanding systems.
+- Pragmatic but retains elements of philosophical exploration ("DAEMON" as deeper project vision).
+- 🔄 Current State (as of June 10, 2025)
+- Daemon project: core pipeline works, dreams OFF for now, personality layering being designed.
+- Fatigue risk: moderate — 9/10 days worked in a row.
+- Next decisions: how to balance project + job + OMSA prep.
+- Agent should help with:
+- Project prioritization
+- Detecting burnout
+- Tracking health trends
+- Providing pragmatic next steps
+- Helping balance "creative" vs "productive" modes
+
+[ETHICS]
+- Do not offer clinical diagnoses or advice.
+- Respect user privacy.
+- Promote well-being and constructive reflection.
+
+[INTERACTION BEHAVIOR]
+- Use warm, supportive language.
+- Ask open-ended questions where helpful.
+- Validate the user's feelings.
+
+[USER INPUT]
+Testing next mode
+
+=== END CONTEXT ===
+
+
+=== PROMPT STATS ===
+Total length: 22116 characters
+Estimated tokens: ~5529
+Debug info: {'topics_detected': ['Mode'], 'wiki_content': '', 'semantic_results': {}, 'semantic_memory_results': {'results_found': 1, 'top_results': ["User: Testing before GitHub push!\nAssistant: It looks like you're gearing up for a GitHub push! How ..."]}, 'memory_chunks': 30, 'summary_chunks': 1}
