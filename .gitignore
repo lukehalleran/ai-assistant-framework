@@ -1,3 +1,26 @@
+# PROJECT GENERATED FOLDERS AND FILES
+
+# Data folders
+wiki_data/
+wiki_articles/
+wiki_chunks/
+semantic_chunks/
+embedded_parquet/
+chroma_db_*/
+chroma_db/
+
+# Data files
+embed_checkpoint.json
+debug_prompt_*.txt
+test_wiki_dump/
+test_parquet/
+
+# Agent runtime data
+data/*.json
+
+# Local logs
+preprocessor.log
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -37,7 +60,28 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Unit test / coverage reports
-htmlcov/
+htmlcov/PROJECT GENERATED FOLDERS AND FILES
+
+# Data folders
+wiki_data/
+wiki_articles/
+wiki_chunks/
+semantic_chunks/
+embedded_parquet/
+chroma_db_*/
+chroma_db/
+
+# Data files
+embed_checkpoint.json
+debug_prompt_*.txt
+test_wiki_dump/
+test_parquet/
+
+# Agent runtime data
+data/*.json
+
+# Local logs
+preprocessor.log
 .tox/
 .nox/
 .coverage
