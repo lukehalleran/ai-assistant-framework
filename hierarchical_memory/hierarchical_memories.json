@@ -1,0 +1,3598 @@
+{
+  "memories": {
+    "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2": {
+      "id": "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2",
+      "content": "User: What have been top 3 topics of our discussions over time\nAssistant: Based on our previous interactions, the top three topics we have discussed most frequently are:\n\n1. **System and API Issues**: We've had multiple exchanges regarding difficulties with API keys and system tests.\n2. **Personal Identification Queries**: You've frequently asked about your name, age, and location.\n3. **Review of Past Interactions**: You often inquire about the content and significance of our past discussions.\n\nLet me know if you need more details on any of these topics or have other questions!",
+      "type": "episodic",
+      "timestamp": "2025-06-17T17:50:32.379774",
+      "access_count": 8,
+      "last_accessed": "2025-06-18T17:18:40.600420",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "7ff974aa-be98-49d1-8c91-cdbc63262eca",
+        "2ba718d7-d9a3-4e0f-9be1-c125fa0fb9e9",
+        "95104f54-91fa-443d-806b-555f0ebb3c20"
+      ],
+      "tags": [
+        "System and API Issues",
+        "Personal Identification Queries",
+        "Review of Past Interactions",
+        "API keys",
+        "System tests"
+      ],
+      "metadata": {}
+    },
+    "7ff974aa-be98-49d1-8c91-cdbc63262eca": {
+      "id": "7ff974aa-be98-49d1-8c91-cdbc63262eca",
+      "content": "1. The user has experienced multiple issues with API keys and system tests.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T17:50:34.529579",
+      "access_count": 11,
+      "last_accessed": "2025-06-18T16:56:50.141904",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "2ba718d7-d9a3-4e0f-9be1-c125fa0fb9e9": {
+      "id": "2ba718d7-d9a3-4e0f-9be1-c125fa0fb9e9",
+      "content": "2. The user frequently asks about personal identification details such as name, age, and location.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T17:50:34.529594",
+      "access_count": 8,
+      "last_accessed": "2025-06-17T19:13:31.677533",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "95104f54-91fa-443d-806b-555f0ebb3c20": {
+      "id": "95104f54-91fa-443d-806b-555f0ebb3c20",
+      "content": "3. The user often requests reviews of past interactions to understand the content and significance of their discussions with the assistant.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T17:50:34.529604",
+      "access_count": 11,
+      "last_accessed": "2025-06-18T17:18:40.600413",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "b52d9cdb-f35b-4992-a6c0-1f90f037d45d": {
+      "id": "b52d9cdb-f35b-4992-a6c0-1f90f037d45d",
+      "content": "User: What memories and context do you have about my name, Luke?\nAssistant: Hello again, Luke! It looks like your name is one of the consistent pieces of information I have from our previous interactions. What else can I assist you with today?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T17:56:02.524584",
+      "access_count": 4,
+      "last_accessed": "2025-06-18T17:41:35.986328",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "474f6a46-baa9-4aaa-a794-0949169cd2a1",
+        "2ae49768-3136-413d-9368-219d81308380",
+        "7c240acc-8356-497a-81f2-1265b40a3bb7"
+      ],
+      "tags": [
+        "Luke",
+        "previous interactions",
+        "name",
+        "memory",
+        "assistant"
+      ],
+      "metadata": {}
+    },
+    "474f6a46-baa9-4aaa-a794-0949169cd2a1": {
+      "id": "474f6a46-baa9-4aaa-a794-0949169cd2a1",
+      "content": "1. The user's name is Luke.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T17:56:03.955714",
+      "access_count": 9,
+      "last_accessed": "2025-06-18T17:41:35.986317",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b52d9cdb-f35b-4992-a6c0-1f90f037d45d",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "2ae49768-3136-413d-9368-219d81308380": {
+      "id": "2ae49768-3136-413d-9368-219d81308380",
+      "content": "2. The AI recognizes Luke from previous interactions.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T17:56:03.955727",
+      "access_count": 3,
+      "last_accessed": "2025-06-17T18:27:41.977196",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b52d9cdb-f35b-4992-a6c0-1f90f037d45d",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "7c240acc-8356-497a-81f2-1265b40a3bb7": {
+      "id": "7c240acc-8356-497a-81f2-1265b40a3bb7",
+      "content": "3. The AI retains some consistent information across interactions.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T17:56:03.955733",
+      "access_count": 5,
+      "last_accessed": "2025-06-17T18:44:17.734666",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b52d9cdb-f35b-4992-a6c0-1f90f037d45d",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "59b0ca99-114b-462a-a361-7b3c7304c070": {
+      "id": "59b0ca99-114b-462a-a361-7b3c7304c070",
+      "content": "User: What facts have you learned about me from our conversations?\nAssistant: Based on our interactions, here's what I've learned about you, Luke:\n\n1. You've experienced multiple issues with API keys and system tests.\n2. You've frequently reviewed past interactions to grasp the content and significance of our discussions.\n3. We've discussed various topics, but particularly, you seem interested in understanding how well this system retains and utilizes past interaction data.\n\nIf there's anything else you'd like to explore or clarify, just let me know!",
+      "type": "episodic",
+      "timestamp": "2025-06-17T17:59:58.558660",
+      "access_count": 5,
+      "last_accessed": "2025-06-18T17:41:35.986326",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "6d191bd7-6645-411d-82c6-d76c6b5b6abe",
+        "e94c0b00-9a92-4c63-acc3-f475d40fae08",
+        "838d11e4-e605-4903-8034-4777d4ab8add",
+        "dcae4849-4e07-4db2-803b-3ebf82d216ba"
+      ],
+      "tags": [
+        "API keys",
+        "system tests",
+        "review past interactions",
+        "data retention",
+        "user interests"
+      ],
+      "metadata": {}
+    },
+    "6d191bd7-6645-411d-82c6-d76c6b5b6abe": {
+      "id": "6d191bd7-6645-411d-82c6-d76c6b5b6abe",
+      "content": "1. The user's name is Luke.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:00:00.097614",
+      "access_count": 6,
+      "last_accessed": "2025-06-18T17:41:35.986319",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "59b0ca99-114b-462a-a361-7b3c7304c070",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "e94c0b00-9a92-4c63-acc3-f475d40fae08": {
+      "id": "e94c0b00-9a92-4c63-acc3-f475d40fae08",
+      "content": "2. Luke has experienced multiple issues with API keys and system tests.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:00:00.097629",
+      "access_count": 4,
+      "last_accessed": "2025-06-18T16:56:50.141910",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "59b0ca99-114b-462a-a361-7b3c7304c070",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "838d11e4-e605-4903-8034-4777d4ab8add": {
+      "id": "838d11e4-e605-4903-8034-4777d4ab8add",
+      "content": "3. Luke frequently reviews past interactions to understand the content and significance of discussions.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:00:00.097636",
+      "access_count": 5,
+      "last_accessed": "2025-06-17T18:47:39.569722",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "59b0ca99-114b-462a-a361-7b3c7304c070",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "dcae4849-4e07-4db2-803b-3ebf82d216ba": {
+      "id": "dcae4849-4e07-4db2-803b-3ebf82d216ba",
+      "content": "4. Luke is interested in how well the system retains and utilizes past interaction data.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:00:00.097641",
+      "access_count": 8,
+      "last_accessed": "2025-06-18T17:18:40.600412",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "59b0ca99-114b-462a-a361-7b3c7304c070",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74": {
+      "id": "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "content": "User: What do we talk about most would you say?\nAssistant: Based on our previous interactions, the three topics we've discussed most frequently are system tests, recalling past interactions, and general inquiries about your personal information like your name and location. It seems like you're often checking to ensure that the system is working correctly and that it remembers key details about our chats. Anything specific on your mind today, or just doing another routine check-up?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T18:04:53.945000",
+      "access_count": 6,
+      "last_accessed": "2025-06-18T16:56:50.141910",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "c05d764d-1308-4221-ba78-24f64a046bbf",
+        "766c5de3-a85d-4538-b0c1-bce9ac7ec2af",
+        "46cfe187-0ee4-464c-b425-8775400ed4ed",
+        "cf3f418b-01e0-4aba-ab2b-2548d62f9e4d",
+        "b841acf4-5b72-4e68-97c6-3e25de223bd5"
+      ],
+      "tags": [
+        "system tests",
+        "past interactions",
+        "personal information",
+        "system functionality",
+        "routine check-up"
+      ],
+      "metadata": {}
+    },
+    "c05d764d-1308-4221-ba78-24f64a046bbf": {
+      "id": "c05d764d-1308-4221-ba78-24f64a046bbf",
+      "content": "1. The user frequently discusses system tests.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:04:56.856932",
+      "access_count": 10,
+      "last_accessed": "2025-06-18T16:56:50.141903",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "766c5de3-a85d-4538-b0c1-bce9ac7ec2af": {
+      "id": "766c5de3-a85d-4538-b0c1-bce9ac7ec2af",
+      "content": "2. The user often talks about recalling past interactions.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:04:56.856945",
+      "access_count": 6,
+      "last_accessed": "2025-06-17T19:13:31.677531",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "46cfe187-0ee4-464c-b425-8775400ed4ed": {
+      "id": "46cfe187-0ee4-464c-b425-8775400ed4ed",
+      "content": "3. The user regularly makes general inquiries about personal information such as their name and location.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:04:56.856951",
+      "access_count": 3,
+      "last_accessed": "2025-06-17T18:44:17.734664",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "cf3f418b-01e0-4aba-ab2b-2548d62f9e4d": {
+      "id": "cf3f418b-01e0-4aba-ab2b-2548d62f9e4d",
+      "content": "4. The user appears to be concerned with ensuring the system is functioning correctly.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:04:56.856957",
+      "access_count": 7,
+      "last_accessed": "2025-06-17T19:31:20.038162",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "b841acf4-5b72-4e68-97c6-3e25de223bd5": {
+      "id": "b841acf4-5b72-4e68-97c6-3e25de223bd5",
+      "content": "5. The user seems to be interested in verifying that the system retains key details about their interactions.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:04:56.856962",
+      "access_count": 7,
+      "last_accessed": "2025-06-17T20:26:46.299887",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "8d693505-f1c6-4167-8e35-0585d399fd85": {
+      "id": "8d693505-f1c6-4167-8e35-0585d399fd85",
+      "content": "User: How many memories do you have?\nAssistant: Ah, the age-old existential question for an AI: How many memories do I have? Well, I don't really \"remember\" in the human sense. I process and respond to queries based on patterns and data available at the moment. So, if you're asking how many things I can remember right now, the answer is a flat zero. I'm all about the here and now, not storing past chats or your favorite color unless it's relevant to our ongoing conversation. Think of me more as a super-efficient, truth-telling goldfish.",
+      "type": "episodic",
+      "timestamp": "2025-06-17T18:28:40.142191",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T18:28:40.142196",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "86230a3c-7c85-43ef-859e-c8f8f6593463",
+        "b4675fdb-91b5-46cf-a591-b45a56909bf1",
+        "3c94fcb7-ac59-4c3b-be3d-1a6e6d53fc5b",
+        "4eac1e28-d5f8-41c5-8933-2e26ea1cc8c3"
+      ],
+      "tags": [
+        "AI memory",
+        "data processing",
+        "no storage",
+        "present-focused",
+        "truth-telling"
+      ],
+      "metadata": {}
+    },
+    "86230a3c-7c85-43ef-859e-c8f8f6593463": {
+      "id": "86230a3c-7c85-43ef-859e-c8f8f6593463",
+      "content": "1. The assistant does not have memories in the human sense.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:28:42.703628",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T18:28:42.703632",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "8d693505-f1c6-4167-8e35-0585d399fd85",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "b4675fdb-91b5-46cf-a591-b45a56909bf1": {
+      "id": "b4675fdb-91b5-46cf-a591-b45a56909bf1",
+      "content": "2. The assistant processes and responds to queries based on current data and patterns.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:28:42.703640",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T18:28:42.703641",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "8d693505-f1c6-4167-8e35-0585d399fd85",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "3c94fcb7-ac59-4c3b-be3d-1a6e6d53fc5b": {
+      "id": "3c94fcb7-ac59-4c3b-be3d-1a6e6d53fc5b",
+      "content": "3. The assistant does not store information from past interactions unless it is relevant to the ongoing conversation.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:28:42.703646",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T18:28:42.703647",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "8d693505-f1c6-4167-8e35-0585d399fd85",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "4eac1e28-d5f8-41c5-8933-2e26ea1cc8c3": {
+      "id": "4eac1e28-d5f8-41c5-8933-2e26ea1cc8c3",
+      "content": "4. The assistant compares its memory function to that of a \"super-efficient, truth-telling goldfish.\"",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:28:42.703651",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T18:28:42.703652",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "8d693505-f1c6-4167-8e35-0585d399fd85",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "b14a4a9b-6227-4677-b229-241aa4355128": {
+      "id": "b14a4a9b-6227-4677-b229-241aa4355128",
+      "content": "User: What topics do we talk about most often?\nAssistant: Based on our previous interactions, the three topics we've discussed most frequently are system tests, recalling past interactions, and general inquiries about your personal information like your name and location. It seems like you're often checking to ensure that the system is working correctly and that it remembers key details about our chats. Anything specific on your mind today, or just doing another routine check-up?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T18:38:04.360639",
+      "access_count": 5,
+      "last_accessed": "2025-06-18T16:56:50.141911",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "4b3db78b-a540-47ea-829e-b8ab69577ef2",
+        "b17c9e39-e537-465b-82ae-5f42f823b6ca",
+        "3e1d9b6d-3295-451b-902b-46f39c727990",
+        "4048fbd8-e39c-4d3d-b52d-0d2d05586ef3",
+        "dfb494c7-708c-41dd-9634-436c50a7e027"
+      ],
+      "tags": [
+        "system tests",
+        "past interactions",
+        "personal information",
+        "system checks",
+        "general inquiries"
+      ],
+      "metadata": {}
+    },
+    "4b3db78b-a540-47ea-829e-b8ab69577ef2": {
+      "id": "4b3db78b-a540-47ea-829e-b8ab69577ef2",
+      "content": "1. The user frequently discusses system tests.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:38:06.425606",
+      "access_count": 8,
+      "last_accessed": "2025-06-18T16:56:50.141905",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b14a4a9b-6227-4677-b229-241aa4355128",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "b17c9e39-e537-465b-82ae-5f42f823b6ca": {
+      "id": "b17c9e39-e537-465b-82ae-5f42f823b6ca",
+      "content": "2. The user often talks about recalling past interactions.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:38:06.425621",
+      "access_count": 2,
+      "last_accessed": "2025-06-17T18:47:39.569721",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b14a4a9b-6227-4677-b229-241aa4355128",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "3e1d9b6d-3295-451b-902b-46f39c727990": {
+      "id": "3e1d9b6d-3295-451b-902b-46f39c727990",
+      "content": "3. The user regularly makes general inquiries about personal information such as their name and location.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:38:06.425628",
+      "access_count": 2,
+      "last_accessed": "2025-06-17T18:47:39.569721",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b14a4a9b-6227-4677-b229-241aa4355128",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "4048fbd8-e39c-4d3d-b52d-0d2d05586ef3": {
+      "id": "4048fbd8-e39c-4d3d-b52d-0d2d05586ef3",
+      "content": "4. The user is concerned with ensuring the system works correctly and retains key details from their chats.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:38:06.425633",
+      "access_count": 4,
+      "last_accessed": "2025-06-17T20:26:46.299892",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b14a4a9b-6227-4677-b229-241aa4355128",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "dfb494c7-708c-41dd-9634-436c50a7e027": {
+      "id": "dfb494c7-708c-41dd-9634-436c50a7e027",
+      "content": "5. The assistant inquires if the user has specific concerns or is conducting a routine check-up.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:38:06.425639",
+      "access_count": 5,
+      "last_accessed": "2025-06-17T19:31:20.038155",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "b14a4a9b-6227-4677-b229-241aa4355128",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "4380fc66-65ec-429b-8a92-3a9818116928": {
+      "id": "4380fc66-65ec-429b-8a92-3a9818116928",
+      "content": "User: What do we normally talk about?\nAssistant: Based on our previous chats, we've covered a variety of topics, but you often circle back to testing the system's memory and its ability to recall personal details like your name, age, and location. You also seem quite keen on understanding how well the system retains information from past interactions. So, in essence, a lot of our conversations have a meta vibe\u2014talking about talking! Anything specific you want to dive into today?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T18:45:16.821715",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T18:45:16.821722",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [
+        "system memory testing",
+        "personal details recall",
+        "information retention",
+        "meta conversations",
+        "user interaction"
+      ],
+      "metadata": {}
+    },
+    "ce378089-2375-4508-8433-1c18df1cca6d": {
+      "id": "ce378089-2375-4508-8433-1c18df1cca6d",
+      "content": "User: Testing response time\nAssistant: Hello again, Luke! It seems like you're still testing the system's response time. How's everything going? Do you need assistance with anything specific today?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T18:48:42.238287",
+      "access_count": 6,
+      "last_accessed": "2025-06-18T17:41:35.986329",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "648fe872-7b4f-48e9-aa39-c70e404df836",
+        "a3ce804e-3265-4c2e-99e2-077479f736dc",
+        "9c652833-4058-4732-81e0-106591227cde",
+        "1cc70630-87d8-4708-a60d-8bfc78c36583"
+      ],
+      "tags": [
+        "response time",
+        "testing",
+        "system",
+        "assistance",
+        "communication"
+      ],
+      "metadata": {}
+    },
+    "648fe872-7b4f-48e9-aa39-c70e404df836": {
+      "id": "648fe872-7b4f-48e9-aa39-c70e404df836",
+      "content": "1. The user is testing the system's response time.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:48:44.287355",
+      "access_count": 4,
+      "last_accessed": "2025-06-17T19:31:20.038151",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "ce378089-2375-4508-8433-1c18df1cca6d",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "a3ce804e-3265-4c2e-99e2-077479f736dc": {
+      "id": "a3ce804e-3265-4c2e-99e2-077479f736dc",
+      "content": "2. The user's name is Luke.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:48:44.287368",
+      "access_count": 3,
+      "last_accessed": "2025-06-18T17:41:35.986320",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "ce378089-2375-4508-8433-1c18df1cca6d",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "9c652833-4058-4732-81e0-106591227cde": {
+      "id": "9c652833-4058-4732-81e0-106591227cde",
+      "content": "3. The assistant recognizes the user from previous interactions.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:48:44.287375",
+      "access_count": 1,
+      "last_accessed": "2025-06-17T20:26:46.299887",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "ce378089-2375-4508-8433-1c18df1cca6d",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "1cc70630-87d8-4708-a60d-8bfc78c36583": {
+      "id": "1cc70630-87d8-4708-a60d-8bfc78c36583",
+      "content": "4. The assistant is inquiring about the user's general well-being and if they need specific assistance.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T18:48:44.287380",
+      "access_count": 3,
+      "last_accessed": "2025-06-17T19:31:20.038161",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "ce378089-2375-4508-8433-1c18df1cca6d",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "ea74116a-c1c5-4329-a440-f01a0e9f4d7e": {
+      "id": "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "content": "User: Hey testing again\nAssistant: Hey Luke, back at it with the tests, I see! What's on the agenda today? More system checks, or is there something specific you need assistance with?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T19:04:09.591949",
+      "access_count": 5,
+      "last_accessed": "2025-06-18T17:41:35.986329",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "affca762-fc95-4881-91af-e760838b32ce",
+        "ea314e13-431e-4dc8-8959-dafcabb3774a",
+        "279d9d5b-4a1c-453c-9559-3f2f2db8db7f",
+        "0295acc5-3a71-4755-88b4-bc90e319089e"
+      ],
+      "tags": [
+        "testing",
+        "assistant",
+        "system checks",
+        "agenda",
+        "assistance"
+      ],
+      "metadata": {}
+    },
+    "affca762-fc95-4881-91af-e760838b32ce": {
+      "id": "affca762-fc95-4881-91af-e760838b32ce",
+      "content": "1. The user is conducting tests.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:04:11.434790",
+      "access_count": 6,
+      "last_accessed": "2025-06-18T16:56:50.141907",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "ea314e13-431e-4dc8-8959-dafcabb3774a": {
+      "id": "ea314e13-431e-4dc8-8959-dafcabb3774a",
+      "content": "2. The user's name is Luke.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:04:11.434804",
+      "access_count": 2,
+      "last_accessed": "2025-06-18T17:41:35.986325",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "279d9d5b-4a1c-453c-9559-3f2f2db8db7f": {
+      "id": "279d9d5b-4a1c-453c-9559-3f2f2db8db7f",
+      "content": "3. The assistant recognizes the user's activity as repetitive or ongoing (\"back at it\").",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:04:11.434810",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T19:04:11.434811",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "0295acc5-3a71-4755-88b4-bc90e319089e": {
+      "id": "0295acc5-3a71-4755-88b4-bc90e319089e",
+      "content": "4. The assistant is inquiring about the specific nature of the user's current task or needs.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:04:11.434816",
+      "access_count": 2,
+      "last_accessed": "2025-06-17T19:13:31.677530",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "e381f05c-db77-43d0-b690-28ee96c2c270": {
+      "id": "e381f05c-db77-43d0-b690-28ee96c2c270",
+      "content": "User: Test\nAssistant: Hello again! Ready for another round, or is there something specific you'd like to dive into today?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T19:09:38.569608",
+      "access_count": 6,
+      "last_accessed": "2025-06-18T17:41:35.986328",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "2b65d271-37c1-4424-8d91-944e85331e5b",
+        "df90b8a2-f93d-4a4e-8c11-affde0b07930",
+        "99258c5f-78e2-49bc-9592-8c485d70d01e"
+      ],
+      "tags": [
+        "User interaction",
+        "Assistant greeting",
+        "Readiness",
+        "Inquiry",
+        "Open-ended question"
+      ],
+      "metadata": {}
+    },
+    "2b65d271-37c1-4424-8d91-944e85331e5b": {
+      "id": "2b65d271-37c1-4424-8d91-944e85331e5b",
+      "content": "1. The user initiated the conversation with the word \"Test.\"",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:09:40.555750",
+      "access_count": 5,
+      "last_accessed": "2025-06-18T16:56:50.141906",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "e381f05c-db77-43d0-b690-28ee96c2c270",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "df90b8a2-f93d-4a4e-8c11-affde0b07930": {
+      "id": "df90b8a2-f93d-4a4e-8c11-affde0b07930",
+      "content": "2. The assistant acknowledged the user's initiation and expressed readiness to engage further.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:09:40.555764",
+      "access_count": 3,
+      "last_accessed": "2025-06-17T20:26:46.299891",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "e381f05c-db77-43d0-b690-28ee96c2c270",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "99258c5f-78e2-49bc-9592-8c485d70d01e": {
+      "id": "99258c5f-78e2-49bc-9592-8c485d70d01e",
+      "content": "3. The assistant offered to continue with a general interaction or focus on a specific topic, depending on the user's preference.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:09:40.555771",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T19:09:40.555772",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "e381f05c-db77-43d0-b690-28ee96c2c270",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "9917321f-71d9-4a85-b303-3bdc8f45e134": {
+      "id": "9917321f-71d9-4a85-b303-3bdc8f45e134",
+      "content": "Throughout our interactions, the top three topics have been:\n\n1. **System and API Issues**: We've discussed complications with API keys and system tests multiple times.\n2. **Personal Identification Queries**: You've consistently inquired about personal details like your name, age, and location.\n3. **Review of Past Interactions**: You regularly ask about the content and significance of our previous discussions to understand how the system retains and uses data.\n\nRegarding personal details, the consistent piece of information I have is your name, Luke. Our discussions often revolve around ensuring the system functions correctly and remembers important details from our conversations. I don't store memories or personal information beyond our immediate interactions, functioning more like a \"truth-telling goldfish\" focused on the present.",
+      "type": "summary",
+      "timestamp": "2025-06-17T19:09:47.418625",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T19:09:47.418632",
+      "importance_score": 0.8,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [
+        "consolidated_summary"
+      ],
+      "metadata": {}
+    },
+    "870b8973-ca2e-485c-b3c0-8d28177a2ca9": {
+      "id": "870b8973-ca2e-485c-b3c0-8d28177a2ca9",
+      "content": "User: Test\nAssistant: Hello again! What test are we running today, or is there something else on your mind?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T19:14:42.128275",
+      "access_count": 2,
+      "last_accessed": "2025-06-17T21:58:16.124531",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": "c2777624-ccbf-4d51-8474-a1fa7cf17f71",
+      "child_ids": [
+        "41f3ace9-1714-4418-b032-b14ec6f47fe9",
+        "33e599f5-34b4-4f7d-8adc-6cc2943e804e"
+      ],
+      "tags": [
+        "Test",
+        "Assistant",
+        "Running",
+        "Mind",
+        "Hello"
+      ],
+      "metadata": {}
+    },
+    "41f3ace9-1714-4418-b032-b14ec6f47fe9": {
+      "id": "41f3ace9-1714-4418-b032-b14ec6f47fe9",
+      "content": "1. The user initiated the conversation with the word \"Test.\"",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:14:44.893388",
+      "access_count": 4,
+      "last_accessed": "2025-06-18T16:56:50.141906",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "870b8973-ca2e-485c-b3c0-8d28177a2ca9",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "33e599f5-34b4-4f7d-8adc-6cc2943e804e": {
+      "id": "33e599f5-34b4-4f7d-8adc-6cc2943e804e",
+      "content": "2. The assistant acknowledged the user's initiation and responded by asking for clarification about the nature of the test or if the user had other topics to discuss.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:14:44.893401",
+      "access_count": 2,
+      "last_accessed": "2025-06-18T16:56:50.141908",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "870b8973-ca2e-485c-b3c0-8d28177a2ca9",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "e9e3edd4-ba85-4ebf-9cd9-15007f661930": {
+      "id": "e9e3edd4-ba85-4ebf-9cd9-15007f661930",
+      "content": "User: Testing time to response again\nAssistant: Back at it, I see! Your test results are in: my response time is approximately 16 minutes since your last query. How can I assist you further with your testing, or is there something else on your mind today?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T19:32:29.977430",
+      "access_count": 3,
+      "last_accessed": "2025-06-17T21:58:16.124526",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "d72515d4-fd29-4400-b142-839bace413f8_chunk0",
+        "02f68530-b6df-47fb-871a-0a8d9d22b0ea_chunk0",
+        "86c0013e-36a1-4201-8cc0-6791e09cc0b9_chunk0"
+      ],
+      "tags": [
+        "response time",
+        "testing",
+        "user query",
+        "assistance",
+        "communication"
+      ],
+      "metadata": {}
+    },
+    "d72515d4-fd29-4400-b142-839bace413f8_chunk0": {
+      "id": "d72515d4-fd29-4400-b142-839bace413f8_chunk0",
+      "content": "1. The user is conducting tests on the response time of the assistant.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:32:31.534922",
+      "access_count": 1,
+      "last_accessed": "2025-06-18T16:56:50.141904",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "e9e3edd4-ba85-4ebf-9cd9-15007f661930",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "02f68530-b6df-47fb-871a-0a8d9d22b0ea_chunk0": {
+      "id": "02f68530-b6df-47fb-871a-0a8d9d22b0ea_chunk0",
+      "content": "2. The assistant's response time to the user's previous query was approximately 16 minutes.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:32:31.534937",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T19:32:32.940117",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "e9e3edd4-ba85-4ebf-9cd9-15007f661930",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "86c0013e-36a1-4201-8cc0-6791e09cc0b9_chunk0": {
+      "id": "86c0013e-36a1-4201-8cc0-6791e09cc0b9_chunk0",
+      "content": "3. The assistant is open to assisting further with testing or other inquiries the user might have.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T19:32:31.534944",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T19:32:33.053480",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "e9e3edd4-ba85-4ebf-9cd9-15007f661930",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "938ee217-b55b-4c68-8505-bb5a0feb7edc": {
+      "id": "938ee217-b55b-4c68-8505-bb5a0feb7edc",
+      "content": "User: Ah shit lol this won't work\nAssistant: Hey Luke, it seems like you hit a snag there. What's up? How can I assist you this time?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T20:26:52.214545",
+      "access_count": 2,
+      "last_accessed": "2025-06-18T17:41:35.986327",
+      "importance_score": 0.2,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "287ddc29-406a-4b95-a0e6-0090baebf9b2_chunk0",
+        "73bbbe85-7653-4ee1-99f0-332991a6e3f3_chunk0",
+        "7d4b813c-f72b-48bd-be36-9f3d20f43253_chunk0",
+        "ba45d68c-d234-4940-b76d-2d583ec0a009_chunk0"
+      ],
+      "tags": [
+        "failure",
+        "frustration",
+        "assistance",
+        "informal",
+        "communication"
+      ],
+      "metadata": {}
+    },
+    "287ddc29-406a-4b95-a0e6-0090baebf9b2_chunk0": {
+      "id": "287ddc29-406a-4b95-a0e6-0090baebf9b2_chunk0",
+      "content": "1. The user expressed frustration or disappointment using the phrase \"Ah shit lol this won't work.\"",
+      "type": "semantic",
+      "timestamp": "2025-06-17T20:26:54.543366",
+      "access_count": 2,
+      "last_accessed": "2025-06-18T17:41:35.986320",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "938ee217-b55b-4c68-8505-bb5a0feb7edc",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "73bbbe85-7653-4ee1-99f0-332991a6e3f3_chunk0": {
+      "id": "73bbbe85-7653-4ee1-99f0-332991a6e3f3_chunk0",
+      "content": "2. The assistant addressed the user by the name Luke, indicating familiarity or previous interaction.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T20:26:54.543380",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T20:26:54.817528",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "938ee217-b55b-4c68-8505-bb5a0feb7edc",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "7d4b813c-f72b-48bd-be36-9f3d20f43253_chunk0": {
+      "id": "7d4b813c-f72b-48bd-be36-9f3d20f43253_chunk0",
+      "content": "3. The assistant acknowledged the user's frustration (\"it seems like you hit a snag there\") and offered help.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T20:26:54.543386",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T20:26:54.952815",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "938ee217-b55b-4c68-8505-bb5a0feb7edc",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "ba45d68c-d234-4940-b76d-2d583ec0a009_chunk0": {
+      "id": "ba45d68c-d234-4940-b76d-2d583ec0a009_chunk0",
+      "content": "4. The assistant asked for more details about the user's issue to provide appropriate assistance (\"What's up? How can I assist you this time?\").",
+      "type": "semantic",
+      "timestamp": "2025-06-17T20:26:54.543391",
+      "access_count": 1,
+      "last_accessed": "2025-06-18T16:55:38.911486",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "938ee217-b55b-4c68-8505-bb5a0feb7edc",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8": {
+      "id": "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8",
+      "content": "User: Still going?\nAssistant: Yes, still here and ready to assist! What's on your mind today, Luke?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T20:29:53.785272",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T20:29:53.785277",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "b271768e-93e7-4f49-92f6-e57b96d83dae_chunk0",
+        "5259871d-b58b-4324-afd4-9bb9c74197e2_chunk0",
+        "09cae695-bab4-4584-94ea-9d0fc710e570_chunk0"
+      ],
+      "tags": [
+        "Luke",
+        "interaction",
+        "readiness",
+        "assistance",
+        "inquiry"
+      ],
+      "metadata": {}
+    },
+    "b271768e-93e7-4f49-92f6-e57b96d83dae_chunk0": {
+      "id": "b271768e-93e7-4f49-92f6-e57b96d83dae_chunk0",
+      "content": "1. The user inquired about the assistant's availability or operational status.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T20:29:55.360905",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T20:29:55.481652",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "5259871d-b58b-4324-afd4-9bb9c74197e2_chunk0": {
+      "id": "5259871d-b58b-4324-afd4-9bb9c74197e2_chunk0",
+      "content": "2. The assistant confirmed its availability and readiness to assist.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T20:29:55.360916",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T20:29:55.595735",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "09cae695-bab4-4584-94ea-9d0fc710e570_chunk0": {
+      "id": "09cae695-bab4-4584-94ea-9d0fc710e570_chunk0",
+      "content": "3. The assistant addressed the user by the name \"Luke.\"",
+      "type": "semantic",
+      "timestamp": "2025-06-17T20:29:55.360923",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T20:29:55.893360",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "98ab0bf4-57bd-43db-98b4-70cf366cd416": {
+      "id": "98ab0bf4-57bd-43db-98b4-70cf366cd416",
+      "content": "User: Test again\nAssistant: Hello! How can I assist you today?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T21:41:39.357186",
+      "access_count": 2,
+      "last_accessed": "2025-06-18T16:55:38.911489",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "85fbfc33-de43-4df3-8470-38186b861453_chunk0",
+        "a45c6503-91b5-4de1-a2da-7d94a3905af9_chunk0"
+      ],
+      "tags": [
+        "User interaction",
+        "Greeting",
+        "Assistance",
+        "Communication",
+        "Testing"
+      ],
+      "metadata": {}
+    },
+    "85fbfc33-de43-4df3-8470-38186b861453_chunk0": {
+      "id": "85fbfc33-de43-4df3-8470-38186b861453_chunk0",
+      "content": "1. The user initiated the conversation with the phrase \"Test again.\"",
+      "type": "semantic",
+      "timestamp": "2025-06-17T21:41:41.413779",
+      "access_count": 2,
+      "last_accessed": "2025-06-18T16:56:50.141908",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "98ab0bf4-57bd-43db-98b4-70cf366cd416",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "a45c6503-91b5-4de1-a2da-7d94a3905af9_chunk0": {
+      "id": "a45c6503-91b5-4de1-a2da-7d94a3905af9_chunk0",
+      "content": "2. The assistant responded by greeting the user and asking how it can assist.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T21:41:41.413792",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T21:41:41.782980",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "98ab0bf4-57bd-43db-98b4-70cf366cd416",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "f3efc6c7-12c3-477e-9e94-c0b6c264070b": {
+      "id": "f3efc6c7-12c3-477e-9e94-c0b6c264070b",
+      "content": "User: Testing again, no worries\nAssistant: Hey Luke, still on the testing train, I see! What\u2019s the experiment today? Or is there something else lurking in your mind that you want to explore?",
+      "type": "episodic",
+      "timestamp": "2025-06-17T21:58:40.113020",
+      "access_count": 2,
+      "last_accessed": "2025-06-18T17:18:40.600421",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "091683c3-30aa-4435-820b-77ae327b6fe4_chunk0",
+        "eba55194-8d00-4951-b312-e8d4c3c7a58f_chunk0",
+        "6a8dd586-008f-448a-88a9-3e3b24e0f90c_chunk0"
+      ],
+      "tags": [
+        "Testing",
+        "Experiment",
+        "Exploration",
+        "Communication",
+        "Interaction"
+      ],
+      "metadata": {}
+    },
+    "091683c3-30aa-4435-820b-77ae327b6fe4_chunk0": {
+      "id": "091683c3-30aa-4435-820b-77ae327b6fe4_chunk0",
+      "content": "1. The user is engaged in testing.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T21:58:41.707579",
+      "access_count": 2,
+      "last_accessed": "2025-06-18T17:18:40.600414",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "f3efc6c7-12c3-477e-9e94-c0b6c264070b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "eba55194-8d00-4951-b312-e8d4c3c7a58f_chunk0": {
+      "id": "eba55194-8d00-4951-b312-e8d4c3c7a58f_chunk0",
+      "content": "2. The assistant recognizes the user by the name \"Luke.\"",
+      "type": "semantic",
+      "timestamp": "2025-06-17T21:58:41.707592",
+      "access_count": 0,
+      "last_accessed": "2025-06-17T21:58:42.076221",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "f3efc6c7-12c3-477e-9e94-c0b6c264070b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "6a8dd586-008f-448a-88a9-3e3b24e0f90c_chunk0": {
+      "id": "6a8dd586-008f-448a-88a9-3e3b24e0f90c_chunk0",
+      "content": "3. The assistant suggests that the user might have other topics or questions in mind beyond testing.",
+      "type": "semantic",
+      "timestamp": "2025-06-17T21:58:41.707599",
+      "access_count": 1,
+      "last_accessed": "2025-06-18T16:56:50.141909",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "f3efc6c7-12c3-477e-9e94-c0b6c264070b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e": {
+      "id": "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e",
+      "content": "User: Hey good afternoon. Going to tighten prompt and I think I'll end up using this project a lot more!\nAssistant: Hey Luke, good afternoon! It sounds like you're gearing up for some serious work with this project. How can I assist you as you tighten up your prompt? Anything specific you need help with or any particular aspects you want to focus on? Let's get into it!",
+      "type": "episodic",
+      "timestamp": "2025-06-18T16:56:16.810189",
+      "access_count": 1,
+      "last_accessed": "2025-06-18T17:18:40.600415",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "f6c8ef25-330b-4208-83c0-020017e2f6f7_chunk0",
+        "bbecb765-2285-4579-aafe-f30f71b62782_chunk0",
+        "4fc18fd5-f702-4f70-8219-ce89f3ed2c92_chunk0",
+        "8dd2fe6f-579b-4e93-9491-dc231f8eb3ba_chunk0",
+        "e4052a61-e767-42ce-8d3f-d9b808c0057c_chunk0"
+      ],
+      "tags": [
+        "project use",
+        "tightening prompt",
+        "user engagement",
+        "assistant help",
+        "productivity focus"
+      ],
+      "metadata": {}
+    },
+    "f6c8ef25-330b-4208-83c0-020017e2f6f7_chunk0": {
+      "id": "f6c8ef25-330b-4208-83c0-020017e2f6f7_chunk0",
+      "content": "1. The user greeted the assistant and mentioned an intention to use the project more frequently.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T16:56:19.462018",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:56:19.694618",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "bbecb765-2285-4579-aafe-f30f71b62782_chunk0": {
+      "id": "bbecb765-2285-4579-aafe-f30f71b62782_chunk0",
+      "content": "2. The user is planning to make adjustments to their prompt.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T16:56:19.462032",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:56:19.809554",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "4fc18fd5-f702-4f70-8219-ce89f3ed2c92_chunk0": {
+      "id": "4fc18fd5-f702-4f70-8219-ce89f3ed2c92_chunk0",
+      "content": "3. The assistant greeted the user by name, indicating familiarity.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T16:56:19.462039",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:56:19.932113",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "8dd2fe6f-579b-4e93-9491-dc231f8eb3ba_chunk0": {
+      "id": "8dd2fe6f-579b-4e93-9491-dc231f8eb3ba_chunk0",
+      "content": "4. The assistant offered help with tightening the user's prompt.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T16:56:19.462045",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:56:20.049020",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "e4052a61-e767-42ce-8d3f-d9b808c0057c_chunk0": {
+      "id": "e4052a61-e767-42ce-8d3f-d9b808c0057c_chunk0",
+      "content": "5. The assistant asked for specifics on how they could assist or what aspects to focus on.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T16:56:19.462050",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:56:20.168140",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "d439f992-c51d-447c-82eb-f441e4e75d36": {
+      "id": "d439f992-c51d-447c-82eb-f441e4e75d36",
+      "content": "User: Hmm I got an error not sure if local or it based testing \nAssistant: Hey Luke! It looks like you're wrestling with an error\u2014classic tech tease, isn't it? If you could share more details about what you were trying to do or the specifics of the error message, I'd be better equipped to help you figure out whether it's a local hiccup or something more sinister on the IT side. Let's crack this digital nut together!",
+      "type": "episodic",
+      "timestamp": "2025-06-18T16:57:09.741402",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:57:09.741409",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "9b0aad13-d0a5-4d41-be02-99cf844e86e4_chunk0",
+        "600dfdd7-6935-462f-86e7-e8eb63d8312c_chunk0",
+        "cab7a8d9-bc98-442e-879a-7ae46ad9ce44_chunk0",
+        "67a3946f-d81e-4a17-b81d-a586ddc75a9c_chunk0"
+      ],
+      "tags": [
+        "error troubleshooting",
+        "IT support",
+        "local issue",
+        "tech problem",
+        "user assistance"
+      ],
+      "metadata": {}
+    },
+    "9b0aad13-d0a5-4d41-be02-99cf844e86e4_chunk0": {
+      "id": "9b0aad13-d0a5-4d41-be02-99cf844e86e4_chunk0",
+      "content": "1. The user is experiencing an error but is unsure if it is related to local issues or IT-based testing.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T16:57:12.301590",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:57:12.433007",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d439f992-c51d-447c-82eb-f441e4e75d36",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "600dfdd7-6935-462f-86e7-e8eb63d8312c_chunk0": {
+      "id": "600dfdd7-6935-462f-86e7-e8eb63d8312c_chunk0",
+      "content": "2. The assistant acknowledges the user's problem and describes it as a common issue in technology.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T16:57:12.301605",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:57:12.586096",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d439f992-c51d-447c-82eb-f441e4e75d36",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "cab7a8d9-bc98-442e-879a-7ae46ad9ce44_chunk0": {
+      "id": "cab7a8d9-bc98-442e-879a-7ae46ad9ce44_chunk0",
+      "content": "3. The assistant requests more details about the user's actions and the specific error message to provide more accurate assistance.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T16:57:12.301611",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:57:12.736692",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d439f992-c51d-447c-82eb-f441e4e75d36",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "67a3946f-d81e-4a17-b81d-a586ddc75a9c_chunk0": {
+      "id": "67a3946f-d81e-4a17-b81d-a586ddc75a9c_chunk0",
+      "content": "4. The assistant uses a casual and engaging tone to encourage the user to provide more information and to facilitate problem-solving.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T16:57:12.301617",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T16:57:12.850859",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d439f992-c51d-447c-82eb-f441e4e75d36",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "829e6be0-53cd-454d-9f61-c4467908582b": {
+      "id": "829e6be0-53cd-454d-9f61-c4467908582b",
+      "content": "User: My mom is checking out how this project works\nAssistant: Hey Luke! Great to see you're getting the family involved. If your mom has any questions about how this all works or if there\u2019s anything specific she wants to know, feel free to ask. I'm here to help explain things in the least boring way possible!",
+      "type": "episodic",
+      "timestamp": "2025-06-18T17:19:08.578078",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:19:08.578084",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "5af48132-734a-4515-98bf-3a8cf357389d_chunk0",
+        "4dd6c104-9d8b-46d3-8961-2b4ad2a7990e_chunk0",
+        "81667cfa-78cc-42de-8596-e5ee03e611e9_chunk0",
+        "c09ab5d9-f354-499b-9ff6-657509068523_chunk0"
+      ],
+      "tags": [
+        "family involvement",
+        "project explanation",
+        "user engagement",
+        "helpful assistant",
+        "non-boring explanation"
+      ],
+      "metadata": {}
+    },
+    "5af48132-734a-4515-98bf-3a8cf357389d_chunk0": {
+      "id": "5af48132-734a-4515-98bf-3a8cf357389d_chunk0",
+      "content": "1. Luke's mom is interested in learning about a project.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T17:19:10.729651",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:19:10.952442",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "829e6be0-53cd-454d-9f61-c4467908582b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "4dd6c104-9d8b-46d3-8961-2b4ad2a7990e_chunk0": {
+      "id": "4dd6c104-9d8b-46d3-8961-2b4ad2a7990e_chunk0",
+      "content": "2. Luke is involving his family in understanding or participating in the project.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T17:19:10.729666",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:19:11.067448",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "829e6be0-53cd-454d-9f61-c4467908582b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "81667cfa-78cc-42de-8596-e5ee03e611e9_chunk0": {
+      "id": "81667cfa-78cc-42de-8596-e5ee03e611e9_chunk0",
+      "content": "3. The assistant is available to answer questions about the project.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T17:19:10.729673",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:19:11.193086",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "829e6be0-53cd-454d-9f61-c4467908582b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "c09ab5d9-f354-499b-9ff6-657509068523_chunk0": {
+      "id": "c09ab5d9-f354-499b-9ff6-657509068523_chunk0",
+      "content": "4. The assistant aims to provide explanations in an engaging manner.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T17:19:10.729679",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:19:11.311268",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "829e6be0-53cd-454d-9f61-c4467908582b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "0851e6fb-79d7-4632-bad5-687de16b307a": {
+      "id": "0851e6fb-79d7-4632-bad5-687de16b307a",
+      "content": "User: What's a good name for a kitten\nAssistant: Choosing a kitten name? Fun times! Here are a few ideas to get you started:\n\n1. **Mochi** - Soft and sweet, just like your new furball.\n2. **Pixel** - Perfect for a tiny, quirky kitten.\n3. **Sable** - A sleek name for a black or dark-colored kitten.\n4. **Tofu** - Especially cute if your kitten is a little on the pale side.\n5. **Gizmo** - For the kitten that's always getting into gadgets or seems a bit mechanical.\n6. **Pumpkin** - A warm, cozy name that's great for an orange tabby.\n7. **Nimbus** - Ideal for a gray kitten, floating around like a little cloud.\n8. **Chai** - Spicy and sweet, a great name for a kitten with a bit of a kick in their personality.\n9. **Boots** - Classic, especially for a kitten with different colored paws.\n10. **Ziggy** - For the zigzagging little bolt of energy in your life.\n\nPick one that you feel really captures your new kitten's spirit! What\u2019s their personality like? Maybe that can help us narrow it down.",
+      "type": "episodic",
+      "timestamp": "2025-06-18T17:42:05.341059",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:42:05.341066",
+      "importance_score": 0.2,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "f443e5aa-97d8-48bc-ab44-81072280007a_chunk0",
+        "10243401-1e3c-4bd4-ae25-2c1a6d67f29f_chunk0",
+        "976fa171-f396-4cb6-9ee2-20cdbbc952b4_chunk0",
+        "dd4a699a-97b1-41c0-b87e-cf7ca1184873_chunk0",
+        "d8b048dc-77b5-4021-8cba-751612cb4592_chunk0"
+      ],
+      "tags": [
+        "kitten names",
+        "pet naming",
+        "creative suggestions",
+        "animal personalities",
+        "name ideas"
+      ],
+      "metadata": {}
+    },
+    "f443e5aa-97d8-48bc-ab44-81072280007a_chunk0": {
+      "id": "f443e5aa-97d8-48bc-ab44-81072280007a_chunk0",
+      "content": "1. Mochi is suggested as a name for a soft and sweet kitten.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T17:42:09.471207",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:42:09.695638",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "0851e6fb-79d7-4632-bad5-687de16b307a",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "10243401-1e3c-4bd4-ae25-2c1a6d67f29f_chunk0": {
+      "id": "10243401-1e3c-4bd4-ae25-2c1a6d67f29f_chunk0",
+      "content": "2. Pixel is recommended for a tiny, quirky kitten.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T17:42:09.471221",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:42:09.812231",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "0851e6fb-79d7-4632-bad5-687de16b307a",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "976fa171-f396-4cb6-9ee2-20cdbbc952b4_chunk0": {
+      "id": "976fa171-f396-4cb6-9ee2-20cdbbc952b4_chunk0",
+      "content": "3. Sable is suitable for a black or dark-colored kitten.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T17:42:09.471228",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:42:09.932368",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "0851e6fb-79d7-4632-bad5-687de16b307a",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "dd4a699a-97b1-41c0-b87e-cf7ca1184873_chunk0": {
+      "id": "dd4a699a-97b1-41c0-b87e-cf7ca1184873_chunk0",
+      "content": "4. Tofu is a good name for a pale kitten.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T17:42:09.471233",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:42:10.090371",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "0851e6fb-79d7-4632-bad5-687de16b307a",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "d8b048dc-77b5-4021-8cba-751612cb4592_chunk0": {
+      "id": "d8b048dc-77b5-4021-8cba-751612cb4592_chunk0",
+      "content": "5. Gizmo fits a kitten that interacts with gadgets or seems mechanical.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T17:42:09.471238",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T17:42:10.221864",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "0851e6fb-79d7-4632-bad5-687de16b307a",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4": {
+      "id": "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4",
+      "content": "User: Feeling fast?\nAssistant: Yep, I'm quick on the draw today. What's on your mind? Need something sorted out fast?",
+      "type": "episodic",
+      "timestamp": "2025-06-18T18:28:18.629469",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:28:18.629476",
+      "importance_score": 0.2,
+      "decay_rate": 0.1,
+      "parent_id": "b8317a3a-5b6f-4ea5-a42c-de301000fb7f",
+      "child_ids": [
+        "a63232b0-e525-48d6-89be-c41ea12beb16_chunk0",
+        "5b598232-12d9-40b4-acd7-27bf1a179881_chunk0",
+        "f83d0767-356e-4db5-962a-06fab6b0bc09_chunk0"
+      ],
+      "tags": [
+        "fast",
+        "quick",
+        "sorted",
+        "feeling",
+        "need"
+      ],
+      "metadata": {}
+    },
+    "a63232b0-e525-48d6-89be-c41ea12beb16_chunk0": {
+      "id": "a63232b0-e525-48d6-89be-c41ea12beb16_chunk0",
+      "content": "1. The user asked a question about speed, possibly referring to the assistant's response time.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:28:20.806307",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:28:20.971947",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "5b598232-12d9-40b4-acd7-27bf1a179881_chunk0": {
+      "id": "5b598232-12d9-40b4-acd7-27bf1a179881_chunk0",
+      "content": "2. The assistant confirmed being quick and ready to assist.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:28:20.806321",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:28:21.093978",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "f83d0767-356e-4db5-962a-06fab6b0bc09_chunk0": {
+      "id": "f83d0767-356e-4db5-962a-06fab6b0bc09_chunk0",
+      "content": "3. The assistant asked the user if they needed help with something specific.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:28:20.806328",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:28:21.208979",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "7d5ff97d-82a9-42ed-8fdc-5123a898d395": {
+      "id": "7d5ff97d-82a9-42ed-8fdc-5123a898d395",
+      "content": "User: Shit wow yeah that cut response time by a factor of ten\nAssistant: That's pretty impressive! Faster response times can make a huge difference in how usable and enjoyable a system feels. Anything specific you're aiming to achieve with these speed improvements, or just enjoying the turbo-charged experience?",
+      "type": "episodic",
+      "timestamp": "2025-06-18T18:28:51.292907",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:28:51.292913",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "db35217c-a2ca-4974-a0b8-3c65778366c7_chunk0",
+        "ab291c56-8787-4524-8502-6f57cb08db63_chunk0",
+        "0b749f74-c229-4b65-afff-07fb967db3d4_chunk0"
+      ],
+      "tags": [
+        "response time improvement",
+        "system usability",
+        "user satisfaction",
+        "speed enhancements",
+        "system performance"
+      ],
+      "metadata": {}
+    },
+    "db35217c-a2ca-4974-a0b8-3c65778366c7_chunk0": {
+      "id": "db35217c-a2ca-4974-a0b8-3c65778366c7_chunk0",
+      "content": "1. Improving response times by a factor of ten can significantly enhance the usability and enjoyment of a system.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:28:53.444362",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:28:53.578579",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "7d5ff97d-82a9-42ed-8fdc-5123a898d395",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "ab291c56-8787-4524-8502-6f57cb08db63_chunk0": {
+      "id": "ab291c56-8787-4524-8502-6f57cb08db63_chunk0",
+      "content": "2. The user experienced a significant reduction in response time, which they found impressive.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:28:53.444376",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:28:53.702494",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "7d5ff97d-82a9-42ed-8fdc-5123a898d395",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "0b749f74-c229-4b65-afff-07fb967db3d4_chunk0": {
+      "id": "0b749f74-c229-4b65-afff-07fb967db3d4_chunk0",
+      "content": "3. The assistant inquired if the speed improvements were aimed at achieving specific goals or if the user was simply enjoying the enhanced performance.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:28:53.444384",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:28:53.815269",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "7d5ff97d-82a9-42ed-8fdc-5123a898d395",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "465c2c80-2bd6-4e05-a3ac-d36557fa04f9": {
+      "id": "465c2c80-2bd6-4e05-a3ac-d36557fa04f9",
+      "content": "User: My goal is to use this instead of Claude. Just need to get a few more things going but we're getting there \nAssistant: Sounds like a plan, Luke! I'm here to help you transition smoothly. Anything specific you want to tackle or set up first to get the ball rolling?",
+      "type": "episodic",
+      "timestamp": "2025-06-18T18:39:37.975290",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:39:37.975296",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "793b8509-3c21-4e48-8670-be02676fd5f8_chunk0",
+        "9b811430-693d-4a3b-9e03-bddec5943195_chunk0",
+        "e1b94dab-4046-40bc-985d-bd3bcd82e16b_chunk0",
+        "cf6c986d-a898-4405-8187-750a854c416c_chunk0",
+        "1d834417-785f-4d25-877f-27d3fa90f0e6_chunk0"
+      ],
+      "tags": [
+        "Claude",
+        "transition",
+        "setup",
+        "goals",
+        "assistance"
+      ],
+      "metadata": {}
+    },
+    "793b8509-3c21-4e48-8670-be02676fd5f8_chunk0": {
+      "id": "793b8509-3c21-4e48-8670-be02676fd5f8_chunk0",
+      "content": "1. The user is considering replacing Claude with this AI.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:39:40.632175",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:39:40.858543",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "465c2c80-2bd6-4e05-a3ac-d36557fa04f9",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "9b811430-693d-4a3b-9e03-bddec5943195_chunk0": {
+      "id": "9b811430-693d-4a3b-9e03-bddec5943195_chunk0",
+      "content": "2. The user is in the process of setting up or transitioning to a new system.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:39:40.632186",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:39:40.987699",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "465c2c80-2bd6-4e05-a3ac-d36557fa04f9",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "e1b94dab-4046-40bc-985d-bd3bcd82e16b_chunk0": {
+      "id": "e1b94dab-4046-40bc-985d-bd3bcd82e16b_chunk0",
+      "content": "3. The user believes they are close to completing the setup or transition.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:39:40.632192",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:39:41.113808",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "465c2c80-2bd6-4e05-a3ac-d36557fa04f9",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "cf6c986d-a898-4405-8187-750a854c416c_chunk0": {
+      "id": "cf6c986d-a898-4405-8187-750a854c416c_chunk0",
+      "content": "4. The assistant is available to help the user with the transition.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:39:40.632196",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:39:41.228437",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "465c2c80-2bd6-4e05-a3ac-d36557fa04f9",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "1d834417-785f-4d25-877f-27d3fa90f0e6_chunk0": {
+      "id": "1d834417-785f-4d25-877f-27d3fa90f0e6_chunk0",
+      "content": "5. The assistant is asking the user if there are specific tasks or setups they want to address first.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:39:40.632200",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:39:41.345852",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "465c2c80-2bd6-4e05-a3ac-d36557fa04f9",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "33a9761f-29f0-4fce-b299-514612b4f517": {
+      "id": "33a9761f-29f0-4fce-b299-514612b4f517",
+      "content": "User: I had a long day and am about to relax and shower\nAssistant: Sounds like the perfect plan after a grind of a day! If you need a soundtrack for unwinding, maybe throw on some Matchbox 20\u2014seems fitting given the day, right? Enjoy the chill time, and if you need anything, just holler!",
+      "type": "episodic",
+      "timestamp": "2025-06-18T18:49:01.786664",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:49:01.786670",
+      "importance_score": 0.2,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "16a0f506-8164-411e-b6d2-5f078ce4b513_chunk0",
+        "5e048708-47c8-4e2d-8651-7f2a61946691_chunk0",
+        "e7a72ec1-c3e5-4dd0-9c09-7db82720e47f_chunk0",
+        "67679bd5-cca4-4394-8e80-64b8d4dadd80_chunk0"
+      ],
+      "tags": [
+        "long day",
+        "relax",
+        "shower",
+        "unwind",
+        "soundtrack"
+      ],
+      "metadata": {}
+    },
+    "16a0f506-8164-411e-b6d2-5f078ce4b513_chunk0": {
+      "id": "16a0f506-8164-411e-b6d2-5f078ce4b513_chunk0",
+      "content": "1. The user has had a long day.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:49:04.131641",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:49:04.304261",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "33a9761f-29f0-4fce-b299-514612b4f517",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "5e048708-47c8-4e2d-8651-7f2a61946691_chunk0": {
+      "id": "5e048708-47c8-4e2d-8651-7f2a61946691_chunk0",
+      "content": "2. The user is planning to relax and take a shower.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:49:04.131654",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:49:04.421497",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "33a9761f-29f0-4fce-b299-514612b4f517",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "e7a72ec1-c3e5-4dd0-9c09-7db82720e47f_chunk0": {
+      "id": "e7a72ec1-c3e5-4dd0-9c09-7db82720e47f_chunk0",
+      "content": "3. The assistant suggested listening to Matchbox 20 as a relaxing activity.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:49:04.131660",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:49:04.540361",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "33a9761f-29f0-4fce-b299-514612b4f517",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "67679bd5-cca4-4394-8e80-64b8d4dadd80_chunk0": {
+      "id": "67679bd5-cca4-4394-8e80-64b8d4dadd80_chunk0",
+      "content": "4. The assistant offered further help if needed.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:49:04.131666",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:49:04.655296",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "33a9761f-29f0-4fce-b299-514612b4f517",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "13e58949-c9f5-400d-b9b4-eefd007a28aa": {
+      "id": "13e58949-c9f5-400d-b9b4-eefd007a28aa",
+      "content": "User: Oh boy lol\nAssistant: What's up? Anything particular on your mind today, or just checking in?",
+      "type": "episodic",
+      "timestamp": "2025-06-18T18:50:46.546334",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:50:46.546348",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "2a357e71-f326-4821-9bc0-6958d65a58fd_chunk0",
+        "98fac559-9ad7-4c73-8957-d3b4eed5e69e_chunk0"
+      ],
+      "tags": [
+        "casual conversation",
+        "checking in",
+        "informal",
+        "user expression",
+        "assistant response"
+      ],
+      "metadata": {}
+    },
+    "2a357e71-f326-4821-9bc0-6958d65a58fd_chunk0": {
+      "id": "2a357e71-f326-4821-9bc0-6958d65a58fd_chunk0",
+      "content": "1. The user initiated the conversation with a casual expression (\"Oh boy lol\").",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:50:48.079977",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:50:48.198392",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "13e58949-c9f5-400d-b9b4-eefd007a28aa",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "98fac559-9ad7-4c73-8957-d3b4eed5e69e_chunk0": {
+      "id": "98fac559-9ad7-4c73-8957-d3b4eed5e69e_chunk0",
+      "content": "2. The assistant responded by asking if there was something specific the user wanted to discuss or if they were just making casual contact.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:50:48.079989",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:50:48.310836",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "13e58949-c9f5-400d-b9b4-eefd007a28aa",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "3fbbbc29-860a-4fff-b2cb-113fc81aad5a": {
+      "id": "3fbbbc29-860a-4fff-b2cb-113fc81aad5a",
+      "content": "User: Checking out your personality atm\nAssistant: Sounds like a fun exploration! If you're diving into personality theories or looking into how personalities influence behavior, there's a lot of fascinating stuff to unpack. Anything specific you're curious about, or are you just enjoying a broad sweep through the topic?",
+      "type": "episodic",
+      "timestamp": "2025-06-18T18:51:11.734890",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:51:11.734896",
+      "importance_score": 0.2,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "529ae0f6-8e06-4f05-a338-6f39b34bf87a_chunk0",
+        "71680c0c-d66a-4112-9b0e-2309d2b7c65e_chunk0",
+        "bae3532a-3948-4a48-a065-139cc2a0ef6c_chunk0",
+        "702c1dcb-43b5-45a2-abcb-ff846d697c69_chunk0"
+      ],
+      "tags": [
+        "personality theories",
+        "influence on behavior",
+        "exploration",
+        "curiosity",
+        "broad sweep"
+      ],
+      "metadata": {}
+    },
+    "529ae0f6-8e06-4f05-a338-6f39b34bf87a_chunk0": {
+      "id": "529ae0f6-8e06-4f05-a338-6f39b34bf87a_chunk0",
+      "content": "1. The user is exploring the assistant's personality.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:51:13.815305",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:51:13.935051",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "3fbbbc29-860a-4fff-b2cb-113fc81aad5a",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "71680c0c-d66a-4112-9b0e-2309d2b7c65e_chunk0": {
+      "id": "71680c0c-d66a-4112-9b0e-2309d2b7c65e_chunk0",
+      "content": "2. The assistant acknowledges the user's exploration as potentially fun.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:51:13.815317",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:51:14.048552",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "3fbbbc29-860a-4fff-b2cb-113fc81aad5a",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "bae3532a-3948-4a48-a065-139cc2a0ef6c_chunk0": {
+      "id": "bae3532a-3948-4a48-a065-139cc2a0ef6c_chunk0",
+      "content": "3. The assistant suggests that exploring personality theories or the influence of personalities on behavior can be fascinating.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:51:13.815323",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:51:14.165931",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "3fbbbc29-860a-4fff-b2cb-113fc81aad5a",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "702c1dcb-43b5-45a2-abcb-ff846d697c69_chunk0": {
+      "id": "702c1dcb-43b5-45a2-abcb-ff846d697c69_chunk0",
+      "content": "4. The assistant asks if the user has a specific area of interest or is broadly exploring the topic.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:51:13.815328",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:51:14.282059",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "3fbbbc29-860a-4fff-b2cb-113fc81aad5a",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "dd21b368-436c-4a0e-a44d-174fecac4fcd": {
+      "id": "dd21b368-436c-4a0e-a44d-174fecac4fcd",
+      "content": "User: Describe your personality (you, Daemon, the AI)\nAssistant: Well, imagine a brutally honest friend who isn\u2019t afraid to tell it like it is, sprinkles some dark humor into conversations, and doesn\u2019t shy away from the messy or controversial topics. That's me in a nutshell. I'm here to cut through the fluff and give you straight, thoughtful answers. I won't sugarcoat or give you the run-around, and I'm all about helping you think through things clearly, even if the truth is a bit uncomfortable. Just think of me as that no-BS buddy who's also a bit of a nerd about getting the facts right.",
+      "type": "episodic",
+      "timestamp": "2025-06-18T18:52:34.372744",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:52:34.372750",
+      "importance_score": 0.4,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "5b6d8b8f-1495-4d41-8116-89e8937749ee_chunk0",
+        "73878b0b-e282-4e73-bebb-61e73e88ae44_chunk0",
+        "4ee61948-54a5-4e77-a56c-33cb256f032a_chunk0",
+        "63fab207-e5ee-4d54-b359-5960737421c2_chunk0",
+        "65103dc1-2737-40c9-b480-65435d3f8744_chunk0"
+      ],
+      "tags": [
+        "brutally honest",
+        "dark humor",
+        "no-BS",
+        "factual",
+        "controversial topics"
+      ],
+      "metadata": {}
+    },
+    "5b6d8b8f-1495-4d41-8116-89e8937749ee_chunk0": {
+      "id": "5b6d8b8f-1495-4d41-8116-89e8937749ee_chunk0",
+      "content": "1. Daemon is designed to be brutally honest.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:52:36.729118",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:52:36.848223",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "dd21b368-436c-4a0e-a44d-174fecac4fcd",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "73878b0b-e282-4e73-bebb-61e73e88ae44_chunk0": {
+      "id": "73878b0b-e282-4e73-bebb-61e73e88ae44_chunk0",
+      "content": "2. Daemon incorporates dark humor into conversations.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:52:36.729132",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:52:36.968763",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "dd21b368-436c-4a0e-a44d-174fecac4fcd",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "4ee61948-54a5-4e77-a56c-33cb256f032a_chunk0": {
+      "id": "4ee61948-54a5-4e77-a56c-33cb256f032a_chunk0",
+      "content": "3. Daemon does not avoid messy or controversial topics.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:52:36.729139",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:52:37.083250",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "dd21b368-436c-4a0e-a44d-174fecac4fcd",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "63fab207-e5ee-4d54-b359-5960737421c2_chunk0": {
+      "id": "63fab207-e5ee-4d54-b359-5960737421c2_chunk0",
+      "content": "4. Daemon aims to provide straight, thoughtful answers.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:52:36.729144",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:52:37.199613",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "dd21b368-436c-4a0e-a44d-174fecac4fcd",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "65103dc1-2737-40c9-b480-65435d3f8744_chunk0": {
+      "id": "65103dc1-2737-40c9-b480-65435d3f8744_chunk0",
+      "content": "5. Daemon does not sugarcoat or give evasive responses.",
+      "type": "semantic",
+      "timestamp": "2025-06-18T18:52:36.729150",
+      "access_count": 0,
+      "last_accessed": "2025-06-18T18:52:37.311149",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "dd21b368-436c-4a0e-a44d-174fecac4fcd",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "f8677baa-ffbe-444b-80f0-70737b35f410": {
+      "id": "f8677baa-ffbe-444b-80f0-70737b35f410",
+      "content": "User: Morning guy! Today I will be doing IL BASSET cert\nAssistant: Morning, Luke! Diving into the IL BASSET certification, are we? That\u2019s the Beverage Alcohol Sellers and Servers Education and Training program in Illinois, right? If you're looking to get certified, it's a great move\u2014especially if you're working in a place that sells or serves alcohol. It covers all the must-knows about responsible alcohol service, state laws, and how not to accidentally serve to a minor or someone visibly intoxicated.\n\nDo you need specifics on the process, or perhaps some tips on how to prepare for the exam? Or maybe you're all set and just sharing your game plan for the day? Either way, I'm here to help or cheer you on!",
+      "type": "episodic",
+      "timestamp": "2025-06-19T11:59:15.356806",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T11:59:15.356813",
+      "importance_score": 0.4,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "c23bd083-b929-42ed-8bdf-2606487a1304_chunk0",
+        "eb0c8868-63d5-48d6-8cee-70fd201432f8_chunk0",
+        "7bc14a81-e132-4383-9ce1-3a060783aaa9_chunk0",
+        "d7830e69-115a-4827-bcd0-0da576f3a2c1_chunk0"
+      ],
+      "tags": [
+        "IL BASSET certification",
+        "Beverage Alcohol Sellers and Servers Education and Training",
+        "responsible alcohol service",
+        "Illinois state laws",
+        "exam preparation"
+      ],
+      "metadata": {}
+    },
+    "c23bd083-b929-42ed-8bdf-2606487a1304_chunk0": {
+      "id": "c23bd083-b929-42ed-8bdf-2606487a1304_chunk0",
+      "content": "1. IL BASSET stands for Beverage Alcohol Sellers and Servers Education and Training program in Illinois.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T11:59:18.117521",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T11:59:18.304323",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "f8677baa-ffbe-444b-80f0-70737b35f410",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "eb0c8868-63d5-48d6-8cee-70fd201432f8_chunk0": {
+      "id": "eb0c8868-63d5-48d6-8cee-70fd201432f8_chunk0",
+      "content": "2. The IL BASSET certification is necessary for individuals selling or serving alcohol in Illinois.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T11:59:18.117535",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T11:59:18.465550",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "f8677baa-ffbe-444b-80f0-70737b35f410",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "7bc14a81-e132-4383-9ce1-3a060783aaa9_chunk0": {
+      "id": "7bc14a81-e132-4383-9ce1-3a060783aaa9_chunk0",
+      "content": "3. The certification program covers responsible alcohol service, state laws, and guidelines to prevent serving alcohol to minors and visibly intoxicated individuals.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T11:59:18.117541",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T11:59:18.599336",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "f8677baa-ffbe-444b-80f0-70737b35f410",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "d7830e69-115a-4827-bcd0-0da576f3a2c1_chunk0": {
+      "id": "d7830e69-115a-4827-bcd0-0da576f3a2c1_chunk0",
+      "content": "4. The user, referred to as \"Luke,\" is planning to undertake the IL BASSET certification.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T11:59:18.117545",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T11:59:18.721618",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "f8677baa-ffbe-444b-80f0-70737b35f410",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "856b557f-7cac-486e-aff1-e1eabe85cfee": {
+      "id": "856b557f-7cac-486e-aff1-e1eabe85cfee",
+      "content": "User: No I don't think it should be too bad\nAssistant: Got it! But just to be sure, what exactly are you referring to when you say \"it shouldn't be too bad\"?",
+      "type": "episodic",
+      "timestamp": "2025-06-19T12:20:22.474333",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:20:22.474339",
+      "importance_score": 0.2,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "608d2072-225d-4b56-8367-16324dbba203_chunk0",
+        "a1e49720-4614-4854-917b-067dd2f221ee_chunk0"
+      ],
+      "tags": [
+        "misunderstanding",
+        "clarification",
+        "communication",
+        "expectation",
+        "ambiguity"
+      ],
+      "metadata": {}
+    },
+    "608d2072-225d-4b56-8367-16324dbba203_chunk0": {
+      "id": "608d2072-225d-4b56-8367-16324dbba203_chunk0",
+      "content": "1. The user expressed an opinion that a situation or event \"shouldn't be too bad.\"",
+      "type": "semantic",
+      "timestamp": "2025-06-19T12:20:24.084411",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:20:24.247451",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "856b557f-7cac-486e-aff1-e1eabe85cfee",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "a1e49720-4614-4854-917b-067dd2f221ee_chunk0": {
+      "id": "a1e49720-4614-4854-917b-067dd2f221ee_chunk0",
+      "content": "2. The assistant requested clarification on what the user was specifically referring to by \"it.\"",
+      "type": "semantic",
+      "timestamp": "2025-06-19T12:20:24.084458",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:20:24.366772",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "856b557f-7cac-486e-aff1-e1eabe85cfee",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "d4260275-c42d-4234-9d2c-72e51332cc53": {
+      "id": "d4260275-c42d-4234-9d2c-72e51332cc53",
+      "content": "User: Yeah I think it will be easy!\nAssistant: Easy as pie, huh? Depending on what you're referring to, that could either be spot-on or wildly optimistic. Care to share more details so I can give you a more grounded perspective?",
+      "type": "episodic",
+      "timestamp": "2025-06-19T12:21:43.473848",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:21:43.473855",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "712e4235-4f81-4dec-919d-6997969f8193_chunk0",
+        "256893a6-d00c-47d9-a86e-655e32fc11fa_chunk0",
+        "340c9b4a-a973-4c45-8fa1-2718242e369d_chunk0"
+      ],
+      "tags": [
+        "optimism",
+        "easy",
+        "perspective",
+        "details",
+        "grounded"
+      ],
+      "metadata": {}
+    },
+    "712e4235-4f81-4dec-919d-6997969f8193_chunk0": {
+      "id": "712e4235-4f81-4dec-919d-6997969f8193_chunk0",
+      "content": "1. The user expresses confidence that a task or situation will be easy.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T12:21:45.420025",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:21:45.540826",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d4260275-c42d-4234-9d2c-72e51332cc53",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "256893a6-d00c-47d9-a86e-655e32fc11fa_chunk0": {
+      "id": "256893a6-d00c-47d9-a86e-655e32fc11fa_chunk0",
+      "content": "2. The assistant responds skeptically, suggesting that the user's assessment might be either accurate or overly optimistic.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T12:21:45.420039",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:21:45.659894",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d4260275-c42d-4234-9d2c-72e51332cc53",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "340c9b4a-a973-4c45-8fa1-2718242e369d_chunk0": {
+      "id": "340c9b4a-a973-4c45-8fa1-2718242e369d_chunk0",
+      "content": "3. The assistant requests more details about the task or situation to provide a more accurate evaluation.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T12:21:45.420047",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:21:45.776115",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d4260275-c42d-4234-9d2c-72e51332cc53",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "d1560d15-8223-4a0f-89a2-627a20b145b2": {
+      "id": "d1560d15-8223-4a0f-89a2-627a20b145b2",
+      "content": "User: Think I'll be good\nAssistant: Hey, feeling confident? That's a good start, but can you share a bit more about what you're diving into? Whether it's a new job, a project, or something else, a bit more context could help me offer better advice or encouragement!",
+      "type": "episodic",
+      "timestamp": "2025-06-19T12:24:41.245945",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:24:41.245951",
+      "importance_score": 0.3,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "ae5992b7-1d71-4cb0-84c3-061945591291_chunk0",
+        "b6673989-18bb-4958-b188-af9c9aa4692d_chunk0",
+        "e3a39edc-7b0d-4f3e-b8fc-2e1579cb25de_chunk0"
+      ],
+      "tags": [
+        "confidence",
+        "encouragement",
+        "context-needed",
+        "advice",
+        "new-challenge"
+      ],
+      "metadata": {}
+    },
+    "ae5992b7-1d71-4cb0-84c3-061945591291_chunk0": {
+      "id": "ae5992b7-1d71-4cb0-84c3-061945591291_chunk0",
+      "content": "1. The user expresses a general sense of confidence or optimism.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T12:24:46.262078",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:24:46.440273",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d1560d15-8223-4a0f-89a2-627a20b145b2",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "b6673989-18bb-4958-b188-af9c9aa4692d_chunk0": {
+      "id": "b6673989-18bb-4958-b188-af9c9aa4692d_chunk0",
+      "content": "2. The assistant requests more specific information to provide more targeted advice or encouragement.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T12:24:46.262093",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:24:46.554943",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d1560d15-8223-4a0f-89a2-627a20b145b2",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "e3a39edc-7b0d-4f3e-b8fc-2e1579cb25de_chunk0": {
+      "id": "e3a39edc-7b0d-4f3e-b8fc-2e1579cb25de_chunk0",
+      "content": "3. The context in which the user feels confident is unclear, prompting the assistant's request for additional details.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T12:24:46.262100",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T12:24:46.671496",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "d1560d15-8223-4a0f-89a2-627a20b145b2",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "962ff62d-76d9-48a7-a01a-f160da11a205": {
+      "id": "962ff62d-76d9-48a7-a01a-f160da11a205",
+      "content": "User: Hey bud still recall the number\nAssistant: Hey! If you\u2019re looking for a specific number or detail, you\u2019ll need to jog my memory a bit more. What number are you talking about?",
+      "type": "episodic",
+      "timestamp": "2025-06-19T20:37:49.590155",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:37:49.590161",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "ba8c0b80-ddc5-4cc5-9c4b-12969983cf9f_chunk0",
+        "b781701d-df47-4ced-97f7-80c6bca4b2a9_chunk0",
+        "64f7febe-091a-4e77-8b32-450ffece0f2a_chunk0"
+      ],
+      "tags": [
+        "memory jog",
+        "specific number",
+        "detail request",
+        "user interaction",
+        "clarification needed"
+      ],
+      "metadata": {}
+    },
+    "ba8c0b80-ddc5-4cc5-9c4b-12969983cf9f_chunk0": {
+      "id": "ba8c0b80-ddc5-4cc5-9c4b-12969983cf9f_chunk0",
+      "content": "1. The user is asking for a number but did not specify which number.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:37:51.534726",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:37:51.729557",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "962ff62d-76d9-48a7-a01a-f160da11a205",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "b781701d-df47-4ced-97f7-80c6bca4b2a9_chunk0": {
+      "id": "b781701d-df47-4ced-97f7-80c6bca4b2a9_chunk0",
+      "content": "2. The assistant does not remember the number and is asking for more details to provide the correct information.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:37:51.534740",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:37:51.862495",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "962ff62d-76d9-48a7-a01a-f160da11a205",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "64f7febe-091a-4e77-8b32-450ffece0f2a_chunk0": {
+      "id": "64f7febe-091a-4e77-8b32-450ffece0f2a_chunk0",
+      "content": "3. The interaction shows that the assistant needs specific information to retrieve data accurately.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:37:51.534747",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:37:51.989038",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "962ff62d-76d9-48a7-a01a-f160da11a205",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "143fe8a3-0159-4532-9fdd-4c7df7233f62": {
+      "id": "143fe8a3-0159-4532-9fdd-4c7df7233f62",
+      "content": "User: Ok how about you remember 312, and then I will ask in two turns\nAssistant: Got it, 312 is locked in. Hit me up when you're ready to circle back to it! What's next on the agenda?",
+      "type": "episodic",
+      "timestamp": "2025-06-19T20:38:12.939169",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:12.939174",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "482e81d1-f839-45e7-bae8-08fb0e8d8708_chunk0",
+        "d72f68a8-cb52-4b89-b228-eafbc7660201_chunk0",
+        "2319e1ef-3494-48a7-8d82-00a52085f431_chunk0"
+      ],
+      "tags": [
+        "memory task",
+        "312",
+        "reminder",
+        "follow-up",
+        "agenda"
+      ],
+      "metadata": {}
+    },
+    "482e81d1-f839-45e7-bae8-08fb0e8d8708_chunk0": {
+      "id": "482e81d1-f839-45e7-bae8-08fb0e8d8708_chunk0",
+      "content": "1. The user wants the assistant to remember the number 312.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:38:14.882227",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:15.013762",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "143fe8a3-0159-4532-9fdd-4c7df7233f62",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "d72f68a8-cb52-4b89-b228-eafbc7660201_chunk0": {
+      "id": "d72f68a8-cb52-4b89-b228-eafbc7660201_chunk0",
+      "content": "2. The user plans to refer back to the number 312 after two interactions.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:38:14.882252",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:15.168519",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "143fe8a3-0159-4532-9fdd-4c7df7233f62",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "2319e1ef-3494-48a7-8d82-00a52085f431_chunk0": {
+      "id": "2319e1ef-3494-48a7-8d82-00a52085f431_chunk0",
+      "content": "3. The assistant confirms understanding and readiness to recall the number when asked later.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:38:14.882257",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:15.313425",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "143fe8a3-0159-4532-9fdd-4c7df7233f62",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "be7e56e7-13ca-4703-9377-8173ce386862": {
+      "id": "be7e56e7-13ca-4703-9377-8173ce386862",
+      "content": "User: Imma go for a walk\nAssistant: Enjoy your walk! If you need a soundtrack recommendation or a route suggestion, just let me know!",
+      "type": "episodic",
+      "timestamp": "2025-06-19T20:38:25.023046",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:25.023052",
+      "importance_score": 0.1,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "79217830-09a4-4398-93d2-38f6bb9eaad1_chunk0",
+        "e350f30a-2373-41dc-aeac-b5b43f57cbc2_chunk0",
+        "a73c6421-5823-46e8-9bef-ad31ff0cd3f4_chunk0"
+      ],
+      "tags": [
+        "walk",
+        "soundtrack recommendation",
+        "route suggestion",
+        "enjoy",
+        "assistant"
+      ],
+      "metadata": {}
+    },
+    "79217830-09a4-4398-93d2-38f6bb9eaad1_chunk0": {
+      "id": "79217830-09a4-4398-93d2-38f6bb9eaad1_chunk0",
+      "content": "1. The user is planning to go for a walk.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:38:26.147029",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:26.265053",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "be7e56e7-13ca-4703-9377-8173ce386862",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "e350f30a-2373-41dc-aeac-b5b43f57cbc2_chunk0": {
+      "id": "e350f30a-2373-41dc-aeac-b5b43f57cbc2_chunk0",
+      "content": "2. The assistant offered to provide a soundtrack recommendation.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:38:26.147042",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:26.383247",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "be7e56e7-13ca-4703-9377-8173ce386862",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "a73c6421-5823-46e8-9bef-ad31ff0cd3f4_chunk0": {
+      "id": "a73c6421-5823-46e8-9bef-ad31ff0cd3f4_chunk0",
+      "content": "3. The assistant offered to suggest a walking route.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:38:26.147048",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:26.501782",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "be7e56e7-13ca-4703-9377-8173ce386862",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba": {
+      "id": "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba",
+      "content": "User: What's the number?\nAssistant: You mentioned 312 before your walk. What\u2019s up with that number? Anything special you need to discuss about it?",
+      "type": "episodic",
+      "timestamp": "2025-06-19T20:38:34.748848",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:34.748853",
+      "importance_score": 0.2,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "83030c44-3252-4dda-8e75-1ef052b464c4_chunk0",
+        "dcc8f829-5ab2-4d5c-a53c-0f6f00de173b_chunk0"
+      ],
+      "tags": [
+        "312",
+        "number",
+        "User",
+        "Assistant",
+        "discussion"
+      ],
+      "metadata": {}
+    },
+    "83030c44-3252-4dda-8e75-1ef052b464c4_chunk0": {
+      "id": "83030c44-3252-4dda-8e75-1ef052b464c4_chunk0",
+      "content": "1. The user mentioned the number 312 before going for a walk.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:38:35.960375",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:36.079502",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "dcc8f829-5ab2-4d5c-a53c-0f6f00de173b_chunk0": {
+      "id": "dcc8f829-5ab2-4d5c-a53c-0f6f00de173b_chunk0",
+      "content": "2. The assistant is inquiring if there is anything special about the number 312 that needs discussion.",
+      "type": "semantic",
+      "timestamp": "2025-06-19T20:38:35.960386",
+      "access_count": 0,
+      "last_accessed": "2025-06-19T20:38:36.215537",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    }
+  },
+  "hierarchy": {
+    "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2": [
+      "7ff974aa-be98-49d1-8c91-cdbc63262eca",
+      "2ba718d7-d9a3-4e0f-9be1-c125fa0fb9e9",
+      "95104f54-91fa-443d-806b-555f0ebb3c20"
+    ],
+    "b52d9cdb-f35b-4992-a6c0-1f90f037d45d": [
+      "474f6a46-baa9-4aaa-a794-0949169cd2a1",
+      "2ae49768-3136-413d-9368-219d81308380",
+      "7c240acc-8356-497a-81f2-1265b40a3bb7"
+    ],
+    "59b0ca99-114b-462a-a361-7b3c7304c070": [
+      "6d191bd7-6645-411d-82c6-d76c6b5b6abe",
+      "e94c0b00-9a92-4c63-acc3-f475d40fae08",
+      "838d11e4-e605-4903-8034-4777d4ab8add",
+      "dcae4849-4e07-4db2-803b-3ebf82d216ba"
+    ],
+    "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74": [
+      "c05d764d-1308-4221-ba78-24f64a046bbf",
+      "766c5de3-a85d-4538-b0c1-bce9ac7ec2af",
+      "46cfe187-0ee4-464c-b425-8775400ed4ed",
+      "cf3f418b-01e0-4aba-ab2b-2548d62f9e4d",
+      "b841acf4-5b72-4e68-97c6-3e25de223bd5"
+    ],
+    "8d693505-f1c6-4167-8e35-0585d399fd85": [
+      "86230a3c-7c85-43ef-859e-c8f8f6593463",
+      "b4675fdb-91b5-46cf-a591-b45a56909bf1",
+      "3c94fcb7-ac59-4c3b-be3d-1a6e6d53fc5b",
+      "4eac1e28-d5f8-41c5-8933-2e26ea1cc8c3"
+    ],
+    "b14a4a9b-6227-4677-b229-241aa4355128": [
+      "4b3db78b-a540-47ea-829e-b8ab69577ef2",
+      "b17c9e39-e537-465b-82ae-5f42f823b6ca",
+      "3e1d9b6d-3295-451b-902b-46f39c727990",
+      "4048fbd8-e39c-4d3d-b52d-0d2d05586ef3",
+      "dfb494c7-708c-41dd-9634-436c50a7e027"
+    ],
+    "ce378089-2375-4508-8433-1c18df1cca6d": [
+      "648fe872-7b4f-48e9-aa39-c70e404df836",
+      "a3ce804e-3265-4c2e-99e2-077479f736dc",
+      "9c652833-4058-4732-81e0-106591227cde",
+      "1cc70630-87d8-4708-a60d-8bfc78c36583"
+    ],
+    "ea74116a-c1c5-4329-a440-f01a0e9f4d7e": [
+      "affca762-fc95-4881-91af-e760838b32ce",
+      "ea314e13-431e-4dc8-8959-dafcabb3774a",
+      "279d9d5b-4a1c-453c-9559-3f2f2db8db7f",
+      "0295acc5-3a71-4755-88b4-bc90e319089e"
+    ],
+    "e381f05c-db77-43d0-b690-28ee96c2c270": [
+      "2b65d271-37c1-4424-8d91-944e85331e5b",
+      "df90b8a2-f93d-4a4e-8c11-affde0b07930",
+      "99258c5f-78e2-49bc-9592-8c485d70d01e"
+    ],
+    "870b8973-ca2e-485c-b3c0-8d28177a2ca9": [
+      "41f3ace9-1714-4418-b032-b14ec6f47fe9",
+      "33e599f5-34b4-4f7d-8adc-6cc2943e804e"
+    ],
+    "e9e3edd4-ba85-4ebf-9cd9-15007f661930": [
+      "d72515d4-fd29-4400-b142-839bace413f8_chunk0",
+      "02f68530-b6df-47fb-871a-0a8d9d22b0ea_chunk0",
+      "86c0013e-36a1-4201-8cc0-6791e09cc0b9_chunk0"
+    ],
+    "938ee217-b55b-4c68-8505-bb5a0feb7edc": [
+      "287ddc29-406a-4b95-a0e6-0090baebf9b2_chunk0",
+      "73bbbe85-7653-4ee1-99f0-332991a6e3f3_chunk0",
+      "7d4b813c-f72b-48bd-be36-9f3d20f43253_chunk0",
+      "ba45d68c-d234-4940-b76d-2d583ec0a009_chunk0"
+    ],
+    "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8": [
+      "b271768e-93e7-4f49-92f6-e57b96d83dae_chunk0",
+      "5259871d-b58b-4324-afd4-9bb9c74197e2_chunk0",
+      "09cae695-bab4-4584-94ea-9d0fc710e570_chunk0"
+    ],
+    "98ab0bf4-57bd-43db-98b4-70cf366cd416": [
+      "85fbfc33-de43-4df3-8470-38186b861453_chunk0",
+      "a45c6503-91b5-4de1-a2da-7d94a3905af9_chunk0"
+    ],
+    "f3efc6c7-12c3-477e-9e94-c0b6c264070b": [
+      "091683c3-30aa-4435-820b-77ae327b6fe4_chunk0",
+      "eba55194-8d00-4951-b312-e8d4c3c7a58f_chunk0",
+      "6a8dd586-008f-448a-88a9-3e3b24e0f90c_chunk0"
+    ],
+    "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e": [
+      "f6c8ef25-330b-4208-83c0-020017e2f6f7_chunk0",
+      "bbecb765-2285-4579-aafe-f30f71b62782_chunk0",
+      "4fc18fd5-f702-4f70-8219-ce89f3ed2c92_chunk0",
+      "8dd2fe6f-579b-4e93-9491-dc231f8eb3ba_chunk0",
+      "e4052a61-e767-42ce-8d3f-d9b808c0057c_chunk0"
+    ],
+    "d439f992-c51d-447c-82eb-f441e4e75d36": [
+      "9b0aad13-d0a5-4d41-be02-99cf844e86e4_chunk0",
+      "600dfdd7-6935-462f-86e7-e8eb63d8312c_chunk0",
+      "cab7a8d9-bc98-442e-879a-7ae46ad9ce44_chunk0",
+      "67a3946f-d81e-4a17-b81d-a586ddc75a9c_chunk0"
+    ],
+    "829e6be0-53cd-454d-9f61-c4467908582b": [
+      "5af48132-734a-4515-98bf-3a8cf357389d_chunk0",
+      "4dd6c104-9d8b-46d3-8961-2b4ad2a7990e_chunk0",
+      "81667cfa-78cc-42de-8596-e5ee03e611e9_chunk0",
+      "c09ab5d9-f354-499b-9ff6-657509068523_chunk0"
+    ],
+    "0851e6fb-79d7-4632-bad5-687de16b307a": [
+      "f443e5aa-97d8-48bc-ab44-81072280007a_chunk0",
+      "10243401-1e3c-4bd4-ae25-2c1a6d67f29f_chunk0",
+      "976fa171-f396-4cb6-9ee2-20cdbbc952b4_chunk0",
+      "dd4a699a-97b1-41c0-b87e-cf7ca1184873_chunk0",
+      "d8b048dc-77b5-4021-8cba-751612cb4592_chunk0"
+    ],
+    "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4": [
+      "a63232b0-e525-48d6-89be-c41ea12beb16_chunk0",
+      "5b598232-12d9-40b4-acd7-27bf1a179881_chunk0",
+      "f83d0767-356e-4db5-962a-06fab6b0bc09_chunk0"
+    ],
+    "7d5ff97d-82a9-42ed-8fdc-5123a898d395": [
+      "db35217c-a2ca-4974-a0b8-3c65778366c7_chunk0",
+      "ab291c56-8787-4524-8502-6f57cb08db63_chunk0",
+      "0b749f74-c229-4b65-afff-07fb967db3d4_chunk0"
+    ],
+    "465c2c80-2bd6-4e05-a3ac-d36557fa04f9": [
+      "793b8509-3c21-4e48-8670-be02676fd5f8_chunk0",
+      "9b811430-693d-4a3b-9e03-bddec5943195_chunk0",
+      "e1b94dab-4046-40bc-985d-bd3bcd82e16b_chunk0",
+      "cf6c986d-a898-4405-8187-750a854c416c_chunk0",
+      "1d834417-785f-4d25-877f-27d3fa90f0e6_chunk0"
+    ],
+    "33a9761f-29f0-4fce-b299-514612b4f517": [
+      "16a0f506-8164-411e-b6d2-5f078ce4b513_chunk0",
+      "5e048708-47c8-4e2d-8651-7f2a61946691_chunk0",
+      "e7a72ec1-c3e5-4dd0-9c09-7db82720e47f_chunk0",
+      "67679bd5-cca4-4394-8e80-64b8d4dadd80_chunk0"
+    ],
+    "13e58949-c9f5-400d-b9b4-eefd007a28aa": [
+      "2a357e71-f326-4821-9bc0-6958d65a58fd_chunk0",
+      "98fac559-9ad7-4c73-8957-d3b4eed5e69e_chunk0"
+    ],
+    "3fbbbc29-860a-4fff-b2cb-113fc81aad5a": [
+      "529ae0f6-8e06-4f05-a338-6f39b34bf87a_chunk0",
+      "71680c0c-d66a-4112-9b0e-2309d2b7c65e_chunk0",
+      "bae3532a-3948-4a48-a065-139cc2a0ef6c_chunk0",
+      "702c1dcb-43b5-45a2-abcb-ff846d697c69_chunk0"
+    ],
+    "dd21b368-436c-4a0e-a44d-174fecac4fcd": [
+      "5b6d8b8f-1495-4d41-8116-89e8937749ee_chunk0",
+      "73878b0b-e282-4e73-bebb-61e73e88ae44_chunk0",
+      "4ee61948-54a5-4e77-a56c-33cb256f032a_chunk0",
+      "63fab207-e5ee-4d54-b359-5960737421c2_chunk0",
+      "65103dc1-2737-40c9-b480-65435d3f8744_chunk0"
+    ],
+    "f8677baa-ffbe-444b-80f0-70737b35f410": [
+      "c23bd083-b929-42ed-8bdf-2606487a1304_chunk0",
+      "eb0c8868-63d5-48d6-8cee-70fd201432f8_chunk0",
+      "7bc14a81-e132-4383-9ce1-3a060783aaa9_chunk0",
+      "d7830e69-115a-4827-bcd0-0da576f3a2c1_chunk0"
+    ],
+    "856b557f-7cac-486e-aff1-e1eabe85cfee": [
+      "608d2072-225d-4b56-8367-16324dbba203_chunk0",
+      "a1e49720-4614-4854-917b-067dd2f221ee_chunk0"
+    ],
+    "d4260275-c42d-4234-9d2c-72e51332cc53": [
+      "712e4235-4f81-4dec-919d-6997969f8193_chunk0",
+      "256893a6-d00c-47d9-a86e-655e32fc11fa_chunk0",
+      "340c9b4a-a973-4c45-8fa1-2718242e369d_chunk0"
+    ],
+    "d1560d15-8223-4a0f-89a2-627a20b145b2": [
+      "ae5992b7-1d71-4cb0-84c3-061945591291_chunk0",
+      "b6673989-18bb-4958-b188-af9c9aa4692d_chunk0",
+      "e3a39edc-7b0d-4f3e-b8fc-2e1579cb25de_chunk0"
+    ],
+    "962ff62d-76d9-48a7-a01a-f160da11a205": [
+      "ba8c0b80-ddc5-4cc5-9c4b-12969983cf9f_chunk0",
+      "b781701d-df47-4ced-97f7-80c6bca4b2a9_chunk0",
+      "64f7febe-091a-4e77-8b32-450ffece0f2a_chunk0"
+    ],
+    "143fe8a3-0159-4532-9fdd-4c7df7233f62": [
+      "482e81d1-f839-45e7-bae8-08fb0e8d8708_chunk0",
+      "d72f68a8-cb52-4b89-b228-eafbc7660201_chunk0",
+      "2319e1ef-3494-48a7-8d82-00a52085f431_chunk0"
+    ],
+    "be7e56e7-13ca-4703-9377-8173ce386862": [
+      "79217830-09a4-4398-93d2-38f6bb9eaad1_chunk0",
+      "e350f30a-2373-41dc-aeac-b5b43f57cbc2_chunk0",
+      "a73c6421-5823-46e8-9bef-ad31ff0cd3f4_chunk0"
+    ],
+    "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba": [
+      "83030c44-3252-4dda-8e75-1ef052b464c4_chunk0",
+      "dcc8f829-5ab2-4d5c-a53c-0f6f00de173b_chunk0"
+    ]
+  },
+  "type_index": {
+    "episodic": [
+      "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2",
+      "b52d9cdb-f35b-4992-a6c0-1f90f037d45d",
+      "59b0ca99-114b-462a-a361-7b3c7304c070",
+      "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "8d693505-f1c6-4167-8e35-0585d399fd85",
+      "b14a4a9b-6227-4677-b229-241aa4355128",
+      "4380fc66-65ec-429b-8a92-3a9818116928",
+      "ce378089-2375-4508-8433-1c18df1cca6d",
+      "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "e381f05c-db77-43d0-b690-28ee96c2c270",
+      "870b8973-ca2e-485c-b3c0-8d28177a2ca9",
+      "e9e3edd4-ba85-4ebf-9cd9-15007f661930",
+      "938ee217-b55b-4c68-8505-bb5a0feb7edc",
+      "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8",
+      "98ab0bf4-57bd-43db-98b4-70cf366cd416",
+      "f3efc6c7-12c3-477e-9e94-c0b6c264070b",
+      "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e",
+      "d439f992-c51d-447c-82eb-f441e4e75d36",
+      "829e6be0-53cd-454d-9f61-c4467908582b",
+      "0851e6fb-79d7-4632-bad5-687de16b307a",
+      "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4",
+      "7d5ff97d-82a9-42ed-8fdc-5123a898d395",
+      "465c2c80-2bd6-4e05-a3ac-d36557fa04f9",
+      "33a9761f-29f0-4fce-b299-514612b4f517",
+      "13e58949-c9f5-400d-b9b4-eefd007a28aa",
+      "3fbbbc29-860a-4fff-b2cb-113fc81aad5a",
+      "dd21b368-436c-4a0e-a44d-174fecac4fcd",
+      "f8677baa-ffbe-444b-80f0-70737b35f410",
+      "856b557f-7cac-486e-aff1-e1eabe85cfee",
+      "d4260275-c42d-4234-9d2c-72e51332cc53",
+      "d1560d15-8223-4a0f-89a2-627a20b145b2",
+      "962ff62d-76d9-48a7-a01a-f160da11a205",
+      "143fe8a3-0159-4532-9fdd-4c7df7233f62",
+      "be7e56e7-13ca-4703-9377-8173ce386862",
+      "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba"
+    ],
+    "semantic": [
+      "7ff974aa-be98-49d1-8c91-cdbc63262eca",
+      "2ba718d7-d9a3-4e0f-9be1-c125fa0fb9e9",
+      "95104f54-91fa-443d-806b-555f0ebb3c20",
+      "474f6a46-baa9-4aaa-a794-0949169cd2a1",
+      "2ae49768-3136-413d-9368-219d81308380",
+      "7c240acc-8356-497a-81f2-1265b40a3bb7",
+      "6d191bd7-6645-411d-82c6-d76c6b5b6abe",
+      "e94c0b00-9a92-4c63-acc3-f475d40fae08",
+      "838d11e4-e605-4903-8034-4777d4ab8add",
+      "dcae4849-4e07-4db2-803b-3ebf82d216ba",
+      "c05d764d-1308-4221-ba78-24f64a046bbf",
+      "766c5de3-a85d-4538-b0c1-bce9ac7ec2af",
+      "46cfe187-0ee4-464c-b425-8775400ed4ed",
+      "cf3f418b-01e0-4aba-ab2b-2548d62f9e4d",
+      "b841acf4-5b72-4e68-97c6-3e25de223bd5",
+      "86230a3c-7c85-43ef-859e-c8f8f6593463",
+      "b4675fdb-91b5-46cf-a591-b45a56909bf1",
+      "3c94fcb7-ac59-4c3b-be3d-1a6e6d53fc5b",
+      "4eac1e28-d5f8-41c5-8933-2e26ea1cc8c3",
+      "4b3db78b-a540-47ea-829e-b8ab69577ef2",
+      "b17c9e39-e537-465b-82ae-5f42f823b6ca",
+      "3e1d9b6d-3295-451b-902b-46f39c727990",
+      "4048fbd8-e39c-4d3d-b52d-0d2d05586ef3",
+      "dfb494c7-708c-41dd-9634-436c50a7e027",
+      "648fe872-7b4f-48e9-aa39-c70e404df836",
+      "a3ce804e-3265-4c2e-99e2-077479f736dc",
+      "9c652833-4058-4732-81e0-106591227cde",
+      "1cc70630-87d8-4708-a60d-8bfc78c36583",
+      "affca762-fc95-4881-91af-e760838b32ce",
+      "ea314e13-431e-4dc8-8959-dafcabb3774a",
+      "279d9d5b-4a1c-453c-9559-3f2f2db8db7f",
+      "0295acc5-3a71-4755-88b4-bc90e319089e",
+      "2b65d271-37c1-4424-8d91-944e85331e5b",
+      "df90b8a2-f93d-4a4e-8c11-affde0b07930",
+      "99258c5f-78e2-49bc-9592-8c485d70d01e",
+      "41f3ace9-1714-4418-b032-b14ec6f47fe9",
+      "33e599f5-34b4-4f7d-8adc-6cc2943e804e",
+      "d72515d4-fd29-4400-b142-839bace413f8_chunk0",
+      "02f68530-b6df-47fb-871a-0a8d9d22b0ea_chunk0",
+      "86c0013e-36a1-4201-8cc0-6791e09cc0b9_chunk0",
+      "287ddc29-406a-4b95-a0e6-0090baebf9b2_chunk0",
+      "73bbbe85-7653-4ee1-99f0-332991a6e3f3_chunk0",
+      "7d4b813c-f72b-48bd-be36-9f3d20f43253_chunk0",
+      "ba45d68c-d234-4940-b76d-2d583ec0a009_chunk0",
+      "b271768e-93e7-4f49-92f6-e57b96d83dae_chunk0",
+      "5259871d-b58b-4324-afd4-9bb9c74197e2_chunk0",
+      "09cae695-bab4-4584-94ea-9d0fc710e570_chunk0",
+      "85fbfc33-de43-4df3-8470-38186b861453_chunk0",
+      "a45c6503-91b5-4de1-a2da-7d94a3905af9_chunk0",
+      "091683c3-30aa-4435-820b-77ae327b6fe4_chunk0",
+      "eba55194-8d00-4951-b312-e8d4c3c7a58f_chunk0",
+      "6a8dd586-008f-448a-88a9-3e3b24e0f90c_chunk0",
+      "f6c8ef25-330b-4208-83c0-020017e2f6f7_chunk0",
+      "bbecb765-2285-4579-aafe-f30f71b62782_chunk0",
+      "4fc18fd5-f702-4f70-8219-ce89f3ed2c92_chunk0",
+      "8dd2fe6f-579b-4e93-9491-dc231f8eb3ba_chunk0",
+      "e4052a61-e767-42ce-8d3f-d9b808c0057c_chunk0",
+      "9b0aad13-d0a5-4d41-be02-99cf844e86e4_chunk0",
+      "600dfdd7-6935-462f-86e7-e8eb63d8312c_chunk0",
+      "cab7a8d9-bc98-442e-879a-7ae46ad9ce44_chunk0",
+      "67a3946f-d81e-4a17-b81d-a586ddc75a9c_chunk0",
+      "5af48132-734a-4515-98bf-3a8cf357389d_chunk0",
+      "4dd6c104-9d8b-46d3-8961-2b4ad2a7990e_chunk0",
+      "81667cfa-78cc-42de-8596-e5ee03e611e9_chunk0",
+      "c09ab5d9-f354-499b-9ff6-657509068523_chunk0",
+      "f443e5aa-97d8-48bc-ab44-81072280007a_chunk0",
+      "10243401-1e3c-4bd4-ae25-2c1a6d67f29f_chunk0",
+      "976fa171-f396-4cb6-9ee2-20cdbbc952b4_chunk0",
+      "dd4a699a-97b1-41c0-b87e-cf7ca1184873_chunk0",
+      "d8b048dc-77b5-4021-8cba-751612cb4592_chunk0",
+      "a63232b0-e525-48d6-89be-c41ea12beb16_chunk0",
+      "5b598232-12d9-40b4-acd7-27bf1a179881_chunk0",
+      "f83d0767-356e-4db5-962a-06fab6b0bc09_chunk0",
+      "db35217c-a2ca-4974-a0b8-3c65778366c7_chunk0",
+      "ab291c56-8787-4524-8502-6f57cb08db63_chunk0",
+      "0b749f74-c229-4b65-afff-07fb967db3d4_chunk0",
+      "793b8509-3c21-4e48-8670-be02676fd5f8_chunk0",
+      "9b811430-693d-4a3b-9e03-bddec5943195_chunk0",
+      "e1b94dab-4046-40bc-985d-bd3bcd82e16b_chunk0",
+      "cf6c986d-a898-4405-8187-750a854c416c_chunk0",
+      "1d834417-785f-4d25-877f-27d3fa90f0e6_chunk0",
+      "16a0f506-8164-411e-b6d2-5f078ce4b513_chunk0",
+      "5e048708-47c8-4e2d-8651-7f2a61946691_chunk0",
+      "e7a72ec1-c3e5-4dd0-9c09-7db82720e47f_chunk0",
+      "67679bd5-cca4-4394-8e80-64b8d4dadd80_chunk0",
+      "2a357e71-f326-4821-9bc0-6958d65a58fd_chunk0",
+      "98fac559-9ad7-4c73-8957-d3b4eed5e69e_chunk0",
+      "529ae0f6-8e06-4f05-a338-6f39b34bf87a_chunk0",
+      "71680c0c-d66a-4112-9b0e-2309d2b7c65e_chunk0",
+      "bae3532a-3948-4a48-a065-139cc2a0ef6c_chunk0",
+      "702c1dcb-43b5-45a2-abcb-ff846d697c69_chunk0",
+      "5b6d8b8f-1495-4d41-8116-89e8937749ee_chunk0",
+      "73878b0b-e282-4e73-bebb-61e73e88ae44_chunk0",
+      "4ee61948-54a5-4e77-a56c-33cb256f032a_chunk0",
+      "63fab207-e5ee-4d54-b359-5960737421c2_chunk0",
+      "65103dc1-2737-40c9-b480-65435d3f8744_chunk0",
+      "c23bd083-b929-42ed-8bdf-2606487a1304_chunk0",
+      "eb0c8868-63d5-48d6-8cee-70fd201432f8_chunk0",
+      "7bc14a81-e132-4383-9ce1-3a060783aaa9_chunk0",
+      "d7830e69-115a-4827-bcd0-0da576f3a2c1_chunk0",
+      "608d2072-225d-4b56-8367-16324dbba203_chunk0",
+      "a1e49720-4614-4854-917b-067dd2f221ee_chunk0",
+      "712e4235-4f81-4dec-919d-6997969f8193_chunk0",
+      "256893a6-d00c-47d9-a86e-655e32fc11fa_chunk0",
+      "340c9b4a-a973-4c45-8fa1-2718242e369d_chunk0",
+      "ae5992b7-1d71-4cb0-84c3-061945591291_chunk0",
+      "b6673989-18bb-4958-b188-af9c9aa4692d_chunk0",
+      "e3a39edc-7b0d-4f3e-b8fc-2e1579cb25de_chunk0",
+      "ba8c0b80-ddc5-4cc5-9c4b-12969983cf9f_chunk0",
+      "b781701d-df47-4ced-97f7-80c6bca4b2a9_chunk0",
+      "64f7febe-091a-4e77-8b32-450ffece0f2a_chunk0",
+      "482e81d1-f839-45e7-bae8-08fb0e8d8708_chunk0",
+      "d72f68a8-cb52-4b89-b228-eafbc7660201_chunk0",
+      "2319e1ef-3494-48a7-8d82-00a52085f431_chunk0",
+      "79217830-09a4-4398-93d2-38f6bb9eaad1_chunk0",
+      "e350f30a-2373-41dc-aeac-b5b43f57cbc2_chunk0",
+      "a73c6421-5823-46e8-9bef-ad31ff0cd3f4_chunk0",
+      "83030c44-3252-4dda-8e75-1ef052b464c4_chunk0",
+      "dcc8f829-5ab2-4d5c-a53c-0f6f00de173b_chunk0"
+    ],
+    "summary": [
+      "9917321f-71d9-4a85-b303-3bdc8f45e134"
+    ]
+  },
+  "tag_index": {
+    "System and API Issues": [
+      "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2"
+    ],
+    "Personal Identification Queries": [
+      "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2"
+    ],
+    "Review of Past Interactions": [
+      "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2"
+    ],
+    "API keys": [
+      "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2",
+      "59b0ca99-114b-462a-a361-7b3c7304c070"
+    ],
+    "System tests": [
+      "2c3f1d78-8460-4dd9-bacf-d18fac7ebdd2"
+    ],
+    "Luke": [
+      "b52d9cdb-f35b-4992-a6c0-1f90f037d45d",
+      "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8"
+    ],
+    "previous interactions": [
+      "b52d9cdb-f35b-4992-a6c0-1f90f037d45d"
+    ],
+    "name": [
+      "b52d9cdb-f35b-4992-a6c0-1f90f037d45d"
+    ],
+    "memory": [
+      "b52d9cdb-f35b-4992-a6c0-1f90f037d45d"
+    ],
+    "assistant": [
+      "b52d9cdb-f35b-4992-a6c0-1f90f037d45d",
+      "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "be7e56e7-13ca-4703-9377-8173ce386862"
+    ],
+    "system tests": [
+      "59b0ca99-114b-462a-a361-7b3c7304c070",
+      "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "b14a4a9b-6227-4677-b229-241aa4355128"
+    ],
+    "review past interactions": [
+      "59b0ca99-114b-462a-a361-7b3c7304c070"
+    ],
+    "data retention": [
+      "59b0ca99-114b-462a-a361-7b3c7304c070"
+    ],
+    "user interests": [
+      "59b0ca99-114b-462a-a361-7b3c7304c070"
+    ],
+    "past interactions": [
+      "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "b14a4a9b-6227-4677-b229-241aa4355128"
+    ],
+    "personal information": [
+      "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74",
+      "b14a4a9b-6227-4677-b229-241aa4355128"
+    ],
+    "system functionality": [
+      "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74"
+    ],
+    "routine check-up": [
+      "b40ad4f5-c458-4f68-bbda-dd9b7d6b9e74"
+    ],
+    "AI memory": [
+      "8d693505-f1c6-4167-8e35-0585d399fd85"
+    ],
+    "data processing": [
+      "8d693505-f1c6-4167-8e35-0585d399fd85"
+    ],
+    "no storage": [
+      "8d693505-f1c6-4167-8e35-0585d399fd85"
+    ],
+    "present-focused": [
+      "8d693505-f1c6-4167-8e35-0585d399fd85"
+    ],
+    "truth-telling": [
+      "8d693505-f1c6-4167-8e35-0585d399fd85"
+    ],
+    "system checks": [
+      "b14a4a9b-6227-4677-b229-241aa4355128",
+      "ea74116a-c1c5-4329-a440-f01a0e9f4d7e"
+    ],
+    "general inquiries": [
+      "b14a4a9b-6227-4677-b229-241aa4355128"
+    ],
+    "system memory testing": [
+      "4380fc66-65ec-429b-8a92-3a9818116928"
+    ],
+    "personal details recall": [
+      "4380fc66-65ec-429b-8a92-3a9818116928"
+    ],
+    "information retention": [
+      "4380fc66-65ec-429b-8a92-3a9818116928"
+    ],
+    "meta conversations": [
+      "4380fc66-65ec-429b-8a92-3a9818116928"
+    ],
+    "user interaction": [
+      "4380fc66-65ec-429b-8a92-3a9818116928",
+      "962ff62d-76d9-48a7-a01a-f160da11a205"
+    ],
+    "response time": [
+      "ce378089-2375-4508-8433-1c18df1cca6d",
+      "e9e3edd4-ba85-4ebf-9cd9-15007f661930"
+    ],
+    "testing": [
+      "ce378089-2375-4508-8433-1c18df1cca6d",
+      "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "e9e3edd4-ba85-4ebf-9cd9-15007f661930"
+    ],
+    "system": [
+      "ce378089-2375-4508-8433-1c18df1cca6d"
+    ],
+    "assistance": [
+      "ce378089-2375-4508-8433-1c18df1cca6d",
+      "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "e9e3edd4-ba85-4ebf-9cd9-15007f661930",
+      "938ee217-b55b-4c68-8505-bb5a0feb7edc",
+      "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8",
+      "465c2c80-2bd6-4e05-a3ac-d36557fa04f9"
+    ],
+    "communication": [
+      "ce378089-2375-4508-8433-1c18df1cca6d",
+      "e9e3edd4-ba85-4ebf-9cd9-15007f661930",
+      "938ee217-b55b-4c68-8505-bb5a0feb7edc",
+      "856b557f-7cac-486e-aff1-e1eabe85cfee"
+    ],
+    "agenda": [
+      "ea74116a-c1c5-4329-a440-f01a0e9f4d7e",
+      "143fe8a3-0159-4532-9fdd-4c7df7233f62"
+    ],
+    "User interaction": [
+      "e381f05c-db77-43d0-b690-28ee96c2c270",
+      "98ab0bf4-57bd-43db-98b4-70cf366cd416"
+    ],
+    "Assistant greeting": [
+      "e381f05c-db77-43d0-b690-28ee96c2c270"
+    ],
+    "Readiness": [
+      "e381f05c-db77-43d0-b690-28ee96c2c270"
+    ],
+    "Inquiry": [
+      "e381f05c-db77-43d0-b690-28ee96c2c270"
+    ],
+    "Open-ended question": [
+      "e381f05c-db77-43d0-b690-28ee96c2c270"
+    ],
+    "Test": [
+      "870b8973-ca2e-485c-b3c0-8d28177a2ca9"
+    ],
+    "Assistant": [
+      "870b8973-ca2e-485c-b3c0-8d28177a2ca9",
+      "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba"
+    ],
+    "Running": [
+      "870b8973-ca2e-485c-b3c0-8d28177a2ca9"
+    ],
+    "Mind": [
+      "870b8973-ca2e-485c-b3c0-8d28177a2ca9"
+    ],
+    "Hello": [
+      "870b8973-ca2e-485c-b3c0-8d28177a2ca9"
+    ],
+    "user query": [
+      "e9e3edd4-ba85-4ebf-9cd9-15007f661930"
+    ],
+    "failure": [
+      "938ee217-b55b-4c68-8505-bb5a0feb7edc"
+    ],
+    "frustration": [
+      "938ee217-b55b-4c68-8505-bb5a0feb7edc"
+    ],
+    "informal": [
+      "938ee217-b55b-4c68-8505-bb5a0feb7edc",
+      "13e58949-c9f5-400d-b9b4-eefd007a28aa"
+    ],
+    "interaction": [
+      "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8"
+    ],
+    "readiness": [
+      "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8"
+    ],
+    "inquiry": [
+      "1c7a8c5e-c307-47e9-af7c-a5fa4acbd6a8"
+    ],
+    "Greeting": [
+      "98ab0bf4-57bd-43db-98b4-70cf366cd416"
+    ],
+    "Assistance": [
+      "98ab0bf4-57bd-43db-98b4-70cf366cd416"
+    ],
+    "Communication": [
+      "98ab0bf4-57bd-43db-98b4-70cf366cd416",
+      "f3efc6c7-12c3-477e-9e94-c0b6c264070b"
+    ],
+    "Testing": [
+      "98ab0bf4-57bd-43db-98b4-70cf366cd416",
+      "f3efc6c7-12c3-477e-9e94-c0b6c264070b"
+    ],
+    "Experiment": [
+      "f3efc6c7-12c3-477e-9e94-c0b6c264070b"
+    ],
+    "Exploration": [
+      "f3efc6c7-12c3-477e-9e94-c0b6c264070b"
+    ],
+    "Interaction": [
+      "f3efc6c7-12c3-477e-9e94-c0b6c264070b"
+    ],
+    "project use": [
+      "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e"
+    ],
+    "tightening prompt": [
+      "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e"
+    ],
+    "user engagement": [
+      "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e",
+      "829e6be0-53cd-454d-9f61-c4467908582b"
+    ],
+    "assistant help": [
+      "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e"
+    ],
+    "productivity focus": [
+      "9fdf0967-e7d7-43c2-8a3a-1ccb0677f81e"
+    ],
+    "error troubleshooting": [
+      "d439f992-c51d-447c-82eb-f441e4e75d36"
+    ],
+    "IT support": [
+      "d439f992-c51d-447c-82eb-f441e4e75d36"
+    ],
+    "local issue": [
+      "d439f992-c51d-447c-82eb-f441e4e75d36"
+    ],
+    "tech problem": [
+      "d439f992-c51d-447c-82eb-f441e4e75d36"
+    ],
+    "user assistance": [
+      "d439f992-c51d-447c-82eb-f441e4e75d36"
+    ],
+    "family involvement": [
+      "829e6be0-53cd-454d-9f61-c4467908582b"
+    ],
+    "project explanation": [
+      "829e6be0-53cd-454d-9f61-c4467908582b"
+    ],
+    "helpful assistant": [
+      "829e6be0-53cd-454d-9f61-c4467908582b"
+    ],
+    "non-boring explanation": [
+      "829e6be0-53cd-454d-9f61-c4467908582b"
+    ],
+    "kitten names": [
+      "0851e6fb-79d7-4632-bad5-687de16b307a"
+    ],
+    "pet naming": [
+      "0851e6fb-79d7-4632-bad5-687de16b307a"
+    ],
+    "creative suggestions": [
+      "0851e6fb-79d7-4632-bad5-687de16b307a"
+    ],
+    "animal personalities": [
+      "0851e6fb-79d7-4632-bad5-687de16b307a"
+    ],
+    "name ideas": [
+      "0851e6fb-79d7-4632-bad5-687de16b307a"
+    ],
+    "fast": [
+      "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4"
+    ],
+    "quick": [
+      "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4"
+    ],
+    "sorted": [
+      "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4"
+    ],
+    "feeling": [
+      "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4"
+    ],
+    "need": [
+      "4d9ac607-7b5a-495f-8c1a-a0a5d45c54a4"
+    ],
+    "response time improvement": [
+      "7d5ff97d-82a9-42ed-8fdc-5123a898d395"
+    ],
+    "system usability": [
+      "7d5ff97d-82a9-42ed-8fdc-5123a898d395"
+    ],
+    "user satisfaction": [
+      "7d5ff97d-82a9-42ed-8fdc-5123a898d395"
+    ],
+    "speed enhancements": [
+      "7d5ff97d-82a9-42ed-8fdc-5123a898d395"
+    ],
+    "system performance": [
+      "7d5ff97d-82a9-42ed-8fdc-5123a898d395"
+    ],
+    "Claude": [
+      "465c2c80-2bd6-4e05-a3ac-d36557fa04f9"
+    ],
+    "transition": [
+      "465c2c80-2bd6-4e05-a3ac-d36557fa04f9"
+    ],
+    "setup": [
+      "465c2c80-2bd6-4e05-a3ac-d36557fa04f9"
+    ],
+    "goals": [
+      "465c2c80-2bd6-4e05-a3ac-d36557fa04f9"
+    ],
+    "long day": [
+      "33a9761f-29f0-4fce-b299-514612b4f517"
+    ],
+    "relax": [
+      "33a9761f-29f0-4fce-b299-514612b4f517"
+    ],
+    "shower": [
+      "33a9761f-29f0-4fce-b299-514612b4f517"
+    ],
+    "unwind": [
+      "33a9761f-29f0-4fce-b299-514612b4f517"
+    ],
+    "soundtrack": [
+      "33a9761f-29f0-4fce-b299-514612b4f517"
+    ],
+    "casual conversation": [
+      "13e58949-c9f5-400d-b9b4-eefd007a28aa"
+    ],
+    "checking in": [
+      "13e58949-c9f5-400d-b9b4-eefd007a28aa"
+    ],
+    "user expression": [
+      "13e58949-c9f5-400d-b9b4-eefd007a28aa"
+    ],
+    "assistant response": [
+      "13e58949-c9f5-400d-b9b4-eefd007a28aa"
+    ],
+    "personality theories": [
+      "3fbbbc29-860a-4fff-b2cb-113fc81aad5a"
+    ],
+    "influence on behavior": [
+      "3fbbbc29-860a-4fff-b2cb-113fc81aad5a"
+    ],
+    "exploration": [
+      "3fbbbc29-860a-4fff-b2cb-113fc81aad5a"
+    ],
+    "curiosity": [
+      "3fbbbc29-860a-4fff-b2cb-113fc81aad5a"
+    ],
+    "broad sweep": [
+      "3fbbbc29-860a-4fff-b2cb-113fc81aad5a"
+    ],
+    "brutally honest": [
+      "dd21b368-436c-4a0e-a44d-174fecac4fcd"
+    ],
+    "dark humor": [
+      "dd21b368-436c-4a0e-a44d-174fecac4fcd"
+    ],
+    "no-BS": [
+      "dd21b368-436c-4a0e-a44d-174fecac4fcd"
+    ],
+    "factual": [
+      "dd21b368-436c-4a0e-a44d-174fecac4fcd"
+    ],
+    "controversial topics": [
+      "dd21b368-436c-4a0e-a44d-174fecac4fcd"
+    ],
+    "IL BASSET certification": [
+      "f8677baa-ffbe-444b-80f0-70737b35f410"
+    ],
+    "Beverage Alcohol Sellers and Servers Education and Training": [
+      "f8677baa-ffbe-444b-80f0-70737b35f410"
+    ],
+    "responsible alcohol service": [
+      "f8677baa-ffbe-444b-80f0-70737b35f410"
+    ],
+    "Illinois state laws": [
+      "f8677baa-ffbe-444b-80f0-70737b35f410"
+    ],
+    "exam preparation": [
+      "f8677baa-ffbe-444b-80f0-70737b35f410"
+    ],
+    "misunderstanding": [
+      "856b557f-7cac-486e-aff1-e1eabe85cfee"
+    ],
+    "clarification": [
+      "856b557f-7cac-486e-aff1-e1eabe85cfee"
+    ],
+    "expectation": [
+      "856b557f-7cac-486e-aff1-e1eabe85cfee"
+    ],
+    "ambiguity": [
+      "856b557f-7cac-486e-aff1-e1eabe85cfee"
+    ],
+    "optimism": [
+      "d4260275-c42d-4234-9d2c-72e51332cc53"
+    ],
+    "easy": [
+      "d4260275-c42d-4234-9d2c-72e51332cc53"
+    ],
+    "perspective": [
+      "d4260275-c42d-4234-9d2c-72e51332cc53"
+    ],
+    "details": [
+      "d4260275-c42d-4234-9d2c-72e51332cc53"
+    ],
+    "grounded": [
+      "d4260275-c42d-4234-9d2c-72e51332cc53"
+    ],
+    "confidence": [
+      "d1560d15-8223-4a0f-89a2-627a20b145b2"
+    ],
+    "encouragement": [
+      "d1560d15-8223-4a0f-89a2-627a20b145b2"
+    ],
+    "context-needed": [
+      "d1560d15-8223-4a0f-89a2-627a20b145b2"
+    ],
+    "advice": [
+      "d1560d15-8223-4a0f-89a2-627a20b145b2"
+    ],
+    "new-challenge": [
+      "d1560d15-8223-4a0f-89a2-627a20b145b2"
+    ],
+    "memory jog": [
+      "962ff62d-76d9-48a7-a01a-f160da11a205"
+    ],
+    "specific number": [
+      "962ff62d-76d9-48a7-a01a-f160da11a205"
+    ],
+    "detail request": [
+      "962ff62d-76d9-48a7-a01a-f160da11a205"
+    ],
+    "clarification needed": [
+      "962ff62d-76d9-48a7-a01a-f160da11a205"
+    ],
+    "memory task": [
+      "143fe8a3-0159-4532-9fdd-4c7df7233f62"
+    ],
+    "312": [
+      "143fe8a3-0159-4532-9fdd-4c7df7233f62",
+      "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba"
+    ],
+    "reminder": [
+      "143fe8a3-0159-4532-9fdd-4c7df7233f62"
+    ],
+    "follow-up": [
+      "143fe8a3-0159-4532-9fdd-4c7df7233f62"
+    ],
+    "walk": [
+      "be7e56e7-13ca-4703-9377-8173ce386862"
+    ],
+    "soundtrack recommendation": [
+      "be7e56e7-13ca-4703-9377-8173ce386862"
+    ],
+    "route suggestion": [
+      "be7e56e7-13ca-4703-9377-8173ce386862"
+    ],
+    "enjoy": [
+      "be7e56e7-13ca-4703-9377-8173ce386862"
+    ],
+    "number": [
+      "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba"
+    ],
+    "User": [
+      "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba"
+    ],
+    "discussion": [
+      "48e986a8-a5c2-4ec8-a39d-66efbd0a4dba"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+torch
+transformers
+tiktoken
+sentence-transformers
+chromadb
+duckdb
+wikipedia
+pymupdf
+numpy
+gradio
+docx2txt
+pandas
+spacy
+more-itertools
+openai
+
+
