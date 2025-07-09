@@ -1,6 +1,12 @@
 # embed_wiki_chunks_to_parquet.py
 print("UPGRADED PARQUET EMBEDDER LAUNCHED", flush=True)
+# === API Keys and Config ===
+import os
+import logging
 
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("embed_wiki_chunks_to_parquet.py is alive")
 import os
 import json
 import sys
@@ -14,6 +20,7 @@ import pandas as pd
 import torch
 from sentence_transformers import SentenceTransformer
 from more_itertools import chunked
+import logging
 # from Injection_Protection_Feed_to_Embeder import sanitize_text # Commented out if not available
 
 # ==== TEST MODE CONFIG ====
@@ -70,7 +77,7 @@ def save_checkpoint(done_chunks):
         json.dump(sorted(list(done_chunks)), f)
 
 done_chunks = load_checkpoint()
-print(f"[DEBUG] Total files already done: {len(done_chunks)}")
+logger.debug(f" Total files already done: {len(done_chunks)}")
 
 # ==== CHUNKING ====
 # This semantic_chunk_text function is redundant if semantic_chunker.py is used.
@@ -155,7 +162,7 @@ def embedder(file_queue, done_chunks):
             file_queue.task_done()
             continue
 
-        print(f"[DEBUG] Embedding chunk for {title} (source: {source_name})...", flush=True)
+        logger.debug(f" Embedding chunk for {title} (source: {source_name})...", flush=True)
 
         start_time = time.time()
         try:

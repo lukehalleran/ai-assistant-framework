@@ -1,8 +1,9 @@
 import re
 import logging
 
-# Set up logger
-logging.basicConfig(filename='preprocessor.log', level=logging.INFO)
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("injection_protection_feed_to_embeder.py is alive")
 
 # Define suspicious patterns
 multilingual_patterns = {

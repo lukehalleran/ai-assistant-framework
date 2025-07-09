@@ -1,4 +1,7 @@
-# hierarchical_memory.py - Hierarchical memory system with LLM gating
+# hierarchical_memory.py - Hierarchical memory system with cosine similarity gating
+import logging
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 import re
 import json
 import os
@@ -8,9 +11,32 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import asyncio
 from enum import Enum
-from config import GATE_REL_THERESHOLD, MAX_FINAL_MEMORIES, MEM_NO,MEM_IMPORTANCE_SCORE, CHILD_MEM_LIMIT
+from config import GATE_REL_THRESHOLD, MAX_FINAL_MEMORIES, MEM_NO, MEM_IMPORTANCE_SCORE, CHILD_MEM_LIMIT
 from transformers import GPT2TokenizerFast
-from llm_gates import MultiStageGateSystem
+from llm_gate_module import MultiStageGateSystem, CosineSimilarityGateSystem
+from ModelManager import ModelManager
+from sentence_transformers import SentenceTransformer
+from scipy.spatial import distance
+from logging_utils import log_and_time
+
+logger = logging.getLogger(__name__)
+logger.debug("Hierarchical Memory.py is alive - with cosine similarity")
+
+_tokenizer_cache = {}
+
+@log_and_time("get Cached Tokenizer")
+def get_cached_tokenizer(model_name="gpt2"):
+    """Safely cache tokenizer for use in token estimation and chunking."""
+
+    # Handle OpenAI model names safely
+    if model_name.lower() in {"gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"}:
+        model_name = "gpt2"  # fallback to gpt2 tokenizer for OpenAI models
+
+    if model_name not in _tokenizer_cache:
+        from transformers import GPT2TokenizerFast
+        _tokenizer_cache[model_name] = GPT2TokenizerFast.from_pretrained(model_name)
+
+    return _tokenizer_cache[model_name]
 
 class MemoryType(Enum):
     EPISODIC = "episodic"      # Individual interactions
@@ -36,14 +62,36 @@ class MemoryNode:
     embeddings: Optional[List[float]] = None
     metadata: Dict = field(default_factory=dict)
 
+    def to_dict(self):
+        safe_metadata = {
+            k: (
+                json.dumps(v) if isinstance(v, (list, dict)) else v
+            )
+            for k, v in self.metadata.items()
+        }
+
+        return {
+            "id": self.id,
+            "content": self.content,
+            "metadata": {
+                "type": self.type.value,
+                "timestamp": self.timestamp.isoformat(),
+                "tags": json.dumps(self.tags),
+                **safe_metadata
+            }
+        }
+
 class HierarchicalMemorySystem:
-    def __init__(self, model_manager, storage_dir="hierarchical_memory"):
+    def __init__(self, model_manager, storage_dir="hierarchical_memory", embed_model=None, cosine_threshold=0.45):
         self.model_manager = model_manager
         self.storage_dir = storage_dir
         self.memories: Dict[str, MemoryNode] = {}
         self.hierarchy: Dict[str, List[str]] = defaultdict(list)
         self.type_index: Dict[MemoryType, List[str]] = defaultdict(list)
         self.tag_index: Dict[str, List[str]] = defaultdict(list)
+        self.embed_model = embed_model or SentenceTransformer("all-MiniLM-L6-v2")
+        self.episodic_memory = []
+        self.cosine_threshold = cosine_threshold
 
         # Memory configuration
         self.consolidation_threshold = 10
@@ -54,21 +102,59 @@ class HierarchicalMemorySystem:
         try:
             from chromadb import PersistentClient
             self.client = PersistentClient(path="chroma_db")
-            self.chroma_collection = self.client.get_or_create_collection("assistant-memory")
-            print(f"[DEBUG] Loaded Chroma collection with {len(self.chroma_collection.get()['documents'])} documents.")
+
+            # Try to get existing collection first
+            try:
+                self.chroma_collection = self.client.get_collection("assistant-memory")
+                logger.debug(f"Loaded existing Chroma collection")
+            except:
+                # If collection doesn't exist, create with proper embedding function
+                try:
+                    import onnxruntime as ort
+                    providers = ort.get_available_providers()
+                    from chromadb.utils import embedding_functions
+                    embed_fn = embedding_functions.ONNXMiniLM_L6_V2(providers=providers)
+                    self.chroma_collection = self.client.create_collection(
+                        "assistant-memory",
+                        embedding_function=embed_fn
+                    )
+                    logger.debug(f"Created new Chroma collection with ONNX providers")
+                except:
+                    # Fallback to default embedding
+                    self.chroma_collection = self.client.create_collection("assistant-memory")
+                    logger.debug(f"Created new Chroma collection with default embedding")
+
+            # Only try to get count if collection exists
+            if self.chroma_collection:
+                doc_count = len(self.chroma_collection.get()['documents'])
+                logger.debug(f"Loaded Chroma collection with {doc_count} documents.")
+
         except Exception as e:
-            print(f"[ChromaDB Init Error] {e}")
+            logger.debug(f"[ChromaDB Init Error] {e}")
             self.chroma_collection = None
 
-        # LLM gating system for memory filtering
-        self.semantic_gate =MultiStageGateSystem(self.model_manager)
+        # Cosine similarity gating system
+        self.semantic_gate = MultiStageGateSystem(self.model_manager, cosine_threshold)
 
         # Ensure storage directory exists
         os.makedirs(storage_dir, exist_ok=True)
         self.load_memories()
 
+        # Safe debug logging
+        if self.chroma_collection:
+            try:
+                logger.debug(f"Chroma collection count: {self.chroma_collection.count()}")
+            except:
+                logger.debug(f"Chroma collection exists but count unavailable")
+        else:
+            logger.debug(f"No Chroma collection available")
+
+        logger.debug(f"Number of self.memories: {len(self.memories)}")
+
+    @log_and_time("Chunk Memory Content")
     def chunk_memory_content(self, text: str, max_tokens: int = 256) -> List[str]:
-        tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+        """Chunk text into smaller pieces using cached tokenizer"""
+        tokenizer = get_cached_tokenizer("gpt2")
         tokens = tokenizer.encode(text)
         chunks = []
         for i in range(0, len(tokens), max_tokens):
@@ -76,14 +162,45 @@ class HierarchicalMemorySystem:
             chunks.append(chunk.strip())
         return chunks
 
-        tokens = tokenizer.encode(text)
-        chunks = []
-        for i in range(0, len(tokens), max_tokens):
-            chunk = tokenizer.decode(tokens[i:i + max_tokens])
-            chunks.append(chunk.strip())
+    def _expand_hierarchical_context(self, memories: List[Dict]) -> List[Dict]:
+        """Expand memories with hierarchical relationships"""
+        expanded = memories.copy()
+        seen_ids = {m['id'] for m in memories}
 
-        return chunks
+        for mem_dict in memories[:MEM_NO]:
+            memory = mem_dict['memory']
 
+            # Add parent context
+            if memory.parent_id and memory.parent_id not in seen_ids:
+                if memory.parent_id in self.memories:
+                    parent = self.memories[memory.parent_id]
+                    if parent.importance_score > MEM_IMPORTANCE_SCORE:
+                        expanded.append({
+                            'id': parent.id,
+                            'memory': parent,
+                            'relevance_score': mem_dict['relevance_score'] * 0.7,
+                            'content': parent.content,
+                            'relationship': 'parent'
+                        })
+                        seen_ids.add(parent.id)
+
+            # Add highly relevant children
+            for child_id in memory.child_ids[:CHILD_MEM_LIMIT]:
+                if child_id not in seen_ids and child_id in self.memories:
+                    child = self.memories[child_id]
+                    if child.importance_score > 0.6:
+                        expanded.append({
+                            'id': child.id,
+                            'memory': child,
+                            'relevance_score': mem_dict['relevance_score'] * 0.8,
+                            'content': child.content,
+                            'relationship': 'child'
+                        })
+                        seen_ids.add(child.id)
+
+        return expanded
+
+    @log_and_time("store interaction")
     async def store_interaction(self, query: str, response: str, tags: List[str] = None) -> str:
         """Store a new interaction and trigger hierarchical processing"""
         import uuid
@@ -91,9 +208,10 @@ class HierarchicalMemorySystem:
         # Create episodic memory
         memory_id = str(uuid.uuid4())
         content = f"User: {query}\nAssistant: {response}"
+        metadata = {"query": query, "response": response}
 
-        # Calculate importance score
-        importance = await self._calculate_importance(content)
+        # Calculate importance score using simple heuristics
+        importance = await self._calculate_importance_heuristic(content)
 
         memory = MemoryNode(
             id=memory_id,
@@ -101,7 +219,8 @@ class HierarchicalMemorySystem:
             type=MemoryType.EPISODIC,
             timestamp=datetime.now(),
             importance_score=importance,
-            tags=tags or []
+            tags=tags or [],
+            metadata=metadata
         )
 
         self.memories[memory_id] = memory
@@ -111,8 +230,8 @@ class HierarchicalMemorySystem:
         for tag in memory.tags:
             self.tag_index[tag].append(memory_id)
 
-        # Extract semantic knowledge
-        raw_semantic_memories = await self._extract_semantic_knowledge(query, response)
+        # Extract semantic knowledge using simple heuristics
+        raw_semantic_memories = await self._extract_semantic_knowledge_heuristic(query, response)
         semantic_memories = []
         for mem in raw_semantic_memories:
             chunks = self.chunk_memory_content(mem.content)
@@ -131,9 +250,10 @@ class HierarchicalMemorySystem:
         for sem_mem in semantic_memories:
             await self._add_child_memory(memory_id, sem_mem)
             await self._index_in_chroma(sem_mem)
+
         # Check for consolidation
         if len(self.type_index[MemoryType.EPISODIC]) % self.consolidation_threshold == 0:
-            await self._consolidate_memories()
+            await self._consolidate_memories_heuristic()
 
         # Save to disk
         self.save_memories()
@@ -141,17 +261,18 @@ class HierarchicalMemorySystem:
 
         return memory_id
 
+    @log_and_time("Retrieve Memory")
     async def retrieve_relevant_memories(self, query: str, max_memories: int = 10) -> List[Dict]:
-        """Retrieve memories relevant to the query using LLM gating"""
+        """Retrieve memories relevant to the query using cosine similarity"""
 
-        print(f"\n[DEBUG] Total memories in system: {len(self.memories)}")
-        print(f"[DEBUG] Memory types: {[(t.value, len(ids)) for t, ids in self.type_index.items() if ids]}")
+        logger.debug(f"\n[DEBUG] Total memories in system: {len(self.memories)}")
+        logger.debug(f" Memory types: {[(t.value, len(ids)) for t, ids in self.type_index.items() if ids]}")
 
         # Stage 1: Quick semantic search for candidates
-        candidates = await self._semantic_search_candidates(query, top_k=15)
+        candidates = await self._semantic_search_candidates(query, top_k=50)
 
-        # Stage 2: LLM-based relevance gating
-        relevant_memories = await self._gate_memories(query, candidates)
+        # Stage 2: Cosine similarity gating
+        relevant_memories = await self._gate_memories_cosine(query, candidates)
 
         # Stage 3: Expand with hierarchical context
         expanded_memories = self._expand_hierarchical_context(relevant_memories)
@@ -166,79 +287,65 @@ class HierarchicalMemorySystem:
         for mem in sorted_memories[:max_memories]:
             self._update_access(mem['id'])
 
-        print(f"\n[DEBUG] Memory Retrieval Pipeline:")
-        print(f"  - Candidates from Chroma: {len(candidates)}")
-        print(f"  - After LLM gating: {len(relevant_memories)}")
-        print(f"  - After hierarchical expansion: {len(expanded_memories)}")
-        print(f"  - Final scored memories: {len(sorted_memories[:max_memories])}")
-
-        # Debug output with timestamps
-        print(f"\n[DEBUG] Retrieved Memories (showing top {min(5, len(sorted_memories))} of {len(sorted_memories)}):")
-        for i, mem in enumerate(sorted_memories[:5]):
-            memory = mem['memory']
-            print(f"\n  Memory {i+1}:")
-            print(f"    Timestamp: {memory.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"    Type: {memory.type.value}")
-            print(f"    Score: {mem['final_score']:.3f}")
-
-            # Show content preview for all types
-            content_preview = memory.content.replace('\n', ' ')[:150]
-            print(f"    Content: {content_preview}...")
-
-            # Parse and display Q&A only for episodic/summary types
-            if memory.type in [MemoryType.EPISODIC, MemoryType.SUMMARY]:
-                query_match = re.search(r'^User:\s*(.*?)(?=\nAssistant:|\Z)', memory.content, re.IGNORECASE | re.DOTALL)
-                response_match = re.search(r'^Assistant:\s*(.*)', memory.content, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-
-                if query_match:
-                    print(f"    Q: {query_match.group(1).strip()[:80]}...")
-                if response_match:
-                    print(f"    A: {response_match.group(1).strip()[:80]}...")
+        logger.debug(f"\n[DEBUG] Memory Retrieval Pipeline:")
+        logger.debug(f"  - Candidates from Chroma: {len(candidates)}")
+        logger.debug(f"  - After cosine gating: {len(relevant_memories)}")
+        logger.debug(f"  - After hierarchical expansion: {len(expanded_memories)}")
+        logger.debug(f"  - Final scored memories: {len(sorted_memories[:max_memories])}")
 
         return sorted_memories[:max_memories]
 
-    async def _calculate_importance(self, content: str) -> float:
-        """Calculate importance score using LLM"""
-        prompt = f"""Rate the importance of this interaction on a scale of 0.0 to 1.0.
-Consider: information density, uniqueness, potential future relevance.
+    @log_and_time("Calculate mem importance heuristic")
+    async def _calculate_importance_heuristic(self, content: str) -> float:
+        """Calculate importance score using simple heuristics"""
+        # Simple heuristics for importance
+        score = 0.5
 
-Content: {content[:500]}
+        # Boost for longer content
+        if len(content) > 200:
+            score += 0.1
 
-Respond with just a number between 0.0 and 1.0."""
+        # Boost for questions
+        if '?' in content:
+            score += 0.1
 
-        try:
-            response = await asyncio.to_thread(
-                self.model_manager.generate,
-                prompt,
-                max_tokens=10,
-                temperature=0.1
-            )
-            return float(response.strip())
-        except:
-            return 0.5
+        # Boost for certain keywords
+        important_keywords = ['important', 'remember', 'note', 'key', 'critical', 'essential']
+        if any(kw in content.lower() for kw in important_keywords):
+            score += 0.2
 
-    async def _extract_semantic_knowledge(self, query: str, response: str) -> List[MemoryNode]:
-        """Extract semantic facts from interaction"""
-        prompt = f"""Extract key facts and knowledge from this interaction.
-List each fact as a separate line. Focus on reusable information.
+        return min(score, 1.0)
 
-User: {query}
-Assistant: {response[:1000]}
+    @log_and_time("Extract semantic knowledge heuristic")
+    async def _extract_semantic_knowledge_heuristic(self, query: str, response: str) -> List[MemoryNode]:
+        """Extract semantic facts using simple pattern matching"""
+        semantic_memories = []
 
-Facts:"""
+        # Look for facts pattern: "X is Y", "X are Y", etc.
+        fact_patterns = [
+            r'(\w+)\s+(?:is|are|was|were)\s+(.+?)(?:\.|,|;|$)',
+            r'(?:I|you|we)\s+(?:like|love|hate|prefer)\s+(.+?)(?:\.|,|;|$)',
+            r'(?:my|your|our)\s+(\w+)\s+(?:is|are)\s+(.+?)(?:\.|,|;|$)'
+        ]
 
-        try:
-            facts_text = await asyncio.to_thread(
-                self.model_manager.generate,
-                prompt,
-                max_tokens=200,
-                temperature=0.3
-            )
+        combined_text = f"{query} {response}"
+        facts = []
 
-            facts = [f.strip() for f in facts_text.split('\n') if f.strip()]
+        for pattern in fact_patterns:
+            matches = re.findall(pattern, combined_text, re.IGNORECASE)
+            for match in matches[:3]:  # Limit facts per pattern
+                if isinstance(match, tuple):
+                    fact = ' '.join(match)
+                else:
+                    fact = match
+                if len(fact) > 10 and len(fact) < 200:  # Reasonable length
+                    facts.append(fact.strip())
 
-            semantic_memories = []
-            for fact in facts[:5]:  # Limit to 5 facts per interaction
+        # Create memory nodes for unique facts
+        seen_facts = set()
+        for fact in facts[:5]:  # Limit total facts
+            if fact.lower() not in seen_facts:
+                seen_facts.add(fact.lower())
                 import uuid
                 sem_id = str(uuid.uuid4())
                 semantic_memories.append(MemoryNode(
@@ -250,13 +357,11 @@ Facts:"""
                     tags=["extracted_fact"]
                 ))
 
-            return semantic_memories
-        except:
-            return []
+        return semantic_memories
 
-
-    async def _consolidate_memories(self):
-        """Consolidate recent episodic memories into summaries"""
+    @log_and_time("Consolidate Memories Heuristic")
+    async def _consolidate_memories_heuristic(self):
+        """Consolidate recent episodic memories into summaries using simple compression"""
         recent_episodic = self.type_index[MemoryType.EPISODIC][-self.consolidation_threshold:]
 
         if len(recent_episodic) < self.consolidation_threshold:
@@ -268,22 +373,21 @@ Facts:"""
             if mem_id in self.memories:
                 contents.append(self.memories[mem_id].content)
 
-        # Generate summary
-        prompt = f"""Create a concise summary of these interactions, preserving key information:
+        # Simple summarization: extract key phrases
+        summary_lines = []
+        for content in contents[:5]:
+            # Extract Q&A pairs
+            user_match = re.search(r'User:\s*(.+?)(?=\nAssistant:|$)', content)
+            assistant_match = re.search(r'Assistant:\s*(.+?)(?=\n|$)', content)
 
-{chr(10).join(contents[:5])}  # Limit to prevent token overflow
+            if user_match and assistant_match:
+                q = user_match.group(1).strip()[:50]
+                a = assistant_match.group(1).strip()[:50]
+                summary_lines.append(f"Q: {q}... A: {a}...")
 
-Summary:"""
+        if summary_lines:
+            summary = "Summary of recent interactions:\n" + "\n".join(summary_lines)
 
-        try:
-            summary = await asyncio.to_thread(
-                self.model_manager.generate,
-                prompt,
-                max_tokens=300,
-                temperature=0.5
-            )
-
-            # Create summary node
             import uuid
             summary_id = str(uuid.uuid4())
             summary_node = MemoryNode(
@@ -295,154 +399,130 @@ Summary:"""
                 tags=["consolidated_summary"]
             )
 
-            # Link summary to original memories
-            for mem_id in recent_episodic:
-                await self._add_child_memory(summary_id, self.memories[mem_id])
-
+            # ✅ Register the summary first
             self.memories[summary_id] = summary_node
             self.type_index[MemoryType.SUMMARY].append(summary_id)
 
-        except Exception as e:
-            print(f"Consolidation error: {e}")
+            # 🔁 Then link child memories
+            for mem_id in recent_episodic:
+                if mem_id in self.memories:
+                    await self._add_child_memory(summary_id, self.memories[mem_id])
 
+
+    @log_and_time("Index in Chroma")
     async def _index_in_chroma(self, memory: MemoryNode):
         """Index memory in ChromaDB"""
         if not self.chroma_collection:
             return
         try:
+            embedding = self.embed_model.encode(memory.content)
             self.chroma_collection.add(
                 documents=[memory.content],
-                metadatas=[{"type": memory.type.value, "tags": json.dumps(memory.tags)}],
+                metadatas=[{
+                    "type": memory.type.value,
+                    "timestamp": memory.timestamp.isoformat(),
+                    "tags": ", ".join(memory.tags),
+                    **{
+                        k: (json.dumps(v) if isinstance(v, (list, dict)) else v)
+                        for k, v in memory.metadata.items()
+                    }
+                }],
                 ids=[memory.id]
             )
         except Exception as e:
-            print(f"[Chroma Index Error] Failed to index memory {memory.id}: {e}")
+            logger.debug(f"[Chroma Index Error] Failed to index memory {memory.id}: {e}")
 
-    async def _semantic_search_candidates(self, query: str, top_k: int = 15) -> List[MemoryNode]:
+    @log_and_time("Semantic Search Candidates")
+    async def _semantic_search_candidates(self, query: str, top_k: int = 50) -> List[MemoryNode]:
         """Get candidate memories from ChromaDB semantic search"""
         if not self.chroma_collection:
             return []
 
-        try:
-            # Remove the where clause - ChromaDB doesn't support timestamp filtering
-            results = self.chroma_collection.query(
-                query_texts=[query],
-                n_results=10,  # CHANGED: Reduced from top_k * 2 for performance
-                include=["metadatas", "distances"]
-            )
+        candidates = []
 
-            if not results["ids"] or not results["ids"][0]:
-                return []  # FIXED: This line was corrupted
+        results = self.chroma_collection.query(
+            query_texts=[query],
+            n_results=top_k,
+            include=["distances", "documents", "metadatas"]
+        )
 
-            # Manual filtering by recency and distance
-            week_ago = datetime.now() - timedelta(days=7)
-            candidates = []
+        result_ids = results.get("ids", [[]])[0]
+        result_distances = results.get("distances", [[]])[0]
 
-            for i, doc_id in enumerate(results["ids"][0]):
-                if doc_id in self.memories:
-                    memory = self.memories[doc_id]
-                    # Manual recency check
-                    if memory.timestamp >= week_ago:
-                        # Distance threshold (lower is better for ChromaDB)
-                        if results["distances"][0][i] < 0.5:
-                            candidates.append(memory)
+        logger.debug(f"Chroma returned {len(result_ids)} candidates")
 
-            # Return top_k candidates sorted by distance
-            return candidates[:top_k]
+        if not result_ids or not result_distances:
+            logger.debug("[WARNING] No semantic candidates returned by Chroma.")
+            return []
 
-        except Exception as e:
-            print(f"[Semantic Search Error] {e}")
-            # Fallback: return recent memories
-            recent_memories = sorted(
-                self.memories.values(),
-                key=lambda m: m.timestamp,
-                reverse=True
-            )[:top_k]
-            return recent_memories
+        # Build ID to distance mapping
+        id_to_distance = dict(zip(result_ids, result_distances))
 
-    async def _gate_memories(self, query: str, candidates: List[MemoryNode]) -> List[Dict]:
-        """Parallel batch processing for memory gating"""
+        # Match with self.memories
+        for chroma_id, distance in id_to_distance.items():
+            # Handle chunked IDs
+            normalized_id = chroma_id.replace("_chunk0", "") if "_chunk0" in chroma_id else chroma_id
+
+            # Try both the normalized and original ID
+            if normalized_id in self.memories:
+                candidates.append(self.memories[normalized_id])
+                logger.debug(f" Matched memory {normalized_id} with distance {distance}")
+            elif chroma_id in self.memories:
+                candidates.append(self.memories[chroma_id])
+                logger.debug(f" Matched memory {chroma_id} with distance {distance}")
+
+        logger.debug(f" Found {len(candidates)} candidates from {len(result_ids)} Chroma results")
+        return candidates
+
+    @log_and_time("Gate Memories Cosine")
+    async def _gate_memories_cosine(self, query: str, candidates: List[MemoryNode]) -> List[Dict]:
+        """Use cosine similarity to filter memories for relevance"""
         if not candidates:
             return []
 
-        prompts = [
-            f"""Rate relevance (0-1) of this memory to query: "{query}"
-    Memory: {mem.content[:200]}...
-    Just respond with a number 0-1:"""
-            for mem in candidates
-        ]
+        try:
+            # Encode query once
+            query_emb = self.embed_model.encode(query, convert_to_numpy=True)
 
-        tasks = [
-            self.model_manager.generate_async(
-                prompt,
-                model_name=self.model_manager.get_active_model_name(),
-                max_tokens=10,
-                temperature=0
-            )
-            for prompt in prompts
-        ]
+            # Prepare memory content and encode in batch
+            contents = [mem.content[:500] for mem in candidates]
+            memory_embs = self.embed_model.encode(contents, convert_to_numpy=True, batch_size=32)
 
-        # Fully parallel await
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
+            # Calculate cosine similarities
+            similarities = cosine_similarity([query_emb], memory_embs)[0]
 
-        results = []
-        for mem, response in zip(candidates, responses):
-            try:
-                if isinstance(response, Exception):
-                    score = 0.5  # Default score on exception
-                    print(f"[LLM Gating Error] {response}")
+            relevant_memories = []
+            for mem, similarity in zip(candidates, similarities):
+                if similarity >= self.cosine_threshold:
+                    relevant_memories.append({
+                        'id': mem.id,
+                        'memory': mem,
+                        'relevance_score': float(similarity),
+                        'content': mem.content
+                    })
+                    logger.debug(f" Memory {mem.id[:8]}... passed gate with score {similarity:.3f}")
                 else:
-                    score = float(response.strip()) if response else 0.5
-            except ValueError:
-                score = 0.5  # Default score if can't parse float
+                    logger.debug(f" Memory {mem.id[:8]}... filtered out with score {similarity:.3f}")
 
-            if score > GATE_REL_THRESHOLD:
-                results.append({
+            # Sort by relevance
+            relevant_memories = sorted(relevant_memories, key=lambda x: x['relevance_score'], reverse=True)
+
+            logger.debug(f" _gate_memories_cosine returning {len(relevant_memories)} relevant memories.")
+            logger.debug(f"[GATE COSINE] Distance: {distance:.3f} → Similarity: {similarity:.3f} | Threshold: {GATE_REL_THRESHOLD}")
+            return relevant_memories[:30]  # Limit to top 30
+
+        except Exception as e:
+            logger.error(f"[Cosine Gate Error] {e}")
+            # Fallback: return top candidates with default scores
+            return [
+                {
                     'id': mem.id,
                     'memory': mem,
-                    'relevance_score': score,
+                    'relevance_score': 0.5 - (i * 0.01),
                     'content': mem.content
-                })
-
-        return results
-
-    def _expand_hierarchical_context(self, memories: List[Dict]) -> List[Dict]:
-        """Expand memories with hierarchical relationships"""
-        expanded = memories.copy()
-        seen_ids = {m['id'] for m in memories}
-
-        for mem_dict in memories[:MEM_NO]:
-            memory = mem_dict['memory']
-
-            # Add parent context
-            if memory.parent_id and memory.parent_id not in seen_ids:
-                if memory.parent_id in self.memories:
-                    parent = self.memories[memory.parent_id]
-                    if parent.importance>MEM_IMPORTANCE_SCORE:
-                        expanded.append({
-                            'id': parent.id,
-                            'memory': parent,
-                            'relevance_score': mem_dict['relevance_score'] * 0.7,  # Reduced relevance
-                            'content': parent.content,
-                            'relationship': 'parent'
-                        })
-                        seen_ids.add(parent.id)
-
-            # Add highly relevant children
-            for child_id in memory.child_ids[:CHILD_MEM_LIMIT]:  # Limit children
-                if child_id not in seen_ids and child_id in self.memories:
-                    child = self.memories[child_id]
-                    if child.importance_score > 0.6:
-                        expanded.append({
-                            'id': child.id,
-                            'memory': child,
-                            'relevance_score': mem_dict['relevance_score'] * 0.8,
-                            'content': child.content,
-                            'relationship': 'child'
-                        })
-                        seen_ids.add(child.id)
-
-        return expanded
+                }
+                for i, mem in enumerate(candidates[:10])
+            ]
 
     def _apply_temporal_decay(self, memories: List[Dict]) -> List[Dict]:
         """Apply temporal decay to memory scores"""
@@ -479,6 +559,7 @@ Summary:"""
         self.hierarchy[parent_id].append(child.id)
         self.type_index[child.type].append(child.id)
         await self._index_in_chroma(child)
+
     def _update_access(self, memory_id: str):
         """Update access count and timestamp"""
         if memory_id in self.memories:
@@ -514,42 +595,138 @@ Summary:"""
         with open(save_path, 'w') as f:
             json.dump(data, f, indent=2)
 
-    def load_memories(self):
-        """Load memories from disk"""
-        save_path = os.path.join(self.storage_dir, 'hierarchical_memories.json')
-        if not os.path.exists(save_path):
-            return
-
+    @log_and_time("Load semantic memories")
+    def load_semantic_memories_from_chroma(self):
+        """Rebuild semantic MemoryNode objects from ChromaDB on startup"""
+        logger.debug(f" Attempting to reconstruct semantic memories from Chroma...")
         try:
-            with open(save_path, 'r') as f:
-                data = json.load(f)
+            results = self.chroma_collection.get(include=["documents", "metadatas"])
 
-            # Reconstruct memories
-            for id, mem_data in data.get('memories', {}).items():
-                memory = MemoryNode(
-                    id=mem_data['id'],
-                    content=mem_data['content'],
-                    type=MemoryType(mem_data['type']),
-                    timestamp=datetime.fromisoformat(mem_data['timestamp']),
-                    access_count=mem_data['access_count'],
-                    last_accessed=datetime.fromisoformat(mem_data['last_accessed']),
-                    importance_score=mem_data['importance_score'],
-                    decay_rate=mem_data['decay_rate'],
-                    parent_id=mem_data.get('parent_id'),
-                    child_ids=mem_data.get('child_ids', []),
-                    tags=mem_data.get('tags', []),
-                    metadata=mem_data.get('metadata', {})
-                )
-                self.memories[id] = memory
+            for doc, metadata, id in zip(results["documents"], results["metadatas"], results["ids"]):
+                try:
+                    timestamp_str = metadata.get("timestamp")
+                    timestamp = datetime.fromisoformat(timestamp_str) if timestamp_str else datetime.now()
 
-            # Reconstruct indices
-            self.hierarchy = defaultdict(list, data.get('hierarchy', {}))
-            for type_str, ids in data.get('type_index', {}).items():
-                self.type_index[MemoryType(type_str)] = ids
-            self.tag_index = defaultdict(list, data.get('tag_index', {}))
+                    memory = MemoryNode(
+                        id=id,
+                        content=doc,
+                        type=MemoryType(metadata.get("type", "semantic")),
+                        timestamp=timestamp,
+                        tags=json.loads(metadata.get("tags", "[]")),
+                        metadata=metadata
+                    )
+                    self.memories[memory.id] = memory
+
+                except Exception as e:
+                    logger.debug(f"[CHROMA LOAD ERROR] Failed to load memory {id}: {e}")
+        except Exception as e:
+            logger.debug(f"[CHROMA COLLECTION ERROR] Could not query ChromaDB: {e}")
+
+    @log_and_time("Load Memories")
+    def load_memories(self):
+        """Load memories from disk and sync with Chroma"""
+        save_path = os.path.join(self.storage_dir, 'hierarchical_memories.json')
+
+        # Load hierarchical JSON disk memories
+        if os.path.exists(save_path):
+            try:
+                with open(save_path, 'r') as f:
+                    data = json.load(f)
+                for id, mem_data in data.get('memories', {}).items():
+                    try:
+                        memory = MemoryNode(
+                            id=mem_data['id'],
+                            content=mem_data['content'],
+                            type=MemoryType(mem_data['type']),
+                            timestamp=datetime.fromisoformat(mem_data['timestamp']),
+                            access_count=mem_data['access_count'],
+                            last_accessed=datetime.fromisoformat(mem_data['last_accessed']),
+                            importance_score=mem_data['importance_score'],
+                            decay_rate=mem_data['decay_rate'],
+                            parent_id=mem_data.get('parent_id'),
+                            child_ids=mem_data.get('child_ids', []),
+                            tags=mem_data.get('tags', []),
+                            metadata=mem_data.get('metadata', {})
+                        )
+                        self.memories[id] = memory
+                    except Exception as e:
+                        logger.debug(f"[LOAD ERROR] Could not load memory ID {id}: {e}")
+
+                # Reconstruct indices
+                self.hierarchy = defaultdict(list, data.get('hierarchy', {}))
+                for type_str, ids in data.get('type_index', {}).items():
+                    self.type_index[MemoryType(type_str)] = ids
+                self.tag_index = defaultdict(list, data.get('tag_index', {}))
+            except Exception as e:
+                logger.debug(f"[ERROR] Failed to load hierarchical memory file: {e}")
+
+        # Sync semantic memories from Chroma
+        try:
+            logger.debug(f" Syncing self.memories with Chroma...")
+            results = self.chroma_collection.get()
+            docs = results['documents']
+            ids = results['ids']
+            metadatas = results['metadatas']
+
+            for doc, metadata, mem_id in zip(docs, metadatas, ids):
+                # Normalize _chunk0 suffix if needed
+                normalized_id = mem_id.replace("_chunk0", "") if mem_id.endswith("_chunk0") else mem_id
+
+                if normalized_id not in self.memories:
+                    try:
+                        # Validate or default MemoryType
+                        raw_type = metadata.get("type", "").lower()
+                        if raw_type not in MemoryType._value2member_map_:
+                            logger.debug(f"[CHROMA LOAD WARNING] Unknown type '{raw_type}' for memory ID {mem_id}, defaulting to 'semantic'")
+                            memory_type = MemoryType.SEMANTIC
+                        else:
+                            memory_type = MemoryType(raw_type)
+
+                        # Parse timestamp safely
+                        raw_timestamp = metadata.get("timestamp")
+                        try:
+                            timestamp = datetime.fromisoformat(raw_timestamp) if raw_timestamp else datetime.now()
+                        except Exception as e:
+                            logger.debug(f"[CHROMA LOAD WARNING] Invalid timestamp for ID {mem_id}: {e}, using now()")
+                            timestamp = datetime.now()
+
+                        # Parse tags safely
+                        raw_tags = metadata.get("tags", "[]")
+                        try:
+                            tags = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+                        except Exception as e:
+                            logger.debug(f"[CHROMA LOAD WARNING] Invalid tags format for ID {mem_id}: {e}")
+                            tags = []
+
+                        # Handle doc as either JSON object or raw string
+                        try:
+                            content_data = json.loads(doc)
+                            content = content_data.get("content", "")
+                        except Exception:
+                            logger.debug(f"[CHROMA LOAD WARNING] Document is not JSON for ID {mem_id}; using raw content.")
+                            content = doc
+
+                        memory = MemoryNode(
+                            id=normalized_id,
+                            content=content,
+                            type=memory_type,
+                            timestamp=timestamp,
+                            tags=tags,
+                            metadata=metadata
+                        )
+                        self.memories[normalized_id] = memory
+
+                    except Exception as e:
+                        logger.debug(f"[CHROMA LOAD ERROR] Could not load memory from Chroma ID {mem_id}: {e}")
 
         except Exception as e:
-            print(f"Error loading memories: {e}")
+            logger.debug(f"[CHROMA COLLECTION ERROR] Could not query ChromaDB: {e}")
+
+    def get_summaries(self, query: str = None, limit: int = 5):
+        return []
+
+    def get_dreams(self, query: str = None, limit: int = 5):
+        return []
 
 
 # Integration with existing LLM gates
@@ -559,10 +736,11 @@ class HierarchicalGatedPromptBuilder:
         self.model_manager = model_manager
         self.memory_system = HierarchicalMemorySystem(model_manager)
 
-        from llm_gates import MultiStageGateSystem
+        from llm_gate_module import MultiStageGateSystem
         self.gate_system = MultiStageGateSystem(model_manager)
         self.semantic_gate = self.gate_system  # One unified gate system
 
+    @log_and_time("Hierarchical Prompt Build")
     async def build_hierarchical_prompt(self, user_input: str, context_sources: Dict, system_prompt: str = "", directives_file: str = "structured_directives.txt") -> str:
 
         filtered_context = {}
@@ -572,7 +750,7 @@ class HierarchicalGatedPromptBuilder:
                 user_input, context_sources.get("memories", [])
             )
         except Exception as e:
-            print(f"[PromptBuilder - Memory Filter Error] {e}")
+            logger.debug(f"[PromptBuilder - Memory Filter Error] {e}")
             filtered_context["memories"] = context_sources.get("memories", [])[:5]
 
         try:
@@ -582,7 +760,7 @@ class HierarchicalGatedPromptBuilder:
             if include_wiki:
                 filtered_context["wiki_snippet"] = filtered_wiki
         except Exception as e:
-            print(f"[PromptBuilder - Wiki Filter Error] {e}")
+            logger.debug(f"[PromptBuilder - Wiki Filter Error] {e}")
             filtered_context["wiki_snippet"] = ""
 
         try:
@@ -590,17 +768,18 @@ class HierarchicalGatedPromptBuilder:
                 user_input, context_sources.get("semantic_chunks", [])
             )
         except Exception as e:
-            print(f"[PromptBuilder - Semantic Chunk Error] {e}")
+            logger.debug(f"[PromptBuilder - Semantic Chunk Error] {e}")
             filtered_context["semantic_chunks"] = []
 
         return self.prompt_builder.build_prompt(
-             model_name=self.model_manager.get_active_model_name(),
+            model_name=self.model_manager.get_active_model_name(),
             user_input=user_input,
             memories=context_sources.get("memories", []),
             summaries=context_sources.get("summaries", []),
             dreams=[],
             wiki_snippet=context_sources.get("wiki_snippet", ""),
             semantic_snippet=context_sources.get("semantic_chunks", []),
+            semantic_memory_results=context_sources.get("semantic_memory_results", None),
             time_context=context_sources.get("time_context", {}),
             is_api=self.model_manager.is_api_model(self.model_manager.get_active_model_name()),
             include_dreams=False,
@@ -608,4 +787,4 @@ class HierarchicalGatedPromptBuilder:
             include_changelog=False,
             system_prompt=system_prompt,
             directives_file=directives_file
-                )
+        )

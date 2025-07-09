@@ -1,4 +1,10 @@
 # unified_pipeline.py
+# semantic_chunker.py
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("unified_pipeline.py is alive")
 import argparse
 import os
 import subprocess
@@ -7,6 +13,7 @@ from pathlib import Path
 import sys
 import json
 from typing import Dict, List
+import logging
 
 # Import both pipelines
 # Make sure these are callable as functions
@@ -25,8 +32,8 @@ TEST_MODE = os.environ.get("TEST_MODE") == "1" # Add this line
 
 def download_wikipedia_dump(url, output_path):
     """Download Wikipedia dump from URL with progress reporting."""
-    print(f"🌐 Downloading Wikipedia dump from: {url}")
-    print(f"📁 Saving to: {output_path}")
+    logger.debug(f"🌐 Downloading Wikipedia dump from: {url}")
+    logger.debug(f"📁 Saving to: {output_path}")
 
     # Ensure directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,9 +1,15 @@
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("search_faiss_with_metadata.py is alive")
 import os
 import faiss
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from config import DEFAULT_TOP_K
+from logging_utils import log_and_time
 
 
 # === CONFIG ===
@@ -16,6 +22,7 @@ TOP_K = DEFAULT_TOP_K
 
 
 # === BUILD OR LOAD FAISS INDEX ===
+@log_and_time("Build FAISS INDEX")
 def build_production_faiss_index(embeddings: np.ndarray, index_type="IVF"):
     d = embeddings.shape[1]
     n = embeddings.shape[0]
@@ -58,7 +65,7 @@ def load_faiss_index():
     return faiss.read_index(FAISS_INDEX_FILE)
 import pyarrow.parquet as pq
 from pathlib import Path
-
+@log_and_time("Load Merged Parquet")
 def load_merged_parquet_mmap(parquet_dir):
     """Load parquet metadata only, create memory-mapped embeddings."""
     total_vectors = 0

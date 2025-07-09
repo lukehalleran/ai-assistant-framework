@@ -1,8 +1,13 @@
 # === API Keys and Config ===
 import os
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("config.py is alive")
 VERSION = "v4"
 CHROMA_PATH = f"./chroma_db_{VERSION}"
-CORPUS_FILE = CORPUS_FILE = f"data/corpus_{VERSION}.json"
+CORPUS_FILE = f"data/corpus_{VERSION}.json"
 DREAM_FILE = f"dreams_{VERSION}.json"
 DREAM_LOG = f"dream_log_{VERSION}.jsonl"
 IN_HARM_TEST = False 
@@ -14,11 +19,20 @@ DEFAULT_TOP_K=5
 DEFAULT_TEMPERATURE=0.7
 LOCAL_MODEL_CONTEXT_LIMIT = 4096  # or whatever your largest local
 API_MODEL_CONTEXT_LIMIT = 128000 # GPT-4-Turbo etc.
-LOAD_LOCAL_MODEL=False
+LOAD_LOCAL_MODEL=True
 SEMANTIC_ONLY_MODE = False
 DEBUG_MODE = True  # Toggle debug info
 CONFIDENCE_THRESHOLD=1.5
+GATE_REL_THRESHOLD = 0.65 # temp for debug        # Minimum relevance score to pass LLM gate (0-1)
+MAX_FINAL_MEMORIES = 5
+RERANK_USE_LLM = True
+CROSS_ENCODER_WEIGHT = 0.7# Maximum memories to return after all filtering
+MEM_NO = 5                      # Number of memories to expand hierarchically
+MEM_IMPORTANCE_SCORE = 0.6      # Minimum importance for parent/child expansion
+MAX_WORKING_MEMORY=10
+CHILD_MEM_LIMIT = 3  # Max children to include per memory
 ##Memory module promts
+COSINE_SIMILARITY_THRESHOLD=0.25 #try values between .3 and .7, experiement
 DEFAULT_SUMMARY_PROMPT_HEADER = "Summary of last 20 exchanges:\n"
 DEFAULT_TAGGING_PROMPT = """You are Daemon, my assistant. Extract 5 concise tags or keywords from the following input. Return them as a list, comma-separated.
 

@@ -1,3 +1,13 @@
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("Personality manager.py is alive")
+
+import re
+import json
+import os
+from datetime import datetime, timedelta
 import os
 
 class PersonalityManager:
@@ -34,9 +44,9 @@ class PersonalityManager:
     def switch_personality(self, name):
         if name in self.personalities:
             self.current_personality = name
-            print(f"[PersonalityManager] Switched to: {name}")
+            logger.debug(f"[PersonalityManager] Switched to: {name}")
         else:
-            print(f"[PersonalityManager] Personality '{name}' not found. Using default.")
+            logger.debug(f"[PersonalityManager] Personality '{name}' not found. Using default.")
 
     def get_current_config(self):
         return self.personalities[self.current_personality]

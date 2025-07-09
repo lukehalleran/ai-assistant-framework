@@ -1,7 +1,14 @@
+# semantic_chunker.py
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("topic_manager.py is alive")
 import json
 from collections import Counter
 import spacy
 import os
+from logging_utils import log_and_time
 
 class TopicManager:
     def __init__(self, top_topics_file="data/top_topics.json"):

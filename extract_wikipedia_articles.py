@@ -2,6 +2,13 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from lxml import etree
+# === API Keys and Config ===
+import os
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("extract_wikipedia_articles.py is alive")
 
 # === CONFIG ===
 BASE_DIR = os.path.dirname(__file__)
@@ -63,7 +70,7 @@ def process_wiki_dump(xml_file):
         future.result()
 
     print(f"[DONE] Extraction complete. {article_count} articles saved.")
-    print(f"[DEBUG] First few titles extracted: {first_titles}")
+    logger.debug(f" First few titles extracted: {first_titles}")
 def stream_extract_articles(xml_file):
     """Generator to stream Wikipedia articles as XML elements."""
     context = etree.iterparse(xml_file, events=("end",), tag="{*}page")

@@ -7,18 +7,23 @@ Responsibilities:
 - Periodic summarization of recent exchanges
 - Trimming corpus size for efficiency
 """
+import logging
+from logging_utils import log_and_time
 
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("memory.py is alive")
 
 import json, os
 from datetime import datetime
 from config import CORPUS_FILE, IN_HARM_TEST
-from persistence import add_to_chroma
+from persistence import add_to_chroma_batch, add_to_chroma
 from transformers import pipeline
-from config import DEFAULT_SUMMARY_PROMPT_HEADER, DEFAULT_TAGGING_PROMPT
+from config import DEFAULT_SUMMARY_PROMPT_HEADER, DEFAULT_TAGGING_PROMPT, CORPUS_FILE
 
 
 
-
+@log_and_time("Hugging Face Auto Tag")
 def huggingface_auto_tag(text, model_manager, model_name=None):
     """Auto-tag text using the model's generate() function."""
     try:
@@ -29,7 +34,7 @@ def huggingface_auto_tag(text, model_manager, model_name=None):
         tags_text = model_manager.generate(prompt, max_tokens=40)
         return [tag.strip() for tag in tags_text.split(",") if tag.strip()]
     except Exception as e:
-        print(f"[Tagging Error] Could not generate tags: {e}")
+        logger.debug(f"[Tagging Error] Could not generate tags: {e}")
         return ["misc"]
 
 
@@ -39,6 +44,7 @@ def format_timestamp(ts):
 
     return ts.strftime("%Y-%m-%d %H:%M:%S") if isinstance(ts, datetime) else ts
 
+@log_and_time("Load Corpus")
 def load_corpus():
     """Load memory corpus from disk."""
     if os.path.exists(CORPUS_FILE):
@@ -53,6 +59,7 @@ def load_corpus():
             return data
     return []
 
+@log_and_time("Save Corpus")
 def save_corpus(corpus):
     """Save memory corpus to disk (atomic write with tmp file)."""
     tmp = CORPUS_FILE + ".tmp"
@@ -61,12 +68,18 @@ def save_corpus(corpus):
             {**e, "timestamp": format_timestamp(e["timestamp"])} for e in corpus
         ], f, indent=2)
     os.replace(tmp, CORPUS_FILE)
-
+@log_and_time("Summerize Corpus")
 def summarize_corpus_block(block):
 
     """Generate a summary node for the last 20 exchanges."""
 
-    summary_lines = [f"Q: {e['query']} → A: {e['response'][:60]}..." for e in block[:20]]
+    summary_lines = [
+        f"Q: {e.get('query', '[no query]')} → A: {resp[:60]}..."
+        for e in block[:20]
+        if (resp := str(e.get('response'))).strip() not in ('', 'None')
+    ]
+
+
     return {
         "query": "[SUMMARY NODE]",
         "response": DEFAULT_SUMMARY_PROMPT_HEADER + "\n".join(summary_lines) + "\n[truncated]",
@@ -74,7 +87,7 @@ def summarize_corpus_block(block):
         "tags": ["@summary"]
     }
 
-
+@log_and_time("Add to Corpus")
 def add_to_corpus(corpus, query, response, tags):
     """Add a new interaction to the corpus, summarize every 20 interactions, trim if needed."""
     if IN_HARM_TEST:

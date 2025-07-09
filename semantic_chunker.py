@@ -1,5 +1,9 @@
 # semantic_chunker.py
+import logging
 
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("semantic_chunker.py is alive")
 import os
 import re
 import json
@@ -158,18 +162,18 @@ class SemanticWikiChunker:
             total_chunks += len(chunks)
 
             if total_articles % 10 == 0:
-                print(f"[PROGRESS] {total_articles} articles → {total_chunks} chunks")
+                logger.debug(f"[PROGRESS] {total_articles} articles → {total_chunks} chunks")
 
             if len(chunk_buffer) >= batch_size:
                 output_path = os.path.join(output_dir, f'semantic_chunks_{file_idx:04}.jsonl')
                 self.save_chunks_jsonl(chunk_buffer, output_path)
-                print(f"[SAVED] {len(chunk_buffer)} chunks to {output_path}")
+                logger.debug(f"[SAVED] {len(chunk_buffer)} chunks to {output_path}")
                 chunk_buffer = []
                 file_idx += 1
 
         if chunk_buffer:
             output_path = os.path.join(output_dir, f'semantic_chunks_{file_idx:04}.jsonl')
             self.save_chunks_jsonl(chunk_buffer, output_path)
-            print(f"[SAVED] Final {len(chunk_buffer)} chunks")
+            logger.debug(f"[SAVED] Final {len(chunk_buffer)} chunks")
 
-        print(f"[COMPLETE] {total_articles} articles → {total_chunks} semantic chunks")
+        logger.debug(f"[COMPLETE] {total_articles} articles → {total_chunks} semantic chunks")

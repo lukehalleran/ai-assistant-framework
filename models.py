@@ -1,13 +1,24 @@
 # models.py (cleaned and shareable)
+import logging
 
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("Models.py is alive")
+
+import re
+import json
+import os
+from datetime import datetime, timedelta
 # Import model manager and system prompt
 from ModelManager import ModelManager
 from config import SYSTEM_PROMPT, DEFAULT_MAX_TOKENS, DEFAULT_TOP_K, DEFAULT_TOP_P, DEFAULT_TEMPERATURE
+from logging_utils import log_and_time
 
 # Initialize global model manager instance
 model_manager = ModelManager()
 
 # Unified model runner function
+@log_and_time("Models-run_model")
 def run_model(
     prompt,
     model_name=None,
@@ -46,14 +57,15 @@ def run_model(
     if tokenizer is not None:
         token_count = len(tokenizer.encode(prompt))
         if token_count > context_limit:
-            print(f"[WARN] Prompt too long ({token_count} > {context_limit}). Truncating input...")
+            logger.debug(f"[WARN] Prompt too long ({token_count} > {context_limit}). Truncating input...")
             prompt = tokenizer.decode(tokenizer.encode(prompt)[-context_limit:])
     else:
         # API models handle input limits server-side
-        # print("[DEBUG] No tokenizer for API model. Assuming server handles input limits.")
+        # logger.debug(f" No tokenizer for API model. Assuming server handles input limits.")
         pass
 
     # Define callable to run model.generate() safely
+    logger.debug("[TIMING] generage_call")
     def generate_call():
         # Define callable to run model.generate() safely
 # Pass system_prompt through so OpenAI models can use custom system prompt if provided.
@@ -95,3 +107,4 @@ def run_model(
         return generate_call()
     except Exception as e:
         return f"[Error during generation: {str(e)}]"
+    logger.debug("[TIMING] generage_call complete")
