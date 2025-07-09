@@ -76,7 +76,7 @@ This AI Assistant Framework is a production-ready conversational AI system that 
 - **IVF Indexing**: Scales to millions of documents while maintaining fast search
 - **Batch Processing**: Optimized embedding generation for large document sets
 
-### 🛡 Security & Reliability
+###  Security & Reliability
 - **Prompt Injection Protection**: Multi-layer input sanitization to prevent manipulation
 - **Multi-Language Pattern Detection**: Security filters work across languages to catch injection attempts
 - **Content Sanitization**: Automatic redaction of suspicious content
