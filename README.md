@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## 🚀 Overview
+## Overview
 
 This AI Assistant Framework is a production-ready conversational AI system that enhances language model responses through intelligent context retrieval and memory management. Built from scratch over 4 months, it demonstrates advanced software architecture and machine learning engineering principles.
 
@@ -16,7 +16,7 @@ This AI Assistant Framework is a production-ready conversational AI system that 
 - **Multi-Model Support**: Seamless switching between local (HuggingFace) and cloud (OpenAI) models
 - **Security-First Design**: Built-in prompt injection protection and content filtering
 
-## 🏗️ Architecture
+##  Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -48,9 +48,9 @@ This AI Assistant Framework is a production-ready conversational AI system that 
 └─────────────────────────────────────────────────────────┘
 ```
 
-## ✨ Features
+##  Features
 
-### 🔍 Intelligent Information Retrieval
+###  Intelligent Information Retrieval
 - **Multi-Stage Filtering Pipeline**: 
   - Initial broad search (n=100) to cast a wide net
   - Cosine similarity threshold filtering to remove low-relevance results
@@ -62,21 +62,21 @@ This AI Assistant Framework is a production-ready conversational AI system that 
 - **Section-Aware Processing**: Maintains Wikipedia article structure during chunking
 - **Temporal Awareness**: Built-in time and date handling for context-aware responses
 
-### 🧠 Advanced Memory Management
+###  Advanced Memory Management
 - **Short-term Memory**: Maintains conversation context for coherent multi-turn interactions
 - **Long-term Memory**: Automatically summarizes conversations every 20 interactions
 - **Vector Storage**: ChromaDB integration for persistent, searchable memory
 - **Memory Prioritization**: Intelligent selection of which memories to retain based on relevance
 - **Cross-Session Persistence**: Memories survive between sessions for continuity
 
-### ⚡ Performance & Scalability
+###  Performance & Scalability
 - **Streaming Processing**: Handles 50GB+ datasets without memory overflow
 - **Multi-threaded Extraction**: Parallel processing for faster indexing
 - **Memory-mapped Embeddings**: Efficient loading of large vector databases
 - **IVF Indexing**: Scales to millions of documents while maintaining fast search
 - **Batch Processing**: Optimized embedding generation for large document sets
 
-### 🛡️ Security & Reliability
+### 🛡 Security & Reliability
 - **Prompt Injection Protection**: Multi-layer input sanitization to prevent manipulation
 - **Multi-Language Pattern Detection**: Security filters work across languages to catch injection attempts
 - **Content Sanitization**: Automatic redaction of suspicious content
@@ -86,7 +86,7 @@ This AI Assistant Framework is a production-ready conversational AI system that 
 - **Audit Logging**: Tracks flagged content and security events for review
 - **Error Recovery**: Graceful handling of API failures and system errors
 
-### 🎭 Dynamic Personality System
+###  Dynamic Personality System
 - **Multiple Personalities**: Built-in personalities including default, therapy, and snarky modes
 - **Configurable Behaviors**: Each personality has different:
   - Memory access patterns
@@ -95,11 +95,11 @@ This AI Assistant Framework is a production-ready conversational AI system that 
 - **Hot-Swappable**: Change personalities at runtime via UI without restarting
 - **Custom Personality Creation**: Framework supports adding new personalities
 
-### 💻 User Experience
+###  User Experience
 - **Responsive Web Interface**: Gradio UI that works seamlessly on desktop and mobile
 - **Real-time Response Streaming**: Immediate feedback with token-by-token generation
 
-## 🚦 Getting Started
+##  Getting Started
 
 ### Prerequisites
 - Python 3.8+
@@ -163,7 +163,7 @@ Key settings in `config.py`:
 | `DEBUG_MODE` | Enable detailed logging | `False` |
 | `SEMANTIC_ONLY_MODE` | Disable memory/wiki features | `False` |
 
-## 📊 Performance Metrics
+##  Performance Metrics
 
 Based on testing with Wikipedia dataset:
 - **Indexing Speed**: ~1,000 articles/minute (multi-threaded)
@@ -171,7 +171,7 @@ Based on testing with Wikipedia dataset:
 - **Memory Usage**: ~4GB for 1M document index
 - **Model Switching**: <2s between local/API models
 
-## 🔮 Future Enhancements
+##  Future Enhancements
 
 - [ ] Multi-language support
 - [ ] Real-time web search integration
@@ -180,14 +180,14 @@ Based on testing with Wikipedia dataset:
 - [ ] Distributed processing support
 - [ ] Fine-tuning pipeline for domain adaptation
 
-## 🤝 Contributing
+##  Contributing
 
 While this is primarily a portfolio project, feedback and suggestions are welcome! Feel free to:
 - Open issues for bugs or feature requests
 - Submit pull requests for improvements
 - Share your use cases and experiences
 
-## 📈 Use Cases
+## Use Cases
 
 This framework has been designed for:
 - **Research Assistants**: Quickly find and synthesize information
@@ -196,7 +196,7 @@ This framework has been designed for:
 - **Content Generation**: Context-aware writing assistance
 - **Data Analysis**: Natural language queries over structured data
 
-## 🎓 Technical Highlights
+##  Technical Highlights
 
 For recruiters and technical evaluators, this project demonstrates:
 
@@ -206,18 +206,18 @@ For recruiters and technical evaluators, this project demonstrates:
 - **Software Engineering**: Modular, extensible codebase with proper abstractions
 - **Problem Solving**: Novel solutions for memory management and context building
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [HuggingFace](https://huggingface.co/) for transformer models and libraries
 - [Meta/Facebook](https://github.com/facebookresearch/faiss) for the FAISS vector search library
 - [OpenAI](https://openai.com/) for GPT API access
 - [Wikipedia](https://www.wikipedia.org/) for open knowledge dumps
 
-## 📧 Contact
+##  Contact
 
 **Luke Halleran**
 - GitHub: [@lukehalleran](https://github.com/lukehalleran)
