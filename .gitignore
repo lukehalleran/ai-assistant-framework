@@ -8,6 +8,12 @@ semantic_chunks/
 embedded_parquet/
 chroma_db_*/
 chroma_db/
+data/
+*.parquet
+*.faiss
+*.dat
+*.bin
+*.mmap
 
 # Data files
 embed_checkpoint.json
