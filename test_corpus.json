@@ -1,0 +1,11 @@
+[
+  {
+    "query": "What's the weather?",
+    "response": "I don't have access to weather data.",
+    "timestamp": "2025-07-12T12:35:12.848146",
+    "tags": [
+      "weather",
+      "query"
+    ]
+  }
+]
