@@ -119,38 +119,30 @@ This system helps avoid AI "hallucination lock-in" by reevaluating ideas over ti
 ---
 
 ##  Architecture Diagram
-User Interface
-                       (Gradio Web App)
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Core Orchestrator                    │
-│  Personality Manager • Response Generator • File Parser │
-└─────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                 Prompt Building Pipeline                │
-│   Unified Hierarchical • Gated Builder • Topic Manager │
-└─────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Memory Systems                       │
-│  Memory Coordinator • Hierarchical Memory • Corpus Mgr │
-└─────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                  Knowledge & Storage                    │
-│   Multi-Collection ChromaDB • FAISS • Wikipedia API    │
-└─────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Gating System                        │
-│      Cosine Similarity Filter • Cross-Encoder Rerank   │
-└─────────────────────────────────────────────────────────┘
+graph TD
+    A[User Interface<br/>Gradio Web App] --> B[Core Orchestrator]
+    B --> B1[Personality Manager]
+    B --> B2[Response Generator]
+    B --> B3[File Processor]
+    
+    B --> C[Prompt Building Pipeline]
+    C --> C1[Unified Hierarchical]
+    C --> C2[Gated Builder]
+    C --> C3[Topic Manager]
+    
+    C --> D[Memory Systems]
+    D --> D1[Memory Coordinator]
+    D --> D2[Hierarchical Memory]
+    D --> D3[Corpus Manager]
+    
+    D --> E[Knowledge & Storage]
+    E --> E1[Multi-Collection ChromaDB]
+    E --> E2[FAISS Search]
+    E --> E3[Wikipedia API]
+    
+    E --> F[Gating System]
+    F --> F1[Cosine Similarity Filter]
+    F --> F2[Cross-Encoder Rerank]
 ##  Configuration
 
 Edit values in `config/config.py`:
