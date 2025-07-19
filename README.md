@@ -1,3 +1,4 @@
+
 # Daemon AI Assistant Framework
 
 **An advanced Retrieval-Augmented Generation (RAG) system with hierarchical memory, cosine similarity gating, and dynamic personality management**
@@ -13,7 +14,7 @@
 
 ---
 
-## 🔧 Why Daemon over LangChain or Haystack?
+##  Why Daemon over LangChain or Haystack?
 
 Unlike higher-abstraction frameworks, Daemon offers:
 - **Direct access to memory internals** (episodic, semantic, procedural, summary)
@@ -117,7 +118,7 @@ This system helps avoid AI "hallucination lock-in" by reevaluating ideas over ti
 
 ---
 
-## 🏗 Architecture Diagram
+##  Architecture Diagram
 ┌─────────────────────────────────────────────────────────┐
 │ User Interface │
 │ (Gradio Web App) │
@@ -158,9 +159,7 @@ This system helps avoid AI "hallucination lock-in" by reevaluating ideas over ti
 │ │ (Primary Filter) │ │ (Optional Rerank) │ │
 └─────────────────────────────────────────────────────────┘
 
----
-
-## ⚙ Configuration
+##  Configuration
 
 Edit values in `config/config.py`:
 
@@ -170,8 +169,10 @@ MAX_FINAL_MEMORIES = 5
 DEFAULT_MAX_TOKENS = 2048
 CORPUS_FILE = "data/corpus.json"
 CHROMA_PATH = "data/chroma_db"
+```
 
 ## **Project Structure**
+```
 daemon-ai-assistant/
 ├── core/               # Core orchestrator and stream gen
 ├── memory/             # Episodic, semantic, procedural, etc.
@@ -183,6 +184,7 @@ daemon-ai-assistant/
 ├── utils/              # Logging, timing, loaders
 ├── config/             # Constants and paths
 └── tests/              # Unit and integration tests
+```
 
 ##  Performance Benchmarks
 
@@ -208,39 +210,47 @@ daemon-ai-assistant/
     "include_wiki": True,
     "include_semantic_search": True
 }
+```
 
 ### Query Memory System
+
+```python
 memories = await memory_system.hierarchical_memory.retrieve_relevant_memories(
     query="how does cosine similarity work?", max_memories=10
 )
 
-results = memory_system.chroma_store.search_conversations("cosine", n_results=5)\
+results = memory_system.chroma_store.search_conversations("cosine", n_results=5)
+```
 
 ### Adjust Gating Sensitivity
-gate_system = MultiStageGateSystem(model_manager, cosine_threshold=0.70)
 
+```python
+gate_system = MultiStageGateSystem(model_manager, cosine_threshold=0.70)
+```
 
 ## FAQ
-Q: Can I run this fully locally?
+
+**Q: Can I run this fully locally?**  
 A: Yes — you can use local LLMs (e.g., Mistral, GPT-Neo) and offline embeddings.
 
-Q: Is there a GUI?
+**Q: Is there a GUI?**  
 A: Yes! Gradio-based web UI included. CLI mode also supported.
 
-Q: Does it work with open-weight models?
+**Q: Does it work with open-weight models?**  
 A: Yes. Local support works with models like LLaMA, Mixtral, Mistral, etc.
 
 ## Getting Started
-rerequisites
 
-    Python 3.8+
+### Prerequisites
 
-    16GB+ RAM (recommended)
+- Python 3.8+
+- 16GB+ RAM (recommended)
+- 50GB+ disk space
+- CUDA GPU (optional for speed)
 
-    50GB+ disk space
+### Installation (not yet tested outside Fedora 42)
 
-    CUDA GPU (optional for speed)
-## Installation (not yet tested outside Fedora 42)
+```bash
 git clone https://github.com/yourusername/daemon-ai-assistant
 cd daemon-ai-assistant
 python -m venv venv
@@ -248,36 +258,33 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 export OPENAI_API_KEY="your-key-here"  # optional
+```
 
-## Quick Start
+### Quick Start
+
+```bash
 # Start web interface
 python main.py
 
 # CLI mode
 python main.py cli
+```
 
 ## Contributing
-Fork this repo
 
-Create a feature branch
-
-Add relevant tests
-
-Open a pull request
+1. Fork this repo  
+2. Create a feature branch  
+3. Add relevant tests  
+4. Open a pull request
 
 ## License
+
 MIT License. See LICENSE for details.
 
 ## Acknowledgements
-Sentence Transformers
 
-ChromaDB
-
-FAISS
-
-Gradio
-
-spaCy
-
-
-Let me know if you want this pushed to your repo or auto-linked to badges or docs!
+- Sentence Transformers
+- ChromaDB
+- FAISS
+- Gradio
+- spaCy
