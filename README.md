@@ -119,46 +119,38 @@ This system helps avoid AI "hallucination lock-in" by reevaluating ideas over ti
 ---
 
 ##  Architecture Diagram
+User Interface
+                       (Gradio Web App)
+                             │
+                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│ User Interface │
-│ (Gradio Web App) │
-└────────────────────┬────────────────────────────────────┘
-│
-┌────────────────────▼────────────────────────────────────┐
-│ Core Orchestrator │
-│ ┌─────────────┐ ┌──────────────┐ ┌───────────────┐ │
-│ │ Personality │ │Response Gen │ │File Processor │ │
-│ └─────────────┘ └──────────────┘ └───────────────┘ │
-└────────────────────┬────────────────────────────────────┘
-│
-┌────────────────────▼────────────────────────────────────┐
-│ Prompt Building Pipeline │
-│ ┌─────────────┐ ┌──────────────┐ ┌───────────────┐ │
-│ │Unified │ │Gated Prompt │ │Topic Manager │ │
-│ │Prompt │ │Builder │ │(Entity Extract)│ │
-└────────────────────┬────────────────────────────────────┘
-│
-┌────────────────────▼────────────────────────────────────┐
-│ Memory Systems │
-│ ┌─────────────┐ ┌──────────────┐ ┌───────────────┐ │
-│ │Memory │ │Hierarchical │ │Corpus Manager │ │
-│ │Coordinator │ │Memory System │ │(Short-term) │ │
-└────────────────────┬────────────────────────────────────┘
-│
-┌────────────────────▼────────────────────────────────────┐
-│ Knowledge & Storage │
-│ ┌─────────────┐ ┌──────────────┐ ┌───────────────┐ │
-│ │Multi-Collect│ │FAISS Search │ │Wiki Manager │ │
-│ │ChromaDB │ │(Semantic) │ │(Wikipedia API)│ │
-└────────────────────┬────────────────────────────────────┘
-│
-┌────────────────────▼────────────────────────────────────┐
-│ Gating System │
-│ ┌─────────────────────┐ ┌─────────────────────────┐ │
-│ │ Cosine Similarity │ │ Cross-Encoder │ │
-│ │ (Primary Filter) │ │ (Optional Rerank) │ │
+│                    Core Orchestrator                    │
+│  Personality Manager • Response Generator • File Parser │
 └─────────────────────────────────────────────────────────┘
-
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│                 Prompt Building Pipeline                │
+│   Unified Hierarchical • Gated Builder • Topic Manager │
+└─────────────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│                    Memory Systems                       │
+│  Memory Coordinator • Hierarchical Memory • Corpus Mgr │
+└─────────────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│                  Knowledge & Storage                    │
+│   Multi-Collection ChromaDB • FAISS • Wikipedia API    │
+└─────────────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│                    Gating System                        │
+│      Cosine Similarity Filter • Cross-Encoder Rerank   │
+└─────────────────────────────────────────────────────────┘
 ##  Configuration
 
 Edit values in `config/config.py`:
