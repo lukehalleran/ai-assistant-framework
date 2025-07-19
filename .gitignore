@@ -246,3 +246,11 @@ vector_index_ivf.faiss
 embeddings_mmap.dat
 metadata.parquet
 vector_index_ivf.faiss
+# Large data artifacts
+data/
+daemon_memory/
+test_chroma_db/
+embeddings_mmap.dat
+vector_index_ivf.faiss
+metadata.parquet
+all-files.txt
