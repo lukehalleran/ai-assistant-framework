@@ -18,7 +18,9 @@ class PersonalityManager:
                 "directives_file": "structured_directives.txt",
                 "num_memories": 5,
                 "include_wiki": True,
-                "include_semantic_search": True
+                "include_semantic_search": True,
+                "include_summaries": True,
+                "summary_limit": 5
 
             },
             "therapy": {
@@ -26,7 +28,9 @@ class PersonalityManager:
                 "directives_file": "structured_directives_therapy.txt",
                 "num_memories": 30,
                 "include_wiki": False,
-                "include_semantic_search": False
+                "include_semantic_search": False,
+                "include_summaries": True,  # Important for therapy mode
+                "summary_limit": 5
 
             },
             "snarky": {
@@ -35,7 +39,8 @@ class PersonalityManager:
                 "num_memories": 3,
                 "include_wiki": True,
                 "include_semantic_search": True,
-
+                "include_summaries": True,  # Important for therapy mode
+                "summary_limit": 5
 
             }
         }

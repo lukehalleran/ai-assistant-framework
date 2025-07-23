@@ -1,62 +1,43 @@
-# daemon_7_11_25_refactor/memory/memory_coordinator.py
+# memory/memory_coordinator.py
 import asyncio
+import uuid
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from utils.logging_utils import get_logger, log_and_time
-from memory.storage.chroma_store import MultiCollectionChromaStore
+from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from memory.memory_interface import HierarchicalMemorySystem
 from processing.gate_system import MultiStageGateSystem
+
 logger = get_logger("memory_coordinator")
 
 class MemoryCoordinator:
     def __init__(self,
                  corpus_manager,
-                 chroma_collection,
-                 chroma_store: Optional[MultiCollectionChromaStore] = None,
+                 chroma_store: MultiCollectionChromaStore,
                  hierarchical_memory: Optional[HierarchicalMemorySystem] = None,
                  gate_system: Optional[MultiStageGateSystem] = None):
         self.corpus_manager = corpus_manager
-        self.chroma_collection = chroma_collection
         self.chroma_store = chroma_store
         self.hierarchical_memory = hierarchical_memory
         self.gate_system = gate_system
 
-
     @log_and_time("Retrieve Relevant Memories")
-    async def retrieve_relevant_memories(self,
-                                       query: str,
-                                       config: Dict) -> Dict:
-        """
-        Retrieve and combine memories from all sources
-        """
+    async def retrieve_relevant_memories(self, query: str, config: Dict) -> Dict:
         logger.debug(f"Retrieving memories for query: {query[:50]}...")
 
-        # Step 1: Get very recent memories (always included)
-        very_recent = self.corpus_manager.get_recent_memories(
-            config.get('recent_count', 3)
-        )
-        logger.debug(f"Got {len(very_recent)} very recent memories")
-
-        # Step 2: Get semantic memories from ChromaDB
-        semantic_memories = await self._get_semantic_memories(
-            query,
-            n_results=config.get('semantic_count', 30)
-        )
-        logger.debug(f"Got {len(semantic_memories)} semantic memories")
-
-        # Step 3: Get hierarchical memories if available
+        very_recent = self.corpus_manager.get_recent_memories(config.get('recent_count', 3))
+        semantic_memories = await self._get_semantic_memories(query, config.get('semantic_count', 30))
         hierarchical_memories = []
+
         if self.hierarchical_memory:
             try:
                 hierarchical_memories = await self.hierarchical_memory.retrieve_relevant_memories(
                     query,
                     max_memories=config.get('hierarchical_count', 15)
                 )
-                logger.debug(f"Got {len(hierarchical_memories)} hierarchical memories")
             except Exception as e:
                 logger.error(f"Error getting hierarchical memories: {e}")
 
-        # Step 4: Combine and deduplicate
         combined = await self._combine_memories(
             very_recent,
             semantic_memories,
@@ -76,215 +57,164 @@ class MemoryCoordinator:
         }
 
     async def _get_semantic_memories(self, query: str, n_results: int = 30) -> List[Dict]:
-        """Get memories from ChromaDB"""
+        """Retrieve semantic memory chunks using the new multi-collection store"""
         try:
-            results = self.chroma_collection.query(
-                query_texts=[query],
-                n_results=n_results,
-                include=["documents", "metadatas"]
-            )
+            results = self.chroma_store.search_all(query, n_results_per_type=n_results)
+            semantic_chunks = results.get("semantic", []) + results.get("facts", [])
 
             memories = []
-            if results['documents'][0]:
-                for i, doc in enumerate(results['documents'][0]):
-                    # Parse the document format
-                    memory = {
-                        'query': self._extract_query_from_doc(doc),
-                        'response': self._extract_response_from_doc(doc),
-                        'timestamp': results['metadatas'][0][i].get('timestamp', datetime.now()),
-                        'source': 'semantic'
-                    }
-                    memories.append(memory)
+            for item in semantic_chunks:
+                meta = item.get('metadata', {})
+                memories.append({
+                    'query': meta.get('query', item['content'][:100]),
+                    'response': meta.get('response', ""),
+                    'timestamp': meta.get('timestamp', datetime.now()),
+                    'source': 'semantic',
+                    'relevance_score': item.get('relevance_score', 0.5)
+                })
 
             return memories
 
         except Exception as e:
-            logger.error(f"Error querying ChromaDB: {e}")
+            logger.error(f"Error in semantic memory retrieval: {e}")
             return []
 
-    async def _combine_memories(self,
-                              very_recent: List[Dict],
-                              semantic: List[Dict],
-                              hierarchical: List[Dict],
-                              query: str,
-                              config: Dict) -> List[Dict]:
-        """Combine memories from all sources with deduplication"""
-
-        # Format very recent memories
+    async def _combine_memories(self, very_recent, semantic, hierarchical, query, config) -> List[Dict]:
         combined = []
         seen = set()
 
-        # Always include very recent (these bypass gating)
         for mem in very_recent:
             key = self._get_memory_key(mem)
             if key not in seen:
                 mem['source'] = 'very_recent'
-                mem['gated'] = False  # Mark as ungated
+                mem['gated'] = False
                 combined.append(mem)
                 seen.add(key)
 
-        # Combine semantic and hierarchical for gating
-        candidates_for_gating = []
+        candidates = []
 
-        # Add semantic memories
         for mem in semantic:
             key = self._get_memory_key(mem)
             if key not in seen:
-                candidates_for_gating.append(mem)
+                candidates.append(mem)
 
-        # Add hierarchical memories (convert format)
-        for h_mem in hierarchical:
-            if isinstance(h_mem, dict) and 'memory' in h_mem:
-                memory = h_mem['memory']
-                formatted = self._format_hierarchical_memory(memory)
-                key = self._get_memory_key(formatted)
+        for h in hierarchical:
+            if isinstance(h, dict) and 'memory' in h:
+                mem = self._format_hierarchical_memory(h['memory'])
+                key = self._get_memory_key(mem)
                 if key not in seen:
-                    formatted['relevance_score'] = h_mem.get('final_score', 0.5)
-                    candidates_for_gating.append(formatted)
+                    mem['relevance_score'] = h.get('final_score', 0.5)
+                    candidates.append(mem)
 
-        # Gate the candidates if gate system available
-        if self.gate_system and candidates_for_gating:
-            gated_memories = await self._gate_memories(query, candidates_for_gating)
-            for mem in gated_memories:
+        if self.gate_system and candidates:
+            gated = await self._gate_memories(query, candidates)
+            for mem in gated:
                 mem['gated'] = True
                 combined.append(mem)
-                if self.debug:
-                    logger.debug(f"[TOKENS] Memory {i}: {mem_tokens} tokens — running total {current_token_total}/{token_budget}")
-
         else:
-            # No gating, just take top N
-            for mem in candidates_for_gating[:config.get('max_memories', 10)]:
+            for mem in candidates[:config.get('max_memories', 10)]:
                 mem['gated'] = False
                 combined.append(mem)
 
-        logger.debug(f"Combined {len(combined)} total memories")
         return combined
 
     async def _gate_memories(self, query: str, memories: List[Dict]) -> List[Dict]:
-        """Apply gating to filter memories"""
         try:
-            # Convert to format expected by gate system
-            chunks = []
-            for mem in memories:
-                chunk = {
-                    "content": f"User: {mem['query']}\nAssistant: {mem['response']}",
-                    "metadata": {"timestamp": mem.get("timestamp", datetime.now())}
-                }
-                chunks.append(chunk)
+            chunks = [{
+                "content": f"User: {m['query']}\nAssistant: {m['response']}",
+                "metadata": {"timestamp": m.get("timestamp", datetime.now())}
+            } for m in memories]
 
-            # Apply gating
-            gated_chunks = await self.gate_system.filter_memories(query, chunks)
+            filtered = await self.gate_system.filter_memories(query, chunks)
 
-            # Convert back to memory format
-            gated_memories = []
-            for chunk in gated_chunks:
+            gated = []
+            for chunk in filtered:
                 parts = chunk["content"].split("\nAssistant: ", 1)
                 if len(parts) == 2:
-                    memory = {
-                        'query': parts[0].replace("User: ", ""),
-                        'response': parts[1],
-                        'timestamp': chunk["metadata"]["timestamp"]
-                    }
-                    gated_memories.append(memory)
-
-            return gated_memories
+                    gated.append({
+                        'query': parts[0].replace("User: ", "").strip(),
+                        'response': parts[1].strip(),
+                        'timestamp': chunk["metadata"].get("timestamp", datetime.now())
+                    })
+            return gated
 
         except Exception as e:
-            logger.error(f"Error gating memories: {e}")
-            return memories[:5]  # Fallback
-    def get_summaries(self, limit: int = 3) -> List[str]:
-        """Get top-level memory summaries (used for global context in prompt)"""
-        return self.corpus_manager.get_summaries(limit)
-
-    def _extract_query_from_doc(self, doc: str) -> str:
-        """Extract query from ChromaDB document"""
-        if "User:" in doc and "Assistant:" in doc:
-            return doc.split("Assistant:")[0].replace("User:", "").strip()
-        return doc[:100]
-
-    def _extract_response_from_doc(self, doc: str) -> str:
-        """Extract response from ChromaDB document"""
-        if "Assistant:" in doc:
-            return doc.split("Assistant:")[1].strip()
-        return doc[100:]
-
-    def _format_hierarchical_memory(self, memory) -> Dict:
-        """Format hierarchical memory to standard format"""
-        content = memory.content
-        parts = content.split('\nAssistant: ')
-
-        if len(parts) == 2:
-            query = parts[0].replace("User: ", "").strip()
-            response = parts[1].strip()
-        else:
-            query = content[:100]
-            response = "[Could not parse response]"
-
-        return {
-            'query': query,
-            'response': response,
-            'timestamp': memory.timestamp,
-            'source': 'hierarchical'
-        }
-    def get_dreams(self, limit: int = 2) -> List[str]:
-        """Get recent dreams (optional symbolic memory)"""
-        if hasattr(self.corpus_manager, 'get_dreams'):
-            return self.corpus_manager.get_dreams(limit)
-        return []
+            logger.error(f"Error during memory gating: {e}")
+            return memories[:5]
 
     def _get_memory_key(self, memory: Dict) -> str:
-        """Get unique key for memory deduplication"""
         q = memory.get('query', '')[:50]
         r = memory.get('response', '')[:50]
         return f"{q}_{r}"
 
-    # inside class MemoryCoordinator
+    def _format_hierarchical_memory(self, memory) -> Dict:
+        parts = memory.content.split('\nAssistant: ')
+        if len(parts) == 2:
+            return {
+                'query': parts[0].replace("User: ", "").strip(),
+                'response': parts[1].strip(),
+                'timestamp': memory.timestamp,
+                'source': 'hierarchical'
+            }
+        return {
+            'query': memory.content[:100],
+            'response': "[Could not parse response]",
+            'timestamp': memory.timestamp,
+            'source': 'hierarchical'
+        }
 
     async def store_interaction(self, query: str, response: str, tags: List[str] = None):
-        """Store interaction in all memory systems"""
-
-        # 1. Store in short-term corpus
         self.corpus_manager.add_entry(query, response, tags)
-
-        # 2. Store in Chroma (via store or collection)
+        logger.debug("[MEMORY] store_interaction was called.")
         try:
-            content = f"User: {query}\nAssistant: {response}"
-            doc_id = str(uuid.uuid4())
             metadata = {
                 "timestamp": datetime.now().isoformat(),
+                "query": query,
+                "response": response,
                 "tags": ",".join(tags or [])
             }
-
-            if self.chroma_store:
-                self.chroma_store.add_conversation_memory(query, response, metadata)
-
-            elif self.chroma_collection:
-                self.chroma_collection.add(
-                    documents=[content],
-                    metadatas=[metadata],
-                    ids=[doc_id]
-                )
-
-            logger.debug(f"Stored in ChromaDB with ID: {doc_id}")
-
+            logger.debug(f"[MemoryCoordinator] Attempting to store memory:\nQuery: {query[:100]}\nResponse: {response[:100]}")
+            self.chroma_store.add_conversation_memory(query, response, metadata)
+            logger.debug("[MemoryCoordinator] ✅ Memory successfully stored")
         except Exception as e:
             logger.error(f"Error storing in ChromaDB: {e}")
 
-        # 3. Store in hierarchical memory
         if self.hierarchical_memory:
             try:
+                logger.debug(f"[MemoryCoordinator] Attempting to store memory:\nQuery: {query[:100]}\nResponse: {response[:100]}")
+
                 await self.hierarchical_memory.store_interaction(query, response, tags)
+                logger.debug("[MemoryCoordinator] ✅ Memory successfully stored")
             except Exception as e:
                 logger.error(f"Error storing in hierarchical memory: {e}")
 
+    def get_summaries(self, limit: int = 3) -> List[Dict]:
+        summaries = self.corpus_manager.get_summaries(limit)
+        return [{
+            'content': s.get('response', ''),
+            'timestamp': s.get('timestamp', datetime.now()),
+            'type': 'summary',
+            'tags': s.get('tags', [])
+        } for s in summaries]
+
+    def get_dreams(self, limit: int = 2) -> List[str]:
+        if hasattr(self.corpus_manager, 'get_dreams'):
+            dreams = self.corpus_manager.get_dreams(limit)
+            return [{
+                'content': d,
+                'timestamp': datetime.now(),
+                'source': 'dream'
+            } for d in dreams]
+        return []
+
+
     async def get_memories(self, query: str, limit: int = 20) -> List[Dict]:
-        """Get top memories for prompt builder use"""
+        """Unified call for prompt builder to fetch top memories"""
         config = {
             'recent_count': 3,
             'semantic_count': 30,
             'hierarchical_count': 15,
             'max_memories': limit
         }
-
         results = await self.retrieve_relevant_memories(query, config)
         return results.get('memories', [])
