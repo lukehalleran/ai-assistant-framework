@@ -1,54 +1,71 @@
-# daemon_7_11_25_refactor/core/orchestrator.py
 from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime
 from utils.logging_utils import get_logger
-from core.prompt import PromptBuilder
-from core.prompt_builder import UnifiedHierarchicalPromptBuilder
 from memory.corpus_manager import CorpusManager
+from memory.memory_coordinator import MemoryCoordinator
+from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+from memory.memory_interface import HierarchicalMemorySystem
 from personality.personality_manager import PersonalityManager
 from knowledge.topic_manager import TopicManager
 from knowledge.WikiManager import WikiManager
+from processing.gate_system import MultiStageGateSystem
+from models.tokenizer_manager import TokenizerManager
+from core.prompt_builder_v2 import UnifiedPromptBuilder
+
 logger = get_logger("orchestrator")
+
 
 class DaemonOrchestrator:
     """Central coordinator for the AI assistant system"""
 
-    def __init__(self,
-                 model_manager,
-                 response_generator,
-                 file_processor,
-                 prompt_builder: UnifiedHierarchicalPromptBuilder = None,
-                 personality_manager: PersonalityManager = None):
+    def __init__(
+        self,
+        model_manager,
+        response_generator,
+        file_processor,
+        prompt_builder,
+        memory_system,
+        personality_manager: PersonalityManager = None
+    ):
         self.model_manager = model_manager
         self.response_generator = response_generator
         self.file_processor = file_processor
-        self.topic_manager= TopicManager()
-        self.WikiManager= WikiManager()
         self.personality_manager = personality_manager or PersonalityManager()
+        self.prompt_builder = prompt_builder
 
-        base_pb = PromptBuilder(
-            model_manager,           # tokenizer_manager
-            "gpt-4-turbo",           # model_name
-            WikiManager(),           # wiki
-            model_manager,           # model_manager
-            TopicManager()           # topic_manager
+        # Initialize components
+        self.topic_manager = TopicManager()
+        self.wiki_manager = WikiManager()
+        self.tokenizer_manager = TokenizerManager(model_manager)
+
+        # Initialize memory system
+        self.corpus_manager = CorpusManager()
+        self.chroma_store = MultiCollectionChromaStore()
+        self.hierarchical_memory = HierarchicalMemorySystem(
+            model_manager=model_manager,
+            chroma_store=self.chroma_store
         )
 
-        self.prompt_builder = prompt_builder or UnifiedHierarchicalPromptBuilder(
-            prompt_builder=base_pb,
-            model_manager=model_manager
+        # Initialize memory coordinator
+        self.memory_system = MemoryCoordinator(
+            corpus_manager=self.corpus_manager,
+            chroma_store=self.chroma_store,
+            hierarchical_memory=self.hierarchical_memory,
+            gate_system=MultiStageGateSystem(model_manager)
         )
 
 
-        # **Expose the MemoryCoordinator directly on the orchestrator**
-        self.memory_system = self.prompt_builder.memory_system
+
     def get_recent_conversation(self, n: int = 5):
+        """Get recent conversation history"""
         return self.memory_system.corpus_manager.get_recent_memories(count=n)
 
-    async def process_user_query(self,
-                                user_input: str,
-                                files: List[Any] = None,
-                                use_raw_mode: bool = False) -> Tuple[str, Dict]:
+    async def process_user_query(
+        self,
+        user_input: str,
+        files: List[Any] = None,
+        use_raw_mode: bool = False
+    ) -> Tuple[str, Dict]:
         """
         Main entry point for processing user queries.
         Returns: (response, debug_info)
@@ -71,24 +88,36 @@ class DaemonOrchestrator:
             if use_raw_mode:
                 prompt = combined_text
             else:
-                # Use prompt builder if available, otherwise just use the text
+                # Get current personality configuration
                 config = self.personality_manager.get_current_config()
 
-                if self.prompt_builder:
-                    recent = self.get_recent_conversation(n=5)
-                    prompt = await self.prompt_builder.build_hierarchical_prompt(
-                        user_input=combined_text,
-                        include_dreams=True,
-                        include_wiki=config.get("include_wiki", True),
-                        include_semantic=config.get("include_semantic_search", True),
-                        recent_conversations=recent,
-                        system_prompt=open(config["system_prompt_file"], "r").read(),
-                        directives_file=config["directives_file"]
-                    )
+                # Read system prompt from file
+                system_prompt = ""
+                if config.get("system_prompt_file"):
+                    try:
+                        with open(config["system_prompt_file"], "r") as f:
+                            system_prompt = f.read()
+                    except:
+                        logger.warning(f"Could not read system prompt file: {config['system_prompt_file']}")
 
-            # Ensure we have a model name
-            model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, 'get_active_model_name') else "gpt-4-turbo"
-            #instante vars
+                # Build prompt using simplified builder
+                prompt = await self.prompt_builder.build_prompt(
+                    user_input=combined_text,
+                    include_dreams=True,
+                    include_wiki=config.get("include_wiki", True),
+                    include_semantic=config.get("include_semantic_search", True),
+                    include_summaries=True,
+                    system_prompt=system_prompt,
+                    directives_file=config.get("directives_file", "structured_directives.txt"),
+                    personality_config=config
+                )
+
+            # Step 3: Generate response
+            model_name = self.model_manager.get_active_model_name()
+            if not model_name:
+                model_name = "gpt-4-turbo"
+                self.model_manager.switch_model(model_name)
+
             full_response = ""
             chunk_count = 0
 
@@ -96,11 +125,19 @@ class DaemonOrchestrator:
                 full_response += chunk + " "
                 chunk_count += 1
 
+            # Step 4: Store the interaction in memory
+            if not use_raw_mode:
+                await self.memory_system.store_interaction(
+                    query=user_input,
+                    response=full_response.strip(),
+                    tags=["conversation"]
+                )
+
             debug_info['response_length'] = len(full_response)
             debug_info['chunk_count'] = chunk_count
             debug_info['end_time'] = datetime.now()
             debug_info['duration'] = (debug_info['end_time'] - debug_info['start_time']).total_seconds()
-            debug_info['prompt'] = prompt
+            debug_info['prompt_length'] = len(prompt)
 
             return full_response.strip(), debug_info
 

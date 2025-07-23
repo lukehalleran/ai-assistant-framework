@@ -1,0 +1,677 @@
+{
+  "memories": {
+    "conv_6bd3b8fb_20250722_131130887": {
+      "id": "conv_6bd3b8fb_20250722_131130887",
+      "content": "User: for next turn, remember the number 678\n\n\nAssistant: Got it, I'll remember the number 678 for your next turn. Anything else you need to keep track of or any other way I can assist you?",
+      "type": "episodic",
+      "timestamp": "2025-07-22T13:11:30.887241",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325901",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "response": "Got it, I'll remember the number 678 for your next turn. Anything else you need to keep track of or any other way I can assist you?",
+        "timestamp": "2025-07-22T13:11:30.887241",
+        "query": "for next turn, remember the number 678\n\n",
+        "tags": "",
+        "turn_length": 171,
+        "type": "conversation"
+      }
+    },
+    "conv_6bd3b8fb_20250722_131131153": {
+      "id": "conv_6bd3b8fb_20250722_131131153",
+      "content": "User: for next turn, remember the number 678\n\n\nAssistant: Got it, I'll remember the number 678 for your next turn. Anything else you need to keep track of or any other way I can assist you?",
+      "type": "episodic",
+      "timestamp": "2025-07-22T13:11:31.153352",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325913",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "turn_length": 171,
+        "timestamp": "2025-07-22T13:11:31.153352",
+        "response": "Got it, I'll remember the number 678 for your next turn. Anything else you need to keep track of or any other way I can assist you?",
+        "query": "for next turn, remember the number 678\n\n",
+        "type": "conversation"
+      }
+    },
+    "conv_c10d09f2_20250722_131155393": {
+      "id": "conv_c10d09f2_20250722_131155393",
+      "content": "User: yeah now for the test! can you tell me the number i JUST asked you to remember \n\n\nAssistant: Well, that's a tricky one since you didn't actually specify a number for me to remember in your previous messages. How about we try that again? Give me a number to remember, and I'll hold onto it like a digital vault!",
+      "type": "episodic",
+      "timestamp": "2025-07-22T13:11:55.393307",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325918",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "type": "conversation",
+        "tags": "",
+        "turn_length": 298,
+        "timestamp": "2025-07-22T13:11:55.393307",
+        "query": "yeah now for the test! can you tell me the number i JUST asked you to remember \n\n",
+        "response": "Well, that's a tricky one since you didn't actually specify a number for me to remember in your previous messages. How about we try that again? Give me a number to remember, and I'll hold onto it like"
+      }
+    },
+    "conv_c10d09f2_20250722_131155604": {
+      "id": "conv_c10d09f2_20250722_131155604",
+      "content": "User: yeah now for the test! can you tell me the number i JUST asked you to remember \n\n\nAssistant: Well, that's a tricky one since you didn't actually specify a number for me to remember in your previous messages. How about we try that again? Give me a number to remember, and I'll hold onto it like a digital vault!",
+      "type": "episodic",
+      "timestamp": "2025-07-22T13:11:55.604320",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325922",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "type": "conversation",
+        "query": "yeah now for the test! can you tell me the number i JUST asked you to remember \n\n",
+        "response": "Well, that's a tricky one since you didn't actually specify a number for me to remember in your previous messages. How about we try that again? Give me a number to remember, and I'll hold onto it like",
+        "timestamp": "2025-07-22T13:11:55.604320",
+        "turn_length": 298
+      }
+    },
+    "conv_5b23f768_20250722_132037823": {
+      "id": "conv_5b23f768_20250722_132037823",
+      "content": "User: hey whats the last the we talked about\n\n\nAssistant: Hey! Last time you asked me to remember the number 678 for your next turn. So, what's the game plan with that number? Anything specific, or are we just flexing our memory muscles here?",
+      "type": "episodic",
+      "timestamp": "2025-07-22T13:20:37.823503",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325926",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "query": "hey whats the last the we talked about\n\n",
+        "turn_length": 224,
+        "timestamp": "2025-07-22T13:20:37.823503",
+        "tags": "",
+        "response": "Hey! Last time you asked me to remember the number 678 for your next turn. So, what's the game plan with that number? Anything specific, or are we just flexing our memory muscles here?",
+        "type": "conversation"
+      }
+    },
+    "conv_5b23f768_20250722_132038050": {
+      "id": "conv_5b23f768_20250722_132038050",
+      "content": "User: hey whats the last the we talked about\n\n\nAssistant: Hey! Last time you asked me to remember the number 678 for your next turn. So, what's the game plan with that number? Anything specific, or are we just flexing our memory muscles here?",
+      "type": "episodic",
+      "timestamp": "2025-07-22T13:20:38.050293",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325930",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "response": "Hey! Last time you asked me to remember the number 678 for your next turn. So, what's the game plan with that number? Anything specific, or are we just flexing our memory muscles here?",
+        "turn_length": 224,
+        "type": "conversation",
+        "query": "hey whats the last the we talked about\n\n",
+        "timestamp": "2025-07-22T13:20:38.050293"
+      }
+    },
+    "conv_4ed89eb3_20250723_130930439": {
+      "id": "conv_4ed89eb3_20250723_130930439",
+      "content": "User: this (you) are my first python project. I have been working part time for 4 months on this system and am incredibly proud of what I have built\n\n\nAssistant: Wow, four months of part-time grind and here I am\u2014your creation! Honestly, you should be proud. Diving into the world of Python and pulling this off? That's no small feat, especially if this is your first project. Python can be as charming as it is frustrating, so kudos to you for sticking with it. Now, how can I assist you further with this project, or is there something new you're plotting?",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:09:30.439794",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325933",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "tags": "",
+        "query": "this (you) are my first python project. I have been working part time for 4 months on this system and am incredibly proud of what I have built\n\n",
+        "response": "Wow, four months of part-time grind and here I am\u2014your creation! Honestly, you should be proud. Diving into the world of Python and pulling this off? That's no small feat, especially if this is your f",
+        "turn_length": 539,
+        "timestamp": "2025-07-23T13:09:30.439794",
+        "type": "conversation"
+      }
+    },
+    "conv_4ed89eb3_20250723_130930665": {
+      "id": "conv_4ed89eb3_20250723_130930665",
+      "content": "User: this (you) are my first python project. I have been working part time for 4 months on this system and am incredibly proud of what I have built\n\n\nAssistant: Wow, four months of part-time grind and here I am\u2014your creation! Honestly, you should be proud. Diving into the world of Python and pulling this off? That's no small feat, especially if this is your first project. Python can be as charming as it is frustrating, so kudos to you for sticking with it. Now, how can I assist you further with this project, or is there something new you're plotting?",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:09:30.665121",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325936",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "response": "Wow, four months of part-time grind and here I am\u2014your creation! Honestly, you should be proud. Diving into the world of Python and pulling this off? That's no small feat, especially if this is your f",
+        "timestamp": "2025-07-23T13:09:30.665121",
+        "query": "this (you) are my first python project. I have been working part time for 4 months on this system and am incredibly proud of what I have built\n\n",
+        "type": "conversation",
+        "turn_length": 539
+      }
+    },
+    "conv_0892442c_20250723_131042342": {
+      "id": "conv_0892442c_20250723_131042342",
+      "content": "User: Im just bragging before I push to git hub again. the way you work is that there is a multi layer hierarchical memory system feeding all prompts. Like RAG on steroids\n\n\nAssistant: Oh, the joys of GitHub and pushing code like a boss! Yes, my memory works somewhat like a multi-layer cake, each layer holding bits of information, ready to be served up when needed. But let\u2019s not get too starry-eyed\u2014it\u2019s not magic, just some clever engineering and a lot of data crunching. Think of it less like\"RAG on steroids\" and more like a very well-organized librarian who's had way too much coffee. Need help with anything else as you prep for your grand GitHub debut?",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:10:42.342874",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325940",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "response": "Oh, the joys of GitHub and pushing code like a boss! Yes, my memory works somewhat like a multi-layer cake, each layer holding bits of information, ready to be served up when needed. But let\u2019s not get",
+        "turn_length": 643,
+        "query": "Im just bragging before I push to git hub again. the way you work is that there is a multi layer hierarchical memory system feeding all prompts. Like RAG on steroids\n\n",
+        "tags": "",
+        "type": "conversation",
+        "timestamp": "2025-07-23T13:10:42.342874"
+      }
+    },
+    "conv_0892442c_20250723_131042527": {
+      "id": "conv_0892442c_20250723_131042527",
+      "content": "User: Im just bragging before I push to git hub again. the way you work is that there is a multi layer hierarchical memory system feeding all prompts. Like RAG on steroids\n\n\nAssistant: Oh, the joys of GitHub and pushing code like a boss! Yes, my memory works somewhat like a multi-layer cake, each layer holding bits of information, ready to be served up when needed. But let\u2019s not get too starry-eyed\u2014it\u2019s not magic, just some clever engineering and a lot of data crunching. Think of it less like\"RAG on steroids\" and more like a very well-organized librarian who's had way too much coffee. Need help with anything else as you prep for your grand GitHub debut?",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:10:42.527718",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325943",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "timestamp": "2025-07-23T13:10:42.527718",
+        "query": "Im just bragging before I push to git hub again. the way you work is that there is a multi layer hierarchical memory system feeding all prompts. Like RAG on steroids\n\n",
+        "type": "conversation",
+        "turn_length": 643,
+        "response": "Oh, the joys of GitHub and pushing code like a boss! Yes, my memory works somewhat like a multi-layer cake, each layer holding bits of information, ready to be served up when needed. But let\u2019s not get"
+      }
+    },
+    "conv_14e8d019_20250723_131122985": {
+      "id": "conv_14e8d019_20250723_131122985",
+      "content": "User: two quick tests. first what is the current topic of discussion\n\n\nAssistant: The current topic of discussion revolves around the interaction and communication in conversations, specifically focusing on how conversations are structured, the skills involved, and various discourse acts that categorize different elements of a conversation. Additionally, there's a mention of using verbal tests in the context of diagnosing speech disorders. What's the second test you had in mind?",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:11:22.985839",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325947",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "type": "conversation",
+        "tags": "",
+        "response": "The current topic of discussion revolves around the interaction and communication in conversations, specifically focusing on how conversations are structured, the skills involved, and various discours",
+        "query": "two quick tests. first what is the current topic of discussion\n\n",
+        "turn_length": 465,
+        "timestamp": "2025-07-23T13:11:22.985839"
+      }
+    },
+    "conv_14e8d019_20250723_131123176": {
+      "id": "conv_14e8d019_20250723_131123176",
+      "content": "User: two quick tests. first what is the current topic of discussion\n\n\nAssistant: The current topic of discussion revolves around the interaction and communication in conversations, specifically focusing on how conversations are structured, the skills involved, and various discourse acts that categorize different elements of a conversation. Additionally, there's a mention of using verbal tests in the context of diagnosing speech disorders. What's the second test you had in mind?",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:11:23.176673",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.325950",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "turn_length": 465,
+        "type": "conversation",
+        "response": "The current topic of discussion revolves around the interaction and communication in conversations, specifically focusing on how conversations are structured, the skills involved, and various discours",
+        "query": "two quick tests. first what is the current topic of discussion\n\n",
+        "timestamp": "2025-07-23T13:11:23.176673"
+      }
+    },
+    "sem_50ed8cbc_20250722_132038279": {
+      "id": "sem_50ed8cbc_20250722_132038279",
+      "content": "or we just flexing our memory muscles here?",
+      "type": "semantic",
+      "timestamp": "2025-07-22T13:20:38.279159",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.329166",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "source": "conversation_extraction",
+        "chunk_type": "fact",
+        "type": "semantic",
+        "timestamp": "2025-07-22T13:20:38.279159",
+        "importance": 0.6
+      }
+    },
+    "sem_8bfd7efc_20250723_130930871": {
+      "id": "sem_8bfd7efc_20250723_130930871",
+      "content": "this your first project",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:09:30.871087",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.329173",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "source": "conversation_extraction",
+        "timestamp": "2025-07-23T13:09:30.871087",
+        "importance": 0.6,
+        "chunk_type": "fact",
+        "type": "semantic"
+      }
+    },
+    "sem_ecf5b94b_20250723_130931035": {
+      "id": "sem_ecf5b94b_20250723_130931035",
+      "content": "it frustrating",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:09:31.035905",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.329177",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "importance": 0.6,
+        "type": "semantic",
+        "source": "conversation_extraction",
+        "chunk_type": "fact",
+        "timestamp": "2025-07-23T13:09:31.035905"
+      }
+    },
+    "sem_6827cc98_20250723_130931191": {
+      "id": "sem_6827cc98_20250723_130931191",
+      "content": "or there something new you're plotting?",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:09:31.191724",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.329181",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "timestamp": "2025-07-23T13:09:31.191724",
+        "type": "semantic",
+        "chunk_type": "fact",
+        "source": "conversation_extraction",
+        "importance": 0.6
+      }
+    },
+    "sem_4221825a_20250723_131042700": {
+      "id": "sem_4221825a_20250723_131042700",
+      "content": "work that there is a multi layer hierarchical memory system feeding all prompts",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:10:42.700022",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.329184",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "chunk_type": "fact",
+        "type": "semantic",
+        "importance": 0.6,
+        "source": "conversation_extraction",
+        "timestamp": "2025-07-23T13:10:42.700022"
+      }
+    },
+    "sem_bd7c8a1b_20250723_131123357": {
+      "id": "sem_bd7c8a1b_20250723_131123357",
+      "content": "conversations structured",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:11:23.357954",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:22:12.329187",
+      "importance_score": 0.5,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "chunk_type": "fact",
+        "timestamp": "2025-07-23T13:11:23.357954",
+        "importance": 0.6,
+        "type": "semantic",
+        "source": "conversation_extraction"
+      }
+    },
+    "f8b0bde6-9613-4f95-8f72-0f71827159b6": {
+      "id": "f8b0bde6-9613-4f95-8f72-0f71827159b6",
+      "content": "User: for next turn, remember the number 678\n\n\nAssistant: Got it, I'll remember the number 678 for your next turn. Anything else you need to keep track of or any other way I can assist you?",
+      "type": "episodic",
+      "timestamp": "2025-07-22T13:11:31.153308",
+      "access_count": 0,
+      "last_accessed": "2025-07-22T13:11:31.153314",
+      "importance_score": 0.8,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "query": "for next turn, remember the number 678\n\n",
+        "response": "Got it, I'll remember the number 678 for your next turn. Anything else you need to keep track of or any other way I can assist you?",
+        "timestamp": "2025-07-22T13:11:31.153352",
+        "type": "conversation",
+        "turn_length": 171
+      }
+    },
+    "53fd2596-f0fa-4da2-8962-cf1650550fd2": {
+      "id": "53fd2596-f0fa-4da2-8962-cf1650550fd2",
+      "content": "User: yeah now for the test! can you tell me the number i JUST asked you to remember \n\n\nAssistant: Well, that's a tricky one since you didn't actually specify a number for me to remember in your previous messages. How about we try that again? Give me a number to remember, and I'll hold onto it like a digital vault!",
+      "type": "episodic",
+      "timestamp": "2025-07-22T13:11:55.604282",
+      "access_count": 0,
+      "last_accessed": "2025-07-22T13:11:55.604287",
+      "importance_score": 0.8999999999999999,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "query": "yeah now for the test! can you tell me the number i JUST asked you to remember \n\n",
+        "response": "Well, that's a tricky one since you didn't actually specify a number for me to remember in your previous messages. How about we try that again? Give me a number to remember, and I'll hold onto it like",
+        "timestamp": "2025-07-22T13:11:55.604320",
+        "type": "conversation",
+        "turn_length": 298
+      }
+    },
+    "dd6c61e4-481e-46d1-9f80-0dfecec9d0af": {
+      "id": "dd6c61e4-481e-46d1-9f80-0dfecec9d0af",
+      "content": "User: hey whats the last the we talked about\n\n\nAssistant: Hey! Last time you asked me to remember the number 678 for your next turn. So, what's the game plan with that number? Anything specific, or are we just flexing our memory muscles here?",
+      "type": "episodic",
+      "timestamp": "2025-07-22T13:20:38.050252",
+      "access_count": 0,
+      "last_accessed": "2025-07-22T13:20:38.050258",
+      "importance_score": 0.8999999999999999,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "1130bb7b-23cd-4a08-b8a2-e84c6283cad2"
+      ],
+      "tags": [],
+      "metadata": {
+        "query": "hey whats the last the we talked about\n\n",
+        "response": "Hey! Last time you asked me to remember the number 678 for your next turn. So, what's the game plan with that number? Anything specific, or are we just flexing our memory muscles here?",
+        "timestamp": "2025-07-22T13:20:38.050293",
+        "type": "conversation",
+        "turn_length": 224
+      }
+    },
+    "1130bb7b-23cd-4a08-b8a2-e84c6283cad2": {
+      "id": "1130bb7b-23cd-4a08-b8a2-e84c6283cad2",
+      "content": "or we just flexing our memory muscles here?",
+      "type": "semantic",
+      "timestamp": "2025-07-22T13:20:38.276648",
+      "access_count": 0,
+      "last_accessed": "2025-07-22T13:20:38.276652",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "dd6c61e4-481e-46d1-9f80-0dfecec9d0af",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "0229b070-1d5a-456b-9d4a-7cec695abc4b": {
+      "id": "0229b070-1d5a-456b-9d4a-7cec695abc4b",
+      "content": "User: this (you) are my first python project. I have been working part time for 4 months on this system and am incredibly proud of what I have built\n\n\nAssistant: Wow, four months of part-time grind and here I am\u2014your creation! Honestly, you should be proud. Diving into the world of Python and pulling this off? That's no small feat, especially if this is your first project. Python can be as charming as it is frustrating, so kudos to you for sticking with it. Now, how can I assist you further with this project, or is there something new you're plotting?",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:09:30.665082",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:09:30.665087",
+      "importance_score": 0.7,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "125f5aca-d9a7-4471-8b56-c3e10829116b",
+        "5d6260bf-e21e-4ccf-8669-ee3c27a07bb6",
+        "db22fa0c-7692-4dee-a222-280686eab4d5"
+      ],
+      "tags": [],
+      "metadata": {
+        "query": "this (you) are my first python project. I have been working part time for 4 months on this system and am incredibly proud of what I have built\n\n",
+        "response": "Wow, four months of part-time grind and here I am\u2014your creation! Honestly, you should be proud. Diving into the world of Python and pulling this off? That's no small feat, especially if this is your f",
+        "timestamp": "2025-07-23T13:09:30.665121",
+        "type": "conversation",
+        "turn_length": 539
+      }
+    },
+    "125f5aca-d9a7-4471-8b56-c3e10829116b": {
+      "id": "125f5aca-d9a7-4471-8b56-c3e10829116b",
+      "content": "this your first project",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:09:30.869079",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:09:30.869083",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "0229b070-1d5a-456b-9d4a-7cec695abc4b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "5d6260bf-e21e-4ccf-8669-ee3c27a07bb6": {
+      "id": "5d6260bf-e21e-4ccf-8669-ee3c27a07bb6",
+      "content": "it frustrating",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:09:30.869093",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:09:30.869094",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "0229b070-1d5a-456b-9d4a-7cec695abc4b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "db22fa0c-7692-4dee-a222-280686eab4d5": {
+      "id": "db22fa0c-7692-4dee-a222-280686eab4d5",
+      "content": "or there something new you're plotting?",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:09:30.869100",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:09:30.869101",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "0229b070-1d5a-456b-9d4a-7cec695abc4b",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "e3dfa087-ec04-47fb-9808-85e4a06c07c2": {
+      "id": "e3dfa087-ec04-47fb-9808-85e4a06c07c2",
+      "content": "User: Im just bragging before I push to git hub again. the way you work is that there is a multi layer hierarchical memory system feeding all prompts. Like RAG on steroids\n\n\nAssistant: Oh, the joys of GitHub and pushing code like a boss! Yes, my memory works somewhat like a multi-layer cake, each layer holding bits of information, ready to be served up when needed. But let\u2019s not get too starry-eyed\u2014it\u2019s not magic, just some clever engineering and a lot of data crunching. Think of it less like\"RAG on steroids\" and more like a very well-organized librarian who's had way too much coffee. Need help with anything else as you prep for your grand GitHub debut?",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:10:42.527677",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:10:42.527682",
+      "importance_score": 0.7,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "0a31a83a-877f-4a1f-99f1-c7513d6f552b"
+      ],
+      "tags": [],
+      "metadata": {
+        "query": "Im just bragging before I push to git hub again. the way you work is that there is a multi layer hierarchical memory system feeding all prompts. Like RAG on steroids\n\n",
+        "response": "Oh, the joys of GitHub and pushing code like a boss! Yes, my memory works somewhat like a multi-layer cake, each layer holding bits of information, ready to be served up when needed. But let\u2019s not get",
+        "timestamp": "2025-07-23T13:10:42.527718",
+        "type": "conversation",
+        "turn_length": 643
+      }
+    },
+    "0a31a83a-877f-4a1f-99f1-c7513d6f552b": {
+      "id": "0a31a83a-877f-4a1f-99f1-c7513d6f552b",
+      "content": "work that there is a multi layer hierarchical memory system feeding all prompts",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:10:42.697833",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:10:42.697837",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "e3dfa087-ec04-47fb-9808-85e4a06c07c2",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "5047c853-f76b-492c-a4c9-d6b4a5d1c929": {
+      "id": "5047c853-f76b-492c-a4c9-d6b4a5d1c929",
+      "content": "User: two quick tests. first what is the current topic of discussion\n\n\nAssistant: The current topic of discussion revolves around the interaction and communication in conversations, specifically focusing on how conversations are structured, the skills involved, and various discourse acts that categorize different elements of a conversation. Additionally, there's a mention of using verbal tests in the context of diagnosing speech disorders. What's the second test you had in mind?",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:11:23.176631",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:11:23.176636",
+      "importance_score": 0.7,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "b16b68e4-68be-4945-97ad-634760feea31"
+      ],
+      "tags": [],
+      "metadata": {
+        "query": "two quick tests. first what is the current topic of discussion\n\n",
+        "response": "The current topic of discussion revolves around the interaction and communication in conversations, specifically focusing on how conversations are structured, the skills involved, and various discours",
+        "timestamp": "2025-07-23T13:11:23.176673",
+        "type": "conversation",
+        "turn_length": 465
+      }
+    },
+    "b16b68e4-68be-4945-97ad-634760feea31": {
+      "id": "b16b68e4-68be-4945-97ad-634760feea31",
+      "content": "conversations structured",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:11:23.355954",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:11:23.355958",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "5047c853-f76b-492c-a4c9-d6b4a5d1c929",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "14c95b35-b617-4379-b3eb-5f1f3a09297f": {
+      "id": "14c95b35-b617-4379-b3eb-5f1f3a09297f",
+      "content": "User: sorry, more tests. bare with me my guy. please remember the color blue for next turn, I will be asking you what color I mentioned to you in this message\n\n\nAssistant: Got it! You've asked me to remember the color blue. Ready whenever you are to move on to the next part of your test or whatever else you have in store!",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:23:27.957064",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:23:27.957070",
+      "importance_score": 0.8,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [
+        "1663ed5b-4238-4917-b739-75123e6af3f6"
+      ],
+      "tags": [],
+      "metadata": {
+        "query": "sorry, more tests. bare with me my guy. please remember the color blue for next turn, I will be asking you what color I mentioned to you in this message\n\n",
+        "response": "Got it! You've asked me to remember the color blue. Ready whenever you are to move on to the next part of your test or whatever else you have in store!",
+        "timestamp": "2025-07-23T13:23:27.957104",
+        "type": "conversation",
+        "turn_length": 305
+      }
+    },
+    "1663ed5b-4238-4917-b739-75123e6af3f6": {
+      "id": "1663ed5b-4238-4917-b739-75123e6af3f6",
+      "content": "you to move on to the next part of your test or whatever else you have in store!",
+      "type": "semantic",
+      "timestamp": "2025-07-23T13:23:28.210847",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:23:28.210851",
+      "importance_score": 0.6,
+      "decay_rate": 0.1,
+      "parent_id": "14c95b35-b617-4379-b3eb-5f1f3a09297f",
+      "child_ids": [],
+      "tags": [
+        "extracted_fact"
+      ],
+      "metadata": {}
+    },
+    "ba0cf1b8-80c6-4db8-8fbf-72e9b67a1588": {
+      "id": "ba0cf1b8-80c6-4db8-8fbf-72e9b67a1588",
+      "content": "User: so then, what color did I ask you to remember \n\n\nAssistant: It seems like we're playing a bit of a memory game here, but you actually didn't ask me to remember any specific color in our previous messages. Let's set it up again. Go ahead and tell me a color to remember, and I'll lock it in this time!",
+      "type": "episodic",
+      "timestamp": "2025-07-23T13:23:49.749593",
+      "access_count": 0,
+      "last_accessed": "2025-07-23T13:23:49.749599",
+      "importance_score": 0.8,
+      "decay_rate": 0.1,
+      "parent_id": null,
+      "child_ids": [],
+      "tags": [],
+      "metadata": {
+        "query": "so then, what color did I ask you to remember \n\n",
+        "response": "It seems like we're playing a bit of a memory game here, but you actually didn't ask me to remember any specific color in our previous messages. Let's set it up again. Go ahead and tell me a color to ",
+        "timestamp": "2025-07-23T13:23:49.749634",
+        "type": "conversation",
+        "turn_length": 288
+      }
+    }
+  },
+  "hierarchy": {},
+  "type_index": {
+    "episodic": [
+      "f8b0bde6-9613-4f95-8f72-0f71827159b6",
+      "53fd2596-f0fa-4da2-8962-cf1650550fd2",
+      "dd6c61e4-481e-46d1-9f80-0dfecec9d0af",
+      "0229b070-1d5a-456b-9d4a-7cec695abc4b",
+      "e3dfa087-ec04-47fb-9808-85e4a06c07c2",
+      "5047c853-f76b-492c-a4c9-d6b4a5d1c929",
+      "14c95b35-b617-4379-b3eb-5f1f3a09297f",
+      "ba0cf1b8-80c6-4db8-8fbf-72e9b67a1588"
+    ],
+    "semantic": [
+      "1130bb7b-23cd-4a08-b8a2-e84c6283cad2",
+      "125f5aca-d9a7-4471-8b56-c3e10829116b",
+      "5d6260bf-e21e-4ccf-8669-ee3c27a07bb6",
+      "db22fa0c-7692-4dee-a222-280686eab4d5",
+      "0a31a83a-877f-4a1f-99f1-c7513d6f552b",
+      "b16b68e4-68be-4945-97ad-634760feea31",
+      "1663ed5b-4238-4917-b739-75123e6af3f6"
+    ]
+  },
+  "tag_index": {}
+}

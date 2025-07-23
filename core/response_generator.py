@@ -32,6 +32,7 @@ class ResponseGenerator:
         try:
             if model_name:
                 self.model_manager.switch_model(model_name)
+                logger.info(f"[ModelManager] Active model set to: {self.model_manager.get_model()}")
 
             # Get the async generator
             response_generator = await self.model_manager.generate_async(prompt)

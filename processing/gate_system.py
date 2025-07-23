@@ -104,56 +104,66 @@ class MultiStageGateSystem:
 
     @log_and_time("Batch Cosine Gate Memories")
     async def batch_gate_memories(self, query: str, memories: List[Dict]) -> List[Dict]:
-        """Batch gate memories using cosine similarity"""
+        """Batch gate memories using cosine similarity, bypassing episodic"""
         if not memories:
             return []
 
         try:
-            # Encode query once
-            query_emb = self.embed_model.encode(query, convert_to_numpy=True)
+            episodic = []
+            to_gate = []
 
-            # Extract content and encode all memories at once
-            contents = [mem.get('content', '')[:500] for mem in memories[:50]]  # Limit to 50 for speed
+            # Separate episodic from others
+            for mem in memories:
+                if mem.get("metadata", {}).get("type") == "episodic":
+                    logger.debug(f"[Batch Gate] BYPASS for episodic memory: {mem.get('id', 'unknown')}")
+                    episodic.append(mem)
+                else:
+                    to_gate.append(mem)
+
+            logger.info(f"[Memory Filter] {len(episodic)} episodic memories bypassed gating")
+            logger.info(f"[Memory Filter] Starting batch cosine gating for {len(to_gate)} memories")
+
+            # Proceed with gating for the rest
+            if not to_gate:
+                return episodic  # nothing to gate
+
+            query_emb = self.embed_model.encode(query, convert_to_numpy=True)
+            contents = [mem.get('content', '')[:500] for mem in to_gate]
             memory_embs = self.embed_model.encode(contents, convert_to_numpy=True, batch_size=32)
 
-            # Calculate all cosine similarities at once
             similarities = cosine_similarity([query_emb], memory_embs)[0]
 
-            # Filter based on threshold
-            filtered_memories = []
-            for mem, sim in zip(memories[:50], similarities):
+            gated = []
+            for mem, sim in zip(to_gate, similarities):
                 if sim >= self.gate_system.cosine_threshold:
                     mem['relevance_score'] = float(sim)
                     mem['filtered_content'] = mem.get('content', '')[:300]
-                    filtered_memories.append(mem)
+                    gated.append(mem)
                 else:
                     logger.debug(f"[Batch Gate] Memory filtered out: score={sim:.3f}")
 
-            # Optional: Rerank using cross-encoder if available
-            if self.gate_system.use_reranking and len(filtered_memories) > 5:
-                pairs = [[query, mem.get('content', '')[:300]] for mem in filtered_memories]
+            # Reranking if needed
+            if self.gate_system.use_reranking and len(gated) > 5:
+                pairs = [[query, mem.get('content', '')[:300]] for mem in gated]
                 rerank_scores = self.gate_system.cross_encoder.predict(pairs)
-
-                for mem, score in zip(filtered_memories, rerank_scores):
+                for mem, score in zip(gated, rerank_scores):
                     mem['rerank_score'] = float(score)
-
-                # Sort by rerank score
-                filtered_memories = sorted(filtered_memories, key=lambda x: x.get('rerank_score', 0), reverse=True)
-                logger.debug(f"[Batch Gate] Reranked {len(filtered_memories)} memories")
+                gated = sorted(gated, key=lambda x: x.get('rerank_score', 0), reverse=True)
             else:
-                # Sort by cosine similarity
-                filtered_memories = sorted(filtered_memories, key=lambda x: x['relevance_score'], reverse=True)
+                gated = sorted(gated, key=lambda x: x['relevance_score'], reverse=True)
 
-            logger.debug(f"[Batch Gate] Kept {len(filtered_memories)} of {len(memories[:50])} memories")
-            return filtered_memories[:20]  # Return top 20
+            final = episodic + gated[:20 - len(episodic)]  # total cap of 20
+            logger.info(f"[Memory Filter] Gating complete: {len(final)}/{len(memories)} memories passed")
+            return final
 
         except Exception as e:
             logger.error(f"[Batch Gate Error] {e}")
-            # Fallback: return top memories with default score
+            # Fallback return
             for i, mem in enumerate(memories[:10]):
-                mem['relevance_score'] = 0.5 - (i * 0.05)  # Decreasing scores
+                mem['relevance_score'] = 0.5 - (i * 0.05)
                 mem['filtered_content'] = mem.get('content', '')[:300]
             return memories[:10]
+
 
     @log_and_time("Filter Memories")
     async def filter_memories(self, query: str, memories: List[Dict]) -> List[Dict]:

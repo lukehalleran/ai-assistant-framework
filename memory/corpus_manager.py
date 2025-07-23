@@ -35,6 +35,17 @@ class CorpusManager:
                 logger.error(f"Error loading corpus: {e}")
         return []
 
+    def clean_for_json(self, entry):
+        if isinstance(entry, dict):
+            return {k: self.clean_for_json(v) for k, v in entry.items()}
+        elif isinstance(entry, list):
+            return [self.clean_for_json(v) for v in entry]
+        elif isinstance(entry, datetime):
+            return entry.isoformat()
+        else:
+            return entry
+
+
     @log_and_time("Save Corpus")
     def save_corpus(self):
         """Save corpus to disk atomically"""
@@ -48,7 +59,7 @@ class CorpusManager:
                     if isinstance(entry_copy.get("timestamp"), datetime):
                         entry_copy["timestamp"] = entry_copy["timestamp"].isoformat()
                     data_to_save.append(entry_copy)
-                json.dump(data_to_save, f, indent=2)
+                json.dump(self.clean_for_json(data_to_save), f, indent=2)
             os.replace(tmp_file, self.corpus_file)
             logger.debug(f"Saved {len(self.corpus)} entries to corpus")
         except Exception as e:
@@ -101,7 +112,68 @@ class CorpusManager:
         non_summary = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
         return sorted(non_summary, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:count]
 
-    def get_summaries(self, count: int = 5) -> List[Dict]:
-        """Get summary nodes"""
+    def get_summaries(self, limit: int = 5) -> List[Dict]:
+        """Get summary nodes - returns full dict not just content"""
         summaries = [e for e in self.corpus if "@summary" in e.get("tags", [])]
-        return sorted(summaries, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:count]
+        # Sort by timestamp to get most recent summaries
+        sorted_summaries = sorted(
+            summaries,
+            key=lambda x: x.get('timestamp', datetime.min),
+            reverse=True
+        )[:limit]
+
+        # Return full dict for better integration
+        return sorted_summaries
+    def create_summary_now(self, entries_to_summarize: int = 20) -> Dict:
+        """
+        Manually trigger summary creation for the last N entries
+        Returns the created summary entry
+        """
+        real_entries = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
+
+        if len(real_entries) < entries_to_summarize:
+            entries_to_summarize = len(real_entries)
+
+        if entries_to_summarize == 0:
+            logger.warning("No entries to summarize")
+            return None
+
+        # Get the last N entries
+        entries = real_entries[-entries_to_summarize:]
+
+        # Create summary
+        summary_lines = []
+        for e in entries:
+            if e.get('response', '').strip():
+                q = e.get('query', '[no query]')[:50]
+                r = e.get('response', '')[:60]
+                timestamp = e.get('timestamp', datetime.now())
+
+                # Format timestamp if it's a datetime
+                if isinstance(timestamp, datetime):
+                    time_str = timestamp.strftime("%H:%M")
+                else:
+                    time_str = ""
+
+                summary_lines.append(f"[{time_str}] Q: {q}... → A: {r}...")
+
+        if summary_lines:
+            summary_entry = {
+                "query": "[SUMMARY NODE]",
+                "response": f"Summary of last {entries_to_summarize} exchanges:\n" + "\n".join(summary_lines),
+                "timestamp": datetime.now(),
+                "tags": ["@summary", f"covers_{entries_to_summarize}_entries"],
+                "metadata": {
+                    "start_time": entries[0].get('timestamp', datetime.now()),
+                    "end_time": entries[-1].get('timestamp', datetime.now()),
+                    "entry_count": entries_to_summarize
+                }
+            }
+
+            self.corpus.append(summary_entry)
+            self.save_corpus()
+            logger.info(f"Created summary covering {entries_to_summarize} entries")
+
+            return summary_entry
+
+        return None
