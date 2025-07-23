@@ -168,7 +168,6 @@ Key settings in `config.py`:
 Based on testing with Wikipedia dataset:
 - **Indexing Speed**: ~1,000 articles/minute (multi-threaded)
 - **Search Latency**: <100ms for semantic search
-- **Memory Usage**: ~4GB for 1M document index
 - **Model Switching**: <2s between local/API models
 
 ##  Future Enhancements
