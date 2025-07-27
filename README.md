@@ -218,5 +218,3 @@ context_sources = {
 ## License & Contact
 
 MIT License – Free for academic and commercial use.
-
-> "The best way to predict the future is to build it."
