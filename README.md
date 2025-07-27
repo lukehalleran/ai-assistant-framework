@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Framework](https://img.shields.io/badge/framework-custom-orange.svg)]()
-[![GPU](https://img.shields.io/badge/gpu-RTX_4090-green.svg)]()
+[![GPU](https://img.shields.io/badge/gpu-RTX_3060-green.svg)]()
 
 > Built from scratch over four months as my first Python project, demonstrating a deep understanding of AI systems architecture, memory management, and software engineering best practices.
 
