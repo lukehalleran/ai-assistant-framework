@@ -27,7 +27,8 @@ Month 2: Vector embeddings, ChromaDB, async programming
 Month 3: FAISS indexing, memory architecture, prompt engineering
 Month 4: Production hardening, testing suite, performance optimization, conversational flow
 ```
-## Screenshots ![Screenshot] (<img width="1919" height="1071" alt="2025-07-28_20-48" src="https://github.com/user-attachments/assets/eac216c2-b9be-4e5b-a799-cc0a41d80266" />
+## Screenshots 
+(<img width="1919" height="1071" alt="2025-07-28_20-48" src="https://github.com/user-attachments/assets/eac216c2-b9be-4e5b-a799-cc0a41d80266" />
 )
 This is assistant respoding to me on a fresh start up, demonstrating tone and memory peristence 
 ## Architecture Overview
