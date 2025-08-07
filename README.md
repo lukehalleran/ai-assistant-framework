@@ -1,228 +1,229 @@
-# AI Assistant Framework
+# Daemon: Memory-Augmented AI Assistant
 
-**A sophisticated Retrieval-Augmented Generation (RAG) system with semantic search, Wikipedia integration, and intelligent memory management**
+A production-grade conversational AI system with hierarchical memory, semantic search, and Wikipedia-scale knowledge retrieval - built from first principles in 4 months.
 
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![GPU](https://img.shields.io/badge/gpu-RTX_3060-green.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## Overview
+## Project Architect 
 
-This AI Assistant Framework is a production-ready conversational AI system that enhances language model responses through intelligent context retrieval and memory management. Built from scratch over 4 months, it demonstrates advanced software architecture and machine learning engineering principles.
+**Context**:  Former actuarial analyst (Mercer, 2022-2024) transitioning to MS Analytics at Georgia Tech. Started learning LLM Assisted Python Development in March 2025, built this system by July 2025.
 
-### Key Achievements
-- **Semantic Search Engine**: Custom-built vector search using FAISS with sub-second query times
-- **Memory System**: Dual-layer memory architecture with automatic summarization for long-term retention
-- **Scalable Data Pipeline**: Processes 50GB+ Wikipedia dumps with streaming XML parsing
-- **Multi-Model Support**: Seamless switching between local (HuggingFace) and cloud (OpenAI) models
-- **Security-First Design**: Built-in prompt injection protection and content filtering
+**Why This Matters**: This project demonstrates the ability to rapidly acquire complex technical skills and apply them to solve real problems. Rather than following tutorials, I architected a complete RAG system before discovering frameworks like LangChain existed - proving first-principles thinking and independent problem-solving ability.
 
-##  Architecture
+## Technical Achievement
 
+### What I Built
+- **Full RAG Pipeline**: Query → Memory Retrieval → Context Building → LLM Generation → Memory Storage
+- **Wikipedia-Scale Search**: Processed entire Wikipedia dump (6.5M+ articles), achieving sub-200ms retrieval
+- **Hierarchical Memory System**: Episodic, semantic, procedural, and meta-memory layers with automatic consolidation
+- **Production Infrastructure**: Async streaming, atomic persistence, comprehensive logging, error recovery
+
+### Learning Curve Conquered
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    User Interface                       │
-│                   (Gradio Web App)                      │
-└────────────────────┬────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│                    Core Pipeline                        │
-│ ┌─────────────┐ ┌──────────────┐ ┌───────────────┐    │
-│ │Topic Manager│ │Prompt Builder│ │ Time Manager  │     │
-│ └─────────────┘ └──────────────┘ └───────────────┘    │
-└────────────────────┬────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│                 Knowledge Sources                       │
-│ ┌─────────────┐ ┌──────────────┐ ┌───────────────┐    │
-│ │Wiki Manager │ │FAISS Search  │ │ Memory Store  │     │
-│ │(Wikipedia)  │ │(Semantic)    │ │ (ChromaDB)    │     │
-│ └─────────────┘ └──────────────┘ └───────────────┘    │
-└────────────────────┬────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│                    Model Layer                          │
-│ ┌─────────────────────┐ ┌─────────────────────────┐    │
-│ │   Local Models      │ │      API Models       │     │
-│ │  (HuggingFace)     │ │    (OpenAI GPT-4)    │     │
-│ └─────────────────────┘ └─────────────────────────┘    │
-└─────────────────────────────────────────────────────────┘
+Month 1: Python basics, API integration, file I/O
+Month 2: Vector embeddings, ChromaDB, async programming  
+Month 3: FAISS indexing, memory architecture, prompt engineering
+Month 4: Production hardening, testing suite, performance optimization, conversational flow
 ```
 
-##  Features
+## Architecture Overview
 
-###  Intelligent Information Retrieval
-- **Multi-Stage Filtering Pipeline**: 
-  - Initial broad search (n=100) to cast a wide net
-  - Cosine similarity threshold filtering to remove low-relevance results
-  - Semantic search on filtered candidates for intent matching
-  - Final reranking done by call to local LLM model to optimize context order
-- **Semantic Search**: Uses sentence transformers to understand query intent, not just keywords
-- **Dynamic Context Building**: Automatically selects the most relevant information for each query
-- **Wikipedia Integration**: Access to millions of articles with intelligent chunking and indexing
-- **Section-Aware Processing**: Maintains Wikipedia article structure during chunking
-- **Temporal Awareness**: Built-in time and date handling for context-aware responses
-
-###  Advanced Memory Management
-- **Short-term Memory**: Maintains conversation context for coherent multi-turn interactions
-- **Long-term Memory**: Automatically summarizes conversations every 20 interactions
-- **Vector Storage**: ChromaDB integration for persistent, searchable memory
-- **Memory Prioritization**: Intelligent selection of which memories to retain based on relevance
-- **Cross-Session Persistence**: Memories survive between sessions for continuity
-
-###  Performance & Scalability
-- **Streaming Processing**: Handles 50GB+ datasets without memory overflow
-- **Multi-threaded Extraction**: Parallel processing for faster indexing
-- **Memory-mapped Embeddings**: Efficient loading of large vector databases
-- **IVF Indexing**: Scales to millions of documents while maintaining fast search
-- **Batch Processing**: Optimized embedding generation for large document sets
-
-###  Security & Reliability
-- **Prompt Injection Protection**: Multi-layer input sanitization to prevent manipulation
-- **Multi-Language Pattern Detection**: Security filters work across languages to catch injection attempts
-- **Content Sanitization**: Automatic redaction of suspicious content
-- **Harm Prevention**: Safety checks and content filtering for user protection
-- **Atomic Operations**: Ensures data integrity during writes
-- **Comprehensive Logging**: Detailed activity logs for debugging and monitoring
-- **Audit Logging**: Tracks flagged content and security events for review
-- **Error Recovery**: Graceful handling of API failures and system errors
-
-###  Dynamic Personality System
-- **Multiple Personalities**: Built-in personalities including default, therapy, and snarky modes
-- **Configurable Behaviors**: Each personality has different:
-  - Memory access patterns
-  - Wikipedia usage preferences
-  - Response styles and tones
-- **Hot-Swappable**: Change personalities at runtime via UI without restarting
-- **Custom Personality Creation**: Framework supports adding new personalities
-
-###  User Experience
-- **Responsive Web Interface**: Gradio UI that works seamlessly on desktop and mobile
-- **Real-time Response Streaming**: Immediate feedback with token-by-token generation
-
-##  Getting Started
-
-### Prerequisites
-- Python 3.8+
-- CUDA-capable GPU (recommended for local models)
-- 50GB+ disk space (for full Wikipedia processing)
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/lukehalleran/ai-assistant-framework
-cd ai-assistant-framework
-
-# Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-python -m spacy download en_core_web_sm
-
-# Set up environment variables
-export OPENAI_API_KEY="your-api-key-here"  # Optional: for GPT-4 support
+```
+User Query
+    ↓
+┌─────────────────────────────────────────┐
+│         ORCHESTRATOR                     │
+│  • Topic extraction (spaCy NER)         │
+│  • Query routing & planning             │
+└─────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────┐
+│      MEMORY COORDINATOR                  │
+│  • ChromaDB collections (5 types)       │
+│  • Hierarchical memory trees            │
+│  • Temporal decay & importance scoring  │
+└─────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────┐
+│      MULTI-STAGE GATE SYSTEM            │
+│  1. FAISS semantic search (top 50)      │
+│  2. Cosine similarity filter (θ=0.45)   │
+│  3. Cross-encoder reranking (MS-MARCO)  │
+└─────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────┐
+│      PROMPT BUILDER                      │
+│  • Token budget management (4096)       │
+│  • Context prioritization               │
+│  • Dynamic personality injection        │
+└─────────────────────────────────────────┘
+    ↓
+Response Generation (GPT-4/Claude/Local Models Once RTX 4090 Aquired)
 ```
 
-### Quick Start
+## Key Innovations
 
-1. **Run with sample data (recommended for first-time users)**
-   ```bash
-   python unified_pipeline.py --extracted sample_data.xml --test --semantic
-   ```
-
-2. **Launch the web interface**
-   ```bash
-   python gui.py
-   ```
-   Access at: http://localhost:7860
-
-3. **Or use the command-line interface**
-   ```bash
-   python runtime.py
-   ```
-
-### Full Wikipedia Processing
-
-For the complete knowledge base:
-```bash
-python unified_pipeline.py --download --semantic --chunk-size 1000
+### 1. Memory Architecture
+```python
+# Actual code from the project
+class HierarchicalMemorySystem:
+    def __init__(self):
+        self.memories = {}  # id -> MemoryNode
+        self.hierarchy = defaultdict(list)  # parent -> children
+        self.type_index = defaultdict(list)  # MemoryType -> ids
+        
+    async def retrieve_relevant_memories(self, query, max_memories=10):
+        # 1. Search all ChromaDB collections
+        # 2. Apply temporal decay: 1.0 / (1.0 + decay_rate * age_days)
+        # 3. Boost by importance and access recency
+        # 4. Return top memories after scoring
 ```
-*Note: This downloads and processes the entire Wikipedia dump (~50GB)*
 
-## 🔧 Configuration
+**Why This Matters**: Most RAG systems treat memory as flat storage. This implements cognitive-inspired hierarchical organization with parent-child relationships and automatic summarization.
 
-Key settings in `config.py`:
+### 2. Iterative Pipeline Development
+- **Version 1**: Successfully processed entire Wikipedia dump (~6.5M articles) with basic chunking
+- **Problem Discovered**: Basic 500-char chunks lost semantic coherence and article structure
+- **Version 2**: Built semantic chunking system that:
+  - Preserves Wikipedia section hierarchy
+  - Maintains semantic boundaries (paragraphs, sections)
+  - Implements sliding window overlap for context preservation
+  - Streams 50GB+ XML without memory overflow
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| `DEFAULT_MODEL` | Primary language model | `gpt-3.5-turbo` |
-| `CONFIDENCE_THRESHOLD` | Semantic search sensitivity | `0.7` |
-| `CHUNK_SIZE` | Text chunk size for embeddings | `1000` |
-| `DEBUG_MODE` | Enable detailed logging | `False` |
-| `SEMANTIC_ONLY_MODE` | Disable memory/wiki features | `False` |
+```python
+# Evolution from basic to semantic chunking
+# V1: Simple splitting (worked but suboptimal)
+chunks = text[i:i+500] for i in range(0, len(text), 500)
 
-##  Performance Metrics
+# V2: Semantic-aware chunking (current)
+sections = parse_wiki_sections(article)
+for section in sections:
+    chunks = semantic_chunk_with_overlap(
+        section, 
+        chunk_size=1000,
+        overlap=200,
+        respect_boundaries=True
+    )
+```
 
-Based on testing with Wikipedia dataset:
-- **Indexing Speed**: ~1,000 articles/minute (multi-threaded)
-- **Search Latency**: <100ms for semantic search
-- **Model Switching**: <2s between local/API models
+**Learning Moment**: Discovered through testing that retrieval quality depends more on chunk semantics than raw coverage. Rebuilt the entire pipeline to fix this.
 
-##  Future Enhancements
+### 3. Intelligent Gating System
+Instead of passing all retrieved context to the LLM (expensive and noisy), I implemented a multi-stage filter:
+```python
+Stage 1: FAISS retrieves 50 candidates (broad net)
+Stage 2: Cosine similarity filters to ~20 (relevance threshold)
+Stage 3: Cross-encoder reranks to final 10 (semantic understanding)
+Stage 4: LLM evalaues both query and final 10 to determine relenvt data to pass to final LLM call (planned)
+```
 
-- [ ] Multi-language support
-- [ ] Real-time web search integration
-- [ ] Voice input/output capabilities
-- [ ] Custom knowledge base uploading
-- [ ] Distributed processing support
+## Performance Metrics (Verified with Comprehensive Logging)
+
+| Operation | Latency | Scale/Notes |
+|-----------|---------|-------------|
+| Memory Retrieval | ~100-200ms | ChromaDB + FAISS hybrid search |
+| Context Building | ~200ms | Multi-stage filtering pipeline |
+| Response Generation | 2-3s | Streaming to UI with GPT-4 |
+| Memory Consolidation | ~500ms | Automatic every 20 conversations |
+| Wikipedia Processing | ~1000 articles/min | Full dump processed (6.5M articles) |
+| Semantic Chunking | ~50 articles/sec | With overlap and structure preservation |
+
+## Code Quality & Engineering
+
+### Testing Coverage (In progress, testing has been ad-hoc so far)
+- Unit tests for all core components 
+- Integration tests for full pipeline
+- Memory leak detection and monitoring
+- Async operation verification
+
+### Production Features
+- **Atomic Operations**: Prevents data corruption during crashes
+- **Graceful Degradation**: Falls back when services unavailable  
+- **Comprehensive Logging**: Every operation tracked for debugging
+- **Resource Management**: Automatic GPU memory clearing, connection pooling
+
+## Real-World Application
+
+This system has been actively developed and tested:
+- **Wikipedia Processing**: Successfully processed entire Wikipedia dump (6.5M+ articles)
+- **Iterative Improvement**: Rebuilt chunking pipeline after discovering semantic issues
+- **Active Development**: Running on RTX 3060, handling real conversations
+- **Multiple Personalities**: Configurable modes (default, therapy, analytical) which access memories differently, and can be given access to different data sources
+- **File Support**: Processes PDF, DOCX, CSV inputs
+
+**Current Status**: Preparing to re-process Wikipedia with improved semantic chunking for better retrieval quality.
+
+## What This Demonstrates
+
+### For Technical Roles
+- **System Design**: Clean separation of concerns, modular architecture
+- **ML Engineering**: Practical implementation of embeddings, vector search, RAG
+- **Problem Solving**: Novel solutions like hierarchical memory and dream generation
+- **Learning Velocity**: 0 to near production system in 4 months
+
+### For Recruiters
+- **Self-Directed Learning**: No formal CS background, learned through building
+- **First-Principles Thinking**: Solved problems before discovering existing solutions
+- **Production Mindset**: Built for reliability, not just functionality
+- **Documentation**: Clear code, comprehensive logging, maintainable structure
+
+## Technical Deep Dive
+
+### Memory Types & Processing
+```python
+MemoryType.EPISODIC    # Raw conversations
+MemoryType.SEMANTIC    # Extracted facts
+MemoryType.PROCEDURAL  # Learned patterns
+MemoryType.SUMMARY     # Compressed episodes
+MemoryType.META        # Patterns about patterns
+```
+
+### Token Budget Management
+The system intelligently allocates limited context window (4096 tokens):
+1. Recent conversation: 40% 
+2. Relevant memories: 30%
+3. Wikipedia context: 20%
+4. Summaries: 10%
+
+## Future Enhancements (Roadmap)
+
+- [ ] Multimodal support (images, audio)
+- [ ] Real-time web search integration  
+- [ ] Distributed processing across multiple GPUs
 - [ ] Fine-tuning pipeline for domain adaptation
+- [ ] Reinforcement learning from conversation feedback via post processing modfication of "truth scalar" meta data
 
-##  Contributing
+## Installation & Usage
 
-While this is primarily a portfolio project, feedback and suggestions are welcome! Feel free to:
-- Open issues for bugs or feature requests
-- Submit pull requests for improvements
-- Share your use cases and experiences
+```bash
+# Clone and setup
+git clone https://github.com/lukehalleran/daemon-ai
+cd daemon-ai
+pip install -r requirements.txt
 
-## Use Cases
+# For full Wikipedia (optional, 50GB download)
+python unified_pipeline.py --download --semantic
 
-This framework has been designed for:
-- **Research Assistants**: Quickly find and synthesize information
-- **Educational Tools**: Interactive learning with persistent memory
-- **Customer Support**: Knowledge-base powered support systems
-- **Content Generation**: Context-aware writing assistance
-- **Data Analysis**: Natural language queries over structured data
-
-##  Technical Highlights
-
-For recruiters and technical evaluators, this project demonstrates:
-
-- **System Design**: Clean architecture with separation of concerns
-- **ML Engineering**: Practical implementation of embeddings, vector search, and RAG
-- **Data Engineering**: Efficient processing of large-scale datasets
-- **Software Engineering**: Modular, extensible codebase with proper abstractions
-- **Problem Solving**: Novel solutions for memory management and context building
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+# Launch web interface
+python main.py
+# Access at http://localhost:7860
+```
 
 ## Acknowledgments
 
-- [HuggingFace](https://huggingface.co/) for transformer models and libraries
-- [Meta/Facebook](https://github.com/facebookresearch/faiss) for the FAISS vector search library
-- [OpenAI](https://openai.com/) for GPT API access
-- [Wikipedia](https://www.wikipedia.org/) for open knowledge dumps
+This project was built through extensive experimentation and learning primarily via LLM
 
-##  Contact
+
+## Contact
 
 **Luke Halleran**
+- MS Analytics Student @ Georgia Tech (Starting Jan 2026)
+- Former Actuarial Analyst @ Mercer
 - GitHub: [@lukehalleran](https://github.com/lukehalleran)
-- Email: [lukehalleran@gmail.com](mailto:lukehalleran@gmail.com)
-- LinkedIn: [luke-halleran-a7605088/]
+- LinkedIn: [luke-halleran](https://linkedin.com/in/luke-halleran-a7605088/)
+- Email: lukehalleran@gmail.com
 
 ---
 
-*Built with passion for AI and a commitment to continuous learning. This project represents 4 months of part self-study and implementation, showcasing the transition from AI enthusiast to capable ML engineer.*
