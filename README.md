@@ -6,6 +6,10 @@ A near production-grade conversational AI system with hierarchical memory, seman
 [![GPU](https://img.shields.io/badge/gpu-RTX_3060-green.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
+## Screenshots 
+<img width="1919" height="1071" alt="2025-07-28_20-48" src="https://github.com/user-attachments/assets/eac216c2-b9be-4e5b-a799-cc0a41d80266" />
+
+This is assistant respoding to me on a fresh start up, demonstrating tone and memory peristence
 ## Project Architect 
 
 **Context**:  Former actuarial analyst (Mercer, 2022-2024) transitioning to MS Analytics at Georgia Tech. Started learning LLM Assisted Python Development in March 2025, built this system by July 2025.
@@ -28,11 +32,9 @@ Month 3: FAISS indexing, memory architecture, prompt engineering
 Month 4: Production hardening, testing suite, performance optimization, conversational flow
 ## Major Iterations
 ``
-## Screenshots 
-(<img width="1919" height="1071" alt="2025-07-28_20-48" src="https://github.com/user-attachments/assets/eac216c2-b9be-4e5b-a799-cc0a41d80266" />
-)
-This is assistant respoding to me on a fresh start up, demonstrating tone and memory peristence 
-## Architecture OvervieMajor Iterations
+
+
+### Major Iterations
 Semantic Chunking Discovery
 
 Started with simple 500-character splits (worked but suboptimal)
