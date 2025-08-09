@@ -35,56 +35,55 @@ Month 4: Production hardening, testing suite, performance optimization, conversa
 
 
 ### Major Iterations
-Semantic Chunking Discovery
 
-Started with simple 500-character splits (worked but suboptimal)
-Retrieval quality was poor despite having all the data
-Rebuilt pipeline to respect semantic boundaries - massive improvement
-Lesson: How you chunk matters more than how much you store
+#### Semantic Chunking Discovery
+- Started with simple 500-character splits (worked but suboptimal)  
+- Retrieval quality was poor despite having all the data  
+- Rebuilt pipeline to respect semantic boundaries — massive improvement  
+- **Lesson:** How you chunk matters more than how much you store  
 
-Memory Architecture Evolution
+#### Memory Architecture Evolution
+- **V1:** Flat storage in JSON (worked for <100 conversations)  
+- **V2:** ChromaDB for persistence (better but no relationships)  
+- **V3:** Hierarchical system with parent-child relationships (current)  
+- Added temporal decay after realizing not all memories are equally important  
 
-V1: Flat storage in JSON (worked for <100 conversations)
-V2: ChromaDB for persistence (better but no relationships)
-V3: Hierarchical system with parent-child relationships (current)
-Added temporal decay after realizing not all memories are equally important
+#### Performance Optimization Journey
+- **Initial:** LLM-based gating (2–3 seconds per query)  
+- **Optimized:** Cosine similarity pre-filtering (~200 ms)  
+- **Final:** Multi-stage pipeline with cross-encoder (best of both worlds)  
 
-Performance Optimization Journey
-
-Initial: LLM-based gating (2-3 seconds per query)
-Optimized: Cosine similarity pre-filtering (200ms)
-Final: Multi-stage pipeline with cross-encoder (best of both worlds)
 ```
 User Query
     ↓
 ┌─────────────────────────────────────────┐
-│         ORCHESTRATOR                     │
+│         ORCHESTRATOR                    │
 │  • Topic extraction (spaCy NER)         │
-│  • Query routing & planning             │
+│  • Query routing & planning              │
 └─────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────┐
 │      MEMORY COORDINATOR                  │
-│  • ChromaDB collections (5 types)       │
-│  • Hierarchical memory trees            │
-│  • Temporal decay & importance scoring  │
+│  • ChromaDB collections (5 types)        │
+│  • Hierarchical memory trees              │
+│  • Temporal decay & importance scoring    │
 └─────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────┐
-│      MULTI-STAGE GATE SYSTEM            │
-│  1. FAISS semantic search (top 50)      │
-│  2. Cosine similarity filter (θ=0.45)   │
-│  3. Cross-encoder reranking (MS-MARCO)  │
+│      MULTI-STAGE GATE SYSTEM             │
+│  1. FAISS semantic search (top 50)       │
+│  2. Cosine similarity filter (θ=0.45)    │
+│  3. Cross-encoder reranking (MS-MARCO)   │
 └─────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────┐
 │      PROMPT BUILDER                      │
-│  • Token budget management (4096)       │
-│  • Context prioritization               │
-│  • Dynamic personality injection        │
+│  • Token budget management (4096)        │
+│  • Context prioritization                 │
+│  • Dynamic personality injection          │
 └─────────────────────────────────────────┘
     ↓
-Response Generation (GPT-4/Claude/Local Models Once RTX 4090 Aquired)
+Response Generation (GPT-4 / Claude / Local Models Once RTX 4090 Acquired)
 ```
 
 ## Key Innovations
