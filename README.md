@@ -1,6 +1,6 @@
 # Daemon: Memory-Augmented AI Assistant
 
-A near production-grade conversational AI system with hierarchical memory, semantic search, and Wikipedia-scale knowledge retrieval - built from first principles in 4 months.
+A near production-grade conversational AI system with hierarchical memory, semantic search, and Wikipedia-scale knowledge retrieval - **built from first principles in 4 months**.
 
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![GPU](https://img.shields.io/badge/gpu-RTX_3060-green.svg)]()
@@ -26,13 +26,32 @@ Month 1: Python basics, API integration, file I/O
 Month 2: Vector embeddings, ChromaDB, async programming  
 Month 3: FAISS indexing, memory architecture, prompt engineering
 Month 4: Production hardening, testing suite, performance optimization, conversational flow
-```
+## Major Iterations
+``
 ## Screenshots 
 (<img width="1919" height="1071" alt="2025-07-28_20-48" src="https://github.com/user-attachments/assets/eac216c2-b9be-4e5b-a799-cc0a41d80266" />
 )
 This is assistant respoding to me on a fresh start up, demonstrating tone and memory peristence 
-## Architecture Overview
+## Architecture OvervieMajor Iterations
+Semantic Chunking Discovery
 
+Started with simple 500-character splits (worked but suboptimal)
+Retrieval quality was poor despite having all the data
+Rebuilt pipeline to respect semantic boundaries - massive improvement
+Lesson: How you chunk matters more than how much you store
+
+Memory Architecture Evolution
+
+V1: Flat storage in JSON (worked for <100 conversations)
+V2: ChromaDB for persistence (better but no relationships)
+V3: Hierarchical system with parent-child relationships (current)
+Added temporal decay after realizing not all memories are equally important
+
+Performance Optimization Journey
+
+Initial: LLM-based gating (2-3 seconds per query)
+Optimized: Cosine similarity pre-filtering (200ms)
+Final: Multi-stage pipeline with cross-encoder (best of both worlds)
 ```
 User Query
     ↓
