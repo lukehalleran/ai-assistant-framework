@@ -25,7 +25,7 @@ This is assistant respoding to me on a fresh start up, demonstrating tone and me
 - **Production Infrastructure**: Async streaming, atomic persistence, comprehensive logging, error recovery
 
 ### Learning Curve Conquered
-```
+
 Month 1: Python basics, API integration, file I/O
 Month 2: Vector embeddings, ChromaDB, async programming  
 Month 3: FAISS indexing, memory architecture, prompt engineering
