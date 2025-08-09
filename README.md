@@ -50,7 +50,7 @@ Month 4: Production hardening, testing suite, performance optimization, conversa
 - **Optimized:** Cosine similarity pre-filtering (~200 ms)  
 - **Final:** Multi-stage pipeline with cross-encoder (best of both worlds)  
 
-```text
+text
 User Query
     ↓
 ┌─────────────────────────────────────────┐
@@ -81,7 +81,7 @@ User Query
 └─────────────────────────────────────────┘
     ↓
 Response Generation (GPT-4 / Claude / Local Models Once RTX 4090 Acquired)
-```
+
 
 ## Key Innovations
 
