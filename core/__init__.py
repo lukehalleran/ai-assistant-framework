@@ -1,25 +1,34 @@
-# daemon_7_11_25_refactor/core/__init__.py
+# core/__init__.py
 """
-Core module for the Daemon AI Assistant
+Core module initialization - controls import order to prevent circular dependencies
+
+Import order:
+1. Dependencies and configs
+2. Base classes and interfaces
+3. Implementations
+4. High-level orchestrators
 """
 
-from .orchestrator import DaemonOrchestrator
-from .response_generator import ResponseGenerator
+# These get imported first (no dependencies on other core modules)
+from .dependencies import deps
 
+# Import order matters - least dependent to most dependent
 __all__ = [
-    'DaemonOrchestrator',
+    'deps',
     'ResponseGenerator',
+    'DaemonOrchestrator',
+    'UnifiedPromptBuilder'
 ]
 
-# Optional imports that may not be ready yet
-try:
-    from .prompt_builder import UnifiedHierarchicalPromptBuilder
-    __all__.append('UnifiedHierarchicalPromptBuilder')
-except ImportError:
-    pass
+# Lazy imports to prevent circular dependencies
+def get_orchestrator_class():
+    from .orchestrator import DaemonOrchestrator
+    return DaemonOrchestrator
 
-try:
-    from .query_processor import QueryProcessor
-    __all__.append('QueryProcessor')
-except ImportError:
-    pass
+def get_prompt_builder_class():
+    from .prompt_builder_v2 import UnifiedPromptBuilder
+    return UnifiedPromptBuilder
+
+def get_response_generator_class():
+    from .response_generator import ResponseGenerator
+    return ResponseGenerator
