@@ -1,131 +1,265 @@
+# memory/storage/multi_collection_chroma_store.py (replace existing content)
 import chromadb
-from chromadb.config import Settings
-import hashlib
-from datetime import datetime
-import json
-from typing import List, Dict, Optional
-from sentence_transformers import SentenceTransformer
+from typing import List, Dict, Any, Optional
 import logging
-from threading import Lock
-
+from datetime import datetime
+import hashlib
+import json
+import uuid
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+from chromadb.utils import embedding_functions
+import os
 logger = logging.getLogger(__name__)
+
+
+def _flatten_for_chroma(md: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Ensure all metadata values are primitives that Chroma accepts."""
+    flat = {}
+    for k, v in (md or {}).items():
+        if isinstance(v, (str, int, float, bool)):
+            flat[k] = v
+        elif v is None:
+            continue
+        elif isinstance(v, (list, tuple, set)):
+            flat[k] = ",".join(map(str, v))
+        else:
+            # dicts or custom objects -> JSON string
+            try:
+                flat[k] = json.dumps(v, ensure_ascii=False)
+            except Exception:
+                flat[k] = str(v)
+    return flat
 
 class MultiCollectionChromaStore:
     """ChromaDB store with separate collections for different memory types"""
 
-    COLLECTIONS = {
-        'conversations': {
-            'name': 'conversation-memory',
-            'description': 'User-assistant conversation history',
-            'embedding_model': 'all-MiniLM-L6-v2'
-        },
-        'wiki': {
-            'name': 'wiki-knowledge',
-            'description': 'Wikipedia article chunks',
-            'embedding_model': 'all-MiniLM-L6-v2'
-        },
-        'semantic': {
-            'name': 'semantic-chunks',
-            'description': 'Semantically chunked long-form content',
-            'embedding_model': 'all-MiniLM-L6-v2'
-        },
-        'summaries': {
-            'name': 'conversation-summaries',
-            'description': 'Periodic summaries of conversations',
-            'embedding_model': 'all-MiniLM-L6-v2'
-        },
-        'facts': {
-            'name': 'extracted-facts',
-            'description': 'Important facts and information extracted from conversations',
-            'embedding_model': 'all-MiniLM-L6-v2'
-        }
-    }
-
     def __init__(self, persist_directory: str = "data/chroma_multi"):
         self.persist_directory = persist_directory
-        self.client = chromadb.PersistentClient(
-            path=persist_directory,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
-            )
+        self.client = chromadb.PersistentClient(path=persist_directory)
+        model_name = os.getenv("CHROMA_ST_MODEL", "all-MiniLM-L6-v2")
+        device = "cpu"  # or "cuda" if you want
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=model_name, device=device
+        )
+        self.client = chromadb.PersistentClient(path=persist_directory)
+
+        # Single, shared embedder for this store instance
+        model_name = os.getenv("CHROMA_ST_MODEL", "all-MiniLM-L6-v2")
+        device = os.getenv("CHROMA_DEVICE", "cpu")  # set to "cuda" if desired
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=model_name, device=device
         )
 
-        self.embedders = {}
-        self.collections = {}
-        self.embedder_lock = Lock()
+        # Keep your existing dict of collections (None placeholders are fine)
+        self.collections = {
+            'conversations': None,
+            'summaries': None,
+            'wiki_knowledge': None,
+            'facts': None,
+            'reflections': None,
+        }
 
         self._initialize_collections()
-        logger.debug(f"[CHROMA INIT] Available collections: {list(self.collections.keys())}")
 
+
+
+    def _collection_embedder_name(self, coll) -> str:
+        """
+        Best-effort peek at the embedder name Chroma stored for a collection.
+        Some versions expose it on the collection metadata; if not, return 'unknown'.
+        """
+        try:
+            # Chroma 0.4/0.5 stores this in 'metadata' -> 'embedding_function'
+            md = getattr(coll, "metadata", None) or {}
+            name = md.get("embedding_function") or md.get("embedding_function_name")
+            if name:
+                return str(name)
+        except Exception:
+            pass
+        # Fallback: try the client API list for a match
+        try:
+            for c in self.client.list_collections():
+                if getattr(c, "name", None) == getattr(coll, "name", None):
+                    md = getattr(c, "metadata", None) or {}
+                    name = md.get("embedding_function") or md.get("embedding_function_name")
+                    if name:
+                        return str(name)
+        except Exception:
+            pass
+        return "unknown"
     def _initialize_collections(self):
-        for key, config in self.COLLECTIONS.items():
+        """Initialize/open collections; if embedder mismatches, delete & recreate."""
+        logger.info(f"[Chroma] Using persistent dir: {self.persist_directory}")
+
+        def _create(name: str):
+            self.collections[name] = self.client.get_or_create_collection(
+                name=name, embedding_function=self.embedding_fn
+            )
+            logger.debug(f"[Chroma] Initialized collection: {name}")
+
+        for name in self.collections.keys():
             try:
-                collection = self.client.get_collection(config['name'])
-                logger.info(f"Loaded existing collection: {config['name']} ({collection.count()} documents)")
-            except:
-                collection = self.client.create_collection(
-                    name=config['name'],
-                    metadata={
-                        "description": config['description'],
-                        "embedding_model": config['embedding_model'],
-                        "created_at": datetime.now().isoformat()
-                    }
-                )
-                logger.info(f"Created new collection: {config['name']}")
+                # Happy path: create/open with our embedder
+                _create(name)
+            except ValueError as e:
+                msg = str(e)
+                if "Embedding function name mismatch" not in msg:
+                    logger.error(f"[Chroma] Failed to init '{name}': {e}")
+                    raise
 
-            self.collections[key] = collection
+                # Inspect what Chroma thinks it has, then fix it in-place
+                try:
+                    existing = self.client.get_collection(name=name)  # may succeed even with mismatch
+                except Exception:
+                    existing = None
 
-            with self.embedder_lock:
-                if config['embedding_model'] not in self.embedders:
-                    self.embedders[config['embedding_model']] = SentenceTransformer(config['embedding_model'])
+                existing_fn = self._collection_embedder_name(existing) if existing else "default"
+                logger.warning(f"[Chroma] '{name}' uses embedder '{existing_fn}', expected 'sentence_transformer'. Recreating…")
+
+                # Delete then recreate with our embedder
+                try:
+                    self.client.delete_collection(name=name)
+                except Exception as de:
+                    logger.warning(f"[Chroma] Delete failed for '{name}' (continuing): {de}")
+
+                _create(name)
+            except Exception as e:
+                logger.error(f"[Chroma] Failed to init '{name}': {e}")
+                raise
+
+
+
+    # memory/storage/multi_collection_chroma_store.py
+
+    def list_all(self, collection_name: str) -> List[Dict]:
+        if collection_name not in self.collections:
+            return []
+        coll = self.collections[collection_name]
+
+        # ❌ don't ask for "ids" here; not supported in your Chroma build
+        results = coll.get(include=["documents", "metadatas"])  # <- only these
+
+        docs = results.get("documents", []) or []
+        metas = results.get("metadatas", []) or []
+
+        # Some builds still return ids even if not requested; handle if present
+        ids   = results.get("ids", []) or []
+
+        out = []
+        n = max(len(docs), len(metas), len(ids))
+        for i in range(n):
+            _id  = ids[i]  if i < len(ids)  else None
+            doc  = docs[i] if i < len(docs) else ""
+            meta = metas[i] if i < len(metas) else {}
+            out.append({
+                "id": _id,
+                "content": doc or "",
+                "metadata": meta or {},
+            })
+        return out
+
+    # Generic helpers expected by coordinators
+    def create_collection(self, name: str):
+        """Create/open a collection with the configured embedder."""
+        self.collections[name] = self.client.get_or_create_collection(
+            name=name, embedding_function=self.embedding_fn
+        )
+        return self.collections[name]
+
+    def add_to_collection(self, name: str, text: str, metadata: Dict[str, Any]) -> str:
+        """Add a single text item to the specified collection with metadata."""
+        if name not in self.collections or self.collections[name] is None:
+            self.create_collection(name)
+        coll = self.collections[name]
+        clean_md = _flatten_for_chroma(dict(metadata or {}))
+        doc_id = str(uuid.uuid4())
+        coll.add(ids=[doc_id], documents=[text or ""], metadatas=[clean_md])
+        return doc_id
+
+    def get_recent(self, collection_name: str, limit: int = 8) -> List[Dict]:
+        all_items = self.list_all(collection_name)
+
+        def _ts(x):
+            ts = (x.get("metadata") or {}).get("timestamp")
+            try:
+                from datetime import datetime
+                if isinstance(ts, str):
+                    return datetime.fromisoformat(ts)
+            except Exception:
+                pass
+            # fallback ensures items without timestamp don’t crash
+            from datetime import datetime as _dt
+            return _dt.min
+
+        all_items.sort(key=_ts, reverse=True)
+        return all_items[:limit]
+
 
     def _generate_id(self, content: str, collection_type: str) -> str:
+        """Generate a unique ID for a document"""
         content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")[:-3]
         return f"{collection_type}_{content_hash}_{timestamp}"
 
-    def _safe_add(self, collection_key: str, ids, documents, metadatas):
+    # Methods for conversations
+    # In memory/storage/multi_collection_chroma_store.py, check the add_conversation_memory method
+    def add_conversation_memory(self, query: str, response: str, metadata: Dict[str, Any]) -> str:
+        """Add a conversation memory to the conversations collection"""
         try:
-            self.collections[collection_key].add(
-                ids=ids,
-                documents=documents,
-                metadatas=metadatas
-            )
-            # Persist is deprecated and handled automatically by the client now.
-            # self.client.persist()
-            logger.debug(f"Added to {collection_key} memory: {ids[0]}")
-        except Exception as e:
-            logger.error(f"Failed to add to {collection_key}: {e}")
+            # Ensure metadata is clean before passing to ChromaDB
+            if metadata is None:
+                metadata = {}
 
-    def add_conversation_memory(self, query: str, response: str, metadata: Dict = None) -> str:
-        content = f"User: {query}\nAssistant: {response}"
-        memory_id = self._generate_id(content, "conv")
+            # Log the metadata before adding
+            logger.debug(f"[ChromaStore] Adding conversation memory with metadata: {metadata}")
+
+            # Double-check metadata values
+            for key, value in metadata.items():
+                if value is None:
+                    logger.warning(f"[ChromaStore] Metadata key '{key}' has None value, removing it")
+                    metadata.pop(key)
+                elif not isinstance(value, (str, int, float, bool)):
+                    logger.warning(f"[ChromaStore] Converting metadata key '{key}' from {type(value)} to string")
+                    metadata[key] = str(value)
+
+            # Create the document ID
+            doc_id = str(uuid.uuid4())
+
+            # Add to collection
+            self.collections['conversations'].add(
+                ids=[doc_id],
+                documents=[f"User: {query}\nAssistant: {response}"],
+                metadatas=[metadata]
+            )
+
+            logger.debug(f"[ChromaStore] Successfully added conversation memory with ID: {doc_id}")
+            return doc_id
+        except Exception as e:
+            logger.error(f"Error adding conversation memory: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+
+    # Methods for summaries
+    def add_summary(self, summary: str, period: str, metadata: Dict = None) -> str:
+        memory_id = self._generate_id(summary, "summ")
 
         metadata = metadata or {}
         metadata.update({
+            "period": period,
             "timestamp": datetime.now().isoformat(),
-            "query": query[:200],
-            "response": response[:200],
-            "type": "conversation",
-            "turn_length": len(query) + len(response)
+            "type": "summary"
         })
 
-        self._safe_add('conversations', [memory_id], [content], [metadata])
-
-        # Confirm it was indexed
-        try:
-            result = self.collections['conversations'].get(ids=[memory_id])
-            if result and result['ids']:
-                logger.debug(f"✅ Memory {memory_id} successfully indexed and retrieved from ChromaDB.")
-            else:
-                logger.warning(f"⚠️ Memory {memory_id} was added but could not be retrieved for confirmation.")
-        except Exception as e:
-            logger.error(f"❌ Error confirming memory {memory_id} in ChromaDB: {e}")
-
+        self.collections['summaries'].add(
+            documents=[summary],
+            metadatas=[metadata],
+            ids=[memory_id]
+        )
         return memory_id
 
-
+    # Methods for wiki knowledge
     def add_wiki_chunk(self, chunk: Dict) -> str:
         content = f"{chunk.get('title', '')} {chunk.get('text', '')}"
         memory_id = self._generate_id(content, "wiki")
@@ -138,163 +272,180 @@ class MultiCollectionChromaStore:
             "type": "wiki"
         }
 
-        self._safe_add('wiki', [memory_id], [content], [metadata])
+        self.collections['wiki_knowledge'].add(
+            documents=[content],
+            metadatas=[metadata],
+            ids=[memory_id]
+        )
         return memory_id
 
-    def add_semantic_chunk(self, chunk: Dict) -> str:
-        content = chunk.get('content', chunk.get('text', ''))
-        memory_id = self._generate_id(content, "sem")
+    # Methods for facts (new)
+    # --- replace your add_fact with this version (keeps your logic, adds compat/flatten) ---
+    # In multi_collection_chroma_store.py, update the add_fact method:
 
-        metadata = {
-            "source": chunk.get('source', 'unknown'),
-            "chunk_type": chunk.get('type', 'paragraph'),
-            "importance": chunk.get('importance', 0.5),
-            "timestamp": datetime.now().isoformat(),
-            "type": "semantic"
-        }
+    def add_fact(
+        self,
+        fact: str,
+        source,  # str OR dict (legacy compat)
+        confidence: float = 1.0,
+        parent_id: Optional[str] = None,
+        child_ids: Optional[List[str]] = None
+    ) -> str:
+        """
+        Preserves existing signature, but also supports legacy calls:
+        add_fact("a | b | c", {"source":"manual", "confidence":0.9, ...})
+        """
+        # Back-compat: if 'source' is actually a metadata dict
+        extra_md = {}
+        if isinstance(source, dict):
+            md_in = dict(source)  # shallow copy
+            source = md_in.pop("source", "unknown")
+            confidence = float(md_in.pop("confidence", confidence))
+            parent_id = md_in.pop("parent_id", parent_id)
+            child_ids = md_in.pop("child_ids", child_ids)
+            # anything else stays as extra metadata
+            extra_md = md_in
 
-        self._safe_add('semantic', [memory_id], [content], [metadata])
-        return memory_id
-
-    def add_summary(self, summary: str, period: str, metadata: Dict = None) -> str:
-        memory_id = self._generate_id(summary, "summ")
-
-        metadata = metadata or {}
-        metadata.update({
-            "period": period,
-            "timestamp": datetime.now().isoformat(),
-            "type": "summary",
-            "length": len(summary)
-        })
-
-        self._safe_add('summaries', [memory_id], [summary], [metadata])
-        return memory_id
-
-    def add_fact(self, fact: str, source: str, confidence: float = 1.0) -> str:
         memory_id = self._generate_id(fact, "fact")
+        logger.debug(f"[ChromaStore] Adding fact with ID {memory_id}: {fact}")
 
         metadata = {
             "source": source,
-            "confidence": confidence,
+            "confidence": float(confidence),
             "timestamp": datetime.now().isoformat(),
-            "type": "fact"
+            "type": "fact",
         }
+        if parent_id is not None:
+            metadata["parent_id"] = parent_id
+        if child_ids:
+            metadata["child_ids"] = child_ids  # will be flattened
 
-        self._safe_add('facts', [memory_id], [fact], [metadata])
+        # merge any extra fields gathered from legacy dict
+        metadata.update(extra_md)
+
+        # flatten to Chroma-acceptable primitives
+        metadata = _flatten_for_chroma(metadata)
+        logger.debug(f"[ChromaStore] Fact metadata: {metadata}")
+
+        try:
+            self.collections["facts"].add(
+                documents=[fact],
+                metadatas=[metadata],
+                ids=[memory_id],
+            )
+            logger.debug(f"[ChromaStore] Successfully added fact to collection")
+            # Verify the fact was added
+            count = self.collections["facts"].count()
+            logger.debug(f"[ChromaStore] Facts collection now has {count} documents")
+        except Exception as e:
+            logger.error(f"[ChromaStore] Error adding fact: {e}")
+            raise
+
         return memory_id
 
-    def get_all_from_collection(self, collection_key: str) -> List[Dict]:
-        """Retrieve all documents from a specific collection."""
-        if collection_key not in self.collections:
-            return []
-        try:
-            collection = self.collections[collection_key]
-            count = collection.count()
-            if count == 0:
-                return []
+    # Methods for reflections (new)
+    def add_reflection(self, reflection: str, source_ids: List[str], reflection_type: str) -> str:
+        memory_id = self._generate_id(reflection, "refl")
+        metadata = _flatten_for_chroma({
+            "source_ids": source_ids,                # list -> "a,b,c"
+            "reflection_type": reflection_type,
+            "timestamp": datetime.now().isoformat(),
+            "type": "reflection",
+        })
+        self.collections["reflections"].add(
+            documents=[reflection],
+            metadatas=[metadata],
+            ids=[memory_id],
+        )
+        return memory_id
 
-            # Retrieve all documents by specifying the limit
-            results = collection.get(limit=count, include=["metadatas", "documents"])
 
-            formatted = []
-            if not results.get('ids'):
-                return formatted
+    # Query methods
 
-            for i, doc_id in enumerate(results['ids']):
-                formatted.append({
-                    'id': doc_id,
-                    'content': results['documents'][i],
-                    'metadata': results['metadatas'][i],
-                    'collection': collection_key
-                })
-            return formatted
-        except Exception as e:
-            logger.error(f"Error getting all documents from {collection_key}: {e}")
-            return []
 
-    def search_conversations(self, query: str, n_results: int = 5) -> List[Dict]:
-        """Search conversation memories"""
-        results = self.collections['conversations'].query(
-            query_texts=[query],
-            n_results=n_results
+
+
+    def query_collection(self, collection_name: str, query_text: str,
+                     n_results: int = 5, **kwargs) -> List[Dict]:
+        # Accept alias kwargs defensively
+        if "n" in kwargs and isinstance(kwargs["n"], int):
+            n_results = kwargs["n"]
+        if "k" in kwargs and isinstance(kwargs["k"], int):
+            n_results = kwargs["k"]
+
+        if collection_name not in self.collections:
+            raise ValueError(f"Unknown collection: {collection_name}")
+
+        # DO NOT include "ids" (not supported by your Chroma build)
+        results = self.collections[collection_name].query(
+            query_texts=[query_text],
+            n_results=n_results,
+            include=["documents", "metadatas", "distances"]  # no "ids"
         )
 
-        return self._format_results(results, 'conversations')
+        # Some builds still return ids even if not requested; handle both cases
+        ids_list  = (results.get("ids") or [[]])[0] or []
+        docs_list = (results.get("documents") or [[]])[0] or []
+        metas     = (results.get("metadatas") or [[]])[0] or []
+        dists     = (results.get("distances") or [[]])[0] or []
 
-    def search_wiki(self, query: str, n_results: int = 5) -> List[Dict]:
-        """Search Wikipedia chunks"""
-        results = self.collections['wiki'].query(
-            query_texts=[query],
-            n_results=n_results
-        )
+        # Iterate by the longest list so we don't drop rows if one list is shorter
+        n = max(len(docs_list), len(metas), len(dists), len(ids_list))
 
-        return self._format_results(results, 'wiki')
+        formatted = []
+        for i in range(n):
+            _id  = ids_list[i] if i < len(ids_list) else None
+            doc  = docs_list[i] if i < len(docs_list) else ""
+            meta = metas[i]     if i < len(metas)     else {}
+            dist = dists[i]     if i < len(dists)     else None
+            score = (1.0 / (1.0 + dist)) if isinstance(dist, (int, float)) else None
+
+            formatted.append({
+                "id": _id,
+                "content": doc,
+                "metadata": meta or {},
+                "relevance_score": score,
+                "collection": collection_name,
+                "rank": i + 1,
+            })
+
+        return formatted
+
+
+
+
 
     def search_all(self, query: str, n_results_per_type: int = 3) -> Dict[str, List[Dict]]:
         """Search across all collections"""
         all_results = {}
 
-        for key, collection in self.collections.items():
+        for name, collection in self.collections.items():
             try:
-                # Ensure we don't query an empty collection, which can cause errors
-                if collection.count() > 0:
-                    results = collection.query(
-                        query_texts=[query],
-                        n_results=min(n_results_per_type, collection.count()) # Cannot request more results than exist
-                    )
-                    all_results[key] = self._format_results(results, key)
-                else:
-                    all_results[key] = []
+                results = self.query_collection(name, query, n_results_per_type)
+                all_results[name] = results
             except Exception as e:
-                logger.error(f"Error searching {key}: {e}")
-                all_results[key] = []
+                logger.error(f"Error searching {name}: {e}")
+                all_results[name] = []
 
         return all_results
-
-    def _format_results(self, results: Dict, collection_type: str) -> List[Dict]:
-        """Format ChromaDB results into consistent structure"""
-        formatted = []
-
-        if not results['ids'] or not results['ids'][0]:
-            return formatted
-
-        for i, (doc_id, doc, meta, distance) in enumerate(zip(
-            results['ids'][0],
-            results['documents'][0],
-            results['metadatas'][0],
-            results['distances'][0]
-        )):
-            formatted.append({
-                'id': doc_id,
-                'content': doc,
-                'metadata': meta,
-                'relevance_score': 1.0 / (1.0 + distance),  # Convert distance to similarity
-                'collection': collection_type,
-                'rank': i + 1
-            })
-
-        return formatted
 
     def get_collection_stats(self) -> Dict[str, Dict]:
         """Get statistics for all collections"""
         stats = {}
 
-        for key, collection in self.collections.items():
-            stats[key] = {
-                'name': self.COLLECTIONS[key]['name'],
-                'description': self.COLLECTIONS[key]['description'],
-                'count': collection.count(),
-                'embedding_model': self.COLLECTIONS[key]['embedding_model']
-            }
+        for name, collection in self.collections.items():
+            try:
+                count = collection.count()
+                stats[name] = {
+                    'name': name,
+                    'count': count
+                }
+            except Exception as e:
+                logger.error(f"Error getting stats for {name}: {e}")
+                stats[name] = {
+                    'name': name,
+                    'count': 0,
+                    'error': str(e)
+                }
 
         return stats
-
-    def clear_collection(self, collection_key: str):
-        """Clear a specific collection"""
-        if collection_key in self.collections:
-            # Delete and recreate the collection
-            self.client.delete_collection(self.COLLECTIONS[collection_key]['name'])
-            logger.info(f"Cleared collection: {collection_key}")
-
-            # Reinitialize
-            self._initialize_collections()
