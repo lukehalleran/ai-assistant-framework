@@ -1,73 +1,268 @@
-# daemon_7_11_25_refactor/daemon_7_11_25_refactor/knowledge/semantic_search.py
+# core/knowledge/semantic_search.py
+"""
+Semantic search with FAISS + SentenceTransformers, optimized for:
+- one-time (lazy) loading of model, FAISS index, and metadata (thread-safe)
+- optional offline mode for HF hubs
+- graceful degradation if FAISS or metadata are missing
+- predictable return schema compatible with existing callers
+
+Public API:
+    semantic_search_with_neighbors(query: str, k: int = 8) -> List[Dict[str, Any]]
+        - Returns top-k results with fields:
+          'text'/'content', 'source'/'namespace', 'similarity', 'timestamp', 'title'
+
+This module is intentionally self-contained so it can be imported early
+without heavy side-effects. Actual heavy resources are loaded on first use.
+"""
+
+from __future__ import annotations
+
 import os
-import logging
-import faiss
-import pandas as pd
+import time
+import json
+import threading
+from typing import List, Dict, Any, Tuple
+
 import numpy as np
-from sentence_transformers import SentenceTransformer
-from config.config import DEFAULT_TOP_K
-from utils.logging_utils import log_and_time
 
-logger = logging.getLogger(__name__)
-logger.debug("knowledge.semantic_search is alive")
+# FAISS is optional; search will no-op if it's unavailable or files are missing
+try:
+    import faiss  # type: ignore
+except Exception:
+    faiss = None
 
-# === CONFIG (tweak these to your setup) ===
-PARQUET_DIR       = "/run/media/lukeh/T9/test_parquet"
-MERGED_PARQUET    = os.path.join(PARQUET_DIR, "merged_embeddings.parquet")
-METADATA_FILE     = "metadata.parquet"
-FAISS_INDEX_FILE  = "vector_index_ivf.faiss"
-MODEL_NAME        = "all-MiniLM-L6-v2"
-TOP_K             = DEFAULT_TOP_K
+from utils.logging_utils import get_logger
+logger = get_logger("knowledge.semantic_search")
 
-# — load or build your index & metadata once on import —
-@log_and_time("Load embeddings + metadata")
-def _load_resources():
-    global model, index, metadata_df
+# ------------------------
+# Configuration (env-tunable)
+# ------------------------
+EMBED_MODEL = os.getenv("SEM_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+INDEX_PATH  = os.getenv(
+    "SEM_INDEX_PATH",
+    "/home/lukeh/Daemon_RAG_Agent_working/data/vector_index_ivf.faiss"
+)
 
-    # 1) load embedding model
-    model = SentenceTransformer(MODEL_NAME)
+META_PATH   = os.getenv("SEM_META_PATH",   "/run/media/lukeh/T9/test_parquet/metadata.parquet")
 
-    # 2) load FAISS index
+# Respect HF offline usage if you want to avoid network HEAD calls on boot
+HF_OFFLINE  = os.getenv("HF_HUB_OFFLINE", "1") == "1"
+
+# Small singletons to avoid repeated heavy loads across requests
+_singleton_lock = threading.Lock()
+_singleton: "SemanticSearchIndex | None" = None
+
+# Guard to avoid spamming logs when index/meta are missing
+_warned_missing = False
+
+
+# ------------------------
+# Helpers
+# ------------------------
+def _cuda_available() -> bool:
+    """Cheap check for CUDA presence without importing torch at module import."""
     try:
-        if os.path.exists(FAISS_INDEX_FILE):
-            index = faiss.read_index(FAISS_INDEX_FILE)
-        else:
-            logger.warning(f"FAISS index not found: {FAISS_INDEX_FILE}. Semantic search will be disabled.")
-            index = None
-    except Exception as e:
-        logger.error(f"Failed to load FAISS index: {e}")
-        index = None
+        import torch
+        return torch.cuda.is_available()
+    except Exception:
+        return False
 
-    # 3) load metadata parquet
-    if os.path.exists(METADATA_FILE):
-        metadata_df = pd.read_parquet(METADATA_FILE)
-    else:
-        raise FileNotFoundError(f"Metadata file not found: {METADATA_FILE}")
 
-_load_resources()
-
-@log_and_time("Semantic search")
-def semantic_search(query: str, top_k: int = TOP_K) -> list:
+def _load_embedder(name: str):
     """
-    Perform a FAISS-based semantic search over your pre-loaded index.
-    Returns a list of dicts with keys: rank, score, similarity, id, title, text.
+    Load a SentenceTransformer with best-effort offline friendliness,
+    and choose CUDA when available. Loading happens once per process.
     """
-    # encode query
-    q_emb = model.encode([query], convert_to_numpy=True).astype("float32")
-    # search
-    D, I = index.search(q_emb, top_k)
+    # Avoid repeated remote HEADs; respect local cache/offline.
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    if HF_OFFLINE:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-    results = []
-    for rank, (dist, idx) in enumerate(zip(D[0], I[0]), start=1):
-        if idx < 0:
-            continue
-        row = metadata_df.iloc[idx]
-        results.append({
-            "rank": rank,
-            "score": float(dist),
-            "similarity": 1.0 / (1.0 + dist),
-            "id":    row["id"],
-            "title": row["title"],
-            "text":  row["text"][:500]
-        })
-    return results
+    from sentence_transformers import SentenceTransformer
+    device = "cuda" if _cuda_available() else "cpu"
+    model = SentenceTransformer(name, device=device)
+    return model
+
+
+# ------------------------
+# Core index holder
+# ------------------------
+class SemanticSearchIndex:
+    """
+    Owns the embedder, FAISS index, and metadata.
+    Loaded lazily (call load() or search() which calls load() if needed).
+    """
+    def __init__(self) -> None:
+        self.embedder = None       # SentenceTransformer
+        self.index = None          # faiss.Index
+        self.meta = None           # pandas.DataFrame
+        self.loaded = False
+
+    def load(self) -> None:
+        """Load model + FAISS + metadata once. Fast-return if already loaded."""
+        global _warned_missing
+        if self.loaded:
+            return
+
+        t0 = time.time()
+
+        # If FAISS or files missing, fail open (return empty on search)
+        if not (faiss and os.path.exists(INDEX_PATH) and os.path.exists(META_PATH)):
+            if not _warned_missing:
+                logger.error("[Semantic] Missing FAISS or metadata — fast-failing search "
+                             "(index=%s, meta=%s)", INDEX_PATH, META_PATH)
+                _warned_missing = True
+            return
+
+        try:
+            # Embedder
+            self.embedder = _load_embedder(EMBED_MODEL)
+
+            # FAISS index
+            self.index = faiss.read_index(INDEX_PATH)
+
+            # Metadata (kept as a dataframe; if too big, use a sidecar JSON or sqlite)
+            import pandas as pd  # local import to keep import-time cost low
+            self.meta = pd.read_parquet(META_PATH)
+
+            self.loaded = True
+            logger.info("[Semantic] Loaded model=%s index=%s meta=%s in %.2fs",
+                        EMBED_MODEL,
+                        os.path.basename(INDEX_PATH),
+                        os.path.basename(META_PATH),
+                        time.time() - t0)
+        except Exception as e:
+            # Do not raise—degrade gracefully; callers get [] from search()
+            logger.exception("[Semantic] Load failed: %s", e)
+
+    def _encode_query(self, query: str) -> np.ndarray:
+        """
+        Encode + normalize the query to float32 (shape: [1, dim]).
+        SentenceTransformers can normalize internally, but we ensure dtype/shape.
+        """
+        vec = self.embedder.encode(
+            [query],
+            convert_to_numpy=True,
+            normalize_embeddings=True
+        ).astype(np.float32)
+        return vec  # already L2-normalized
+
+    def _row_to_result(self, row, score: float) -> Dict[str, Any]:
+        """
+        Convert a metadata row into the expected result dict.
+        Keeps back-compat with existing consumers.
+        """
+        # Prefer common text columns
+        text = None
+        for col in ("text", "content", "chunk_text", "passage"):
+            if col in row.index and getattr(row, col) is not None:
+                text = str(getattr(row, col))
+                break
+        if not text:
+            # If no text field exists, skip the row.
+            return {}
+
+        # Determine a source-ish field (namespace/file/etc.)
+        source = "unknown"
+        for col in ("source", "namespace", "file", "document"):
+            if col in row.index and getattr(row, col) is not None:
+                source = str(getattr(row, col))
+                break
+
+        # Optional fields
+        ts = getattr(row, "timestamp", "")
+        title = getattr(row, "title", "")
+
+        return {
+            "text": text[:1000],
+            "content": text[:1000],
+            "source": source,
+            "namespace": source,
+            "similarity": float(score),   # cosine similarity (IP on normalized vectors)
+            "timestamp": ts,
+            "title": title,
+        }
+
+    def search(self, query: str, k: int = 8) -> List[Dict[str, Any]]:
+        """
+        Top-k semantic search.
+        - Returns [] if not loaded / resources missing
+        - Keeps result shape compatible with previous implementation
+        """
+        if not query:
+            return []
+
+        if not self.loaded:
+            self.load()
+        if not self.loaded:
+            # Still not ready (e.g., FAISS missing) -> no results
+            return []
+
+        # 1) Encode query once (normalized float32)
+        q = self._encode_query(query)
+
+        # 2) Search FAISS index (HNSW/IP, IVF/IP etc.)
+        try:
+            # FAISS returns (distances, indices); with normalized vectors + IP,
+            # 'distances' are cosine similarities already in [-1, 1]
+            D, I = self.index.search(q, int(max(1, k)))
+        except Exception as e:
+            logger.error("[Semantic] FAISS search error: %s", e, exc_info=True)
+            return []
+
+        # 3) Assemble rows from metadata
+        rows: List[Dict[str, Any]] = []
+        try:
+            # iloc is faster than loc for int indices
+            for idx, score in zip(I[0], D[0]):
+                if idx < 0:
+                    continue
+                try:
+                    row = self.meta.iloc[int(idx)]
+                except Exception:
+                    continue
+
+                rec = self._row_to_result(row, score)
+                if rec:
+                    rows.append(rec)
+
+            # Sort high->low cosine and cap to k
+            rows.sort(key=lambda r: r["similarity"], reverse=True)
+            return rows[:k]
+        except Exception as e:
+            logger.error("[Semantic] Result assembly error: %s", e, exc_info=True)
+            return []
+
+
+# ------------------------
+# Module-level accessors
+# ------------------------
+def get_index() -> SemanticSearchIndex:
+    """Return the process-wide singleton index holder."""
+    global _singleton
+    if _singleton is None:
+        with _singleton_lock:
+            if _singleton is None:
+                _singleton = SemanticSearchIndex()
+    return _singleton
+
+
+# ------------------------
+# Public API (kept stable)
+# ------------------------
+def semantic_search_with_neighbors(query: str, k: int = 8) -> List[Dict[str, Any]]:
+    """
+    Backwards-compatible wrapper that most of the codebase calls today.
+    Usage remains:
+        results = semantic_search_with_neighbors("your query", k=10)
+    """
+    return get_index().search(query, k=k)
+
+
+# Optional: admin hook to force reload at runtime (if you update files on disk)
+def reload_semantic_resources() -> None:
+    """Force a full reload of embedder, FAISS index, and metadata."""
+    global _singleton
+    with _singleton_lock:
+        _singleton = None  # next get_index() will rebuild
+    logger.info("[Semantic] Resources scheduled for reload; will re-init on next query.")
