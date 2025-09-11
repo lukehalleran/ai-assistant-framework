@@ -1,4 +1,4 @@
-# daemon_7_11_25_refactor/memory/corpus_manager.py
+# /memory/corpus_manager.py
 import json
 import os
 from datetime import datetime
@@ -11,9 +11,15 @@ class CorpusManager:
     """Manages the conversation corpus (short-term memory)"""
 
     def __init__(self, corpus_file: str = None):
-        from config.config import CORPUS_FILE
+        if corpus_file is None:
+                from config.app_config import CORPUS_FILE
+                corpus_file=CORPUS_FILE
         self.corpus_file = corpus_file or CORPUS_FILE
+        self.memories = []
+        self.summaries = []
+        logger.info(f"[CorpusManager] Initializing with file: {self.corpus_file}")
         self.corpus = self._load_corpus()
+        logger.info(f"[CorpusManager] After init, corpus has {len(self.corpus)} entries")
 
     @log_and_time("Load Corpus")
     def _load_corpus(self) -> List[Dict]:
@@ -22,6 +28,7 @@ class CorpusManager:
             try:
                 with open(self.corpus_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    logger.info(f"[CorpusManager] Loaded {len(data)} entries from {self.corpus_file}")
                     # Convert timestamp strings back to datetime
                     for entry in data:
                         if isinstance(entry.get("timestamp"), str):
@@ -30,9 +37,15 @@ class CorpusManager:
                             except:
                                 pass
                     logger.info(f"Loaded {len(data)} corpus entries")
+                    self.corpus = data
                     return data
+
             except Exception as e:
                 logger.error(f"Error loading corpus: {e}")
+
+        else:
+            logger.warning(f"[CorpusManager] Corpus file not found: {self.corpus_file}")
+
         return []
 
     def clean_for_json(self, entry):
@@ -65,20 +78,19 @@ class CorpusManager:
         except Exception as e:
             logger.error(f"Error saving corpus: {e}")
 
-    def add_entry(self, query: str, response: str, tags: List[str] = None):
+    def add_entry(self, query: str, response: str, tags: List[str] = None, timestamp: datetime = None):
         """Add a new interaction to corpus"""
+        # Trim obvious trailing/leading whitespace to avoid blank lines in prompts
+        q = (query or "").strip()
+        r = (response or "").strip()
         entry = {
-            "query": query,
-            "response": response,
-            "timestamp": datetime.now(),
+            "query": q,
+            "response": r,
+            "timestamp": timestamp or datetime.now(),
             "tags": tags or []
         }
         self.corpus.append(entry)
 
-        # Auto-summarize every 20 non-summary entries
-        real_entries = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
-        if len(real_entries) % 20 == 0 and len(real_entries) > 0:
-            self._create_summary(real_entries[-20:])
 
         # Trim if too large
         if len(self.corpus) > 500:
@@ -86,94 +98,126 @@ class CorpusManager:
 
         self.save_corpus()
 
-    def _create_summary(self, entries: List[Dict]):
-        """Create a summary node for the given entries"""
-        from config.config import DEFAULT_SUMMARY_PROMPT_HEADER
-
-        summary_lines = []
-        for e in entries[:20]:
-            if e.get('response', '').strip():
-                q = e.get('query', '[no query]')[:50]
-                r = e.get('response', '')[:60]
-                summary_lines.append(f"Q: {q}... → A: {r}...")
-
-        if summary_lines:
-            summary_entry = {
-                "query": "[SUMMARY NODE]",
-                "response": DEFAULT_SUMMARY_PROMPT_HEADER + "\n".join(summary_lines),
-                "timestamp": datetime.now(),
-                "tags": ["@summary"]
-            }
-            self.corpus.append(summary_entry)
-            logger.debug("Created summary node")
 
     def get_recent_memories(self, count: int = 3) -> List[Dict]:
         """Get most recent non-summary memories"""
         non_summary = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
-        return sorted(non_summary, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:count]
+        result = sorted(non_summary, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:count]
+        logger.debug(f"[CorpusManager] Returning {len(result)} recent memories from {len(non_summary)} non-summary entries")
+        return result
 
-    def get_summaries(self, limit: int = 5) -> List[Dict]:
-        """Get summary nodes - returns full dict not just content"""
-        summaries = [e for e in self.corpus if "@summary" in e.get("tags", [])]
-        # Sort by timestamp to get most recent summaries
-        sorted_summaries = sorted(
-            summaries,
-            key=lambda x: x.get('timestamp', datetime.min),
-            reverse=True
-        )[:limit]
 
-        # Return full dict for better integration
-        return sorted_summaries
-    def create_summary_now(self, entries_to_summarize: int = 20) -> Dict:
+    def add_summary(self, content, tags: List[str] = None, timestamp: datetime = None):
+        """Add a summary-like node to the corpus.
+
+        Accepts either:
+          - content: str (classic summary text), or
+          - content: dict with keys {content, timestamp?, tags?, type?}
+        Ensures type defaults to 'summary' for string inputs. For dict inputs,
+        preserves provided type and only adds '@summary' tag when the type is a summary.
         """
-        Manually trigger summary creation for the last N entries
-        Returns the created summary entry
-        """
-        real_entries = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
+        if isinstance(content, dict):
+            node = dict(content)  # shallow copy
+            # Normalize fields
+            node.setdefault("content", "")
+            # Accept either 'timestamp' or legacy 'created_at'
+            if "timestamp" in node:
+                pass
+            elif "created_at" in node and isinstance(node["created_at"], datetime):
+                node["timestamp"] = node["created_at"]
+            elif "created_at" in node and isinstance(node["created_at"], str):
+                try:
+                    node["timestamp"] = datetime.fromisoformat(node["created_at"].replace("Z", "+00:00"))
+                except Exception:
+                    node["timestamp"] = timestamp or datetime.now()
+            else:
+                node["timestamp"] = timestamp or datetime.now()
+            node.setdefault("type", node.get("type") or "summary")
+            node["tags"] = list(node.get("tags") or [])
+            # Only mark as '@summary' if this is actually a summary-type node
+            node_type = str(node.get("type", "")).lower()
+            if ("summary" in node_type) and ("@summary" not in node["tags"]):
+                node["tags"].append("@summary")
+            summary = node
+        else:
+            summary = {
+                "content": str(content or ""),
+                "timestamp": timestamp or datetime.now(),
+                "tags": (tags or []) + ["@summary"],
+                "type": "summary"
+            }
+        # persist in the same list/file that get_summaries() actually reads
+        self.corpus.append(summary)
+        # bound size like other entries
+        if len(self.corpus) > 500:
+            self.corpus = self.corpus[-500:]
+        self.save_corpus()
+        logger.debug(f"[CorpusManager] Added summary: {content[:50]}...")
 
-        if len(real_entries) < entries_to_summarize:
-            entries_to_summarize = len(real_entries)
+    def get_summaries(self, count: int = 5) -> List[Dict[str, any]]:
+        """Get the most recent summaries, normalizing timestamps for robust sorting."""
+        from datetime import timezone
 
-        if entries_to_summarize == 0:
-            logger.warning("No entries to summarize")
+        def _norm_ts(ts):
+            # Accept datetime or ISO string; return naive UTC datetime
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except Exception:
+                    return datetime.min
+            if isinstance(ts, datetime):
+                try:
+                    if ts.tzinfo is not None and ts.tzinfo.utcoffset(ts) is not None:
+                        return ts.astimezone(timezone.utc).replace(tzinfo=None)
+                    return ts
+                except Exception:
+                    return datetime.min
+            return datetime.min
+
+        def _is_summary_entry(e: Dict) -> bool:
+            typ = (e.get("type", "") or "").lower()
+            tags = e.get("tags") or []
+            # Exclude reflections even if they carry '@summary' from legacy paths
+            if ("reflection" in typ) or ("type:reflection" in tags):
+                return False
+            return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
+
+        summaries = [e for e in self.corpus if _is_summary_entry(e)]
+        summaries.sort(key=lambda x: _norm_ts(x.get("timestamp")), reverse=True)
+        return summaries[:count]
+
+    def create_summary_now(self, num_recent: int = 20) -> str:
+        """Manually create a summary of recent conversations"""
+        recent = self.get_recent_memories(num_recent)
+        if not recent:
             return None
 
-        # Get the last N entries
-        entries = real_entries[-entries_to_summarize:]
-
-        # Create summary
         summary_lines = []
-        for e in entries:
-            if e.get('response', '').strip():
-                q = e.get('query', '[no query]')[:50]
-                r = e.get('response', '')[:60]
-                timestamp = e.get('timestamp', datetime.now())
+        for entry in recent[:num_recent]:
+            q = entry.get('query', '')[:50]
+            r = entry.get('response', '')[:50]
+            summary_lines.append(f"Q: {q}... A: {r}...")
 
-                # Format timestamp if it's a datetime
-                if isinstance(timestamp, datetime):
-                    time_str = timestamp.strftime("%H:%M")
-                else:
-                    time_str = ""
+        summary_content = f"Summary of {len(recent)} conversations:\n" + "\n".join(summary_lines)
 
-                summary_lines.append(f"[{time_str}] Q: {q}... → A: {r}...")
+        self.add_summary(
+            content=summary_content,
+            tags=["@summary", "manual"],
+            timestamp=datetime.now()
+        )
 
-        if summary_lines:
-            summary_entry = {
-                "query": "[SUMMARY NODE]",
-                "response": f"Summary of last {entries_to_summarize} exchanges:\n" + "\n".join(summary_lines),
-                "timestamp": datetime.now(),
-                "tags": ["@summary", f"covers_{entries_to_summarize}_entries"],
-                "metadata": {
-                    "start_time": entries[0].get('timestamp', datetime.now()),
-                    "end_time": entries[-1].get('timestamp', datetime.now()),
-                    "entry_count": entries_to_summarize
-                }
-            }
+        logger.info(f"[CorpusManager] Created manual summary of {len(recent)} conversations")
+        return summary_content
 
-            self.corpus.append(summary_entry)
-            self.save_corpus()
-            logger.info(f"Created summary covering {entries_to_summarize} entries")
+    # --- Convenience helpers used by reflections path ---
+    def get_summaries_of_type(self, types=("summary",), limit: int = 5) -> List[Dict]:
+        tset = set(types or ("summary",))
+        items = [e for e in self.corpus if (e.get("type") or "").lower() in tset]
+        items.sort(key=lambda x: x.get("timestamp", datetime.min), reverse=True)
+        return items[:limit]
 
-            return summary_entry
-
-        return None
+    def get_items_by_type(self, type_name: str, limit: int = 5) -> List[Dict]:
+        t = (type_name or "").lower()
+        items = [e for e in self.corpus if (e.get("type") or "").lower() == t or f"type:{t}" in (e.get("tags") or [])]
+        items.sort(key=lambda x: x.get("timestamp", datetime.min), reverse=True)
+        return items[:limit]
