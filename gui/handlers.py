@@ -1,9 +1,11 @@
+# /gui/handlers.py
 import pandas as pd
 import logging
 from utils.logging_utils import log_and_time
+from utils.conversation_logger import get_conversation_logger
 import json
-from config.config import SYSTEM_PROMPT as system_prompt
-
+from config.app_config import load_system_prompt
+DEFAULT_SYSTEM_PROMPT = load_system_prompt()
 logger = logging.getLogger("gradio_gui")
 
 
@@ -21,8 +23,21 @@ def smart_join(prev: str, new: str) -> str:
 
 
 @log_and_time("Handle Submit")
-async def handle_submit(user_text, files, history, use_raw_gpt, orchestrator, force_summarize=False, include_summaries=True):
+async def handle_submit(
+    user_text,
+    files,
+    history,
+    use_raw_gpt,
+    orchestrator,
+    system_prompt=DEFAULT_SYSTEM_PROMPT,
+    force_summarize=False,
+    include_summaries=True,
+    personality=None
+):
     logger.debug(f"[Handle Submit] Received user_text: {user_text}")
+
+    # Get conversation logger
+    conversation_logger = get_conversation_logger()
 
     if not user_text.strip():
         yield {"role": "assistant", "content": "⚠️ Empty input received."}
@@ -30,8 +45,10 @@ async def handle_submit(user_text, files, history, use_raw_gpt, orchestrator, fo
 
     # Process files into the 'file_data' list
     file_data = []
+    file_names = []  # Track file names for metadata
     if files:
         for file in files:
+            file_names.append(file.name)
             try:
                 if file.name.endswith(".txt"):
                     with open(file.name, 'r', encoding='utf-8') as f:
@@ -50,49 +67,97 @@ async def handle_submit(user_text, files, history, use_raw_gpt, orchestrator, fo
     # Merge file content into user_input
     merged_input = user_text + "\n\n" + "\n\n".join(file_data)
 
+    # RAW MODE: go straight through orchestrator (personality hook is handled inside process_user_query)
     if use_raw_gpt:
-        logger.info("[Handle Submit] RAW MODE ENABLED — skipping memory and prompt building.")
+        logger.info("[Handle Submit] RAW MODE ENABLED – skipping memory and prompt building.")
+
         response_text, debug_info = await orchestrator.process_user_query(
             user_input=merged_input,
             files=None,
-            use_raw_mode=True
+            use_raw_mode=True,
+            personality=personality
         )
+
+        # Log the raw mode conversation
+        conversation_logger.log_interaction(
+            user_input=user_text,  # Log original input without file content for clarity
+            assistant_response=response_text,
+            metadata={
+                'mode': 'raw',
+                'files': file_names if file_names else None,
+                'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
+            }
+        )
+
         yield {"role": "assistant", "content": response_text}
         return
 
-    # Otherwise proceed with enhanced mode
-    full_prompt = await orchestrator.prompt_builder.build_prompt(
-        user_input=merged_input,
-        include_dreams=True,
-        include_wiki=True,
-        include_semantic=True,
-        include_summaries=include_summaries
+    # ENHANCED MODE: build prompt first via orchestrator.prepare_prompt (do NOT pass personality here)
+    full_prompt, system_prompt = await orchestrator.prepare_prompt(
+        user_input=user_text,
+        files=files,
+        use_raw_mode=False  # enhanced mode
     )
 
     logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
 
     final_output = ""
     try:
-        logger.debug(f"[🔍 FINAL MESSAGE PAYLOAD TO OPENAI]:\n{json.dumps([{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': full_prompt}], indent=2)}")
+        logger.debug(
+            "[🔍 FINAL MESSAGE PAYLOAD TO OPENAI]:\n" +
+            json.dumps(
+                [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': full_prompt}],
+                indent=2
+            )
+        )
 
         async for chunk in orchestrator.response_generator.generate_streaming_response(
             prompt=full_prompt,
-            model_name=orchestrator.model_manager.get_active_model_name()
+            model_name=orchestrator.model_manager.get_active_model_name(),
+            system_prompt=system_prompt
         ):
             final_output = smart_join(final_output, chunk)
             yield {"role": "assistant", "content": final_output}
 
     except Exception as e:
         logger.error(f"[HANDLE_SUBMIT] Streaming error: {e}")
-        yield {"role": "assistant", "content": f"⚠️ Streaming error: {str(e)}"}
+        error_message = f"⚠️ Streaming error: {str(e)}"
+
+        # Log error conversation
+        conversation_logger.log_interaction(
+            user_input=user_text,
+            assistant_response=error_message,
+            metadata={
+                'error': str(e),
+                'mode': 'enhanced',
+                'files': file_names if file_names else None
+            }
+        )
+
+        yield {"role": "assistant", "content": error_message}
 
     finally:
-        if final_output or len(user_input.strip()) > 20:
+        if final_output and len(user_text.strip()) > 0:
+            # Log successful conversation
+            conversation_logger.log_interaction(
+                user_input=user_text,  # Log original input for clarity
+                assistant_response=final_output,
+                metadata={
+                    'mode': 'enhanced',
+                    'files': file_names if file_names else None,
+                    'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
+                    'topic': getattr(orchestrator, 'current_topic', None)
+                }
+            )
+
+            # Store in memory system (existing code)
             try:
                 logger.info("[HANDLE_SUBMIT] Storing interaction in memory...")
+                tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
                 await orchestrator.memory_system.store_interaction(
                     query=merged_input,
-                    response=final_output
+                    response=final_output,
+                    tags=tags
                 )
                 logger.info("[HANDLE_SUBMIT] Interaction successfully stored.")
             except Exception as e:
