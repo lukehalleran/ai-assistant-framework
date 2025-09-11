@@ -1,4 +1,4 @@
-# semantic_chunker.py
+# knowledge/topic_manager.py
 import logging
 
 # Use the root logger or create a child logger that will inherit handlers
@@ -8,7 +8,6 @@ import json
 from collections import Counter
 import spacy
 import os
-from utils.logging_utils import log_and_time
 
 class TopicManager:
     def __init__(self, top_topics_file="data/top_topics.json"):
@@ -21,6 +20,7 @@ class TopicManager:
         self.user_topic_counter = Counter()
         self._load_top_topics()
         self.nlp = spacy.load("en_core_web_sm")
+        self.last_topic: str | None = None  # <- track most-recent primary topic
 
     def _load_top_topics(self):
         if os.path.exists(self.top_topics_file):
@@ -64,7 +64,20 @@ class TopicManager:
         # Use current topics as the active topics for this query
         self.top_topics = set(current_topics)
 
+        # Remember “primary” topic for the most recent text
+        self.last_topic = current_topics[0] if current_topics else None
+
         return current_topics
+
+    def get_primary_topic(self, text: str | None = None) -> str | None:
+        """
+        Return a single best topic string. If text is provided, derive from it;
+        else use the last seen topic from update_from_user_input.
+        """
+        if text:
+            topics = self.extract_entities_and_topics(text)
+            self.last_topic = topics[0] if topics else None
+        return self.last_topic
 
     def refresh_top_topics(self):
         popular_user_topics = [topic for topic, count in self.user_topic_counter.items() if count >= 3]
