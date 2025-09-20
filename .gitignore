@@ -248,6 +248,9 @@ metadata.parquet
 vector_index_ivf.faiss
 # Large data artifacts
 data/
+!data/pipeline/
+!data/pipeline/*.py
+
 daemon_memory/
 test_chroma_db/
 embeddings_mmap.dat
