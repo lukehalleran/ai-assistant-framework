@@ -57,7 +57,7 @@ MANIFEST
 #Phi 2 stuff
 *.gguf
 *.gguf.*
-models/
+
 ha
 # Installer logs
 pip-log.txt
