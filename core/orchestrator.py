@@ -18,6 +18,79 @@ def is_deictic(text: str) -> bool:
     return t in {"what about that?", "that?", "and that?"}
 
 
+class _SimplePromptBuilder:
+    """Fallback prompt builder used when the unified builder is unavailable."""
+
+    async def build_prompt(self, user_input: str, **_: Any) -> str:
+        return user_input or ""
+
+
+class _InMemoryCorpus:
+    """Minimal corpus manager used by fallback memory coordinator."""
+
+    def __init__(self) -> None:
+        self._entries: List[Dict[str, Any]] = []
+
+    def add_entry(self, query: str, response: str, tags: Optional[List[str]] = None) -> None:
+        self._entries.append({
+            "query": query,
+            "response": response,
+            "timestamp": datetime.now(),
+            "tags": tags or [],
+        })
+
+    def get_recent_memories(self, limit: int) -> List[Dict[str, Any]]:
+        if limit <= 0:
+            return []
+        return self._entries[-limit:]
+
+    def get_summaries(self, _limit: int) -> List[Dict[str, Any]]:
+        return []
+
+
+class _FallbackMemoryCoordinator:
+    """Extremely small in-memory memory system for offline testing."""
+
+    def __init__(self) -> None:
+        self.corpus_manager = _InMemoryCorpus()
+        self.gate_system = None
+
+    async def store_interaction(self, query: str, response: str, tags: Optional[List[str]] = None) -> None:
+        self.corpus_manager.add_entry(query, response, tags)
+
+    async def get_memories(self, _query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        recent = list(reversed(self.corpus_manager.get_recent_memories(limit)))
+        return [
+            {
+                "query": item.get("query", ""),
+                "response": item.get("response", ""),
+                "metadata": {"source": "recent", "final_score": 1.0},
+            }
+            for item in recent
+        ]
+
+    async def retrieve_relevant_memories(self, _query: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        limit = (config or {}).get("recent_count", 5)
+        recent = list(reversed(self.corpus_manager.get_recent_memories(limit)))
+        memories = [
+            {
+                "query": item.get("query", ""),
+                "response": item.get("response", ""),
+                "source": "recent",
+                "final_score": 1.0,
+            }
+            for item in recent
+        ]
+        counts = {
+            "recent": len(memories),
+            "semantic": 0,
+            "hierarchical": 0,
+        }
+        return {"memories": memories, "counts": counts}
+
+SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
+wiki_api = WikipediaAPI()
+gate_system.wikipedia_api = wiki_api  # This sets it globally
 class DaemonOrchestrator:
     """
     Single orchestrator (prepare + generate split).

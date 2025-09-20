@@ -1,10 +1,12 @@
-# daemon_7_11_25_refactor/main.py
+# main.py
 import asyncio
 import sys
 import os
+from datetime import datetime
+
 from utils.logging_utils import get_logger
 from utils.time_manager import TimeManager
-from datetime import datetime# Setup logging
+# Setup logging
 logger = get_logger("main")
 
 # Add parent directory to path
@@ -15,16 +17,23 @@ sys.path.append(parent_dir)
 from core.response_generator import ResponseGenerator
 from core.orchestrator import DaemonOrchestrator
 from utils.file_processor import FileProcessor
+from utils.conversation_logger import get_conversation_logger
+
 from memory.memory_coordinator import MemoryCoordinator
 from memory.corpus_manager import CorpusManager
-from memory.memory_interface import HierarchicalMemorySystem
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from processing.gate_system import MultiStageGateSystem
 from gui.launch import launch_gui
 from knowledge.topic_manager import TopicManager
 from knowledge.WikiManager import WikiManager
-from models.tokenizer_manager import TokenizerManager
+# during startup
+from knowledge.WikiManager import WikiManager, _get_embedder
+_ = _get_embedder("all-MiniLM-L6-v2")
 
+from processing.gate_system import set_topic_resolver
+from models.tokenizer_manager import TokenizerManager
+from config.app_config import config, CHROMA_PATH, CORPUS_FILE
+orchestrator = None  # module-scope
 # Import model manager
 try:
     from models.model_manager import ModelManager
@@ -60,56 +69,73 @@ except ImportError:
         def close(self):
             logger.info("Mock: Closing model manager")
 
-#Instantate Time Manager
-time_manager = TimeManager()
-topic_manager=TopicManager()
-wiki_manager = WikiManager()
-tokenizer_manager=TokenizerManager()
+
+# main.py
 try:
-    from core.prompt_builder_v2 import UnifiedPromptBuilder
-    from processing.gate_system import GatedPromptBuilder
+    from core.prompt_builder_v2 import UnifiedPromptBuilder as _UnifiedPromptBuilder
+    HAS_UNIFIED_PROMPT = True
     logger.info("Found prompt builders, will use enhanced mode")
-except ImportError as e:
-    logger.warning(f"Prompt builders not found: {e}, will use raw mode")
+except Exception as e:  # catch *any* import-time failure, not just ImportError
+    HAS_UNIFIED_PROMPT = False
+    logger.warning(f"Prompt builders not available: {e}; falling back to raw mode")
+# after HAS_UNIFIED_PROMPT is set
+class _SimplePromptBuilder:
+    async def build_prompt(self, user_input: str, **kwargs) -> str:
+        # ultra-simple fallback: just return user_input as the "prompt"
+        return user_input
+# main.py (updated build_orchestrator function)
 def build_orchestrator():
     """Builds and returns a configured orchestrator"""
+    # Create model_manager FIRST
     model_manager = ModelManager()
     model_manager.load_openai_model("gpt-4-turbo", "gpt-4-turbo")
-    model_manager.switch_model("gpt-4-turbo")
+    model_manager.switch_model("claude-opus")
     logger.info(f"[ModelManager] Active model set to: {model_manager.get_active_model_name()}")
-    response_generator = ResponseGenerator(model_manager)
+
+    # NOW create instances that depend on model_manager
+    time_manager = TimeManager()
+    tokenizer_manager = TokenizerManager(model_manager=model_manager)
+    topic_manager = TopicManager()
+    # IMPORTANT: get_primary_topic must return str | None (not (str, …))
+    set_topic_resolver(topic_manager.get_primary_topic)
+    wiki_manager = WikiManager()
+
+    gate_system = MultiStageGateSystem(model_manager)
+    response_generator = ResponseGenerator(model_manager, time_manager)
     file_processor = FileProcessor()
 
-    # Build the prompt builder directly (UnifiedPromptBuilder is now standalone)
-    chroma_store = MultiCollectionChromaStore(persist_directory="daemon_memory")
-    # ✅ Explicitly grab the semantic collection
-    semantic_collection = chroma_store.collections.get("semantic")
+    chroma_store = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
+    # Build shared corpus manager once
+    corpus_manager = CorpusManager(corpus_file=CORPUS_FILE)
 
-    # ✅ Initialize hierarchical memory with correct collection
-    hierarchical_memory = HierarchicalMemorySystem(
-        model_manager=model_manager,
+    # Single coordinator instance (use the SAME corpus manager)
+    memory_coordinator = MemoryCoordinator(
+        corpus_manager=corpus_manager,
         chroma_store=chroma_store,
-    )
-
-    # ✅ MemoryCoordinator with working memory system
-    memory_system = MemoryCoordinator(
-        corpus_manager=CorpusManager(),
-        chroma_store=chroma_store,
-        hierarchical_memory=hierarchical_memory,
-        gate_system=MultiStageGateSystem(model_manager)
-    )
-
-    logger.info(f"[Memory Boot] Chroma collection set: {semantic_collection is not None}")
-    logger.info(f"[Memory Boot] Loaded hierarchical memory count: {len(hierarchical_memory.memories)}")
-
-    prompt_builder = UnifiedPromptBuilder(
+        gate_system=gate_system,
+        topic_manager=topic_manager,   # will be honored if __init__ uses `or TopicManager()`
         model_manager=model_manager,
-        memory_coordinator=memory_system,
-        tokenizer_manager=TokenizerManager(),
-        wiki_manager=wiki_manager,
-        topic_manager=TopicManager(),
-        gate_system=MultiStageGateSystem(model_manager)
+        time_manager=time_manager
     )
+    # Keep a local reference; we'll pass it where needed
+    coord = memory_coordinator
+
+    if HAS_UNIFIED_PROMPT:
+        prompt_builder = _UnifiedPromptBuilder(
+            model_manager=model_manager,
+            memory_coordinator=coord,  # <- same instance
+            tokenizer_manager=tokenizer_manager,
+            wiki_manager=wiki_manager,
+            topic_manager=topic_manager,
+            gate_system=gate_system,
+    )
+        mc = getattr(prompt_builder, "memory_coordinator", None)
+        logger.info("[orchestrator] coord wired: type=%s has get_memories=%s get_facts=%s",
+        type(mc), hasattr(mc, "get_memories"), hasattr(mc, "get_facts"))
+
+    else:
+        logger.warning("Using simple fallback prompt builder")
+        prompt_builder = _SimplePromptBuilder()
 
     from personality.personality_manager import PersonalityManager
     return DaemonOrchestrator(
@@ -118,9 +144,12 @@ def build_orchestrator():
         file_processor=file_processor,
         prompt_builder=prompt_builder,
         personality_manager=PersonalityManager(),
-        memory_system=memory_system
+        memory_system=coord,
+        topic_manager=topic_manager,
+        wiki_manager=wiki_manager,
+        tokenizer_manager=tokenizer_manager,
+        conversation_logger=get_conversation_logger()
     )
-
 
 async def test_orchestrator():
     orchestrator = build_orchestrator()
@@ -141,7 +170,7 @@ async def test_prompt_with_summaries():
     orchestrator = build_orchestrator()
     corpus_manager = orchestrator.memory_system.corpus_manager
 
-    if len(corpus_manager.get_summaries()) < 2:
+    if len(corpus_manager.get_summaries()) < 4:
         print("Creating summaries...")
         corpus_manager.create_summary_now(5)
         corpus_manager.create_summary_now(10)
@@ -213,5 +242,56 @@ if __name__ == "__main__":
         traceback.print_exc()
     finally:
         print("\nShutting down...")
-        if hasattr(ModelManager, 'close'):
-            ModelManager().close()
+
+        try:
+            # Gather session buffers, if your logger tracks them
+            session_convos = []
+            session_summaries = []
+            if orchestrator:
+                # If your conversation logger exposes a buffer of [{'query','response'}, ...]
+                try:
+                    logger_obj = getattr(orchestrator, "conversation_logger", None)
+                    if logger_obj and hasattr(logger_obj, "buffer"):
+                        session_convos = list(logger_obj.buffer)
+                except Exception:
+                    pass
+
+                # Pull any summaries collected in this run if you keep them
+                try:
+                    pb = getattr(orchestrator, "prompt_builder", None)
+                    if pb and isinstance(getattr(pb, "_last_summaries", None), list):
+                        session_summaries = list(pb._last_summaries)
+                except Exception:
+                    pass
+
+                # Ensure we can call async at shutdown
+                async def _do_shutdown_reflection():
+                    try:
+                        await orchestrator.memory_system.run_shutdown_reflection(
+                            session_conversations=session_convos,
+                            session_summaries=session_summaries
+                        )
+                    except Exception as e:
+                        logger.error(f"Shutdown reflection failed: {e}")
+
+                try:
+                    import asyncio as _a
+                    loop = None
+                    try:
+                        loop = _a.get_running_loop()
+                    except RuntimeError:
+                        loop = None
+                    if loop and loop.is_running():
+                        # schedule and give it a beat
+                        loop.create_task(_do_shutdown_reflection())
+                    else:
+                        _a.run(_do_shutdown_reflection())
+                except Exception:
+                    pass
+        finally:
+            # close model manager cleanly (don’t instantiate a new one)
+            try:
+                if orchestrator and hasattr(orchestrator, "model_manager"):
+                    orchestrator.model_manager.close()
+            except Exception:
+                pass

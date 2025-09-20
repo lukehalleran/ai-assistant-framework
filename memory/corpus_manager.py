@@ -2,7 +2,7 @@
 import json
 import os
 from datetime import datetime
-from typing import List, Dict
+from typing import Any, Dict, List, Optional
 from utils.logging_utils import get_logger, log_and_time
 
 logger = get_logger("corpus_manager")

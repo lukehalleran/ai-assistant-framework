@@ -257,3 +257,7 @@ embeddings_mmap.dat
 vector_index_ivf.faiss
 metadata.parquet
 all-files.txt
+
+!data/pipeline/
+!data/pipeline/*.py
+!data/pipeline/**
