@@ -36,6 +36,7 @@ import httpx  # <— added for title search + summary fallback
 # --- app-local ---
 from config.app_config import GATE_REL_THRESHOLD
 from utils.logging_utils import log_and_time, get_logger
+from utils.query_checks import is_deictic_followup
 
 logger = get_logger(__name__)
 logger.debug("gate_system.py loaded — cosine similarity gating active")

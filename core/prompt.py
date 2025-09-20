@@ -23,6 +23,7 @@ import time
 import asyncio
 from typing import Dict, List, Optional, Any, Iterable
 from datetime import datetime
+from utils.time_manager import TimeManager
 
 from memory.memory_consolidator import MemoryConsolidator
 from utils.logging_utils import get_logger, log_and_time
@@ -45,6 +46,73 @@ except Exception:
 logger = get_logger("prompt_builder_v2")
 
 
+class _FallbackCorpusManager:
+    """Very small in-memory corpus to support compatibility builders."""
+
+    def __init__(self) -> None:
+        from collections import deque
+
+        self._entries = deque(maxlen=500)
+
+    def add_entry(self, query: str, response: str, tags=None, timestamp=None):
+        self._entries.append({
+            "query": query,
+            "response": response,
+            "tags": tags or [],
+            "timestamp": timestamp or datetime.now(),
+        })
+
+    def get_recent_memories(self, count: int = 3):
+        return list(self._entries)[-count:]
+
+    def get_summaries(self, _count: int = 3):
+        return []
+
+    def add_summary(self, *_, **__):
+        return None
+
+
+class _FallbackMemoryCoordinator:
+    """Fallback memory coordinator used when full storage stack is unavailable."""
+
+    def __init__(self) -> None:
+        self.corpus_manager = _FallbackCorpusManager()
+        self.gate_system = None
+        self.current_topic = "general"
+
+    async def store_interaction(self, query: str, response: str, tags=None):
+        self.corpus_manager.add_entry(query, response, tags)
+
+    async def get_memories(self, _query: str, limit: int = 20, topic_filter: str | None = None):
+        items = list(self.corpus_manager.get_recent_memories(limit))
+        if topic_filter and topic_filter != "general":
+            items = [i for i in items if f"topic:{topic_filter}" in (i.get("tags") or [])]
+        return [
+            {
+                "query": item.get("query", ""),
+                "response": item.get("response", ""),
+                "timestamp": item.get("timestamp", datetime.now()),
+                "source": "recent",
+                "metadata": {"truth_score": 0.5},
+            }
+            for item in reversed(items)
+        ][:limit]
+
+    async def retrieve_relevant_memories(self, query: str, config=None):
+        memories = await self.get_memories(query, limit=(config or {}).get("max_memories", 20))
+        return {"memories": memories, "counts": {"recent": len(memories), "semantic": 0, "hierarchical": 0}}
+
+    def get_summaries(self, limit: int = 3):
+        return self.corpus_manager.get_summaries(limit)
+
+    def get_dreams(self, _limit: int = 2):
+        return []
+
+    async def get_facts(self, *_, **__):
+        return []
+
+
+
 # === helpers ================================================================
 
 def _parse_bool(s: Optional[str], default: bool = False) -> bool:
@@ -58,8 +126,11 @@ def _parse_bool(s: Optional[str], default: bool = False) -> bool:
         return False
     return default
 
-def _as_summary_dict(text: str, tags: list[str], source: str) -> dict:
-    return {"content": text, "type": "summary", "tags": tags, "source": source}
+def _as_summary_dict(text: str, tags: list[str], source: str, timestamp: Optional[str] = None) -> dict:
+    out = {"content": text, "type": "summary", "tags": tags, "source": source}
+    if timestamp:
+        out["timestamp"] = timestamp
+    return out
 
 def _dedupe_keep_order(items: Iterable[Any], key_fn=lambda x: str(x).strip().lower()) -> List[Any]:
     """De-duplicate while preserving order. key_fn extracts a stable identity."""
@@ -118,6 +189,19 @@ PROMPT_MAX_SUMMARIES   = int(os.getenv("PROMPT_MAX_SUMMARIES", "5"))
 PROMPT_MAX_DREAMS      = int(os.getenv("PROMPT_MAX_DREAMS", "3"))
 PROMPT_MAX_REFLECTIONS=PROMPT_MAX_REFLECTIONS = int(os.getenv("PROMPT_MAX_REFLECTIONS", "3"))
 SHOW_EMPTY_SECTIONS = _parse_bool(os.getenv("PROMPT_SHOW_EMPTY_SECTIONS", "1"))
+ENABLE_MIDDLE_OUT   = _parse_bool(os.getenv("ENABLE_MIDDLE_OUT", "1"))
+USER_INPUT_MAX_TOKENS = int(os.getenv("USER_INPUT_MAX_TOKENS", "4096"))
+MEMORY_ITEM_MAX_TOKENS = int(os.getenv("MEMORY_ITEM_MAX_TOKENS", "512"))
+SEMANTIC_ITEM_MAX_TOKENS = int(os.getenv("SEMANTIC_ITEM_MAX_TOKENS", "800"))
+
+# Semantic search knobs
+SEM_K = int(os.getenv("SEM_K", "8"))
+SEM_TIMEOUT_S = float(os.getenv("SEM_TIMEOUT_S", "5.0"))  # allow first-load index/model costs
+
+# Semantic stitching knobs
+SEM_STITCH_MAX_CHARS = int(os.getenv("SEM_STITCH_MAX_CHARS", "0"))  # 0 disables stitching
+SEM_STITCH_TOP_TITLES = int(os.getenv("SEM_STITCH_TOP_TITLES", "1"))
+SEM_STITCH_MIN_CHUNKS = int(os.getenv("SEM_STITCH_MIN_CHUNKS", "2"))
 
 
 # LLM summaries controls (timeouts + force switch)
@@ -165,28 +249,67 @@ class UnifiedPromptBuilder:
     def __init__(
         self,
         model_manager,
-        memory_coordinator,
-        tokenizer_manager,  # expects an instance; we preserve your fallback
-        wiki_manager,
-        topic_manager,
+        memory_coordinator=None,
+        tokenizer_manager=None,  # expects an instance; we preserve your fallback
+        wiki_manager=None,
+        topic_manager=None,
         gate_system=None,
         max_tokens: int = MODEL_MAX_TOKENS,
         reserved_for_output: int = RESERVE_FOR_COMPLETION
     ):
         self.model_manager = model_manager
-        self.memory_coordinator = memory_coordinator
+
+        resolved_topic_manager = topic_manager
+        if resolved_topic_manager is None:
+            try:
+                from utils.topic_manager import TopicManager
+
+                resolved_topic_manager = TopicManager()
+            except Exception:
+                resolved_topic_manager = None
+
+        resolved_gate_system = gate_system
+        if resolved_gate_system is None:
+            try:
+                from processing.gate_system import MultiStageGateSystem
+
+                resolved_gate_system = MultiStageGateSystem(model_manager)
+            except Exception:
+                resolved_gate_system = None
+
+        resolved_memory = memory_coordinator
+        if resolved_memory is None:
+            resolved_memory = self._build_default_memory_coordinator(
+                model_manager=model_manager,
+                gate_system=resolved_gate_system,
+                topic_manager=resolved_topic_manager,
+            )
+
+        self.memory_coordinator = resolved_memory
         self.consolidator = MemoryConsolidator(model_manager=self.model_manager)
-        # Preserve your original instance-or-fallback behavior for tokenizer_manager
+
         if tokenizer_manager is None or isinstance(tokenizer_manager, type):
-            from models.tokenizer_manager import TokenizerManager
-            self.tokenizer_manager = TokenizerManager(model_manager)
+            try:
+                from models.tokenizer_manager import TokenizerManager
+
+                self.tokenizer_manager = TokenizerManager(model_manager)
+            except Exception:
+                self.tokenizer_manager = None
         else:
             self.tokenizer_manager = tokenizer_manager
 
-        # Kept for compatibility with any external callers; not used in the unified path.
-        self.wiki_manager = wiki_manager
-        self.topic_manager = topic_manager
-        self.gate_system = gate_system
+        if wiki_manager is None:
+            try:
+                from knowledge.WikiManager import WikiManager
+
+                self.wiki_manager = WikiManager()
+            except Exception:
+                self.wiki_manager = None
+        else:
+            self.wiki_manager = wiki_manager
+
+        self.topic_manager = resolved_topic_manager
+        self.gate_system = resolved_gate_system
 
         # Token budgeting
         self.max_tokens = max_tokens
@@ -202,6 +325,82 @@ class UnifiedPromptBuilder:
         self._request_cache: Dict[str, Any] = {}
         logger.info(f"[PROMPT] Using builder class={self.__class__.__name__} module={self.__module__}")
         self._ensure_summaries_model()
+
+        # Best-effort background warmup for semantic index (FAISS + parquet + embedder).
+        # Keeps first-query latency low so we don't hit the bounded timeout.
+        try:
+            import threading
+            def _warm_semantic_index_sync():
+                try:
+                    from knowledge.semantic_search import get_index
+                    idx = get_index()
+                    idx.load()
+                    logger.debug("[PROMPT][Semantic] warmup complete")
+                except Exception as e:
+                    logger.debug(f"[PROMPT][Semantic] warmup failed: {e}")
+            threading.Thread(target=_warm_semantic_index_sync, daemon=True).start()
+        except Exception:
+            pass
+
+    def _build_default_memory_coordinator(self, *, model_manager, gate_system, topic_manager):
+        try:
+            from config.app_config import CORPUS_FILE, CHROMA_PATH
+            from memory.corpus_manager import CorpusManager
+            from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+            from memory.memory_coordinator import MemoryCoordinator
+            from utils.time_manager import TimeManager
+
+            corpus_manager = CorpusManager(corpus_file=CORPUS_FILE)
+            chroma_store = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
+
+            if gate_system is None:
+                from processing.gate_system import MultiStageGateSystem
+
+                gate_system = MultiStageGateSystem(model_manager)
+
+            return MemoryCoordinator(
+                corpus_manager=corpus_manager,
+                chroma_store=chroma_store,
+                gate_system=gate_system,
+                topic_manager=topic_manager,
+                model_manager=model_manager,
+                time_manager=TimeManager(),
+            )
+        except Exception as exc:
+            logger.debug(f"[PromptBuilder] Falling back to in-memory coordinator: {exc}")
+            fallback = _FallbackMemoryCoordinator()
+            if topic_manager is not None:
+                fallback.current_topic = getattr(topic_manager, "last_topic", "general") or "general"
+            return fallback
+
+    # --- Middle-out compression helpers --------------------------------------
+    def _middle_out(self, text: str, max_tokens: int, head_ratio: float = 0.6) -> str:
+        """Compress text by keeping the head and tail, trimming the middle.
+
+        Uses tokenizer_manager to decide if compression is needed, but slices by characters
+        to avoid requiring a full encode/decode path. Good enough for budget safety.
+        """
+        if not ENABLE_MIDDLE_OUT:
+            return text
+
+        try:
+            model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
+            toks = self.get_token_count(text or "", model_name)
+        except Exception:
+            toks = len((text or "").split())
+        if toks <= max_tokens:
+            return text
+        s = text or ""
+        # Roughly map tokens to characters; assume ~4 chars per token as a conservative heuristic
+        approx_chars = max_tokens * 4
+        head_chars = int(approx_chars * head_ratio)
+        tail_chars = max(0, approx_chars - head_chars)
+        if len(s) <= approx_chars:
+            return s
+        head = s[:head_chars]
+        tail = s[-tail_chars:] if tail_chars > 0 else ""
+        snip = f"\n… [middle-out snipped {len(s) - (head_chars + tail_chars)} chars] …\n"
+        return head + snip + tail
 
     def _ensure_summaries_model(self):
         """
@@ -422,9 +621,11 @@ class UnifiedPromptBuilder:
         try:
             cm = getattr(self.memory_coordinator, "corpus_manager", None)
             if cm and hasattr(cm, "add_summary"):
+                tm = TimeManager()
                 cm.add_summary({
                     "content": text,
-                    "timestamp": datetime.now(),
+                    # store as ISO for consistent downstream display
+                    "timestamp": tm.current_iso(),
                     "type": "summary",
                     "tags": ["summary:stored", "source:llm"]
                 })
@@ -467,40 +668,43 @@ class UnifiedPromptBuilder:
                     except Exception as e:
                         logger.debug(f"[PROMPT][Summaries] persist failed: {e}")
 
-                    # 👇 NEW: also include the most recent stored ones (minus duplicates), up to `count`
+                    # Also include the most recent stored ones (minus duplicates), up to `count`
                     stored: list[dict] = []
                     try:
                         cm = getattr(self.memory_coordinator, "corpus_manager", None)
                         if cm and hasattr(cm, "get_summaries"):
-                            stored = cm.get_summaries(count) or []
+                            stored = cm.get_summaries(count * 2) or []
                     except Exception:
                         stored = []
 
-                    # normalize to text list, filter placeholders
-                    def _is_real(s):
-                        t = (s or "").strip().lower()
-                        return t and not (t.startswith("summary of ") or t.startswith("q:") or " q: " in t or " a: " in t)
+                    def _is_real_text(t: str) -> bool:
+                        t2 = (t or "").strip().lower()
+                        return t2 and not (t2.startswith("summary of ") or t2.startswith("q:") or " q: " in t2 or " a: " in t2)
 
-                    stored_texts = []
+                    # Filter placeholders and dedupe by content text
+                    cleaned = []
+                    seen_txts = {llm.strip()}
                     for s in stored:
-                        stored_texts.append((s.get("content") if isinstance(s, dict) else str(s)).strip())
+                        txt = (s.get("content") if isinstance(s, dict) else str(s)).strip()
+                        if not _is_real_text(txt):
+                            continue
+                        if txt in seen_txts:
+                            continue
+                        seen_txts.add(txt)
+                        cleaned.append({
+                            "content": txt,
+                            "timestamp": s.get("timestamp") if isinstance(s, dict) else None,
+                            "type": "summary",
+                            "tags": ["summary:stored"],
+                            "source": "stored",
+                        })
 
-                    stored_real = [t for t in stored_texts if _is_real(t)]
-
-                    # Deduplicate against the just-forced text
-                    dedup = []
-                    seen = {llm.strip()}
-                    for t in stored_real:
-                        if t not in seen:
-                            dedup.append(t)
-                            seen.add(t)
-
-                    # Build final list: forced first, then the freshest stored, capped
-                    final_texts = [llm] + dedup[: max(0, count - 1)]
-                    return [
-                        _as_summary_dict(final_texts[0], ["llm_summary", "forced"], "llm_forced"),
-                        *[_as_summary_dict(t, ["summary:stored"], "stored") for t in final_texts[1:]]
-                    ]
+                    # Build final: forced first (with timestamp), then freshest stored, capped to count
+                    from utils.time_manager import TimeManager
+                    forced_ts = TimeManager().current_iso()
+                    final = [_as_summary_dict(llm, ["llm_summary", "forced"], "llm_forced", forced_ts)]
+                    final.extend(cleaned[: max(0, count - 1)])
+                    return final
 
 
         # 1) Try stored summaries first
@@ -522,15 +726,26 @@ class UnifiedPromptBuilder:
             t2 = (t or "").lower()
             return (t2.startswith("summary of ") or t2.startswith("q:") or " q: " in t2 or " a: " in t2)
 
-        texts = []
+        # Keep dicts and preserve timestamps, filter placeholders based on content
+        normalized: List[Dict] = []
         for s in summaries or []:
-            texts.append((s.get("content") if isinstance(s, dict) else str(s)).strip())
+            if isinstance(s, dict):
+                txt = (s.get("content") or "").strip()
+                ts = s.get("timestamp")
+            else:
+                txt = str(s).strip(); ts = None
+            if txt and not _looks_placeholder(txt):
+                normalized.append({
+                    "content": txt,
+                    "timestamp": ts,
+                    "type": "summary",
+                    "tags": ["summary:stored"],
+                    "source": "stored",
+                })
+        logger.debug("[PROMPT][Summaries] have_real=%s", len(normalized))
 
-        have_real = [t for t in texts if t and not _looks_placeholder(t)]
-        logger.debug("[PROMPT][Summaries] have_real=%s", len(have_real))
-
-        if have_real:
-            return [{"content": t, "type": "summary", "tags": ["summary:stored"], "source": "stored"} for t in have_real[:count]]
+        if normalized:
+            return normalized[:count]
 
         # 2) LLM fallback (only if not forced above)
         try:
@@ -585,12 +800,14 @@ class UnifiedPromptBuilder:
                 items = await mc.search_by_type("reflections", query="", limit=count)
                 for r in items or []:
                     txt = (r.get("content") if isinstance(r, dict) else str(r)).strip()
+                    ts  = (r.get("timestamp") if isinstance(r, dict) else None)
                     if txt:
                         out.append({
                             "content": txt,
                             "type": "reflection",
                             "tags": ["source:semantic"],
-                            "source": "semantic"
+                            "source": "semantic",
+                            "timestamp": ts,
                         })
                 return out[:count]
         except Exception:
@@ -598,18 +815,33 @@ class UnifiedPromptBuilder:
         # If still empty, last-ditch: read directly from a chroma-like store, if present
         try:
             store = getattr(getattr(self, "memory_coordinator", None), "chroma_store", None)
-            if not out and store and hasattr(store, "get_recent_texts"):
-                recent = store.get_recent_texts("reflections", limit=count) or []
-                for t in recent:
-                    t = (t or "").strip()
-                    if t:
-                        out.append({
-                            "content": t,
-                            "type": "reflection",
-                            "tags": ["source:chroma"],
-                            "source": "chroma"
-                        })
-                return out[:count]
+            if not out and store:
+                if hasattr(store, "get_recent"):
+                    items = store.get_recent("reflections", limit=count) or []
+                    for it in items:
+                        txt = (it.get("content") or "").strip()
+                        ts  = (it.get("metadata") or {}).get("timestamp")
+                        if txt:
+                            out.append({
+                                "content": txt,
+                                "type": "reflection",
+                                "tags": ["source:chroma"],
+                                "source": "chroma",
+                                "timestamp": ts,
+                            })
+                    return out[:count]
+                elif hasattr(store, "get_recent_texts"):
+                    recent = store.get_recent_texts("reflections", limit=count) or []
+                    for t in recent:
+                        t = (t or "").strip()
+                        if t:
+                            out.append({
+                                "content": t,
+                                "type": "reflection",
+                                "tags": ["source:chroma"],
+                                "source": "chroma"
+                            })
+                    return out[:count]
         except Exception:
             pass
 
@@ -680,7 +912,20 @@ class UnifiedPromptBuilder:
             except Exception:
                 pass
 
-            return [{"content": txt, "type": "reflection", "tags": ["source:adhoc"], "source": "adhoc"}]
+            # Stamp timestamp for immediate display
+            try:
+                from utils.time_manager import TimeManager
+                ts = TimeManager().current_iso()
+            except Exception:
+                from datetime import datetime
+                ts = datetime.now().isoformat(sep=" ", timespec="seconds")
+            return [{
+                "content": txt,
+                "type": "reflection",
+                "tags": ["source:adhoc"],
+                "source": "adhoc",
+                "timestamp": ts,
+            }]
         except Exception:
             return []
 
@@ -731,6 +976,8 @@ class UnifiedPromptBuilder:
         # ----------------------------
         # Run all subfetches in parallel (bounded)
         # ----------------------------
+        raw_user_input = user_input
+
         tasks = {
             "recent": self._bounded(self._get_recent_conversations(5), 0.3, []),
             "mems": self._bounded(
@@ -741,13 +988,10 @@ class UnifiedPromptBuilder:
             "sums": self._bounded(self._get_summaries(PROMPT_MAX_SUMMARIES), SUMMARIES_TASK_TIMEOUT, []),
             "dreams":
             self._bounded(self._get_dreams(PROMPT_MAX_DREAMS), 0.3, []) if include_dreams else asyncio.sleep(0, result=[]),
+            # Use unified semantic retrieval (includes FAISS + Chroma fallback and hot-cache)
             "sem": self._bounded(
-                asyncio.to_thread(
-                    semantic_search_with_neighbors,
-                    retrieval_query,
-                    k=int(os.getenv("SEM_K", "8"))
-                ),
-                1.2, []
+                self._get_semantic_chunks(retrieval_query),
+                SEM_TIMEOUT_S, []
             ),
             "refl": self._bounded(self._get_reflections(PROMPT_MAX_REFLECTIONS), 1.5, []),
 
@@ -875,6 +1119,23 @@ class UnifiedPromptBuilder:
                         break
             except Exception:
                 pass
+        # Optional: always inject one fresh reflection even if cap already full
+        try:
+            force_new = _parse_bool(os.getenv("REFLECTIONS_FORCE_NEW", "0"))
+            if force_new and recent:
+                od = await self._reflect_on_demand(recent)
+                if od:
+                    # replace the oldest (tail) if different
+                    existing_texts = [(r.get('content') or '').strip() if isinstance(r, dict) else str(r).strip() for r in (refl or [])]
+                    new_txt = (od[0].get('content') or '').strip()
+                    if new_txt and new_txt not in existing_texts:
+                        if refl:
+                            refl = list(refl)
+                            refl[-1] = od[0]
+                        else:
+                            refl = od
+        except Exception:
+            pass
         logger.debug(f"[PROMPT][Refl] final_after_adhoc={len(refl or [])}")
 
         # Build initial ctx
@@ -891,6 +1152,7 @@ class UnifiedPromptBuilder:
             "current_topic": current_topic or "",
             "system_prompt": system_prompt or "",
             "user_input": user_input or "",
+            "raw_user_input": raw_user_input,
         }
 
         # ----------------------------
@@ -916,8 +1178,99 @@ class UnifiedPromptBuilder:
         refl_c = _truncate_list(_dedupe_keep_order(_safe_list(gated_ctx.get("reflections"))), PROMPT_MAX_REFLECTIONS)
 
         recent_c     = _truncate_list(_safe_list(gated_ctx.get("recent_conversations") or []), PROMPT_MAX_RECENT)
-        sem_chunks_c = _truncate_list(_safe_list(gated_ctx.get("semantic_chunks") or []), PROMPT_MAX_SEMANTIC)
+        # Dedupe semantic chunks by their cleaned or raw text
+        def _sem_key(ch: Any) -> str:
+            if isinstance(ch, dict):
+                return (
+                    (ch.get("filtered_content") or ch.get("text") or ch.get("content") or "")
+                    .strip().lower()
+                )
+            return str(ch).strip().lower()
+        sem_dedup = _dedupe_keep_order(_safe_list(gated_ctx.get("semantic_chunks") or []), key_fn=_sem_key)
+        # Collapse near-duplicates where one text is a large substring of another
+        collapsed: List[Dict[str, Any]] = []
+        for ch in sem_dedup:
+            try:
+                t = (ch.get("filtered_content") or ch.get("text") or ch.get("content") or "").strip()
+            except Exception:
+                t = str(ch).strip()
+            if not t:
+                continue
+            too_similar = False
+            for kept in collapsed:
+                kt = (kept.get("filtered_content") or kept.get("text") or kept.get("content") or "").strip()
+                long, short = (kt, t) if len(kt) >= len(t) else (t, kt)
+                if short and short in long and len(short) / max(1, len(long)) >= 0.85:
+                    too_similar = True
+                    break
+            if not too_similar:
+                collapsed.append(ch)
+        # Optional stitching: merge multiple chunks per top title into large excerpts
+        def _stitch_by_title(items: List[Dict]) -> List[Dict]:
+            if SEM_STITCH_MAX_CHARS <= 0:
+                return items
+            by_title: Dict[str, List[Dict]] = {}
+            for it in items:
+                title = (it.get("title") or "").strip()
+                key = title.lower()
+                by_title.setdefault(key, []).append(it)
+            scored = []
+            for k, lst in by_title.items():
+                mx = max((x.get("relevance_score", 0.0) for x in lst), default=0.0)
+                scored.append((k, len(lst), mx))
+            scored.sort(key=lambda x: (x[1], x[2]), reverse=True)
+            out: List[Dict] = []
+            picked = 0
+            for key, _cnt, _mx in scored:
+                parts: List[str] = []
+                kept = 0
+                for it in sorted(by_title[key], key=lambda x: x.get("relevance_score", 0.0), reverse=True):
+                    txt = (it.get("filtered_content") or it.get("text") or it.get("content") or "").strip()
+                    if not txt:
+                        continue
+                    parts.append(txt)
+                    kept += 1
+                    if kept >= max(1, SEM_STITCH_MIN_CHUNKS):
+                        # keep adding; we'll clip by char budget
+                        pass
+                stitched = "\n\n".join(parts)
+                stitched = stitched[: SEM_STITCH_MAX_CHARS]
+                if stitched:
+                    sample = by_title[key][0]
+                    out.append({
+                        "text": stitched,
+                        "title": sample.get("title") or "",
+                        "source": sample.get("source") or sample.get("namespace") or "wikipedia",
+                        "timestamp": sample.get("timestamp") or sample.get("ts") or "",
+                        "relevance_score": max((x.get("relevance_score", 0.0) for x in by_title[key]), default=0.0),
+                    })
+                    picked += 1
+                if picked >= max(1, SEM_STITCH_TOP_TITLES):
+                    break
+            # Fill remaining slots with non-stitched items from other titles
+            if len(out) < PROMPT_MAX_SEMANTIC:
+                seen_keys = { (o.get("title") or "").strip().lower() for o in out }
+                for it in items:
+                    k = (it.get("title") or "").strip().lower()
+                    if k in seen_keys:
+                        continue
+                    out.append(it)
+                    if len(out) >= PROMPT_MAX_SEMANTIC:
+                        break
+            return out
+
+        stitched = _stitch_by_title(collapsed)
+        sem_chunks_c = _truncate_list(stitched, PROMPT_MAX_SEMANTIC)
         mems_c       = _truncate_list(_safe_list(gated_ctx.get("memories") or []), PROMPT_MAX_MEMS)
+        if not mems_c:
+            fallback_mems = _safe_list(ctx.get("memories") or [])
+            if not fallback_mems:
+                fallback_mems = _safe_list(ctx.get("recent_conversations") or [])
+            if fallback_mems:
+                limit = PROMPT_MAX_MEMS if PROMPT_MAX_MEMS else len(fallback_mems)
+                if limit <= 0:
+                    limit = len(fallback_mems)
+                mems_c = fallback_mems[:limit]
         dreams_c     = _truncate_list(_safe_list(gated_ctx.get("dreams") or []), PROMPT_MAX_DREAMS) if include_dreams else []
         wiki_snip    = (gated_ctx.get("wiki") or gated_ctx.get("wiki_snippet") or "") or ""
 
@@ -940,6 +1293,7 @@ class UnifiedPromptBuilder:
             "semantic_chunks": sem_chunks_c,
             "wiki": wiki_snip,
             "dreams": dreams_c,
+            "raw_user_input": raw_user_input,
 
         }
 
@@ -1174,6 +1528,11 @@ class UnifiedPromptBuilder:
             for conv in context["recent_conversations"]:
                 q = (conv.get("query") or "").strip()
                 r = (conv.get("response") or "").strip()
+                # Middle-out very long Q/A pairs
+                if ENABLE_MIDDLE_OUT and q:
+                    q = self._middle_out(q, MEMORY_ITEM_MAX_TOKENS)
+                if ENABLE_MIDDLE_OUT and r:
+                    r = self._middle_out(r, MEMORY_ITEM_MAX_TOKENS)
                 ts = _fmt_ts(conv.get("timestamp"))
                 if q or r:
                     ts_line = f"[{ts}]\n" if ts else ""
@@ -1184,6 +1543,10 @@ class UnifiedPromptBuilder:
             mems = context.get("memories") or []
             parts.append(f"\n[RELEVANT MEMORIES] (n={len(mems)})\n")
             for mem in mems:
+                # Format and compress long memory responses
+                if isinstance(mem, dict) and (mem.get("response")):
+                    mem = dict(mem)
+                    mem["response"] = self._middle_out(mem.get("response", ""), MEMORY_ITEM_MAX_TOKENS)
                 parts.append(self._format_memory(mem))
 
         # Facts
@@ -1254,11 +1617,30 @@ class UnifiedPromptBuilder:
             parts.append(
                 f"\n[RELEVANT INFORMATION] (n={len(context.get('semantic_chunks') or [])}, ~{total_sem_tokens} tokens)\n"
             )
+            # How many characters to show for each semantic item in the prompt (preview only)
+            try:
+                _sem_disp_chars = int(os.getenv("SEMANTIC_ITEM_DISPLAY_CHARS", "1500"))
+            except Exception:
+                _sem_disp_chars = 300
+
             for chunk in (context.get("semantic_chunks") or []):
-                text = chunk.get("text", chunk.get("content", ""))
+                # Prefer gated/cleaned text if available
+                text = (
+                    chunk.get("filtered_content")
+                    or chunk.get("text")
+                    or chunk.get("content")
+                    or ""
+                )
+                if ENABLE_MIDDLE_OUT and text:
+                    text = self._middle_out(text, SEMANTIC_ITEM_MAX_TOKENS)
                 src  = chunk.get("source") or chunk.get("namespace") or "unknown"
                 ts   = chunk.get("timestamp") or chunk.get("ts") or ""
-                parts.append(f"- src={src} ts={ts} :: {text[:300]}...\n")
+                title = (chunk.get("title") or "").strip()
+                title_part = f" title=\"{title}\"" if title else ""
+                preview = text[: max(0, _sem_disp_chars)] if text else ""
+                if preview and len(text) > len(preview):
+                    preview += "..."
+                parts.append(f"- src={src}{title_part} ts={ts} :: {preview}\n")
 
         # Background knowledge (wiki)
         wiki_text = context.get("wiki") or ""
@@ -1278,8 +1660,14 @@ class UnifiedPromptBuilder:
         if directives:
             parts.append(f"\n[DIRECTIVES]\n{directives}\n")
 
-        # User input last
-        parts.append(f"\n[USER INPUT]\n{user_input}\n")
+        # User input last (middle-out compress very long inputs)
+        display_input = context.get("raw_user_input")
+        if display_input is None or display_input == "":
+            display_input = user_input or ""
+        final_user_input = display_input
+        if ENABLE_MIDDLE_OUT and final_user_input:
+            final_user_input = self._middle_out(final_user_input, USER_INPUT_MAX_TOKENS)
+        parts.append(f"\n[USER INPUT]\n{final_user_input}\n")
 
         return "".join(parts)
 
@@ -1419,20 +1807,130 @@ class UnifiedPromptBuilder:
         return ""
 
     async def _get_semantic_chunks(self, query: str) -> List[Dict]:
-        """Neighborhood semantic search with guarded import."""
+        """
+        Retrieve semantic chunks for the prompt following the configured source order.
+
+        Source options: "faiss" (global FAISS index), "chroma" (wiki_knowledge collection).
+        Uses a small hot-cache: FAISS results are upserted into Chroma with a soft cap.
+        """
+        # Load config defaults lazily to avoid hard import-time deps
         try:
-            from knowledge.semantic_search import semantic_search_with_neighbors as _sem
+            from config.app_config import SEMANTIC_SOURCE_ORDER as _ORDER, WIKI_HOT_CACHE_LIMIT as _HOT_CAP
         except Exception:
-            # If import path differs in this environment, use the one we imported at top
-            _sem = semantic_search_with_neighbors
-        try:
-            # Support both signatures (k or top_k)
+            _ORDER = ["faiss", "chroma"]
+            _HOT_CAP = 50000
+
+        async def _from_chroma() -> List[Dict]:
+            chunks: List[Dict] = []
             try:
-                return _sem(query, k=10) or []
-            except TypeError:
-                return _sem(query, top_k=10) or []
-        except Exception:
-            return []
+                if getattr(self, "memory_coordinator", None):
+                    results = await self.memory_coordinator.search_by_type(
+                        "wiki_knowledge", query=query, limit=10
+                    )
+                    for r in results or []:
+                        if not isinstance(r, dict):
+                            continue
+                        meta = r.get("metadata", {}) or {}
+                        chunks.append({
+                            "text": r.get("content") or meta.get("content") or "",
+                            "title": meta.get("title") or "",
+                            "source": "wiki_knowledge",
+                            "timestamp": meta.get("timestamp"),
+                            "relevance_score": r.get("relevance_score", 0.0),
+                        })
+            except Exception:
+                return []
+            return chunks
+
+        async def _from_faiss_and_hotcache() -> List[Dict]:
+            # Import FAISS neighbor search with guard
+            try:
+                from knowledge.semantic_search import semantic_search_with_neighbors as _sem
+            except Exception:
+                # If import path differs in this environment, use the one we imported at top
+                try:
+                    _sem = semantic_search_with_neighbors
+                except Exception:
+                    return []
+
+            # Run search
+            try:
+                try:
+                    faiss_res = _sem(query, k=SEM_K) or []
+                except TypeError:
+                    faiss_res = _sem(query, top_k=SEM_K) or []
+            except Exception:
+                faiss_res = []
+
+            if not faiss_res:
+                return []
+
+            # Hot-cache into Chroma (best-effort, soft cap)
+            try:
+                store = getattr(getattr(self, "memory_coordinator", None), "chroma_store", None)
+                if store is not None:
+                    stats = store.get_collection_stats() or {}
+                    wiki_count = int((stats.get("wiki_knowledge") or {}).get("count", 0))
+                    if wiki_count < _HOT_CAP:
+                        for r in faiss_res:
+                            text = (r.get("text") or r.get("content") or "").strip()
+                            if not text:
+                                continue
+                            title = (r.get("title") or "").strip()
+                            # Clean wiki-ish markup before caching
+                            try:
+                                from processing.gate_system import clean_wikiish as _cw
+                                text = _cw(text)
+                            except Exception:
+                                pass
+                            chunk = {"title": title or "Wikipedia", "id": title or "unknown", "text": text, "chunk_index": 0}
+                            try:
+                                store.add_wiki_chunk(chunk)
+                            except Exception:
+                                pass
+                        # Attempt pruning if we exceeded cap
+                        try:
+                            store.prune_collection_by_timestamp("wiki_knowledge", keep=_HOT_CAP)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # Normalize FAISS records into chunk shape
+            chunks: List[Dict] = []
+            for r in faiss_res:
+                text = (r.get("text") or r.get("content") or "").strip()
+                if not text:
+                    continue
+                # Return cleaned text to the caller
+                try:
+                    from processing.gate_system import clean_wikiish as _cw
+                    text = _cw(text)
+                except Exception:
+                    pass
+                chunks.append({
+                    "text": text,
+                    "title": r.get("title") or "",
+                    "source": r.get("source") or r.get("namespace") or "wikipedia",
+                    "timestamp": r.get("timestamp"),
+                    "relevance_score": float(r.get("similarity", 0.0)),
+                })
+            return chunks
+
+        # Iterate sources per configured order
+        order = [s.strip().lower() for s in (_ORDER or []) if isinstance(s, str)] or ["faiss", "chroma"]
+        for src in order:
+            if src == "chroma":
+                chunks = await _from_chroma()
+                if chunks:
+                    return chunks
+            elif src == "faiss":
+                chunks = await _from_faiss_and_hotcache()
+                if chunks:
+                    return chunks
+
+        # Nothing from any source
+        return []
 
     def _load_directives(self, directives_file: str) -> str:
         """Load directives file if present (kept)."""
@@ -1440,3 +1938,28 @@ class UnifiedPromptBuilder:
             with open(directives_file, 'r') as f:
                 return f.read()
         return ""
+
+
+# -----------------------------------------------------------------------------
+# Compatibility exports
+# -----------------------------------------------------------------------------
+
+
+class PromptBuilder:
+    """Backwards-compatible facade around UnifiedPromptBuilder."""
+
+    def __init__(self, model_manager, **kwargs):
+        self._builder = UnifiedPromptBuilder(model_manager, **kwargs)
+        self.consolidator = getattr(self._builder, "consolidator", None)
+
+    async def build_prompt(self, *args, **kwargs):
+        return await self._builder.build_prompt(*args, **kwargs)
+
+    def __getattr__(self, item):
+        return getattr(self._builder, item)
+
+
+__all__ = ["UnifiedPromptBuilder", "PromptBuilder"]
+# Semantic search knobs
+SEM_K = int(os.getenv("SEM_K", "8"))
+SEM_TIMEOUT_S = float(os.getenv("SEM_TIMEOUT_S", "5.0"))  # allow first-load index/model costs
