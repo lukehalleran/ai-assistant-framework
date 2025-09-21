@@ -1,8 +1,6 @@
 # inspect_chroma.py
 
 from chromadb import PersistentClient
-from chromadb.utils import embedding_functions
-import onnxruntime as ort
 
 def inspect_chroma(path="chroma_db", collection_name="assistant-memory"):
     print(f"🔍 Inspecting ChromaDB at: {path}")
