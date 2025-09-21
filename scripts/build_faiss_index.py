@@ -8,7 +8,6 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
 
 PARQUET_DIR       = "/run/media/lukeh/T9/test_parquet"
 EMBED_MMAP_FILE   = "embeddings_mmap.dat"
