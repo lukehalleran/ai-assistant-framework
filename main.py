@@ -24,7 +24,7 @@ from memory.corpus_manager import CorpusManager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from processing.gate_system import MultiStageGateSystem
 from gui.launch import launch_gui
-from knowledge.topic_manager import TopicManager
+from utils.topic_manager import TopicManager
 from knowledge.WikiManager import WikiManager
 # during startup
 from knowledge.WikiManager import WikiManager, _get_embedder
@@ -72,7 +72,7 @@ except ImportError:
 
 # main.py
 try:
-    from core.prompt_builder_v2 import UnifiedPromptBuilder as _UnifiedPromptBuilder
+    from core.prompt_builder import UnifiedPromptBuilder as _UnifiedPromptBuilder
     HAS_UNIFIED_PROMPT = True
     logger.info("Found prompt builders, will use enhanced mode")
 except Exception as e:  # catch *any* import-time failure, not just ImportError

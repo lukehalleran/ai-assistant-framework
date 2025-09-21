@@ -63,11 +63,12 @@ def resolve_vars(config: dict) -> dict:
 def load_yaml_config(config_path="config.yaml"):
     """Load configuration from YAML file with robust variable substitution."""
     # Try multiple paths
-    paths_to_try = [
+    paths_to_try = list(dict.fromkeys([
         Path(config_path),
+        Path(__file__).parent / config_path,
         Path(__file__).parent.parent / config_path,
-        Path.cwd() / config_path
-    ]
+        Path.cwd() / config_path,
+    ]))
 
     config = {}
     for path in paths_to_try:
