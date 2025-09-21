@@ -20,6 +20,7 @@ data/*.json
 
 # Local logs
 preprocessor.log
+conversation_logs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -261,3 +262,7 @@ all-files.txt
 !data/pipeline/
 !data/pipeline/*.py
 !data/pipeline/**
+core/prompt_builder_v2.py
+
+# Editor swap files
+*.kate-swp

@@ -1,0 +1,29 @@
+
+#/utils/query_checker.py
+
+DEICTIC_HINTS = (
+    "explain", "that", "it", "this", "again", "another way",
+    "different way", "more", "elaborate", "clarify", "what about"
+)
+
+def is_deictic(query: str) -> bool:
+    """Check if query references something from context"""
+    if not query:
+        return False
+    ql = query.lower().strip()
+
+    # Short queries are often deictic
+    if len(ql.split()) <= 5:
+        for hint in DEICTIC_HINTS:
+            if hint in ql:
+                return True
+
+    # Pronouns at the start often indicate reference
+    if ql.startswith(("that", "this", "it", "those", "these")):
+        return True
+
+    return False
+
+def is_deictic_followup(q: str) -> bool:
+    ql = (q or "").lower()
+    return any(h in ql for h in DEICTIC_HINTS)
