@@ -232,10 +232,20 @@ class FactExtractor:
         self.use_regex = use_regex
 
         # Light, high-precision patterns
+        # Generic, high‑precision patterns (applied per line)
+        # Terminators include end‑of‑line to avoid spanning into the assistant text.
         self.fact_patterns = [
-            r'(\w+)\s+(?:is|are|was|were)\s+(.+?)(?:\.|,|;|$)',
-            r'(?:I|you|we)\s+(?:like|love|hate|prefer)\s+(.+?)(?:\.|,|;|$)',
-            r'(?:my|your|our)\s+(\w+)\s+(?:is|are)\s+(.+?)(?:\.|,|;|$)'
+            r'(\w+)\s+(?:is|are|was|were)\s+(.+?)(?:[\.;,!?:]|$)',
+            r'(?:I|you|we)\s+(?:like|love|hate|prefer)\s+(.+?)(?:[\.;,!?:]|$)',
+            r'(?:my|your|our)\s+(\w+)\s+(?:is|are)\s+(.+?)(?:[\.;,!?:]|$)'
+        ]
+
+        # Domain‑helpful patterns: lifting metrics like "my squat is 365 lb"
+        self.lift_patterns = [
+            # my squat is 365, squat: 365 lb, deadlift=405kg, etc.
+            r'\b(?:my\s+)?(squat|bench(?:\s*press)?|deadlift|ohp|overhead\s*press)\s*(?:is|=|:)\s*(\d{2,4})\s*(lbs?|pounds?|kgs?|kg)?\b',
+            # I squatted 365 lb / I benched 225
+            r'\bI\s*(?:just\s*)?(squatted|benched|deadlifted|pressed)\s*(\d{2,4})\s*(lbs?|pounds?|kgs?|kg)?\b',
         ]
 
         logger.debug(
@@ -511,37 +521,94 @@ class FactExtractor:
 
     @log_and_time("Regex Extract")
     def _extract_with_regex(self, text: str) -> List[Tuple[str, str, str, float, str]]:
+        """Apply regexes line‑by‑line to avoid crossing speaker boundaries.
+        Includes generic patterns and lifting‑specific patterns.
+        """
         found: List[Tuple[str, str, str, float, str]] = []
+
+        # Work line‑wise to ensure EOL acts as a terminator
+        lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+        # Strip speaker prefixes where present
+        def strip_prefix(ln: str) -> str:
+            if ln.lower().startswith("user:"):
+                return ln.split(":", 1)[1].strip()
+            if ln.lower().startswith("assistant:"):
+                return ln.split(":", 1)[1].strip()
+            return ln
+
+        norm_lines = [strip_prefix(ln) for ln in lines]
+
+        # 1) Generic patterns
         for pi, pattern in enumerate(self.fact_patterns):
-            try:
-                matches = re.findall(pattern, text, flags=re.IGNORECASE)
-            except Exception as e:
-                logger.warning(f"[FactExtractor] Regex pattern error idx={pi}: {e}")
-                continue
-
-            logger.debug(f"[FactExtractor] Pattern[{pi}] matched {len(matches)}")
-            for mi, m in enumerate(matches[:4]):
-                if isinstance(m, tuple):
-                    if len(m) == 2:
-                        subj, obj = m
-                        rel = "is"
+            total_matches = 0
+            for ln in norm_lines:
+                try:
+                    matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"[FactExtractor] Regex pattern error idx={pi}: {e}")
+                    continue
+                total_matches += len(matches)
+                for mi, m in enumerate(matches[:4]):
+                    if isinstance(m, tuple):
+                        if len(m) == 2:
+                            subj, obj = m
+                            rel = "is"
+                        else:
+                            subj, rel, obj = m[0], "is", " ".join(m[1:])
                     else:
-                        subj, rel, obj = m[0], "is", " ".join(m[1:])
-                else:
-                    subj, rel, obj = "user", "likes", m
+                        subj, rel, obj = "user", "likes", m
 
-                subj, obj = (subj or "").strip(), (obj if isinstance(obj, str) else str(obj)).strip()
+                    subj, obj = (subj or "").strip(), (obj if isinstance(obj, str) else str(obj)).strip()
+                    if 4 < len(subj) + len(obj) < 160:
+                        cleaned = _clean_triple(subj, rel, obj, nlp=_NLP)
+                        if not cleaned:
+                            continue
+                        subj2, rel2, obj2 = cleaned
+                        found.append((subj2, rel2, obj2, 0.6, "regex"))
+                        logger.debug(f"[FactExtractor] Regex kept m[{mi}] -> subj='{subj2}' rel='{rel2}' obj='{obj2}'")
+                    else:
+                        logger.debug(f"[FactExtractor] Regex dropped m[{mi}] (length bounds)")
+            logger.debug(f"[FactExtractor] Pattern[{pi}] matched {total_matches}")
 
-                if 4 < len(subj) + len(obj) < 200:
-                    # Early generic clean before accepting regex hit
+        # 2) Lifting patterns → canonical relation names
+        def lift_rel(verb_or_noun: str) -> str:
+            v = (verb_or_noun or "").lower()
+            if v.startswith("squat") or v == "squatted":
+                return "squat_max"
+            if v.startswith("bench") or v == "benched":
+                return "bench_max"
+            if v.startswith("deadlift") or v == "deadlifted":
+                return "deadlift_max"
+            if v.startswith("ohp") or v.startswith("overhead") or v == "pressed":
+                return "ohp_max"
+            return f"lift_{v}"
+
+        for li, pattern in enumerate(self.lift_patterns):
+            lm_total = 0
+            for ln in norm_lines:
+                try:
+                    matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"[FactExtractor] Lift regex error idx={li}: {e}")
+                    continue
+                lm_total += len(matches)
+                for m in matches[:4]:
+                    # m can be (type, value, unit) or (verb, value, unit)
+                    kind, value, unit = (m[0], m[1], (m[2] or "").lower()) if isinstance(m, tuple) else ("", str(m), "")
+                    rel = lift_rel(kind)
+                    # Normalize unit
+                    unit_norm = "kg" if unit.startswith("kg") else ("lb" if unit else "")
+                    obj = f"{value} {unit_norm}".strip()
+                    subj = "user"
+
                     cleaned = _clean_triple(subj, rel, obj, nlp=_NLP)
                     if not cleaned:
                         continue
                     subj2, rel2, obj2 = cleaned
-                    found.append((subj2, rel2, obj2, 0.6, "regex"))
-                    logger.debug(f"[FactExtractor] Regex kept m[{mi}] -> subj='{subj2}' rel='{rel2}' obj='{obj2}'")
-                else:
-                    logger.debug(f"[FactExtractor] Regex dropped m[{mi}] (length bounds)")
+                    found.append((subj2, rel2, obj2, 0.72, "regex"))
+            if lm_total:
+                logger.debug(f"[FactExtractor] LiftPattern[{li}] matched {lm_total}")
+
         return found
 
     def _canon(self, s: str) -> str:

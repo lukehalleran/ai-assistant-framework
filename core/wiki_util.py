@@ -1,3 +1,4 @@
+#core/wiki_util
 """Shared Wikipedia helpers used by the prompt builder."""
 
 from __future__ import annotations
