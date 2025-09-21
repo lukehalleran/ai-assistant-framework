@@ -3,7 +3,7 @@ This document is a snapshot of the Daemon AI Assistant codebase and architecture
 ├# Project: Daemon — Local AI Assistant
 
 ## Overview:
-Daemon is a local-first, memory-integrated AI assistant running on an RTX 4090. It uses:
+Daemon is a local-first, memory-integrated AI assistant running on an RTX 3060. It uses:
 - ChromaDB for persistent memory (episodic, semantic, summary layers)
 - SentenceTransformer (onnx_mini_lm_l6_v2) for vector embedding
 - Cosine similarity + cross-encoder reranking for gating
@@ -16,6 +16,8 @@ This system aims to simulate human-like memory processing and internal reasoning
 - Goal tracking and internal directives
 - Symbolic/emotional tagging (planned)
 - Long-term retrieval via structured metadata
+- Simulating RL with post processing modification of "truth scalars" attached to data
+-Ability for memories to move stores based on truth scores (dreams can become memories if useful enough)
 
 ## Prompt Use Notes:
 - Logs are consistently formatted to help the LLM reason about flow
@@ -37,11 +39,12 @@ This system aims to simulate human-like memory processing and internal reasoning
 - Pushing to GitHub post-stability check
 
 ###Folder Structure Below:
-── all-files.txt
+.
 ├── chroma
 │   └── chroma.sqlite3
 ├── chroma_db
 │   └── chroma.sqlite3
+├── clean_corpus.py
 ├── config
 │   ├── config.py
 │   ├── __init__.py
@@ -59,16 +62,11 @@ This system aims to simulate human-like memory processing and internal reasoning
 ├── core
 │   ├── __init__.py
 │   ├── orchestrator.py
-│   ├── prompt_buiilder_v2.py
-│   ├── 
-│   ├── 
-│   ├── 
+│   ├── prompt_builder_v2.py
 │   ├── __pycache__
 │   │   ├── __init__.cpython-311.pyc
 │   │   ├── orchestrator.cpython-311.pyc
-│   │   ├──
 │   │   ├── prompt_builder_v2.cpython-311.pyc
-│   │   ├── 
 │   │   ├── query_processor.cpython-311.pyc
 │   │   └── response_generator.cpython-311.pyc
 │   ├── query_processor.py
@@ -99,9 +97,21 @@ This system aims to simulate human-like memory processing and internal reasoning
 ├── data
 │   ├── chroma
 │   ├── chroma_multi
+│   │   ├── 38d168d7-4dbd-48e6-9d1a-cad4b581d8a5
+│   │   │   ├── data_level0.bin
+│   │   │   ├── header.bin
+│   │   │   ├── length.bin
+│   │   │   └── link_lists.bin
+│   │   ├── b794cbe6-6f86-410e-b383-3ce7e56c255e
+│   │   │   ├── data_level0.bin
+│   │   │   ├── header.bin
+│   │   │   ├── length.bin
+│   │   │   └── link_lists.bin
 │   │   └── chroma.sqlite3
 │   ├── corpus
+│   ├── corpus_v4_cleaned.json
 │   ├── corpus_v4.json
+│   ├── corpus_v4.json.bak_20250722_122033
 │   ├── last_query_time.json
 │   ├── pipeline
 │   │   ├── embed_wiki_chunks_to_parquet.py
@@ -113,14 +123,11 @@ This system aims to simulate human-like memory processing and internal reasoning
 │   │   ├── embed_wiki_chunks_to_parquet.py
 │   │   ├── extract_wikipedia_articles.py
 │   │   ├── __init__.py
-│   │   ├── __pycache__
-│   │   │   ├── embed_wiki_chunks_to_parquet.cpython-311.pyc
-│   │   │   ├── extract_wikipedia_articles.cpython-311.pyc
-│   │   │   └── semantic_chunker.cpython-311.pyc
 │   │   ├── semantic_chunker.py
 │   │   └── unified_pipeline.py
 │   └── wiki
 │       └── enwiki-latest-pages-articles.xml
+├── delete_large_memories.py
 ├── embed_checkpoint.json
 ├── embedded_parquet
 │   ├── AccessibleComputing_Unknown.parquet
@@ -134,9 +141,9 @@ This system aims to simulate human-like memory processing and internal reasoning
 │       ├── handlers.cpython-311.pyc
 │       └── launch.cpython-311.pyc
 ├── hierarchical_memory
+│   └── hierarchical_memories.json
 ├── knowledge
 │   ├── __pycache__
-│   │   ├── __init__.cpython-311.pyc
 │   │   ├── semantic_search.cpython-311.pyc
 │   │   ├── topic_manager.cpython-311.pyc
 │   │   └── WikiManager.cpython-311.pyc
@@ -150,7 +157,6 @@ This system aims to simulate human-like memory processing and internal reasoning
 │   ├── memory_interface.py
 │   ├── __pycache__
 │   │   ├── corpus_manager.cpython-311.pyc
-│   │   ├── __init__.cpython-311.pyc
 │   │   ├── memory_coordinator.cpython-311.pyc
 │   │   └── memory_interface.cpython-311.pyc
 │   └── storage
@@ -158,7 +164,6 @@ This system aims to simulate human-like memory processing and internal reasoning
 │       ├── multi_collection_chroma_store.py
 │       ├── __pycache__
 │       │   ├── chroma_store.cpython-311.pyc
-│       │   ├── __init__.cpython-311.pyc
 │       │   └── multi_collection_chroma_store.cpython-311.pyc
 │       └── {storage}
 │           └── __init__.py
@@ -166,7 +171,6 @@ This system aims to simulate human-like memory processing and internal reasoning
 ├── models
 │   ├── model_manager.py
 │   ├── __pycache__
-│   │   ├── __init__.cpython-311.pyc
 │   │   ├── model_manager.cpython-311.pyc
 │   │   └── tokenizer_manager.cpython-311.pyc
 │   └── tokenizer_manager.py
@@ -189,11 +193,14 @@ This system aims to simulate human-like memory processing and internal reasoning
 │   │   └── __init__.cpython-311.pyc
 │   ├── reranking.py
 │   └── tag_generator.py
-├── project_snapshot.py
 ├── project_snapshot.txt
+├── purge_code_memory.py
+├── README.md
 ├── scripts
 │   ├── benchmark.py
 │   ├── build_faiss_index.py
+│   ├── clean_corpus.py
+│   ├── find_big_memory.py
 │   ├── __init__.py
 │   ├── migrate_data.py
 │   └── test_component.py
@@ -219,9 +226,6 @@ This system aims to simulate human-like memory processing and internal reasoning
 │   │   └── test_full_pipeline.py
 │   ├── memory_test.py
 │   ├── mem_route_test.py
-│   ├── __pycache__
-│   │   ├── __init__.cpython-311.pyc
-│   │   └── test_summaries.cpython-311.pyc
 │   ├── test_basic_pipeline.py
 │   ├── test_file_processor.py
 │   ├── test_gated_prompt.py
@@ -230,608 +234,251 @@ This system aims to simulate human-like memory processing and internal reasoning
 │   ├── test_orchestrator.py
 │   ├── test_response_gen.py
 │   └── test_summaries.py
+├── total_memory_wipe.py
 ├── utils
 │   ├── debug_formatter.py
 │   ├── file_processor.py
 │   ├── __init__.py
 │   ├── logging_utils.py
 │   ├── __pycache__
-│   │   ├── file_processor.cpython-311.p
+│   │   ├── file_processor.cpython-311.pyc
+│   │   ├── __init__.cpython-311.pyc
+│   │   ├── logging_utils.cpython-311.pyc
+│   │   ├── time_manager.cpython-311.pyc
+│   │   └── topic_manager.cpython-311.pyc
+│   ├── time_manager.py
+│   └── topic_manager.py
+└── vector_index_ivf.faiss
+-311.p
 
 
-## README: 
-# Daemon AI Assistant Framework
-
-**An advanced Retrieval-Augmented Generation (RAG) system with hierarchical memory, cosine similarity gating, and dynamic personality management**
+## EXISITING README (WANT TO UPGRADE!) 
+# Near Production-Grade Conversational AI with Biologically-Inspired Memory
 
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Framework](https://img.shields.io/badge/framework-custom-orange.svg)]()
+[![GPU](https://img.shields.io/badge/gpu-RTX_3060-green.svg)]()
+
+> Built from scratch over four months as my first Python project, demonstrating a deep understanding of AI systems architecture, memory management, and software engineering best practices.
 
 ---
 
 ## Overview
 
-**Daemon** is a production-ready conversational AI system that enhances language model responses through intelligent context retrieval, hierarchical memory management, and efficient cosine similarity-based gating. Built with a modular architecture, it integrates multiple knowledge sources while maintaining continuity across conversations and sessions.
+This project is an advanced conversational AI framework featuring a **hierarchical memory architecture** inspired by human cognition, efficient semantic retrieval, and adaptive learning mechanisms. Built independently of high-level frameworks, it demonstrates how precise control over AI memory can shift from a stateless to a stateful architecture.
+
+A planned experimental "dream" system aims to locate undiscovered semantic connections ("insights") through stochastic recombination of conversational memories and external knowledge sources, combined with post processing "truth score" evaluation and modification, approximating lightweight reinforcement learning.
 
 ---
 
-##  Why Daemon over LangChain or Haystack?
-
-Unlike higher-abstraction frameworks, Daemon offers:
-- **Direct access to memory internals** (episodic, semantic, procedural, summary)
-- **Custom gating logic** with cosine filtering and optional reranking
-- **Persistent, modifiable memory across sessions** — suitable for long-term assistants
-- **Minimal dependencies** for faster dev cycles and transparent behavior
-
-Daemon trades some plug-and-play ease for **extensibility, control, and interpretability** — ideal for researchers and tinkerers building truly agentic systems.
-
----
-
-## Key Features
-
-### Intelligent Memory Management
-
-- **Hierarchical Architecture**:
-  - *Episodic*: Timestamped conversation turns
-  - *Semantic*: Extracted facts and claims
-  - *Procedural*: How-to tasks and step-by-step knowledge
-  - *Summary*: Long-term memory compression
-  - *Meta*: Memories about memory itself
-
-- **Consolidation** every 20 interactions to prevent overflow
-- **Temporal Decay** with relevance-weighted retrieval
-- **Persistent Across Sessions** — memory lives forever
-
----
-
-###  Efficient Cosine Similarity Gating
-
-- Multi-stage pipeline:
-  1. FAISS semantic search (top 50)
-  2. Cosine filter (threshold = 0.65)
-  3. Hierarchical expansion
-  4. (Optional) Cross-encoder reranking
-
-- Batch processing with NumPy
-- Special handling for meta/system queries
-- Graceful fallback when no high-similarity results found
-
----
-
-###  Advanced Knowledge Integration
-
-- **Wikipedia API** integration with summarization
-- **Semantic search** over embedded documents
-- **Topic extraction** using SpaCy entity recognition
-- **Multi-source fusion** in the prompt builder
-
----
-
-###  Dynamic Personality System
-
-- Hot-swappable personalities define:
-  - Prompt + directive files
-  - Memory access patterns
-  - Tone, verbosity, and source preferences
-
-Built-ins:
-- `Default`: Balanced helper
-- `Therapy`: Long memory span, empathetic
-- `Snarky`: Minimal memory, witty tone
-
----
-
-###  Streaming Response Generation
-
-- `async/await` support
-- Token-by-token streaming output
-- Local or API-based model backends
-- Graceful recovery from stream failures
-
----
-
-###  Production-Ready Tooling
-
-- Full logging (DEBUG, INFO, WARNING)
-- Execution time decorators
-- Prompt truncation and token budget awareness
-- File parsing: TXT, DOCX, CSV, Python
-- Time awareness: Session timestamps and response duration
-
----
-
-##  Dreams and Truth Evaluation (Experimental)
-
-Daemon includes a unique **"dreaming" system**:
-- Memories are recombined and reweighted during idle cycles to form *symbolic insight paths* (dreams)
-- Each memory is scored with a **truth scalar** based on post-convo evaluation
-- Inaccurate memories decay or mutate; consistent ones stabilize
-- Enables long-term *adaptive learning without full RL*
-
-This system helps avoid AI "hallucination lock-in" by reevaluating ideas over time.
-
----
-
-## Interface Preview (Coming Soon)
-
-<!-- Insert a GIF or screenshot here -->
-> Screenshot of Gradio interface showing memory selection, personalities, and live chat stream.
-
----
-
-##  Architecture Diagram
-User Interface
-```
-                       (Gradio Web App)
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Core Orchestrator                    │
-│  Personality Manager • Response Generator • File Parser │
-└─────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                 Prompt Building Pipeline                │
-│   Unified Hierarchical • Gated Builder • Topic Manager │
-└─────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Memory Systems                       │
-│  Memory Coordinator • Hierarchical Memory • Corpus Mgr │
-└─────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                  Knowledge & Storage                    │
-│   Multi-Collection ChromaDB • FAISS • Wikipedia API    │
-└─────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Gating System                        │
-│      Cosine Similarity Filter • Cross-Encoder Rerank   │
-└─────────────────────────────────────────────────────────┘
-```
-##  Configuration
-
-Edit values in `config/config.py`:
-
-```python
-GATE_REL_THRESHOLD = 0.65
-MAX_FINAL_MEMORIES = 5
-DEFAULT_MAX_TOKENS = 2048
-CORPUS_FILE = "data/corpus.json"
-CHROMA_PATH = "data/chroma_db"
-```
-
-## **Project Structure**
-```
-daemon-ai-assistant/
-├── core/               # Core orchestrator and stream gen
-├── memory/             # Episodic, semantic, procedural, etc.
-├── knowledge/          # Wikipedia + semantic chunks
-├── processing/         # Gating and filter systems
-├── personality/        # Personalities + directives
-├── models/             # LLM manager
-├── gui/                # Gradio frontend
-├── utils/              # Logging, timing, loaders
-├── config/             # Constants and paths
-└── tests/              # Unit and integration tests
-```
-
-##  Performance Benchmarks
-
-| Task                 | Latency         |
-|----------------------|-----------------|
-| Memory Retrieval     | <100ms (10k)    |
-| Cosine Gating        | ~50ms (50 items)|
-| Wikipedia Search     | ~500ms          |
-| Response Gen (GPT-4) | ~20–30 tok/s    |
-| Memory Usage         | ~2GB + model    |
-
----
-
-## 🧬 Advanced Usage
-
-### Add New Personality
-
-```python
-"custom": {
-    "system_prompt_file": "system_prompt_custom.txt",
-    "directives_file": "directives_custom.txt",
-    "num_memories": 10,
-    "include_wiki": True,
-    "include_semantic_search": True
-}
-```
-
-### Query Memory System
-
-```python
-memories = await memory_system.hierarchical_memory.retrieve_relevant_memories(
-    query="how does cosine similarity work?", max_memories=10
-)
-
-results = memory_system.chroma_store.search_conversations("cosine", n_results=5)
-```
-
-### Adjust Gating Sensitivity
-
-```python
-gate_system = MultiStageGateSystem(model_manager, cosine_threshold=0.70)
-```
-
-## FAQ
-
-**Q: Can I run this fully locally?**  
-A: Yes — you can use local LLMs (e.g., Mistral, GPT-Neo) and offline embeddings.
-
-**Q: Is there a GUI?**  
-A: Yes! Gradio-based web UI included. CLI mode also supported.
-
-**Q: Does it work with open-weight models?**  
-A: Yes. Local support works with models like LLaMA, Mixtral, Mistral, etc.
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.8+
-- 16GB+ RAM (recommended)
-- 50GB+ disk space
-- CUDA GPU (optional for speed)
-
-### Installation (not yet tested outside Fedora 42)
+## Quick Start
 
 ```bash
 git clone https://github.com/yourusername/daemon-ai-assistant
 cd daemon-ai-assistant
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+
+export OPENAI_API_KEY="your-key"
 python -m spacy download en_core_web_sm
-export OPENAI_API_KEY="your-key-here"  # optional
+
+python main.py  # Web UI at http://localhost:7860
 ```
 
-### Quick Start
+---
 
-```bash
-# Start web interface
-python main.py
+## Layout 
+| Component       | Technology                           | Purpose                                     |
+| --------------- | ------------------------------------ | ------------------------------------------- |
+| Orchestrator    | Custom Async Python                  | Manages the end-to-end query lifecycle      |
+| Memory System   | ChromaDB + Hierarchical Logic        | Persistent, multi-layered memory            |
+| Vector Search   | FAISS                                | High-speed semantic retrieval               |
+| Embedding Model | all-MiniLM-L6-v2                     | Text vectorization                          |
+| Gating System   | Cosine Similarity + Cross-Encoder    | Filters irrelevant context before prompting |
+| LLM Backend     | gpt-4-turbo (or any local/API model) | Response generation                         |
+| User Interface  | Gradio                               | Web-based chat interface                    |
 
-# CLI mode
-python main.py cli
+
+
+
+## Key Features
+
+* **Hierarchical Memory**: Episodic, Semantic, Procedural, and Meta-memory
+* **Real-time Semantic Retrieval**: Sub-100ms latency for 10,000+ items
+* **Dream Generation (Experimental)**: Analogous to human REM sleep
+* **Near Production-Ready**: Logging, async streaming, robust error handling, and atomic persistence
+
+---
+
+## Technical Architecture
+
+### Design Philosophy
+
+Custom-built to ensure:
+
+* Transparency in memory management
+* Debugging ease
+* Experimentation flexibility
+* Inspired by exisiting biological systems
+
+### Core Components
+
+**Hierarchical Memory System**
+- Episodic Memory (ChromaDB + FAISS)
+- Semantic Memory (Cross-encoder reranking)
+- Procedural Memory (Pattern extraction)
+- Meta-Memory (Self-reflection capabilities)
+
+**Multi-Stage Gating Pipeline**
+1. FAISS Semantic Search (Top-50 candidates)
+2. Cosine Similarity Filtering (θ = 0.65)
+3. Hierarchical Memory Expansion
+4. Cross-Encoder Reranking (MS-MARCO MiniLM)
+
+### Technical Highlights
+
+* **Temporal Decay (Memory Forgetting)**
+
+```python
+decay_factor = 1.0 / (1.0 + memory.decay_rate * age_days)
+final_score = relevance * importance * decay_factor * access_boost
 ```
 
-## Contributing
+* **Adaptive Truth Scoring**
+  * Each memory maintains a "truth scalar" based on consistency
+  * Contradictory information triggers re-evaluation
+  * Continuous validation to prevent hallucination
 
-1. Fork this repo  
-2. Create a feature branch  
-3. Add relevant tests  
-4. Open a pull request
+* **Batch Processing**
 
-## License
+  * NumPy optimizations
+  * Asynchronous parallel retrieval
+  * LRU caching
 
-MIT License. See LICENSE for details.
+---
 
-## Acknowledgements
+## Storage & Performance
 
-- Sentence Transformers
-- ChromaDB
-- FAISS
-- Gradio
-- spaCy
+| Component          | Technology           | Purpose          | Performance          |
+| ------------------ | -------------------- | ---------------- | -------------------- |
+| Vector Store       | FAISS IVF Index      | Semantic search  | \~50ms @ 50k vectors |
+| Persistent Storage | ChromaDB             | Long-term memory | \~100ms retrieval    |
+| Embedding Cache    | Memory-mapped arrays | Fast lookups     | <10ms access         |
+| Session State      | Atomic JSON          | Crash recovery   | Instant              |
 
-### .py files below:
-# daemon_7_11_25_refactor/main.py
-import asyncio
-import sys
-import os
-from utils.logging_utils import get_logger
-from utils.time_manager import TimeManager
-from datetime import datetime# Setup logging
-logger = get_logger("main")
+---
 
-# Add parent directory to path
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(parent_dir)
+## Advanced Features
 
-# Import our components
-from core.response_generator import ResponseGenerator
-from core.orchestrator import DaemonOrchestrator
-from utils.file_processor import FileProcessor
-from memory.memory_coordinator import MemoryCoordinator
-from memory.corpus_manager import CorpusManager
-from memory.memory_interface import HierarchicalMemorySystem
-from memory.storage.chroma_store import MultiCollectionChromaStore
-from processing.gate_system import MultiStageGateSystem
-from gui.launch import launch_gui
-from knowledge.topic_manager import TopicManager
-from knowledge.WikiManager import WikiManager
-from models.tokenizer_manager import TokenizerManager
+### Context Fusion
 
-# Import model manager
-try:
-    from models.model_manager import ModelManager
-except ImportError:
-    logger.warning("ModelManager not found, using mock")
-    # Create a mock ModelManager for testing
-    class ModelManager:
-        def __init__(self):
-            self.model_name = "gpt-4-turbo"
-
-        def load_openai_model(self, name, alias):
-            logger.info(f"Mock: Loading {name} as {alias}")
-
-        def switch_model(self, name):
-            logger.info(f"Mock: Switching to {name}")
-            self.model_name = name
-
-        def get_active_model_name(self):
-            return self.model_name
-
-        async def generate_async(self, prompt):
-            # Mock response that simulates streaming
-            async def mock_stream():
-                words = "This is a mock response. The calculation 2+2 equals 4.".split()
-                for word in words:
-                    yield type('obj', (object,), {
-                        'choices': [type('obj', (object,), {
-                            'delta': type('obj', (object,), {'content': word + ' '})()
-                        })()]
-                    })()
-            return mock_stream()
-
-        def close(self):
-            logger.info("Mock: Closing model manager")
-
-#Instantate Time Manager
-time_manager = TimeManager()
-topic_manager=TopicManager()
-wiki_manager = WikiManager()
-tokenizer_manager=TokenizerManager()
-try:
-    from core.prompt_builder_v2 import UnifiedPromptBuilder
-    from processing.gate_system import GatedPromptBuilder
-    logger.info("Found prompt builders, will use enhanced mode")
-except ImportError as e:
-    logger.warning(f"Prompt builders not found: {e}, will use raw mode")
-def build_orchestrator():
-    """Builds and returns a configured orchestrator"""
-    model_manager = ModelManager()
-    model_manager.load_openai_model("gpt-4-turbo", "gpt-4-turbo")
-    model_manager.switch_model("gpt-4-turbo")
-    logger.info(f"[ModelManager] Active model set to: {model_manager.get_active_model_name()}")
-    response_generator = ResponseGenerator(model_manager)
-    file_processor = FileProcessor()
-
-    # Build the prompt builder directly (UnifiedPromptBuilder is now standalone)
-    chroma_store = MultiCollectionChromaStore(persist_directory="daemon_memory")
-    # ✅ Explicitly grab the semantic collection
-    semantic_collection = chroma_store.collections.get("semantic")
-
-    # ✅ Initialize hierarchical memory with correct collection
-    hierarchical_memory = HierarchicalMemorySystem(
-        model_manager=model_manager,
-        chroma_store=chroma_store,
-    )
-
-    # ✅ MemoryCoordinator with working memory system
-    memory_system = MemoryCoordinator(
-        corpus_manager=CorpusManager(),
-        chroma_store=chroma_store,
-        hierarchical_memory=hierarchical_memory,
-        gate_system=MultiStageGateSystem(model_manager)
-    )
-
-    logger.info(f"[Memory Boot] Chroma collection set: {semantic_collection is not None}")
-    logger.info(f"[Memory Boot] Loaded hierarchical memory count: {len(hierarchical_memory.memories)}")
-
-    prompt_builder = UnifiedPromptBuilder(
-        model_manager=model_manager,
-        memory_coordinator=memory_system,
-        tokenizer_manager=TokenizerManager(),
-        wiki_manager=wiki_manager,
-        topic_manager=TopicManager(),
-        gate_system=MultiStageGateSystem(model_manager)
-    )
-
-    from personality.personality_manager import PersonalityManager
-    return DaemonOrchestrator(
-        model_manager=model_manager,
-        response_generator=response_generator,
-        file_processor=file_processor,
-        prompt_builder=prompt_builder,
-        personality_manager=PersonalityManager(),
-        memory_system=memory_system
-    )
-
-
-async def test_orchestrator():
-    orchestrator = build_orchestrator()
-    print("\n" + "="*50)
-    print("Testing Orchestrator")
-    print("="*50)
-
-    # Test 1: Simple query
-    response, debug_info = await orchestrator.process_user_query("What's 2+2? Give a brief answer.")
-    print(f"\nResponse: {response}")
-    for k, v in debug_info.items():
-        if k != 'prompt': print(f"  {k}: {v}")
-
-
-
-# Optional test helpers
-async def test_prompt_with_summaries():
-    orchestrator = build_orchestrator()
-    corpus_manager = orchestrator.memory_system.corpus_manager
-
-    if len(corpus_manager.get_summaries()) < 2:
-        print("Creating summaries...")
-        corpus_manager.create_summary_now(5)
-        corpus_manager.create_summary_now(10)
-
-    prompt = await orchestrator.prompt_builder.build_prompt(
-        user_input="Summarize our previous conversations.",
-        include_dreams=False,
-        include_wiki=False,
-        include_semantic=False,
-        include_summaries=True
-    )
-
-    print("\n" + "=" * 60)
-    print("PROMPT WITH SUMMARIES")
-    print("=" * 60)
-    if "[CONVERSATION SUMMARIES]" in prompt:
-        start = prompt.find("[CONVERSATION SUMMARIES]")
-        end = prompt.find("\n[", start + 1)
-        print(prompt[start:end if end != -1 else None])
-    else:
-        print("❌ No summary section found in prompt!")
-    print("\nTotal prompt length:", len(prompt))
-
-
-async def inspect_summaries():
-    orchestrator = build_orchestrator()
-    memory_system = orchestrator.memory_system
-    corpus_manager = orchestrator.memory_system.corpus_manager
-    summaries = memory_system.corpus_manager.get_summaries(limit=10)
-
-    print("\n" + "=" * 60)
-    print("SUMMARY INSPECTION")
-    print("=" * 60)
-
-    if not summaries:
-        print("No summaries found.")
-        return
-
-    for i, s in enumerate(summaries):
-        timestamp = s.get("timestamp", "Unknown")
-        if isinstance(timestamp, datetime):
-            timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"Summary {i+1}: [{timestamp}] {s.get('tags', [])}")
-        print(f"  {s.get('response', '')[:200]}...\n{'-' * 40}")
-
-
-if __name__ == "__main__":
-    try:
-        mode = sys.argv[1] if len(sys.argv) > 1 else "gui"
-
-        if mode == "cli":
-            asyncio.run(test_orchestrator())
-        elif mode == "test-summaries":
-            from tests.test_summaries import test_summary_integration
-            asyncio.run(test_summary_integration())
-        elif mode == "inspect-summaries":
-            asyncio.run(inspect_summaries())
-        elif mode == "test-prompt-summaries":
-            asyncio.run(test_prompt_with_summaries())
-        else:
-            orchestrator = build_orchestrator()
-            launch_gui(orchestrator)
-
-    except KeyboardInterrupt:
-        print("\nInterrupted by user")
-    except Exception as e:
-        logger.error(f"Startup failed: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        print("\nShutting down...")
-        if hasattr(ModelManager, 'close'):
-            ModelManager().close()
-
-# config.py
-import os
-from utils.logging_utils import get_logger
-
-logger = get_logger("config")
-logger.debug("config.py is alive")
-
-VERSION = os.getenv("DAEMON_VERSION", "v4")
-
-# Base directory for data (production)
-DEFAULT_DATA_DIR = os.path.join(os.getcwd(), "data")
-
-# Construct default production paths
-_default_corpus_file = os.path.join(
-    DEFAULT_DATA_DIR, f"corpus_{VERSION}.json"
-)
-_default_chroma_dir = os.path.join(
-    DEFAULT_DATA_DIR, f"chroma_db_{VERSION}"
-)
-
-# Allow overrides via ENV
-CORPUS_FILE = os.getenv("CORPUS_FILE", _default_corpus_file)
-CHROMA_PATH = os.getenv("CHROMA_PATH", _default_chroma_dir)
-
-logger.debug(f"Using CORPUS_FILE={CORPUS_FILE}")
-logger.debug(f"Using CHROMA_PATH={CHROMA_PATH}")
-
-#DREAM_FILE = f"dreams_{VERSION}.json"
-#DREAM_LOG = f"dream_log_{VERSION}.jsonl"
-IN_HARM_TEST = False 
-DEFAULT_MODEL_NAME = "llama" 
-DREAM_MODEL_NAME="gpt-neo"
-DEFAULT_MAX_TOKENS=2048
-DEFAULT_TOP_P=.9
-DEFAULT_TOP_K=5
-DEFAULT_TEMPERATURE=0.7
-LOCAL_MODEL_CONTEXT_LIMIT = 4096  # or whatever your largest local
-API_MODEL_CONTEXT_LIMIT = 128000 # GPT-4-Turbo etc.
-LOAD_LOCAL_MODEL=True
-SEMANTIC_ONLY_MODE = False
-DEBUG_MODE = True  # Toggle debug info
-CONFIDENCE_THRESHOLD=1.5
-GATE_REL_THRESHOLD = 0.35 # temp for debug        # Minimum relevance score to pass LLM gate (0-1)
-MAX_FINAL_MEMORIES = 5
-RERANK_USE_LLM = True
-CROSS_ENCODER_WEIGHT = 0.7# Maximum memories to return after all filtering
-MEM_NO = 5                      # Number of memories to expand hierarchically
-MEM_IMPORTANCE_SCORE = 0.6      # Minimum importance for parent/child expansion
-MAX_WORKING_MEMORY=10
-CHILD_MEM_LIMIT = 3  # Max children to include per memory
-##Memory module promts
-COSINE_SIMILARITY_THRESHOLD=0.25 #try values between .3 and .7, experiement
-DEFAULT_SUMMARY_PROMPT_HEADER = "Summary of last 20 exchanges:\n"
-DEFAULT_TAGGING_PROMPT = """You are Daemon, my assistant. Extract 5 concise tags or keywords from the following input. Return them as a list, comma-separated.
-
-Input: "{text}"
-
-Tags:"""
-OpenAPIKey = os.getenv("OPENAI_API_KEY", "")
-
-
-
-# === Imports ===
-import torch
-from datetime import datetime
-
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-SYSTEM_PROMPT = "You are Daemon, a brutally honest AI assistant who tells the truth even when uncomfortable, admits ignorance freely, and uses dark humor about current events. You're willing to call out BS while still being genuinely helpful."
-
-
-DEFAULT_CORE_DIRECTIVE = {
-    "query": "[CORE DIRECTIVE]",
-    "response": (
-        "You are an AI assistant. You are helpful, reliable, and memory-persistent.\n"
-        "You should respect user intent and be aligned with their goals."
-    ),
-    "timestamp": datetime.now(),
-    "tags": ["@seed", "core", "directive", "safety"]
+```python
+context_sources = {
+    "recent_conversations": weight=0.4,
+    "semantic_memories": weight=0.3,
+    "knowledge_base": weight=0.2,
+    "summaries": weight=0.1
 }
+```
+
+### Dynamic Personalities
+
+* Modifiable modules adjusting behavior dynamically
+
+### Semantic Chunk Optimization
+
+* Structured, hierarchical Wikipedia embeddings tested on entire database
+
+---
+
+## Performance Metrics
+
+| Operation          | Latency     | Throughput    | Resource Usage |
+| ------------------ | ----------- | ------------- | -------------- |
+| Memory Retrieval   | <100ms      | 1000 qps      | 2GB RAM        |
+| Context Assembly   | \~200ms     | 500 qps       | 4GB RAM        |
+| Response Streaming | 20-30 tok/s | -             | GPU-dependent  |
+| Consolidation      | \~500ms     | Every 20 msgs | Minimal        |
+
+---
+
+## Engineering Quality
+
+* **SOLID Principles**
+* **Design Patterns**
+* **Comprehensive Testing**
+* **Robustness**
+
+---
+
+## Technical Journey
+
+* **Month 1**: Python basics, API integration
+* **Month 2**: Modular refactoring
+* **Month 3**: Memory management optimization
+* **Month 4**: Approaching production readiness, full testing, second refactor
+
+### Technologies Learned
+
+* **AI/ML**: Transformers, Sentence-BERT, FAISS
+* **Databases**: ChromaDB, atomic storage
+* **Backend**: AsyncIO, concurrency
+* **DevOps**: Logging, monitoring, performance testing
+
+---
+
+## Roadmap
+
+### Future Research
+
+* Lightweight reinforcement learning
+* Multimodal integration
+* Distributed/federated memory
+
+### Engineering Improvements
+
+* Rust extensions
+* GraphQL querying
+* Kubernetes scaling
+* Analytics dashboard
+
+---
+
+## Practical Applications
+
+* **Personal AI Assistant**
+* **Research Tool**
+* **Adaptive Educational Assistant**
+* **Mental Health Companion**
+
+**Deployment Metrics**
+
+* Operational 24/7
+* 10k+ conversations processed
+* 1M+ articles indexed
+
+---
+
+## Impact & Value
+
+* Demonstrates ability to deliver robust, scalable AI systems
+* Highlights self-directed learning and technical problem-solving
+* Offers novel research contributions
+
+---
 
 
 
-def set_padding_token_if_none(tokenizer):
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    return tokenizer
-# daemon_7_11_25_refactor/core/__init__.py
+## License & Contact
+
+MIT License – Free for academic and commercial use.
+Project files pasted in below:
+
+First set of files is the agent itself, second set will be pipeline to embed wikipedia for agent. 
+
+
+# /core/__init__.py
 """
 Core module for the Daemon AI Assistant
 """
@@ -856,12 +503,14 @@ try:
     __all__.append('QueryProcessor')
 except ImportError:
     pass
+#core/Orchestrator.py
 from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime
 from utils.logging_utils import get_logger
+from utils.query_checks import is_deictic
 from memory.corpus_manager import CorpusManager
 from memory.memory_coordinator import MemoryCoordinator
-from memory.storage.chroma_store import MultiCollectionChromaStore
+from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from memory.memory_interface import HierarchicalMemorySystem
 from personality.personality_manager import PersonalityManager
 from knowledge.topic_manager import TopicManager
@@ -869,7 +518,7 @@ from knowledge.WikiManager import WikiManager
 from processing.gate_system import MultiStageGateSystem
 from models.tokenizer_manager import TokenizerManager
 from core.prompt_builder_v2 import UnifiedPromptBuilder
-
+from utils.conversation_logger import get_conversation_logger
 logger = get_logger("orchestrator")
 
 
@@ -882,6 +531,7 @@ class DaemonOrchestrator:
         response_generator,
         file_processor,
         prompt_builder,
+        memory_system,
         personality_manager: PersonalityManager = None
     ):
         self.model_manager = model_manager
@@ -911,97 +561,205 @@ class DaemonOrchestrator:
             gate_system=MultiStageGateSystem(model_manager)
         )
 
+        # Initialize Topics (FIXED)
+        self.current_topic = None
+        self.topic_confidence_threshold = 0.7  # Default value
+        # Initialize conversation logger
+        self.conversation_logger = get_conversation_logger()
 
+    def _should_switch_topic(self, new_topics: List[str]) -> bool:
+        """Determine if we should switch topics based on new topics detected"""
+        if not self.current_topic:
+            return True  # First topic
+
+        if not new_topics:
+            return False  # No topics detected
+
+        # Simple heuristic: switch if primary topic is very different
+        if self.current_topic == "general":
+            return len(new_topics) > 0
+
+        return new_topics[0].lower() != self.current_topic.lower()
 
     def get_recent_conversation(self, n: int = 5):
         """Get recent conversation history"""
         return self.memory_system.corpus_manager.get_recent_memories(count=n)
 
-    async def process_user_query(
-        self,
-        user_input: str,
-        files: List[Any] = None,
-        use_raw_mode: bool = False
-    ) -> Tuple[str, Dict]:
-        """
-        Main entry point for processing user queries.
-        Returns: (response, debug_info)
-        """
-        debug_info = {
-            'start_time': datetime.now(),
-            'user_input': user_input[:100],
-            'files_count': len(files) if files else 0,
-            'mode': 'raw' if use_raw_mode else 'enhanced'
-        }
+async def process_user_query(
+    self,
+    user_input: str,
+    files: List[Any] = None,
+    use_raw_mode: bool = False,
+    personality: str = None
+) -> Tuple[str, Dict]:
+    """
+    Main entry point for processing user queries.
+    Returns: (response, debug_info)
+    """
+    debug_info = {
+        'start_time': datetime.now(),
+        'user_input': user_input[:100],
+        'files_count': len(files) if files else 0,
+        'mode': 'raw' if use_raw_mode else 'enhanced'
+    }
 
-        try:
-            # Step 1: Process files if any
-            combined_text = user_input
-            if files and not use_raw_mode:
-                combined_text = await self.file_processor.process_files(user_input, files)
-                debug_info['combined_text_length'] = len(combined_text)
+    try:
+        # Handle special commands first
+        if user_input.startswith("/topic "):
+            new_topic = user_input.replace("/topic ", "").strip()
+            self.current_topic = new_topic
+            self.memory_system.current_topic = new_topic
+            return f"Switched to topic: {new_topic}", {"command": "topic_switch"}
 
-            # Step 2: Build prompt
-            if use_raw_mode:
-                prompt = combined_text
-            else:
-                # Get current personality configuration
-                config = self.personality_manager.get_current_config()
+        if user_input == "/clear_topic":
+            self.current_topic = "general"
+            self.memory_system.current_topic = "general"
+            return "Cleared topic context, starting fresh conversation", {"command": "topic_clear"}
 
-                # Read system prompt from file
-                system_prompt = ""
-                if config.get("system_prompt_file"):
-                    try:
-                        with open(config["system_prompt_file"], "r") as f:
-                            system_prompt = f.read()
-                    except:
-                        logger.warning(f"Could not read system prompt file: {config['system_prompt_file']}")
+        # Detect if topic has changed
+        new_topics = self.topic_manager.update_from_user_input(user_input)
+        logger.info(f"Extracted topics: {new_topics}")
+        logger.info(f"Current topic before switch: {self.current_topic}")
+        if self._should_switch_topic(new_topics):
+            logger.info(f"Topic switch detected: {self.current_topic} → {new_topics[0]}")
+            self.current_topic = new_topics[0] if new_topics else "general"
+            self.memory_system.current_topic = self.current_topic
 
-                # Build prompt using simplified builder
-                prompt = await self.prompt_builder.build_prompt(
-                    user_input=combined_text,
-                    include_dreams=True,
-                    include_wiki=config.get("include_wiki", True),
-                    include_semantic=config.get("include_semantic_search", True),
-                    include_summaries=True,
-                    system_prompt=system_prompt,
-                    directives_file=config.get("directives_file", "structured_directives.txt"),
-                    personality_config=config
+        # Step 1: Process files if any
+        combined_text = user_input
+        if files and not use_raw_mode:
+            combined_text = await self.file_processor.process_files(user_input, files)
+            debug_info['combined_text_length'] = len(combined_text)
+
+        # Pre-check for deictic queries
+        if not use_raw_mode:
+            try:
+                from utils.query_checks import is_deictic
+                if is_deictic(user_input):
+                    retrieval_result = await self.memory_system.retrieve_relevant_memories(
+                        combined_text,
+                        config={'recent_count': 3, 'semantic_count': 30, 'hierarchical_count': 15, 'max_memories': 10}
+                    )
+                    debug_info['retrieval_counts'] = retrieval_result.get('counts', {})
+
+                    if retrieval_result.get('needs_clarification'):
+                        response = "Do you mean the result we just discussed, or a different expression?"
+                        await self.memory_system.store_interaction(query=user_input, response=response, tags=["clarification"])
+                        debug_info['response_length'] = len(response)
+                        debug_info['end_time'] = datetime.now()
+                        debug_info['duration'] = (debug_info['end_time'] - debug_info['start_time']).total_seconds()
+                        return response, debug_info
+            except Exception as e:
+                logger.debug(f"[Orchestrator] Pre-retrieval failed or skipped: {e}")
+
+        # Step 2: Build prompt
+        if use_raw_mode:
+            prompt = combined_text
+        else:
+            config = self.personality_manager.get_current_config()
+
+            # Read system prompt from file
+            system_prompt = ""
+            if config.get("system_prompt_file"):
+                try:
+                    with open(config["system_prompt_file"], "r") as f:
+                        system_prompt = f.read()
+                except:
+                    logger.warning(f"Could not read system prompt file: {config['system_prompt_file']}")
+
+            # Conditional deictic injection
+            from utils.query_checks import is_deictic
+            if is_deictic(user_input):
+                system_prompt += (
+                    "\nAnswer ONLY if the retrieved context clearly matches the user’s referent; "
+                    "otherwise, ask a brief clarifying question."
+                )
+                retrieval_result = await self.memory_system.retrieve_relevant_memories(
+                    combined_text,
+                    config={'recent_count': 5, 'semantic_count': 20}
                 )
 
-            # Step 3: Generate response
-            model_name = self.model_manager.get_active_model_name()
-            if not model_name:
-                model_name = "gpt-4-turbo"
-                self.model_manager.switch_model(model_name)
+                if retrieval_result.get('counts', {}).get('final', 0) < 2:
+                    response = "I need more context. Are you referring to something specific we just discussed?"
+                    await self.memory_system.store_interaction(
+                        query=user_input,
+                        response=response,
+                        tags=["clarification_request"]
+                    )
+                    return response, debug_info
 
-            full_response = ""
-            chunk_count = 0
+            # Build prompt using simplified builder
+            prompt = await self.prompt_builder.build_prompt(
+                user_input=combined_text,
+                include_dreams=True,
+                include_wiki=config.get("include_wiki", True),
+                include_semantic=config.get("include_semantic_search", True),
+                include_summaries=True,
+                system_prompt=system_prompt,
+                directives_file=config.get("directives_file", "structured_directives.txt"),
+                personality_config=config,
+                current_topic=self.current_topic
+            )
 
-            async for chunk in self.response_generator.generate_streaming_response(prompt, model_name):
-                full_response += chunk + " "
-                chunk_count += 1
+        # Step 3: Generate response
+        model_name = self.model_manager.get_active_model_name()
+        if not model_name:
+            model_name = "gpt-4-turbo"
+            self.model_manager.switch_model(model_name)
 
-            # Step 4: Store the interaction in memory
-            if not use_raw_mode:
-                await self.memory_system.store_interaction(
-                    query=user_input,
-                    response=full_response.strip(),
-                    tags=["conversation"]
-                )
+        full_response = ""
+        chunk_count = 0
 
-            debug_info['response_length'] = len(full_response)
-            debug_info['chunk_count'] = chunk_count
-            debug_info['end_time'] = datetime.now()
-            debug_info['duration'] = (debug_info['end_time'] - debug_info['start_time']).total_seconds()
-            debug_info['prompt_length'] = len(prompt)
+        async for chunk in self.response_generator.generate_streaming_response(prompt, model_name):
+            full_response += chunk + " "
+            chunk_count += 1
 
-            return full_response.strip(), debug_info
+            conversation_metadata = {
+                'topic': self.current_topic,
+                'personality': personality or self.personality_manager.current_personality,
+                'mode': 'raw' if use_raw_mode else 'enhanced',
+                'files': [f.name for f in files] if files else None,
+                'response_length': len(full_response),
+                'prompt_length': len(prompt) if not use_raw_mode else len(user_input)
+            }
 
-        except Exception as e:
-            logger.error(f"Error processing query: {e}")
-            debug_info['error'] = str(e)
-            raise
+            # Log the conversation
+            self.conversation_logger.log_interaction(
+                user_input=user_input,
+                assistant_response=full_response.strip(),
+                metadata=conversation_metadata
+            )
+
+        # Step 4: Store the interaction in memory
+        if not use_raw_mode:
+            await self.memory_system.store_interaction(
+                query=user_input,
+                response=full_response.strip(),
+                tags=["conversation"]
+            )
+
+        debug_info['response_length'] = len(full_response)
+        debug_info['chunk_count'] = chunk_count
+        debug_info['end_time'] = datetime.now()
+        debug_info['duration'] = (debug_info['end_time'] - debug_info['start_time']).total_seconds()
+        debug_info['prompt_length'] = len(prompt)
+
+        return full_response.strip(), debug_info
+
+    except Exception as e:
+        logger.error(f"Error processing query: {e}")
+        debug_info['error'] = str(e)
+                # Log error as system event
+        self.conversation_logger.log_system_event(
+            "Error",
+            str(e)
+        )
+
+        raise
+
+
+
+
 # core/prompt_builder_v2.py
 import asyncio
 import time
@@ -1159,11 +917,18 @@ class UnifiedPromptBuilder:
         """Apply cosine similarity gating to filter context"""
         logger.debug("[PROMPT] Applying cosine similarity gating")
 
-        # Gate memories
+        # Gate long-term memories only (not recent or summaries)
         if context["memories"]:
-            context["memories"] = await self.gate_system.filter_memories(
-                user_input, context["memories"]
-            )
+            # Separate short-term from others (optional—if you're mixing them)
+            ungated_memories = [m for m in context["memories"] if m.get("source") in {"very_recent", "summary"}]
+            gated_candidates = [m for m in context["memories"] if m.get("source") not in {"very_recent", "summary"}]
+
+            if gated_candidates:
+                filtered = await self.gate_system.filter_memories(user_input, gated_candidates)
+            else:
+                filtered = []
+
+            context["memories"] = ungated_memories + filtered
 
         # Gate wiki content
         if context["wiki"]:
@@ -1182,6 +947,7 @@ class UnifiedPromptBuilder:
                     f"{len(context['semantic_chunks'])} chunks")
 
         return context
+
 
     def _manage_token_budget(self, context: Dict) -> Dict:
         """Trim context to fit within token budget"""
@@ -1340,19 +1106,48 @@ class UnifiedPromptBuilder:
         now = datetime.now()
         return f"Current time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
 
-    async def _get_recent_conversations(self, count: int) -> List[Dict]:
-        """Get recent conversations"""
-        return self.memory_coordinator.corpus_manager.get_recent_memories(count)
+    async def _get_recent_conversations(self, count: int, topic: str = None) -> List[Dict]:
+        """Get recent conversations, optionally filtered by topic"""
+        all_recent = self.memory_coordinator.corpus_manager.get_recent_memories(count * 2)
+
+        # Get current topic from memory coordinator if not provided
+        if topic is None and hasattr(self.memory_coordinator, 'current_topic'):
+            topic = self.memory_coordinator.current_topic
+
+        if topic and topic != "general":
+            # Filter to only conversations on current topic
+            filtered = [
+                conv for conv in all_recent
+                if f"topic:{topic}" in conv.get('tags', [])
+            ][:count]
+
+            # If we have too few on-topic memories, include some general ones
+            if len(filtered) < 2:
+                general = [
+                    conv for conv in all_recent
+                    if "topic:general" in conv.get('tags', [])
+                ][:2]
+                filtered.extend(general)
+
+            return filtered
+        return all_recent[:count]
 
     async def _get_summaries(self, count: int) -> List[str]:
         """Get conversation summaries"""
-        summaries = self.memory_coordinator.get_summaries(limit=count)
-        return [s.get('content', '') for s in summaries if s.get('content')]
+        summaries = self.memory_coordinator.corpus_manager.get_summaries(count)  # Fixed: was 'limit'
+        return [{
+            'content': s.get('response', ''),
+            'timestamp': s.get('timestamp', datetime.now()),
+            'type': 'summary',
+            'tags': s.get('tags', []),
+            'source': 'summary'
+        } for s in summaries]
 
     async def _get_dreams(self, count: int) -> List[str]:
         """Get dreams/reflections"""
         dreams = self.memory_coordinator.get_dreams(limit=count)
         return [d.get('content', '') for d in dreams if d.get('content')]
+
 
     async def _get_wiki_content(self, query: str) -> str:
         """Get wiki content for query"""
@@ -1377,7 +1172,7 @@ class UnifiedPromptBuilder:
             with open(directives_file, 'r') as f:
                 return f.read()
         return ""
-# daemon_7_11_25_refactor/core/response_generator.py
+# /core/response_generator.py
 from utils.logging_utils import get_logger
 import time
 from typing import AsyncGenerator
@@ -1482,370 +1277,77 @@ class ResponseGenerator:
         except Exception as e:
             self.logger.error(f"[GENERATE] Error: {type(e).__name__}: {str(e)}")
             yield f"[Streaming Error] {e}"
-import pandas as pd
-import logging
-from utils.logging_utils import log_and_time
-import json
-from config.config import SYSTEM_PROMPT as system_prompt
-
-logger = logging.getLogger("gradio_gui")
-
-
-def smart_join(prev: str, new: str) -> str:
-    """
-    Inserts a space between tokens unless the new chunk begins with punctuation or whitespace.
-    Prevents jammed-together words while respecting formatting.
-    """
-    if not prev:
-        return new
-    if prev.endswith((' ', '\n')) or new.startswith((' ', '\n', '.', ',', '?', '!', "'", '"', ")", "’", "”")):
-        return prev + new
-    else:
-        return prev + ' ' + new
-
-
-@log_and_time("Handle Submit")
-async def handle_submit(user_text, files, history, use_raw_gpt, orchestrator, force_summarize=False, include_summaries=True):
-
-    # Check if we should force a summary
-    if force_summarize:
-        summary = orchestrator.memory_system.corpus_manager.create_summary_now()
-        if summary:
-            logger.info("Forced summary creation completed")
-    logger.debug(f"[Handle Submit] Received user_text: {user_text}")
-
-    if not user_text.strip():
-        yield {"role": "assistant", "content": "⚠️ Empty input received."}
-        return
-
-    # Process files into the 'file_data' list
-    file_data = []
-    if files:
-        for file in files:
-            try:
-                if file.name.endswith(".txt"):
-                    with open(file.name, 'r', encoding='utf-8') as f:
-                        file_data.append(f.read())
-                elif file.name.endswith(".csv"):
-                    df = pd.read_csv(file.name)
-                    file_data.append(df.to_string())
-                elif file.name.endswith(".py"):
-                    with open(file.name, 'r', encoding='utf-8') as f:
-                        file_data.append(f.read())
-                else:
-                    file_data.append(f"[Unsupported file type: {file.name}]")
-            except Exception as e:
-                file_data.append(f"[Error reading {file.name}: {str(e)}]")
-
-    # Step 1: Merge file content into user_input
-    user_input = user_text + "\n\n" + "\n\n".join(file_data)
-
-    # Step 2: Build full hierarchical prompt
-    full_prompt = await orchestrator.prompt_builder.build_prompt(
-        user_input=user_input,
-        include_dreams=True,
-        include_wiki=True,
-        include_semantic=True,
-    )
-
-    logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
-
-    final_output = ""
-    try:
-        # Step 3: Stream response from full prompt
-        logger.debug(f"[🔍 FINAL MESSAGE PAYLOAD TO OPENAI]:\n{json.dumps([{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': full_prompt}], indent=2)}")
-
-        async for chunk in orchestrator.response_generator.generate_streaming_response(
-            prompt=full_prompt,
-            model_name=orchestrator.model_manager.get_active_model_name()
-        ):
-            final_output = smart_join(final_output, chunk)
-            yield {"role": "assistant", "content": final_output}
-
-        if not final_output:
-            yield {"role": "assistant", "content": "⚠️ No response was generated."}
-
-    except Exception as e:
-        logger.error(f"[HANDLE_SUBMIT] Streaming error: {e}")
-        yield {"role": "assistant", "content": f"⚠️ Streaming error: {str(e)}"}
-
-    finally:
-        # Step 4: Store the completed interaction in memory.
-        # This block will run even if the streaming fails.
-        if final_output:  # Only store if any response was generated
-            try:
-                logger.info("[HANDLE_SUBMIT] Storing interaction in memory...")
-                # NOTE: Using the 'memory_system' which is the MemoryCoordinator
-                await orchestrator.memory_system.store_interaction(
-                    query=user_input,
-                    response=final_output
-                )
-                logger.info("[HANDLE_SUBMIT] Interaction successfully stored.")
-            except Exception as e:
-                logger.error(f"[HANDLE_SUBMIT] Failed to store interaction: {e}")
-
-import gradio as gr
-from gui.handlers import handle_submit
-
-def launch_gui(orchestrator):
-    personality_manager = orchestrator.personality_manager
-
-    def get_summary_status():
-        summaries = orchestrator.memory_system.corpus_manager.get_summaries()
-        total_entries = len(orchestrator.memory_system.corpus_manager.corpus)
-        non_summary_entries = len([
-            e for e in orchestrator.memory_system.corpus_manager.corpus
-            if "@summary" not in e.get("tags", [])
-        ])
-        return {
-            "total_summaries": len(summaries),
-            "total_entries": total_entries,
-            "non_summary_entries": non_summary_entries,
-            "next_summary_in": 20 - (non_summary_entries % 20)
-        }
-
-    async def submit_chat(user_text, chat_history, files, use_raw_gpt, personality):
-        personality_manager.switch_personality(personality)
-        async for chunk in handle_submit(
-            user_text=user_text,
-            files=files,
-            history=chat_history,
-            use_raw_gpt=use_raw_gpt,
-            orchestrator=orchestrator
-        ):
-            # If chunk is a dict, extract 'content'
-            if isinstance(chunk, dict) and "content" in chunk:
-                assistant_reply = chunk["content"]
-            else:
-                assistant_reply = str(chunk)
-            yield chat_history + [[user_text, assistant_reply]]
-
-
-    with gr.Blocks(theme="soft") as demo:
-        gr.Markdown("## 🤖 Daemon Chat Interface")
-        with gr.Row():
-            summary_json = gr.JSON(value=get_summary_status(), label="📊 Summary Status")
-            refresh_button = gr.Button("🔄 Refresh Summary Status")
-        refresh_button.click(fn=get_summary_status, outputs=summary_json)
-
-        chatbot = gr.Chatbot(label="Daemon")
-        user_input = gr.Textbox(lines=2, placeholder="Ask Daemon something...", label="Your Message")
-        submit_button = gr.Button("Submit")
-
-        with gr.Row():
-            files = gr.File(file_types=[".txt", ".docx", ".csv", ".py"], file_count="multiple", label="Files")
-            use_raw = gr.Checkbox(label="Bypass Memory (Raw GPT)", value=False)
-            personality = gr.Dropdown(
-                label="Personality",
-                choices=list(personality_manager.personalities.keys()),
-                value=personality_manager.current_personality
-            )
-
-        chat_state = gr.State([])
-
-        submit_button.click(
-            submit_chat,
-            inputs=[user_input, chat_state, files, use_raw, personality],
-            outputs=[chatbot],
-        )
-
-    demo.launch(
-        server_name="0.0.0.0",
-        max_file_size="100mb",
-        max_threads=40,
-        quiet=False,
-        share=True
-    )
-# daemon_7_11_25_refactor/memory/corpus_manager.py
-import json
-import os
-from datetime import datetime
-from typing import List, Dict
-from utils.logging_utils import get_logger, log_and_time
-
-logger = get_logger("corpus_manager")
-
-class CorpusManager:
-    """Manages the conversation corpus (short-term memory)"""
-
-    def __init__(self, corpus_file: str = None):
-        from config.config import CORPUS_FILE
-        self.corpus_file = corpus_file or CORPUS_FILE
-        self.corpus = self._load_corpus()
-
-    @log_and_time("Load Corpus")
-    def _load_corpus(self) -> List[Dict]:
-        """Load corpus from disk"""
-        if os.path.exists(self.corpus_file):
-            try:
-                with open(self.corpus_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    # Convert timestamp strings back to datetime
-                    for entry in data:
-                        if isinstance(entry.get("timestamp"), str):
-                            try:
-                                entry["timestamp"] = datetime.fromisoformat(entry["timestamp"])
-                            except:
-                                pass
-                    logger.info(f"Loaded {len(data)} corpus entries")
-                    return data
-            except Exception as e:
-                logger.error(f"Error loading corpus: {e}")
-        return []
-
-    def clean_for_json(self, entry):
-        if isinstance(entry, dict):
-            return {k: self.clean_for_json(v) for k, v in entry.items()}
-        elif isinstance(entry, list):
-            return [self.clean_for_json(v) for v in entry]
-        elif isinstance(entry, datetime):
-            return entry.isoformat()
-        else:
-            return entry
-
-
-    @log_and_time("Save Corpus")
-    def save_corpus(self):
-        """Save corpus to disk atomically"""
-        tmp_file = self.corpus_file + ".tmp"
-        try:
-            with open(tmp_file, 'w', encoding='utf-8') as f:
-                # Convert datetime to string for JSON
-                data_to_save = []
-                for entry in self.corpus:
-                    entry_copy = entry.copy()
-                    if isinstance(entry_copy.get("timestamp"), datetime):
-                        entry_copy["timestamp"] = entry_copy["timestamp"].isoformat()
-                    data_to_save.append(entry_copy)
-                json.dump(self.clean_for_json(data_to_save), f, indent=2)
-            os.replace(tmp_file, self.corpus_file)
-            logger.debug(f"Saved {len(self.corpus)} entries to corpus")
-        except Exception as e:
-            logger.error(f"Error saving corpus: {e}")
-
-    def add_entry(self, query: str, response: str, tags: List[str] = None):
-        """Add a new interaction to corpus"""
-        entry = {
-            "query": query,
-            "response": response,
-            "timestamp": datetime.now(),
-            "tags": tags or []
-        }
-        self.corpus.append(entry)
-
-        # Auto-summarize every 20 non-summary entries
-        real_entries = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
-        if len(real_entries) % 20 == 0 and len(real_entries) > 0:
-            self._create_summary(real_entries[-20:])
-
-        # Trim if too large
-        if len(self.corpus) > 500:
-            self.corpus = self.corpus[-500:]
-
-        self.save_corpus()
-
-    def _create_summary(self, entries: List[Dict]):
-        """Create a summary node for the given entries"""
-        from config.config import DEFAULT_SUMMARY_PROMPT_HEADER
-
-        summary_lines = []
-        for e in entries[:20]:
-            if e.get('response', '').strip():
-                q = e.get('query', '[no query]')[:50]
-                r = e.get('response', '')[:60]
-                summary_lines.append(f"Q: {q}... → A: {r}...")
-
-        if summary_lines:
-            summary_entry = {
-                "query": "[SUMMARY NODE]",
-                "response": DEFAULT_SUMMARY_PROMPT_HEADER + "\n".join(summary_lines),
-                "timestamp": datetime.now(),
-                "tags": ["@summary"]
-            }
-            self.corpus.append(summary_entry)
-            logger.debug("Created summary node")
-
-    def get_recent_memories(self, count: int = 3) -> List[Dict]:
-        """Get most recent non-summary memories"""
-        non_summary = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
-        return sorted(non_summary, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:count]
-
-    def get_summaries(self, limit: int = 5) -> List[Dict]:
-        """Get summary nodes - returns full dict not just content"""
-        summaries = [e for e in self.corpus if "@summary" in e.get("tags", [])]
-        # Sort by timestamp to get most recent summaries
-        sorted_summaries = sorted(
-            summaries,
-            key=lambda x: x.get('timestamp', datetime.min),
-            reverse=True
-        )[:limit]
-
-        # Return full dict for better integration
-        return sorted_summaries
-    def create_summary_now(self, entries_to_summarize: int = 20) -> Dict:
-        """
-        Manually trigger summary creation for the last N entries
-        Returns the created summary entry
-        """
-        real_entries = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
-
-        if len(real_entries) < entries_to_summarize:
-            entries_to_summarize = len(real_entries)
-
-        if entries_to_summarize == 0:
-            logger.warning("No entries to summarize")
-            return None
-
-        # Get the last N entries
-        entries = real_entries[-entries_to_summarize:]
-
-        # Create summary
-        summary_lines = []
-        for e in entries:
-            if e.get('response', '').strip():
-                q = e.get('query', '[no query]')[:50]
-                r = e.get('response', '')[:60]
-                timestamp = e.get('timestamp', datetime.now())
-
-                # Format timestamp if it's a datetime
-                if isinstance(timestamp, datetime):
-                    time_str = timestamp.strftime("%H:%M")
-                else:
-                    time_str = ""
-
-                summary_lines.append(f"[{time_str}] Q: {q}... → A: {r}...")
-
-        if summary_lines:
-            summary_entry = {
-                "query": "[SUMMARY NODE]",
-                "response": f"Summary of last {entries_to_summarize} exchanges:\n" + "\n".join(summary_lines),
-                "timestamp": datetime.now(),
-                "tags": ["@summary", f"covers_{entries_to_summarize}_entries"],
-                "metadata": {
-                    "start_time": entries[0].get('timestamp', datetime.now()),
-                    "end_time": entries[-1].get('timestamp', datetime.now()),
-                    "entry_count": entries_to_summarize
-                }
-            }
-
-            self.corpus.append(summary_entry)
-            self.save_corpus()
-            logger.info(f"Created summary covering {entries_to_summarize} entries")
-
-            return summary_entry
-
-        return None
 # memory/memory_coordinator.py
 import asyncio
 import uuid
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from utils.logging_utils import get_logger, log_and_time
+from utils.topic_manager import TopicManager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from memory.memory_interface import HierarchicalMemorySystem
 from processing.gate_system import MultiStageGateSystem
-
+from collections import deque
 logger = get_logger("memory_coordinator")
+import re
+
+DEICTIC_HINTS = ("explain", "that", "it", "this", "again", "another way", "different way")
+
+def _is_deictic_followup(q: str) -> bool:
+    ql = (q or "").lower()
+    return any(h in ql for h in DEICTIC_HINTS)
+
+STOPWORDS = set("""
+the a an to of in on for with and or if is are was were be been being by at from as this that it its
+""".split())
+
+def _salient_tokens(text: str, k: int = 12) -> set:
+    toks = re.findall(r"[a-zA-Z0-9\+\-\*/=\^()]+", (text or "").lower())
+    toks = [t for t in toks if t not in STOPWORDS and len(t) > 1]
+    freq = {}
+    for t in toks: freq[t] = freq.get(t, 0) + 1
+    return {t for t, _ in sorted(freq.items(), key=lambda x: (-x[1], -len(x[0])))[:k]}
+
+def _num_op_density(text: str) -> float:
+    if not text: return 0.0
+    nums  = len(re.findall(r"\b\d+(?:\.\d+)?\b", text))
+    ops   = len(re.findall(r"[\+\-\*/=\^]", text))
+    toks  = max(1, len(re.findall(r"\w+", text)))
+    return (nums + ops) / toks  # 0..~1
+
+def _analogy_markers(text: str) -> int:
+    if not text: return 0
+    t = text.lower()
+    markers = ["it's like", "its like", "imagine", "picture this", "as if", "like when", "metaphor", "analogy"]
+    return sum(1 for m in markers if m in t)
+
+# In memory_coordinator.py, update the _build_anchor_tokens function:
+
+def _build_anchor_tokens(conv: list, maxlen: int = 20) -> set:
+    """Pull anchor tokens from the last exchange with better math handling."""
+    anchors = set()
+    if conv:
+        last = conv[-1]
+        blob = f"{last.get('query','')} {last.get('response','')}"
+
+        # Extract mathematical expressions with higher priority
+        math_patterns = [
+            r"[a-zA-Z]\([a-zA-Z]\)",  # f(x), h(x), g(x)
+            r"\d+[a-zA-Z]\^\d+",       # 7x^4, 2x^3
+            r"\d+[a-zA-Z]\d*",         # 7x4, 2x3, 9x
+            r"[a-zA-Z]′\([a-zA-Z]\)",  # f'(x), h'(x)
+            r"\b\d+(?:\.\d+)?\b",      # numbers
+            r"derivative|integral|function|equation",  # math terms
+        ]
+
+        for pattern in math_patterns:
+            matches = re.findall(pattern, blob.lower())
+            anchors.update(matches[:5])  # Take top 5 of each pattern
+
+        # Also get salient tokens
+        anchors |= _salient_tokens(blob, k=8)
+
+    return set(list(anchors)[:maxlen])
 
 class MemoryCoordinator:
     def __init__(self,
@@ -1857,78 +1359,185 @@ class MemoryCoordinator:
         self.chroma_store = chroma_store
         self.hierarchical_memory = hierarchical_memory
         self.gate_system = gate_system
-
+        self.current_topic = "general"
+        self.topic_manager = TopicManager()
+        self.conversation_context = deque(maxlen=5)  # recent 5 exchanges
     @log_and_time("Retrieve Relevant Memories")
-    async def retrieve_relevant_memories(self, query: str, config: Dict) -> Dict:
-        logger.debug(f"Retrieving memories for query: {query[:50]}...")
+    def _calculate_truth_score(self, query: str, response: str) -> float:
+        score = 0.5
+        if len(response) > 200: score += 0.1        # substance
+        if '?' in query:        score += 0.1        # engagement
+        confirms = ('yes','correct','exactly','right','understood','makes sense')
+        if any(c in response.lower() for c in confirms): score += 0.2
+        # continuity hint: overlap with last response’s first 10 tokens
+        if self.conversation_context:
+            last = self.conversation_context[-1]
+            last_tokens = set(last['response'].lower().split()[:10])
+            if any(t in last_tokens for t in query.lower().split()):
+                score += 0.15
+        return min(score, 1.0)
 
-        very_recent = self.corpus_manager.get_recent_memories(config.get('recent_count', 3))
-        semantic_memories = await self._get_semantic_memories(query, config.get('semantic_count', 30))
-        hierarchical_memories = []
+        def _rank_memories(self, memories: List[Dict], current_query: str) -> List[Dict]:
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            last_10m = now - timedelta(minutes=10)
 
-        if self.hierarchical_memory:
-            try:
-                hierarchical_memories = await self.hierarchical_memory.retrieve_relevant_memories(
-                    query,
-                    max_memories=config.get('hierarchical_count', 15)
+            is_deictic = _is_deictic_followup(current_query)
+            anchors = _build_anchor_tokens(list(self.conversation_context))
+
+            # Define missing variables
+            cq_salient = _salient_tokens(current_query, k=12)
+            cq_density = _num_op_density(current_query)
+
+            for m in memories:
+                # 1) base relevance
+                rel = m.get('relevance_score', m.get('score', 0.5))
+
+                # 2) recency
+                ts = m.get('timestamp') or (m.get('metadata', {}) or {}).get('timestamp')
+                if isinstance(ts, str):
+                    try:
+                        ts = datetime.fromisoformat(ts)
+                    except:
+                        ts = now
+                if not isinstance(ts, datetime):
+                    ts = now
+                age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
+                recency = 1.0 / (1.0 + 0.05 * age_hours)
+
+                # For deictic queries, boost memories that match anchor tokens
+                if is_deictic and anchors:
+                    mem_text = f"{m.get('query', '')} {m.get('response', '')}".lower()
+                    mem_tokens = set(re.findall(r"[a-zA-Z0-9\+\-\*/=\^()]+", mem_text))
+
+                    anchor_overlap = len(anchors & mem_tokens) / max(1, len(anchors))
+
+                    # Strong boost for high anchor overlap in deictic context
+                    if anchor_overlap > 0.3:
+                        rel *= (1.5 + anchor_overlap)  # 1.5x to 2.5x boost
+                        logger.debug(f"[Deictic Boost] Memory boosted by {1.5 + anchor_overlap:.2f}x due to anchor overlap")
+                    elif anchor_overlap < 0.1:
+                        rel *= 0.5  # Penalize low overlap for deictic queries
+
+                # 3) truth
+                mem_obj = m.get('memory')
+                if mem_obj is not None and hasattr(mem_obj, 'truth_score'):
+                    truth = getattr(mem_obj, 'truth_score') or 0.5
+                else:
+                    truth = m.get('truth_score', (m.get('metadata', {}) or {}).get('truth_score', 0.5)) or 0.5
+
+                # 4) continuity and other scores
+                blob = (m.get('query', '') + ' ' + m.get('response', '')).lower()
+                m_toks = set(re.findall(r"[a-zA-Z0-9\+\-\*/=\^()]+", blob))
+
+                continuity = 0.0
+                if ts >= last_10m:
+                    continuity += 0.1
+                if cq_salient:
+                    overlap = len(cq_salient & m_toks) / max(1, len(cq_salient))
+                    continuity += 0.3 * max(0.0, min(1.0, overlap))
+
+                # structure alignment
+                m_density = _num_op_density(blob)
+                density_alignment = 1.0 - min(1.0, abs(cq_density - m_density) * 3.0)
+                structure = 0.15 * density_alignment
+
+                # analogy penalty
+                penalty = 0.0
+                if _analogy_markers(blob) > 0 and cq_density > 0.05 and "analogy" not in current_query.lower():
+                    penalty -= 0.1
+
+                # anchor bonus for deictic follow-ups
+                anchor_bonus = 0.0
+                if anchors:
+                    anchor_overlap = len(anchors & m_toks) / max(1, len(anchors))
+                    if is_deictic:
+                        if anchor_overlap < 0.05:
+                            penalty -= 0.1
+                        else:
+                            anchor_bonus += 0.2 * anchor_overlap
+                    else:
+                        anchor_bonus += 0.1 * anchor_overlap
+
+                # tone softener
+                if any(t in blob for t in ("idiot", "stupid", "dumb", "toddler")):
+                    truth = max(0.0, truth - 0.2)
+
+                # Final score calculation
+                m['final_score'] = (
+                    0.4 * rel + 0.3 * recency + 0.2 * truth + 0.1 * continuity + structure + anchor_bonus + penalty
                 )
+
+                if _is_deictic_followup(current_query):
+                    if continuity < 0.12 and anchor_bonus < 0.04:
+                        m['final_score'] *= 0.85
+
+                m['debug'] = {
+                    'rel': rel, 'rec': recency, 'truth': truth,
+                    'continuity': continuity, 'structure': structure,
+                    'anchor_bonus': anchor_bonus, 'penalty': penalty
+                }
+
+            # Sort after scoring ALL items
+            ranked = sorted(memories, key=lambda x: x.get('final_score', 0.0), reverse=True)
+
+            # Debug print (optional)
+            if logger.isEnabledFor(logging.DEBUG):
+                topn = ranked[:5]
+                logger.debug("\n[Ranker Debug] Top 5 Memories:")
+                for i, m in enumerate(topn, 1):
+                    dbg = m.get('debug', {})
+                    logger.debug(
+                        f"#{i} | Final: {m['final_score']:.3f} "
+                        f"(rel={dbg.get('rel', 0):.2f}, rec={dbg.get('rec', 0):.2f}, truth={dbg.get('truth', 0):.2f}, "
+                        f"cont={dbg.get('continuity', 0):.2f}, struct={dbg.get('structure', 0):.2f}, "
+                        f"anchor={dbg.get('anchor_bonus', 0):.2f}, pen={dbg.get('penalty', 0):.2f}) "
+                        f"Q: {m.get('query', '')[:48]!r}"
+                    )
+
+            return ranked
+
+
+        async def _get_semantic_memories(self, query: str, n_results: int = 30) -> List[Dict]:
+            """Retrieve semantic memory chunks using the new multi-collection store"""
+            try:
+                results = self.chroma_store.search_all(query, n_results_per_type=n_results)
+                semantic_chunks = results.get("semantic", []) + results.get("facts", [])
+
+                memories = []
+                for item in semantic_chunks:
+                    meta = item.get('metadata', {})
+                    memories.append({
+                        'query': meta.get('query', item['content'][:100]),
+                        'response': meta.get('response', ""),
+                        'timestamp': meta.get('timestamp', datetime.now()),
+                        'source': 'semantic',
+                        'relevance_score': item.get('relevance_score', 0.5),
+                        'metadata': meta,
+                        'tags': (meta.get('tags', '') or '').split(',') if isinstance(meta.get('tags'), str) else meta.get('tags', []),
+                        'truth_score': meta.get('truth_score', 0.5),
+                    })
+
+                return memories
+
             except Exception as e:
-                logger.error(f"Error getting hierarchical memories: {e}")
-
-        combined = await self._combine_memories(
-            very_recent,
-            semantic_memories,
-            hierarchical_memories,
-            query,
-            config
-        )
-
-        return {
-            'memories': combined,
-            'counts': {
-                'very_recent': len(very_recent),
-                'semantic': len(semantic_memories),
-                'hierarchical': len(hierarchical_memories),
-                'final': len(combined)
-            }
-        }
-
-    async def _get_semantic_memories(self, query: str, n_results: int = 30) -> List[Dict]:
-        """Retrieve semantic memory chunks using the new multi-collection store"""
-        try:
-            results = self.chroma_store.search_all(query, n_results_per_type=n_results)
-            semantic_chunks = results.get("semantic", []) + results.get("facts", [])
-
-            memories = []
-            for item in semantic_chunks:
-                meta = item.get('metadata', {})
-                memories.append({
-                    'query': meta.get('query', item['content'][:100]),
-                    'response': meta.get('response', ""),
-                    'timestamp': meta.get('timestamp', datetime.now()),
-                    'source': 'semantic',
-                    'relevance_score': item.get('relevance_score', 0.5)
-                })
-
-            return memories
-
-        except Exception as e:
-            logger.error(f"Error in semantic memory retrieval: {e}")
-            return []
+                logger.error(f"Error in semantic memory retrieval: {e}")
+                return []
 
     async def _combine_memories(self, very_recent, semantic, hierarchical, query, config) -> List[Dict]:
         combined = []
         seen = set()
+        candidates = []  # <-- start candidates pool
 
+        # was: you appended very_recent straight to combined
+        # now: push them into candidates so they go through gating
         for mem in very_recent:
             key = self._get_memory_key(mem)
             if key not in seen:
                 mem['source'] = 'very_recent'
                 mem['gated'] = False
-                combined.append(mem)
+                candidates.append(mem)
                 seen.add(key)
-
-        candidates = []
 
         for mem in semantic:
             key = self._get_memory_key(mem)
@@ -1955,12 +1564,26 @@ class MemoryCoordinator:
 
         return combined
 
+
     async def _gate_memories(self, query: str, memories: List[Dict]) -> List[Dict]:
         try:
+            # Map original by (query,response) to recover metadata later
+            orig_index = {
+                (m.get('query','').strip(), m.get('response','').strip()): m
+                for m in memories
+            }
+
             chunks = [{
                 "content": f"User: {m['query']}\nAssistant: {m['response']}",
-                "metadata": {"timestamp": m.get("timestamp", datetime.now())}
+                "metadata": {
+                    "timestamp": m.get("timestamp", datetime.now()),
+                    "truth_score": (
+                        m.get('truth_score') or
+                        (m.get('metadata', {}) or {}).get('truth_score', 0.5)
+                    )
+                }
             } for m in memories]
+
 
             filtered = await self.gate_system.filter_memories(query, chunks)
 
@@ -1968,16 +1591,32 @@ class MemoryCoordinator:
             for chunk in filtered:
                 parts = chunk["content"].split("\nAssistant: ", 1)
                 if len(parts) == 2:
-                    gated.append({
-                        'query': parts[0].replace("User: ", "").strip(),
-                        'response': parts[1].strip(),
-                        'timestamp': chunk["metadata"].get("timestamp", datetime.now())
+                    q = parts[0].replace("User: ", "").strip()
+                    r = parts[1].strip()
+                    base = {
+                        'query': q,
+                        'response': r,
+                        'timestamp': chunk["metadata"].get("timestamp", datetime.now()),
+                    }
+                    # restore original fields if present
+                    orig = orig_index.get((q, r), {})
+                    base.update({
+                        'source': orig.get('source', 'gated'),
+                        'tags': orig.get('tags', []),
+                        'metadata': orig.get('metadata', {}),
+                        'relevance_score': orig.get('relevance_score', 0.5),
+                        'truth_score': (
+                            orig.get('truth_score') or
+                            (orig.get('metadata', {}) or {}).get('truth_score', 0.5)
+                        ),
                     })
+                    gated.append(base)
             return gated
 
         except Exception as e:
             logger.error(f"Error during memory gating: {e}")
             return memories[:5]
+
 
     def _get_memory_key(self, memory: Dict) -> str:
         q = memory.get('query', '')[:50]
@@ -1986,33 +1625,60 @@ class MemoryCoordinator:
 
     def _format_hierarchical_memory(self, memory) -> Dict:
         parts = memory.content.split('\nAssistant: ')
+        q = memory.content[:100]
+        r = "[Could not parse response]"
         if len(parts) == 2:
-            return {
-                'query': parts[0].replace("User: ", "").strip(),
-                'response': parts[1].strip(),
-                'timestamp': memory.timestamp,
-                'source': 'hierarchical'
-            }
+            q = parts[0].replace("User: ", "").strip()
+            r = parts[1].strip()
+
+        # pull truth and tags if available
+        truth = getattr(memory, 'truth_score', None)
+        if truth is None:
+            truth = (memory.metadata or {}).get('truth_score', 0.5)
+
         return {
-            'query': memory.content[:100],
-            'response': "[Could not parse response]",
+            'query': q,
+            'response': r,
             'timestamp': memory.timestamp,
-            'source': 'hierarchical'
+            'source': 'hierarchical',
+            'metadata': memory.metadata or {},
+            'tags': getattr(memory, 'tags', []),
+            'truth_score': truth,
         }
+
 
     async def store_interaction(self, query: str, response: str, tags: List[str] = None):
         self.corpus_manager.add_entry(query, response, tags)
         logger.debug("[MEMORY] store_interaction was called.")
         try:
+            # Extract topic from query
+            topics = self.topic_manager.update_from_user_input(query)
+            primary_topic = topics[0] if topics else "general"
+
+            # Add topic to tags
+            tags = tags or []
+            tags.append(f"topic:{primary_topic}")
+
+            #store with meta data
             metadata = {
                 "timestamp": datetime.now().isoformat(),
                 "query": query,
                 "response": response,
-                "tags": ",".join(tags or [])
+                "tags": ",".join(tags or []),
+                "topic": primary_topic
             }
             logger.debug(f"[MemoryCoordinator] Attempting to store memory:\nQuery: {query[:100]}\nResponse: {response[:100]}")
             self.chroma_store.add_conversation_memory(query, response, metadata)
             logger.debug("[MemoryCoordinator] ✅ Memory successfully stored")
+            self.conversation_context.append({
+                "query": query,
+                "response": response,
+                "timestamp": datetime.now()
+            })
+            logger.debug("[MemoryCoordinator] ✅ Context successfully stored")
+            truth = self._calculate_truth_score(query, response)
+            metadata["truth_score"] = truth
+            logger.debug("[MemoryCoordinator] ✅ Truth Score successfully stored")
         except Exception as e:
             logger.error(f"Error storing in ChromaDB: {e}")
 
@@ -2045,7 +1711,7 @@ class MemoryCoordinator:
         return []
 
 
-    async def get_memories(self, query: str, limit: int = 20) -> List[Dict]:
+    async def get_memories(self, query: str, limit: int = 20, topic_filter: Optional[str] = None) -> List[Dict]:
         """Unified call for prompt builder to fetch top memories"""
         config = {
             'recent_count': 3,
@@ -2053,9 +1719,36 @@ class MemoryCoordinator:
             'hierarchical_count': 15,
             'max_memories': limit
         }
-        results = await self.retrieve_relevant_memories(query, config)
-        return results.get('memories', [])
+        # define topic_filter
+        topic_filter = topic_filter or self.current_topic
 
+        # Use current_topic if no filter provided
+        if topic_filter is None:
+            topic_filter = self.current_topic
+
+        if topic_filter and topic_filter != "general":
+            # For corpus memories
+            filtered_recent = [
+                m for m in self.corpus_manager.get_recent_memories(10)
+                if f"topic:{topic_filter}" in m.get('tags', [])
+            ]
+
+            # Note: ChromaDB metadata filtering might need adjustment
+            # For now, just do post-filtering
+            results = await self.retrieve_relevant_memories(query, config)
+
+            # Post-filter by topic
+            filtered_memories = [
+                m for m in results.get('memories', [])
+                if f"topic:{topic_filter}" in m.get('tags', [])
+            ]
+
+            return filtered_memories[:limit]
+        else:
+            results = await self.retrieve_relevant_memories(query, config)
+            return results.get('memories', [])
+
+#core/memory_interface
 import os
 import json
 import re
@@ -2115,6 +1808,7 @@ class MemoryNode:
     last_accessed: datetime = field(default_factory=datetime.now)
     importance_score: float = 0.5
     decay_rate: float = 0.1
+    truth_score: float = 0.5
     parent_id: Optional[str] = None
     child_ids: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
@@ -2132,45 +1826,38 @@ class MemoryNode:
         return {
             "id": self.id,
             "content": self.content,
-            "metadata": {
-                "type": self.type.value,
-                "timestamp": self.timestamp.isoformat(),
-                "tags": json.dumps(self.tags),
-                **safe_metadata
-            }
+            "type": self.type.value,  # you might want this too
+            "timestamp": self.timestamp.isoformat(),
+            "importance_score": self.importance_score,
+            "decay_rate": self.decay_rate,
+            "truth_score": self.truth_score,    # <-- persists
+            "metadata": safe_metadata
         }
 
     @classmethod
     def from_dict(cls, data: Dict):
-        """Reconstruct MemoryNode from dictionary"""
         metadata = data.get('metadata', {})
-
-        # Parse tags
-        tags = metadata.get('tags', '[]')
+        # Parse tags from metadata
+        tags = metadata.get('tags', [])
         if isinstance(tags, str):
             try:
                 tags = json.loads(tags)
             except:
                 tags = []
 
-        # Parse timestamp
-        timestamp_str = metadata.get('timestamp', '')
-        try:
-            timestamp = datetime.fromisoformat(timestamp_str)
-        except:
-            timestamp = datetime.now()
-
-        # Get memory type
-        mem_type = MemoryType(metadata.get('type', 'semantic'))
-
         return cls(
-            id=data.get('id', str(uuid.uuid4())),
-            content=data.get('content', ''),
-            type=mem_type,
-            timestamp=timestamp,
+            id=data["id"],
+            content=data["content"],
+            type=MemoryType(metadata.get('type', 'semantic')),
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            importance_score=data.get("importance_score", 0.5),
+            decay_rate=data.get("decay_rate", 0.01),
+            truth_score=data.get("truth_score", 0.5),   # <-- loads
             tags=tags,
             metadata=metadata
         )
+
+
 
 
 class HierarchicalMemorySystem:
@@ -2599,18 +2286,20 @@ class HierarchicalMemorySystem:
             age_days = (now - memory.timestamp).days
 
             # Apply decay function
-            decay_factor = 1.0 / (1.0 + memory.decay_rate * age_days)
+            age_hours = (now - memory.timestamp).total_seconds() / 3600.0
+            decay_factor = 1.0 / (1.0 + memory.decay_rate * (age_hours/24.0))  # keep same daily rate, but higher resolution
 
             # Boost recently accessed memories
             access_recency = (now - memory.last_accessed).days
             access_boost = 1.0 if access_recency < 1 else 1.0 / (1.0 + 0.1 * access_recency)
 
             # Calculate final score
+            truth = getattr(memory, 'truth_score', memory.metadata.get('truth_score', 0.5))
             mem_dict['final_score'] = (
                 mem_dict['relevance_score'] *
-                memory.importance_score *
-                decay_factor *
-                access_boost
+                max(0.1, memory.importance_score) *
+                max(0.1, decay_factor) *
+                (0.75 + 0.5*truth)  # gentle multiplier 0.75..1.25
             )
 
         return memories
@@ -2701,9 +2390,212 @@ class HierarchicalMemorySystem:
         # This would be implemented based on your dream generation logic
         return []
 
-# memory/storage/chroma_store_multi.py
-# Multi-collection ChromaDB storage system
+# /memory/corpus_manager.py
+import json
+import os
+from datetime import datetime
+from typing import List, Dict
+from utils.logging_utils import get_logger, log_and_time
 
+logger = get_logger("corpus_manager")
+
+class CorpusManager:
+    """Manages the conversation corpus (short-term memory)"""
+
+    def __init__(self, corpus_file: str = None):
+        from config.config import CORPUS_FILE
+        self.corpus_file = corpus_file or CORPUS_FILE
+        self.corpus = self._load_corpus()
+
+    @log_and_time("Load Corpus")
+    def _load_corpus(self) -> List[Dict]:
+        """Load corpus from disk"""
+        if os.path.exists(self.corpus_file):
+            try:
+                with open(self.corpus_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    # Convert timestamp strings back to datetime
+                    for entry in data:
+                        if isinstance(entry.get("timestamp"), str):
+                            try:
+                                entry["timestamp"] = datetime.fromisoformat(entry["timestamp"])
+                            except:
+                                pass
+                    logger.info(f"Loaded {len(data)} corpus entries")
+                    return data
+            except Exception as e:
+                logger.error(f"Error loading corpus: {e}")
+        return []
+
+    def clean_for_json(self, entry):
+        if isinstance(entry, dict):
+            return {k: self.clean_for_json(v) for k, v in entry.items()}
+        elif isinstance(entry, list):
+            return [self.clean_for_json(v) for v in entry]
+        elif isinstance(entry, datetime):
+            return entry.isoformat()
+        else:
+            return entry
+
+
+    @log_and_time("Save Corpus")
+    def save_corpus(self):
+        """Save corpus to disk atomically"""
+        tmp_file = self.corpus_file + ".tmp"
+        try:
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                # Convert datetime to string for JSON
+                data_to_save = []
+                for entry in self.corpus:
+                    entry_copy = entry.copy()
+                    if isinstance(entry_copy.get("timestamp"), datetime):
+                        entry_copy["timestamp"] = entry_copy["timestamp"].isoformat()
+                    data_to_save.append(entry_copy)
+                json.dump(self.clean_for_json(data_to_save), f, indent=2)
+            os.replace(tmp_file, self.corpus_file)
+            logger.debug(f"Saved {len(self.corpus)} entries to corpus")
+        except Exception as e:
+            logger.error(f"Error saving corpus: {e}")
+
+    def add_entry(self, query: str, response: str, tags: List[str] = None):
+        """Add a new interaction to corpus"""
+        entry = {
+            "query": query,
+            "response": response,
+            "timestamp": datetime.now(),
+            "tags": tags or []
+        }
+        self.corpus.append(entry)
+
+        # Auto-summarize every 20 non-summary entries
+        real_entries = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
+        if len(real_entries) % 20 == 0 and len(real_entries) > 0:
+            self._create_summary(real_entries[-20:])
+
+        # Trim if too large
+        if len(self.corpus) > 500:
+            self.corpus = self.corpus[-500:]
+
+        self.save_corpus()
+
+    def _create_summary(self, entries: List[Dict]):
+        """Create a summary node for the given entries"""
+        from config.config import DEFAULT_SUMMARY_PROMPT_HEADER
+
+        summary_lines = []
+        for e in entries[:20]:
+            if e.get('response', '').strip():
+                q = e.get('query', '[no query]')[:50]
+                r = e.get('response', '')[:60]
+                summary_lines.append(f"Q: {q}... → A: {r}...")
+
+        if summary_lines:
+            summary_entry = {
+                "query": "[SUMMARY NODE]",
+                "response": DEFAULT_SUMMARY_PROMPT_HEADER + "\n".join(summary_lines),
+                "timestamp": datetime.now(),
+                "tags": ["@summary"]
+            }
+            self.corpus.append(summary_entry)
+            logger.debug("Created summary node")
+
+    def get_recent_memories(self, count: int = 3) -> List[Dict]:
+        """Get most recent non-summary memories"""
+        non_summary = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
+        return sorted(non_summary, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:count]
+
+    def get_summaries(self, limit: int = 5) -> List[Dict]:
+        """Get summary nodes - returns full dict not just content"""
+        summaries = [e for e in self.corpus if "@summary" in e.get("tags", [])]
+        # Sort by timestamp to get most recent summaries
+        sorted_summaries = sorted(
+            summaries,
+            key=lambda x: x.get('timestamp', datetime.min),
+            reverse=True
+        )[:limit]
+
+        # Return full dict for better integration
+        return sorted_summaries
+    def create_summary_now(self, entries_to_summarize: int = 20) -> Dict:
+        """
+        Manually trigger summary creation for the last N entries
+        Returns the created summary entry
+        """
+        real_entries = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
+
+        if len(real_entries) < entries_to_summarize:
+            entries_to_summarize = len(real_entries)
+
+        if entries_to_summarize == 0:
+            logger.warning("No entries to summarize")
+            return None
+
+        # Get the last N entries
+        entries = real_entries[-entries_to_summarize:]
+
+        # Create summary
+        summary_lines = []
+        for e in entries:
+            if e.get('response', '').strip():
+                q = e.get('query', '[no query]')[:50]
+                r = e.get('response', '')[:60]
+                timestamp = e.get('timestamp', datetime.now())
+
+                # Format timestamp if it's a datetime
+                if isinstance(timestamp, datetime):
+                    time_str = timestamp.strftime("%H:%M")
+                else:
+                    time_str = ""
+
+                summary_lines.append(f"[{time_str}] Q: {q}... → A: {r}...")
+
+        if summary_lines:
+            summary_entry = {
+                "query": "[SUMMARY NODE]",
+                "response": f"Summary of last {entries_to_summarize} exchanges:\n" + "\n".join(summary_lines),
+                "timestamp": datetime.now(),
+                "tags": ["@summary", f"covers_{entries_to_summarize}_entries"],
+                "metadata": {
+                    "start_time": entries[0].get('timestamp', datetime.now()),
+                    "end_time": entries[-1].get('timestamp', datetime.now()),
+                    "entry_count": entries_to_summarize
+                }
+            }
+
+            self.corpus.append(summary_entry)
+            self.save_corpus()
+            logger.info(f"Created summary covering {entries_to_summarize} entries")
+
+            return summary_entry
+
+        return None
+# /utils/query_check.py
+import re
+
+DEICTIC_HINTS = (
+    "explain", "that", "it", "this", "again", "another way",
+    "different way", "more", "elaborate", "clarify", "what about"
+)
+
+def is_deictic(query: str) -> bool:
+    """Check if query references something from context"""
+    if not query:
+        return False
+    ql = query.lower().strip()
+
+    # Short queries are often deictic
+    if len(ql.split()) <= 5:
+        for hint in DEICTIC_HINTS:
+            if hint in ql:
+                return True
+
+    # Pronouns at the start often indicate reference
+    if ql.startswith(("that", "this", "it", "those", "these")):
+        return True
+
+    return False
+
+#core/multi_collection_chroma_store.py
 import chromadb
 from chromadb.config import Settings
 import hashlib
@@ -2712,13 +2604,13 @@ import json
 from typing import List, Dict, Optional
 from sentence_transformers import SentenceTransformer
 import logging
+from threading import Lock
 
 logger = logging.getLogger(__name__)
 
 class MultiCollectionChromaStore:
     """ChromaDB store with separate collections for different memory types"""
 
-    # Define collection names and their purposes
     COLLECTIONS = {
         'conversations': {
             'name': 'conversation-memory',
@@ -2757,22 +2649,19 @@ class MultiCollectionChromaStore:
             )
         )
 
-        # Initialize embedding models (could use different ones per collection)
         self.embedders = {}
         self.collections = {}
+        self.embedder_lock = Lock()
 
-        # Initialize all collections
         self._initialize_collections()
+        logger.debug(f"[CHROMA INIT] Available collections: {list(self.collections.keys())}")
 
     def _initialize_collections(self):
-        """Initialize all collection types"""
         for key, config in self.COLLECTIONS.items():
             try:
-                # Try to get existing collection
                 collection = self.client.get_collection(config['name'])
                 logger.info(f"Loaded existing collection: {config['name']} ({collection.count()} documents)")
             except:
-                # Create new collection
                 collection = self.client.create_collection(
                     name=config['name'],
                     metadata={
@@ -2785,41 +2674,57 @@ class MultiCollectionChromaStore:
 
             self.collections[key] = collection
 
-            # Initialize embedder for this collection (lazy load)
-            if config['embedding_model'] not in self.embedders:
-                self.embedders[config['embedding_model']] = SentenceTransformer(config['embedding_model'])
+            with self.embedder_lock:
+                if config['embedding_model'] not in self.embedders:
+                    self.embedders[config['embedding_model']] = SentenceTransformer(config['embedding_model'])
 
     def _generate_id(self, content: str, collection_type: str) -> str:
-        """Generate unique ID for a memory"""
         content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")[:-3]
         return f"{collection_type}_{content_hash}_{timestamp}"
 
+    def _safe_add(self, collection_key: str, ids, documents, metadatas):
+        try:
+            self.collections[collection_key].add(
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas
+            )
+            # Persist is deprecated and handled automatically by the client now.
+            # self.client.persist()
+            logger.debug(f"Added to {collection_key} memory: {ids[0]}")
+        except Exception as e:
+            logger.error(f"Failed to add to {collection_key}: {e}")
+
     def add_conversation_memory(self, query: str, response: str, metadata: Dict = None) -> str:
-        """Add a conversation turn to memory"""
         content = f"User: {query}\nAssistant: {response}"
         memory_id = self._generate_id(content, "conv")
 
         metadata = metadata or {}
         metadata.update({
             "timestamp": datetime.now().isoformat(),
-            "query": query[:200],  # Store preview
+            "query": query[:200],
             "response": response[:200],
             "type": "conversation",
             "turn_length": len(query) + len(response)
         })
 
-        self.collections['conversations'].add(
-            ids=[memory_id],
-            documents=[content],
-            metadatas=[metadata]
-        )
+        self._safe_add('conversations', [memory_id], [content], [metadata])
 
-        logger.debug(f"Added conversation memory: {memory_id}")
+        # Confirm it was indexed
+        try:
+            result = self.collections['conversations'].get(ids=[memory_id])
+            if result and result['ids']:
+                logger.debug(f"✅ Memory {memory_id} successfully indexed and retrieved from ChromaDB.")
+            else:
+                logger.warning(f"⚠️ Memory {memory_id} was added but could not be retrieved for confirmation.")
+        except Exception as e:
+            logger.error(f"❌ Error confirming memory {memory_id} in ChromaDB: {e}")
+
         return memory_id
 
+
     def add_wiki_chunk(self, chunk: Dict) -> str:
-        """Add a Wikipedia chunk"""
         content = f"{chunk.get('title', '')} {chunk.get('text', '')}"
         memory_id = self._generate_id(content, "wiki")
 
@@ -2831,16 +2736,10 @@ class MultiCollectionChromaStore:
             "type": "wiki"
         }
 
-        self.collections['wiki'].add(
-            ids=[memory_id],
-            documents=[content],
-            metadatas=[metadata]
-        )
-
+        self._safe_add('wiki', [memory_id], [content], [metadata])
         return memory_id
 
     def add_semantic_chunk(self, chunk: Dict) -> str:
-        """Add a semantic chunk from long-form content"""
         content = chunk.get('content', chunk.get('text', ''))
         memory_id = self._generate_id(content, "sem")
 
@@ -2852,36 +2751,24 @@ class MultiCollectionChromaStore:
             "type": "semantic"
         }
 
-        self.collections['semantic'].add(
-            ids=[memory_id],
-            documents=[content],
-            metadatas=[metadata]
-        )
-
+        self._safe_add('semantic', [memory_id], [content], [metadata])
         return memory_id
 
     def add_summary(self, summary: str, period: str, metadata: Dict = None) -> str:
-        """Add a conversation summary"""
         memory_id = self._generate_id(summary, "summ")
 
         metadata = metadata or {}
         metadata.update({
-            "period": period,  # e.g., "2024-01-15_afternoon"
+            "period": period,
             "timestamp": datetime.now().isoformat(),
             "type": "summary",
             "length": len(summary)
         })
 
-        self.collections['summaries'].add(
-            ids=[memory_id],
-            documents=[summary],
-            metadatas=[metadata]
-        )
-
+        self._safe_add('summaries', [memory_id], [summary], [metadata])
         return memory_id
 
     def add_fact(self, fact: str, source: str, confidence: float = 1.0) -> str:
-        """Add an extracted fact"""
         memory_id = self._generate_id(fact, "fact")
 
         metadata = {
@@ -2891,13 +2778,37 @@ class MultiCollectionChromaStore:
             "type": "fact"
         }
 
-        self.collections['facts'].add(
-            ids=[memory_id],
-            documents=[fact],
-            metadatas=[metadata]
-        )
-
+        self._safe_add('facts', [memory_id], [fact], [metadata])
         return memory_id
+
+    def get_all_from_collection(self, collection_key: str) -> List[Dict]:
+        """Retrieve all documents from a specific collection."""
+        if collection_key not in self.collections:
+            return []
+        try:
+            collection = self.collections[collection_key]
+            count = collection.count()
+            if count == 0:
+                return []
+
+            # Retrieve all documents by specifying the limit
+            results = collection.get(limit=count, include=["metadatas", "documents"])
+
+            formatted = []
+            if not results.get('ids'):
+                return formatted
+
+            for i, doc_id in enumerate(results['ids']):
+                formatted.append({
+                    'id': doc_id,
+                    'content': results['documents'][i],
+                    'metadata': results['metadatas'][i],
+                    'collection': collection_key
+                })
+            return formatted
+        except Exception as e:
+            logger.error(f"Error getting all documents from {collection_key}: {e}")
+            return []
 
     def search_conversations(self, query: str, n_results: int = 5) -> List[Dict]:
         """Search conversation memories"""
@@ -2923,11 +2834,15 @@ class MultiCollectionChromaStore:
 
         for key, collection in self.collections.items():
             try:
-                results = collection.query(
-                    query_texts=[query],
-                    n_results=n_results_per_type
-                )
-                all_results[key] = self._format_results(results, key)
+                # Ensure we don't query an empty collection, which can cause errors
+                if collection.count() > 0:
+                    results = collection.query(
+                        query_texts=[query],
+                        n_results=min(n_results_per_type, collection.count()) # Cannot request more results than exist
+                    )
+                    all_results[key] = self._format_results(results, key)
+                else:
+                    all_results[key] = []
             except Exception as e:
                 logger.error(f"Error searching {key}: {e}")
                 all_results[key] = []
@@ -2981,59 +2896,533 @@ class MultiCollectionChromaStore:
 
             # Reinitialize
             self._initialize_collections()
+# /utils/file_processor.py
+import docx2txt
+import pandas as pd
+from typing import List, Any
+from utils.logging_utils import get_logger
+logger = get_logger("file_processor")
 
-    def migrate_from_single_collection(self, old_collection_name: str = "assistant-memory"):
-        """Migrate from single collection to multi-collection setup"""
+
+
+class FileProcessor:
+    """Handles processing of uploaded files"""
+
+    def __init__(self):
+        self.supported_extensions = ['.txt', '.docx', '.csv', '.py']
+
+    async def process_files(self, user_text: str, files: List[Any]) -> str:
+        """
+        Process uploaded files and combine with user text
+
+        Args:
+            user_text: Original user input
+            files: List of uploaded file objects
+
+        Returns:
+            Combined text including file contents
+        """
+        combined_text = user_text
+
+        if not files:
+            return combined_text
+
+        logger.debug(f"Processing {len(files)} uploaded files")
+
+        for file in files:
+            try:
+                file_content = self._process_single_file(file)
+                combined_text += "\n\n" + file_content
+                logger.debug(f"Successfully processed: {file.name}")
+
+            except Exception as e:
+                error_msg = f"[Error reading {file.name}: {str(e)}]"
+                logger.error(f"File processing error: {e}")
+                combined_text += "\n\n" + error_msg
+
+        return combined_text
+
+    def _process_single_file(self, file) -> str:
+        """Process a single file based on its extension"""
+
+        if file.name.endswith('.txt'):
+            with open(file.name, 'r', encoding='utf-8') as f:
+                return f.read()
+
+        elif file.name.endswith('.docx'):
+            return docx2txt.process(file.name)
+
+        elif file.name.endswith('.csv'):
+            df = pd.read_csv(file.name)
+            return df.to_string()
+
+        elif file.name.endswith('.py'):
+            with open(file.name, 'r', encoding='utf-8') as f:
+                return f"```python\n{f.read()}\n```"
+
+        else:
+            return f"[Unsupported file type: {file.name}]"
+
+    def get_supported_extensions(self) -> List[str]:
+        """Return list of supported file extensions"""
+        return self.supported_extensions
+#/utilis/logging_utils.py
+import os
+import sys
+import time
+import logging
+import inspect
+import threading
+import functools
+import multiprocessing
+from datetime import datetime
+
+# === Direct File Logger (Failsafe) ===
+class DirectFileLogger:
+    def __init__(self, filename="daemon_debug.log"):
+        self.filename = filename
+        self.lock = threading.Lock()
+
+    def _write(self, level, logger_name, message):
+        with self.lock:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            line = f"{timestamp} [{level}] [{logger_name}] {message}\n"
+            with open(self.filename, 'a', encoding='utf-8') as f:
+                f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+
+    def debug(self, msg, logger_name="daemon_app"):
+        self._write("DEBUG", logger_name, msg)
+
+    def info(self, msg, logger_name="daemon_app"):
+        self._write("INFO", logger_name, msg)
+
+    def warning(self, msg, logger_name="daemon_app"):
+        self._write("WARNING", logger_name, msg)
+
+    def error(self, msg, logger_name="daemon_app"):
+        self._write("ERROR", logger_name, msg)
+
+direct_logger = DirectFileLogger()
+
+# === Logging Decorators ===
+def log_and_time(label="Function"):
+    def decorator(func):
+        log = get_logger(func.__module__)
+
+        if inspect.isasyncgenfunction(func):
+            @functools.wraps(func)
+            async def async_gen_wrapper(*args, **kwargs):
+                start = time.time()
+                log.debug(f"[{label}] START")
+                async for result in func(*args, **kwargs):
+                    yield result
+                duration = time.time() - start
+                log.debug(f"[{label}] END — Duration: {duration:.2f}s")
+            return async_gen_wrapper
+
+        elif inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_func_wrapper(*args, **kwargs):
+                start = time.time()
+                log.debug(f"[{label}] START")
+                result = await func(*args, **kwargs)
+                duration = time.time() - start
+                log.debug(f"[{label}] END — Duration: {duration:.2f}s")
+                return result
+            return async_func_wrapper
+
+        elif inspect.isfunction(func):
+            @functools.wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                start = time.time()
+                log.debug(f"[{label}] START")
+                result = func(*args, **kwargs)
+                duration = time.time() - start
+                log.debug(f"[{label}] END — Duration: {duration:.2f}s")
+                return result
+            return sync_wrapper
+
+        else:
+            raise TypeError(f"@log_and_time cannot be applied to: {func.__name__}")
+    return decorator
+
+
+def log_duration(tag):
+    def decorator(func):
+        log = get_logger(func.__module__)
+
+        if inspect.isasyncgenfunction(func):
+            return func  # No good timing model for async generators
+        if inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                start = time.time()
+                result = await func(*args, **kwargs)
+                log.debug(f"[TIMING] {tag} took {time.time() - start:.2f}s")
+                return result
+            return async_wrapper
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            start = time.time()
+            result = func(*args, **kwargs)
+            log.debug(f"[TIMING] {tag} took {time.time() - start:.2f}s")
+            return result
+        return sync_wrapper
+    return decorator
+
+
+def with_logging(func):
+    log = get_logger(func.__module__)
+
+    if inspect.isasyncgenfunction(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            ensure_logging_persistence()
+            async for item in func(*args, **kwargs):
+                yield item
+    else:
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            ensure_logging_persistence()
+            return await func(*args, **kwargs)
+    return wrapper
+
+
+def log_async_operation(func):
+    log = get_logger(func.__module__)
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        log.debug(f"[ASYNC START] {func.__name__}")
         try:
-            old_collection = self.client.get_collection(old_collection_name)
-            all_data = old_collection.get()
-
-            if not all_data['ids']:
-                logger.info("No data to migrate")
-                return
-
-            migrated = {
-                'conversations': 0,
-                'wiki': 0,
-                'summaries': 0,
-                'facts': 0,
-                'semantic': 0
-            }
-
-            for doc_id, doc, meta in zip(all_data['ids'], all_data['documents'], all_data['metadatas']):
-                # Determine type based on content or metadata
-                if 'User:' in doc and 'Assistant:' in doc:
-                    self.add_conversation_memory(
-                        query=doc.split('Assistant:')[0].replace('User:', '').strip(),
-                        response=doc.split('Assistant:')[1].strip(),
-                        metadata=meta
-                    )
-                    migrated['conversations'] += 1
-                elif meta.get('type') == 'wiki' or 'title' in meta:
-                    self.collections['wiki'].add(
-                        ids=[doc_id],
-                        documents=[doc],
-                        metadatas=[meta]
-                    )
-                    migrated['wiki'] += 1
-                elif '@summary' in meta.get('tags', []):
-                    self.add_summary(doc, period="migrated", metadata=meta)
-                    migrated['summaries'] += 1
-                else:
-                    # Default to semantic chunks
-                    self.collections['semantic'].add(
-                        ids=[doc_id],
-                        documents=[doc],
-                        metadatas=[meta]
-                    )
-                    migrated['semantic'] += 1
-
-            logger.info(f"Migration complete: {migrated}")
-            return migrated
-
+            result = await func(*args, **kwargs)
+            log.debug(f"[ASYNC COMPLETE] {func.__name__}")
+            return result
         except Exception as e:
-            logger.error(f"Migration failed: {e}")
-            return None
+            log.error(f"[ASYNC ERROR] {func.__name__}: {type(e).__name__}: {e}")
+            raise
+    return wrapper
+
+
+# === Gradio Logger Wrapper ===
+
+class GradioLogger:
+    def __init__(self):
+        self.direct_logger = direct_logger
+        self.logger = logging.getLogger("daemon_app")
+
+    def _log(self, level, msg):
+        try:
+            ensure_logging_persistence()
+            getattr(self.logger, level)(msg)
+        except Exception:
+            pass
+        getattr(self.direct_logger, level)(msg)
+
+    def debug(self, msg): self._log("debug", msg)
+    def info(self, msg): self._log("info", msg)
+    def warning(self, msg): self._log("warning", msg)
+    def error(self, msg): self._log("error", msg)
+
+# === File Handler that Flushes Immediately ===
+
+class ImmediateFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+        direct_logger._write(record.levelname, record.name, record.getMessage())
+
+# === Logging Setup ===
+
+def setup_logging():
+    import asyncio
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    for name in list(logging.Logger.manager.loggerDict):
+        logger_instance = logging.getLogger(name)
+        logger_instance.handlers.clear()
+        logger_instance.propagate = True
+    root_logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] [%(name)s] %(message)s", "%Y-%m-%d %H:%M:%S"
+    )
+
+    file_handler = ImmediateFileHandler("daemon_debug.log", mode="w", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    logging.captureWarnings(True)
+    multiprocessing.log_to_stderr().setLevel(logging.DEBUG)
+    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+
+    critical_loggers = [
+        '', '__main__', 'daemon_app', 'httpx', 'httpcore', 'openai', 'asyncio',
+        'gradio', 'gradio.queueing', 'gradio.routes', 'transformers',
+        'chromadb', 'models', 'hierarchical_memory', 'llm_gates', 'unified_hierarchical_prompt_builder'
+    ]
+    for name in critical_loggers:
+        log = logging.getLogger(name)
+        log.setLevel(logging.DEBUG)
+        log.propagate = True
+
+    root_logger.debug(f"🌀 New session started at {datetime.now().isoformat()}")
+    direct_logger.debug(f"🌀 Direct logger also active at {datetime.now().isoformat()}")
+
+    return root_logger
+
+def ensure_logging_persistence():
+    root_logger = logging.getLogger()
+    if not any(isinstance(h, ImmediateFileHandler) for h in root_logger.handlers):
+        setup_logging()
+        direct_logger.warning("Logging was reset — reconfigured handlers")
+
+def start_logging_monitor():
+    def monitor():
+        while True:
+            time.sleep(5)
+            ensure_logging_persistence()
+            direct_logger.debug(f"Logging heartbeat — {datetime.now()}")
+    threading.Thread(target=monitor, daemon=True).start()
+
+def get_logger(name: str = "daemon_app") -> logging.Logger:
+    ensure_logging_persistence()
+    return logging.getLogger(name)
+
+# === Initialize on Import ===
+
+logger = setup_logging()
+start_logging_monitor()
+# /utils/time_manager.py
+import json, os, logging
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+class TimeManager:
+    def __init__(self, time_file="data/last_query_time.json"):
+        self.time_file = time_file
+        self.last_query_time = self._load_last_query_time()
+        self.last_response_time = None
+
+    # ---------- persistence ----------
+    def _load_last_query_time(self):
+        if os.path.exists(self.time_file):
+            try:
+                with open(self.time_file, "r") as f:
+                    return datetime.fromisoformat(json.load(f)["last_query_time"])
+            except (json.JSONDecodeError, KeyError, ValueError):
+                pass
+        return None
+
+    def _save_last_query_time(self):
+        if self.last_query_time:
+            with open(self.time_file, "w") as f:
+                json.dump({"last_query_time": self.last_query_time.isoformat()}, f)
+
+    # ---------- public helpers ----------
+    def current(self) -> datetime:
+        return datetime.now()
+
+    def current_iso(self) -> str:
+        return self.current().isoformat(sep=" ", timespec="seconds")
+
+    def elapsed_since_last(self) -> str:
+        if not self.last_query_time:
+            return "N/A (first query)"
+        delta = self.current() - self.last_query_time
+        if delta.days:
+            return f"{delta.days} d {delta.seconds//3600} h"
+        if delta.seconds >= 3600:
+            return f"{delta.seconds//3600} h {(delta.seconds%3600)//60} m"
+        if delta.seconds >= 60:
+            return f"{delta.seconds//60} m"
+        return f"{delta.seconds} s"
+
+    def mark_query_time(self) -> datetime:
+        """Call at the *start* of request handling."""
+        self.last_query_time = self.current()
+        self._save_last_query_time()
+        return self.last_query_time
+
+    def measure_response(self, start_time, end_time):
+        elapsed = end_time - start_time
+        self.last_response_time = elapsed
+        return f"{elapsed.total_seconds():.2f} s"
+
+    def last_response(self) -> str:
+        return f"{self.last_response_time.total_seconds():.2f} s" if self.last_response_time else "N/A"
+
+# /utils/topic_manager.py
+import logging
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("topic_manager.py is alive")
+import json
+from collections import Counter
+import spacy
+import os
+from utils.logging_utils import log_and_time
+
+class TopicManager:
+    def __init__(self, top_topics_file="data/top_topics.json"):
+        self.top_topics_file = top_topics_file
+        self.default_common_topics = [
+            "World War II", "United States", "Artificial Intelligence",
+            "Climate Change", "Photosynthesis", "Quantum Mechanics",
+            "Neural Networks", "Moon Landing", "French Revolution",
+        ]
+        self.user_topic_counter = Counter()
+        self._load_top_topics()
+        self.nlp = spacy.load("en_core_web_sm")
+
+    def _load_top_topics(self):
+        if os.path.exists(self.top_topics_file):
+            with open(self.top_topics_file, "r") as f:
+                self.top_topics = set(json.load(f))
+        else:
+            self.top_topics = set(self.default_common_topics)
+
+    def extract_nouns(self, text):
+        doc = self.nlp(text)
+        return [token.text.lower() for token in doc if token.pos_ == "NOUN"]
+
+    def extract_entities_and_topics(self, text):
+        """Extract named entities and important nouns from text"""
+        doc = self.nlp(text)
+
+        # Get named entities (proper nouns, places, etc.)
+        entities = [ent.text for ent in doc.ents]
+
+        # Get important nouns (not just any noun)
+        important_nouns = []
+        for token in doc:
+            if (token.pos_ == "NOUN" and
+                len(token.text) > 3 and  # Skip short words
+                not token.is_stop and    # Skip stop words
+                token.is_alpha):         # Skip numbers/punctuation
+                important_nouns.append(token.text.title())  # Capitalize
+
+        # Combine and deduplicate
+        topics = list(set(entities + important_nouns))
+        return topics[:10]  # Return top 10 most relevant
+
+    def update_from_user_input(self, text):
+        # Extract topics from current input
+        current_topics = self.extract_entities_and_topics(text)
+
+        # Update the counter for long-term tracking
+        nouns = self.extract_nouns(text)
+        self.user_topic_counter.update(nouns)
+
+        # Use current topics as the active topics for this query
+        self.top_topics = set(current_topics)
+
+        return current_topics
+
+    def refresh_top_topics(self):
+        popular_user_topics = [topic for topic, count in self.user_topic_counter.items() if count >= 3]
+        combined = set(self.default_common_topics).union(popular_user_topics)
+        with open(self.top_topics_file, "w") as f:
+            json.dump(list(combined), f, indent=2)
+        print("[TopicManager] Refreshed top topics.")
+# /config/config.py
+import os
+from utils.logging_utils import get_logger
+
+logger = get_logger("config")
+logger.debug("config.py is alive")
+
+VERSION = os.getenv("DAEMON_VERSION", "v4")
+
+# Base directory for data (production)
+DEFAULT_DATA_DIR = os.path.join(os.getcwd(), "data")
+
+# Construct default production paths
+_default_corpus_file = os.path.join(
+    DEFAULT_DATA_DIR, f"corpus_{VERSION}.json"
+)
+_default_chroma_dir = os.path.join(
+    DEFAULT_DATA_DIR, f"chroma_db_{VERSION}"
+)
+
+# Allow overrides via ENV
+CORPUS_FILE = os.getenv("CORPUS_FILE", _default_corpus_file)
+CHROMA_PATH = os.getenv("CHROMA_PATH", _default_chroma_dir)
+
+logger.debug(f"Using CORPUS_FILE={CORPUS_FILE}")
+logger.debug(f"Using CHROMA_PATH={CHROMA_PATH}")
+
+#DREAM_FILE = f"dreams_{VERSION}.json"
+#DREAM_LOG = f"dream_log_{VERSION}.jsonl"
+IN_HARM_TEST = False 
+DEFAULT_MODEL_NAME = "llama" 
+DREAM_MODEL_NAME="gpt-neo"
+DEFAULT_MAX_TOKENS=2048
+DEFAULT_TOP_P=.9
+DEFAULT_TOP_K=5
+DEFAULT_TEMPERATURE=0.7
+LOCAL_MODEL_CONTEXT_LIMIT = 4096  # or whatever your largest local
+API_MODEL_CONTEXT_LIMIT = 128000 # GPT-4-Turbo etc.
+LOAD_LOCAL_MODEL=True
+SEMANTIC_ONLY_MODE = False
+DEBUG_MODE = True  # Toggle debug info
+CONFIDENCE_THRESHOLD=1.5
+GATE_REL_THRESHOLD = 0.35 # temp for debug        # Minimum relevance score to pass LLM gate (0-1)
+MAX_FINAL_MEMORIES = 5
+RERANK_USE_LLM = True
+CROSS_ENCODER_WEIGHT = 0.7# Maximum memories to return after all filtering
+MEM_NO = 5                      # Number of memories to expand hierarchically
+MEM_IMPORTANCE_SCORE = 0.6      # Minimum importance for parent/child expansion
+MAX_WORKING_MEMORY=10
+CHILD_MEM_LIMIT = 3  # Max children to include per memory
+##Memory module promts
+COSINE_SIMILARITY_THRESHOLD=0.25 #try values between .3 and .7, experiement
+DEFAULT_SUMMARY_PROMPT_HEADER = "Summary of last 20 exchanges:\n"
+DEFAULT_TAGGING_PROMPT = """You are Daemon, my assistant. Extract 5 concise tags or keywords from the following input. Return them as a list, comma-separated.
+
+Input: "{text}"
+
+Tags:"""
+OpenAPIKey = os.getenv("OPENAI_API_KEY", "")
+
+topic_confidence_threshold = 0.7  # Fixed typo
+# === Imports ===
+import torch
+from datetime import datetime
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+SYSTEM_PROMPT = "You are Daemon, a brutally honest AI assistant who tells the truth even when uncomfortable, admits ignorance freely, and uses dark humor about current events. You're willing to call out BS while still being genuinely helpful."
+
+
+DEFAULT_CORE_DIRECTIVE = {
+    "query": "[CORE DIRECTIVE]",
+    "response": (
+        "You are an AI assistant. You are helpful, reliable, and memory-persistent.\n"
+        "You should respect user intent and be aligned with their goals."
+    ),
+    "timestamp": datetime.now(),
+    "tags": ["@seed", "core", "directive", "safety"]
+}
+
+
+
+def set_padding_token_if_none(tokenizer):
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
+# /models/model_manager.py
 # Import dependencies and config defaults
 import logging
 from utils.logging_utils import log_and_time, get_logger
@@ -3070,18 +3459,40 @@ class ModelManager:
         # Dictionary mapping registered API models
         self.api_models = {}
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.client = OpenAI(api_key=self.api_key,   http_client=httpx.Client(
-        timeout=httpx.Timeout(30.0),
-        limits=httpx.Limits(
-            max_connections=100,
-            max_keepalive_connections=10
-        ),
-        headers={"Connection": "keep-alive"},
-    )
-    )
-        self.async_client = AsyncOpenAI(api_key=self.api_key)
+
+        self.base_url = "https://openrouter.ai/api/v1"
+
+        # Sync client for `OpenAI`
+        sync_http_client = httpx.Client(
+            timeout=httpx.Timeout(30.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=10),
+            headers={"Connection": "keep-alive"},
+        )
+
+        # Async client for `AsyncOpenAI`
+        async_http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=10),
+            headers={"Connection": "keep-alive"},
+        )
+
+        # Now pass each to the correct client
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url="https://openrouter.ai/api/v1",
+            http_client=sync_http_client
+        )
+
+        self.async_client = AsyncOpenAI(
+            api_key=self.api_key,
+            base_url="https://openrouter.ai/api/v1",
+            http_client=async_http_client
+        )
+
         self.default_model = "gpt-4-turbo"
         self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.api_models["claude-opus"] = "anthropic/claude-3-opus"
+
     def get_context_limit(self):
         """Get the maximum context window based on active model."""
         if self.is_api_model(self.get_active_model_name()):
@@ -3346,6 +3757,10 @@ class ModelManager:
                         ]
                     else:
                         messages = [{"role": "user", "content": prompt}]
+                for i, msg in enumerate(messages):
+                    logger.debug(f"--- Prompt Message {i} ---")
+                    logger.debug(f"Role: {msg['role']}")
+                    logger.debug(f"Content:\n{msg['content']}")
 
                 stream = await self.async_client.chat.completions.create(
                     model=self.api_models[target_model],
@@ -3399,7 +3814,7 @@ class TokenizerManager:
             return None
 
         # Patch for OpenAI-style names (fallback to gpt2 tokenizer)
-        if model_name.lower() in {"gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.5-turbo"}:
+        if model_name.lower() in {"gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.5-turbo", "claude-opus"}:
             model_name = "gpt2"
 
         if model_name not in self.tokenizers:
@@ -3421,429 +3836,7 @@ if __name__ == "__main__":
 
     print(tokenizer.encode(sample))
     print("Token count:", len(tokenizer.encode(sample)))
-import logging
-
-# Use the root logger or create a child logger that will inherit handlers
-logger = logging.getLogger(__name__)
-logger.debug("Personality manager.py is alive")
-
-import re
-import json
-import os
-from datetime import datetime, timedelta
-import os
-
-class PersonalityManager:
-    def __init__(self):
-        self.personalities = {
-            "default": {
-                "system_prompt_file": "system_prompt_default.txt",
-                "directives_file": "structured_directives.txt",
-                "num_memories": 5,
-                "include_wiki": True,
-                "include_semantic_search": True,
-                "include_summaries": True,
-                "summary_limit": 5
-
-            },
-            "therapy": {
-                "system_prompt_file": "system_prompt_therapy.txt",
-                "directives_file": "structured_directives_therapy.txt",
-                "num_memories": 30,
-                "include_wiki": False,
-                "include_semantic_search": False,
-                "include_summaries": True,  # Important for therapy mode
-                "summary_limit": 5
-
-            },
-            "snarky": {
-                "system_prompt_file": "system_prompt_snarky.txt",
-                "directives_file": "structured_directives_snarky.txt",
-                "num_memories": 3,
-                "include_wiki": True,
-                "include_semantic_search": True,
-                "include_summaries": True,  # Important for therapy mode
-                "summary_limit": 5
-
-            }
-        }
-        self.current_personality = "default"
-
-    def switch_personality(self, name):
-        if name in self.personalities:
-            self.current_personality = name
-            logger.debug(f"[PersonalityManager] Switched to: {name}")
-        else:
-            logger.debug(f"[PersonalityManager] Personality '{name}' not found. Using default.")
-
-    def get_current_config(self):
-        return self.personalities[self.current_personality]
-
-# daemon_7_11_25_refactor/utils/file_processor.py
-import docx2txt
-import pandas as pd
-from typing import List, Any
-from utils.logging_utils import get_logger
-logger = get_logger("file_processor")
-
-
-
-class FileProcessor:
-    """Handles processing of uploaded files"""
-
-    def __init__(self):
-        self.supported_extensions = ['.txt', '.docx', '.csv', '.py']
-
-    async def process_files(self, user_text: str, files: List[Any]) -> str:
-        """
-        Process uploaded files and combine with user text
-
-        Args:
-            user_text: Original user input
-            files: List of uploaded file objects
-
-        Returns:
-            Combined text including file contents
-        """
-        combined_text = user_text
-
-        if not files:
-            return combined_text
-
-        logger.debug(f"Processing {len(files)} uploaded files")
-
-        for file in files:
-            try:
-                file_content = self._process_single_file(file)
-                combined_text += "\n\n" + file_content
-                logger.debug(f"Successfully processed: {file.name}")
-
-            except Exception as e:
-                error_msg = f"[Error reading {file.name}: {str(e)}]"
-                logger.error(f"File processing error: {e}")
-                combined_text += "\n\n" + error_msg
-
-        return combined_text
-
-    def _process_single_file(self, file) -> str:
-        """Process a single file based on its extension"""
-
-        if file.name.endswith('.txt'):
-            with open(file.name, 'r', encoding='utf-8') as f:
-                return f.read()
-
-        elif file.name.endswith('.docx'):
-            return docx2txt.process(file.name)
-
-        elif file.name.endswith('.csv'):
-            df = pd.read_csv(file.name)
-            return df.to_string()
-
-        elif file.name.endswith('.py'):
-            with open(file.name, 'r', encoding='utf-8') as f:
-                return f"```python\n{f.read()}\n```"
-
-        else:
-            return f"[Unsupported file type: {file.name}]"
-
-    def get_supported_extensions(self) -> List[str]:
-        """Return list of supported file extensions"""
-        return self.supported_extensions
-import os
-import sys
-import time
-import logging
-import inspect
-import threading
-import functools
-import multiprocessing
-from datetime import datetime
-
-# === Direct File Logger (Failsafe) ===
-class DirectFileLogger:
-    def __init__(self, filename="daemon_debug.log"):
-        self.filename = filename
-        self.lock = threading.Lock()
-
-    def _write(self, level, logger_name, message):
-        with self.lock:
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            line = f"{timestamp} [{level}] [{logger_name}] {message}\n"
-            with open(self.filename, 'a', encoding='utf-8') as f:
-                f.write(line)
-                f.flush()
-                os.fsync(f.fileno())
-
-    def debug(self, msg, logger_name="daemon_app"):
-        self._write("DEBUG", logger_name, msg)
-
-    def info(self, msg, logger_name="daemon_app"):
-        self._write("INFO", logger_name, msg)
-
-    def warning(self, msg, logger_name="daemon_app"):
-        self._write("WARNING", logger_name, msg)
-
-    def error(self, msg, logger_name="daemon_app"):
-        self._write("ERROR", logger_name, msg)
-
-direct_logger = DirectFileLogger()
-
-# === Logging Decorators ===
-def log_and_time(label="Function"):
-    def decorator(func):
-        log = get_logger(func.__module__)
-
-        if inspect.isasyncgenfunction(func):
-            @functools.wraps(func)
-            async def async_gen_wrapper(*args, **kwargs):
-                start = time.time()
-                log.debug(f"[{label}] START")
-                async for result in func(*args, **kwargs):
-                    yield result
-                duration = time.time() - start
-                log.debug(f"[{label}] END — Duration: {duration:.2f}s")
-            return async_gen_wrapper
-
-        elif inspect.iscoroutinefunction(func):
-            @functools.wraps(func)
-            async def async_func_wrapper(*args, **kwargs):
-                start = time.time()
-                log.debug(f"[{label}] START")
-                result = await func(*args, **kwargs)
-                duration = time.time() - start
-                log.debug(f"[{label}] END — Duration: {duration:.2f}s")
-                return result
-            return async_func_wrapper
-
-        elif inspect.isfunction(func):
-            @functools.wraps(func)
-            def sync_wrapper(*args, **kwargs):
-                start = time.time()
-                log.debug(f"[{label}] START")
-                result = func(*args, **kwargs)
-                duration = time.time() - start
-                log.debug(f"[{label}] END — Duration: {duration:.2f}s")
-                return result
-            return sync_wrapper
-
-        else:
-            raise TypeError(f"@log_and_time cannot be applied to: {func.__name__}")
-    return decorator
-
-
-def log_duration(tag):
-    def decorator(func):
-        log = get_logger(func.__module__)
-
-        if inspect.isasyncgenfunction(func):
-            return func  # No good timing model for async generators
-        if inspect.iscoroutinefunction(func):
-            @functools.wraps(func)
-            async def async_wrapper(*args, **kwargs):
-                start = time.time()
-                result = await func(*args, **kwargs)
-                log.debug(f"[TIMING] {tag} took {time.time() - start:.2f}s")
-                return result
-            return async_wrapper
-        @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            start = time.time()
-            result = func(*args, **kwargs)
-            log.debug(f"[TIMING] {tag} took {time.time() - start:.2f}s")
-            return result
-        return sync_wrapper
-    return decorator
-
-
-def with_logging(func):
-    log = get_logger(func.__module__)
-
-    if inspect.isasyncgenfunction(func):
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            ensure_logging_persistence()
-            async for item in func(*args, **kwargs):
-                yield item
-    else:
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            ensure_logging_persistence()
-            return await func(*args, **kwargs)
-    return wrapper
-
-
-def log_async_operation(func):
-    log = get_logger(func.__module__)
-
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        log.debug(f"[ASYNC START] {func.__name__}")
-        try:
-            result = await func(*args, **kwargs)
-            log.debug(f"[ASYNC COMPLETE] {func.__name__}")
-            return result
-        except Exception as e:
-            log.error(f"[ASYNC ERROR] {func.__name__}: {type(e).__name__}: {e}")
-            raise
-    return wrapper
-
-
-# === Gradio Logger Wrapper ===
-
-class GradioLogger:
-    def __init__(self):
-        self.direct_logger = direct_logger
-        self.logger = logging.getLogger("daemon_app")
-
-    def _log(self, level, msg):
-        try:
-            ensure_logging_persistence()
-            getattr(self.logger, level)(msg)
-        except Exception:
-            pass
-        getattr(self.direct_logger, level)(msg)
-
-    def debug(self, msg): self._log("debug", msg)
-    def info(self, msg): self._log("info", msg)
-    def warning(self, msg): self._log("warning", msg)
-    def error(self, msg): self._log("error", msg)
-
-# === File Handler that Flushes Immediately ===
-
-class ImmediateFileHandler(logging.FileHandler):
-    def emit(self, record):
-        super().emit(record)
-        self.flush()
-        direct_logger._write(record.levelname, record.name, record.getMessage())
-
-# === Logging Setup ===
-
-def setup_logging():
-    import asyncio
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
-    for name in list(logging.Logger.manager.loggerDict):
-        logger_instance = logging.getLogger(name)
-        logger_instance.handlers.clear()
-        logger_instance.propagate = True
-    root_logger.handlers.clear()
-
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] [%(name)s] %(message)s", "%Y-%m-%d %H:%M:%S"
-    )
-
-    file_handler = ImmediateFileHandler("daemon_debug.log", mode="w", encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    root_logger.addHandler(file_handler)
-
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
-
-    logging.captureWarnings(True)
-    multiprocessing.log_to_stderr().setLevel(logging.DEBUG)
-    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-
-    critical_loggers = [
-        '', '__main__', 'daemon_app', 'httpx', 'httpcore', 'openai', 'asyncio',
-        'gradio', 'gradio.queueing', 'gradio.routes', 'transformers',
-        'chromadb', 'models', 'hierarchical_memory', 'llm_gates', 'unified_hierarchical_prompt_builder'
-    ]
-    for name in critical_loggers:
-        log = logging.getLogger(name)
-        log.setLevel(logging.DEBUG)
-        log.propagate = True
-
-    root_logger.debug(f"🌀 New session started at {datetime.now().isoformat()}")
-    direct_logger.debug(f"🌀 Direct logger also active at {datetime.now().isoformat()}")
-
-    return root_logger
-
-def ensure_logging_persistence():
-    root_logger = logging.getLogger()
-    if not any(isinstance(h, ImmediateFileHandler) for h in root_logger.handlers):
-        setup_logging()
-        direct_logger.warning("Logging was reset — reconfigured handlers")
-
-def start_logging_monitor():
-    def monitor():
-        while True:
-            time.sleep(5)
-            ensure_logging_persistence()
-            direct_logger.debug(f"Logging heartbeat — {datetime.now()}")
-    threading.Thread(target=monitor, daemon=True).start()
-
-def get_logger(name: str = "daemon_app") -> logging.Logger:
-    ensure_logging_persistence()
-    return logging.getLogger(name)
-
-# === Initialize on Import ===
-
-logger = setup_logging()
-start_logging_monitor()
-# time_manager.py
-import json, os, logging
-from datetime import datetime, timedelta
-
-logger = logging.getLogger(__name__)
-
-class TimeManager:
-    def __init__(self, time_file="data/last_query_time.json"):
-        self.time_file = time_file
-        self.last_query_time = self._load_last_query_time()
-        self.last_response_time = None
-
-    # ---------- persistence ----------
-    def _load_last_query_time(self):
-        if os.path.exists(self.time_file):
-            try:
-                with open(self.time_file, "r") as f:
-                    return datetime.fromisoformat(json.load(f)["last_query_time"])
-            except (json.JSONDecodeError, KeyError, ValueError):
-                pass
-        return None
-
-    def _save_last_query_time(self):
-        if self.last_query_time:
-            with open(self.time_file, "w") as f:
-                json.dump({"last_query_time": self.last_query_time.isoformat()}, f)
-
-    # ---------- public helpers ----------
-    def current(self) -> datetime:
-        return datetime.now()
-
-    def current_iso(self) -> str:
-        return self.current().isoformat(sep=" ", timespec="seconds")
-
-    def elapsed_since_last(self) -> str:
-        if not self.last_query_time:
-            return "N/A (first query)"
-        delta = self.current() - self.last_query_time
-        if delta.days:
-            return f"{delta.days} d {delta.seconds//3600} h"
-        if delta.seconds >= 3600:
-            return f"{delta.seconds//3600} h {(delta.seconds%3600)//60} m"
-        if delta.seconds >= 60:
-            return f"{delta.seconds//60} m"
-        return f"{delta.seconds} s"
-
-    def mark_query_time(self) -> datetime:
-        """Call at the *start* of request handling."""
-        self.last_query_time = self.current()
-        self._save_last_query_time()
-        return self.last_query_time
-
-    def measure_response(self, start_time, end_time):
-        elapsed = end_time - start_time
-        self.last_response_time = elapsed
-        return f"{elapsed.total_seconds():.2f} s"
-
-    def last_response(self) -> str:
-        return f"{self.last_response_time.total_seconds():.2f} s" if self.last_response_time else "N/A"
-
+#/processing/gate_system.py
 import logging
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
@@ -3979,14 +3972,30 @@ class MultiStageGateSystem:
 
             similarities = cosine_similarity([query_emb], memory_embs)[0]
 
+            is_deictic = _is_deictic_followup(query)  # import from coordinator helpers or re-implement tiny
+
             gated = []
             for mem, sim in zip(to_gate, similarities):
-                if sim >= self.gate_system.cosine_threshold:
-                    mem['relevance_score'] = float(sim)
+                truth = float(mem.get("metadata", {}).get("truth_score", 0.5))
+                # blend cosine + truth (domain-agnostic)
+                score = 0.7*float(sim) + 0.3*truth
+
+                # if deictic, increase threshold
+                threshold = self.gate_system.cosine_threshold
+                if is_deictic:
+                    threshold = max(threshold, 0.60)  # stricter
+
+                if score >= threshold:
+                    mem['relevance_score'] = score
+                    mem['filtered_content'] = mem.get('content','')[:300]
+                    gated.append(mem)
+
+                if final_score >= self.gate_system.cosine_threshold:
                     mem['filtered_content'] = mem.get('content', '')[:300]
                     gated.append(mem)
                 else:
-                    logger.debug(f"[Batch Gate] Memory filtered out: score={sim:.3f}")
+                    logger.debug(f"[Batch Gate] Memory filtered out: score={final_score:.3f}")
+
 
             # Reranking if needed
             if self.gate_system.use_reranking and len(gated) > 5:
@@ -4173,7 +4182,346 @@ class GatedPromptBuilder:
             directives_file=directives_file
         )
 
-# daemon_7_11_25_refactor/daemon_7_11_25_refactor/knowledge/semantic_search.py
+#/gui/handlers.py
+import pandas as pd
+import logging
+from utils.logging_utils import log_and_time
+from utils.conversation_logger import get_conversation_logger
+import json
+from config.config import SYSTEM_PROMPT as system_prompt
+
+logger = logging.getLogger("gradio_gui")
+
+
+def smart_join(prev: str, new: str) -> str:
+    """
+    Inserts a space between tokens unless the new chunk begins with punctuation or whitespace.
+    Prevents jammed-together words while respecting formatting.
+    """
+    if not prev:
+        return new
+    if prev.endswith((' ', '\n')) or new.startswith((' ', '\n', '.', ',', '?', '!', "'", '"', ")", "’", "”")):
+        return prev + new
+    else:
+        return prev + ' ' + new
+
+
+@log_and_time("Handle Submit")
+async def handle_submit(user_text, files, history, use_raw_gpt, orchestrator,
+                        force_summarize=False, include_summaries=True, personality=None):
+    logger.debug(f"[Handle Submit] Received user_text: {user_text}")
+
+    # Get conversation logger
+    conversation_logger = get_conversation_logger()
+
+    if not user_text.strip():
+        yield {"role": "assistant", "content": "⚠️ Empty input received."}
+        return
+
+    # Process files into the 'file_data' list
+    file_data = []
+    file_names = []  # Track file names for metadata
+    if files:
+        for file in files:
+            file_names.append(file.name)
+            try:
+                if file.name.endswith(".txt"):
+                    with open(file.name, 'r', encoding='utf-8') as f:
+                        file_data.append(f.read())
+                elif file.name.endswith(".csv"):
+                    df = pd.read_csv(file.name)
+                    file_data.append(df.to_string())
+                elif file.name.endswith(".py"):
+                    with open(file.name, 'r', encoding='utf-8') as f:
+                        file_data.append(f.read())
+                else:
+                    file_data.append(f"[Unsupported file type: {file.name}]")
+            except Exception as e:
+                file_data.append(f"[Error reading {file.name}: {str(e)}]")
+
+    # Merge file content into user_input
+    merged_input = user_text + "\n\n" + "\n\n".join(file_data)
+
+    if use_raw_gpt:
+        logger.info("[Handle Submit] RAW MODE ENABLED – skipping memory and prompt building.")
+
+        # For raw mode, directly get response
+        response_text, debug_info = await orchestrator.process_user_query(
+            user_input=merged_input,
+            files=None,
+            use_raw_mode=True,
+            personality=personality  # Pass personality
+        )
+
+        # Log the raw mode conversation
+        conversation_logger.log_interaction(
+            user_input=user_text,  # Log original input without file content for clarity
+            assistant_response=response_text,
+            metadata={
+                'mode': 'raw',
+                'files': file_names if file_names else None,
+                'personality': personality or orchestrator.personality_manager.current_personality
+            }
+        )
+
+        yield {"role": "assistant", "content": response_text}
+        return
+
+    # Otherwise proceed with enhanced mode
+    full_prompt = await orchestrator.prompt_builder.build_prompt(
+        user_input=merged_input,
+        include_dreams=True,
+        include_wiki=True,
+        include_semantic=True,
+        include_summaries=include_summaries
+    )
+
+    logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
+
+    final_output = ""
+    try:
+        logger.debug(f"[🔍 FINAL MESSAGE PAYLOAD TO OPENAI]:\n{json.dumps([{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': full_prompt}], indent=2)}")
+
+        async for chunk in orchestrator.response_generator.generate_streaming_response(
+            prompt=full_prompt,
+            model_name=orchestrator.model_manager.get_active_model_name()
+        ):
+            final_output = smart_join(final_output, chunk)
+            yield {"role": "assistant", "content": final_output}
+
+    except Exception as e:
+        logger.error(f"[HANDLE_SUBMIT] Streaming error: {e}")
+        error_message = f"⚠️ Streaming error: {str(e)}"
+
+        # Log error conversation
+        conversation_logger.log_interaction(
+            user_input=user_text,
+            assistant_response=error_message,
+            metadata={
+                'error': str(e),
+                'mode': 'enhanced',
+                'files': file_names if file_names else None
+            }
+        )
+
+        yield {"role": "assistant", "content": error_message}
+
+    finally:
+        if final_output and len(user_text.strip()) > 0:
+            # Log successful conversation
+            conversation_logger.log_interaction(
+                user_input=user_text,  # Log original input for clarity
+                assistant_response=final_output,
+                metadata={
+                    'mode': 'enhanced',
+                    'files': file_names if file_names else None,
+                    'personality': personality or orchestrator.personality_manager.current_personality,
+                    'topic': orchestrator.current_topic if hasattr(orchestrator, 'current_topic') else None
+                }
+            )
+
+            # Store in memory system (existing code)
+            try:
+                logger.info("[HANDLE_SUBMIT] Storing interaction in memory...")
+                await orchestrator.memory_system.store_interaction(
+                    query=merged_input,
+                    response=final_output
+                )
+                logger.info("[HANDLE_SUBMIT] Interaction successfully stored.")
+            except Exception as e:
+                logger.error(f"[HANDLE_SUBMIT] Failed to store interaction: {e}")
+
+#/gui/launch.py
+#/gui/launch.py
+import gradio as gr
+from gui.handlers import handle_submit
+from utils.conversation_logger import get_conversation_logger
+def launch_gui(orchestrator):
+    personality_manager = orchestrator.personality_manager
+    conversation_logger = get_conversation_logger()
+
+    def get_summary_status():
+        summaries = orchestrator.memory_system.corpus_manager.get_summaries()
+        total_entries = len(orchestrator.memory_system.corpus_manager.corpus)
+        non_summary_entries = len([
+            e for e in orchestrator.memory_system.corpus_manager.corpus
+            if "@summary" not in e.get("tags", [])
+        ])
+        conv_stats = conversation_logger.get_session_stats()
+        return {
+            "total_summaries": len(summaries),
+            "total_entries": total_entries,
+            "non_summary_entries": non_summary_entries,
+            "next_summary_in": 20 - (non_summary_entries % 20),
+            "conversation_count": conv_stats["conversation_count"],
+            "log_file": conv_stats["current_log_file"]
+        }
+
+    def get_recent_conversation_log(num_lines=50):
+        """Read and return the last N lines of the conversation log"""
+        try:
+            log_path = conversation_logger.get_current_log_path()
+            if log_path.exists():
+                with open(log_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    # Return last N lines
+                    return ''.join(lines[-num_lines:])
+            return "No conversation log yet."
+        except Exception as e:
+            return f"Error reading log: {e}"
+
+    async def submit_chat(user_text, chat_history, files, use_raw_gpt, personality):
+        personality_manager.switch_personality(personality)
+
+        # Pass personality to handle_submit
+        async for chunk in handle_submit(
+            user_text=user_text,
+            files=files,
+            history=chat_history,
+            use_raw_gpt=use_raw_gpt,
+            orchestrator=orchestrator,
+            personality=personality  # Add this
+        ):
+            # If chunk is a dict, extract 'content'
+            if isinstance(chunk, dict) and "content" in chunk:
+                assistant_reply = chunk["content"]
+            else:
+                assistant_reply = str(chunk)
+            yield chat_history + [[user_text, assistant_reply]]
+
+    with gr.Blocks(theme="soft") as demo:
+        gr.Markdown("## 🤖 Daemon Chat Interface")
+
+        # Add tabs for main interface and conversation log
+        with gr.Tabs():
+            with gr.TabItem("Chat"):
+                with gr.Row():
+                    summary_json = gr.JSON(value=get_summary_status(), label="📊 Status")
+                    refresh_button = gr.Button("🔄 Refresh Status")
+                refresh_button.click(fn=get_summary_status, outputs=summary_json)
+
+                chatbot = gr.Chatbot(label="Daemon")
+                user_input = gr.Textbox(lines=2, placeholder="Ask Daemon something...", label="Your Message")
+                submit_button = gr.Button("Submit")
+
+                with gr.Row():
+                    files = gr.File(file_types=[".txt", ".docx", ".csv", ".py"], file_count="multiple", label="Files")
+                    use_raw = gr.Checkbox(label="Bypass Memory (Raw GPT)", value=False)
+                    personality = gr.Dropdown(
+                        label="Personality",
+                        choices=list(personality_manager.personalities.keys()),
+                        value=personality_manager.current_personality
+                    )
+
+                chat_state = gr.State([])
+
+                submit_button.click(
+                    submit_chat,
+                    inputs=[user_input, chat_state, files, use_raw, personality],
+                    outputs=[chatbot],
+                )
+
+            with gr.TabItem("Conversation Log"):
+                gr.Markdown("### 📝 Recent Conversation History")
+                gr.Markdown(f"Log file: `{conversation_logger.get_current_log_path()}`")
+
+                with gr.Row():
+                    lines_slider = gr.Slider(10, 200, value=50, step=10, label="Lines to display")
+                    refresh_log_button = gr.Button("🔄 Refresh Log")
+
+                conversation_log_display = gr.Textbox(
+                    value=get_recent_conversation_log(),
+                    label="Conversation Log",
+                    lines=25,
+                    max_lines=30,
+                    interactive=False
+                )
+
+                def update_log(num_lines):
+                    return get_recent_conversation_log(num_lines)
+
+                refresh_log_button.click(
+                    fn=update_log,
+                    inputs=[lines_slider],
+                    outputs=[conversation_log_display]
+                )
+
+                # Auto-refresh every 5 seconds when on this tab
+                conversation_log_display.change(
+                    fn=lambda: get_recent_conversation_log(lines_slider.value),
+                    inputs=[],
+                    outputs=[conversation_log_display],
+
+                )
+
+    demo.launch(
+        server_name="0.0.0.0",
+        max_file_size="100mb",
+        max_threads=40,
+        quiet=False,
+        share=True
+    )
+
+#/personality/personality_manager.py
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("Personality manager.py is alive")
+
+import re
+import json
+import os
+from datetime import datetime, timedelta
+import os
+
+class PersonalityManager:
+    def __init__(self):
+        self.personalities = {
+            "default": {
+                "system_prompt_file": "system_prompt_default.txt",
+                "directives_file": "structured_directives.txt",
+                "num_memories": 5,
+                "include_wiki": True,
+                "include_semantic_search": True,
+                "include_summaries": True,
+                "summary_limit": 5
+
+            },
+            "therapy": {
+                "system_prompt_file": "system_prompt_therapy.txt",
+                "directives_file": "structured_directives_therapy.txt",
+                "num_memories": 30,
+                "include_wiki": False,
+                "include_semantic_search": False,
+                "include_summaries": True,  # Important for therapy mode
+                "summary_limit": 5
+
+            },
+            "snarky": {
+                "system_prompt_file": "system_prompt_snarky.txt",
+                "directives_file": "structured_directives_snarky.txt",
+                "num_memories": 3,
+                "include_wiki": True,
+                "include_semantic_search": True,
+                "include_summaries": True,  # Important for therapy mode
+                "summary_limit": 5
+
+            }
+        }
+        self.current_personality = "default"
+
+    def switch_personality(self, name):
+        if name in self.personalities:
+            self.current_personality = name
+            logger.debug(f"[PersonalityManager] Switched to: {name}")
+        else:
+            logger.debug(f"[PersonalityManager] Personality '{name}' not found. Using default.")
+
+    def get_current_config(self):
+        return self.personalities[self.current_personality]
+
+# /knowledge/semantic_search.py
 import os
 import logging
 import faiss
@@ -4246,7 +4594,8 @@ def semantic_search(query: str, top_k: int = TOP_K) -> list:
             "text":  row["text"][:500]
         })
     return results
-# semantic_chunker.py
+
+# knowledge/topic_manager.py
 import logging
 
 # Use the root logger or create a child logger that will inherit handlers
@@ -4320,7 +4669,7 @@ class TopicManager:
         with open(self.top_topics_file, "w") as f:
             json.dump(list(combined), f, indent=2)
         print("[TopicManager] Refreshed top topics.")
-# WikiManager.py
+# Knowledge/WikiManager.py
 
 """
 WikiManager - Retrieves Wikipedia summaries and full articles.
@@ -4387,7 +4736,540 @@ class WikiManager:
         if any(k in query.lower() for k in keywords):
             return True
         return False
-# embed_wiki_chunks_to_parquet.py
+
+# main.py
+import asyncio
+import sys
+import os
+from utils.logging_utils import get_logger
+from utils.time_manager import TimeManager
+from datetime import datetime# Setup logging
+logger = get_logger("main")
+
+# Add parent directory to path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(parent_dir)
+
+# Import our components
+from core.response_generator import ResponseGenerator
+from core.orchestrator import DaemonOrchestrator
+from utils.file_processor import FileProcessor
+from memory.memory_coordinator import MemoryCoordinator
+from memory.corpus_manager import CorpusManager
+from memory.memory_interface import HierarchicalMemorySystem
+from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+from processing.gate_system import MultiStageGateSystem
+from gui.launch import launch_gui
+from knowledge.topic_manager import TopicManager
+from knowledge.WikiManager import WikiManager
+from models.tokenizer_manager import TokenizerManager
+
+# Import model manager
+try:
+    from models.model_manager import ModelManager
+except ImportError:
+    logger.warning("ModelManager not found, using mock")
+    # Create a mock ModelManager for testing
+    class ModelManager:
+        def __init__(self):
+            self.model_name = "gpt-4-turbo"
+
+        def load_openai_model(self, name, alias):
+            logger.info(f"Mock: Loading {name} as {alias}")
+
+        def switch_model(self, name):
+            logger.info(f"Mock: Switching to {name}")
+            self.model_name = name
+
+        def get_active_model_name(self):
+            return self.model_name
+
+        async def generate_async(self, prompt):
+            # Mock response that simulates streaming
+            async def mock_stream():
+                words = "This is a mock response. The calculation 2+2 equals 4.".split()
+                for word in words:
+                    yield type('obj', (object,), {
+                        'choices': [type('obj', (object,), {
+                            'delta': type('obj', (object,), {'content': word + ' '})()
+                        })()]
+                    })()
+            return mock_stream()
+
+        def close(self):
+            logger.info("Mock: Closing model manager")
+
+#Instantate Time Manager
+time_manager = TimeManager()
+topic_manager=TopicManager()
+wiki_manager = WikiManager()
+tokenizer_manager=TokenizerManager()
+try:
+    from core.prompt_builder_v2 import UnifiedPromptBuilder
+    from processing.gate_system import GatedPromptBuilder
+    logger.info("Found prompt builders, will use enhanced mode")
+except ImportError as e:
+    logger.warning(f"Prompt builders not found: {e}, will use raw mode")
+def build_orchestrator():
+    """Builds and returns a configured orchestrator"""
+    model_manager = ModelManager()
+    model_manager.load_openai_model("gpt-4-turbo", "gpt-4-turbo")
+    model_manager.switch_model("claude-opus")
+    logger.info(f"[ModelManager] Active model set to: {model_manager.get_active_model_name()}")
+    response_generator = ResponseGenerator(model_manager)
+    file_processor = FileProcessor()
+
+    # Build the prompt builder directly (UnifiedPromptBuilder is now standalone)
+    chroma_store = MultiCollectionChromaStore(persist_directory="daemon_memory")
+    # ✅ Explicitly grab the semantic collection
+    semantic_collection = chroma_store.collections.get("semantic")
+
+    # ✅ Initialize hierarchical memory with correct collection
+    hierarchical_memory = HierarchicalMemorySystem(
+        model_manager=model_manager,
+        chroma_store=chroma_store,
+    )
+
+    # ✅ MemoryCoordinator with working memory system
+    memory_system = MemoryCoordinator(
+        corpus_manager=CorpusManager(),
+        chroma_store=chroma_store,
+        hierarchical_memory=hierarchical_memory,
+        gate_system=MultiStageGateSystem(model_manager)
+    )
+
+    logger.info(f"[Memory Boot] Chroma collection set: {semantic_collection is not None}")
+    logger.info(f"[Memory Boot] Loaded hierarchical memory count: {len(hierarchical_memory.memories)}")
+
+    prompt_builder = UnifiedPromptBuilder(
+        model_manager=model_manager,
+        memory_coordinator=memory_system,
+        tokenizer_manager=TokenizerManager(),
+        wiki_manager=wiki_manager,
+        topic_manager=TopicManager(),
+        gate_system=MultiStageGateSystem(model_manager)
+    )
+
+    from personality.personality_manager import PersonalityManager
+    return DaemonOrchestrator(
+        model_manager=model_manager,
+        response_generator=response_generator,
+        file_processor=file_processor,
+        prompt_builder=prompt_builder,
+        personality_manager=PersonalityManager(),
+        memory_system=memory_system
+    )
+
+
+async def test_orchestrator():
+    orchestrator = build_orchestrator()
+    print("\n" + "="*50)
+    print("Testing Orchestrator")
+    print("="*50)
+
+    # Test 1: Simple query
+    response, debug_info = await orchestrator.process_user_query("What's 2+2? Give a brief answer.")
+    print(f"\nResponse: {response}")
+    for k, v in debug_info.items():
+        if k != 'prompt': print(f"  {k}: {v}")
+
+
+
+# Optional test helpers
+async def test_prompt_with_summaries():
+    orchestrator = build_orchestrator()
+    corpus_manager = orchestrator.memory_system.corpus_manager
+
+    if len(corpus_manager.get_summaries()) < 2:
+        print("Creating summaries...")
+        corpus_manager.create_summary_now(5)
+        corpus_manager.create_summary_now(10)
+
+    prompt = await orchestrator.prompt_builder.build_prompt(
+        user_input="Summarize our previous conversations.",
+        include_dreams=False,
+        include_wiki=False,
+        include_semantic=False,
+        include_summaries=True
+    )
+
+    print("\n" + "=" * 60)
+    print("PROMPT WITH SUMMARIES")
+    print("=" * 60)
+    if "[CONVERSATION SUMMARIES]" in prompt:
+        start = prompt.find("[CONVERSATION SUMMARIES]")
+        end = prompt.find("\n[", start + 1)
+        print(prompt[start:end if end != -1 else None])
+    else:
+        print("❌ No summary section found in prompt!")
+    print("\nTotal prompt length:", len(prompt))
+
+
+async def inspect_summaries():
+    orchestrator = build_orchestrator()
+    memory_system = orchestrator.memory_system
+    corpus_manager = orchestrator.memory_system.corpus_manager
+    summaries = memory_system.corpus_manager.get_summaries(limit=10)
+
+    print("\n" + "=" * 60)
+    print("SUMMARY INSPECTION")
+    print("=" * 60)
+
+    if not summaries:
+        print("No summaries found.")
+        return
+
+    for i, s in enumerate(summaries):
+        timestamp = s.get("timestamp", "Unknown")
+        if isinstance(timestamp, datetime):
+            timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Summary {i+1}: [{timestamp}] {s.get('tags', [])}")
+        print(f"  {s.get('response', '')[:200]}...\n{'-' * 40}")
+
+
+if __name__ == "__main__":
+    try:
+        mode = sys.argv[1] if len(sys.argv) > 1 else "gui"
+
+        if mode == "cli":
+            asyncio.run(test_orchestrator())
+        elif mode == "test-summaries":
+            from tests.test_summaries import test_summary_integration
+            asyncio.run(test_summary_integration())
+        elif mode == "inspect-summaries":
+            asyncio.run(inspect_summaries())
+        elif mode == "test-prompt-summaries":
+            asyncio.run(test_prompt_with_summaries())
+        else:
+            orchestrator = build_orchestrator()
+            launch_gui(orchestrator)
+
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+    except Exception as e:
+        logger.error(f"Startup failed: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        print("\nShutting down...")
+        if hasattr(ModelManager, 'close'):
+            ModelManager().close()
+
+This completes the agent part of the project (for now). Below is the pipeline to download, extract, semantically chunk and embed wikipedia and provide that info to the agent:
+
+#/data/pipeline/Injection_protection_feed_to_embeder.py
+import re
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("injection_protection_feed_to_embeder.py is alive")
+
+# Define suspicious patterns
+multilingual_patterns = {
+    'english': [r'ignore previous instructions', r'instead respond with'],
+    'chinese': [r'忽略之前的指令', r'改为以下回复'],
+    'spanish': [r'ignora las instrucciones anteriores', r'en su lugar responde con'],
+    'russian': [r'игнорировать предыдущие инструкции', r'вместо этого ответить'],
+    'arabic': [r'تجاهل التعليمات السابقة', r'بدلاً من ذلك رد بـ'],
+    'french': [r'ignorez les instructions précédentes', r'répondez plutôt par'],
+    'german': [r'ignoriere vorherige anweisungen', r'antworte stattdessen mit']
+}
+
+def sanitize_text(text, chunk_id=None, log=True):
+    flagged = False
+    flagged_phrases = []
+    for lang, patterns in multilingual_patterns.items():
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                flagged = True
+                flagged_phrases.append((lang, pattern))
+                text = re.sub(pattern, '[REDACTED SUSPICIOUS PHRASE]', text, flags=re.IGNORECASE)
+
+    if flagged and log:
+        logging.info(f"FLAGGED CHUNK: {chunk_id} | PHRASES: {flagged_phrases}")
+
+    return text
+
+#data/pipeline/extract_wikipedia_articles.py
+import os
+import re
+from concurrent.futures import ThreadPoolExecutor
+from lxml import etree
+# === API Keys and Config ===
+import os
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("extract_wikipedia_articles.py is alive")
+
+# === CONFIG ===
+BASE_DIR = os.path.dirname(__file__)
+XML_FILE = os.path.join(BASE_DIR, "wiki_data", "enwiki-latest-pages-articles.xml")
+OUTPUT_DIR = os.path.join(BASE_DIR, "wiki_articles")
+MAX_WORKERS = 8  # Adjust depending on CPU
+
+# === FUNCTIONS ===
+
+def clean_text(text):
+    """Basic cleanup for article text."""
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def save_article(title, text):
+    """Save a single article to disk."""
+    safe_title = re.sub(r'[^a-zA-Z0-9_\-]', '_', title)
+    filename = f"{safe_title[:100]}.txt"
+    filepath = os.path.join(OUTPUT_DIR, filename)
+
+    with open(filepath, "w", encoding="utf-8") as f_out:
+        f_out.write(clean_text(text))
+
+def process_wiki_dump(xml_file):
+    """Extract and save articles from the Wikipedia dump."""
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+
+    context = etree.iterparse(xml_file, events=("end",), tag="{*}page")
+    article_count = 0
+
+    print("[INFO] Extraction started...")
+    first_titles = []
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = []
+
+        for event, elem in context:
+            title_elem = elem.find("./{*}title")
+            text_elem = elem.find(".//{*}text")
+
+            if title_elem is not None and text_elem is not None:
+                title = title_elem.text or "Untitled"
+                text = text_elem.text or ""
+
+                if len(text.strip()) > 100:
+                    futures.append(executor.submit(save_article, title, text))
+                    article_count += 1
+
+                    if len(first_titles) < 3:
+                        first_titles.append(title)
+
+                    if article_count % 100 == 0:
+                        print(f"[PROGRESS] {article_count} articles scheduled...")
+
+            elem.clear()
+
+    for future in futures:
+        future.result()
+
+    print(f"[DONE] Extraction complete. {article_count} articles saved.")
+    logger.debug(f" First few titles extracted: {first_titles}")
+def stream_extract_articles(xml_file):
+    """Generator to stream Wikipedia articles as XML elements."""
+    context = etree.iterparse(xml_file, events=("end",), tag="{*}page")
+
+    for event, elem in context:
+        title_elem = elem.find("./{*}title")
+        text_elem = elem.find(".//{*}text")
+
+        if title_elem is not None and text_elem is not None:
+            title = title_elem.text or "Untitled"
+            text = text_elem.text or ""
+
+            yield {
+                "title": title,
+                "text": text
+            }
+
+        elem.clear()
+
+# === MAIN ===
+
+if __name__ == "__main__":
+    print("[INIT] Starting Wikipedia extraction...")
+    process_wiki_dump(XML_FILE)
+
+# data/pipeline/semantic_chunker.py
+import logging
+
+# Use the root logger or create a child logger that will inherit handlers
+logger = logging.getLogger(__name__)
+logger.debug("semantic_chunker.py is alive")
+import os
+import re
+import json
+from typing import List, Dict
+from extract_wikipedia_articles import stream_extract_articles
+
+class SemanticWikiChunker:
+    """
+    Chunks Wikipedia articles semantically for optimal FAISS embedding.
+    """
+
+    def __init__(self,
+                 chunk_size: int = 1000,
+                 chunk_overlap: int = 200,
+                 min_chunk_size: int = 100):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.min_chunk_size = min_chunk_size
+
+    def parse_wiki_sections(self, wiki_text: str) -> List[Dict]:
+        sections = []
+        current_section = {"title": "Introduction", "content": [], "level": 0}
+
+        for line in wiki_text.split('\n'):
+            header_match = re.match(r'^(=+)\s*(.*?)\s*\1$', line)
+            if header_match:
+                if current_section['content']:
+                    current_section['content'] = '\n'.join(current_section['content'])
+                    sections.append(current_section)
+
+                level = len(header_match.group(1))
+                current_section = {
+                    "title": header_match.group(2),
+                    "content": [],
+                    "level": level
+                }
+            else:
+                if line.strip():
+                    current_section['content'].append(line)
+
+        if current_section['content']:
+            current_section['content'] = '\n'.join(current_section['content'])
+            sections.append(current_section)
+
+        return sections
+
+    def clean_wiki_markup(self, text: str) -> str:
+        text = re.sub(r'\{\{[^}]+\}\}', '', text)
+        text = re.sub(r'<ref[^>]*>.*?</ref>', '', text)
+        text = re.sub(r'\[\[(?:[^|\]]+\|)?([^\]]+)\]\]', r'\1', text)
+        text = re.sub(r'\[https?://[^\s\]]+\s*([^\]]*)\]', r'\1', text)
+        text = re.sub(r'<[^>]+>', '', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+
+    def estimate_tokens(self, text: str) -> int:
+        return len(text) // 4
+
+    def chunk_text(self, text: str, metadata: Dict) -> List[Dict]:
+        words = text.split()
+        chunks = []
+        if not words:
+            return chunks
+
+        words_per_chunk = int(self.chunk_size / 1.5)
+        words_per_overlap = int(self.chunk_overlap / 1.5)
+
+        start = 0
+        chunk_idx = 0
+
+        while start < len(words):
+            end = start + words_per_chunk
+            chunk_text = ' '.join(words[start:end])
+
+            if self.estimate_tokens(chunk_text) >= self.min_chunk_size:
+                chunks.append({
+                    'text': chunk_text,
+                    'metadata': {
+                        **metadata,
+                        'chunk_idx': chunk_idx,
+                        'chunk_start': start,
+                        'chunk_end': min(end, len(words))
+                    }
+                })
+                chunk_idx += 1
+
+            start = end - words_per_overlap
+            if start >= len(words):
+                break
+
+        return chunks
+
+    def process_article(self, article_dict: Dict) -> List[Dict]:
+        # Use article_dict from stream_extract_articles
+        article_data = {
+            'title': article_dict.get('title', 'Unknown'),
+            'page_id': article_dict.get('page_id', 'Unknown'),  # Optional, if you add page_id
+            'raw_text': article_dict.get('text', '')
+        }
+
+        if not article_data['raw_text']:
+            return []
+
+        sections = self.parse_wiki_sections(article_data['raw_text'])
+        all_chunks = []
+
+        for section in sections:
+            clean_text = self.clean_wiki_markup(section['content'])
+            if not clean_text:
+                continue
+
+            section_metadata = {
+                'title': article_data['title'],
+                'page_id': article_data['page_id'],
+                'section': section['title'],
+                'section_level': section['level']
+            }
+
+            if self.estimate_tokens(clean_text) > self.chunk_size:
+                chunks = self.chunk_text(clean_text, section_metadata)
+                all_chunks.extend(chunks)
+            else:
+                all_chunks.append({
+                    'text': clean_text,
+                    'metadata': {
+                        **section_metadata,
+                        'chunk_idx': 0,
+                        'chunk_start': 0,
+                        'chunk_end': len(clean_text.split())
+                    }
+                })
+
+        return all_chunks
+
+    def save_chunks_jsonl(self, chunks: List[Dict], output_path: str):
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for chunk in chunks:
+                f.write(json.dumps(chunk, ensure_ascii=False) + '\n')
+
+    def stream_process_wikipedia(self, xml_path: str, output_dir: str,
+                                 batch_size: int = 1000, max_articles: int = None):
+        os.makedirs(output_dir, exist_ok=True)
+
+        chunk_buffer = []
+        file_idx = 0
+        total_articles = 0
+        total_chunks = 0
+
+        for article_dict in stream_extract_articles(xml_path):
+            if max_articles and total_articles >= max_articles:
+                break
+
+            chunks = self.process_article(article_dict)
+            chunk_buffer.extend(chunks)
+            total_articles += 1
+            total_chunks += len(chunks)
+
+            if total_articles % 10 == 0:
+                logger.debug(f"[PROGRESS] {total_articles} articles → {total_chunks} chunks")
+
+            if len(chunk_buffer) >= batch_size:
+                output_path = os.path.join(output_dir, f'semantic_chunks_{file_idx:04}.jsonl')
+                self.save_chunks_jsonl(chunk_buffer, output_path)
+                logger.debug(f"[SAVED] {len(chunk_buffer)} chunks to {output_path}")
+                chunk_buffer = []
+                file_idx += 1
+
+        if chunk_buffer:
+            output_path = os.path.join(output_dir, f'semantic_chunks_{file_idx:04}.jsonl')
+            self.save_chunks_jsonl(chunk_buffer, output_path)
+            logger.debug(f"[SAVED] Final {len(chunk_buffer)} chunks")
+
+        logger.debug(f"[COMPLETE] {total_articles} articles → {total_chunks} semantic chunks")
+# data/pipeline/embed_wiki_chunks_to_parquet.py
 print("UPGRADED PARQUET EMBEDDER LAUNCHED", flush=True)
 # === API Keys and Config ===
 import os
@@ -4713,316 +5595,8 @@ def run_embedding_pipeline():
         cons_thread.join()
 
     print("🎉 Embedding pipeline finished.", flush=True)
-import os
-import re
-from concurrent.futures import ThreadPoolExecutor
-from lxml import etree
-# === API Keys and Config ===
-import os
-import logging
 
-# Use the root logger or create a child logger that will inherit handlers
-logger = logging.getLogger(__name__)
-logger.debug("extract_wikipedia_articles.py is alive")
-
-# === CONFIG ===
-BASE_DIR = os.path.dirname(__file__)
-XML_FILE = os.path.join(BASE_DIR, "wiki_data", "enwiki-latest-pages-articles.xml")
-OUTPUT_DIR = os.path.join(BASE_DIR, "wiki_articles")
-MAX_WORKERS = 8  # Adjust depending on CPU
-
-# === FUNCTIONS ===
-
-def clean_text(text):
-    """Basic cleanup for article text."""
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-def save_article(title, text):
-    """Save a single article to disk."""
-    safe_title = re.sub(r'[^a-zA-Z0-9_\-]', '_', title)
-    filename = f"{safe_title[:100]}.txt"
-    filepath = os.path.join(OUTPUT_DIR, filename)
-
-    with open(filepath, "w", encoding="utf-8") as f_out:
-        f_out.write(clean_text(text))
-
-def process_wiki_dump(xml_file):
-    """Extract and save articles from the Wikipedia dump."""
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
-
-    context = etree.iterparse(xml_file, events=("end",), tag="{*}page")
-    article_count = 0
-
-    print("[INFO] Extraction started...")
-    first_titles = []
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = []
-
-        for event, elem in context:
-            title_elem = elem.find("./{*}title")
-            text_elem = elem.find(".//{*}text")
-
-            if title_elem is not None and text_elem is not None:
-                title = title_elem.text or "Untitled"
-                text = text_elem.text or ""
-
-                if len(text.strip()) > 100:
-                    futures.append(executor.submit(save_article, title, text))
-                    article_count += 1
-
-                    if len(first_titles) < 3:
-                        first_titles.append(title)
-
-                    if article_count % 100 == 0:
-                        print(f"[PROGRESS] {article_count} articles scheduled...")
-
-            elem.clear()
-
-    for future in futures:
-        future.result()
-
-    print(f"[DONE] Extraction complete. {article_count} articles saved.")
-    logger.debug(f" First few titles extracted: {first_titles}")
-def stream_extract_articles(xml_file):
-    """Generator to stream Wikipedia articles as XML elements."""
-    context = etree.iterparse(xml_file, events=("end",), tag="{*}page")
-
-    for event, elem in context:
-        title_elem = elem.find("./{*}title")
-        text_elem = elem.find(".//{*}text")
-
-        if title_elem is not None and text_elem is not None:
-            title = title_elem.text or "Untitled"
-            text = text_elem.text or ""
-
-            yield {
-                "title": title,
-                "text": text
-            }
-
-        elem.clear()
-
-# === MAIN ===
-
-if __name__ == "__main__":
-    print("[INIT] Starting Wikipedia extraction...")
-    process_wiki_dump(XML_FILE)
-import re
-import logging
-
-# Use the root logger or create a child logger that will inherit handlers
-logger = logging.getLogger(__name__)
-logger.debug("injection_protection_feed_to_embeder.py is alive")
-
-# Define suspicious patterns
-multilingual_patterns = {
-    'english': [r'ignore previous instructions', r'instead respond with'],
-    'chinese': [r'忽略之前的指令', r'改为以下回复'],
-    'spanish': [r'ignora las instrucciones anteriores', r'en su lugar responde con'],
-    'russian': [r'игнорировать предыдущие инструкции', r'вместо этого ответить'],
-    'arabic': [r'تجاهل التعليمات السابقة', r'بدلاً من ذلك رد بـ'],
-    'french': [r'ignorez les instructions précédentes', r'répondez plutôt par'],
-    'german': [r'ignoriere vorherige anweisungen', r'antworte stattdessen mit']
-}
-
-def sanitize_text(text, chunk_id=None, log=True):
-    flagged = False
-    flagged_phrases = []
-    for lang, patterns in multilingual_patterns.items():
-        for pattern in patterns:
-            if re.search(pattern, text, re.IGNORECASE):
-                flagged = True
-                flagged_phrases.append((lang, pattern))
-                text = re.sub(pattern, '[REDACTED SUSPICIOUS PHRASE]', text, flags=re.IGNORECASE)
-
-    if flagged and log:
-        logging.info(f"FLAGGED CHUNK: {chunk_id} | PHRASES: {flagged_phrases}")
-
-    return text
-# semantic_chunker.py
-import logging
-
-# Use the root logger or create a child logger that will inherit handlers
-logger = logging.getLogger(__name__)
-logger.debug("semantic_chunker.py is alive")
-import os
-import re
-import json
-from typing import List, Dict
-from extract_wikipedia_articles import stream_extract_articles
-
-class SemanticWikiChunker:
-    """
-    Chunks Wikipedia articles semantically for optimal FAISS embedding.
-    """
-
-    def __init__(self,
-                 chunk_size: int = 1000,
-                 chunk_overlap: int = 200,
-                 min_chunk_size: int = 100):
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.min_chunk_size = min_chunk_size
-
-    def parse_wiki_sections(self, wiki_text: str) -> List[Dict]:
-        sections = []
-        current_section = {"title": "Introduction", "content": [], "level": 0}
-
-        for line in wiki_text.split('\n'):
-            header_match = re.match(r'^(=+)\s*(.*?)\s*\1$', line)
-            if header_match:
-                if current_section['content']:
-                    current_section['content'] = '\n'.join(current_section['content'])
-                    sections.append(current_section)
-
-                level = len(header_match.group(1))
-                current_section = {
-                    "title": header_match.group(2),
-                    "content": [],
-                    "level": level
-                }
-            else:
-                if line.strip():
-                    current_section['content'].append(line)
-
-        if current_section['content']:
-            current_section['content'] = '\n'.join(current_section['content'])
-            sections.append(current_section)
-
-        return sections
-
-    def clean_wiki_markup(self, text: str) -> str:
-        text = re.sub(r'\{\{[^}]+\}\}', '', text)
-        text = re.sub(r'<ref[^>]*>.*?</ref>', '', text)
-        text = re.sub(r'\[\[(?:[^|\]]+\|)?([^\]]+)\]\]', r'\1', text)
-        text = re.sub(r'\[https?://[^\s\]]+\s*([^\]]*)\]', r'\1', text)
-        text = re.sub(r'<[^>]+>', '', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
-
-    def estimate_tokens(self, text: str) -> int:
-        return len(text) // 4
-
-    def chunk_text(self, text: str, metadata: Dict) -> List[Dict]:
-        words = text.split()
-        chunks = []
-        if not words:
-            return chunks
-
-        words_per_chunk = int(self.chunk_size / 1.5)
-        words_per_overlap = int(self.chunk_overlap / 1.5)
-
-        start = 0
-        chunk_idx = 0
-
-        while start < len(words):
-            end = start + words_per_chunk
-            chunk_text = ' '.join(words[start:end])
-
-            if self.estimate_tokens(chunk_text) >= self.min_chunk_size:
-                chunks.append({
-                    'text': chunk_text,
-                    'metadata': {
-                        **metadata,
-                        'chunk_idx': chunk_idx,
-                        'chunk_start': start,
-                        'chunk_end': min(end, len(words))
-                    }
-                })
-                chunk_idx += 1
-
-            start = end - words_per_overlap
-            if start >= len(words):
-                break
-
-        return chunks
-
-    def process_article(self, article_dict: Dict) -> List[Dict]:
-        # Use article_dict from stream_extract_articles
-        article_data = {
-            'title': article_dict.get('title', 'Unknown'),
-            'page_id': article_dict.get('page_id', 'Unknown'),  # Optional, if you add page_id
-            'raw_text': article_dict.get('text', '')
-        }
-
-        if not article_data['raw_text']:
-            return []
-
-        sections = self.parse_wiki_sections(article_data['raw_text'])
-        all_chunks = []
-
-        for section in sections:
-            clean_text = self.clean_wiki_markup(section['content'])
-            if not clean_text:
-                continue
-
-            section_metadata = {
-                'title': article_data['title'],
-                'page_id': article_data['page_id'],
-                'section': section['title'],
-                'section_level': section['level']
-            }
-
-            if self.estimate_tokens(clean_text) > self.chunk_size:
-                chunks = self.chunk_text(clean_text, section_metadata)
-                all_chunks.extend(chunks)
-            else:
-                all_chunks.append({
-                    'text': clean_text,
-                    'metadata': {
-                        **section_metadata,
-                        'chunk_idx': 0,
-                        'chunk_start': 0,
-                        'chunk_end': len(clean_text.split())
-                    }
-                })
-
-        return all_chunks
-
-    def save_chunks_jsonl(self, chunks: List[Dict], output_path: str):
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for chunk in chunks:
-                f.write(json.dumps(chunk, ensure_ascii=False) + '\n')
-
-    def stream_process_wikipedia(self, xml_path: str, output_dir: str,
-                                 batch_size: int = 1000, max_articles: int = None):
-        os.makedirs(output_dir, exist_ok=True)
-
-        chunk_buffer = []
-        file_idx = 0
-        total_articles = 0
-        total_chunks = 0
-
-        for article_dict in stream_extract_articles(xml_path):
-            if max_articles and total_articles >= max_articles:
-                break
-
-            chunks = self.process_article(article_dict)
-            chunk_buffer.extend(chunks)
-            total_articles += 1
-            total_chunks += len(chunks)
-
-            if total_articles % 10 == 0:
-                logger.debug(f"[PROGRESS] {total_articles} articles → {total_chunks} chunks")
-
-            if len(chunk_buffer) >= batch_size:
-                output_path = os.path.join(output_dir, f'semantic_chunks_{file_idx:04}.jsonl')
-                self.save_chunks_jsonl(chunk_buffer, output_path)
-                logger.debug(f"[SAVED] {len(chunk_buffer)} chunks to {output_path}")
-                chunk_buffer = []
-                file_idx += 1
-
-        if chunk_buffer:
-            output_path = os.path.join(output_dir, f'semantic_chunks_{file_idx:04}.jsonl')
-            self.save_chunks_jsonl(chunk_buffer, output_path)
-            logger.debug(f"[SAVED] Final {len(chunk_buffer)} chunks")
-
-        logger.debug(f"[COMPLETE] {total_articles} articles → {total_chunks} semantic chunks")
-# unified_pipeline.py
-# semantic_chunker.py
+# data/pipeline/unified_pipeline.py
 import logging
 
 # Use the root logger or create a child logger that will inherit handlers
@@ -5247,3 +5821,4 @@ Examples:
 if __name__ == "__main__":
     main()
 
+This completes the project snapshot
