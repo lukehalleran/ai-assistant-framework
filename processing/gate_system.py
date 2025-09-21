@@ -1,3 +1,4 @@
+#processing/gate_system.py
 """
 Gating & lightweight retrieval helpers.
 

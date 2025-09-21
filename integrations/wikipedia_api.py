@@ -1,3 +1,4 @@
+#intergrations/wikipedia_api.py
 """Compatibility wrapper providing an async Wikipedia fetch interface."""
 
 from __future__ import annotations
