@@ -1,3 +1,4 @@
+#test/memory_test
 import os
 import asyncio
 from core.orchestrator     import DaemonOrchestrator

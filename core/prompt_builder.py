@@ -1,3 +1,4 @@
+#core/prompt_builder.py
 """Compatibility builders bridging legacy imports to the refreshed pipeline."""
 
 from __future__ import annotations
@@ -5,7 +6,9 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-from core.prompt import PromptBuilder
+from core.prompt import UnifiedPromptBuilder as _UnifiedPromptBuilder, PromptBuilder
+
+UnifiedPromptBuilder = _UnifiedPromptBuilder
 
 
 class UnifiedHierarchicalPromptBuilder:
@@ -39,5 +42,5 @@ class UnifiedHierarchicalPromptBuilder:
         return getattr(self._delegate, item)
 
 
-__all__ = ["UnifiedHierarchicalPromptBuilder", "PromptBuilder"]
+__all__ = ["UnifiedPromptBuilder", "UnifiedHierarchicalPromptBuilder", "PromptBuilder"]
 

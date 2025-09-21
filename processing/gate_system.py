@@ -36,7 +36,7 @@ import httpx  # <— added for title search + summary fallback
 # --- app-local ---
 from config.app_config import GATE_REL_THRESHOLD
 from utils.logging_utils import log_and_time, get_logger
-from utils.query_checks import is_deictic_followup
+from utils.query_checker import is_deictic_followup
 
 logger = get_logger(__name__)
 logger.debug("gate_system.py loaded — cosine similarity gating active")
@@ -82,7 +82,7 @@ def should_attempt_wiki(q: str) -> bool:
         return False
     ql = (q or "").lower()
     # Avoid deictic follow-ups like “explain that again” or “another way”.
-    if _is_deictic_followup(ql):
+    if is_deictic_followup(ql):
         return False
     # Canonical topic intents.
     if any(p in ql for p in ("what is", "what are", "who is", "tell me about", "explain")):
@@ -130,9 +130,6 @@ async def gated_wiki_fetch(query: str, timeout: float = WIKI_TIMEOUT_S) -> tuple
 _DEICTIC_HINTS = ("explain", "that", "it", "this", "again", "another way", "different way")
 
 
-def _is_deictic_followup(q: str) -> bool:
-    ql = (q or "").lower()
-    return any(h in ql for h in _DEICTIC_HINTS)
 
 
 # --- semantic hygiene helpers (domain-agnostic) ---
@@ -708,7 +705,7 @@ class MultiStageGateSystem:
             similarities = cosine_similarity([query_emb], memory_embs)[0]
 
             # Deictic queries are often vague; don’t lower the bar for them.
-            is_deictic = _is_deictic_followup(query)
+            is_deictic = is_deictic_followup(query)
 
             gated: List[Dict] = []
             for mem, sim in zip(to_gate, similarities):
