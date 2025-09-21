@@ -266,3 +266,4 @@ core/prompt_builder_v2.py
 
 # Editor swap files
 *.kate-swp
+.venv/
