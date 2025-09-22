@@ -417,16 +417,7 @@ class DaemonOrchestrator:
             if self.logger:
                 self.logger.debug("[orchestrator] Persisted exchange; considering consolidation")
 
-            # --- Add this block ---
-            try:
-                # Consolidate every N exchanges (configurable)
-                if hasattr(self, "prompt_builder") and hasattr(self.prompt_builder, "consolidator"):
-                    await self.prompt_builder.consolidator.maybe_consolidate(
-                        corpus_manager=getattr(self.memory_system, "corpus_manager", None)
-                    )
-            except Exception as e:
-                if self.logger:
-                    self.logger.debug(f"[Consolidation] skipped: {e}")
+            # Summaries now run on shutdown; skip mid-session consolidation
             debug_info.update({
                 "response_length": len(full_response),
                 "end_time": datetime.now(),

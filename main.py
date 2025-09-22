@@ -274,6 +274,12 @@ if __name__ == "__main__":
                     except Exception as e:
                         logger.error(f"Shutdown reflection failed: {e}")
 
+                async def _do_shutdown_summaries_and_facts():
+                    try:
+                        await orchestrator.memory_system.process_shutdown_memory()
+                    except Exception as e:
+                        logger.error(f"Shutdown summary/fact processing failed: {e}")
+
                 try:
                     import asyncio as _a
                     loop = None
@@ -284,8 +290,10 @@ if __name__ == "__main__":
                     if loop and loop.is_running():
                         # schedule and give it a beat
                         loop.create_task(_do_shutdown_reflection())
+                        loop.create_task(_do_shutdown_summaries_and_facts())
                     else:
                         _a.run(_do_shutdown_reflection())
+                        _a.run(_do_shutdown_summaries_and_facts())
                 except Exception:
                     pass
         finally:
