@@ -34,6 +34,8 @@ REFLECTIONS_ENABLED      = os.getenv("REFLECTIONS_ENABLED", "1").strip() not in 
 REFLECTION_MAX_TOKENS    = int(os.getenv("REFLECTION_MAX_TOKENS", "300"))
 REFLECTION_MODEL_ALIAS   = os.getenv("LLM_REFLECTION_ALIAS", os.getenv("LLM_SUMMARY_ALIAS", "gpt-4o-mini"))
 REFLECTION_MIN_EXCHANGES = int(os.getenv("REFLECTION_MIN_EXCHANGES", "4"))
+SUMMARIZE_AT_SHUTDOWN_ONLY = os.getenv("SUMMARIZE_AT_SHUTDOWN_ONLY", "1").strip().lower() not in ("0", "false", "no", "off")
+SUMMARY_MAX_BLOCKS_PER_SHUTDOWN = int(os.getenv("SUMMARY_MAX_BLOCKS_PER_SHUTDOWN", "1"))
 
 # ---------------------------
 # Heuristics & token helpers
@@ -382,11 +384,12 @@ class MemoryCoordinator:
             except Exception as fe:
                 logger.warning(f"[MemoryCoordinator][Facts] extraction/store failed: {fe}", exc_info=True)
 
-            # Increment counter and check for consolidation
-            self.interactions_since_consolidation += 1
-            if self.interactions_since_consolidation >= self.consolidator.consolidation_threshold:
-                await self._consolidate_and_store_summary()
-                self.interactions_since_consolidation = 0
+            # Increment counter and (optionally) consolidate mid-session unless disabled
+            if not SUMMARIZE_AT_SHUTDOWN_ONLY:
+                self.interactions_since_consolidation += 1
+                if self.interactions_since_consolidation >= self.consolidator.consolidation_threshold:
+                    await self._consolidate_and_store_summary()
+                    self.interactions_since_consolidation = 0
 
             logger.debug(f"[MemoryCoordinator] Stored memory {memory_id} (topic={primary_topic}, truth={truth_score:.2f})")
         except Exception as e:
@@ -1226,37 +1229,218 @@ class MemoryCoordinator:
     # ---------------------------
 
     async def process_shutdown_memory(self):
-        """Process shutdown consolidation and fact extraction"""
+        """Create any due summaries in fixed-size blocks and run fact extraction.
+
+        Behavior:
+          - Let N = self.consolidator.consolidation_threshold (e.g., 3, 10, 20)
+          - Let T = total non-summary conversation entries in the corpus
+          - Let S = number of consolidator-produced summaries already stored
+          - Target summaries = floor(T / N)
+          - Generate (Target - S) new summaries, each summarizing a disjoint block
+            of size N, from oldest to newest (so we never duplicate prior work).
+        """
         try:
-            recent = self.corpus_manager.get_recent_memories(20) or []
+            # 1) Prep corpus slices and counts
+            corpus = list(self.corpus_manager.corpus)
 
-            # Consolidate if enough memories
-            if len(recent) >= 10:
-                content_list = [
-                    {'content': f"User: {c.get('query', '')}\nAssistant: {c.get('response', '')}"}
-                    for c in recent
-                ]
-                summary_node = await self.consolidator.consolidate_memories(content_list)
-                if summary_node:
-                    period = f"shutdown_{datetime.now().strftime('%Y%m%d_%H%M')}"
-                    self.chroma_store.add_summary(
-                        summary=summary_node.content,
-                        period=period,
-                        metadata={'source': 'shutdown', 'importance_score': 0.8}
-                    )
+            def _is_summary(e: Dict) -> bool:
+                typ = (e.get('type') or '').lower()
+                tags = e.get('tags') or []
+                return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
 
-            # Extract facts from recent conversations
+            # Exclude summaries and reflections from conversation slices
+            def _is_reflection(e: Dict) -> bool:
+                typ = (e.get('type') or '').lower()
+                tags = [str(t).lower() for t in (e.get('tags') or [])]
+                return (typ == 'reflection') or ('type:reflection' in tags)
+
+            non_summ = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e))]
+            # Sort non-summary items by ascending timestamp to get stable, non-overlapping blocks
+            def _ts(e):
+                ts = e.get('timestamp')
+                from datetime import datetime
+                if isinstance(ts, str):
+                    try:
+                        ts = datetime.fromisoformat(ts)
+                    except Exception:
+                        ts = datetime.min
+                if not isinstance(ts, datetime):
+                    ts = datetime.min
+                return ts
+            non_summ.sort(key=_ts)
+
+            # count consolidator-produced summaries (tags are stable across runs)
+            def _is_consolidator_summary(e: Dict) -> bool:
+                tags = [str(t).lower() for t in (e.get('tags') or [])]
+                typ  = (e.get('type') or '').lower()
+                if not (("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)):
+                    return False
+                return ("source:consolidator" in tags) or ("summary:consolidated" in tags)
+
+            consolidator_summaries = [e for e in corpus if _is_consolidator_summary(e)]
+            # Track any known block indices for the CURRENT N via 'block_n:<N>:<idx>' tags
+            def _parse_block_n(tags: list, n: int) -> int | None:
+                try:
+                    key = f"block_n:{n}:"
+                    for t in (tags or []):
+                        t = str(t).strip().lower()
+                        if t.startswith(key):
+                            return int(t.split(':', 2)[2])
+                except Exception:
+                    return None
+                return None
+            existing_block_indices = []
+            # Determine N early to parse indices for the current cadence
+            N = max(1, int(getattr(self.consolidator, 'consolidation_threshold', 10)))
+            for s in consolidator_summaries:
+                bi = _parse_block_n(s.get('tags') or [], N)
+                if isinstance(bi, int):
+                    existing_block_indices.append(bi)
+            max_block_done = max(existing_block_indices) if existing_block_indices else -1
+
+            T = len(non_summ)
+            total_blocks = T // N
+            # Determine where to start:
+            #  - If we have tagged blocks, continue after the max tagged index
+            #  - If none tagged yet, anchor to the most recent blocks to avoid backfilling the entire history
+            if existing_block_indices:
+                start_block = max_block_done + 1
+            else:
+                # Start from the tail (newest) so we summarize current session first
+                start_block = max(0, total_blocks - SUMMARY_MAX_BLOCKS_PER_SHUTDOWN)
+            # Cap how many blocks we generate in this shutdown
+            to_generate = min(max(0, total_blocks - start_block), max(1, SUMMARY_MAX_BLOCKS_PER_SHUTDOWN))
+
+            if to_generate > 0:
+                # 2) Generate summaries for the next blocks not yet summarized
+                # Build blocks from the ordered non-summary stream
+                # b is a block index in [start_block, total_blocks)
+                end_block = min(total_blocks, start_block + to_generate)
+                for b in range(start_block, end_block):
+                    start = b * N
+                    end = start + N
+                    block = non_summ[start:end]
+                    if not block:
+                        break
+                    content_list = []
+                    for c in block:
+                        q = (c.get('query') or '').strip()
+                        a = (c.get('response') or '').strip()
+                        if not (q or a):
+                            continue
+                        content_list.append({'content': f"User: {q}\nAssistant: {a}", 'q': q, 'a': a})
+                    if not content_list:
+                        continue
+                    # Try consolidator API if available; otherwise do a local LLM summarize
+                    summary_text: Optional[str] = None
+                    if hasattr(self.consolidator, 'consolidate_memories'):
+                        try:
+                            summary_node = await self.consolidator.consolidate_memories(content_list)
+                            if summary_node and getattr(summary_node, 'content', None):
+                                summary_text = summary_node.content
+                        except Exception:
+                            summary_text = None
+                    if summary_text is None:
+                        try:
+                            # Deterministic micro-summary for tiny blocks (avoids hallucination)
+                            if len(content_list) <= 2:
+                                def _clip(s, n=160):
+                                    s = s or ''
+                                    return s if len(s) <= n else (s[:n] + '…')
+                                lines = []
+                                for it in content_list:
+                                    if it.get('q'):
+                                        lines.append(f"- User: {_clip(it['q'])}")
+                                    if it.get('a'):
+                                        lines.append(f"- Assistant: {_clip(it['a'])}")
+                                summary_text = "\n".join(lines).strip()
+                            else:
+                                # Strictly extractive prompt (no invention)
+                                excerpts = "\n\n".join(x['content'] for x in content_list if x.get('content'))
+                                prompt = (
+                                    "You are an extractive note-taker. Using ONLY the EXCERPTS below, "
+                                    "write 3–5 factual bullets. Do NOT infer or invent anything not present. "
+                                    "If information is minimal, output 1–2 bullets that quote/paraphrase the text.\n\n"
+                                    f"EXCERPTS:\n{excerpts}\n\nBullets (no headers):"
+                                )
+                                if hasattr(self, 'model_manager') and hasattr(self.model_manager, 'generate_once'):
+                                    summary_text = await self.model_manager.generate_once(prompt, max_tokens=220)
+                        except Exception:
+                            summary_text = None
+                    summary_text = (summary_text or '').strip()
+                    if not summary_text:
+                        continue
+
+                    # Store into corpus (kept consistent with add_summary schema)
+                    try:
+                        # Deduplicate by content against existing summary nodes
+                        existing_texts = set()
+                        try:
+                            for s in self.corpus_manager.get_summaries(500):
+                                txt = (s.get('content') or '').strip()
+                                if txt:
+                                    existing_texts.add(txt)
+                        except Exception:
+                            pass
+                        if summary_text in existing_texts:
+                            continue
+                        self.corpus_manager.add_summary({
+                            'content': summary_text,
+                            'timestamp': datetime.now(),
+                            'type': 'summary',
+                            'tags': [
+                                'summary:consolidated',
+                                'source:consolidator',
+                                f'block_n:{N}:{b}',
+                                f'block_span_n:{N}:{start}-{end-1}',
+                            ]
+                        })
+                    except Exception:
+                        pass
+
+                    # Store into Chroma as well
+                    try:
+                        md = {
+                            'timestamp': datetime.now().isoformat(),
+                            'type': 'summary',
+                            'importance_score': getattr(summary_node, 'importance_score', 0.7),
+                            'tags': f'summary:consolidated,source:consolidator,block_n:{N}:{b},block_span_n:{N}:{start}-{end-1}',
+                            'memory_count': len(block),
+                        }
+                        if hasattr(self.chroma_store, 'add_to_collection'):
+                            self.chroma_store.add_to_collection('summaries', summary_text, md)
+                    except Exception:
+                        pass
+
+                # For logging, prefer tagged count when present; else total consolidator summaries
+                prev_blocks = len(existing_block_indices) if existing_block_indices else len(consolidator_summaries)
+                logger.info(f"[Shutdown] Created {to_generate} summary block(s) (N={N}, T={T}, prev={prev_blocks})")
+            else:
+                prev_blocks = len(existing_block_indices) if existing_block_indices else len(consolidator_summaries)
+                logger.info("[Shutdown] No new summaries due (N=%s, T=%s, prev=%s)", N, T, prev_blocks)
+
+            # 3) Extract facts from the most recent conversations (unchanged)
+            try:
+                recent = self.corpus_manager.get_recent_memories(20) or []
+            except Exception:
+                recent = []
+
             for conv in recent[:10]:
-                facts = await self.fact_extractor.extract_facts(
-                    conv.get('query', ''),
-                    conv.get('response', '')
-                )
-                for fact in (facts or []):
-                    self.chroma_store.add_fact(
-                        fact=getattr(fact, 'content', str(fact)),
-                        source='shutdown_extraction',
-                        confidence=0.7
+                try:
+                    facts = await self.fact_extractor.extract_facts(
+                        conv.get('query', ''), conv.get('response', '')
                     )
+                except Exception:
+                    facts = []
+                for fact in (facts or []):
+                    try:
+                        self.chroma_store.add_fact(
+                            fact=getattr(fact, 'content', str(fact)),
+                            source='shutdown_extraction',
+                            confidence=0.7
+                        )
+                    except Exception:
+                        continue
 
             logger.info("[Shutdown] Memory processing complete")
 

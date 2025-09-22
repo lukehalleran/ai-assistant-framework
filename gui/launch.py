@@ -274,6 +274,58 @@ def launch_gui(orchestrator):
                     refresh_button = gr.Button("🔄 Refresh Status")
                 refresh_button.click(fn=get_summary_status, outputs=summary_json)
 
+            with gr.TabItem("Settings"):
+                gr.Markdown("### ⚙️ Runtime Settings")
+
+                # Summary cadence (every N exchanges)
+                try:
+                    current_n = int(getattr(getattr(orchestrator, 'memory_system', None), 'consolidator', None).consolidation_threshold)
+                except Exception:
+                    current_n = 10
+
+                with gr.Row():
+                    summary_n = gr.Slider(
+                        label="Summary Every N Exchanges (applies at shutdown)",
+                        minimum=1,
+                        maximum=200,
+                        step=1,
+                        value=current_n,
+                    )
+                    apply_btn = gr.Button("Apply", variant="primary")
+                status_md = gr.Markdown(visible=True)
+
+                def _apply_summary_n(n: int):
+                    import os
+                    try:
+                        n = int(n)
+                        # Update memory coordinator consolidator (used at shutdown)
+                        try:
+                            mc = getattr(orchestrator, 'memory_system', None)
+                            if mc and getattr(mc, 'consolidator', None):
+                                mc.consolidator.consolidation_threshold = n
+                        except Exception:
+                            pass
+
+                        # Update prompt builder consolidator for consistency
+                        try:
+                            pb = getattr(orchestrator, 'prompt_builder', None)
+                            if pb and getattr(pb, 'consolidator', None):
+                                pb.consolidator.consolidation_threshold = n
+                        except Exception:
+                            pass
+
+                        # Keep an env hint (session-scoped)
+                        try:
+                            os.environ['SUMMARY_EVERY_N'] = str(n)
+                        except Exception:
+                            pass
+
+                        return f"Summary cadence updated: every {n} exchanges."
+                    except Exception as e:
+                        return f"Failed to apply: {e}"
+
+                apply_btn.click(_apply_summary_n, inputs=[summary_n], outputs=[status_md])
+
     # --- Launch logic with graceful fallback ---
     # prevent_thread_lock so we can inspect URLs or handle fallback
     try:

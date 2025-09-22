@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from utils.logging_utils import get_logger, log_and_time
+from config.app_config import CORPUS_MAX_ENTRIES
 
 logger = get_logger("corpus_manager")
 
@@ -15,6 +16,11 @@ class CorpusManager:
                 from config.app_config import CORPUS_FILE
                 corpus_file=CORPUS_FILE
         self.corpus_file = corpus_file or CORPUS_FILE
+        # Allow runtime override of max via env/config; can be adjusted at runtime for testing
+        try:
+            self.max_entries = int(os.getenv("CORPUS_MAX_ENTRIES", str(CORPUS_MAX_ENTRIES)))
+        except Exception:
+            self.max_entries = CORPUS_MAX_ENTRIES
         self.memories = []
         self.summaries = []
         logger.info(f"[CorpusManager] Initializing with file: {self.corpus_file}")
@@ -92,9 +98,9 @@ class CorpusManager:
         self.corpus.append(entry)
 
 
-        # Trim if too large
-        if len(self.corpus) > 500:
-            self.corpus = self.corpus[-500:]
+        # Trim if too large (preserve most recent max_entries)
+        if len(self.corpus) > self.max_entries:
+            self.corpus = self.corpus[-self.max_entries:]
 
         self.save_corpus()
 
@@ -149,10 +155,39 @@ class CorpusManager:
         # persist in the same list/file that get_summaries() actually reads
         self.corpus.append(summary)
         # bound size like other entries
-        if len(self.corpus) > 500:
-            self.corpus = self.corpus[-500:]
+        if len(self.corpus) > self.max_entries:
+            self.corpus = self.corpus[-self.max_entries:]
         self.save_corpus()
         logger.debug(f"[CorpusManager] Added summary: {content[:50]}...")
+
+    # Maintenance helpers
+    def clear_corpus(self, keep_summaries: bool = True):
+        """Clear corpus entries. Optionally keep all summary items."""
+        if keep_summaries:
+            def _is_summary(e: Dict) -> bool:
+                typ = (e.get("type", "") or "").lower()
+                tags = e.get("tags") or []
+                return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
+            self.corpus = [e for e in self.corpus if _is_summary(e)]
+        else:
+            self.corpus = []
+        self.save_corpus()
+        logger.info("[CorpusManager] Corpus cleared (keep_summaries=%s). Now %d entries.", keep_summaries, len(self.corpus))
+
+    def prune_corpus(self, keep: int, preserve_summaries: bool = True):
+        """Keep only the most recent `keep` entries (plus optionally all summaries)."""
+        if keep < 0:
+            keep = 0
+        if preserve_summaries:
+            summaries = [e for e in self.corpus if ("@summary" in (e.get("tags") or []) or ("summary" in (e.get("type") or "").lower()))]
+            nons = [e for e in self.corpus if e not in summaries]
+            # sort by timestamp
+            nons = sorted(nons, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:keep]
+            self.corpus = sorted((summaries + nons), key=lambda x: x.get('timestamp', datetime.min))
+        else:
+            self.corpus = sorted(self.corpus, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:keep]
+        self.save_corpus()
+        logger.info("[CorpusManager] Corpus pruned to keep=%d (preserve_summaries=%s). Now %d entries.", keep, preserve_summaries, len(self.corpus))
 
     def get_summaries(self, count: int = 5) -> List[Dict[str, any]]:
         """Get the most recent summaries, normalizing timestamps for robust sorting."""

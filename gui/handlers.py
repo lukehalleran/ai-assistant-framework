@@ -179,20 +179,7 @@ async def handle_submit(
                 )
                 logger.info("[HANDLE_SUBMIT] Interaction successfully stored.")
 
-                # Consider consolidation: generate and persist a fresh summary every N exchanges
-                try:
-                    consolidator = getattr(getattr(orchestrator, "prompt_builder", None), "consolidator", None)
-                    corpus_mgr = getattr(getattr(orchestrator, "memory_system", None), "corpus_manager", None)
-                    if consolidator and corpus_mgr:
-                        # Test override: generate a summary roughly every 3 exchanges with no time gap
-                        try:
-                            consolidator.consolidation_threshold = 3
-                            consolidator.min_gap_minutes = 0
-                        except Exception:
-                            pass
-                        await consolidator.maybe_consolidate(corpus_mgr)
-                except Exception as e:
-                    logger.debug(f"[HANDLE_SUBMIT] Consolidation skipped/failed: {e}")
+                # No mid-session consolidation: summaries are generated at shutdown
             except Exception as e:
                 logger.error(f"[HANDLE_SUBMIT] Failed to store interaction: {e}")
 
