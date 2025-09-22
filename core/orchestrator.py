@@ -12,10 +12,6 @@ wiki_api = WikipediaAPI()
 gate_system.wikipedia_api = wiki_api  # This sets it globally
 # If you have a real helper, import that instead:
 from utils.query_checker import is_deictic
-def is_deictic(text: str) -> bool:
-    # Placeholder; replace with your real implementation
-    t = text.strip().lower()
-    return t in {"what about that?", "that?", "and that?"}
 
 
 class _SimplePromptBuilder:

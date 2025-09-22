@@ -199,8 +199,22 @@ def wiki_title_candidates(q: str) -> list[str]:
     if topic:
         seeds.append(topic)
 
+    # Heuristic simplification: drop 'current' and temporal tails to improve hits
+    def _simplify_title(s: str) -> str:
+        import re as _re
+        t = (s or "").strip()
+        t = _re.sub(r"^(current|new|latest|recent|modern)\s+", "", t, flags=_re.IGNORECASE)
+        t = _re.sub(r"\s+in\s+the\s+\d{1,2}(st|nd|rd|th)\s+century\b", "", t, flags=_re.IGNORECASE)
+        t = _re.sub(r"\s+in\s+\d{3,4}s\b", "", t, flags=_re.IGNORECASE)
+        t = _re.sub(r"\s+in\s+\d{4}\b", "", t, flags=_re.IGNORECASE)
+        t = _re.sub(r"\s+", " ", t).strip()
+        return t
+
     # 2) Conversational cleanups (kept for back-compat and robustness)
     seeds.append(base)
+    simp = _simplify_title(base)
+    if simp and simp not in seeds:
+        seeds.append(simp)
     # Strip articles and add title-cased variant
     stripped = _strip_articles(base)
     if stripped and stripped not in seeds:
@@ -558,9 +572,9 @@ class CosineSimilarityGateSystem:
             logger.info("[Memory Filter] Gating complete: 0/0 (%.0fms)", (time.time() - t0) * 1000)
             return []
 
-        # 1) Encode query once
-        q_vec = await self._encode_texts([query or ""])
-        q = q_vec[0]  # (D,)
+        # 1) Encode query once (offload to executor if needed)
+        q_vec = await self._encode_texts([query or ""])  # (1, D)
+        q = q_vec[0]
 
         # 2) Prepare memory vectors (cache + batch encode)
         m_texts: List[str] = []
@@ -615,9 +629,12 @@ class CosineSimilarityGateSystem:
 
         try:
             logger.debug(f"[Cosine Gate] Encoding query and {content_type} content")
-            query_emb = self.embed_model.encode(query or "", convert_to_numpy=True)
             content_trim = (content or "")[:500]
-            content_emb = self.embed_model.encode(content_trim, convert_to_numpy=True)
+            # Offload encoding to executor/aencode to avoid blocking event loop
+            qv = await self._encode_texts([query or ""])  # (1,D)
+            cv = await self._encode_texts([content_trim])  # (1,D)
+            query_emb = qv[0]
+            content_emb = cv[0]
 
             similarity = float(cosine_similarity([query_emb], [content_emb])[0][0])
             relevant = similarity >= self.cosine_threshold
@@ -698,10 +715,11 @@ class MultiStageGateSystem:
             if not to_gate:
                 return episodic  # nothing to gate
 
-            # Encode once.
-            query_emb = self.embed_model.encode(query or "", convert_to_numpy=True)
+            # Encode once (offload to executor/aencode for responsiveness)
+            qv = await self.gate_system._encode_texts([query or ""])  # (1,D)
+            query_emb = qv[0]
             contents = [mem.get("content", "")[:500] for mem in to_gate]
-            memory_embs = self.embed_model.encode(contents, convert_to_numpy=True, batch_size=32)
+            memory_embs = await self.gate_system._encode_texts(contents)
 
             similarities = cosine_similarity([query_emb], memory_embs)[0]
 

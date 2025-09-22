@@ -89,7 +89,16 @@ async def handle_submit(
             }
         )
 
-        yield {"role": "assistant", "content": response_text}
+        # Emit final chunk including debug record for UI tracing
+        debug_record = {
+            'mode': 'raw',
+            'query': user_text,
+            'prompt': merged_input,
+            'system_prompt': None,
+            'response': response_text,
+            'model': getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
+        }
+        yield {"role": "assistant", "content": response_text, "debug": debug_record}
         return
 
     # ENHANCED MODE: build prompt first via orchestrator.prepare_prompt (do NOT pass personality here)
@@ -154,11 +163,50 @@ async def handle_submit(
             try:
                 logger.info("[HANDLE_SUBMIT] Storing interaction in memory...")
                 tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
+                # Ensure corpus capacity is generous during testing (override at runtime)
+                try:
+                    cm = getattr(getattr(orchestrator, "memory_system", None), "corpus_manager", None)
+                    if cm and hasattr(cm, "max_entries"):
+                        # Default test cap to 5000 if not set via env
+                        import os as _os
+                        cm.max_entries = int(_os.getenv("CORPUS_MAX_ENTRIES", "5000"))
+                except Exception:
+                    pass
                 await orchestrator.memory_system.store_interaction(
                     query=merged_input,
                     response=final_output,
                     tags=tags
                 )
                 logger.info("[HANDLE_SUBMIT] Interaction successfully stored.")
+
+                # Consider consolidation: generate and persist a fresh summary every N exchanges
+                try:
+                    consolidator = getattr(getattr(orchestrator, "prompt_builder", None), "consolidator", None)
+                    corpus_mgr = getattr(getattr(orchestrator, "memory_system", None), "corpus_manager", None)
+                    if consolidator and corpus_mgr:
+                        # Test override: generate a summary roughly every 3 exchanges with no time gap
+                        try:
+                            consolidator.consolidation_threshold = 3
+                            consolidator.min_gap_minutes = 0
+                        except Exception:
+                            pass
+                        await consolidator.maybe_consolidate(corpus_mgr)
+                except Exception as e:
+                    logger.debug(f"[HANDLE_SUBMIT] Consolidation skipped/failed: {e}")
             except Exception as e:
                 logger.error(f"[HANDLE_SUBMIT] Failed to store interaction: {e}")
+
+            # Emit a final debug record so UI can display Query → Prompt → Response
+            try:
+                debug_record = {
+                    'mode': 'enhanced',
+                    'query': user_text,
+                    'prompt': full_prompt,
+                    'system_prompt': system_prompt,
+                    'response': final_output,
+                    'model': getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
+                }
+                yield {"role": "assistant", "content": final_output, "debug": debug_record}
+            except Exception:
+                # If yielding here fails (e.g., consumer closed), just continue silently
+                pass

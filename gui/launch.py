@@ -89,24 +89,24 @@ def launch_gui(orchestrator):
             "last_user_message_time": last_ts,
         }
 
-    def get_recent_reflections(n=5):
-        """Return a small list of recent reflections from corpus and semantic store."""
-        out = {"corpus": [], "semantic": []}
-        try:
-            cm = orchestrator.memory_system.corpus_manager
-            items = cm.get_items_by_type("reflection", limit=n)
-            out["corpus"] = [i.get("content", "") for i in items]
-        except Exception:
-            pass
-        try:
-            store = getattr(orchestrator.memory_system, "chroma_store", None)
-            coll = store.collections.get("reflections") if store else None
-            if coll and coll.count() > 0:
-                items = store.get_recent("reflections", limit=n)
-                out["semantic"] = [(i.get("content") or "") for i in items]
-        except Exception:
-            pass
-        return out
+    # ---- Debug Trace helpers ----
+    def _format_debug_entries(entries):
+        if not entries:
+            return "No debug entries yet. Submit a message in Chat."
+        parts = []
+        for i, rec in enumerate(entries, start=1):
+            mode = rec.get('mode') or 'enhanced'
+            model = rec.get('model') or ''
+            q = rec.get('query') or ''
+            prompt = rec.get('prompt') or ''
+            resp = rec.get('response') or ''
+            parts.append(
+                f"### #{i} — Mode: {mode}  Model: {model}\n"
+                f"**Query**\n\n````\n{q}\n````\n\n"
+                f"**Prompt**\n\n````\n{prompt}\n````\n\n"
+                f"**Response**\n\n````\n{resp}\n````\n\n---\n"
+            )
+        return "\n".join(parts)
 
     def get_recent_conversation_log(num_lines=50):
         """Read and return the last N lines of the conversation log"""
@@ -120,36 +120,102 @@ def launch_gui(orchestrator):
         except Exception as e:
             return f"Error reading log: {e}"
 
-    async def submit_chat(user_text, chat_history, files, use_raw_gpt, personality):
+    async def submit_chat(user_text, chat_history, files, use_raw_gpt, personality, debug_entries):
         personality_manager.switch_personality(personality)
 
-        async for chunk in handle_submit(
+        # Ensure we have a list to work with
+        chat_history = list(chat_history or [])
+        # Start a new turn with empty assistant reply
+        chat_history.append([user_text, "…"])  # show ephemeral typing dots in the bubble
+        # Emit immediately so the user sees their message appear
+        debug_entries = list(debug_entries or [])
+        # Initial emit: clear input, keep debug_state only (debug view updates via state.change)
+        import time as _t, asyncio as _a
+        _t0 = _t.time(); _updates = 0; _last_tick = _t0
+        typing_text = "<div style='text-align:right'>Assistant is typing …</div>"
+        timer_text = "<div style='text-align:right'>⏱️ 0.0 s</div>"
+        yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
+
+        # Concurrent loop: tick timer while awaiting streamed chunks, without blocking loop
+        agen = handle_submit(
             user_text=user_text,
             files=files,
             history=chat_history,
             use_raw_gpt=use_raw_gpt,
             orchestrator=orchestrator,
             personality=personality
-        ):
-            if isinstance(chunk, dict) and "content" in chunk:
-                assistant_reply = chunk["content"]
-            else:
-                assistant_reply = str(chunk)
-            yield chat_history + [[user_text, assistant_reply]]
+        )
+
+        # Prime the first fetch task
+        next_task = _a.create_task(agen.__anext__())
+        while True:
+            # Wait either for next chunk or a tick interval
+            tick = _a.create_task(_a.sleep(0.25))
+            done, pending = await _a.wait({next_task, tick}, return_when=_a.FIRST_COMPLETED)
+
+            if tick in done:
+                # Timer tick: update indicators
+                now = _t.time(); _updates += 1
+                if (now - _last_tick) >= 0.20 or (_updates % 3 == 0):
+                    _last_tick = now
+                    _dots = "." * (1 + (_updates % 3))
+                    typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
+                    timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
+                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
+                # Continue; next_task may also be done
+            if next_task in done:
+                try:
+                    chunk = next_task.result()
+                except StopAsyncIteration:
+                    break
+                except Exception:
+                    # If streaming errored, stop typing and break
+                    typing_text = ""
+                    timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
+                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
+                    break
+
+                # Process streamed chunk
+                if isinstance(chunk, dict) and "content" in chunk:
+                    assistant_reply = chunk["content"]
+                else:
+                    assistant_reply = str(chunk)
+                chat_history[-1][1] = assistant_reply
+                if isinstance(chunk, dict) and "debug" in chunk:
+                    try:
+                        debug_entries.append(chunk["debug"])  # append single record
+                    except Exception:
+                        pass
+                # Re-yield current state along with typing + timer
+                now = _t.time(); _updates += 1
+                if (now - _last_tick) >= 0.10 or (_updates % 2 == 0):
+                    _last_tick = now
+                    _dots = "." * (1 + (_updates % 3))
+                    typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
+                    timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
+                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
+
+                # Schedule next chunk read
+                next_task = _a.create_task(agen.__anext__())
+
+        # Final update: clear typing indicator, freeze timer
+        typing_text = ""
+        timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
+        yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
 
     with gr.Blocks(theme="soft") as demo:
         gr.Markdown("## 🤖 Daemon Chat Interface")
 
         with gr.Tabs():
             with gr.TabItem("Chat"):
-                with gr.Row():
-                    summary_json = gr.JSON(value=get_summary_status(), label="📊 Status")
-                    refresh_button = gr.Button("🔄 Refresh Status")
-                refresh_button.click(fn=get_summary_status, outputs=summary_json)
-
-                chatbot = gr.Chatbot(label="Daemon")
+                chatbot = gr.Chatbot(label="Daemon", height=520)
+                # Place typing + timer directly under the chat so they stay visible
+                typing_md = gr.Markdown(value="", elem_id="typing_indicator")
+                timer_md = gr.Markdown(value="", elem_id="response_timer")
                 user_input = gr.Textbox(lines=2, placeholder="Ask Daemon something...", label="Your Message")
-                submit_button = gr.Button("Submit")
+                with gr.Row():
+                    submit_button = gr.Button("Submit", variant="primary")
+                    clear_button = gr.Button("🧹 Clear Chat")
 
                 with gr.Row():
                     files = gr.File(file_types=[".txt", ".docx", ".csv", ".py"], file_count="multiple", label="Files")
@@ -161,54 +227,52 @@ def launch_gui(orchestrator):
                     )
 
                 chat_state = gr.State([])
+                debug_state = gr.State([])
+
+                # Immediately preset typing + timer on click so they appear before streaming starts
+                def _preset_typing():
+                    return (
+                        "<div style='text-align:right'>Assistant is typing …</div>",
+                        "<div style='text-align:right'>⏱️ 0.0 s</div>",
+                    )
+
+                submit_button.click(
+                    _preset_typing,
+                    inputs=[],
+                    outputs=[typing_md, timer_md],
+                )
 
                 submit_button.click(
                     submit_chat,
-                    inputs=[user_input, chat_state, files, use_raw, personality],
-                    outputs=[chatbot],
+                    inputs=[user_input, chat_state, files, use_raw, personality, debug_state],
+                    outputs=[chatbot, chat_state, user_input, debug_state, typing_md, timer_md],
                 )
 
-            with gr.TabItem("Reflections"):
-                gr.Markdown("### 🪞 Recent Reflections")
-                ref_json = gr.JSON(value=get_recent_reflections(), label="Reflections (corpus & semantic)")
-                with gr.Row():
-                    ref_n = gr.Slider(1, 20, value=5, step=1, label="How many")
-                    ref_refresh = gr.Button("🔄 Refresh Reflections")
-                def _update_reflections(k):
-                    return get_recent_reflections(int(k))
-                ref_refresh.click(fn=_update_reflections, inputs=[ref_n], outputs=[ref_json])
+                # Clear chat handler
+                def _clear_chat():
+                    return [], [], "", "", ""
 
-            with gr.TabItem("Conversation Log"):
-                gr.Markdown("### 📝 Recent Conversation History")
-                gr.Markdown(f"Log file: `{conversation_logger.get_current_log_path()}`")
-
-                with gr.Row():
-                    lines_slider = gr.Slider(10, 200, value=50, step=10, label="Lines to display")
-                    refresh_log_button = gr.Button("🔄 Refresh Log")
-
-                conversation_log_display = gr.Textbox(
-                    value=get_recent_conversation_log(),
-                    label="Conversation Log",
-                    lines=25,
-                    max_lines=30,
-                    interactive=False
-                )
-
-                def update_log(num_lines):
-                    return get_recent_conversation_log(num_lines)
-
-                refresh_log_button.click(
-                    fn=update_log,
-                    inputs=[lines_slider],
-                    outputs=[conversation_log_display]
-                )
-
-                # Auto-refresh every 5 seconds when on this tab
-                conversation_log_display.change(
-                    fn=lambda: get_recent_conversation_log(lines_slider.value),
+                clear_button.click(
+                    fn=_clear_chat,
                     inputs=[],
-                    outputs=[conversation_log_display],
+                    outputs=[chatbot, chat_state, user_input, typing_md, timer_md],
                 )
+            with gr.TabItem("Debug Trace"):
+                gr.Markdown("### 🔎 Query → Prompt → Response")
+                debug_view = gr.Markdown(value=_format_debug_entries([]))
+
+                # Update debug view whenever debug_state changes
+                def _render_debug(entries):
+                    return _format_debug_entries(entries)
+                # Bind state change to view update
+                debug_state.change(fn=_render_debug, inputs=[debug_state], outputs=[debug_view])
+
+            with gr.TabItem("Status"):
+                gr.Markdown("### 📊 Runtime Status")
+                with gr.Row():
+                    summary_json = gr.JSON(value=get_summary_status(), label="Status")
+                    refresh_button = gr.Button("🔄 Refresh Status")
+                refresh_button.click(fn=get_summary_status, outputs=summary_json)
 
     # --- Launch logic with graceful fallback ---
     # prevent_thread_lock so we can inspect URLs or handle fallback

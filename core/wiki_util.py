@@ -24,7 +24,10 @@ def get_wiki_snippet(query: str) -> str:
         page = _get_manager().resolve_and_fetch(query)
     except Exception:
         return ""
-    if page and page.summary:
+    # Drop disambiguation pages entirely (e.g., "Luke may refer to:")
+    if not page or page.is_disambiguation:
+        return ""
+    if page.summary:
         return page.summary
     return ""
 
