@@ -40,12 +40,20 @@ class ResponseGenerator:
                     self.model_manager.get_active_model_name()
                 )
 
-            # Ensure system_prompt is forwarded so messages become:
-            #   [{"role":"system","content": system_prompt},
-            #    {"role":"user","content": prompt}]
+            # Ensure a non-empty system prompt is always sent.
+            # Falls back to config default if None/blank is provided.
+            try:
+                from config.app_config import SYSTEM_PROMPT as DEFAULT_SP  # local import to avoid hard dep at import time
+            except Exception:
+                DEFAULT_SP = "You are Daemon, a helpful assistant with memory and RAG. Be direct, truthful, concise."
+
+            effective_sp = (system_prompt or "").strip() or DEFAULT_SP
+
+            # Always include the system message; "raw" only controls upstream prompt building
             response_generator = await self.model_manager.generate_async(
                 prompt,
-                system_prompt=system_prompt
+                system_prompt=effective_sp,
+                raw=False,
             )
 
             # Streaming path

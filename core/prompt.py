@@ -495,14 +495,25 @@ class UnifiedPromptBuilder:
             return ctx
 
         try:
-            # Memories (fail-soft: if gate drops everything, keep a couple originals)
+            # Memories: if already pre-gated, keep as-is; else gate them now
             orig_mems = ctx.get("memories", []) or []
-            gated_mems = await self.gate_system.filter_memories(user_input, orig_mems)
-            if not gated_mems and orig_mems:
-                gated_mems = orig_mems[: min(2, len(orig_mems))]
+            if orig_mems and all(isinstance(m, dict) and m.get('pre_gated') for m in orig_mems):
+                gated_mems = orig_mems
+            else:
+                # Only include memories that pass gating; if none pass, leave empty
+                gated_mems = await self.gate_system.filter_memories(user_input, orig_mems)
 
-            # Wiki: unified accessor (no legacy HTTP, small cached call)
-            wiki_snip = ctx.get("wiki") or self._get_wiki_snippet_cached(user_input)
+            # Wiki: unified accessor + gate (drop weak/disambiguation content)
+            wiki_snip = ""
+            wiki_raw = ctx.get("wiki") or self._get_wiki_snippet_cached(user_input)
+            if wiki_raw:
+                try:
+                    ok, snippet = await self.gate_system.filter_wiki_content(user_input, wiki_raw)
+                    if ok and snippet:
+                        wiki_snip = snippet
+                except Exception:
+                    # On any error, omit wiki entirely rather than include noise
+                    wiki_snip = ""
 
             # Semantic chunks (fail-soft)
             orig_sem = ctx.get("semantic_chunks", []) or []
@@ -979,10 +990,15 @@ class UnifiedPromptBuilder:
         # ----------------------------
         raw_user_input = user_input
 
+        # Prefer semantic, gated memories across conversations/summaries/reflections.
+        # If the coordinator doesn't expose that method, treat as unavailable rather than
+        # silently falling back to recency here (recency already appears in its own section).
+        _get_sem_top = getattr(self.memory_coordinator, 'get_semantic_top_memories', None)
+
         tasks = {
             "recent": self._bounded(self._get_recent_conversations(5), 0.3, []),
             "mems": self._bounded(
-                self.memory_coordinator.get_memories(retrieval_query, limit=PROMPT_MAX_MEMS),
+                (_get_sem_top(retrieval_query, limit=PROMPT_MAX_MEMS) if callable(_get_sem_top) else asyncio.sleep(0, result=[])),
                 1.5, []
             ),
             "facts": self._bounded(self.get_facts(retrieval_query, limit=PROMPT_MAX_FACTS), 0.8, []),
@@ -1007,15 +1023,9 @@ class UnifiedPromptBuilder:
             f"facts={len(facts)} dreams={len(dreams)} wiki_len={len(wiki) if wiki else 0}"
         )
 
-        # Minimal fallbacks to avoid empty critical sections
-        #  - If mems is empty, include up to 2 most recent Q/A pairs as soft memories
-        if not mems and recent:
-            soft = []
-            for e in recent[:2]:
-                q = (e.get("query") or "").strip(); a = (e.get("response") or "").strip()
-                if q or a:
-                    soft.append({"query": q, "response": a, "type": "memory", "tags": ["source:recent_fallback"]})
-            mems = soft
+        # Do not auto-substitute recent Q/A pairs into the semantic memories slot.
+        # Recent conversations already render in their own section; keeping this empty
+        # when no semantic hits avoids confusing “last-N” bleed-through.
 
         # Keep a copy of raw reflections before filtering
         raw_refl = list(refl or [])
@@ -1263,15 +1273,6 @@ class UnifiedPromptBuilder:
         stitched = _stitch_by_title(collapsed)
         sem_chunks_c = _truncate_list(stitched, PROMPT_MAX_SEMANTIC)
         mems_c       = _truncate_list(_safe_list(gated_ctx.get("memories") or []), PROMPT_MAX_MEMS)
-        if not mems_c:
-            fallback_mems = _safe_list(ctx.get("memories") or [])
-            if not fallback_mems:
-                fallback_mems = _safe_list(ctx.get("recent_conversations") or [])
-            if fallback_mems:
-                limit = PROMPT_MAX_MEMS if PROMPT_MAX_MEMS else len(fallback_mems)
-                if limit <= 0:
-                    limit = len(fallback_mems)
-                mems_c = fallback_mems[:limit]
         dreams_c     = _truncate_list(_safe_list(gated_ctx.get("dreams") or []), PROMPT_MAX_DREAMS) if include_dreams else []
         wiki_snip    = (gated_ctx.get("wiki") or gated_ctx.get("wiki_snippet") or "") or ""
 
@@ -1342,7 +1343,11 @@ class UnifiedPromptBuilder:
         # Launch parallel tasks
         tasks = []
         tasks.append(self._get_recent_conversations(5))                               # 0
-        tasks.append(self.memory_coordinator.get_memories(user_input, limit=memory_count))  # 1
+        # Semantic top memories only (conversations + summaries + reflections)
+        if hasattr(self.memory_coordinator, 'get_semantic_top_memories'):
+            tasks.append(self.memory_coordinator.get_semantic_top_memories(user_input, limit=memory_count))  # 1
+        else:
+            tasks.append(self.memory_coordinator.get_memories(user_input, limit=memory_count))  # fallback
         tasks.append(self._get_summaries(PROMPT_MAX_SUMMARIES))                       # 2
         tasks.append(self._get_dreams(PROMPT_MAX_DREAMS) if (include_dreams and DREAMS_ENABLED) else asyncio.sleep(0, result=[]))  # 3
         # Wiki gate happens later; don't block here

@@ -188,6 +188,7 @@ MEM_NO = config.get("memory", {}).get("mem_no", 5)
 MEM_IMPORTANCE_SCORE = config.get("memory", {}).get("mem_importance_score", 0.6)
 MAX_WORKING_MEMORY = config.get("memory", {}).get("max_working_memory", 10)
 CHILD_MEM_LIMIT = config.get("memory", {}).get("child_mem_limit", 3)
+CORPUS_MAX_ENTRIES = int(config.get("memory", {}).get("corpus_max_entries", 2000))
 COSINE_SIMILARITY_THRESHOLD = config.get("gating", {}).get("cosine_similarity_threshold", 0.25)
 DEFAULT_SUMMARY_PROMPT_HEADER = config.get("memory", {}).get("default_summary_prompt_header", "Summary of last 20 exchanges:\n")
 DEFAULT_TAGGING_PROMPT = config.get("memory", {}).get("default_tagging_prompt", "...")
@@ -241,21 +242,49 @@ def load_system_prompt(cfg: Optional[Dict] = None) -> str:
     if cfg.get('paths', {}).get('system_prompt'):
         paths_to_try.append(Path(cfg['paths']['system_prompt']))
 
-    # Standard locations
+    # Standard locations (support both with and without .txt)
     paths_to_try.extend([
+        Path(__file__).parent.parent / 'core' / 'system_prompt',
+        Path.cwd() / 'core' / 'system_prompt',
+        Path('core') / 'system_prompt',
         Path(__file__).parent.parent / 'core' / 'system_prompt.txt',
         Path.cwd() / 'core' / 'system_prompt.txt',
         Path('core') / 'system_prompt.txt',
     ])
 
+    def _clean_header(text: str) -> str:
+        """
+        Drop leading file-header comment lines (e.g., '#core/system_prompt.txt', '# Daemon System Prompt …')
+        while preserving markdown sections that follow. Stops at the first blank line.
+        """
+        if not text:
+            return text
+        lines = text.splitlines()
+        i = 0
+        # remove contiguous leading comment-ish lines (starting with '#') until a blank line
+        while i < len(lines):
+            line = lines[i].strip()
+            if line == "":
+                i += 1
+                break
+            if line.startswith('#'):
+                i += 1
+                continue
+            # First non-comment, non-blank line reached; stop stripping
+            break
+        cleaned = "\n".join(lines[i:]).lstrip("\n")
+        return cleaned or text
+
     for path in paths_to_try:
         if path and path.exists():
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    if content:
-                        logger.info(f"Loaded system prompt from: {path}")
-                        return content
+                    content = f.read()
+                    # normalize whitespace and remove any leading header comments
+                    content = _clean_header(content).strip()
+                if content:
+                    logger.info(f"Loaded system prompt from: {path}")
+                    return content
             except Exception as e:
                 logger.warning(f"Failed to read {path}: {e}")
 
@@ -277,8 +306,13 @@ VERSION = os.getenv("DAEMON_VERSION", VERSION)
 CORPUS_FILE = os.getenv("CORPUS_FILE", CORPUS_FILE)
 CHROMA_PATH = os.getenv("CHROMA_PATH", CHROMA_PATH)
 OpenAPIKey = os.getenv("OPENAI_API_KEY", OpenAPIKey)
+try:
+    CORPUS_MAX_ENTRIES = int(os.getenv("CORPUS_MAX_ENTRIES", str(CORPUS_MAX_ENTRIES)))
+except Exception:
+    pass
 
 logger.info(f"Config loaded successfully for VERSION={VERSION}")
 logger.info(f"Using CORPUS_FILE={CORPUS_FILE}")
 logger.info(f"Using CHROMA_PATH={CHROMA_PATH}")
 logger.info(f"Using DEVICE={device}")
+logger.info(f"Corpus max entries={CORPUS_MAX_ENTRIES}")

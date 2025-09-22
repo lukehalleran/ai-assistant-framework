@@ -21,8 +21,8 @@ class DirectFileLogger:
             line = f"{timestamp} [{level}] [{logger_name}] {message}\n"
             with open(self.filename, 'a', encoding='utf-8') as f:
                 f.write(line)
+                # Flush only; avoid per-line fsync to reduce I/O latency
                 f.flush()
-                os.fsync(f.fileno())
 
     def debug(self, msg, logger_name="daemon_app"):
         self._write("DEBUG", logger_name, msg)
@@ -172,6 +172,7 @@ def setup_logging():
     import asyncio
 
     root_logger = logging.getLogger()
+    # Restore DEBUG to file logs so prompts and internals are visible
     root_logger.setLevel(logging.DEBUG)
     for name in list(logging.Logger.manager.loggerDict):
         logger_instance = logging.getLogger(name)
@@ -194,17 +195,28 @@ def setup_logging():
     root_logger.addHandler(console_handler)
 
     logging.captureWarnings(True)
-    multiprocessing.log_to_stderr().setLevel(logging.DEBUG)
+    multiprocessing.log_to_stderr().setLevel(logging.WARNING)
     asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
-    critical_loggers = [
-        '', '__main__', 'daemon_app', 'httpx', 'httpcore', 'openai', 'asyncio',
-        'gradio', 'gradio.queueing', 'gradio.routes', 'transformers',
-        'chromadb', 'models', 'hierarchical_memory', 'llm_gates', 'unified_hierarchical_prompt_builder'
+    # Project modules at DEBUG (keep rich internal diagnostics)
+    project_debuggers = [
+        '', '__main__', 'daemon_app', 'models', 'hierarchical_memory', 'llm_gates',
+        'unified_hierarchical_prompt_builder', 'fact_extractor', 'memory_coordinator',
+        'processing', 'gate_system', 'core', 'memory', 'utils', 'knowledge'
     ]
-    for name in critical_loggers:
+    for name in project_debuggers:
         log = logging.getLogger(name)
         log.setLevel(logging.DEBUG)
+        log.propagate = True
+
+    # Noisy external libs → WARNING to reduce clutter and I/O
+    library_quiet = [
+        'httpx', 'httpcore', 'openai', 'asyncio', 'gradio', 'gradio.queueing',
+        'gradio.routes', 'transformers', 'sentence_transformers', 'chromadb'
+    ]
+    for name in library_quiet:
+        log = logging.getLogger(name)
+        log.setLevel(logging.WARNING)
         log.propagate = True
 
     root_logger.debug(f"🌀 New session started at {datetime.now().isoformat()}")
