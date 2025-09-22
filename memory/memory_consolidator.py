@@ -112,10 +112,11 @@ class MemoryConsolidator:
                 return False
 
             # 4) LLM summarize (bounded by your model_manager’s timeout policies)
+            excerpts = "\n\n".join(convo_slices)
             prompt = (
-                "You are a neutral note-taker. Create a concise recap of the recent conversation "
-                "in 3–5 bullet points, third-person, factual, no praise, no instructions.\n\n"
-                "EXCERPTS:\n" + "\n\n".join(convo_slices)
+                "You are an extractive note-taker. Using ONLY the EXCERPTS below, write 3–5 factual bullets. "
+                "Do NOT infer or invent anything not present. If information is minimal, output 1–2 bullets that "
+                "quote or paraphrase the text. No headers, just bullets.\n\nEXCERPTS:\n" + excerpts + "\n\nBullets:"
             )
             if not hasattr(self.model_manager, "generate_once"):
                 logger.debug("[Consolidation] No generate_once on model_manager")
