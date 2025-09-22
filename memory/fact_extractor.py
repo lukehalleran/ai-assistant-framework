@@ -53,6 +53,14 @@ def _is_adj_only(doc) -> bool:
     nounish = any(t.pos_ in {"NOUN","PROPN"} for t in doc)
     return not nounish
 
+def _relation_allows_adj(rel: str) -> bool:
+    """Allow adjective-only objects for certain attribute relations (e.g., color)."""
+    rl = (rel or "").lower()
+    # If relation clearly denotes a color/favorite-color, adjectives like "blue" are valid objects
+    if "color" in rl or rl in {"likes_color", "favourite_color", "favorite_color"}:
+        return True
+    return False
+
 def _is_clause_like(text: str) -> bool:
     """Heuristic: object looks like a clause (infinitive/gerund/passive-pp + prep)."""
     t = (text or "").strip().lower()
@@ -109,11 +117,12 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
     if r == "is" and _is_clause_like(o):
         return None
 
-    # If spaCy is available, reject adjective-only complements (e.g., "is impressive")
+    # If spaCy is available, reject adjective-only complements (e.g., "is impressive"),
+    # except for relations where adjectives are valid values (e.g., *_color)
     if nlp is not None:
         try:
             o_doc = nlp(o)
-            if _is_adj_only(o_doc):
+            if _is_adj_only(o_doc) and not _relation_allows_adj(r):
                 return None
             # Prefer proper-noun/entity forms when available, but keep lowercased key later
             s_doc = nlp(s)
@@ -179,11 +188,16 @@ PREF_PATTERNS = [
     (r"\bmy favorite (?P<slot>video game|game)\b", "favorite_video_game"),
     (r"\bmy favorite (?P<slot>beer)\b", "favorite_beer"),
     (r"\bmy favorite (?P<slot>coffee)\b", "favorite_coffee"),
+    (r"\bmy favorite (?P<slot>color)\b", "favorite_color"),
 ]
 
 def _normalize_subject_obj(subj: str, rel: str, obj: str, user_name: str = "Luke") -> Tuple[str, str, str]:
     """Promote generic subjects, keep obvious entity casing lightly."""
     s, r, o = (subj or "").strip(), (rel or "").strip(), (obj or "").strip()
+
+    # Map first-person pronouns/possessives to canonical 'user'
+    if s.lower() in {"i", "me", "my", "mine", "we", "our", "ours", "us"}:
+        s = "user"
 
     # If subject is too generic and object looks like the real entity, promote object to subject
     generic_subjects = {"game", "brew", "coffee", "beer", "dunkel", "dunkels"}
@@ -248,6 +262,18 @@ class FactExtractor:
             r'\bI\s*(?:just\s*)?(squatted|benched|deadlifted|pressed)\s*(\d{2,4})\s*(lbs?|pounds?|kgs?|kg)?\b',
         ]
 
+        # Possessive-like attribute statements without apostrophes
+        # e.g., "my cats name is Flapjack", "my car make is Honda"
+        self.possessive_attr_patterns = [
+            r"\bmy\s+([a-zA-Z]+?)(?:'s|s)?\s+(name|make|model|color|birthday|birth\s*date)\s*(?:is|=|:)\s+([^\.;,!?:]+)"
+        ]
+
+        # Two-word user attributes like "my middle name is Andrew" → user | middle_name | Andrew
+        # Keep specific to name parts to avoid overfitting.
+        self.two_word_attr_patterns = [
+            r"\b(?:my|our)\s+((?:first|middle|last)\s+name)\s*(?:is|=|:)\s+([^\.;,!?:]+)"
+        ]
+
         logger.debug(
             f"[FactExtractor.__init__] use_rebel={self.use_rebel} "
             f"(pipeline={'yes' if _REBEL else 'no'}), use_regex={self.use_regex}, "
@@ -270,7 +296,8 @@ class FactExtractor:
             f"ctx_items={len(conversation_context or [])}"
         )
 
-        text = self._prep_text(query, response, conversation_context)
+        # Facts should be extracted ONLY from the user query (ignore assistant response)
+        text = self._prep_text(query, "", conversation_context)
         t_preview = text[:200].replace("\n", " ")
         logger.debug(f"[FactExtractor] Prepared text len={len(text)} preview='{t_preview}'")
 
@@ -312,7 +339,7 @@ class FactExtractor:
 
         for subj, rel, obj, conf, method in triples:
             # First, normalize subject/object with light heuristics
-            s1, r1, o1 = _normalize_subject_obj(subj, rel, obj, user_name="Luke")
+            s1, r1, o1 = _normalize_subject_obj(subj, rel, obj, user_name="user")
 
             # Generic cleaning (drop low-signal triples, prefer named spans)
             cleaned = _clean_triple(s1, r1, o1, nlp=nlp_ref)
@@ -321,10 +348,13 @@ class FactExtractor:
             s2, r2, o2 = cleaned
 
             # Canonicalize preferences (maps to Luke | favorite_* | X or Luke | likes | X when applicable)
-            s3, r3, o3 = _canonicalize_preferences(query, response, s2, r2, o2, user_name="Luke")
+            s3, r3, o3 = _canonicalize_preferences(query, response, s2, r2, o2, user_name="user")
 
             # Final canon for the key (lowercasing etc. as you had)
             subj_c, rel_c, obj_c = self._canon(s3), self._canon(r3), self._canon(o3)
+            # Enforce that we only keep facts about the user
+            if subj_c != "user":
+                continue
             if not subj_c or not rel_c or not obj_c:
                 logger.debug(
                     f"[FactExtractor] Dropped empty field triple: subj='{subj}' rel='{rel}' obj='{obj}'"
@@ -359,6 +389,25 @@ class FactExtractor:
             if kept >= 8:  # cap per turn (unchanged)
                 logger.debug("[FactExtractor] Reached per-turn cap (8 facts); stopping")
                 break
+
+        # Post-filter: if a specific name part exists, drop generic name duplicate
+        specific_name_vals = {
+            (n.metadata.get('subject',''), n.metadata.get('object',''))
+            for n in facts
+            if n.metadata.get('relation') in {"first_name","middle_name","last_name"}
+        }
+        if specific_name_vals:
+            before = len(facts)
+            facts = [
+                n for n in facts
+                if not (
+                    n.metadata.get('relation') == 'name' and
+                    (n.metadata.get('subject',''), n.metadata.get('object','')) in specific_name_vals
+                )
+            ]
+            after = len(facts)
+            if after != before:
+                logger.debug(f"[FactExtractor] Dropped {before - after} generic 'name' facts shadowed by specific name parts")
 
         logger.info(f"[FactExtractor] Final facts: {len(facts)} (from {len(triples)} triples; deduped={len(seen)})")
         return facts
@@ -429,9 +478,35 @@ class FactExtractor:
                         cop  = cop  or next((c for c in head.children if c.dep_ == "cop"), None)
                         attr = attr or next((c for c in head.children if c.dep_ in {"attr","acomp","oprd"}), None)
                 if poss and (cop or name_tok.lemma_ == "name") and attr:
+                    # Determine if the 'name' has modifiers like 'middle/first/last'
+                    mod = None
+                    for c in name_tok.children:
+                        if c.dep_ in {"amod","compound"}:
+                            lem = c.lemma_.lower()
+                            if lem in {"first","middle","last"}:
+                                mod = lem
+                                break
+
+                    rel_name = f"{mod}_name" if mod else "name"
+
+                    # Subject: if possessor is first-person (my/our), use 'user'
                     subj_text = tok_text(poss)
+                    subj_lower = subj_text.lower()
+                    userish = {"my","our","me","us"}
+
+                    # Special case: "my cat's name" → user | cat_name | …
+                    # If possessor is a NOUN and itself is possessed by my/our, attach noun into relation
+                    rel_override = None
+                    if poss.pos_ == "NOUN":
+                        inner_poss = next((c for c in poss.children if c.dep_ == "poss" and c.lemma_.lower() in userish), None)
+                        if inner_poss is not None:
+                            rel_override = f"{poss.lemma_.lower()}_{rel_name}"
+                            subj_text = "user"
+                    elif subj_lower in userish:
+                        subj_text = "user"
+
                     obj_text  = tok_text(attr)
-                    triples.append((subj_text, "name", obj_text, 0.80, "spacy_rules"))
+                    triples.append((subj_text, rel_override or rel_name, obj_text, 0.80, "spacy_rules"))
 
             # --- (C) Preference: “my favorite <NOUN> is Y” → (user, likes:<NOUN>, Y)
             for fav in [t for t in sent if t.lemma_.lower() == "favorite" and t.pos_ in {"ADJ"}]:
@@ -458,8 +533,10 @@ class FactExtractor:
 
     @log_and_time("Prep Text")
     def _prep_text(self, q: str, r: str, ctx: Optional[List[Dict]]) -> str:
-        """Merge query/response, resolve easy pronouns with anchors from last turn."""
-        base = f"User: {q}\nAssistant: {r}"
+        """Merge query/response labels for parsing. If response is empty, omit its label."""
+        base = f"User: {q}"
+        if r:
+            base += f"\nAssistant: {r}"
         if _NLP is None:
             logger.debug("[FactExtractor] spaCy unavailable; returning base text")
             return base
@@ -551,15 +628,25 @@ class FactExtractor:
                 for mi, m in enumerate(matches[:4]):
                     if isinstance(m, tuple):
                         if len(m) == 2:
-                            subj, obj = m
-                            rel = "is"
+                            # Pattern index 2 is (my|your|our) <attr> is <val>
+                            if pi == 2:
+                                attr, obj = m
+                                subj, rel = "user", (attr or "").strip()
+                            else:
+                                subj, obj = m
+                                rel = "is"
                         else:
                             subj, rel, obj = m[0], "is", " ".join(m[1:])
                     else:
                         subj, rel, obj = "user", "likes", m
 
-                    subj, obj = (subj or "").strip(), (obj if isinstance(obj, str) else str(obj)).strip()
-                    if 4 < len(subj) + len(obj) < 160:
+                    # Normalize
+                    subj = (subj or "").strip()
+                    obj = (obj if isinstance(obj, str) else str(obj)).strip()
+                    # If rel came from attribute phrase, normalize to underscored
+                    rel = re.sub(r"\s+", "_", (rel or "").strip().lower())
+
+                    if 4 < len(rel) + len(obj) < 200:
                         cleaned = _clean_triple(subj, rel, obj, nlp=_NLP)
                         if not cleaned:
                             continue
@@ -567,8 +654,66 @@ class FactExtractor:
                         found.append((subj2, rel2, obj2, 0.6, "regex"))
                         logger.debug(f"[FactExtractor] Regex kept m[{mi}] -> subj='{subj2}' rel='{rel2}' obj='{obj2}'")
                     else:
-                        logger.debug(f"[FactExtractor] Regex dropped m[{mi}] (length bounds)")
+                        logger.debug(f"[FactExtractor] Regex dropped m[{mi}] (length/rel bounds)")
             logger.debug(f"[FactExtractor] Pattern[{pi}] matched {total_matches}")
+
+        # 1b) Possessive attribute patterns (map to user | <noun>_<attr> | value)
+        for li, pattern in enumerate(self.possessive_attr_patterns):
+            total_matches = 0
+            for ln in norm_lines:
+                try:
+                    matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"[FactExtractor] PossAttr regex error idx={li}: {e}")
+                    continue
+                total_matches += len(matches)
+                for m in matches[:4]:
+                    if not isinstance(m, tuple) or len(m) < 3:
+                        continue
+                    noun, attr, val = m[0], m[1], m[2]
+                    noun = (noun or '').strip().lower().rstrip('s')
+                    # Convert multi-token attribute to underscored
+                    attr = re.sub(r"\s+", "_", (attr or '').strip().lower())
+                    # Build relation
+                    rel = f"{noun}_{attr}" if noun else attr
+                    # Stop value at common conjunctions/punctuation
+                    val = (val or '').strip()
+                    val = re.split(r"\s+(?:and|but|however)\b|[,;]", val, maxsplit=1)[0].strip()
+
+                    # Build canonical triple: user | rel | val
+                    cleaned = _clean_triple('user', rel, val, nlp=_NLP)
+                    if not cleaned:
+                        continue
+                    sj, rl, ob = cleaned
+                    found.append((sj, rl, ob, 0.78, "regex"))
+            if total_matches:
+                logger.debug(f"[FactExtractor] PossAttrPattern[{li}] matched {total_matches}")
+
+        # 1c) Two-word user attributes (e.g., "my middle name is Andrew")
+        for li, pattern in enumerate(self.two_word_attr_patterns):
+            total_matches = 0
+            for ln in norm_lines:
+                try:
+                    matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"[FactExtractor] TwoWordAttr regex error idx={li}: {e}")
+                    continue
+                total_matches += len(matches)
+                for m in matches[:4]:
+                    if not isinstance(m, tuple) or len(m) < 2:
+                        continue
+                    attr, val = m[0], m[1]
+                    rel = re.sub(r"\s+", "_", (attr or '').strip().lower())
+                    val = (val or '').strip()
+                    val = re.split(r"\s+(?:and|but|however)\b|[,;]", val, maxsplit=1)[0].strip()
+
+                    cleaned = _clean_triple('user', rel, val, nlp=_NLP)
+                    if not cleaned:
+                        continue
+                    sj, rl, ob = cleaned
+                    found.append((sj, rl, ob, 0.78, "regex"))
+            if total_matches:
+                logger.debug(f"[FactExtractor] TwoWordAttrPattern[{li}] matched {total_matches}")
 
         # 2) Lifting patterns → canonical relation names
         def lift_rel(verb_or_noun: str) -> str:

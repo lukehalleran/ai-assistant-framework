@@ -18,9 +18,9 @@ WIKI_API_SUMMARY_BASE = "https://{lang}.wikipedia.org/api/rest_v1/page/summary/{
 WIKI_V1_BASE = "https://{lang}.wikipedia.org/w/rest.php/v1"
 
 _PHRASE_STRIPPERS = (
-    "information about", "info about", "tell me about",
-    "what can you tell me about", "who is", "what is", "define",
-    "explain", "overview of", "summary of",
+    "information about", "info about", "tell me", "tell me about",
+    "what can you tell me about", "can you tell me", "could you tell me",
+    "who is", "what is", "define", "explain", "overview of", "summary of",
 )
 
 STOPWORDS = {
@@ -228,6 +228,10 @@ class WikiManager:
         self.min_accept_score = min_accept_score
         self.disable_embed_scoring = bool(int(os.getenv("WIKI_DISABLE_EMBED_SCORING", "0")))
         self.max_attempts = int(max_attempts if max_attempts is not None else os.getenv("WIKI_MAX_ATTEMPTS", "5"))
+        # Overall time budget to avoid cascading probes when topic is weak
+        self.overall_budget_s = float(os.getenv("WIKI_BUDGET_S", "1.2"))
+        # Cap probe counts per phase
+        self.max_titles = int(os.getenv("WIKI_MAX_TITLES", "4"))
 
         # Reuse HTTP connections
         self.http = session or requests.Session()
@@ -366,6 +370,11 @@ class WikiManager:
 
     def resolve_and_fetch(self, query: str) -> Optional[WikiPage]:
         try:
+            import time as _t
+            _t0 = _t.time()
+            def _within_budget() -> bool:
+                return (_t.time() - _t0) < self.overall_budget_s
+
             # Normalize verbose user phrasing like "information about X", "tell me about Y", etc.
             original_query = query or ""
             query = _clean_query(original_query)
@@ -373,8 +382,10 @@ class WikiManager:
             candidates: List[WikiPage] = []
 
             # 1) Quick direct attempts using gentle title variants (fast path)
-            for t in _title_variants(query)[:3]:  # keep probe count small
+            for t in _title_variants(query)[:min(3, self.max_titles)]:  # keep probe count small
                 try:
+                    if not _within_budget():
+                        break
                     p = self._fetch_summary_v1(t)
                     if p and _is_main_namespace(p.title):
                         candidates.append(p)
@@ -411,8 +422,10 @@ class WikiManager:
             if not titles and not candidates:
                 log.debug("[Wiki] No candidate titles for query=%r (cleaned) or original=%r", query, original_query)
 
-            for t in titles[:7]:
+            for t in titles[: self.max_titles]:
                 try:
+                    if not _within_budget():
+                        break
                     p = self._fetch_summary_v1(t)
                     if p and _is_main_namespace(p.title):
                         candidates.append(p)
@@ -420,7 +433,7 @@ class WikiManager:
                     log.debug("[Wiki] summary fetch failed for %s: %s", t, e)
 
             # If we got no page objects but we do have titles, fetch a seed
-            if titles and not candidates:
+            if titles and not candidates and _within_budget():
                 seed = _pick_candidate(query, titles) or titles[0]
                 try:
                     p = self._fetch_summary_v1(seed)
@@ -443,10 +456,12 @@ class WikiManager:
                 return None
 
             # 3) If first is a disambiguation, expand by searching again with (query + title)
-            if candidates[0].is_disambiguation:
+            if candidates and candidates[0].is_disambiguation and _within_budget():
                 more_titles = self._search_titles(f"{query} {candidates[0].title}")
-                for t in more_titles[:10]:
+                for t in more_titles[: min(5, self.max_titles)]:
                     try:
+                        if not _within_budget():
+                            break
                         p = self._fetch_summary_v1(t)
                         if p and _is_main_namespace(p.title):
                             key = p.title.strip().lower()

@@ -13,6 +13,35 @@ SUMMARY_MIN_GAP_MIN = int(os.getenv("SUMMARY_MIN_GAP_MIN", "20"))
 SUMMARY_MODEL_ALIAS = os.getenv("LLM_SUMMARY_ALIAS", "gpt-4o-mini")
 SUMMARY_MAX_TOKENS = int(os.getenv("SUMMARY_MAX_TOKENS", "220"))
 
+
+def _format_recent_for_summary(recent: List[Dict[str, Any]],
+                               q_max: int = 240,
+                               a_max: int = 300) -> List[str]:
+    """
+    Build short conversation slices from recent corpus entries for summarization.
+    Each slice is of the form:
+      "User: <q>\nAssistant: <a>"
+    with conservative clipping to avoid overly long prompts.
+    """
+    out: List[str] = []
+    if not recent:
+        return out
+    for e in recent:
+        try:
+            q = (e.get("query") or "").strip()
+            a = (e.get("response") or "").strip()
+            if not (q or a):
+                continue
+            if len(q) > q_max:
+                q = q[:q_max]
+            if len(a) > a_max:
+                a = a[:a_max]
+            out.append(f"User: {q}\nAssistant: {a}")
+        except Exception:
+            # best-effort; skip malformed entries
+            continue
+    return out
+
 class MemoryConsolidator:
     def __init__(
         self,

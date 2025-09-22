@@ -546,12 +546,14 @@ class MemoryCoordinator:
                 items = self.chroma_store.get_recent("reflections", limit=limit)
                 for r in items or []:
                     txt = (r.get("content") if isinstance(r, dict) else str(r)).strip()
+                    ts  = (r.get("metadata") or {}).get("timestamp") if isinstance(r, dict) else None
                     if txt:
                         out.append({
                             "content": txt,
                             "type": "reflection",
                             "tags": ["source:semantic"],
                             "source": "semantic",
+                            "timestamp": ts,
                         })
                         if len(out) >= limit:
                             break
@@ -884,8 +886,8 @@ class MemoryCoordinator:
     async def _get_semantic_memories(self, query: str, n_results: int = 30) -> List[Dict]:
         """Get semantic memories from Chroma collections"""
         memories: List[Dict] = []
-        # Ensure we're querying all collections
-        collections_to_query = ['conversations', 'summaries', 'facts', 'reflections']
+        # Ensure we're querying target collections (semantic across 3 DBs)
+        collections_to_query = ['conversations', 'summaries', 'reflections']
 
         for collection_name in collections_to_query:
             try:
@@ -931,6 +933,61 @@ class MemoryCoordinator:
 
         logger.info(f"[Semantic] Retrieved {len(memories)} total memories from all collections")
         return memories
+
+    async def get_semantic_top_memories(self, query: str, limit: int = 10) -> List[Dict]:
+        """
+        Return top-k semantic memories across conversations, summaries, reflections
+        using the gate system's cosine score. No recent-corpus bypass.
+        """
+        try:
+            raw = await self._get_semantic_memories(query, n_results=max(30, limit * 3))
+        except Exception:
+            raw = []
+
+        if not raw:
+            return []
+
+        # Build chunks for gating with back-reference to original memory
+        def _gate_text(m: Dict) -> str:
+            txt = (m.get('content') or '').strip()
+            if txt:
+                return txt
+            q = (m.get('query') or '').strip(); a = (m.get('response') or '').strip()
+            return f"User: {q}\nAssistant: {a}"
+
+        chunks = [{
+            "content": _gate_text(m)[:500],
+            "metadata": {"original_memory": m},
+        } for m in raw]
+
+        # If no gate_system, return a simple cap by initial relevance score
+        if not self.gate_system:
+            out = sorted(raw, key=lambda x: float(x.get('relevance_score', 0.5)), reverse=True)[:limit]
+            for m in out:
+                m['pre_gated'] = True
+            return out
+
+        # Run gate and pick top-k by gate score
+        try:
+            filtered = await self.gate_system.filter_memories(query, chunks)
+        except Exception:
+            filtered = chunks[:limit]
+
+        # Propagate gate score + mark as pre_gated
+        out: List[Dict] = []
+        for ch in filtered[:limit]:
+            md = ch.get('metadata', {}) or {}
+            orig = md.get('original_memory')
+            if not isinstance(orig, dict):
+                continue
+            # Prefer gate scores where available
+            score = float(ch.get('relevance_score', ch.get('__score__', orig.get('relevance_score', 0.5))))
+            orig = dict(orig)
+            orig['relevance_score'] = score
+            orig['pre_gated'] = True
+            out.append(orig)
+
+        return out[:limit]
 
 
 
@@ -998,8 +1055,18 @@ class MemoryCoordinator:
         """Apply gate while preserving original metadata."""
         try:
             # Keep original object by reference for robust rehydration
+            def _gate_text(m: Dict) -> str:
+                # Prefer explicit content when present (summaries/reflections/facts)
+                txt = (m.get('content') or '').strip()
+                if txt:
+                    return txt
+                # Fallback to Q/A rendering for conversation-style memories
+                q = (m.get('query') or '').strip()
+                a = (m.get('response') or '').strip()
+                return f"User: {q}\nAssistant: {a}"
+
             chunks = [{
-                "content": f"User: {m.get('query','')}\nAssistant: {m.get('response','')}",
+                "content": _gate_text(m)[:500],
                 "metadata": {
                     "timestamp": m.get("timestamp", datetime.now()),
                     "truth_score": m.get('truth_score', 0.5),
@@ -1079,7 +1146,8 @@ class MemoryCoordinator:
             importance = float(m.get('importance_score', md.get('importance_score', 0.5)))
 
             # 5) continuity (overlap + recency)
-            blob = (m.get('query', '') + ' ' + m.get('response', '')).lower()
+            # Include content for non Q/A memories (summaries/reflections)
+            blob = (m.get('query', '') + ' ' + m.get('response', '') + ' ' + m.get('content', '')).lower()
             m_toks = set(re.findall(r"[a-zA-Z0-9\+\-\*/=\^()]+", blob))
             continuity = 0.0
             if ts >= last_10m:
