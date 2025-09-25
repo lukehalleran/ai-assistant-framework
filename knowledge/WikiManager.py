@@ -8,6 +8,12 @@ from urllib.parse import quote
 import string
 import requests
 from sentence_transformers import SentenceTransformer, util
+from config.app_config import (
+    WIKI_FETCH_FULL_DEFAULT,
+    WIKI_MAX_CHARS_DEFAULT,
+    WIKI_MAX_SENTENCES_DEFAULT,
+    WIKI_TIMEOUT_DEFAULT,
+)
 
 log = logging.getLogger(__name__)
 
@@ -212,7 +218,7 @@ class WikiManager:
     def __init__(
         self,
         lang: str = "en",
-        max_sentences: int = 6,
+        max_sentences: int = None,
         timeout: float = None,
         embed_model_name: str = "all-MiniLM-L6-v2",
         min_accept_score: float = 0.35,
@@ -220,22 +226,115 @@ class WikiManager:
         max_attempts: Optional[int] = None,
     ):
         self.lang = lang
-        # Tighter default timeout; env override supported
-        self.timeout = float(timeout if timeout is not None else os.getenv("WIKI_TIMEOUT", "0.8"))
-        self.max_sentences = max_sentences
+        # Timeout: env override -> explicit arg -> config default
+        if timeout is not None:
+            self.timeout = float(timeout)
+        else:
+            try:
+                self.timeout = float(os.getenv("WIKI_TIMEOUT", str(WIKI_TIMEOUT_DEFAULT)))
+            except Exception:
+                self.timeout = float(WIKI_TIMEOUT_DEFAULT)
+        # Allow env override; 0 or negative disables clipping
+        try:
+            env_ms = int(os.getenv("WIKI_MAX_SENTENCES", str(WIKI_MAX_SENTENCES_DEFAULT)))
+        except Exception:
+            env_ms = int(WIKI_MAX_SENTENCES_DEFAULT or 0)
+        if env_ms > 0:
+            self.max_sentences = env_ms
+        else:
+            self.max_sentences = max_sentences if (isinstance(max_sentences, int) and max_sentences > 0) else None
         self.embed_model_name = embed_model_name
         self.embed = None  # defer actual load
         self.min_accept_score = min_accept_score
         self.disable_embed_scoring = bool(int(os.getenv("WIKI_DISABLE_EMBED_SCORING", "0")))
         self.max_attempts = int(max_attempts if max_attempts is not None else os.getenv("WIKI_MAX_ATTEMPTS", "5"))
         # Overall time budget to avoid cascading probes when topic is weak
+        # Budget for resolve-and-fetch across probes
         self.overall_budget_s = float(os.getenv("WIKI_BUDGET_S", "1.2"))
         # Cap probe counts per phase
         self.max_titles = int(os.getenv("WIKI_MAX_TITLES", "4"))
 
+        # If full fetch is requested, expand default timeout/budget unless overridden
+        try:
+            _full = int(os.getenv("WIKI_FETCH_FULL", "1" if WIKI_FETCH_FULL_DEFAULT else "0")) == 1
+        except Exception:
+            _full = bool(WIKI_FETCH_FULL_DEFAULT)
+        if _full:
+            try:
+                _tt = float(os.getenv("WIKI_TIMEOUT", "2.5"))
+            except Exception:
+                _tt = 2.5
+            try:
+                _bud = float(os.getenv("WIKI_BUDGET_S", "4.0"))
+            except Exception:
+                _bud = 4.0
+            # Only increase if current values are smaller and not explicitly passed
+            if timeout is None:
+                self.timeout = max(self.timeout, _tt)
+            self.overall_budget_s = max(self.overall_budget_s, _bud)
+
         # Reuse HTTP connections
         self.http = session or requests.Session()
         self.http.headers.update(WIKI_UA)
+
+    def _fetch_extract_action_api(self, title: str) -> Optional[WikiPage]:
+        """
+        Fetch article extract via MediaWiki Action API. When WIKI_FETCH_FULL=1, fetches
+        the full page text (no exintro). Otherwise, fetches only the intro.
+        Applies WIKI_MAX_CHARS clipping if set (>0).
+        """
+        if not title:
+            return None
+        headers = {**WIKI_UA, "Accept": "application/json"}
+        api = f"https://{self.lang}.wikipedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "prop": "extracts",
+            "explaintext": 1,
+            "redirects": 1,
+            "format": "json",
+            "titles": title,
+        }
+        try:
+            # Respect WIKI_FETCH_FULL; default is intro only
+            if int(os.getenv("WIKI_FETCH_FULL", "0")) == 0:
+                params["exintro"] = 1
+        except Exception:
+            params["exintro"] = 1
+
+        try:
+            r = self.http.get(api, params=params, headers=headers, timeout=self.timeout)
+            if r.status_code != 200:
+                return None
+            js = r.json() or {}
+            pages = js.get("query", {}).get("pages", {}) or {}
+            if not pages:
+                return None
+            _pid, pdata = next(iter(pages.items()))
+            extract = (pdata or {}).get("extract", "") or ""
+            if not extract.strip():
+                return None
+            extract = extract.strip()
+            try:
+                max_chars = int(os.getenv("WIKI_MAX_CHARS", str(WIKI_MAX_CHARS_DEFAULT)))
+            except Exception:
+                max_chars = WIKI_MAX_CHARS_DEFAULT
+            if max_chars and max_chars > 0 and len(extract) > max_chars:
+                import re as _re
+                clip = extract[:max_chars]
+                m = _re.search(r"[\.!?](?!.*[\.!?])", clip)
+                extract = clip if not m else clip[: m.end()]
+            norm_title = (pdata or {}).get("title") or title
+            return WikiPage(
+                title=norm_title,
+                url=f"https://{self.lang}.wikipedia.org/wiki/{quote(norm_title.replace(' ', '_'))}",
+                summary=extract,
+                thumbnail=None,
+                is_disambiguation=False,
+            )
+        except Exception as e:
+            log.debug("[Wiki] Action API extract failed for %s: %s", title, e)
+            return None
 
     # -------- REST helpers --------
     def _search_titles(self, query: str, limit: int = 7) -> List[str]:
@@ -272,6 +371,14 @@ class WikiManager:
         """
         if not title:
             return None
+        # If full fetch requested, prefer Action API right away
+        try:
+            if int(os.getenv("WIKI_FETCH_FULL", "1" if WIKI_FETCH_FULL_DEFAULT else "0")) == 1:
+                full = self._fetch_extract_action_api(title)
+                if full:
+                    return full
+        except Exception:
+            pass
 
         headers = {**WIKI_UA, "Accept": "application/json"}
 
@@ -288,7 +395,8 @@ class WikiManager:
                         url=js.get("content_urls", {}).get("desktop", {}).get(
                             "page", f"https://{self.lang}.wikipedia.org/wiki/{quote(title)}"
                         ),
-                        summary=(js.get("extract") or "").strip()[:2000],
+                        # Keep the full extract (lead section) without aggressive truncation
+                        summary=(js.get("extract") or "").strip(),
                         thumbnail=js.get("thumbnail", {}).get("url"),
                         is_disambiguation=(js.get("type") == "disambiguation"),
                     )
@@ -308,7 +416,7 @@ class WikiManager:
                         url=js.get("content_urls", {}).get("desktop", {}).get(
                             "page", f"https://{self.lang}.wikipedia.org/wiki/{quote(title)}"
                         ),
-                        summary=(js.get("extract") or "").strip()[:2000],
+                        summary=(js.get("extract") or "").strip(),
                         thumbnail=js.get("thumbnail", {}).get("url"),
                         is_disambiguation=(js.get("type") == "disambiguation"),
                     )
@@ -321,7 +429,8 @@ class WikiManager:
             params = {
                 "action": "query",
                 "prop": "extracts",
-                "exintro": 1,
+                # Respect full-intro flag via env; default is intro-only
+                **({"exintro": 1} if int(os.getenv("WIKI_FETCH_FULL", "0")) == 0 else {}),
                 "explaintext": 1,
                 "redirects": 1,
                 "format": "json",
@@ -336,10 +445,21 @@ class WikiManager:
                     extract = (pdata or {}).get("extract", "") or ""
                     if extract.strip():
                         norm_title = (pdata or {}).get("title") or title
+                        extract = extract.strip()
+                        try:
+                            max_chars = int(os.getenv("WIKI_MAX_CHARS", "5000"))
+                        except Exception:
+                            max_chars = 5000
+                        if max_chars and max_chars > 0 and len(extract) > max_chars:
+                            # Attempt sentence-boundary clip
+                            import re as _re
+                            clip = extract[:max_chars]
+                            m = _re.search(r"[\.!?](?!.*[\.!?])", clip)
+                            extract = clip if not m else clip[: m.end()]
                         return WikiPage(
                             title=norm_title,
                             url=f"https://{self.lang}.wikipedia.org/wiki/{quote(norm_title.replace(' ', '_'))}",
-                            summary=_clip_sentences(extract.strip(), self.max_sentences),
+                            summary=extract,
                             thumbnail=None,
                             is_disambiguation=False,
                         )
@@ -386,7 +506,13 @@ class WikiManager:
                 try:
                     if not _within_budget():
                         break
-                    p = self._fetch_summary_v1(t)
+                    # Prefer action API when full fetch requested
+                    if int(os.getenv("WIKI_FETCH_FULL", "1" if WIKI_FETCH_FULL_DEFAULT else "0")) == 1:
+                        p = self._fetch_extract_action_api(t)
+                        if not p:
+                            p = self._fetch_summary_v1(t)
+                    else:
+                        p = self._fetch_summary_v1(t)
                     if p and _is_main_namespace(p.title):
                         candidates.append(p)
                 except Exception as e:
@@ -426,7 +552,10 @@ class WikiManager:
                 try:
                     if not _within_budget():
                         break
-                    p = self._fetch_summary_v1(t)
+                    if int(os.getenv("WIKI_FETCH_FULL", "1" if WIKI_FETCH_FULL_DEFAULT else "0")) == 1:
+                        p = self._fetch_extract_action_api(t) or self._fetch_summary_v1(t)
+                    else:
+                        p = self._fetch_summary_v1(t)
                     if p and _is_main_namespace(p.title):
                         candidates.append(p)
                 except Exception as e:
@@ -484,8 +613,8 @@ class WikiManager:
                 log.debug("[Wiki] Best score below floor (%.3f < %.3f)", best.score, self.min_accept_score)
                 return None
 
-            # 5) Clip to N sentences
-            if self.max_sentences and best.summary:
+            # 5) Optional: Clip to N sentences (disabled when max_sentences is None/<=0)
+            if isinstance(self.max_sentences, int) and self.max_sentences > 0 and best.summary:
                 best.summary = _clip_sentences(best.summary, self.max_sentences)
 
             return best
@@ -515,3 +644,15 @@ if __name__ == "__main__":
         else:
             print("→ None")
         print("-" * 60)
+"""
+# knowledge/WikiManager.py
+
+Module Contract
+- Purpose: Retrieve short Wikipedia snippets given a query/topic. Provides light cleaning and scoring to prefer high‑quality pages.
+- Inputs:
+  - Public APIs (e.g., get_wiki_snippet) used by prompt builder and gating
+- Outputs:
+  - Short, cleaned text snippets suitable for inclusion in prompt context
+- Side effects:
+  - Optional hot‑cache of wiki chunks into Chroma (by callers); network requests to Wikipedia endpoints.
+"""

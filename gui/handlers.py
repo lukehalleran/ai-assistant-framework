@@ -1,10 +1,25 @@
-# /gui/handlers.py
+"""
+# gui/handlers.py
+
+Module Contract
+- Purpose: Orchestrates a single chat submission in the GUI: preprocesses files, routes to raw/enhanced flows, streams the response to the UI, and persists interaction + debug trace.
+- Inputs:
+  - handle_submit(user_text, files, history, use_raw_gpt, orchestrator, system_prompt=?, force_summarize=?, include_summaries=?, personality=?)
+- Outputs:
+  - Yields streaming dicts {role, content, debug?} as Gradio updates.
+- Behavior:
+  - RAW mode: send directly through orchestrator.process_user_query(use_raw_mode=True)
+  - ENHANCED: orchestrator.prepare_prompt → response_generator.generate_streaming_response → store interaction
+- Side effects:
+  - Writes to conversation logger; stores to memory_system; updates debug_state for Debug Trace tab.
+"""
 import pandas as pd
 import logging
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
 import json
-from config.app_config import load_system_prompt
+from config.app_config import load_system_prompt, ENABLE_BEST_OF, BEST_OF_N, BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_MIN_QUESTION, BEST_OF_MODEL, BEST_OF_MIN_TOKENS
+from utils.query_checker import analyze_query
 DEFAULT_SYSTEM_PROMPT = load_system_prompt()
 logger = logging.getLogger("gradio_gui")
 
@@ -120,13 +135,44 @@ async def handle_submit(
             )
         )
 
-        async for chunk in orchestrator.response_generator.generate_streaming_response(
-            prompt=full_prompt,
-            model_name=orchestrator.model_manager.get_active_model_name(),
-            system_prompt=system_prompt
-        ):
-            final_output = smart_join(final_output, chunk)
+        use_bestof = False
+        try:
+            qinfo = analyze_query(user_text)
+            use_bestof = bool(
+                ENABLE_BEST_OF and (
+                    (qinfo.is_question and qinfo.token_count >= BEST_OF_MIN_TOKENS)
+                    or (not BEST_OF_MIN_QUESTION)
+                )
+            )
+        except Exception:
+            use_bestof = bool(ENABLE_BEST_OF)
+
+        model_name = orchestrator.model_manager.get_active_model_name()
+        bestof_model = BEST_OF_MODEL or model_name
+
+        if use_bestof:
+            # Non-streaming best-of: emit at once
+            best = await orchestrator.response_generator.generate_best_of(
+                prompt=full_prompt,
+                model_name=bestof_model,
+                system_prompt=system_prompt,
+                question_text=user_text,
+                context_hint=full_prompt,
+                n=BEST_OF_N,
+                temps=tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7),
+                max_tokens=BEST_OF_MAX_TOKENS,
+            )
+            final_output = best
             yield {"role": "assistant", "content": final_output}
+        else:
+            # Default streaming path
+            async for chunk in orchestrator.response_generator.generate_streaming_response(
+                prompt=full_prompt,
+                model_name=model_name,
+                system_prompt=system_prompt
+            ):
+                final_output = smart_join(final_output, chunk)
+                yield {"role": "assistant", "content": final_output}
 
     except Exception as e:
         logger.error(f"[HANDLE_SUBMIT] Streaming error: {e}")

@@ -266,3 +266,15 @@ def reload_semantic_resources() -> None:
     with _singleton_lock:
         _singleton = None  # next get_index() will rebuild
     logger.info("[Semantic] Resources scheduled for reload; will re-init on next query.")
+"""
+# knowledge/semantic_search.py
+
+Module Contract
+- Purpose: FAISS/embedding‑based semantic search across an offline corpus (e.g., Wikipedia parquet). Returns top‑k neighbors for a query with metadata.
+- Inputs:
+  - semantic_search_with_neighbors(query, k|top_k)
+- Outputs:
+  - List[dict] records with text/content/title/source/timestamp/similarity
+- Side effects:
+  - Loads FAISS index and metadata parquet; may cache index in memory.
+"""

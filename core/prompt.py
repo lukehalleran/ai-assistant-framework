@@ -1,3 +1,24 @@
+"""
+# core/prompt.py
+
+Module Contract
+- Purpose: Unified Prompt Builder. Gathers recent/semantic memory, facts, summaries, reflections, wiki snippets; applies gating; manages token budgets; assembles final prompt context.
+- Inputs:
+  - build_prompt(user_input: str, search_query: Optional[str], personality_config: Optional[dict], system_prompt: Optional[str], current_topic: Optional[str])
+- Outputs:
+  - dict prompt_ctx consumed by orchestrator._assemble_prompt (time context, recent_conversations, memories, facts, summaries, reflections, semantic_chunks, wiki, etc.)
+- Key classes/functions:
+  - UnifiedPromptBuilder: main builder
+  - _apply_gating(): wrap gate_system for memories/semantic/wiki
+  - _get_summaries(): prefer stored summaries, else LLM fallback, else micro
+  - _hygiene_and_caps(), _manage_token_budget(), _assemble_prompt(): ordering, dedupe, token budgeting, final render
+- Dependencies:
+  - memory coordinator (corpus + Chroma), processing.gate_system, knowledge.WikiManager/semantic_search, models.model_manager (for summary/reflection calls)
+- Side effects:
+  - None (fetch/compute only). Persistence handled by memory_coordinator and consolidators elsewhere.
+- Async behavior:
+  - Parallel subfetches (recent/mems/facts/summaries/semantic/wiki) with bounded timeouts.
+"""
 
 #core/prompt.py -----------------------------------------------------------------------------
 # Unified Prompt Builder (refreshed)
@@ -495,6 +516,7 @@ class UnifiedPromptBuilder:
             return ctx
 
         try:
+            import os as _os
             # Memories: if already pre-gated, keep as-is; else gate them now
             orig_mems = ctx.get("memories", []) or []
             if orig_mems and all(isinstance(m, dict) and m.get('pre_gated') for m in orig_mems):
@@ -503,16 +525,31 @@ class UnifiedPromptBuilder:
                 # Only include memories that pass gating; if none pass, leave empty
                 gated_mems = await self.gate_system.filter_memories(user_input, orig_mems)
 
-            # Wiki: unified accessor + gate (drop weak/disambiguation content)
+            # Wiki: prefer full fetch when requested, otherwise cached snippet
             wiki_snip = ""
-            wiki_raw = ctx.get("wiki") or self._get_wiki_snippet_cached(user_input)
+            wiki_raw = ctx.get("wiki") or ""
+            try:
+                _want_full = int(_os.getenv("WIKI_FETCH_FULL", "0")) == 1
+            except Exception:
+                _want_full = False
+
+            if _want_full:
+                try:
+                    from processing.gate_system import gated_wiki_fetch as _gwf
+                    ok_full, full_text = await _gwf(user_input)
+                    if ok_full and full_text:
+                        wiki_raw = full_text
+                except Exception:
+                    pass
+            if not wiki_raw:
+                wiki_raw = self._get_wiki_snippet_cached(user_input)
+
             if wiki_raw:
                 try:
                     ok, snippet = await self.gate_system.filter_wiki_content(user_input, wiki_raw)
                     if ok and snippet:
                         wiki_snip = snippet
                 except Exception:
-                    # On any error, omit wiki entirely rather than include noise
                     wiki_snip = ""
 
             # Semantic chunks (fail-soft)

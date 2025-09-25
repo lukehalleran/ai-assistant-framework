@@ -1,4 +1,22 @@
-# /models/model_manager.py
+"""
+# models/model_manager.py
+
+Module Contract
+- Purpose: Single interface over local HF models and API chat models (OpenRouter/OpenAI). Handles registration, switching, sync/async generation, and embedding model access.
+- Inputs:
+  - generate(prompt, model_name=?, system_prompt=?, …)
+  - generate_async(prompt, raw=?, system_prompt=?)
+  - generate_once(prompt, model_name=?, system_prompt=?, max_tokens=?)
+- Outputs:
+  - Text responses (sync) or async stream of ChatCompletion chunks; stub output when API unavailable.
+- Key methods:
+  - load_model(), load_openai_model(), switch_model(), get_active_model_name(), get_embedder()
+  - truncate_prompt(): ensures local prompts fit context window
+- Dependencies:
+  - transformers, sentence-transformers, httpx, environment OPENAI_API_KEY
+- Side effects:
+  - Maintains HTTP clients; exposes aclose/close to release resources.
+"""
 # Import dependencies and config defaults
 from utils.logging_utils import log_and_time, get_logger
 # Use the root logger or create a child logger that will inherit handlers
@@ -70,6 +88,8 @@ class ModelManager:
         self.default_model = "gpt-4-turbo"
         self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
         self.api_models["claude-opus"] = "anthropic/claude-3-opus"
+        # Handy faster model alias for best-of reranking or Q&A
+        self.api_models["gpt-4o-mini"] = "openai/gpt-4o-mini"
 
     def _stub_response(self, prompt: str) -> str:
         snippet = (prompt or "").strip().splitlines()[0] if prompt else ""
@@ -335,7 +355,13 @@ class ModelManager:
                 temperature=temperature or 0.7,
                 top_p=top_p or 1.0
             )
-    async def generate_once(self, prompt: str, model_name: str = None, system_prompt: str = "You are a concise and helpful assistant.", max_tokens: int = 256) -> str:
+    async def generate_once(self,
+                            prompt: str,
+                            model_name: str = None,
+                            system_prompt: str = "You are a concise and helpful assistant.",
+                            max_tokens: int = 256,
+                            temperature: float = None,
+                            top_p: float = None) -> str:
         """
         Generates a single, complete response asynchronously (non-streaming).
         Ideal for internal tasks like query rewriting or classification.
@@ -353,7 +379,9 @@ class ModelManager:
                 prompt,
                 model_name=target_model,
                 system_prompt=system_prompt,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                temperature=temperature if temperature is not None else DEFAULT_TEMPERATURE,
+                top_p=top_p if top_p is not None else DEFAULT_TOP_P
             )
 
         # --- Handle API Models ---
@@ -370,6 +398,8 @@ class ModelManager:
                     model=self.api_models[target_model],
                     messages=messages,
                     max_tokens=max_tokens,
+                    temperature=temperature if temperature is not None else DEFAULT_TEMPERATURE,
+                    top_p=top_p if top_p is not None else DEFAULT_TOP_P,
                     stream=False  # Key change for non-streaming response
                 )
 

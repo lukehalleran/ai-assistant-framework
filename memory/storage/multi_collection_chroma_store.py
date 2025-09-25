@@ -1,4 +1,21 @@
-# memory/storage/multi_collection_chroma_store.py (replace existing content)
+"""
+# memory/storage/multi_collection_chroma_store.py
+
+Module Contract
+- Purpose: Wrapper over ChromaDB with separate collections (conversations, summaries, wiki_knowledge, facts, reflections). Provides add/query helpers with robust metadata flattening.
+- Inputs:
+  - add_conversation_memory(query, response, metadata)
+  - add_summary(summary, period, metadata) [back‑compat]
+  - add_wiki_chunk(chunk), add_fact(...), add_reflection(...)
+  - query_collection(name, query_text, n_results)
+- Outputs:
+  - Stored documents with consistent metadata; formatted search results.
+- Key behaviors:
+  - Embedding function (SentenceTransformer) is configured once for all collections
+  - Metadata values are flattened to primitives/JSON strings for Chroma acceptance
+- Side effects:
+  - Persists to CHROMA_PATH directory; can prune or list.
+"""
 import chromadb
 from typing import List, Dict, Any, Optional
 import logging
