@@ -35,12 +35,34 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 import httpx  # <— added for title search + summary fallback
 
 # --- app-local ---
-from config.app_config import GATE_REL_THRESHOLD
+from config.app_config import (
+    GATE_REL_THRESHOLD,
+    WIKI_FETCH_FULL_DEFAULT,
+    WIKI_MAX_CHARS_DEFAULT,
+    WIKI_TIMEOUT_DEFAULT,
+)
 from utils.logging_utils import log_and_time, get_logger
 from utils.query_checker import is_deictic_followup
 
 logger = get_logger(__name__)
 logger.debug("gate_system.py loaded — cosine similarity gating active")
+
+"""
+# processing/gate_system.py
+
+Module Contract
+- Purpose: Multi‑stage gating and reranking for candidate context (memories, semantic chunks, wiki). Provides a GatedPromptBuilder that prefilters context before prompt assembly.
+- Key classes:
+  - MultiStageGateSystem: cosine similarity + optional cross‑encoder reranking; filter_memories, filter_semantic_chunks, filter_wiki_content.
+  - GatedPromptBuilder: adapter that invokes gate system then delegates to a prompt builder.
+- Inputs:
+  - Query text + lists of memories/semantic chunks/wiki content (dicts with text/metadata).
+- Outputs:
+  - Filtered lists with per‑item relevance scores; final prompt via underlying builder.
+- Dependencies:
+  - sentence-transformers, cross‑encoder model (optional), knowledge cleanup utilities, config gating thresholds.
+- Side effects: None beyond logging.
+"""
 
 # =============================================================================
 # Fast Wiki “assist” (cheap topical context that never blocks prompt build)
@@ -48,12 +70,27 @@ logger.debug("gate_system.py loaded — cosine similarity gating active")
 
 # Enables wiki assist; can be toggled if needed.
 WIKI_ENABLED_DEFAULT = True
+# Allow env override; otherwise honor config defaults
+WIKI_FETCH_FULL = bool(int(os.getenv("WIKI_FETCH_FULL", "1" if WIKI_FETCH_FULL_DEFAULT else "0")))
+try:
+    WIKI_MAX_CHARS = int(os.getenv("WIKI_MAX_CHARS", str(WIKI_MAX_CHARS_DEFAULT)))
+except Exception:
+    WIKI_MAX_CHARS = WIKI_MAX_CHARS_DEFAULT
 
 # Hard timeout to ensure we never stall prompt building.
-WIKI_TIMEOUT_S = 0.8
+try:
+    WIKI_TIMEOUT_S = float(os.getenv("WIKI_TIMEOUT", str(WIKI_TIMEOUT_DEFAULT)))
+except Exception:
+    WIKI_TIMEOUT_S = WIKI_TIMEOUT_DEFAULT
+if WIKI_FETCH_FULL and WIKI_TIMEOUT_S < 2.5:
+    WIKI_TIMEOUT_S = 2.5
 
 # Tiny in-process cache (query -> snippet); sized to avoid memory creep.
 _WIKI_CACHE: dict[str, str] = {}
+
+def _wiki_cache_key(q: str) -> str:
+    base = (q or "").strip().lower()
+    return f"{base}:full" if WIKI_FETCH_FULL else f"{base}:lead"
 
 # Wikipedia HTTP settings
 _WIKI_UA = {"User-Agent": "Daemon/1.0 (+https://example.com)"}
@@ -61,12 +98,12 @@ _WIKI_LANG = "en"
 
 def get_cached_wiki(q: str) -> str:
     """Return cached snippet for normalized query if available."""
-    return _WIKI_CACHE.get((q or "").strip().lower(), "")
+    return _WIKI_CACHE.get(_wiki_cache_key(q), "")
 
 
 def _cache_wiki(q: str, text: str) -> None:
     """Store small snippets; keep cache bounded to ~64 entries."""
-    key = (q or "").strip().lower()
+    key = _wiki_cache_key(q)
     if text:
         if len(_WIKI_CACHE) > 64:
             _WIKI_CACHE.pop(next(iter(_WIKI_CACHE)))
@@ -98,10 +135,11 @@ async def gated_wiki_fetch(query: str, timeout: float = WIKI_TIMEOUT_S) -> tuple
     Non-blocking: returns (ok, snippet). If anything goes wrong or the content
     is judged irrelevant, returns (False, "") — callers can simply ignore.
     """
-    # 0) cache hit
-    cached = get_cached_wiki(query)
-    if cached:
-        return True, cached
+    # 0) cache hit (skip if full fetch requested to avoid stale short summaries)
+    if not WIKI_FETCH_FULL:
+        cached = get_cached_wiki(query)
+        if cached:
+            return True, cached
 
     # 1) pre-gate (no network)
     if not should_attempt_wiki(query):
@@ -293,22 +331,50 @@ async def _wiki_search_title(query: str, timeout: float = 0.6) -> Optional[str]:
 
 async def _wiki_summary_for_title(title: str, timeout: float = 0.6) -> Optional[str]:
     """
-    Fetch a concise summary for a known Wikipedia title using the SUMMARY endpoint.
+    Fetch the full introductory section (multi‑paragraph lead) for a known title.
+    Tries the MediaWiki action API (exintro) first, then falls back to REST summary.
     """
     if not title:
         return None
-    url = f"https://{_WIKI_LANG}.wikipedia.org/api/rest_v1/page/summary/{httpx.utils.quote(title)}"
     try:
+        # 1) Action API: exintro (plain text)
+        api = f"https://{_WIKI_LANG}.wikipedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "prop": "extracts",
+            # include only intro unless full fetch requested
+            **({"exintro": 1} if not WIKI_FETCH_FULL else {}),
+            "explaintext": 1,
+            "redirects": 1,
+            "format": "json",
+            "titles": title,
+        }
+        async with httpx.AsyncClient(timeout=timeout, headers=_WIKI_UA) as client:
+            r = await client.get(api, params=params)
+            if r.status_code == 200:
+                js = r.json() or {}
+                pages = (js.get("query", {}) or {}).get("pages", {}) or {}
+                if pages:
+                    _pid, pdata = next(iter(pages.items()))
+                    extract = (pdata or {}).get("extract", "") or ""
+                    if extract.strip():
+                        extract = extract.strip()
+                        if WIKI_MAX_CHARS and WIKI_MAX_CHARS > 0 and len(extract) > WIKI_MAX_CHARS:
+                            # Clip at a sentence boundary if possible
+                            clip = extract[:WIKI_MAX_CHARS]
+                            m = re.search(r"[\.!?](?!.*[\.!?])", clip)
+                            extract = clip if not m else clip[: m.end()]
+                        logger.debug(f"[Wiki Summary] Action API {'FULL' if WIKI_FETCH_FULL else 'INTRO'} used for '{title}' (len={len(extract)})")
+                        return extract
+        # 2) Fallback: REST summary (shorter)
+        url = f"https://{_WIKI_LANG}.wikipedia.org/api/rest_v1/page/summary/{httpx.utils.quote(title)}"
         async with httpx.AsyncClient(timeout=timeout, headers=_WIKI_UA) as client:
             r = await client.get(url)
             if r.status_code != 200:
                 return None
             js = r.json() or {}
             extract = (js.get("extract") or "").strip()
-            if not extract:
-                return None
-            # keep it short-ish (≈ 6 sentences)
-            return " ".join(re.split(r"(?<=[.!?])\s+", extract)[:6])
+            return extract or None
     except Exception as e:
         logger.debug(f"[Wiki Summary] failed for '{title}': {e}")
         return None
@@ -362,7 +428,7 @@ async def fetch_wiki_with_fallbacks(q: str) -> tuple[bool, str, str]:
             continue
 
         # If we have a local wikipedia_api, try it first (may return full text)
-        if wikipedia_api is not None and hasattr(wikipedia_api, "fetch_article_text"):
+        if (not WIKI_FETCH_FULL) and wikipedia_api is not None and hasattr(wikipedia_api, "fetch_article_text"):
             try:
                 ok, text = await wikipedia_api.fetch_article_text(title)
                 if ok and text and len(text) > 400:
@@ -629,7 +695,8 @@ class CosineSimilarityGateSystem:
 
         try:
             logger.debug(f"[Cosine Gate] Encoding query and {content_type} content")
-            content_trim = (content or "")[:500]
+            content = content or ""
+            content_trim = content[:500]
             # Offload encoding to executor/aencode to avoid blocking event loop
             qv = await self._encode_texts([query or ""])  # (1,D)
             cv = await self._encode_texts([content_trim])  # (1,D)
@@ -649,7 +716,8 @@ class CosineSimilarityGateSystem:
                 relevant=relevant,
                 confidence=similarity,
                 reasoning=f"Cosine similarity: {similarity:.3f}",
-                filtered_content=content_trim if relevant else None,
+                # Use full content when relevant; we only trim for embedding
+                filtered_content=(content if relevant else None),
             )
             self.cache[cache_key] = result
             logger.info(
@@ -795,14 +863,15 @@ class MultiStageGateSystem:
             result = await self.gate_system.gate_content_async(query, wiki_content, "wikipedia")
 
             if result.relevant and result.confidence > self.gate_system.cosine_threshold:
-                return True, result.filtered_content or wiki_content[:500]
+                # Prefer the full content passed through the gate
+                return True, result.filtered_content or wiki_content
 
             # Secondary: minimal lexical overlap rescue (if cosine borderline)
             if result.confidence < 0.40:
-                olap = _overlap_score(query, wiki_content[:500])
+                olap = _overlap_score(query, wiki_content[:1200])
                 if olap >= 0.35:
                     logger.debug(f"[Wiki Filter Fallback] Overlap rescue (olap={olap:.2f})")
-                    return True, wiki_content[:500]
+                    return True, wiki_content
 
             return False, ""
 

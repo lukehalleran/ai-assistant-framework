@@ -1,4 +1,22 @@
-# /gui/launch.py
+"""
+# gui/launch.py
+
+Module Contract
+- Purpose: Define and launch the Gradio UI. Provides Chat, Debug Trace, Status, and Settings tabs; wires UI events to handlers and state.
+- Inputs:
+  - Orchestrator instance (built in main). Environment flags for networking.
+- Outputs:
+  - Running web app (local or shared); exposes live chat and debug views.
+- Key pieces:
+  - submit_chat(): async driver that streams tokens + timer updates
+  - Tabs:
+    • Chat: chat UI, file upload, raw toggle, personality selector
+    • Debug Trace: renders debug_state entries
+    • Status: shows counters (summaries, corpus counts, logs)
+    • Settings: slider to control summary cadence (every N exchanges)
+- Side effects:
+  - None beyond UI + logging.
+"""
 import os
 import socket
 import gradio as gr
@@ -125,8 +143,9 @@ def launch_gui(orchestrator):
 
         # Ensure we have a list to work with
         chat_history = list(chat_history or [])
-        # Start a new turn with empty assistant reply
-        chat_history.append([user_text, "…"])  # show ephemeral typing dots in the bubble
+        # Start a new turn for type="messages": append user, then assistant placeholder
+        chat_history.append({"role": "user", "content": user_text})
+        chat_history.append({"role": "assistant", "content": "…"})  # ephemeral typing dots
         # Emit immediately so the user sees their message appear
         debug_entries = list(debug_entries or [])
         # Initial emit: clear input, keep debug_state only (debug view updates via state.change)
@@ -180,7 +199,12 @@ def launch_gui(orchestrator):
                     assistant_reply = chunk["content"]
                 else:
                     assistant_reply = str(chunk)
-                chat_history[-1][1] = assistant_reply
+                # Update the last assistant message's content
+                if chat_history and isinstance(chat_history[-1], dict):
+                    chat_history[-1]["content"] = assistant_reply
+                else:
+                    # Fallback in case state shape is unexpected
+                    chat_history.append({"role": "assistant", "content": assistant_reply})
                 if isinstance(chunk, dict) and "debug" in chunk:
                     try:
                         debug_entries.append(chunk["debug"])  # append single record
@@ -208,7 +232,7 @@ def launch_gui(orchestrator):
 
         with gr.Tabs():
             with gr.TabItem("Chat"):
-                chatbot = gr.Chatbot(label="Daemon", height=520)
+                chatbot = gr.Chatbot(label="Daemon", height=520, type="messages")
                 # Place typing + timer directly under the chat so they stay visible
                 typing_md = gr.Markdown(value="", elem_id="typing_indicator")
                 timer_md = gr.Markdown(value="", elem_id="response_timer")

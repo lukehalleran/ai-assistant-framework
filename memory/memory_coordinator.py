@@ -1,4 +1,25 @@
+"""
 # memory/memory_coordinator.py
+
+Module Contract
+- Purpose: Central coordinator for conversational memory. Persists each turn, retrieves relevant memories (recent + semantic), runs shutdown reflections, and synthesizes/stores block summaries at shutdown.
+- Inputs:
+  - store_interaction(query, response, tags?): adds a turn to corpus + Chroma
+  - get_memories(query, limit, topic_filter?): unified retrieval/gating/ranking
+  - process_shutdown_memory(): summarize blocks (size N) and extract end‑of‑session facts
+  - run_shutdown_reflection(...): generate a short reflection at session end
+- Outputs:
+  - Lists of normalized memory dicts with scores/metadata; new summary/reflection/fact nodes in storage.
+- Key collaborators:
+  - CorpusManager (JSON short‑term store)
+  - MultiCollectionChromaStore (semantic collections)
+  - MemoryConsolidator (LLM summarization API, may be bypassed for micro‑summaries)
+  - MultiStageGateSystem (cosine/rerank gating)
+- Side effects:
+  - Writes to corpus JSON and Chroma collections; updates access/score metadata.
+- Async behavior:
+  - Most public methods are async to coordinate with model calls and gating.
+"""
 from __future__ import annotations
 
 import os
@@ -683,7 +704,8 @@ class MemoryCoordinator:
         try:
             logger.debug(f"[MemoryCoordinator] Extracting facts from query: {query[:100]}...")
             facts = await self.fact_extractor.extract_facts(query, response) or []
-            logger.debug(f"[MemoryCoordinator] Extracted {len(facts)} facts (raw)")
+            total = len(facts)
+            logger.debug(f"[MemoryCoordinator] Extracted {total} facts (raw)")
 
             def _to_dict(item):
                 # Normalize MemoryNode / dict / str into a dict with content + metadata
@@ -731,7 +753,9 @@ class MemoryCoordinator:
                         confidence=conf,
                     )
                     stored += 1
-                    logger.debug(f"[MemoryCoordinator][Facts] stored: {fact_text!r} (conf={conf:.2f})")
+                    logger.info(
+                        f"[MemoryCoordinator][Facts] Stored {idx}/{total}: {fact_text} (conf={conf:.2f})"
+                    )
                 except Exception as inner:
                     logger.warning(
                         f"[MemoryCoordinator][Facts] add_fact failed at #{idx}: {inner}. "

@@ -195,3 +195,16 @@ def get_conversation_logger(log_dir: str = "conversation_logs",
     if _conversation_logger is None:
         _conversation_logger = ConversationLogger(log_dir=log_dir, log_format=log_format)
     return _conversation_logger
+"""
+# utils/conversation_logger.py
+
+Module Contract
+- Purpose: Append‑only conversation logging for debugging and traceability. Aggregates session stats and a debug feed for the GUI.
+- Inputs:
+  - log_interaction(user_input, assistant_response, metadata)
+  - log_system_event(event, detail)
+- Outputs:
+  - Rotating plaintext logs under conversation_logs/; in‑memory debug entries for GUI Debug Trace tab.
+- Side effects:
+  - File writes per interaction; manages current log file path and counters.
+"""

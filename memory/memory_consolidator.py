@@ -1,4 +1,18 @@
+"""
 # memory/memory_consolidator.py
+
+Module Contract
+- Purpose: Generate concise conversation summaries from recent exchanges. Used by shutdown summarizer and optionally mid‑session consolidation.
+- Inputs:
+  - consolidation_threshold (N): target block size for summaries
+  - maybe_consolidate(corpus_manager): returns True if a new summary node is stored
+- Outputs:
+  - Creates a new summary node via corpus_manager.add_summary when due.
+- Dependencies:
+  - models.model_manager for generate_once
+- Side effects:
+  - Writes summary nodes to corpus (and by caller pathways, to Chroma).
+"""
 
 import os
 from datetime import datetime, timedelta

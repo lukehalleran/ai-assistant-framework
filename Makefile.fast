@@ -1,3 +1,4 @@
+#Fast run profile
 SHELL := /bin/bash
 PYTHON ?= python
 

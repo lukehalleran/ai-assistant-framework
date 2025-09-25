@@ -1,4 +1,24 @@
+"""
 # config/app_config.py
+
+Module Contract
+- Purpose: Central configuration loader/normalizer. Reads YAML (optional), merges env overrides, sets defaults, exposes strongly‑typed constants, and loads the system prompt text.
+- Inputs:
+  - Optional YAML (config.yaml) at several search paths
+  - Environment variables (e.g., CORPUS_FILE, CHROMA_PATH, OPENAI_API_KEY, SUMMARY_* knobs, gating thresholds)
+- Outputs:
+  - Module‑level constants used across the stack: paths, memory/gating/model limits, SYSTEM_PROMPT text, etc.
+- Key functions:
+  - load_yaml_config(config_path) → dict: tolerant loader with variable resolution
+  - ensure_config_defaults(config) → dict: fills missing critical defaults
+  - load_system_prompt(cfg) → str: resolves from core/system_prompt[.txt] (stripping header comments) or falls back to inline
+- Important constants:
+  - CORPUS_FILE, CHROMA_PATH, SYSTEM_PROMPT, DEFAULT_* model knobs, gating thresholds, CORPUS_MAX_ENTRIES
+- Side effects:
+  - Creates data directories on import to ensure persistence paths exist.
+- Error handling:
+  - Logs and falls back to safe defaults if files/vars are missing.
+"""
 import os
 import re
 import yaml
@@ -205,6 +225,18 @@ COLLECTION_BOOSTS = config.get("memory", {}).get("collection_boosts", {
     "semantic": 0.05,
     "wiki": 0.05,
 })
+
+# -----------------------------
+# Wikipedia defaults (config-driven)
+# -----------------------------
+# These drive how much wiki text is fetched and included. They act as defaults
+# when environment variables are not explicitly set.
+WIKI_CFG = config.get("wiki", {})
+WIKI_FETCH_FULL_DEFAULT: bool = bool(WIKI_CFG.get("fetch_full", True))
+WIKI_MAX_CHARS_DEFAULT: int = int(WIKI_CFG.get("max_chars", 15000))
+# 0 (or <=0) disables sentence clipping; intro/full selection is handled elsewhere
+WIKI_MAX_SENTENCES_DEFAULT: int = int(WIKI_CFG.get("max_sentences", 0))
+WIKI_TIMEOUT_DEFAULT: float = float(WIKI_CFG.get("timeout_s", 1.2))
 DEICTIC_THRESHOLD = config.get("gating", {}).get("deictic_threshold", 0.60)
 NORMAL_THRESHOLD = config.get("gating", {}).get("normal_threshold", 0.35)
 DEICTIC_ANCHOR_PENALTY = config.get("gating", {}).get("deictic_anchor_penalty", 0.1)
@@ -217,6 +249,15 @@ SCORE_WEIGHTS = config.get("gating", {}).get("score_weights", {
     "continuity": 0.10,
     "structure": 0.05,
 })
+
+# Best-of-N generation (answer-side reranking)
+ENABLE_BEST_OF = config.get("features", {}).get("enable_best_of", True)
+BEST_OF_N = int(config.get("features", {}).get("best_of_n", 2))
+BEST_OF_TEMPS = tuple(config.get("features", {}).get("best_of_temps", [0.2, 0.7]))
+BEST_OF_MIN_QUESTION = bool(config.get("features", {}).get("best_of_min_question", True))
+BEST_OF_MAX_TOKENS = int(config.get("features", {}).get("best_of_max_tokens", 256))
+BEST_OF_MODEL = config.get("features", {}).get("best_of_model", None)
+BEST_OF_MIN_TOKENS = int(config.get("features", {}).get("best_of_min_tokens", 8))
 
 system_prompt_file = config.get("paths", {}).get("system_prompt_file", {})
 

@@ -1,7 +1,20 @@
-#core/prompt_builder.py
+from __future__ import annotations
+"""
+# core/prompt_builder.py
+
+Module Contract
+- Purpose: Compatibility shims that expose legacy builder names while delegating to the refreshed UnifiedPromptBuilder.
+- Classes:
+  - UnifiedHierarchicalPromptBuilder: thin adapter that forwards build_prompt/build_gated_prompt calls to the provided delegate builder; preserves consolidator reference.
+  - UnifiedPromptBuilder (alias): re-export of core.prompt.UnifiedPromptBuilder.
+- Inputs/Outputs:
+  - Same signature/return shape as underlying builders (async build_prompt yielding context dict).
+- Side effects:
+  - None. Pure delegation.
+"""
 """Compatibility builders bridging legacy imports to the refreshed pipeline."""
 
-from __future__ import annotations
+
 
 import inspect
 from typing import Any
@@ -43,4 +56,3 @@ class UnifiedHierarchicalPromptBuilder:
 
 
 __all__ = ["UnifiedPromptBuilder", "UnifiedHierarchicalPromptBuilder", "PromptBuilder"]
-
