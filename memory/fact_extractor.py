@@ -409,7 +409,25 @@ class FactExtractor:
             if after != before:
                 logger.debug(f"[FactExtractor] Dropped {before - after} generic 'name' facts shadowed by specific name parts")
 
-        logger.info(f"[FactExtractor] Final facts: {len(facts)} (from {len(triples)} triples; deduped={len(seen)})")
+        # Emit a clear INFO line for each extracted fact so users can see
+        # what was captured without enabling DEBUG.
+        if facts:
+            for i, node in enumerate(facts, start=1):
+                meta = node.metadata or {}
+                conf = meta.get("confidence")
+                try:
+                    conf_str = f"{float(conf):.2f}"
+                except Exception:
+                    conf_str = str(conf)
+                method = meta.get("method", "?")
+                logger.info(
+                    f"[FactExtractor] Fact[{i}] {node.content} "
+                    f"(conf={conf_str}, method={method}, id={node.id})"
+                )
+
+        logger.info(
+            f"[FactExtractor] Final facts: {len(facts)} (from {len(triples)} triples; deduped={len(seen)})"
+        )
         return facts
 
     def _extract_with_spacy_rules(self, text: str) -> List[Tuple[str, str, str, float, str]]:

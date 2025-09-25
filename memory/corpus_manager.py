@@ -1,4 +1,20 @@
-# /memory/corpus_manager.py
+"""
+# memory/corpus_manager.py
+
+Module Contract
+- Purpose: Lightweight JSON corpus for short‑term memory. Stores Q/A exchanges and summary/Reflection nodes with timestamps and tags. Provides recent retrieval and summary helpers.
+- Inputs:
+  - add_entry(query, response, tags?, timestamp?)
+  - add_summary(content|node)
+  - get_recent_memories(count), get_summaries(count)
+- Outputs:
+  - Lists of dict entries sorted by recency; persisted file on disk.
+- Key behaviors:
+  - Atomic save with .tmp swap; timestamps normalized to datetime/ISO
+  - Size bounded by CORPUS_MAX_ENTRIES (config/env)
+- Side effects:
+  - Writes to CORPUS_FILE JSON on each add.
+"""
 import json
 import os
 from datetime import datetime

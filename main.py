@@ -1,12 +1,34 @@
+"""
 # main.py
+
+Module Contract
+- Purpose: Application entry point. Builds the orchestrator stack, launches GUI or runs small CLI tests, and coordinates graceful shutdown work (reflections + summaries/facts).
+- Inputs:
+  - CLI arg `mode`: "gui" (default), "cli", "test-summaries", "inspect-summaries", "test-prompt-summaries"
+  - Environment: GRADIO_* networking flags; config/app_config.py settings (paths, memory, models)
+- Outputs:
+  - Starts a Gradio app (GUI) or runs test routines; at shutdown triggers memory_system tasks.
+- Key functions/classes:
+  - build_orchestrator() → DaemonOrchestrator fully wired with model_manager, prompt_builder, memory_system, etc.
+  - test_orchestrator(), test_prompt_with_summaries(), inspect_summaries(): small helpers for ad‑hoc testing.
+  - __main__ block: selects mode, launches, and on shutdown runs:
+      • memory_system.run_shutdown_reflection(...)
+      • memory_system.process_shutdown_memory() (summary blocks + facts)
+- Important dependencies: core.orchestrator.DaemonOrchestrator, gui.launch.launch_gui, config.app_config constants, memory components, processing.gate_system.
+- Side effects:
+  - Launches local web server; writes to conversation logs and corpus/chroma via orchestrator.
+- Threading/Async:
+  - Uses asyncio to stream model output and to run shutdown tasks deterministically.
+"""
 import asyncio
 import sys
 import os
 from datetime import datetime
 
-from utils.logging_utils import get_logger
+from utils.logging_utils import get_logger, configure_logging
 from utils.time_manager import TimeManager
-# Setup logging
+# Setup logging early to avoid duplicate handlers
+configure_logging()
 logger = get_logger("main")
 
 # Add parent directory to path

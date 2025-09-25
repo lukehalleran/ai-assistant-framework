@@ -68,3 +68,15 @@ class FileProcessor:
     def get_supported_extensions(self) -> List[str]:
         """Return list of supported file extensions"""
         return self.supported_extensions
+"""
+# utils/file_processor.py
+
+Module Contract
+- Purpose: Normalize supported file uploads (txt/csv/py) into text for prompt augmentation.
+- Inputs:
+  - process_files(user_input: str, files: List[IO]) → concatenated text
+- Outputs:
+  - Merged text including user input and extracted file contents.
+- Side effects:
+  - None (reads files only). Errors are captured and embedded as diagnostic text.
+"""

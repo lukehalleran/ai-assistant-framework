@@ -1,4 +1,25 @@
+"""
 # core/orchestrator.py
+
+Module Contract
+- Purpose: High‑level request orchestrator. Prepares prompts (topic detection, optional file processing, query rewrite), invokes the model, and persists the interaction to memory.
+- Inputs:
+  - user_input: str; optional files; mode flags (raw/enhanced)
+  - Wired collaborators: model_manager, response_generator, file_processor, prompt_builder, memory_system, personality/topic/wiki/tokenizer managers
+- Outputs:
+  - process_user_query() → (assistant_text: str, debug_info: dict)
+  - prepare_prompt() → (prompt_text: str, system_prompt: Optional[str])
+- Key methods:
+  - handle_commands(): simple topic switching commands
+  - prepare_prompt(): topic update, file processing, optional query rewrite, resolve system prompt, build prompt via prompt_builder
+  - process_user_query(): personality hook, deictic check, generate streamed response, store memory, schedule consolidation (now at shutdown)
+- System prompt flow:
+  - Resolved via config/app_config.load_system_prompt and/or path override; forwarded to response generation as system role message.
+- Side effects:
+  - Writes conversation+metadata to corpus DB/Chroma via memory_system; logs events.
+- Async behavior:
+  - Uses async streaming from response_generator; overall methods are async.
+"""
 import os
 import processing.gate_system as gate_system
 from datetime import datetime
@@ -11,7 +32,7 @@ SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
 gate_system.wikipedia_api = wiki_api  # This sets it globally
 # If you have a real helper, import that instead:
-from utils.query_checker import is_deictic
+from utils.query_checker import is_deictic, analyze_query
 
 
 class _SimplePromptBuilder:
@@ -218,10 +239,13 @@ class DaemonOrchestrator:
         # 2) Optional query rewrite (for retrieval/search phrasing)
         # ---------------------------------------------------------------------
         rewritten_query: Optional[str] = None
-        if not use_raw_mode and (
-            "?" in user_input
-            or user_input.lower().startswith(("what", "who", "when", "how", "why"))
-        ):
+        qinfo = None
+        try:
+            qinfo = analyze_query(user_input)
+        except Exception:
+            qinfo = None
+        # Only rewrite longer questions; skip tiny factoids to save latency
+        if not use_raw_mode and qinfo and qinfo.is_question and qinfo.token_count >= 8:
             try:
                 rewrite_prompt = (
                     'Rewrite the following user question into a concise, third-person declarative '
@@ -396,12 +420,50 @@ class DaemonOrchestrator:
             model_name = active_name_getter() if callable(active_name_getter) else None
             model_name = model_name or "gpt-4-turbo"
 
-            full_response = ""
-            async for chunk in self.response_generator.generate_streaming_response(
-                prompt, model_name, system_prompt=system_prompt
-            ):
-                full_response += (chunk + " ")
-            full_response = full_response.strip()
+            # Decide if we should use best-of (non-streaming) for quality
+            try:
+                from config.app_config import ENABLE_BEST_OF, BEST_OF_N, BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_MIN_QUESTION
+            except Exception:
+                ENABLE_BEST_OF = True; BEST_OF_N = 2; BEST_OF_TEMPS = (0.2, 0.7); BEST_OF_MAX_TOKENS = 512; BEST_OF_MIN_QUESTION = True
+
+            use_bestof = False
+            try:
+                from config.app_config import BEST_OF_MIN_TOKENS as _BEST_OF_MIN_TOKENS
+            except Exception:
+                _BEST_OF_MIN_TOKENS = 8
+            try:
+                qinfo = analyze_query(user_input)
+                use_bestof = bool(
+                    ENABLE_BEST_OF and (
+                        (qinfo.is_question and qinfo.token_count >= _BEST_OF_MIN_TOKENS)
+                        or (not BEST_OF_MIN_QUESTION)
+                    )
+                )
+            except Exception:
+                use_bestof = bool(ENABLE_BEST_OF)
+
+            if use_bestof and not use_raw_mode:
+                try:
+                    from config.app_config import BEST_OF_MODEL
+                except Exception:
+                    BEST_OF_MODEL = None
+                full_response = await self.response_generator.generate_best_of(
+                    prompt=prompt,
+                    model_name=BEST_OF_MODEL or model_name,
+                    system_prompt=system_prompt,
+                    question_text=user_input,
+                    context_hint=prompt,
+                    n=BEST_OF_N,
+                    temps=tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7),
+                    max_tokens=BEST_OF_MAX_TOKENS,
+                )
+            else:
+                full_response = ""
+                async for chunk in self.response_generator.generate_streaming_response(
+                    prompt, model_name, system_prompt=system_prompt
+                ):
+                    full_response += (chunk + " ")
+                full_response = full_response.strip()
 
             # --- Store Interaction ---
             if self.memory_system and not use_raw_mode:
