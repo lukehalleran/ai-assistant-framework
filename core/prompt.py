@@ -508,6 +508,13 @@ class UnifiedPromptBuilder:
         Unified accessor with per-request cache.
         Returns a formatted snippet or '' on miss.
         """
+        # Avoid pointless wiki lookups for non-topics
+        try:
+            rq = (raw_query or "").strip().lower()
+            if rq in ("", "general"):
+                return ""
+        except Exception:
+            pass
         key = self._wiki_cache_key(raw_query)
         if key in self._request_cache:
             return self._request_cache[key]
