@@ -298,7 +298,7 @@ if __name__ == "__main__":
 
                 async def _do_shutdown_summaries_and_facts():
                     try:
-                        await orchestrator.memory_system.process_shutdown_memory()
+                        await orchestrator.memory_system.process_shutdown_memory(session_conversations=session_convos)
                     except Exception as e:
                         logger.error(f"Shutdown summary/fact processing failed: {e}")
 

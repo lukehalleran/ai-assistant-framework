@@ -1309,7 +1309,7 @@ class MemoryCoordinator:
     # Shutdown processing
     # ---------------------------
 
-    async def process_shutdown_memory(self):
+    async def process_shutdown_memory(self, session_conversations: list[dict] | None = None):
         """Create any due summaries in fixed-size blocks and run fact extraction.
 
         Behavior:
@@ -1500,27 +1500,32 @@ class MemoryCoordinator:
                 prev_blocks = len(existing_block_indices) if existing_block_indices else len(consolidator_summaries)
                 logger.info("[Shutdown] No new summaries due (N=%s, T=%s, prev=%s)", N, T, prev_blocks)
 
-            # 3) Extract facts from the most recent conversations (unchanged)
-            try:
-                corpus = list(self.corpus_manager.corpus)
-            except Exception:
-                corpus = []
-            # Session-only, non-summary/non-reflection, newest first
-            def _is_summary(e: Dict) -> bool:
-                typ = (e.get('type') or '').lower()
-                tags = e.get('tags') or []
-                return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
-            def _is_reflection(e: Dict) -> bool:
-                typ = (e.get('type') or '').lower()
-                tags = [str(t).lower() for t in (e.get('tags') or [])]
-                return (typ == 'reflection') or ('type:reflection' in tags)
-            session_recent = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e))]
-            # reuse earlier _ts helper in this function
-            try:
-                session_recent = [e for e in session_recent if _ts(e) >= self.session_start]
-            except Exception:
-                pass
-            session_recent.sort(key=_ts, reverse=True)
+            # 3) Extract facts from this session's user turns only
+            session_recent: list[Dict]
+            if isinstance(session_conversations, list) and session_conversations:
+                # Use provided in-memory buffer
+                session_recent = list(session_conversations)
+            else:
+                try:
+                    corpus = list(self.corpus_manager.corpus)
+                except Exception:
+                    corpus = []
+                # Session-only, non-summary/non-reflection, newest first
+                def _is_summary(e: Dict) -> bool:
+                    typ = (e.get('type') or '').lower()
+                    tags = e.get('tags') or []
+                    return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
+                def _is_reflection(e: Dict) -> bool:
+                    typ = (e.get('type') or '').lower()
+                    tags = [str(t).lower() for t in (e.get('tags') or [])]
+                    return (typ == 'reflection') or ('type:reflection' in tags)
+                session_recent = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e))]
+                # reuse earlier _ts helper in this function
+                try:
+                    session_recent = [e for e in session_recent if _ts(e) >= self.session_start]
+                except Exception:
+                    pass
+                session_recent.sort(key=_ts, reverse=True)
 
             for conv in session_recent[:10]:
                 try:
@@ -1540,7 +1545,7 @@ class MemoryCoordinator:
                         )
                     except Exception:
                         continue
-
+            
             # 4) Optional LLM-assisted facts over recent user messages (additive)
             try:
                 _enabled = int(os.getenv("LLM_FACTS_ENABLED", "1")) == 1
@@ -1562,24 +1567,26 @@ class MemoryCoordinator:
                     max_chars = 4000
                 model_alias = os.getenv("LLM_FACTS_MODEL", "gpt-4o-mini")
 
-                # Collect last user-only queries from THIS SESSION only
-                try:
-                    corpus = list(self.corpus_manager.corpus)
-                except Exception:
-                    corpus = []
-                def _is_summary(e: Dict) -> bool:
-                    typ = (e.get('type') or '').lower()
-                    tags = e.get('tags') or []
-                    return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
-                def _is_reflection(e: Dict) -> bool:
-                    typ = (e.get('type') or '').lower()
-                    tags = [str(t).lower() for t in (e.get('tags') or [])]
-                    return (typ == 'reflection') or ('type:reflection' in tags)
-                sess_items = []
-                try:
-                    sess_items = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e)) and _ts(e) >= self.session_start]
-                except Exception:
-                    sess_items = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e))]
+                # Collect last user-only queries from THIS SESSION only (prefer in-memory buffer if provided)
+                if isinstance(session_conversations, list) and session_conversations:
+                    sess_items = session_conversations
+                else:
+                    try:
+                        corpus = list(self.corpus_manager.corpus)
+                    except Exception:
+                        corpus = []
+                    def _is_summary(e: Dict) -> bool:
+                        typ = (e.get('type') or '').lower()
+                        tags = e.get('tags') or []
+                        return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
+                    def _is_reflection(e: Dict) -> bool:
+                        typ = (e.get('type') or '').lower()
+                        tags = [str(t).lower() for t in (e.get('tags') or [])]
+                        return (typ == 'reflection') or ('type:reflection' in tags)
+                    try:
+                        sess_items = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e)) and _ts(e) >= self.session_start]
+                    except Exception:
+                        sess_items = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e))]
                 users = [ (e.get('query') or '').strip() for e in sess_items if (e.get('query') or '').strip() ]
                 user_tail = users[-max(1,last_turns):]
 

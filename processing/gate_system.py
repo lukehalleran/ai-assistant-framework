@@ -801,7 +801,12 @@ class MultiStageGateSystem:
 
                 threshold = self.gate_system.cosine_threshold
                 if is_deictic:
-                    threshold = max(threshold, 0.50)
+                    # Keep a floor for deictic follow-ups but allow env override; default to 0.25
+                    try:
+                        deictic_min = float(os.getenv("GATE_DEICTIC_MIN", "0.25"))
+                    except Exception:
+                        deictic_min = 0.25
+                    threshold = max(threshold, deictic_min)
 
                 if score >= threshold:
                     mem["relevance_score"] = float(score)
