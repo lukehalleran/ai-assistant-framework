@@ -112,16 +112,16 @@ class TokenizerManager:
         if key in self._cache:
             return self._cache[key]
 
-        # Special-case common OpenAI-style names for HF fallback path
-        if key in {"gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.5-turbo", "claude-opus"}:
-            # If someone insists on treating these as local, redirect to gpt2
-            logger.debug(f"[TokenizerManager] Remapping '{model_name}' -> 'gpt2' for HF tokenizer.")
-            tok = self._load_hf_tokenizer("gpt2")
+        # Prefer API tokenizer for API models (tiktoken when available)
+        if self._is_api_model(model_name):
+            tok = self._load_api_tokenizer(model_name)
             self._cache[key] = tok
             return tok
 
-        if self._is_api_model(model_name):
-            tok = self._load_api_tokenizer(model_name)
+        # Special-case common OpenAI/Anthropic names if someone passes them as local
+        if key in {"gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.5-turbo", "claude-opus"}:
+            logger.debug(f"[TokenizerManager] Remapping '{model_name}' -> 'gpt2' for HF tokenizer (local fallback).")
+            tok = self._load_hf_tokenizer("gpt2")
             self._cache[key] = tok
             return tok
 

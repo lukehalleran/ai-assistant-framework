@@ -118,12 +118,23 @@ def launch_gui(orchestrator):
             q = rec.get('query') or ''
             prompt = rec.get('prompt') or ''
             resp = rec.get('response') or ''
-            parts.append(
+            ptoks = rec.get('prompt_tokens')
+            stoks = rec.get('system_tokens')
+            ttoks = rec.get('total_tokens')
+            tok_line = ""
+            try:
+                if ptoks is not None:
+                    tok_line = f"Tokens — prompt: {ptoks}  system: {stoks or 0}  total: {ttoks or (ptoks + (stoks or 0))}"
+            except Exception:
+                tok_line = ""
+            segment = (
                 f"### #{i} — Mode: {mode}  Model: {model}\n"
-                f"**Query**\n\n````\n{q}\n````\n\n"
-                f"**Prompt**\n\n````\n{prompt}\n````\n\n"
-                f"**Response**\n\n````\n{resp}\n````\n\n---\n"
+                + (f"{tok_line}\n\n" if tok_line else "")
+                + f"**Query**\n\n````\n{q}\n````\n\n"
+                + f"**Prompt**\n\n````\n{prompt}\n````\n\n"
+                + f"**Response**\n\n````\n{resp}\n````\n\n---\n"
             )
+            parts.append(segment)
         return "\n".join(parts)
 
     def get_recent_conversation_log(num_lines=50):
@@ -320,6 +331,8 @@ def launch_gui(orchestrator):
 
                 def _apply_summary_n(n: int):
                     import os
+                    from pathlib import Path
+                    import yaml
                     try:
                         n = int(n)
                         # Update memory coordinator consolidator (used at shutdown)
@@ -344,7 +357,21 @@ def launch_gui(orchestrator):
                         except Exception:
                             pass
 
-                        return f"Summary cadence updated: every {n} exchanges."
+                        # Persist to config/config.yaml under memory.summary_interval
+                        try:
+                            cfg_path = Path('config') / 'config.yaml'
+                            data = {}
+                            if cfg_path.exists():
+                                with open(cfg_path, 'r', encoding='utf-8') as f:
+                                    data = yaml.safe_load(f) or {}
+                            mem = data.setdefault('memory', {})
+                            mem['summary_interval'] = int(n)
+                            with open(cfg_path, 'w', encoding='utf-8') as f:
+                                yaml.safe_dump(data, f, sort_keys=False)
+                        except Exception as _e:
+                            return f"Applied (runtime). Persist failed: {_e}"
+
+                        return f"Summary cadence updated: every {n} exchanges (persisted)."
                     except Exception as e:
                         return f"Failed to apply: {e}"
 
