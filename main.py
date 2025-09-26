@@ -302,6 +302,7 @@ if __name__ == "__main__":
                     except Exception as e:
                         logger.error(f"Shutdown summary/fact processing failed: {e}")
 
+                scheduled_shutdown_tasks = False
                 try:
                     import asyncio as _a
                     loop = None
@@ -313,6 +314,7 @@ if __name__ == "__main__":
                         # schedule and give it a beat
                         loop.create_task(_do_shutdown_reflection())
                         loop.create_task(_do_shutdown_summaries_and_facts())
+                        scheduled_shutdown_tasks = True
                     else:
                         _a.run(_do_shutdown_reflection())
                         _a.run(_do_shutdown_summaries_and_facts())
@@ -321,7 +323,12 @@ if __name__ == "__main__":
         finally:
             # close model manager cleanly (don’t instantiate a new one)
             try:
+                # If tasks were scheduled onto a still-running loop, skip immediate close
+                # to avoid tearing down clients while tasks finish (e.g., httpx/uvloop EOF noise).
                 if orchestrator and hasattr(orchestrator, "model_manager"):
-                    orchestrator.model_manager.close()
+                    if 'scheduled_shutdown_tasks' in locals() and scheduled_shutdown_tasks:
+                        logger.debug("[main] Skipping immediate model_manager.close(); shutdown tasks still scheduled")
+                    else:
+                        orchestrator.model_manager.close()
             except Exception:
                 pass
