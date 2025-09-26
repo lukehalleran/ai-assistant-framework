@@ -35,6 +35,7 @@ from utils.topic_manager import TopicManager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from memory.fact_extractor import FactExtractor
 from memory.memory_consolidator import MemoryConsolidator
+from memory.llm_fact_extractor import LLMFactExtractor
 from memory.memory_scorer import MemoryScorer
 from processing.gate_system import MultiStageGateSystem
 from config.app_config import (
@@ -57,6 +58,13 @@ REFLECTION_MODEL_ALIAS   = os.getenv("LLM_REFLECTION_ALIAS", os.getenv("LLM_SUMM
 REFLECTION_MIN_EXCHANGES = int(os.getenv("REFLECTION_MIN_EXCHANGES", "4"))
 SUMMARIZE_AT_SHUTDOWN_ONLY = os.getenv("SUMMARIZE_AT_SHUTDOWN_ONLY", "1").strip().lower() not in ("0", "false", "no", "off")
 SUMMARY_MAX_BLOCKS_PER_SHUTDOWN = int(os.getenv("SUMMARY_MAX_BLOCKS_PER_SHUTDOWN", "1"))
+# Reflection content caps (0 = no cap)
+REFLECTION_MAX_EXCERPTS   = int(os.getenv("REFLECTION_MAX_EXCERPTS", "0") or 0)
+REFLECTION_MAX_SUMMARIES  = int(os.getenv("REFLECTION_MAX_SUMMARIES", "0") or 0)
+# Fallback number of recent memories if session buffer absent (0 = all non-summary, non-reflection)
+REFLECTION_FALLBACK_RECENT = int(os.getenv("REFLECTION_FALLBACK_RECENT", "0") or 0)
+# Facts extraction policy: default is shutdown-only (no per-turn extraction)
+FACTS_EXTRACT_EACH_TURN = os.getenv("FACTS_EXTRACT_EACH_TURN", "0").strip().lower() not in ("0", "false", "no", "off")
 
 # ---------------------------
 # Heuristics & token helpers
@@ -157,7 +165,7 @@ class MemoryCoordinator:
             consolidation_threshold=max(1, int(env_n)),
             model_manager=model_manager
         )
-        self.model_manager=model_manager
+        self.model_manager = model_manager
         self.scorer = MemoryScorer()
         self.topic_manager = topic_manager or TopicManager()
         self.conversation_context = deque(maxlen=5)
@@ -165,6 +173,12 @@ class MemoryCoordinator:
         self.interactions_since_consolidation = 0
         self.time_manager = time_manager
         self.last_consolidation_time = datetime.now()
+        # Mark the start of this application session; used to scope shutdown reflections/facts
+        try:
+            self.session_start = self._now()
+        except Exception:
+            from datetime import datetime as _dt
+            self.session_start = _dt.now()
 
     # --------- time helpers (prefer TimeManager) ---------
     def _now(self):
@@ -398,23 +412,25 @@ class MemoryCoordinator:
 
             # Store in Chroma
             memory_id = self.chroma_store.add_conversation_memory(query, response, clean_metadata)
-            #extract facts
-            # --- Facts: extract & store, but don't crash the turn if it fails ---
-            try:
-                # avoid wasted work on very short/empty outputs
-                if (response or "").strip() and len(response) >= 8:
-                    before = datetime.now()
-                    facts_before = getattr(self.chroma_store.collections["facts"], "count", lambda: 0)()
-                    await self._extract_and_store_facts(query, response, truth_score)
-                    facts_after = getattr(self.chroma_store.collections["facts"], "count", lambda: 0)()
-                    logger.debug(
-                        f"[MemoryCoordinator][Facts] stored {max(0, facts_after - facts_before)} "
-                        f"facts in {(datetime.now()-before).total_seconds():.3f}s"
-                    )
-                else:
-                    logger.debug("[MemoryCoordinator][Facts] skipped (response too short/empty)")
-            except Exception as fe:
-                logger.warning(f"[MemoryCoordinator][Facts] extraction/store failed: {fe}", exc_info=True)
+            # --- Facts: by default, only run at shutdown. Per-turn is opt-in via FACTS_EXTRACT_EACH_TURN=1 ---
+            if FACTS_EXTRACT_EACH_TURN:
+                try:
+                    # avoid wasted work on very short/empty outputs
+                    if (response or "").strip() and len(response) >= 8:
+                        before = datetime.now()
+                        facts_before = getattr(self.chroma_store.collections["facts"], "count", lambda: 0)()
+                        await self._extract_and_store_facts(query, response, truth_score)
+                        facts_after = getattr(self.chroma_store.collections["facts"], "count", lambda: 0)()
+                        logger.debug(
+                            f"[MemoryCoordinator][Facts] stored {max(0, facts_after - facts_before)} "
+                            f"facts in {(datetime.now()-before).total_seconds():.3f}s"
+                        )
+                    else:
+                        logger.debug("[MemoryCoordinator][Facts] skipped (response too short/empty)")
+                except Exception as fe:
+                    logger.warning(f"[MemoryCoordinator][Facts] extraction/store failed: {fe}", exc_info=True)
+            else:
+                logger.debug("[MemoryCoordinator][Facts] per-turn extraction disabled (shutdown-only mode)")
 
             # Increment counter and (optionally) consolidate mid-session unless disabled
             if not SUMMARIZE_AT_SHUTDOWN_ONLY:
@@ -638,7 +654,33 @@ class MemoryCoordinator:
 
         if not conv:
             try:
-                conv = self.corpus_manager.get_recent_memories(30) or []
+                corpus = list(self.corpus_manager.corpus)
+                def _is_summary(e: Dict) -> bool:
+                    typ = (e.get('type') or '').lower()
+                    tags = e.get('tags') or []
+                    return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
+                def _is_reflection(e: Dict) -> bool:
+                    typ = (e.get('type') or '').lower()
+                    tags = [str(t).lower() for t in (e.get('tags') or [])]
+                    return (typ == 'reflection') or ('type:reflection' in tags)
+                from datetime import datetime as _dt
+                def _ts(e):
+                    ts = e.get('timestamp')
+                    if isinstance(ts, str):
+                        try:
+                            ts = _dt.fromisoformat(ts)
+                        except Exception:
+                            ts = _dt.min
+                    if not hasattr(ts, 'isoformat'):
+                        ts = _dt.min
+                    return ts
+                # Build session-only fallback: restrict to entries from this run
+                non = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e)) and _ts(e) >= self.session_start]
+                non.sort(key=_ts, reverse=True)
+                if REFLECTION_FALLBACK_RECENT and REFLECTION_FALLBACK_RECENT > 0:
+                    conv = non[:REFLECTION_FALLBACK_RECENT]
+                else:
+                    conv = non
             except Exception:
                 conv = []
 
@@ -669,9 +711,12 @@ class MemoryCoordinator:
             "3) High-level insights (durable heuristics to carry forward)\n"
             "Avoid praise; be specific and actionable.\n\n"
         )
+        # Apply configurable caps (0 = unlimited)
         if sum_texts:
-            prompt += "SESSION SUMMARIES:\n" + "\n\n".join(f"- {t}" for t in sum_texts[:8]) + "\n\n"
-        prompt += "CONVERSATION EXCERPTS:\n" + "\n\n".join(conv_blocks[-20:]) + "\n\n"
+            sum_use = sum_texts if REFLECTION_MAX_SUMMARIES <= 0 else sum_texts[:REFLECTION_MAX_SUMMARIES]
+            prompt += "SESSION SUMMARIES:\n" + "\n\n".join(f"- {t}" for t in sum_use) + "\n\n"
+        conv_use = conv_blocks if REFLECTION_MAX_EXCERPTS <= 0 else conv_blocks[-REFLECTION_MAX_EXCERPTS:]
+        prompt += "CONVERSATION EXCERPTS:\n" + "\n\n".join(conv_use) + "\n\n"
         prompt += "Produce the three sections now."
 
         prev_model = None
@@ -1457,16 +1502,33 @@ class MemoryCoordinator:
 
             # 3) Extract facts from the most recent conversations (unchanged)
             try:
-                recent = self.corpus_manager.get_recent_memories(20) or []
+                corpus = list(self.corpus_manager.corpus)
             except Exception:
-                recent = []
+                corpus = []
+            # Session-only, non-summary/non-reflection, newest first
+            def _is_summary(e: Dict) -> bool:
+                typ = (e.get('type') or '').lower()
+                tags = e.get('tags') or []
+                return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
+            def _is_reflection(e: Dict) -> bool:
+                typ = (e.get('type') or '').lower()
+                tags = [str(t).lower() for t in (e.get('tags') or [])]
+                return (typ == 'reflection') or ('type:reflection' in tags)
+            session_recent = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e))]
+            # reuse earlier _ts helper in this function
+            try:
+                session_recent = [e for e in session_recent if _ts(e) >= self.session_start]
+            except Exception:
+                pass
+            session_recent.sort(key=_ts, reverse=True)
 
-            for conv in recent[:10]:
+            for conv in session_recent[:10]:
                 try:
                     # Extract strictly from the user's side only to keep inputs tiny
-                    facts = await self.fact_extractor.extract_facts(
-                        conv.get('query', ''), ""
-                    )
+                    q = (conv.get('query') or '').strip()
+                    if not q:
+                        continue
+                    facts = await self.fact_extractor.extract_facts(q, "")
                 except Exception:
                     facts = []
                 for fact in (facts or []):
@@ -1478,6 +1540,73 @@ class MemoryCoordinator:
                         )
                     except Exception:
                         continue
+
+            # 4) Optional LLM-assisted facts over recent user messages (additive)
+            try:
+                _enabled = int(os.getenv("LLM_FACTS_ENABLED", "1")) == 1
+            except Exception:
+                _enabled = False
+
+            if _enabled and hasattr(self, 'model_manager') and self.model_manager is not None:
+                try:
+                    last_turns = int(os.getenv("LLM_FACTS_LAST_TURNS", "12"))
+                except Exception:
+                    last_turns = 12
+                try:
+                    max_triples = int(os.getenv("LLM_FACTS_MAX_TRIPLES", "10"))
+                except Exception:
+                    max_triples = 10
+                try:
+                    max_chars = int(os.getenv("LLM_FACTS_MAX_INPUT_CHARS", "4000"))
+                except Exception:
+                    max_chars = 4000
+                model_alias = os.getenv("LLM_FACTS_MODEL", "gpt-4o-mini")
+
+                # Collect last user-only queries from THIS SESSION only
+                try:
+                    corpus = list(self.corpus_manager.corpus)
+                except Exception:
+                    corpus = []
+                def _is_summary(e: Dict) -> bool:
+                    typ = (e.get('type') or '').lower()
+                    tags = e.get('tags') or []
+                    return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
+                def _is_reflection(e: Dict) -> bool:
+                    typ = (e.get('type') or '').lower()
+                    tags = [str(t).lower() for t in (e.get('tags') or [])]
+                    return (typ == 'reflection') or ('type:reflection' in tags)
+                sess_items = []
+                try:
+                    sess_items = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e)) and _ts(e) >= self.session_start]
+                except Exception:
+                    sess_items = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e))]
+                users = [ (e.get('query') or '').strip() for e in sess_items if (e.get('query') or '').strip() ]
+                user_tail = users[-max(1,last_turns):]
+
+                if user_tail:
+                    llm_ex = LLMFactExtractor(
+                        self.model_manager,
+                        model_alias=model_alias,
+                        max_input_chars=max_chars,
+                        max_triples=max_triples,
+                    )
+                    triples = await llm_ex.extract_triples(user_tail)
+                    kept = 0
+                    for t in triples:
+                        subj = t.get('subject'); rel = t.get('relation'); obj = t.get('object')
+                        if not subj or not rel or not obj:
+                            continue
+                        fact_text = f"{subj} | {rel} | {obj}"
+                        try:
+                            self.chroma_store.add_fact(
+                                fact=fact_text,
+                                source='llm_shutdown',
+                                confidence=0.75,
+                            )
+                            kept += 1
+                        except Exception:
+                            continue
+                    logger.info(f"[LLM Facts] kept={kept} (model={model_alias})")
 
             logger.info("[Shutdown] Memory processing complete")
 
