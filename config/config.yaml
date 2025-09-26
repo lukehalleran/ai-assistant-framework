@@ -1,50 +1,52 @@
 daemon:
-  version: "v4"
-  data_dir: "./data"
-  log_dir: "./conversation_logs"
+  version: v4
+  data_dir: ./data
+  log_dir: ./conversation_logs
   in_harm_test: false
   debug_mode: true
-  device: "cuda"
-
+  device: cuda
 memory:
   corpus_file: ./data/corpus_v4.json
   chroma_path: ./data/chroma_db_v4
-
   max_recent: 50
-  max_memories: 8              # tighter candidate pool
-  max_final_memories: 2        # fewer injected memories
+  max_memories: 8
+  max_final_memories: 2
   max_working_memory: 8
   mem_no: 5
-  mem_importance_score: 0.75   # only keep higher-value memories
+  mem_importance_score: 0.75
   num_memories: 10
   child_mem_limit: 3
-  recency_decay_rate: 0.10     # stronger penalty on older items
+  recency_decay_rate: 0.1
   truth_score_update_rate: 0.02
   truth_score_max: 0.95
   collection_boosts:
-    facts: 0.10                # de-emphasize generic regex-y facts
-    summaries: 0.10
-    conversations: 0.30        # prefer fresh convo context
-    semantic: 0.05             # keep flowing
-    wiki: 0.05                 # keep flowing
-  default_summary_prompt_header: "Summary of last 20 exchanges:\n"
-  default_tagging_prompt: |
-    You are Daemon, my assistant. Extract 5 concise tags or keywords from the following input. Return them as a list, comma-separated.
+    facts: 0.1
+    summaries: 0.1
+    conversations: 0.3
+    semantic: 0.05
+    wiki: 0.05
+  default_summary_prompt_header: 'Summary of last 20 exchanges:
+
+    '
+  default_tagging_prompt: 'You are Daemon, my assistant. Extract 5 concise tags or
+    keywords from the following input. Return them as a list, comma-separated.
+
     Input: "{text}"
+
     Tags:
-  # Retrieval settings
+
+    '
   retrieve_conversations: true
   max_conversations: 4
-  conversation_collection: "conversations"
+  conversation_collection: conversations
   retrieve_summaries: true
   max_summaries: 1
-  summary_collection: "summaries"
-  summary_interval: 20
-
+  summary_collection: summaries
+  summary_interval: 1
 models:
-  default: "llama"
-  dream_model: "gpt-neo"
-  openrouter_base: "https://openrouter.ai/api/v1"
+  default: llama
+  dream_model: gpt-neo
+  openrouter_base: https://openrouter.ai/api/v1
   load_local_model: true
   local_model_context_limit: 4096
   api_model_context_limit: 128000
@@ -52,48 +54,52 @@ models:
   default_top_p: 0.9
   default_top_k: 5
   default_temperature: 0.7
-  openai_api_key: ""  # Set via environment variable
-
+  openai_api_key: ''
 gating:
-  confidence_threshold: 2.0         # stricter inclusion floor
-  gate_rel_threshold: 0.55          # higher topicality requirement
-  cosine_threshold: 0.55            # tighter embedding gate
+  confidence_threshold: 2.0
+  gate_rel_threshold: 0.25
+  cosine_threshold: 0.25
   cosine_similarity_threshold: 0.45
   deictic_threshold: 0.75
   normal_threshold: 0.55
   deictic_anchor_penalty: 0.25
   deictic_continuity_min: 0.25
   use_reranking: true
-  rerank_use_llm: false             # reduce noise/latency in rerank
-  cross_encoder_weight: 0.90        # trust cross-encoder more
-  topic_confidence_threshold: 0.85  # require strong topic match
+  rerank_use_llm: false
+  cross_encoder_weight: 0.9
+  topic_confidence_threshold: 0.85
   score_weights:
-    relevance: 0.55                 # prioritize relevance
-    recency: 0.30                   # and freshness
+    relevance: 0.55
+    recency: 0.3
     truth: 0.15
-    importance: 0.00
+    importance: 0.0
     continuity: 0.03
     structure: 0.02
-
 paths:
-  system_prompt: "core/system_prompt.txt"
-  directives: "structured_directives.txt"
+  system_prompt: core/system_prompt.txt
+  directives: structured_directives.txt
   system_prompt_file:
-    name: "daemon"
-    system_prompt_file: "/home/lukeh/Daemon_RAG_Agent_working/core/system_prompt.txt"
-
+    name: daemon
+    system_prompt_file: /home/lukeh/Daemon_RAG_Agent_working/core/system_prompt.txt
 features:
-  enable_wikipedia: true            # keep ON
-  enable_semantic_search: true      # keep ON
+  enable_wikipedia: true
+  enable_semantic_search: true
   enable_facts: true
   enable_dreams: false
   semantic_only_mode: false
-
 prompts:
-  default_system_prompt: "You are Daemon, a brutally honest AI assistant who tells the truth even when uncomfortable, admits ignorance freely, and uses dark humor about current events. You're willing to call out BS while still being genuinely helpful."
-  system_prompt: ""  # Will be loaded from file at runtime
+  default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
+    the truth even when uncomfortable, admits ignorance freely, and uses dark humor
+    about current events. You're willing to call out BS while still being genuinely
+    helpful.
+  system_prompt: ''
   default_core_directive:
-    query: "[CORE DIRECTIVE]"
-    response: "You are an AI assistant. You are helpful, reliable, and memory-persistent. You should respect user intent and be aligned with their goals."
-    timestamp: ""  # Will be set at runtime
-    tags: ["@seed", "core", "directive", "safety"]
+    query: '[CORE DIRECTIVE]'
+    response: You are an AI assistant. You are helpful, reliable, and memory-persistent.
+      You should respect user intent and be aligned with their goals.
+    timestamp: ''
+    tags:
+    - '@seed'
+    - core
+    - directive
+    - safety

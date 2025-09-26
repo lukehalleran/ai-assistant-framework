@@ -105,6 +105,14 @@ async def handle_submit(
         )
 
         # Emit final chunk including debug record for UI tracing
+        # Compute token counts for the raw prompt (no system prompt)
+        try:
+            model_for_tokens = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
+            tm = getattr(orchestrator, 'tokenizer_manager', None)
+            prompt_tokens = int(tm.count_tokens(merged_input, model_for_tokens)) if tm else None
+        except Exception:
+            prompt_tokens = None
+
         debug_record = {
             'mode': 'raw',
             'query': user_text,
@@ -112,6 +120,9 @@ async def handle_submit(
             'system_prompt': None,
             'response': response_text,
             'model': getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
+            'prompt_tokens': prompt_tokens,
+            'system_tokens': 0,
+            'total_tokens': (prompt_tokens or 0),
         }
         yield {"role": "assistant", "content": response_text, "debug": debug_record}
         return
@@ -148,6 +159,16 @@ async def handle_submit(
             use_bestof = bool(ENABLE_BEST_OF)
 
         model_name = orchestrator.model_manager.get_active_model_name()
+        # Token counts for debug trace
+        try:
+            tm = getattr(orchestrator, 'tokenizer_manager', None)
+            prompt_tokens = int(tm.count_tokens(full_prompt, model_name)) if tm else None
+            system_tokens = int(tm.count_tokens(system_prompt or '', model_name)) if tm else 0
+            total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
+        except Exception:
+            prompt_tokens = None
+            system_tokens = None
+            total_tokens = None
         bestof_model = BEST_OF_MODEL or model_name
 
         if use_bestof:
@@ -238,6 +259,9 @@ async def handle_submit(
                     'system_prompt': system_prompt,
                     'response': final_output,
                     'model': getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
+                    'prompt_tokens': prompt_tokens,
+                    'system_tokens': system_tokens,
+                    'total_tokens': total_tokens,
                 }
                 yield {"role": "assistant", "content": final_output, "debug": debug_record}
             except Exception:
