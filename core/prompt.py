@@ -308,7 +308,19 @@ class UnifiedPromptBuilder:
             )
 
         self.memory_coordinator = resolved_memory
-        self.consolidator = MemoryConsolidator(model_manager=self.model_manager)
+        # Use persisted summary cadence when available
+        try:
+            from config.app_config import config as _app_cfg
+            import os as _os
+            _cfg_n = int(((_app_cfg.get('memory') or {}).get('summary_interval') or 20))
+            _env_n = int(_os.getenv('SUMMARY_EVERY_N', str(_cfg_n)))
+            _sum_every = max(1, _env_n)
+        except Exception:
+            _sum_every = 20
+        self.consolidator = MemoryConsolidator(
+            model_manager=self.model_manager,
+            consolidation_threshold=_sum_every,
+        )
 
         if tokenizer_manager is None or isinstance(tokenizer_manager, type):
             try:
@@ -1562,8 +1574,9 @@ class UnifiedPromptBuilder:
 
         # Recent conversations
         if context.get("recent_conversations"):
+            _rc_list = context.get("recent_conversations") or []
             parts.append(
-                "\n[RECENT CONVERSATION — FOR CONTEXT ONLY]\n"
+                f"\n[RECENT CONVERSATION — FOR CONTEXT ONLY] (n={len(_rc_list)})\n"
                 "Do NOT quote, paraphrase, or restate anything from this section in your reply. "
                 "Use it only to avoid repeating yourself. Answer strictly the new USER INPUT.\n"
             )
@@ -1594,8 +1607,9 @@ class UnifiedPromptBuilder:
 
         # Facts
         if context.get("facts"):
-            parts.append("\n[FACTS]")
-            for f in context["facts"]:
+            _facts_list = context.get("facts") or []
+            parts.append(f"\n[FACTS] (n={len(_facts_list)})\n")
+            for f in _facts_list:
                 md = (f.get("metadata", {}) if isinstance(f, dict) else getattr(f, "metadata", {}) or {})
                 subj = md.get("subject"); rel = md.get("relation"); obj = md.get("object"); conf = md.get("confidence")
                 if subj and rel and obj:
@@ -1610,13 +1624,14 @@ class UnifiedPromptBuilder:
 
         # --- Summaries (single, guarded section; duplicates removed) ----------
         if context.get("summaries"):
+            _sum_list = context.get("summaries") or []
             parts.append(
-                "\n[CONVERSATION SUMMARIES — FOR CONTEXT ONLY]\n"
+                f"\n[CONVERSATION SUMMARIES — FOR CONTEXT ONLY] (n={len(_sum_list)})\n"
                 "Do NOT quote, paraphrase, praise, or restate anything from this section in your reply. "
                 "Use it only to recall past topics. Answer strictly the new USER INPUT.\n"
             )
             first = True
-            for summary in context["summaries"]:
+            for summary in _sum_list:
                 if isinstance(summary, dict):
                     text = summary.get("content")
                     ts = _fmt_ts(summary.get("timestamp"))

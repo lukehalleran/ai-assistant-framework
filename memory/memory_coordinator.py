@@ -142,8 +142,19 @@ class MemoryCoordinator:
         self.gate_system = gate_system
         self.current_topic = "general"
         self.fact_extractor = FactExtractor()
+        # Determine summary cadence from config or env (fallback to 10)
+        try:
+            from config.app_config import config as _app_cfg
+            cfg_n = int(((_app_cfg.get('memory') or {}).get('summary_interval') or 10))
+        except Exception:
+            cfg_n = 10
+        try:
+            import os as _os
+            env_n = int(_os.getenv('SUMMARY_EVERY_N', str(cfg_n)))
+        except Exception:
+            env_n = cfg_n
         self.consolidator = MemoryConsolidator(
-            consolidation_threshold=10,  # Adjust as needed
+            consolidation_threshold=max(1, int(env_n)),
             model_manager=model_manager
         )
         self.model_manager=model_manager
@@ -703,7 +714,8 @@ class MemoryCoordinator:
         """Extract and store facts from a turn; robust to mixed return types."""
         try:
             logger.debug(f"[MemoryCoordinator] Extracting facts from query: {query[:100]}...")
-            facts = await self.fact_extractor.extract_facts(query, response) or []
+            # Extract strictly from user input; ignore assistant response to avoid long-model overflows
+            facts = await self.fact_extractor.extract_facts(query, "") or []
             total = len(facts)
             logger.debug(f"[MemoryCoordinator] Extracted {total} facts (raw)")
 
@@ -1451,8 +1463,9 @@ class MemoryCoordinator:
 
             for conv in recent[:10]:
                 try:
+                    # Extract strictly from the user's side only to keep inputs tiny
                     facts = await self.fact_extractor.extract_facts(
-                        conv.get('query', ''), conv.get('response', '')
+                        conv.get('query', ''), ""
                     )
                 except Exception:
                     facts = []

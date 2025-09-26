@@ -480,8 +480,10 @@ class WikiManager:
             self.embed = _get_embedder(self.embed_model_name)
 
         try:
-            q = self.embed.encode(query, normalize_embeddings=True)
-            doc = self.embed.encode(f"{page.title}\n\n{page.summary}", normalize_embeddings=True)
+            q = self.embed.encode(query, normalize_embeddings=True, show_progress_bar=False)
+            doc = self.embed.encode(
+                f"{page.title}\n\n{page.summary}", normalize_embeddings=True, show_progress_bar=False
+            )
             return float(util.cos_sim(q, doc))
         except Exception as e:
             log.debug("[Wiki] embedding score failed: %s", e)

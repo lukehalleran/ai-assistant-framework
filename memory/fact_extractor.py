@@ -249,8 +249,11 @@ class FactExtractor:
         # Generic, high‑precision patterns (applied per line)
         # Terminators include end‑of‑line to avoid spanning into the assistant text.
         self.fact_patterns = [
-            r'(\w+)\s+(?:is|are|was|were)\s+(.+?)(?:[\.;,!?:]|$)',
+            # Generic copular statements, include 'am' for first person
+            r'(\w+)\s+(?:is|are|was|were|am)\s+(.+?)(?:[\.;,!?:]|$)',
+            # Simple preference statements
             r'(?:I|you|we)\s+(?:like|love|hate|prefer)\s+(.+?)(?:[\.;,!?:]|$)',
+            # Possessive attribute: my|your|our <attr> is <val>
             r'(?:my|your|our)\s+(\w+)\s+(?:is|are)\s+(.+?)(?:[\.;,!?:]|$)'
         ]
 
@@ -274,6 +277,14 @@ class FactExtractor:
             r"\b(?:my|our)\s+((?:first|middle|last)\s+name)\s*(?:is|=|:)\s+([^\.;,!?:]+)"
         ]
 
+        # Employment/occupation patterns (explicit)
+        #  - I work at/for/in X -> user | works_at | X
+        #  - I work as (a|an) Y -> user | occupation | Y
+        self.employment_patterns = [
+            ("works_at", r"\b(?:i|we)\s+(?:work|worked|have\s+worked|currently\s+work)\s+(?:at|for|in)\s+([^\.;,!?:\n]+?)(?:[\.;,!?:]|$)"),
+            ("occupation", r"\b(?:i|we)\s+(?:work|worked|have\s+worked|currently\s+work)\s+as\s+(?:an?\s+)?([^\.;,!?:\n]+?)(?:[\.;,!?:]|$)"),
+        ]
+
         logger.debug(
             f"[FactExtractor.__init__] use_rebel={self.use_rebel} "
             f"(pipeline={'yes' if _REBEL else 'no'}), use_regex={self.use_regex}, "
@@ -288,12 +299,9 @@ class FactExtractor:
         conversation_context: Optional[List[Dict]] = None
     ) -> List[MemoryNode]:
         q_preview = (query or "")[:120].replace("\n", " ")
-        r_preview = (response or "")[:120].replace("\n", " ")
         logger.debug(
-            f"[FactExtractor] Received query/response "
-            f"(q_len={len(query or '')}, r_len={len(response or '')}) "
-            f"q_preview='{q_preview}' r_preview='{r_preview}' "
-            f"ctx_items={len(conversation_context or [])}"
+            f"[FactExtractor] Received query-only (q_len={len(query or '')}; response_ignored=True) "
+            f"q_preview='{q_preview}' ctx_items={len(conversation_context or [])}"
         )
 
         # Facts should be extracted ONLY from the user query (ignore assistant response)
@@ -559,6 +567,12 @@ class FactExtractor:
             logger.debug("[FactExtractor] spaCy unavailable; returning base text")
             return base
 
+        # Light normalization for common contractions to improve regex hits
+        try:
+            import re as _re
+            base = _re.sub(r"\bI['’]m\b", "I am", base)
+        except Exception:
+            pass
         try:
             doc = _NLP(base)
             # If you add a coref component later, apply here (spacy-experimental/coreferee)
@@ -581,7 +595,20 @@ class FactExtractor:
         if _REBEL is None:
             return []
         try:
-            out = _REBEL(text, return_text=True, clean_up_tokenization_spaces=True)[0].get("generated_text", "")
+            # Hard cap input length to keep within model limits even if upstream changes
+            try:
+                import os as _os
+                max_chars = int(_os.getenv("REBEL_MAX_INPUT_CHARS", "1200"))
+            except Exception:
+                max_chars = 1200
+            safe_text = (text or "")[:max_chars]
+            out = _REBEL(
+                safe_text,
+                return_text=True,
+                clean_up_tokenization_spaces=True,
+                truncation=True,
+                max_length=256,
+            )[0].get("generated_text", "")
             out_preview = out[:250].replace("\n", " ")
             logger.debug(f"[FactExtractor] REBEL raw output preview: '{out_preview}'")
         except Exception as e:
@@ -664,6 +691,14 @@ class FactExtractor:
                     # If rel came from attribute phrase, normalize to underscored
                     rel = re.sub(r"\s+", "_", (rel or "").strip().lower())
 
+                    # Map 1st‑person to stable subject
+                    if subj.lower() in {"i", "me", "my", "we", "us"}:
+                        subj = "user"
+
+                    # Trim temporal adverbs in simple copular claims
+                    if rel in {"is", "is_a"}:
+                        obj = re.sub(r"\b(?:currently|right\s+now|today|presently|now)\b\.?$", "", obj, flags=re.IGNORECASE).strip()
+
                     if 4 < len(rel) + len(obj) < 200:
                         cleaned = _clean_triple(subj, rel, obj, nlp=_NLP)
                         if not cleaned:
@@ -732,6 +767,37 @@ class FactExtractor:
                     found.append((sj, rl, ob, 0.78, "regex"))
             if total_matches:
                 logger.debug(f"[FactExtractor] TwoWordAttrPattern[{li}] matched {total_matches}")
+
+        # 1d) Employment/occupation statements
+        for ei, (rel_key, pattern) in enumerate(self.employment_patterns):
+            emp_total = 0
+            for ln in norm_lines:
+                try:
+                    matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"[FactExtractor] Employment regex error idx={ei}: {e}")
+                    continue
+                # re.findall may return list of tuples or strings depending on grouping
+                if not isinstance(matches, list):
+                    continue
+                emp_total += len(matches)
+                for m in matches[:4]:
+                    val = m[0] if isinstance(m, tuple) else m
+                    val = (val or '').strip()
+                    # Trim common temporal/qualifier tails
+                    val = re.split(r"\b(?:right\s+now|currently|today)\b", val, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+                    # Drop leading articles
+                    val = re.sub(r"^(?:the|a|an)\s+", "", val, flags=re.IGNORECASE)
+                    # Stop value at conjunctions/punctuation just in case
+                    val = re.split(r"\s+(?:and|but|however)\b|[,;]", val, maxsplit=1)[0].strip()
+
+                    cleaned = _clean_triple('user', rel_key, val, nlp=_NLP)
+                    if not cleaned:
+                        continue
+                    sj, rl, ob = cleaned
+                    found.append((sj, rl, ob, 0.78, "regex"))
+            if emp_total:
+                logger.debug(f"[FactExtractor] EmploymentPattern[{ei}:{rel_key}] matched {emp_total}")
 
         # 2) Lifting patterns → canonical relation names
         def lift_rel(verb_or_noun: str) -> str:
