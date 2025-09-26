@@ -106,6 +106,16 @@ class TopicManager:
         # Title-case for wiki titles
         candidate = " ".join(w.capitalize() if w.isalpha() else w for w in candidate.split())
 
+        # Guardrail: if the "topic" is essentially the whole utterance, prefer 'general'
+        def _norm(s: str) -> str:
+            import re as _re
+            return _re.sub(r"[^a-z0-9]+"," ", s.lower()).strip()
+
+        norm_q = _norm(text)
+        norm_c = _norm(candidate)
+        if norm_c == norm_q and len(norm_q.split()) >= 4:
+            return "general"
+
         return candidate or None
 
     def _simplify_topic(self, s: str) -> str:
