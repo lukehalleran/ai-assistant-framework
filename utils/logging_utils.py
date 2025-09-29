@@ -1,11 +1,14 @@
 """
-Logging utilities for the project.
-
-Key goals:
-- Provide a simple `get_logger(name)` for modules.
-- Configure root logging once on startup without duplicate handlers.
+# utils/logging_utils.py
+Module Contract
+- Purpose: Central logging utilities used throughout the project. Provides named loggers and simple timing decorators.
+- Inputs:
+  - get_logger(name), log_and_time(label)
+- Outputs:
+  - Logger instances; wrapped functions with timing logs.
+- Side effects:
+  - None (root configuration happens in entrypoints via configure_logging()).
 """
-
 from typing import Callable, Optional
 import logging
 import time
@@ -155,13 +158,4 @@ def log_async_operation(func):
     return wrapper
 
 
-"""
-Module Contract
-- Purpose: Central logging utilities used throughout the project. Provides named loggers and simple timing decorators.
-- Inputs:
-  - get_logger(name), log_and_time(label)
-- Outputs:
-  - Logger instances; wrapped functions with timing logs.
-- Side effects:
-  - None (root configuration happens in entrypoints via configure_logging()).
-"""
+

@@ -1,7 +1,0 @@
-#/utils/query_processor.py
-
-def is_deictic(text: str) -> bool:
-    """Return True if query likely refers to something in context (deictic)"""
-    lower = text.lower()
-    deictic_terms = ["this", "that", "those", "these", "it", "them", "there", "here"]
-    return any(term in lower.split() for term in deictic_terms)

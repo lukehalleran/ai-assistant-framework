@@ -1,4 +1,4 @@
-# daemon_7_11_25_refactor/test_memory_coordinator.py
+# tests/test_memory_coordinator.py
 import asyncio
 from chromadb import PersistentClient
 from memory.corpus_manager import CorpusManager
