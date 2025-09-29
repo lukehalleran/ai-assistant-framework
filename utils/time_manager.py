@@ -1,4 +1,13 @@
-# /utils/time_manager.py
+"""
+# utils/time_manager.py
+
+Module Contract
+- Purpose: Track last query/response timing and provide formatted timestamps used across the app.
+- Inputs/Outputs:
+  - current(), current_iso(), mark_query_time(), measure_response(start, end)
+- Side effects:
+  - Maintains in‑memory timestamps for latency reporting.
+"""
 import json, os, logging
 from datetime import datetime
 
@@ -57,13 +66,4 @@ class TimeManager:
 
     def last_response(self) -> str:
         return f"{self.last_response_time.total_seconds():.2f} s" if self.last_response_time else "N/A"
-"""
-# utils/time_manager.py
 
-Module Contract
-- Purpose: Track last query/response timing and provide formatted timestamps used across the app.
-- Inputs/Outputs:
-  - current(), current_iso(), mark_query_time(), measure_response(start, end)
-- Side effects:
-  - Maintains in‑memory timestamps for latency reporting.
-"""
