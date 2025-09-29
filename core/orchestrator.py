@@ -316,6 +316,18 @@ class DaemonOrchestrator:
                 )
 
         # ---------------------------------------------------------------------
+        # 4) Append resolved topic hint to the end of the system prompt
+        #     (kept simple; if no topic was inferred, default to 'general').
+        # ---------------------------------------------------------------------
+        try:
+            topic_str = (getattr(self, "current_topic", None) or "general").strip()
+            if isinstance(system_prompt, str) and system_prompt.strip():
+                system_prompt = system_prompt.rstrip() + f"\n\nQuery topic: {topic_str}"
+        except Exception:
+            # Never let topic hint break the flow
+            pass
+
+        # ---------------------------------------------------------------------
         # 4) Raw mode: return plain text, no system prompt
         # ---------------------------------------------------------------------
         if use_raw_mode:

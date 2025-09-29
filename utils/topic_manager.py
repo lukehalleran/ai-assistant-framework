@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Set
+
+from utils.logging_utils import get_logger
 
 @dataclass
 class TopicSpan:
@@ -18,28 +20,79 @@ class TopicManager:
     Designed to feed a single canonical topic string into set_topic_resolver(...).
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        model_manager=None,
+        llm_model: str = "gpt-4o-mini",
+        enable_llm_fallback: bool = True,
+    ):
+        """
+        Hybrid topic manager:
+        - Heuristics first (fast, local)
+        - Optional LLM fallback on ambiguous cases (e.g., pronouns like "that")
+
+        Args:
+            model_manager: Optional ModelManager instance. If not provided, we
+                attempt to resolve from core.dependencies.deps (best effort).
+            llm_model: API model name registered in ModelManager.api_models.
+            enable_llm_fallback: Whether to attempt LLM on ambiguous inputs.
+        """
         self.last_topic: Optional[str] = None
+        self.enable_llm_fallback = enable_llm_fallback
+        self.llm_model = llm_model
+        self.logger = get_logger("topic_manager")
+
+        # Optional dependency injection: resolve ModelManager if not provided
+        self.model_manager = model_manager or self._resolve_model_manager()
+
+        # Small stoplist to block deictic pronouns, vague fillers, and connectors
+        self._stop_topics: Set[str] = {
+            # deictic / vague
+            "that", "this", "it", "there", "here",
+            "today", "now", "stuff", "things", "misc", "none",
+            # common connectors / interjections that are never a real topic
+            "and", "but", "so", "ok", "okay", "yeah", "yep", "no", "yes",
+        }
 
     # --- Public API expected by the rest of your app ---
 
     def update_from_user_input(self, text: str) -> None:
         """
         Update internal state based on a new user utterance.
+        Never commit clearly ambiguous candidates (e.g., "it", "this").
+        If LLM fallback is disabled/unavailable, keep the previous topic.
         """
-        topic = self._extract_primary_from_text(text)
-        if topic:
-            self.last_topic = topic
+        candidate = self._extract_primary_from_text(text)
+
+        # If ambiguous, try LLM; if that fails, do not overwrite last_topic
+        if self._is_ambiguous(candidate, text):
+            resolved = self._llm_fallback(text)
+            if resolved:
+                self.last_topic = resolved
+            # else: keep prior last_topic (no update)
+            return
+
+        if candidate:
+            self.last_topic = candidate
 
     def get_primary_topic(self, text: Optional[str] = None) -> Optional[str]:
         """
         Return a single best topic string. If `text` is provided, derive from it;
         else return the last seen topic (may be None).
+        Ambiguous candidates are ignored unless the LLM fallback resolves them.
         """
         if text:
-            topic = self._extract_primary_from_text(text)
-            if topic:
-                self.last_topic = topic
+            candidate = self._extract_primary_from_text(text)
+
+            if self._is_ambiguous(candidate, text):
+                resolved = self._llm_fallback(text)
+                if resolved:
+                    self.last_topic = resolved
+                # If unresolved, do not change last_topic
+            else:
+                if candidate:
+                    self.last_topic = candidate
         return self.last_topic
 
     # Some call sites used `resolve_topic`; keep it as an alias returning str|None.
@@ -84,6 +137,9 @@ class TopicManager:
 
         # Prefer capitalized spans; else keep full cleaned q
         caps = re.findall(r"(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", q)
+        # Filter out obvious sentence connectors or single-letter fillers
+        cap_exclude = {"i", "and", "but", "so", "ok", "okay", "yes", "no"}
+        caps = [c for c in caps if c.strip() and c.strip().lower() not in cap_exclude]
         candidate = caps[-1] if caps else q
 
         # Remove leading articles
@@ -131,3 +187,91 @@ class TopicManager:
         # Collapse repeated spaces
         t = re.sub(r"\s+", " ", t).strip()
         return t
+
+    # --- Ambiguity detection and LLM fallback ---
+
+    def _is_ambiguous(self, candidate: Optional[str], source_text: str) -> bool:
+        """Return True if the heuristic topic is vague or low quality."""
+        if not candidate:
+            return True
+
+        c = candidate.strip().strip("'\"")
+        if not c:
+            return True
+
+        # Deictic or vague words
+        if c.lower() in self._stop_topics:
+            return True
+
+        # Very short or mostly stopwords
+        tokens = [t for t in re.split(r"\s+", c) if t]
+        if len(tokens) <= 2 and all(t.lower() in self._stop_topics or len(t) <= 2 for t in tokens):
+            return True
+
+        # If heuristics returned 'general', try to get something better
+        if c.lower() == "general":
+            # Only treat as ambiguous if source is short or pronoun-heavy
+            if len(re.findall(r"\b(that|this|it|here|there)\b", source_text.lower())) > 0:
+                return True
+            # Also if the source has no nouns-ish pattern (very rough)
+            if not re.search(r"[a-zA-Z]{3,}", source_text):
+                return True
+
+        return False
+
+    def _resolve_model_manager(self):
+        """Best-effort resolution of ModelManager from dependency container."""
+        try:
+            from core.dependencies import deps  # type: ignore
+            return deps.get_model_manager()
+        except Exception:
+            return None
+
+    def _llm_fallback(self, text: str) -> Optional[str]:
+        """
+        Invoke a small LLM to extract a concrete topic when heuristics are
+        ambiguous. Returns a sanitized topic or None.
+        """
+        if not self.enable_llm_fallback or self.model_manager is None:
+            return None
+
+        system = (
+            "You extract one short, concrete topic (2–4 words, noun phrase). "
+            "No pronouns or vague words (that/this/it/stuff/none). "
+            "No punctuation. If impossible, return CONTINUE."
+        )
+        prompt = text.strip()
+        try:
+            raw = self.model_manager.generate(
+                prompt=prompt,
+                model_name=self.llm_model,
+                system_prompt=system,
+                max_tokens=16,
+                temperature=0.0,
+                top_p=0.0,
+            )
+        except Exception as e:
+            # Fail open on any model errors
+            self.logger.debug(f"[TopicManager] LLM fallback skipped: {e}")
+            return None
+
+        if not isinstance(raw, str):
+            return None
+        resp = raw.strip().strip('"').strip()
+        if not resp or resp.upper() == "CONTINUE":
+            return None
+
+        # Sanitize output: disallow stoplist, tiny tokens, or punctuation-only
+        if resp.startswith("["):
+            # Likely a stub or error string from model manager
+            return None
+        if resp.lower() in self._stop_topics:
+            return None
+        # Remove trailing punctuation
+        resp = resp.strip("?!.,;:")
+        if not resp:
+            return None
+
+        # Title-case similar to heuristic for consistency
+        topic = " ".join(w.capitalize() if w.isalpha() else w for w in resp.split())
+        return topic or None
