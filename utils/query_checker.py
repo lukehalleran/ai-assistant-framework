@@ -1,5 +1,6 @@
 
 """
+utils/query_checker.py
 Utilities for quick query analysis and gating hints.
 
 This module began as a small deictic checker; it now provides a few

@@ -1,3 +1,4 @@
+#tests/test_gated_prompt.py
 import asyncio
 from core.prompt import PromptBuilder
 from core.model_manager import ModelManager
