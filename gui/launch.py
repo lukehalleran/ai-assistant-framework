@@ -18,6 +18,7 @@ Module Contract
   - None beyond UI + logging.
 """
 import os
+import logging
 import socket
 import gradio as gr
 from gui.handlers import handle_submit
@@ -55,12 +56,68 @@ def launch_gui(orchestrator):
     PORT = _find_free_port(PORT)
 
     def get_summary_status():
-        summaries = orchestrator.memory_system.corpus_manager.get_summaries()
-        total_entries = len(orchestrator.memory_system.corpus_manager.corpus)
-        non_summary_entries = len([
-            e for e in orchestrator.memory_system.corpus_manager.corpus
-            if "@summary" not in e.get("tags", [])
-        ])
+        cm = orchestrator.memory_system.corpus_manager
+        corpus = cm.corpus
+
+        # Determine active cadence N from runtime consolidator (fallback 20)
+        try:
+            N = int(getattr(getattr(orchestrator.memory_system, 'consolidator', None), 'consolidation_threshold', 20))
+        except Exception:
+            N = 20
+
+        # Summary/reflection identification aligned with CorpusManager logic
+        def _is_reflection(e: dict) -> bool:
+            typ = (e.get('type') or '').lower()
+            tags = [str(t).lower() for t in (e.get('tags') or [])]
+            return (typ == 'reflection') or ('type:reflection' in tags)
+
+        def _is_summary(e: dict) -> bool:
+            typ = (e.get('type') or '').lower()
+            tags = [str(t).lower() for t in (e.get('tags') or [])]
+            if _is_reflection(e):
+                return False
+            return ("summary" in typ) or ('@summary' in tags) or ('type:summary' in tags)
+
+        total_entries = len(corpus)
+        total_summaries = sum(1 for e in corpus if _is_summary(e))  # not capped at 5
+        non_summary_entries = sum(1 for e in corpus if (not _is_summary(e)) and (not _is_reflection(e)))
+
+        # Estimate backlog and remaining (t)
+        def _is_consolidator_summary(e: dict) -> bool:
+            if not _is_summary(e):
+                return False
+            tags = [str(t).lower() for t in (e.get('tags') or [])]
+            return ('summary:consolidated' in tags) or ('source:consolidator' in tags)
+
+        def _parse_block_n(tags: list):  # -> Optional[int]
+            try:
+                key = f"block_n:{N}:"
+                for t in (tags or []):
+                    t = str(t).strip().lower()
+                    if t.startswith(key):
+                        return int(t.split(':', 2)[2])
+            except Exception:
+                return None
+            return None
+
+        tagged_blocks = set()
+        for e in corpus:
+            if _is_consolidator_summary(e):
+                bi = _parse_block_n(e.get('tags') or [])
+                if isinstance(bi, int):
+                    tagged_blocks.add(bi)
+
+        # Prefer tagged count when present; else count of consolidator summaries
+        prev_blocks = len(tagged_blocks) if tagged_blocks else sum(1 for e in corpus if _is_consolidator_summary(e))
+        total_blocks = non_summary_entries // N
+        backlog = max(0, total_blocks - prev_blocks)
+
+        if backlog > 0:
+            since_last = 0
+            remaining = 0
+        else:
+            since_last = non_summary_entries % N
+            remaining = 0 if since_last == 0 else (N - since_last)
         conv_stats = conversation_logger.get_session_stats()
         # Reflection counts
         cm = orchestrator.memory_system.corpus_manager
@@ -96,10 +153,13 @@ def launch_gui(orchestrator):
             last_ts = ""
 
         return {
-            "total_summaries": len(summaries),
+            "total_summaries": total_summaries,
             "total_entries": total_entries,
             "non_summary_entries": non_summary_entries,
-            "next_summary_in": 20 - (non_summary_entries % 20),
+            "summary_cadence_N": N,
+            "since_last": since_last,
+            "next_summary_in": remaining,
+            "backlog_blocks": backlog,
             "conversation_count": conv_stats["conversation_count"],
             "log_file": conv_stats["current_log_file"],
             "reflections_corpus": len(corpus_refl),
@@ -111,6 +171,18 @@ def launch_gui(orchestrator):
     def _format_debug_entries(entries):
         if not entries:
             return "No debug entries yet. Submit a message in Chat."
+
+        # Pick the most recent non-empty system prompt (so it stays accurate if topic changes)
+        latest_system_prompt = None
+        try:
+            for rec in reversed(entries):
+                sp = (rec.get('system_prompt') if isinstance(rec, dict) else None) or None
+                if isinstance(sp, str) and sp.strip():
+                    latest_system_prompt = sp.strip()
+                    break
+        except Exception:
+            latest_system_prompt = None
+
         parts = []
         for i, rec in enumerate(entries, start=1):
             mode = rec.get('mode') or 'enhanced'
@@ -127,12 +199,20 @@ def launch_gui(orchestrator):
                     tok_line = f"Tokens — prompt: {ptoks}  system: {stoks or 0}  total: {ttoks or (ptoks + (stoks or 0))}"
             except Exception:
                 tok_line = ""
-            segment = (
-                f"### #{i} — Mode: {mode}  Model: {model}\n"
-                + (f"{tok_line}\n\n" if tok_line else "")
-                + f"**Query**\n\n````\n{q}\n````\n\n"
-                + f"**Prompt**\n\n````\n{prompt}\n````\n\n"
-                + f"**Response**\n\n````\n{resp}\n````\n\n---\n"
+            # Build the segment for this entry
+            segment = f"### #{i} — Mode: {mode}  Model: {model}\n"
+            if tok_line:
+                segment += f"{tok_line}\n\n"
+
+            # Show the System Prompt exactly once at the top (below token line),
+            # using the most recent value so it stays current across queries.
+            if i == 1 and latest_system_prompt:
+                segment += f"**System Prompt**\n\n````\n{latest_system_prompt}\n````\n\n"
+
+            segment += (
+                f"**Query**\n\n````\n{q}\n````\n\n"
+                f"**Prompt**\n\n````\n{prompt}\n````\n\n"
+                f"**Response**\n\n````\n{resp}\n````\n\n---\n"
             )
             parts.append(segment)
         return "\n".join(parts)
@@ -148,6 +228,33 @@ def launch_gui(orchestrator):
             return "No conversation log yet."
         except Exception as e:
             return f"Error reading log: {e}"
+
+    def get_app_log_path():
+        """Find the app .log file from the root logger's FileHandler if present."""
+        try:
+            root = logging.getLogger()
+            for h in root.handlers:
+                if isinstance(h, logging.FileHandler):
+                    # type: ignore[attr-defined]
+                    return getattr(h, 'baseFilename', None)
+        except Exception:
+            pass
+        # Fallback to the default used in utils.logging_utils.configure_logging
+        return os.path.abspath('daemon_debug.log')
+
+    def get_recent_app_log(num_lines=200):
+        """Read tail of the main app .log file (daemon_debug.log by default)."""
+        try:
+            path = get_app_log_path()
+            if not path:
+                return "No file handler configured for logging."
+            if not os.path.exists(path):
+                return f"Log file not found at: {path}"
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
+                return ''.join(lines[-num_lines:])
+        except Exception as e:
+            return f"Error reading app log: {e}"
 
     async def submit_chat(user_text, chat_history, files, use_raw_gpt, personality, debug_entries):
         personality_manager.switch_personality(personality)
@@ -292,6 +399,51 @@ def launch_gui(orchestrator):
                     inputs=[],
                     outputs=[chatbot, chat_state, user_input, typing_md, timer_md],
                 )
+
+            with gr.TabItem("Logs"):
+                gr.Markdown("### 📜 Live Logs")
+                with gr.Row():
+                    log_source = gr.Dropdown(
+                        label="Source",
+                        choices=["App Log (.log)", "Conversation Log"],
+                        value="App Log (.log)",
+                    )
+                    tail_n = gr.Slider(label="Tail lines", minimum=50, maximum=5000, step=50, value=400)
+                    auto_refresh = gr.Checkbox(label="Auto‑refresh", value=True)
+
+                # Helpful path hints
+                app_path_md = gr.Markdown(value=f"App log: `{get_app_log_path()}`", visible=True)
+                conv_path_md = gr.Markdown(value=f"Conversation log: `{conversation_logger.get_current_log_path()}`", visible=False)
+
+                def _path_hints(src):
+                    # Toggle visibility: show only the relevant path row
+                    return (
+                        gr.update(visible=(src == "App Log (.log)")),
+                        gr.update(visible=(src == "Conversation Log")),
+                    )
+
+                log_source.change(_path_hints, inputs=[log_source], outputs=[app_path_md, conv_path_md])
+
+                # Log viewer: use None for plain text (no highlighting)
+                log_view = gr.Code(value=get_recent_app_log(400), language=None, label="Tail")
+
+                def _read_logs(src: str, n: int):
+                    n = int(n or 200)
+                    if src == "Conversation Log":
+                        return get_recent_conversation_log(n)
+                    return get_recent_app_log(n)
+
+                refresh_btn = gr.Button("🔄 Refresh")
+                refresh_btn.click(_read_logs, inputs=[log_source, tail_n], outputs=[log_view])
+
+                # Auto refresh using a timer; toggle via checkbox
+                # Gradio >=5 uses `value` for the interval (seconds); older versions used `interval`.
+                try:
+                    timer = gr.Timer(value=2.0, active=True)
+                except TypeError:
+                    timer = gr.Timer(interval=2.0, active=True)
+                auto_refresh.change(lambda v: gr.update(active=bool(v)), inputs=[auto_refresh], outputs=[timer])
+                timer.tick(_read_logs, inputs=[log_source, tail_n], outputs=[log_view])
             with gr.TabItem("Debug Trace"):
                 gr.Markdown("### 🔎 Query → Prompt → Response")
                 debug_view = gr.Markdown(value=_format_debug_entries([]))

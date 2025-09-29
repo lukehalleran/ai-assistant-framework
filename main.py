@@ -114,10 +114,18 @@ def build_orchestrator():
     model_manager.switch_model("claude-opus")
     logger.info(f"[ModelManager] Active model set to: {model_manager.get_active_model_name()}")
 
+    # Register shared dependencies so modules (e.g., TopicManager) can resolve them
+    try:
+        from core.dependencies import deps
+        deps.initialize(model_manager)
+    except Exception as e:
+        logger.debug(f"[build_orchestrator] deps.initialize failed or unavailable: {e}")
+
     # NOW create instances that depend on model_manager
     time_manager = TimeManager()
     tokenizer_manager = TokenizerManager(model_manager=model_manager)
-    topic_manager = TopicManager()
+    # Enable hybrid topic extraction (heuristics + optional LLM fallback)
+    topic_manager = TopicManager()  # resolves model_manager via deps if available
     # IMPORTANT: get_primary_topic must return str | None (not (str, …))
     set_topic_resolver(topic_manager.get_primary_topic)
     wiki_manager = WikiManager()

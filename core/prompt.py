@@ -202,14 +202,27 @@ PRIORITY_ORDER = [
     ("dreams",               2),   # still included; trimmed early if needed
 ]
 
-# Soft caps for noisy sections (safe defaults; overridable)
-PROMPT_MAX_FACTS       = int(os.getenv("PROMPT_MAX_FACTS", "12"))
-PROMPT_MAX_RECENT      = int(os.getenv("PROMPT_MAX_RECENT", "5"))
-PROMPT_MAX_SEMANTIC    = int(os.getenv("PROMPT_MAX_SEMANTIC", "8"))
-PROMPT_MAX_MEMS        = int(os.getenv("PROMPT_MAX_MEMS", "10"))
-PROMPT_MAX_SUMMARIES   = int(os.getenv("PROMPT_MAX_SUMMARIES", "5"))
-PROMPT_MAX_DREAMS      = int(os.getenv("PROMPT_MAX_DREAMS", "3"))
-PROMPT_MAX_REFLECTIONS=PROMPT_MAX_REFLECTIONS = int(os.getenv("PROMPT_MAX_REFLECTIONS", "3"))
+# Soft caps for noisy sections (env first; fall back to YAML config; else defaults)
+try:
+    from config.app_config import config as _APP_CFG
+    _MEM_CFG = (_APP_CFG.get("memory") or {})
+except Exception:
+    _MEM_CFG = {}
+
+def _cfg_int(key: str, default_val: int) -> int:
+    try:
+        v = _MEM_CFG.get(key, default_val)
+        return int(v) if v is not None else int(default_val)
+    except Exception:
+        return int(default_val)
+
+PROMPT_MAX_FACTS       = int(os.getenv("PROMPT_MAX_FACTS",       str(_cfg_int("max_facts", 12))))
+PROMPT_MAX_RECENT      = int(os.getenv("PROMPT_MAX_RECENT",      str(_cfg_int("max_conversations", 5))))
+PROMPT_MAX_SEMANTIC    = int(os.getenv("PROMPT_MAX_SEMANTIC",    "8"))
+PROMPT_MAX_MEMS        = int(os.getenv("PROMPT_MAX_MEMS",        str(_cfg_int("num_memories", 10))))
+PROMPT_MAX_SUMMARIES   = int(os.getenv("PROMPT_MAX_SUMMARIES",   str(_cfg_int("max_summaries", 5))))
+PROMPT_MAX_DREAMS      = int(os.getenv("PROMPT_MAX_DREAMS",      "3"))
+PROMPT_MAX_REFLECTIONS = int(os.getenv("PROMPT_MAX_REFLECTIONS", str(_cfg_int("max_reflections", 3))))
 SHOW_EMPTY_SECTIONS = _parse_bool(os.getenv("PROMPT_SHOW_EMPTY_SECTIONS", "1"))
 ENABLE_MIDDLE_OUT   = _parse_bool(os.getenv("ENABLE_MIDDLE_OUT", "1"))
 USER_INPUT_MAX_TOKENS = int(os.getenv("USER_INPUT_MAX_TOKENS", "4096"))
@@ -1052,7 +1065,8 @@ class UnifiedPromptBuilder:
         _get_sem_top = getattr(self.memory_coordinator, 'get_semantic_top_memories', None)
 
         tasks = {
-            "recent": self._bounded(self._get_recent_conversations(5), 0.3, []),
+            # Respect PROMPT_MAX_RECENT if manually set; avoid hidden cap of 5
+            "recent": self._bounded(self._get_recent_conversations(PROMPT_MAX_RECENT), 0.3, []),
             "mems": self._bounded(
                 (_get_sem_top(retrieval_query, limit=PROMPT_MAX_MEMS) if callable(_get_sem_top) else asyncio.sleep(0, result=[])),
                 1.5, []
@@ -1398,7 +1412,8 @@ class UnifiedPromptBuilder:
 
         # Launch parallel tasks
         tasks = []
-        tasks.append(self._get_recent_conversations(5))                               # 0
+        # Use configured PROMPT_MAX_RECENT instead of a fixed 5
+        tasks.append(self._get_recent_conversations(PROMPT_MAX_RECENT))               # 0
         # Semantic top memories only (conversations + summaries + reflections)
         if hasattr(self.memory_coordinator, 'get_semantic_top_memories'):
             tasks.append(self.memory_coordinator.get_semantic_top_memories(user_input, limit=memory_count))  # 1

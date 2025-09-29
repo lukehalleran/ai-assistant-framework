@@ -1381,23 +1381,19 @@ class MemoryCoordinator:
 
             T = len(non_summ)
             total_blocks = T // N
-            # Determine where to start:
-            #  - If we have tagged blocks, continue after the max tagged index
-            #  - If none tagged yet, anchor to the most recent blocks to avoid backfilling the entire history
-            if existing_block_indices:
-                start_block = max_block_done + 1
-            else:
-                # Start from the tail (newest) so we summarize current session first
-                start_block = max(0, total_blocks - SUMMARY_MAX_BLOCKS_PER_SHUTDOWN)
-            # Cap how many blocks we generate in this shutdown
-            to_generate = min(max(0, total_blocks - start_block), max(1, SUMMARY_MAX_BLOCKS_PER_SHUTDOWN))
 
-            if to_generate > 0:
-                # 2) Generate summaries for the next blocks not yet summarized
-                # Build blocks from the ordered non-summary stream
-                # b is a block index in [start_block, total_blocks)
-                end_block = min(total_blocks, start_block + to_generate)
-                for b in range(start_block, end_block):
+            # Compute missing block indices among [0, total_blocks)
+            existing_set = set(int(x) for x in existing_block_indices if isinstance(x, int))
+            all_indices = set(range(total_blocks))
+            missing = sorted(all_indices - existing_set)
+
+            # Choose newest missing blocks (from the tail) up to the per-shutdown cap
+            cap = max(1, SUMMARY_MAX_BLOCKS_PER_SHUTDOWN)
+            selected_blocks = missing[-cap:] if missing else []
+
+            if selected_blocks:
+                # 2) Generate summaries for selected blocks (newest missing first)
+                for b in selected_blocks:
                     start = b * N
                     end = start + N
                     block = non_summ[start:end]
@@ -1495,10 +1491,25 @@ class MemoryCoordinator:
 
                 # For logging, prefer tagged count when present; else total consolidator summaries
                 prev_blocks = len(existing_block_indices) if existing_block_indices else len(consolidator_summaries)
-                logger.info(f"[Shutdown] Created {to_generate} summary block(s) (N={N}, T={T}, prev={prev_blocks})")
+                # After generating, recompute handy diagnostics
+                new_prev = prev_blocks + len(selected_blocks)
+                pending_blocks = max(0, (T // N) - new_prev)
+                since_last = 0 if pending_blocks > 0 else (T % N)
+                remaining = 0 if pending_blocks > 0 else (N if since_last == 0 else (N - since_last))
+                logger.info(
+                    f"[Shutdown] Created {len(selected_blocks)} summary block(s) (N={N}, T={T}, prev={prev_blocks}); "
+                    f"since_last={since_last}, remaining={remaining}, t={remaining}, backlog={pending_blocks}"
+                )
             else:
                 prev_blocks = len(existing_block_indices) if existing_block_indices else len(consolidator_summaries)
-                logger.info("[Shutdown] No new summaries due (N=%s, T=%s, prev=%s)", N, T, prev_blocks)
+                # No complete block was due. Report turns since last summary and remaining to next.
+                pending_blocks = max(0, (T // N) - prev_blocks)
+                since_last = 0 if pending_blocks > 0 else (T % N)
+                remaining = 0 if pending_blocks > 0 else (N if since_last == 0 else (N - since_last))
+                logger.info(
+                    "[Shutdown] No new summaries due (N=%s, T=%s, prev=%s); since_last=%s, remaining=%s, t=%s, backlog=%s",
+                    N, T, prev_blocks, since_last, remaining, remaining, pending_blocks
+                )
 
             # 3) Extract facts from this session's user turns only
             session_recent: list[Dict]
