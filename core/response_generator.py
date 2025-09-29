@@ -81,12 +81,18 @@ class ResponseGenerator:
                 buffer = ""
                 async for chunk in response_generator:
                     try:
-                        # Extract content from ChatCompletionChunk
-                        if hasattr(chunk, "choices") and len(chunk.choices) > 0:
+                        # Extract content from different possible streaming chunk shapes
+                        delta_content = ""
+                        # OpenAI-style ChatCompletionChunk
+                        if hasattr(chunk, "choices") and len(getattr(chunk, "choices", [])) > 0:
                             delta = chunk.choices[0].delta
                             delta_content = getattr(delta, "content", "") or ""
-                        else:
-                            delta_content = ""
+                        # Plain string chunk (e.g., stub/local streams)
+                        elif isinstance(chunk, str):
+                            delta_content = chunk
+                        # Dict-like chunk with direct content
+                        elif isinstance(chunk, dict):
+                            delta_content = (chunk.get("content") or chunk.get("text") or "")
 
                         if delta_content:
                             now = time.time()
