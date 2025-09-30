@@ -87,9 +87,17 @@ class ModelManager:
 
         self.default_model = "gpt-4-turbo"
         self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+        # Runtime-overridable defaults (mutable via GUI and persisted to config)
+        self.default_temperature = DEFAULT_TEMPERATURE
+        self.default_max_tokens = DEFAULT_MAX_TOKENS
+        # Common API model aliases
         self.api_models["claude-opus"] = "anthropic/claude-3-opus"
-        # Handy faster model alias for best-of reranking or Q&A
+        # OpenAI models via OpenRouter
         self.api_models["gpt-4o-mini"] = "openai/gpt-4o-mini"
+        self.api_models["gpt-4o"] = "openai/gpt-4o"
+        self.api_models["gpt-4.1"] = "openai/gpt-4.1"
+        # Add GPT‑5 support (via OpenRouter naming)
+        self.api_models["gpt-5"] = "openai/gpt-5"
 
     def _stub_response(self, prompt: str) -> str:
         snippet = (prompt or "").strip().splitlines()[0] if prompt else ""
@@ -192,9 +200,9 @@ class ModelManager:
     @log_and_time("Generate with openAI")
     def generate_with_openai(self, prompt, model_name, system_prompt=None, max_tokens=None, temperature=None, top_p=None):
         """Generate text using OpenAI API, with global defaults fallback."""
-        # Apply global defaults if not provided
-        max_tokens = DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
-        temperature = DEFAULT_TEMPERATURE if temperature is None else temperature
+        # Apply global defaults if not provided (allow runtime override)
+        max_tokens = (self.default_max_tokens if max_tokens is None else max_tokens)
+        temperature = (self.default_temperature if temperature is None else temperature)
         top_p = DEFAULT_TOP_P if top_p is None else top_p
 
         if self.client is None:
@@ -211,7 +219,6 @@ class ModelManager:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
-                transforms=["middle-out"],         # ← enable middle-out compression
             )
 
             return response.choices[0].message.content.strip()
@@ -291,7 +298,7 @@ class ModelManager:
 
             # Use defaults where needed
             max_tokens = 64 if max_tokens is None else max_tokens
-            temperature = DEFAULT_TEMPERATURE if temperature is None else temperature
+            temperature = self.default_temperature if temperature is None else temperature
             top_p = DEFAULT_TOP_P if top_p is None else top_p
             top_k = DEFAULT_TOP_K if top_k is None else top_k
 
@@ -318,7 +325,11 @@ class ModelManager:
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=max_tokens,
-                    do_sample=False,
+                    # Enable sampling so temperature has an effect on local models
+                    do_sample=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
                     num_beams=1,
                     pad_token_id=pad_token_id or tokenizer.pad_token_id
             )
@@ -338,7 +349,7 @@ class ModelManager:
                 self.api_models[target_model],
                 system_prompt=system_prompt,
                 max_tokens=max_tokens or 500,
-                temperature=temperature or 0.7,
+                temperature=self.default_temperature if temperature is None else temperature,
                 top_p=top_p or 1.0
             )
 
@@ -380,7 +391,7 @@ class ModelManager:
                 model_name=target_model,
                 system_prompt=system_prompt,
                 max_tokens=max_tokens,
-                temperature=temperature if temperature is not None else DEFAULT_TEMPERATURE,
+                temperature=temperature if temperature is not None else self.default_temperature,
                 top_p=top_p if top_p is not None else DEFAULT_TOP_P
             )
 
@@ -397,8 +408,8 @@ class ModelManager:
                 response = await self.async_client.chat.completions.create(
                     model=self.api_models[target_model],
                     messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature if temperature is not None else DEFAULT_TEMPERATURE,
+                    max_tokens=(max_tokens if max_tokens is not None else self.default_max_tokens),
+                    temperature=temperature if temperature is not None else self.default_temperature,
                     top_p=top_p if top_p is not None else DEFAULT_TOP_P,
                     stream=False  # Key change for non-streaming response
                 )
@@ -453,8 +464,8 @@ class ModelManager:
                 stream = await self.async_client.chat.completions.create(
                     model=self.api_models[target_model],
                     messages=messages,
-                    max_tokens=kwargs.get('max_tokens', DEFAULT_MAX_TOKENS),
-                    temperature=kwargs.get('temperature', DEFAULT_TEMPERATURE),
+                    max_tokens=kwargs.get('max_tokens', self.default_max_tokens),
+                    temperature=kwargs.get('temperature', self.default_temperature),
                     top_p=kwargs.get('top_p', DEFAULT_TOP_P),
                     stream=True
                 )

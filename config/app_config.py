@@ -259,6 +259,38 @@ BEST_OF_MAX_TOKENS = int(config.get("features", {}).get("best_of_max_tokens", 25
 BEST_OF_MODEL = config.get("features", {}).get("best_of_model", None)
 BEST_OF_MIN_TOKENS = int(config.get("features", {}).get("best_of_min_tokens", 8))
 
+# Optional multi-model generators/selectors (defaults keep current behavior)
+BEST_OF_GENERATOR_MODELS = list(
+    config.get("features", {}).get("best_of_generator_models", [])
+)
+BEST_OF_SELECTOR_MODELS = list(
+    config.get("features", {}).get("best_of_selector_models", [])
+)
+BEST_OF_SELECTOR_MAX_TOKENS = int(
+    config.get("features", {}).get("best_of_selector_max_tokens", 64)
+)
+BEST_OF_SELECTOR_WEIGHTS = dict(
+    config.get("features", {}).get(
+        "best_of_selector_weights", {"heuristic": 1.0, "llm": 0.0}
+    )
+)
+BEST_OF_SELECTOR_TOP_K = int(
+    config.get("features", {}).get("best_of_selector_top_k", 0)
+)
+
+# Optional strict 2-model duel mode (A vs B judged by a single judge)
+BEST_OF_DUEL_MODE = bool(
+    config.get("features", {}).get("best_of_duel_mode", False)
+)
+
+# Query rewrite toggle (can add latency on first token)
+ENABLE_QUERY_REWRITE = bool(config.get("features", {}).get("enable_query_rewrite", True))
+# Bound rewrite latency to keep first-token time low
+REWRITE_TIMEOUT_S = float(config.get("features", {}).get("rewrite_timeout_s", 1.2))
+
+# Soft latency budget for best-of reranking before falling back to streaming
+BEST_OF_LATENCY_BUDGET_S = float(config.get("features", {}).get("best_of_latency_budget_s", 2.0))
+
 system_prompt_file = config.get("paths", {}).get("system_prompt_file", {})
 
 DEFAULT_CORE_DIRECTIVE = config.get("prompts", {}).get("default_core_directive", {
