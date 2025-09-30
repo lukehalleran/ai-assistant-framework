@@ -1071,6 +1071,39 @@ class MemoryCoordinator:
             orig['pre_gated'] = True
             out.append(orig)
 
+        # If fewer than desired passed gating, top up from highest-scoring raw results
+        # This ensures the prompt's [RELEVANT MEMORIES] section has up to `limit` items.
+        if len(out) < limit and raw:
+            # Build a set of keys for quick de-duplication (prefer stable id; fall back to content)
+            def _k(m: Dict) -> str:
+                mid = str(m.get('id') or '').strip()
+                if mid:
+                    return f"id::{mid}"
+                return f"content::{(m.get('content') or '').strip()[:160].lower()}"
+
+            selected = {_k(m) for m in out}
+            # Sort raw by any available score (relevance_score or rank), descending
+            def _score(m: Dict) -> float:
+                try:
+                    return float(m.get('relevance_score', 0.0))
+                except Exception:
+                    return 0.0
+
+            for cand in sorted(raw, key=_score, reverse=True):
+                if len(out) >= limit:
+                    break
+                key = _k(cand)
+                if not key or key in selected:
+                    continue
+                # Clone and mark as pre-gated so prompt builder doesn't re-gate and drop it
+                c = dict(cand)
+                c['pre_gated'] = True
+                # Carry forward any initial score if present
+                if 'relevance_score' not in c:
+                    c['relevance_score'] = 0.0
+                out.append(c)
+                selected.add(key)
+
         return out[:limit]
 
 

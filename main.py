@@ -110,9 +110,30 @@ def build_orchestrator():
     """Builds and returns a configured orchestrator"""
     # Create model_manager FIRST
     model_manager = ModelManager()
-    model_manager.load_openai_model("gpt-4-turbo", "gpt-4-turbo")
-    model_manager.switch_model("claude-opus")
+    # Register common OpenRouter model ids explicitly
+    model_manager.load_openai_model("gpt-4-turbo", "openai/gpt-4-turbo")
+    # Choose active model: prefer persisted config, else default to GPT‑5
+    try:
+        active_from_config = (config.get("models", {}) or {}).get("active")
+    except Exception:
+        active_from_config = None
+    target_model = (active_from_config or "gpt-5")
+    model_manager.switch_model(target_model)
     logger.info(f"[ModelManager] Active model set to: {model_manager.get_active_model_name()}")
+    try:
+        from config.app_config import (
+            BEST_OF_GENERATOR_MODELS as _BO_GENS,
+            BEST_OF_SELECTOR_MODELS as _BO_SEL,
+            BEST_OF_DUEL_MODE as _BO_DUEL,
+        )
+        if _BO_DUEL and isinstance(_BO_GENS, list) and len(_BO_GENS) == 2:
+            logger.info(
+                f"[DUEL] configured model_1={_BO_GENS[0]} model_2={_BO_GENS[1]} judge={( _BO_SEL[0] if isinstance(_BO_SEL, list) and _BO_SEL else 'N/A')}"
+            )
+        elif isinstance(_BO_GENS, list) and _BO_GENS:
+            logger.info(f"[BESTOF] configured generators={_BO_GENS} selectors={( _BO_SEL if isinstance(_BO_SEL, list) else [])}")
+    except Exception:
+        pass
 
     # Register shared dependencies so modules (e.g., TopicManager) can resolve them
     try:
@@ -178,7 +199,8 @@ def build_orchestrator():
         topic_manager=topic_manager,
         wiki_manager=wiki_manager,
         tokenizer_manager=tokenizer_manager,
-        conversation_logger=get_conversation_logger()
+        conversation_logger=get_conversation_logger(),
+        config=config
     )
 
 async def test_orchestrator():

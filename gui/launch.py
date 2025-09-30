@@ -345,6 +345,61 @@ def launch_gui(orchestrator):
         timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
         yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
 
+    # ---- Settings persistence helpers ----
+    def _load_settings():
+        """Load persisted UI settings from config/config.yaml (best-effort)."""
+        try:
+            import yaml  # type: ignore
+            from pathlib import Path
+            cfg_path = Path('config') / 'config.yaml'
+            if cfg_path.exists():
+                with open(cfg_path, 'r', encoding='utf-8') as f:
+                    return yaml.safe_load(f) or {}
+        except Exception:
+            pass
+        return {}
+
+    def _save_settings(updater):
+        """Update config/config.yaml with a callable that mutates the dict."""
+        try:
+            import yaml  # type: ignore
+            from pathlib import Path
+            cfg_path = Path('config') / 'config.yaml'
+            data = {}
+            if cfg_path.exists():
+                with open(cfg_path, 'r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f) or {}
+            updater(data)
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cfg_path, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(data, f, sort_keys=False)
+            return True, None
+        except Exception as e:
+            return False, str(e)
+
+    # Apply persisted active model at startup (if present)
+    try:
+        _persisted = (_load_settings().get('models', {}) or {}).get('active')
+        if isinstance(_persisted, str) and _persisted.strip():
+            try:
+                orchestrator.model_manager.switch_model(_persisted.strip())
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Apply persisted default temperature at startup (if present)
+    try:
+        _m = (_load_settings().get('models', {}) or {})
+        _t = _m.get('default_temperature', None)
+        if _t is not None:
+            try:
+                orchestrator.model_manager.default_temperature = float(_t)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     with gr.Blocks(theme="soft") as demo:
         gr.Markdown("## 🤖 Daemon Chat Interface")
 
@@ -463,6 +518,258 @@ def launch_gui(orchestrator):
 
             with gr.TabItem("Settings"):
                 gr.Markdown("### ⚙️ Runtime Settings")
+
+                # --- Active Model selector (persisted) ---
+                try:
+                    _mm = orchestrator.model_manager
+                    _api_aliases = list(getattr(_mm, 'api_models', {}).keys())
+                    _local_models = list(getattr(_mm, 'models', {}).keys())
+                    _model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
+                    _current_active = _mm.get_active_model_name() or (_model_choices[0] if _model_choices else 'gpt-4-turbo')
+                except Exception:
+                    _model_choices = ['gpt-5', 'gpt-4-turbo', 'claude-opus']
+                    _current_active = 'gpt-5'
+
+                with gr.Row():
+                    model_dd = gr.Dropdown(
+                        label="Active Model",
+                        choices=_model_choices,
+                        value=_current_active,
+                        interactive=True,
+                    )
+                apply_model_btn = gr.Button("Set Active Model", variant="primary")
+                model_status = gr.Markdown(visible=True)
+                gr.Markdown("Note: Active Model is used for normal streaming and as a fallback. Duel mode runs two models in parallel and lets a judge pick the winner.")
+
+                def _apply_active_model(name: str):
+                    _name = (name or '').strip()
+                    if not _name:
+                        return "No model selected."
+                    try:
+                        _mm = orchestrator.model_manager
+                        _mm.switch_model(_name)
+                        _ok, _err = _save_settings(lambda d: d.setdefault('models', {}).update({'active': _name}))
+                        if not _ok:
+                            return f"Switched to '{_name}'. Persist failed: {_err}"
+                        return f"Active model set to: {_name} (persisted)."
+                    except Exception as _e:
+                        return f"Failed to switch model: {_e}"
+
+                apply_model_btn.click(_apply_active_model, inputs=[model_dd], outputs=[model_status])
+
+                # --- Faster Streaming options ---
+                gr.Markdown("### ⚡ Faster Streaming (reduce first-token latency)")
+                # Load defaults from config for initial checkbox states
+                try:
+                    _settings = _load_settings()
+                    _feat = (_settings.get('features', {}) or {})
+                    _disable_bestof_default = not bool(_feat.get('enable_best_of', True))
+                    _disable_rewrite_default = not bool(_feat.get('enable_query_rewrite', True))
+                    _disable_summaries_default = bool(_feat.get('disable_llm_summaries', False))
+                except Exception:
+                    _disable_bestof_default = False
+                    _disable_rewrite_default = False
+                    _disable_summaries_default = False
+
+                with gr.Row():
+                    disable_bestof = gr.Checkbox(label="Disable Best-of (no multi-sample reranking)", value=_disable_bestof_default)
+                    disable_rewrite = gr.Checkbox(label="Disable Query Rewrite (skip pre-call)", value=_disable_rewrite_default)
+                    disable_summaries = gr.Checkbox(label="Disable LLM Summaries (skip pre-call)", value=_disable_summaries_default)
+                try:
+                    _bo_budget_default = float((_settings.get('features', {}) or {}).get('best_of_latency_budget_s', 0))
+                except Exception:
+                    _bo_budget_default = 0.0
+                bestof_budget = gr.Slider(label="Best‑of Latency Budget (s)", minimum=0.0, maximum=15.0, step=0.5, value=_bo_budget_default)
+                apply_fast_btn = gr.Button("Apply Streaming Settings")
+                fast_status = gr.Markdown(visible=True)
+
+                def _apply_fast(disable_bo: bool, disable_rw: bool, disable_sums: bool, bo_budget: float):
+                    try:
+                        # Update runtime config on the orchestrator
+                        cfg = getattr(orchestrator, 'config', {}) or {}
+                        feats = cfg.setdefault('features', {}) if isinstance(cfg, dict) else {}
+                        feats['enable_best_of'] = not bool(disable_bo)
+                        feats['enable_query_rewrite'] = not bool(disable_rw)
+                        feats['disable_llm_summaries'] = bool(disable_sums)
+                        feats['best_of_latency_budget_s'] = float(bo_budget)
+                        # Attempt runtime override for prompt builder (no restart needed)
+                        try:
+                            pb = getattr(orchestrator, 'prompt_builder', None)
+                            if pb is not None:
+                                setattr(pb, 'force_llm_summaries', False if disable_sums else True)
+                        except Exception:
+                            pass
+                        # Persist to YAML
+                        ok, err = _save_settings(lambda d: d.setdefault('features', {}).update({
+                            'enable_best_of': not bool(disable_bo),
+                            'enable_query_rewrite': not bool(disable_rw),
+                            'disable_llm_summaries': bool(disable_sums),
+                            'best_of_latency_budget_s': float(bo_budget),
+                        }))
+                        if not ok:
+                            return f"Applied runtime settings. Persist failed: {err}"
+                        return "Streaming settings updated (persisted)."
+                    except Exception as e:
+                        return f"Failed to apply: {e}"
+
+                apply_fast_btn.click(_apply_fast, inputs=[disable_bestof, disable_rewrite, disable_summaries, bestof_budget], outputs=[fast_status])
+
+                # --- Best-of / Duel Mode (runtime + persisted) ---
+                gr.Markdown("### 🥊 Best‑of / Duel Mode")
+                try:
+                    _settings = _load_settings()
+                    _feat = (_settings.get('features', {}) or {})
+                    _duel_enabled_default = bool(_feat.get('best_of_duel_mode', False))
+                    _gens_default = list(_feat.get('best_of_generator_models', []))
+                except Exception:
+                    _duel_enabled_default = False
+                    _gens_default = []
+
+                # Build model choices from known API aliases + local models
+                try:
+                    _mm = orchestrator.model_manager
+                    _api_aliases = list(getattr(_mm, 'api_models', {}).keys())
+                    _local_models = list(getattr(_mm, 'models', {}).keys())
+                    _all_model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
+                except Exception:
+                    _all_model_choices = ['gpt-5', 'gpt-4-turbo', 'claude-opus', 'gpt-4o', 'gpt-4o-mini']
+
+                _m1_value = _gens_default[0] if len(_gens_default) > 0 else (_all_model_choices[0] if _all_model_choices else None)
+                # Pick a second default different from the first, if possible
+                _m2_value = _gens_default[1] if len(_gens_default) > 1 else (next((m for m in _all_model_choices if m != _m1_value), _m1_value))
+
+                with gr.Row():
+                    duel_enable = gr.Checkbox(label="Enable Duel Mode (two models + judge)", value=_duel_enabled_default)
+                with gr.Row():
+                    duel_model_1 = gr.Dropdown(label="Model 1", choices=_all_model_choices, value=_m1_value, interactive=True)
+                    duel_model_2 = gr.Dropdown(label="Model 2", choices=_all_model_choices, value=_m2_value, interactive=True)
+                apply_duel_btn = gr.Button("Apply Duel Settings", variant="primary")
+                duel_status = gr.Markdown(visible=True)
+
+                def _apply_duel_settings(enable: bool, m1: str, m2: str):
+                    try:
+                        m1 = (m1 or '').strip()
+                        m2 = (m2 or '').strip()
+                        if enable and (not m1 or not m2):
+                            return "Select both Model 1 and Model 2."
+                        if enable and m1 == m2:
+                            return "Pick two different models for duel mode."
+
+                        # Runtime update
+                        cfg = getattr(orchestrator, 'config', {}) or {}
+                        feats = cfg.setdefault('features', {}) if isinstance(cfg, dict) else {}
+                        feats['best_of_duel_mode'] = bool(enable)
+                        feats['best_of_generator_models'] = [m1, m2] if m1 and m2 else feats.get('best_of_generator_models', [])
+
+                        # Persist to YAML
+                        def _updater(d):
+                            f = d.setdefault('features', {})
+                            f['best_of_duel_mode'] = bool(enable)
+                            if m1 and m2:
+                                f['best_of_generator_models'] = [m1, m2]
+                        ok, err = _save_settings(_updater)
+                        if not ok:
+                            return f"Applied runtime duel settings. Persist failed: {err}"
+                        return f"Duel mode={'ON' if enable else 'OFF'} | Model 1={m1 or '-'} Model 2={m2 or '-'} (persisted)."
+                    except Exception as e:
+                        return f"Failed to apply: {e}"
+
+                apply_duel_btn.click(_apply_duel_settings, inputs=[duel_enable, duel_model_1, duel_model_2], outputs=[duel_status])
+
+                # --- Max Tokens Controls (runtime + persisted) ---
+                gr.Markdown("### ✂️ Max Tokens (length/speed)")
+                try:
+                    _settings = _load_settings()
+                    _feat = (_settings.get('features', {}) or {})
+                    _models_cfg = (_settings.get('models', {}) or {})
+                    _gen_maxtok_default = int(_feat.get('best_of_max_tokens', 128))
+                    _judge_maxtok_default = int(_feat.get('best_of_selector_max_tokens', 64))
+                    _stream_maxtok_default = int(_models_cfg.get('default_max_tokens', getattr(orchestrator.model_manager, 'default_max_tokens', 2048)))
+                except Exception:
+                    _gen_maxtok_default = 128
+                    _judge_maxtok_default = 64
+                    _stream_maxtok_default = getattr(orchestrator.model_manager, 'default_max_tokens', 2048)
+
+                with gr.Row():
+                    gen_max_tok = gr.Slider(label="Duel/Best‑of Max Tokens (per answer)", minimum=16, maximum=10000, step=16, value=_gen_maxtok_default)
+                    judge_max_tok = gr.Slider(label="Judge Max Tokens", minimum=16, maximum=2000, step=8, value=_judge_maxtok_default)
+                # Streaming max tokens as a separate, clear control
+                stream_max_tok = gr.Slider(label="Streaming Max Tokens (final answer)", minimum=256, maximum=10000, step=64, value=_stream_maxtok_default)
+                apply_tok_btn = gr.Button("Apply Token Settings", variant="primary")
+                tok_status = gr.Markdown(visible=True)
+
+                def _apply_tokens(gen_max: int, judge_max: int, stream_max: int):
+                    try:
+                        gen_max = int(gen_max); judge_max = int(judge_max); stream_max = int(stream_max)
+                        # Runtime update
+                        cfg = getattr(orchestrator, 'config', {}) or {}
+                        feats = cfg.setdefault('features', {}) if isinstance(cfg, dict) else {}
+                        models_cfg = cfg.setdefault('models', {}) if isinstance(cfg, dict) else {}
+                        feats['best_of_max_tokens'] = gen_max
+                        feats['best_of_selector_max_tokens'] = judge_max
+                        models_cfg['default_max_tokens'] = stream_max
+                        # Apply runtime to ModelManager
+                        try:
+                            mm = getattr(orchestrator, 'model_manager', None)
+                            if mm is not None:
+                                setattr(mm, 'default_max_tokens', int(stream_max))
+                        except Exception:
+                            pass
+                        # Persist to YAML
+                        def _updater(d):
+                            f = d.setdefault('features', {})
+                            f['best_of_max_tokens'] = int(gen_max)
+                            f['best_of_selector_max_tokens'] = int(judge_max)
+                            m = d.setdefault('models', {})
+                            m['default_max_tokens'] = int(stream_max)
+                        ok, err = _save_settings(_updater)
+                        if not ok:
+                            return f"Applied runtime tokens. Persist failed: {err}"
+                        return f"Applied: generators={gen_max} judge={judge_max} streaming={stream_max} (persisted)."
+                    except Exception as e:
+                        return f"Failed to apply: {e}"
+
+                apply_tok_btn.click(_apply_tokens, inputs=[gen_max_tok, judge_max_tok, stream_max_tok], outputs=[tok_status])
+
+                # --- Model Temperature (runtime + persisted) ---
+                gr.Markdown("### 🌡️ Model Temperature")
+                try:
+                    _settings = _load_settings()
+                    _models = (_settings.get('models', {}) or {})
+                    _temp_default = float(_models.get('default_temperature', getattr(orchestrator.model_manager, 'default_temperature', 0.7)))
+                except Exception:
+                    _temp_default = getattr(orchestrator.model_manager, 'default_temperature', 0.7)
+
+                with gr.Row():
+                    model_temp = gr.Slider(
+                        label="Model Temperature",
+                        minimum=0.0,
+                        maximum=1.5,
+                        step=0.05,
+                        value=_temp_default,
+                    )
+                    apply_temp_btn = gr.Button("Apply Temperature", variant="primary")
+                temp_status = gr.Markdown(visible=True)
+
+                def _apply_temperature(t: float):
+                    try:
+                        t = float(t)
+                        # Apply runtime
+                        try:
+                            mm = getattr(orchestrator, 'model_manager', None)
+                            if mm is not None:
+                                setattr(mm, 'default_temperature', t)
+                        except Exception:
+                            pass
+                        # Persist to YAML
+                        ok, err = _save_settings(lambda d: d.setdefault('models', {}).update({'default_temperature': float(t)}))
+                        if not ok:
+                            return f"Applied runtime temperature={t:.2f}. Persist failed: {err}"
+                        return f"Model temperature set to {t:.2f} (persisted)."
+                    except Exception as e:
+                        return f"Failed to apply: {e}"
+
+                apply_temp_btn.click(_apply_temperature, inputs=[model_temp], outputs=[temp_status])
 
                 # Summary cadence (every N exchanges)
                 try:
