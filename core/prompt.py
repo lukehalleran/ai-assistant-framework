@@ -727,6 +727,13 @@ class UnifiedPromptBuilder:
 
         # Determine whether to force an LLM summary for this build (boolean or cadence)
         _force = FORCE_LLM_SUMMARIES
+        # Allow runtime override from the builder instance (bool or int cadence)
+        try:
+            override = getattr(self, "force_llm_summaries", None)
+            if override is not None:
+                _force = override
+        except Exception:
+            pass
         should_force = False
         if _force is True:
             should_force = True

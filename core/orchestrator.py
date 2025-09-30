@@ -245,16 +245,31 @@ class DaemonOrchestrator:
         except Exception:
             qinfo = None
         # Only rewrite longer questions; skip tiny factoids to save latency
-        if not use_raw_mode and qinfo and qinfo.is_question and qinfo.token_count >= 8:
+        # Allow config to disable query rewrite for lower latency
+        _features = (self.config or {}).get("features", {}) if isinstance(self.config, dict) else {}
+        _enable_rewrite = bool(_features.get("enable_query_rewrite", True))
+        if _enable_rewrite and not use_raw_mode and qinfo and qinfo.is_question and qinfo.token_count >= 8:
             try:
                 rewrite_prompt = (
                     'Rewrite the following user question into a concise, third-person declarative '
                     'statement suitable for a vector database search.\n\n'
                     f'User question: "{user_input}"\nRewritten statement:'
                 )
-                rewritten_query = await self.model_manager.generate_once(
-                    prompt=rewrite_prompt, model_name="gpt-4-turbo"
+                # Use a low-latency alias for quick rewrites; allow disabling timeout via config (<= 0)
+                from config.app_config import REWRITE_TIMEOUT_S
+                import asyncio as _a
+                _rw_timeout = 0.0
+                try:
+                    _rw_timeout = float(REWRITE_TIMEOUT_S)
+                except Exception:
+                    _rw_timeout = 0.0
+                _coro = self.model_manager.generate_once(
+                    prompt=rewrite_prompt, model_name="gpt-4o-mini"
                 )
+                if _rw_timeout > 0:
+                    rewritten_query = await _a.wait_for(_coro, timeout=_rw_timeout)
+                else:
+                    rewritten_query = await _coro
                 if isinstance(rewritten_query, str):
                     rewritten_query = rewritten_query.strip().strip('"')
                 else:
@@ -432,43 +447,198 @@ class DaemonOrchestrator:
             model_name = active_name_getter() if callable(active_name_getter) else None
             model_name = model_name or "gpt-4-turbo"
 
-            # Decide if we should use best-of (non-streaming) for quality
+            # Decide if we should use best-of (non-streaming) for quality; prefer runtime config
             try:
-                from config.app_config import ENABLE_BEST_OF, BEST_OF_N, BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_MIN_QUESTION
+                from config.app_config import (
+                    ENABLE_BEST_OF as DEFAULT_ENABLE_BEST_OF,
+                    BEST_OF_N,
+                    BEST_OF_TEMPS,
+                    BEST_OF_MAX_TOKENS,
+                    BEST_OF_MIN_QUESTION,
+                    BEST_OF_MIN_TOKENS as _BEST_OF_MIN_TOKENS,
+                )
             except Exception:
-                ENABLE_BEST_OF = True; BEST_OF_N = 2; BEST_OF_TEMPS = (0.2, 0.7); BEST_OF_MAX_TOKENS = 512; BEST_OF_MIN_QUESTION = True
+                DEFAULT_ENABLE_BEST_OF = True; BEST_OF_N = 2; BEST_OF_TEMPS = (0.2, 0.7); BEST_OF_MAX_TOKENS = 512; BEST_OF_MIN_QUESTION = True; _BEST_OF_MIN_TOKENS = 8
+
+            _features = (self.config or {}).get("features", {}) if isinstance(self.config, dict) else {}
+            _enable_bestof = bool(_features.get("enable_best_of", DEFAULT_ENABLE_BEST_OF))
 
             use_bestof = False
             try:
-                from config.app_config import BEST_OF_MIN_TOKENS as _BEST_OF_MIN_TOKENS
-            except Exception:
-                _BEST_OF_MIN_TOKENS = 8
-            try:
                 qinfo = analyze_query(user_input)
                 use_bestof = bool(
-                    ENABLE_BEST_OF and (
+                    _enable_bestof and (
                         (qinfo.is_question and qinfo.token_count >= _BEST_OF_MIN_TOKENS)
                         or (not BEST_OF_MIN_QUESTION)
                     )
                 )
             except Exception:
-                use_bestof = bool(ENABLE_BEST_OF)
+                use_bestof = bool(_enable_bestof)
 
             if use_bestof and not use_raw_mode:
                 try:
-                    from config.app_config import BEST_OF_MODEL
+                    from config.app_config import (
+                        BEST_OF_MODEL,
+                        BEST_OF_LATENCY_BUDGET_S,
+                        BEST_OF_GENERATOR_MODELS as DEF_GEN_MODELS,
+                        BEST_OF_SELECTOR_MODELS as DEF_SEL_MODELS,
+                        BEST_OF_SELECTOR_MAX_TOKENS as DEF_SEL_MAXTOK,
+                        BEST_OF_SELECTOR_WEIGHTS as DEF_SEL_WEIGHTS,
+                        BEST_OF_SELECTOR_TOP_K as DEF_SEL_TOPK,
+                        BEST_OF_DUEL_MODE as DEF_DUEL_MODE,
+                        BEST_OF_MAX_TOKENS as DEF_BEST_MAXTOK,
+                    )
                 except Exception:
-                    BEST_OF_MODEL = None
-                full_response = await self.response_generator.generate_best_of(
-                    prompt=prompt,
-                    model_name=BEST_OF_MODEL or model_name,
-                    system_prompt=system_prompt,
-                    question_text=user_input,
-                    context_hint=prompt,
-                    n=BEST_OF_N,
-                    temps=tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7),
-                    max_tokens=BEST_OF_MAX_TOKENS,
-                )
+                    BEST_OF_MODEL = None; BEST_OF_LATENCY_BUDGET_S = 2.0
+                    DEF_GEN_MODELS = []
+                    DEF_SEL_MODELS = []
+                    DEF_SEL_MAXTOK = 64
+                    DEF_SEL_WEIGHTS = {"heuristic": 1.0, "llm": 0.0}
+                    DEF_SEL_TOPK = 0
+                    DEF_DUEL_MODE = False
+                    DEF_BEST_MAXTOK = 512
+
+                import asyncio as _a
+                # Run best-of with an optional latency budget; if disabled (<=0), do not time out
+                try:
+                    _budget = 0.0
+                    try:
+                        _budget = float(BEST_OF_LATENCY_BUDGET_S)
+                    except Exception:
+                        _budget = 0.0
+
+                    # Feature overrides (runtime-configurable via GUI)
+                    _runtime = (self.config or {}).get("features", {}) if isinstance(self.config, dict) else {}
+                    GEN_MODELS = list(_runtime.get('best_of_generator_models', DEF_GEN_MODELS))
+                    SEL_MODELS = list(_runtime.get('best_of_selector_models', DEF_SEL_MODELS))
+                    SEL_MAXTOK = int(_runtime.get('best_of_selector_max_tokens', DEF_SEL_MAXTOK))
+                    SEL_WEIGHTS = dict(_runtime.get('best_of_selector_weights', DEF_SEL_WEIGHTS)) if isinstance(_runtime.get('best_of_selector_weights', DEF_SEL_WEIGHTS), dict) else DEF_SEL_WEIGHTS
+                    SEL_TOPK = int(_runtime.get('best_of_selector_top_k', DEF_SEL_TOPK))
+                    BEST_MAXTOK = int(_runtime.get('best_of_max_tokens', DEF_BEST_MAXTOK))
+
+                    # If multi-model generators are configured, use ensemble path
+                    use_ensemble = bool(GEN_MODELS)
+                    if self.logger:
+                        try:
+                            self.logger.info(
+                                f"[BESTOF] ensemble={use_ensemble} gens={list(GEN_MODELS)} "
+                                f"selectors={list(SEL_MODELS)} weights={dict(SEL_WEIGHTS)} "
+                                f"top_k={int(SEL_TOPK)} model={(BEST_OF_MODEL or model_name)} max_tokens={int(BEST_MAXTOK)}"
+                            )
+                        except Exception:
+                            pass
+                    temps_used = tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7)
+                    # Optional strict duel mode (two generators + one judge)
+                    _DUEL_MODE = bool(_runtime.get('best_of_duel_mode', DEF_DUEL_MODE))
+                    use_duel = bool(_DUEL_MODE and len(GEN_MODELS) == 2 and len(SEL_MODELS) >= 1)
+                    if _budget > 0:
+                        if use_duel:
+                            m1, m2 = list(GEN_MODELS)[:2]
+                            judge = list(SEL_MODELS)[0]
+                            best_task = _a.create_task(
+                                self.response_generator.generate_duel_and_judge(
+                                    prompt=prompt,
+                                    model_a=m1,
+                                    model_b=m2,
+                                    judge_model=judge,
+                                    system_prompt=system_prompt,
+                                    question_text=user_input,
+                                    context_hint=prompt,
+                                    max_tokens=BEST_MAXTOK,
+                                    temperature_a=(temps_used[0] if len(temps_used) > 0 else None),
+                                    temperature_b=(temps_used[1] if len(temps_used) > 1 else None),
+                                    judge_max_tokens=int(SEL_MAXTOK),
+                                )
+                            )
+                        elif use_ensemble:
+                            best_task = _a.create_task(
+                                self.response_generator.generate_best_of_ensemble(
+                                    prompt=prompt,
+                                    generator_models=list(GEN_MODELS),
+                                    system_prompt=system_prompt,
+                                    question_text=user_input,
+                                    context_hint=prompt,
+                                    n_total=BEST_OF_N,
+                                    temps=temps_used,
+                                    max_tokens=BEST_MAXTOK,
+                                    selector_models=list(SEL_MODELS),
+                                    selector_max_tokens=int(SEL_MAXTOK),
+                                    weight_heuristic=float(SEL_WEIGHTS.get("heuristic", 0.5)),
+                                    weight_llm=float(SEL_WEIGHTS.get("llm", 0.5)),
+                                    judge_top_k=int(SEL_TOPK),
+                                )
+                            )
+                        else:
+                            best_task = _a.create_task(
+                                self.response_generator.generate_best_of(
+                                    prompt=prompt,
+                                    model_name=BEST_OF_MODEL or model_name,
+                                    system_prompt=system_prompt,
+                                    question_text=user_input,
+                                    context_hint=prompt,
+                                    n=BEST_OF_N,
+                                    temps=temps_used,
+                                    max_tokens=BEST_MAXTOK,
+                                )
+                            )
+                        full_response = await _a.wait_for(best_task, timeout=_budget)
+                    else:
+                        if use_duel:
+                            m1, m2 = list(GEN_MODELS)[:2]
+                            judge = list(SEL_MODELS)[0]
+                            full_response = await self.response_generator.generate_duel_and_judge(
+                                prompt=prompt,
+                                model_a=m1,
+                                model_b=m2,
+                                judge_model=judge,
+                                system_prompt=system_prompt,
+                                question_text=user_input,
+                                context_hint=prompt,
+                                max_tokens=BEST_MAXTOK,
+                                temperature_a=(temps_used[0] if len(temps_used) > 0 else None),
+                                temperature_b=(temps_used[1] if len(temps_used) > 1 else None),
+                                judge_max_tokens=int(SEL_MAXTOK),
+                            )
+                        elif use_ensemble:
+                            full_response = await self.response_generator.generate_best_of_ensemble(
+                                prompt=prompt,
+                                generator_models=list(GEN_MODELS),
+                                system_prompt=system_prompt,
+                                question_text=user_input,
+                                context_hint=prompt,
+                                n_total=BEST_OF_N,
+                                temps=temps_used,
+                                max_tokens=BEST_MAXTOK,
+                                selector_models=list(SEL_MODELS),
+                                selector_max_tokens=int(SEL_MAXTOK),
+                                weight_heuristic=float(SEL_WEIGHTS.get("heuristic", 0.5)),
+                                weight_llm=float(SEL_WEIGHTS.get("llm", 0.5)),
+                                judge_top_k=int(SEL_TOPK),
+                            )
+                        else:
+                            full_response = await self.response_generator.generate_best_of(
+                                prompt=prompt,
+                                model_name=BEST_OF_MODEL or model_name,
+                                system_prompt=system_prompt,
+                                question_text=user_input,
+                                context_hint=prompt,
+                                n=BEST_OF_N,
+                                temps=temps_used,
+                                max_tokens=BEST_MAXTOK,
+                            )
+                except Exception:
+                    # Timeout or error: cancel best-of (if applicable) and proceed with streaming
+                    try:
+                        if 'best_task' in locals():
+                            best_task.cancel()
+                    except Exception:
+                        pass
+                    full_response = ""
+                    async for chunk in self.response_generator.generate_streaming_response(
+                        prompt, model_name, system_prompt=system_prompt
+                    ):
+                        full_response += (chunk + " ")
+                    full_response = full_response.strip()
             else:
                 full_response = ""
                 async for chunk in self.response_generator.generate_streaming_response(

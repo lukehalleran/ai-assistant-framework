@@ -14,9 +14,7 @@ memory:
   max_working_memory: 8
   mem_no: 5
   mem_importance_score: 0.75
-  # Controls how many semantically relevant memories the builder asks for.
-  # Increased from 10 -> 20 for this experiment.
-  num_memories: 20
+  num_memories: 10
   child_mem_limit: 3
   recency_decay_rate: 0.1
   truth_score_update_rate: 0.02
@@ -39,15 +37,12 @@ memory:
 
     '
   retrieve_conversations: true
-  # Allow more recent conversations for utilities that honor this knob.
   max_conversations: 10
   conversation_collection: conversations
   retrieve_summaries: true
-  # Increase availability of stored conversation summaries for consumers.
   max_summaries: 10
   summary_collection: summaries
   summary_interval: 20
-  # New caps used by prompt builder if env variables are not set
   max_facts: 15
   max_reflections: 6
 models:
@@ -57,11 +52,12 @@ models:
   load_local_model: true
   local_model_context_limit: 4096
   api_model_context_limit: 128000
-  default_max_tokens: 2048
+  default_max_tokens: 8192
   default_top_p: 0.9
   default_top_k: 5
-  default_temperature: 0.7
+  default_temperature: 1.5
   openai_api_key: ''
+  active: claude-opus
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.25
@@ -94,6 +90,26 @@ features:
   enable_facts: true
   enable_dreams: false
   semantic_only_mode: false
+  enable_best_of: false
+  enable_query_rewrite: true
+  disable_llm_summaries: false
+  best_of_latency_budget_s: 4.0
+  rewrite_timeout_s: 0
+  best_of_model: gpt-4o
+  best_of_max_tokens: 8816
+  best_of_min_question: false
+  best_of_generator_models:
+  - gpt-5
+  - claude-opus
+  best_of_selector_models:
+  - gpt-4o-mini
+  - gpt-4.1
+  best_of_selector_weights:
+    heuristic: 0.4
+    llm: 0.6
+  best_of_selector_top_k: 0
+  best_of_selector_max_tokens: 80
+  best_of_duel_mode: true
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

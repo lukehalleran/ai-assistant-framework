@@ -137,6 +137,7 @@ async def handle_submit(
     logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
 
     final_output = ""
+    debug_emitted = False
     try:
         logger.debug(
             "[🔍 FINAL MESSAGE PAYLOAD TO OPENAI]:\n" +
@@ -146,17 +147,22 @@ async def handle_submit(
             )
         )
 
+        # Respect runtime settings via orchestrator.config if available
+        _cfg = getattr(orchestrator, 'config', {}) or {}
+        _features = _cfg.get('features', {}) if isinstance(_cfg, dict) else {}
+        _enable_bestof = bool(_features.get('enable_best_of', ENABLE_BEST_OF))
+
         use_bestof = False
         try:
             qinfo = analyze_query(user_text)
             use_bestof = bool(
-                ENABLE_BEST_OF and (
+                _enable_bestof and (
                     (qinfo.is_question and qinfo.token_count >= BEST_OF_MIN_TOKENS)
                     or (not BEST_OF_MIN_QUESTION)
                 )
             )
         except Exception:
-            use_bestof = bool(ENABLE_BEST_OF)
+            use_bestof = bool(_enable_bestof)
 
         model_name = orchestrator.model_manager.get_active_model_name()
         # Token counts for debug trace
@@ -172,19 +178,82 @@ async def handle_submit(
         bestof_model = BEST_OF_MODEL or model_name
 
         if use_bestof:
-            # Non-streaming best-of: emit at once
-            best = await orchestrator.response_generator.generate_best_of(
-                prompt=full_prompt,
-                model_name=bestof_model,
-                system_prompt=system_prompt,
-                question_text=user_text,
-                context_hint=full_prompt,
-                n=BEST_OF_N,
-                temps=tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7),
-                max_tokens=BEST_OF_MAX_TOKENS,
-            )
-            final_output = best
-            yield {"role": "assistant", "content": final_output}
+            # Best-of with optional latency budget and streaming fallback
+            # If BEST_OF_TEMPS not explicitly configured, anchor around current runtime temperature
+            try:
+                _explicit_temps = tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else None
+            except Exception:
+                _explicit_temps = None
+
+            if _explicit_temps and len(_explicit_temps) > 0:
+                _temps_to_use = _explicit_temps
+            else:
+                # Derive two temps around current default_temperature to reflect the Settings slider
+                try:
+                    _t = float(getattr(orchestrator.model_manager, 'default_temperature', 0.7))
+                except Exception:
+                    _t = 0.7
+                # Slight spread while staying in [0.0, 1.5]
+                _low = max(0.0, min(1.5, round(0.6 * _t, 2)))
+                _hi = max(0.0, min(1.5, round(_t, 2)))
+                _temps_to_use = (_low, _hi)
+
+            # Read latency budget: runtime features override, else app_config default
+            try:
+                from config.app_config import BEST_OF_LATENCY_BUDGET_S as _DEF_BUDGET
+            except Exception:
+                _DEF_BUDGET = 0.0
+            try:
+                _budget = float(_features.get('best_of_latency_budget_s', _DEF_BUDGET))
+            except Exception:
+                _budget = float(_DEF_BUDGET) if _DEF_BUDGET else 0.0
+
+            import asyncio as _a
+            try:
+                if _budget and _budget > 0:
+                    best_task = _a.create_task(
+                        orchestrator.response_generator.generate_best_of(
+                            prompt=full_prompt,
+                            model_name=bestof_model,
+                            system_prompt=system_prompt,
+                            question_text=user_text,
+                            context_hint=full_prompt,
+                            n=BEST_OF_N,
+                            temps=_temps_to_use,
+                            max_tokens=BEST_OF_MAX_TOKENS,
+                        )
+                    )
+                    best = await _a.wait_for(best_task, timeout=float(_budget))
+                    final_output = best
+                    yield {"role": "assistant", "content": final_output}
+                else:
+                    # No budget: run best-of to completion (non-streaming)
+                    best = await orchestrator.response_generator.generate_best_of(
+                        prompt=full_prompt,
+                        model_name=bestof_model,
+                        system_prompt=system_prompt,
+                        question_text=user_text,
+                        context_hint=full_prompt,
+                        n=BEST_OF_N,
+                        temps=_temps_to_use,
+                        max_tokens=BEST_OF_MAX_TOKENS,
+                    )
+                    final_output = best
+                    yield {"role": "assistant", "content": final_output}
+            except Exception:
+                # Timeout or error: fall back to streaming
+                try:
+                    if 'best_task' in locals():
+                        best_task.cancel()
+                except Exception:
+                    pass
+                async for chunk in orchestrator.response_generator.generate_streaming_response(
+                    prompt=full_prompt,
+                    model_name=model_name,
+                    system_prompt=system_prompt
+                ):
+                    final_output = smart_join(final_output, chunk)
+                    yield {"role": "assistant", "content": final_output}
         else:
             # Default streaming path
             async for chunk in orchestrator.response_generator.generate_streaming_response(
@@ -194,6 +263,32 @@ async def handle_submit(
             ):
                 final_output = smart_join(final_output, chunk)
                 yield {"role": "assistant", "content": final_output}
+
+            # After streaming completes, emit a final debug record so the Debug Trace tab is populated
+            try:
+                tm = getattr(orchestrator, 'tokenizer_manager', None)
+                model_for_tokens = model_name
+                prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
+                system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
+                total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
+            except Exception:
+                prompt_tokens2 = None
+                system_tokens2 = None
+                total_tokens2 = None
+
+            debug_record = {
+                'mode': 'enhanced',
+                'query': user_text,
+                'prompt': full_prompt,
+                'system_prompt': system_prompt,
+                'response': final_output,
+                'model': model_name,
+                'prompt_tokens': prompt_tokens2,
+                'system_tokens': system_tokens2,
+                'total_tokens': total_tokens2,
+            }
+            yield {"role": "assistant", "content": final_output, "debug": debug_record}
+            debug_emitted = True
 
     except Exception as e:
         logger.error(f"[HANDLE_SUBMIT] Streaming error: {e}")
@@ -250,20 +345,22 @@ async def handle_submit(
             except Exception as e:
                 logger.error(f"[HANDLE_SUBMIT] Failed to store interaction: {e}")
 
-            # Emit a final debug record so UI can display Query → Prompt → Response
-            try:
-                debug_record = {
-                    'mode': 'enhanced',
-                    'query': user_text,
-                    'prompt': full_prompt,
-                    'system_prompt': system_prompt,
-                    'response': final_output,
-                    'model': getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
-                    'prompt_tokens': prompt_tokens,
-                    'system_tokens': system_tokens,
-                    'total_tokens': total_tokens,
-                }
-                yield {"role": "assistant", "content": final_output, "debug": debug_record}
-            except Exception:
-                # If yielding here fails (e.g., consumer closed), just continue silently
-                pass
+            # Emit a final debug record only if not already emitted above
+            if not debug_emitted:
+                try:
+                    debug_record = {
+                        'mode': 'enhanced',
+                        'query': user_text,
+                        'prompt': full_prompt,
+                        'system_prompt': system_prompt,
+                        'response': final_output,
+                        'model': getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
+                        'prompt_tokens': prompt_tokens,
+                        'system_tokens': system_tokens,
+                        'total_tokens': total_tokens,
+                    }
+                    yield {"role": "assistant", "content": final_output, "debug": debug_record}
+                    debug_emitted = True
+                except Exception:
+                    # If yielding here fails (e.g., consumer closed), just continue silently
+                    pass
