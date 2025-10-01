@@ -90,9 +90,13 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
     if not subj or not obj or not rel:
         return None
 
-    s = re.sub(r"\s+", " ", subj).strip(" .,:;\"'`").lower()
+    # Preserve original casing for spaCy checks (proper nouns lose signal when lowercased)
+    subj_orig = re.sub(r"\s+", " ", subj).strip(" .,:;\"'`")
+    obj_orig = re.sub(r"\s+", " ", obj).strip(" .,:;\"'`")
+
+    s = subj_orig.lower()
     r = re.sub(r"\s+", " ", rel).strip(" .,:;\"'`").lower()
-    o = re.sub(r"\s+", " ", obj).strip(" .,:;\"'`").lower()
+    o = obj_orig.lower()
 
     # Drop trivial subjects/objects
     if s in _STOP_SUBJECTS or o in _STOP_OBJECTS:
@@ -119,17 +123,17 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
 
     # If spaCy is available, reject adjective-only complements (e.g., "is impressive"),
     # except for relations where adjectives are valid values (e.g., *_color)
+    # IMPORTANT: Use original casing for spaCy parse (proper nouns need capitalization)
     if nlp is not None:
         try:
-            o_doc = nlp(o)
-            if _is_adj_only(o_doc) and not _relation_allows_adj(r):
+            o_doc_orig = nlp(obj_orig)  # Parse with original casing
+            if _is_adj_only(o_doc_orig) and not _relation_allows_adj(r):
                 return None
             # Prefer proper-noun/entity forms when available, but keep lowercased key later
-            s_doc = nlp(s)
-            o_doc2 = nlp(o)
-            s_pref = _prefer_named_span(s, s_doc, s)
-            o_pref = _prefer_named_span(o, o_doc2, o)
-            s, o = s_pref, o_pref
+            s_doc = nlp(subj_orig)
+            s_pref = _prefer_named_span(subj_orig, s_doc, s)
+            o_pref = _prefer_named_span(obj_orig, o_doc_orig, o)
+            s, o = s_pref.lower(), o_pref.lower()  # Lowercase after preference extraction
         except Exception:
             pass
 
@@ -497,12 +501,21 @@ class FactExtractor:
                 poss = next((c for c in name_tok.children if c.dep_ == "poss"), None)
                 cop  = next((c for c in name_tok.children if c.dep_ == "cop"), None)
                 attr = next((c for c in name_tok.children if c.dep_ in {"attr","acomp","oprd"}), None)
-                # Sometimes “is” attaches differently; fallback to head
+
+                # Common case: "name" is nsubj, head is copula (ROOT or AUX)
+                # e.g., "My cat's name is Flapjack" → name --nsubj--> is --attr--> Flapjack
                 if not (cop and attr):
                     head = name_tok.head
                     if head and head != name_tok:
-                        cop  = cop  or next((c for c in head.children if c.dep_ == "cop"), None)
-                        attr = attr or next((c for c in head.children if c.dep_ in {"attr","acomp","oprd"}), None)
+                        # If name is subject of copula, look for attr in head's children
+                        if name_tok.dep_ == "nsubj" and head.pos_ in {"AUX", "VERB"}:
+                            cop = head  # The head IS the copula
+                            attr = next((c for c in head.children if c.dep_ in {"attr","acomp","oprd"}), None)
+                        else:
+                            # Fallback: original pattern
+                            cop  = cop  or next((c for c in head.children if c.dep_ == "cop"), None)
+                            attr = attr or next((c for c in head.children if c.dep_ in {"attr","acomp","oprd"}), None)
+
                 if poss and (cop or name_tok.lemma_ == "name") and attr:
                     # Determine if the 'name' has modifiers like 'middle/first/last'
                     mod = None
@@ -589,7 +602,7 @@ class FactExtractor:
     @log_and_time("REBEL Extract")
     def _extract_with_rebel(self, text: str) -> List[Tuple[str, str, str, float, str]]:
         """
-        Use REBEL to get triples.
+        Use REBEL to get triples with grounding check against source text.
         Output decoding per REBEL format: <triplet> subject <subj> relation <rel> object <obj>
         """
         if _REBEL is None:
@@ -615,9 +628,13 @@ class FactExtractor:
             logger.error(f"[FactExtractor] REBEL generation failed: {e}")
             return []
 
+        # Normalize source text for grounding check
+        text_lower = (safe_text or "").lower()
+
         triples: List[Tuple[str, str, str, float, str]] = []
         chunks = out.split("<triplet>")
         parsed = 0
+        grounded = 0
         for ch in chunks:
             ch = ch.strip()
             if not ch:
@@ -627,11 +644,36 @@ class FactExtractor:
                 rel  = self._between(ch, "relation", "object")
                 obj  = ch.split("object")[-1].strip(" <>:;,. \n\t")
                 if subj and rel and obj:
-                    triples.append((subj, rel, obj, 0.75, "rebel"))
                     parsed += 1
+
+                    # Grounding check: both subject and object must appear in source text
+                    # (allows for minor normalization differences)
+                    subj_lower = subj.lower().strip()
+                    obj_lower = obj.lower().strip()
+
+                    subj_grounded = subj_lower in text_lower or any(
+                        token in text_lower for token in subj_lower.split() if len(token) > 2
+                    )
+                    obj_grounded = obj_lower in text_lower or any(
+                        token in text_lower for token in obj_lower.split() if len(token) > 2
+                    )
+
+                    if not (subj_grounded and obj_grounded):
+                        logger.debug(
+                            f"[FactExtractor] REBEL dropped ungrounded triple: "
+                            f"subj='{subj}' (grounded={subj_grounded}) "
+                            f"obj='{obj}' (grounded={obj_grounded})"
+                        )
+                        continue
+
+                    grounded += 1
+                    triples.append((subj, rel, obj, 0.75, "rebel"))
             except Exception:
                 continue
-        logger.debug(f"[FactExtractor] REBEL parsed {parsed} triples from {len(chunks)} chunks")
+        logger.debug(
+            f"[FactExtractor] REBEL parsed {parsed} triples, "
+            f"{grounded} passed grounding check ({len(chunks)} chunks)"
+        )
         return triples
 
     def _between(self, s: str, a: str, b: str) -> str:
@@ -704,6 +746,12 @@ class FactExtractor:
                         if not cleaned:
                             continue
                         subj2, rel2, obj2 = cleaned
+
+                        # Filter clause-like objects (infinitives, gerunds) for non-attribute relations
+                        if rel2 in {"is", "is_a", "likes", "loves", "prefers"} and _is_clause_like(obj2):
+                            logger.debug(f"[FactExtractor] Regex dropped clause-like object: rel='{rel2}' obj='{obj2}'")
+                            continue
+
                         found.append((subj2, rel2, obj2, 0.6, "regex"))
                         logger.debug(f"[FactExtractor] Regex kept m[{mi}] -> subj='{subj2}' rel='{rel2}' obj='{obj2}'")
                     else:
