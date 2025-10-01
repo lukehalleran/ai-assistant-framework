@@ -115,6 +115,39 @@ class DaemonOrchestrator:
     - process_user_query: optional personality switch, commands, deictic check, generate, store
     """
 
+    @staticmethod
+    def _parse_thinking_block(response: str) -> Tuple[str, str]:
+        """
+        Parse response to extract thinking block and final answer.
+
+        Args:
+            response: Full LLM response potentially containing <thinking>...</thinking>
+
+        Returns:
+            Tuple of (thinking_part, final_answer_part)
+            - If no thinking block found, thinking_part is empty and final_answer_part is the full response
+        """
+        if not response or not isinstance(response, str):
+            return "", response or ""
+
+        # Look for </thinking> delimiter
+        delimiter = "</thinking>"
+        if delimiter in response:
+            parts = response.split(delimiter, 1)
+            if len(parts) == 2:
+                thinking_raw = parts[0]
+                final_answer = parts[1].strip()
+
+                # Extract thinking content (remove opening tag if present)
+                thinking_content = thinking_raw
+                if "<thinking>" in thinking_raw:
+                    thinking_content = thinking_raw.split("<thinking>", 1)[1]
+
+                return thinking_content.strip(), final_answer
+
+        # No thinking block found - return empty thinking and full response as answer
+        return "", response
+
     def __init__(
         self,
         *,
@@ -343,7 +376,19 @@ class DaemonOrchestrator:
             pass
 
         # ---------------------------------------------------------------------
-        # 4) Raw mode: return plain text, no system prompt
+        # 4.5) Add thinking block instruction to system prompt
+        # ---------------------------------------------------------------------
+        if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
+            thinking_instruction = (
+                "\n\n"
+                "IMPORTANT: Before you provide your final answer, you must include a <thinking> block. "
+                "Inside this block, detail your step-by-step reasoning and analysis of the user's request. "
+                "After the </thinking> block, provide your final, concise, and helpful response to the user."
+            )
+            system_prompt = system_prompt.rstrip() + thinking_instruction
+
+        # ---------------------------------------------------------------------
+        # 5) Raw mode: return plain text, no system prompt
         # ---------------------------------------------------------------------
         if use_raw_mode:
             return combined_text, None
@@ -633,6 +678,7 @@ class DaemonOrchestrator:
                             best_task.cancel()
                     except Exception:
                         pass
+                    # Accumulate full response (no yielding yet - need to parse thinking block)
                     full_response = ""
                     async for chunk in self.response_generator.generate_streaming_response(
                         prompt, model_name, system_prompt=system_prompt
@@ -640,6 +686,7 @@ class DaemonOrchestrator:
                         full_response += (chunk + " ")
                     full_response = full_response.strip()
             else:
+                # Accumulate full response (no yielding yet - need to parse thinking block first)
                 full_response = ""
                 async for chunk in self.response_generator.generate_streaming_response(
                     prompt, model_name, system_prompt=system_prompt
@@ -647,12 +694,24 @@ class DaemonOrchestrator:
                     full_response += (chunk + " ")
                 full_response = full_response.strip()
 
+            # --- Parse thinking block and extract final answer ---
+            thinking_part, final_answer = self._parse_thinking_block(full_response)
+
+            # Log thinking part for debugging if present
+            if thinking_part:
+                if self.logger:
+                    self.logger.debug(f"[THINKING BLOCK]\n{thinking_part}")
+                debug_info["thinking_length"] = len(thinking_part)
+
+            # Store final answer (not the thinking part) in memory
+            answer_for_storage = final_answer if final_answer else full_response
+
             # --- Store Interaction ---
             if self.memory_system and not use_raw_mode:
                 try:
                     await self.memory_system.store_interaction(
                         query=user_input,
-                        response=full_response,
+                        response=answer_for_storage,
                         tags=["conversation"]
                     )
                 except Exception:
@@ -663,12 +722,15 @@ class DaemonOrchestrator:
 
             # Summaries now run on shutdown; skip mid-session consolidation
             debug_info.update({
-                "response_length": len(full_response),
+                "response_length": len(answer_for_storage),
+                "full_response_length": len(full_response),
                 "end_time": datetime.now(),
                 "prompt_length": len(prompt),
             })
             debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
-            return full_response, debug_info
+
+            # Return only the final answer (thinking block removed)
+            return answer_for_storage, debug_info
 
         except Exception as e:
             if self.logger:

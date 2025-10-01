@@ -270,16 +270,31 @@ class ResponseGenerator:
                 pass
         results = await asyncio.gather(*tasks, return_exceptions=True)
         candidates: List[str] = []
+        raw_candidates: List[str] = []
         for idx, res in enumerate(results, start=1):
             if isinstance(res, Exception):
                 self.logger.error(f"[BESTOF] candidate {idx}/{n} error: {res}")
                 candidates.append("")
+                raw_candidates.append("")
             else:
-                text = (res or "").strip()
-                candidates.append(text)
-                self.logger.debug(f"[BESTOF] candidate {idx}/{n} len={len(text)}")
+                text_raw = (res or "").strip()
+                raw_candidates.append(text_raw)
 
-        # Score candidates
+                # Parse thinking block from each candidate
+                from core.orchestrator import DaemonOrchestrator
+                thinking, text_final = DaemonOrchestrator._parse_thinking_block(text_raw)
+
+                # Log thinking block for this candidate
+                if thinking and self.logger:
+                    try:
+                        self.logger.debug(f"[BESTOF] candidate {idx}/{n} [THINKING BLOCK]\n{thinking}")
+                    except Exception:
+                        pass
+
+                candidates.append(text_final)
+                self.logger.debug(f"[BESTOF] candidate {idx}/{n} raw_len={len(text_raw)} final_len={len(text_final)}")
+
+        # Score candidates based on final answers (without thinking blocks)
         scored = [(self._score_answer(ans, question_text, context_hint), ans) for ans in candidates]
         scored.sort(key=lambda x: x[0], reverse=True)
         best_score, best_answer = scored[0]
@@ -421,7 +436,12 @@ class ResponseGenerator:
         temperature_b: Optional[float] = None,
         judge_max_tokens: int = 64,
     ) -> str:
-        """Generate once with two models, judge both, and return the winner."""
+        """Generate once with two models, judge both, and return the winner.
+
+        Thinking blocks: Both models may include <thinking>...</thinking> blocks.
+        These are logged but stripped before sending to the judge, and only the
+        final answer from the winning model is returned.
+        """
         import asyncio
         if self.logger:
             try:
@@ -447,13 +467,33 @@ class ResponseGenerator:
             )
         )
         res1, res2 = await asyncio.gather(t1, t2, return_exceptions=True)
-        a_text = ("" if isinstance(res1, Exception) else (res1 or "")).strip()
-        b_text = ("" if isinstance(res2, Exception) else (res2 or "")).strip()
-        if self.logger:
+        a_text_raw = ("" if isinstance(res1, Exception) else (res1 or "")).strip()
+        b_text_raw = ("" if isinstance(res2, Exception) else (res2 or "")).strip()
+
+        # Parse thinking blocks from both responses
+        from core.orchestrator import DaemonOrchestrator
+        thinking_a, a_text = DaemonOrchestrator._parse_thinking_block(a_text_raw)
+        thinking_b, b_text = DaemonOrchestrator._parse_thinking_block(b_text_raw)
+
+        # Log thinking blocks for debugging
+        if thinking_a and self.logger:
             try:
-                self.logger.info(f"[DUEL] lengths a={len(a_text)} b={len(b_text)}")
+                self.logger.debug(f"[DUEL][{model_a}][THINKING BLOCK]\n{thinking_a}")
             except Exception:
                 pass
+        if thinking_b and self.logger:
+            try:
+                self.logger.debug(f"[DUEL][{model_b}][THINKING BLOCK]\n{thinking_b}")
+            except Exception:
+                pass
+
+        if self.logger:
+            try:
+                self.logger.info(f"[DUEL] raw lengths a={len(a_text_raw)} b={len(b_text_raw)}, final lengths a={len(a_text)} b={len(b_text)}")
+            except Exception:
+                pass
+
+        # Judge sees only final answers (without thinking blocks)
         result = await self._llm_judge_compare(
             judge_model=judge_model,
             question_text=question_text,
@@ -468,6 +508,8 @@ class ResponseGenerator:
                 self.logger.info(f"[DUEL] winner={winner} scores A={result.get('score_A')} B={result.get('score_B')}")
             except Exception:
                 pass
+
+        # Return only the final answer from the winner (thinking block already stripped)
         return a_text if winner == "A" else b_text
 
     async def generate_best_of_ensemble(
