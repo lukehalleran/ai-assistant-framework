@@ -21,6 +21,7 @@ import os
 import logging
 import socket
 import gradio as gr
+import copy
 from gui.handlers import handle_submit
 from utils.conversation_logger import get_conversation_logger
 
@@ -271,7 +272,10 @@ def launch_gui(orchestrator):
         _t0 = _t.time(); _updates = 0; _last_tick = _t0
         typing_text = "<div style='text-align:right'>Assistant is typing …</div>"
         timer_text = "<div style='text-align:right'>⏱️ 0.0 s</div>"
-        yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
+        # Use a deep copy for the Chatbot output to avoid aliasing issues
+        _chatbot_view = copy.deepcopy(chat_history)
+        _state_view = copy.deepcopy(chat_history)
+        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text
 
         # Concurrent loop: tick timer while awaiting streamed chunks, without blocking loop
         agen = handle_submit(
@@ -298,7 +302,9 @@ def launch_gui(orchestrator):
                     _dots = "." * (1 + (_updates % 3))
                     typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
                     timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
-                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
+                    _chatbot_view = copy.deepcopy(chat_history)
+                    _state_view = copy.deepcopy(chat_history)
+                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text
                 # Continue; next_task may also be done
             if next_task in done:
                 try:
@@ -309,7 +315,9 @@ def launch_gui(orchestrator):
                     # If streaming errored, stop typing and break
                     typing_text = ""
                     timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
-                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
+                    _chatbot_view = copy.deepcopy(chat_history)
+                    _state_view = copy.deepcopy(chat_history)
+                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text
                     break
 
                 # Process streamed chunk
@@ -343,7 +351,9 @@ def launch_gui(orchestrator):
         # Final update: clear typing indicator, freeze timer
         typing_text = ""
         timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
-        yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
+        _chatbot_view = copy.deepcopy(chat_history)
+        _state_view = copy.deepcopy(chat_history)
+        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text
 
     # ---- Settings persistence helpers ----
     def _load_settings():

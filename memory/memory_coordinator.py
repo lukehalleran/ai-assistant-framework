@@ -373,10 +373,11 @@ class MemoryCoordinator:
             importance_score = self._calculate_importance_score(f"{query} {response}")
 
             # Create metadata with proper type checking
+            # Note: Store full query/response in metadata for retrieval context
             raw_metadata = {
                 "timestamp": self._now_iso(),
-                "query": query[:200] if query else "",
-                "response": response[:200] if response else "",
+                "query": query if query else "",
+                "response": response if response else "",
                 "tags": ",".join(tags) if tags else "",
                 "topic": primary_topic or "general",
                 "truth_score": float(truth_score),
