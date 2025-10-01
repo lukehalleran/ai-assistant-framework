@@ -208,11 +208,95 @@ async def handle_submit(
             except Exception:
                 _budget = float(_DEF_BUDGET) if _DEF_BUDGET else 0.0
 
+            # Check for duel mode configuration (two generators + one judge)
+            try:
+                from config.app_config import (
+                    BEST_OF_GENERATOR_MODELS as DEF_GEN_MODELS,
+                    BEST_OF_SELECTOR_MODELS as DEF_SEL_MODELS,
+                    BEST_OF_SELECTOR_MAX_TOKENS as DEF_SEL_MAXTOK,
+                    BEST_OF_DUEL_MODE as DEF_DUEL_MODE,
+                )
+            except Exception:
+                DEF_GEN_MODELS = []
+                DEF_SEL_MODELS = []
+                DEF_SEL_MAXTOK = 64
+                DEF_DUEL_MODE = False
+
+            GEN_MODELS = list(_features.get('best_of_generator_models', DEF_GEN_MODELS))
+            SEL_MODELS = list(_features.get('best_of_selector_models', DEF_SEL_MODELS))
+            SEL_MAXTOK = int(_features.get('best_of_selector_max_tokens', DEF_SEL_MAXTOK))
+            _DUEL_MODE = bool(_features.get('best_of_duel_mode', DEF_DUEL_MODE))
+            use_duel = bool(_DUEL_MODE and len(GEN_MODELS) == 2 and len(SEL_MODELS) >= 1)
+
             import asyncio as _a
             try:
                 if _budget and _budget > 0:
-                    best_task = _a.create_task(
-                        orchestrator.response_generator.generate_best_of(
+                    # With latency budget
+                    if use_duel:
+                        # DUEL MODE: Two models (Claude Opus + GPT-5) with judge (GPT-4o-mini)
+                        m1, m2 = list(GEN_MODELS)[:2]
+                        judge = list(SEL_MODELS)[0]
+                        logger.info(f"[GUI] DUEL MODE: {m1} vs {m2}, judge={judge}")
+                        best_task = _a.create_task(
+                            orchestrator.response_generator.generate_duel_and_judge(
+                                prompt=full_prompt,
+                                model_a=m1,
+                                model_b=m2,
+                                judge_model=judge,
+                                system_prompt=system_prompt,
+                                question_text=user_text,
+                                context_hint=full_prompt,
+                                max_tokens=BEST_OF_MAX_TOKENS,
+                                temperature_a=(_temps_to_use[0] if len(_temps_to_use) > 0 else None),
+                                temperature_b=(_temps_to_use[1] if len(_temps_to_use) > 1 else None),
+                                judge_max_tokens=int(SEL_MAXTOK),
+                            )
+                        )
+                    else:
+                        # Single-model best-of
+                        logger.info(f"[GUI] SINGLE-MODEL BEST-OF: {bestof_model}")
+                        best_task = _a.create_task(
+                            orchestrator.response_generator.generate_best_of(
+                                prompt=full_prompt,
+                                model_name=bestof_model,
+                                system_prompt=system_prompt,
+                                question_text=user_text,
+                                context_hint=full_prompt,
+                                n=BEST_OF_N,
+                                temps=_temps_to_use,
+                                max_tokens=BEST_OF_MAX_TOKENS,
+                            )
+                        )
+                    best = await _a.wait_for(best_task, timeout=float(_budget))
+                    final_output = best
+                    # Parse thinking block - only show final answer to user
+                    _, final_answer = orchestrator._parse_thinking_block(final_output)
+                    display_output = final_answer if final_answer else final_output
+                    yield {"role": "assistant", "content": display_output}
+                else:
+                    # No budget: run to completion (non-streaming)
+                    if use_duel:
+                        # DUEL MODE: Two models (Claude Opus + GPT-5) with judge (GPT-4o-mini)
+                        m1, m2 = list(GEN_MODELS)[:2]
+                        judge = list(SEL_MODELS)[0]
+                        logger.info(f"[GUI] DUEL MODE: {m1} vs {m2}, judge={judge}")
+                        best = await orchestrator.response_generator.generate_duel_and_judge(
+                            prompt=full_prompt,
+                            model_a=m1,
+                            model_b=m2,
+                            judge_model=judge,
+                            system_prompt=system_prompt,
+                            question_text=user_text,
+                            context_hint=full_prompt,
+                            max_tokens=BEST_OF_MAX_TOKENS,
+                            temperature_a=(_temps_to_use[0] if len(_temps_to_use) > 0 else None),
+                            temperature_b=(_temps_to_use[1] if len(_temps_to_use) > 1 else None),
+                            judge_max_tokens=int(SEL_MAXTOK),
+                        )
+                    else:
+                        # Single-model best-of
+                        logger.info(f"[GUI] SINGLE-MODEL BEST-OF: {bestof_model}")
+                        best = await orchestrator.response_generator.generate_best_of(
                             prompt=full_prompt,
                             model_name=bestof_model,
                             system_prompt=system_prompt,
@@ -222,24 +306,11 @@ async def handle_submit(
                             temps=_temps_to_use,
                             max_tokens=BEST_OF_MAX_TOKENS,
                         )
-                    )
-                    best = await _a.wait_for(best_task, timeout=float(_budget))
                     final_output = best
-                    yield {"role": "assistant", "content": final_output}
-                else:
-                    # No budget: run best-of to completion (non-streaming)
-                    best = await orchestrator.response_generator.generate_best_of(
-                        prompt=full_prompt,
-                        model_name=bestof_model,
-                        system_prompt=system_prompt,
-                        question_text=user_text,
-                        context_hint=full_prompt,
-                        n=BEST_OF_N,
-                        temps=_temps_to_use,
-                        max_tokens=BEST_OF_MAX_TOKENS,
-                    )
-                    final_output = best
-                    yield {"role": "assistant", "content": final_output}
+                    # Parse thinking block - only show final answer to user
+                    _, final_answer = orchestrator._parse_thinking_block(final_output)
+                    display_output = final_answer if final_answer else final_output
+                    yield {"role": "assistant", "content": display_output}
             except Exception:
                 # Timeout or error: fall back to streaming
                 try:
@@ -253,7 +324,10 @@ async def handle_submit(
                     system_prompt=system_prompt
                 ):
                     final_output = smart_join(final_output, chunk)
-                    yield {"role": "assistant", "content": final_output}
+                    # Parse in real-time to hide thinking block during streaming
+                    thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
+                    display_output = final_answer if final_answer else final_output
+                    yield {"role": "assistant", "content": display_output}
         else:
             # Default streaming path
             async for chunk in orchestrator.response_generator.generate_streaming_response(
@@ -262,7 +336,17 @@ async def handle_submit(
                 system_prompt=system_prompt
             ):
                 final_output = smart_join(final_output, chunk)
-                yield {"role": "assistant", "content": final_output}
+                # Parse in real-time to hide thinking block during streaming
+                thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
+                display_output = final_answer if final_answer else final_output
+                yield {"role": "assistant", "content": display_output}
+
+            # After streaming completes, parse thinking block for logging and storage
+            thinking_part_stream, final_answer_stream = orchestrator._parse_thinking_block(final_output)
+            if thinking_part_stream:
+                logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK FROM STREAM]\n{thinking_part_stream}")
+                # Update final_output to only include the final answer for storage
+                final_output = final_answer_stream if final_answer_stream else final_output
 
             # After streaming completes, emit a final debug record so the Debug Trace tab is populated
             try:
@@ -308,6 +392,8 @@ async def handle_submit(
         yield {"role": "assistant", "content": error_message}
 
     finally:
+        # Persist interaction and debug after streaming, but do not emit additional
+        # assistant content here (avoid overwriting the last streamed UI state).
         if final_output and len(user_text.strip()) > 0:
             # Log successful conversation
             conversation_logger.log_interaction(
@@ -334,9 +420,17 @@ async def handle_submit(
                         cm.max_entries = int(_os.getenv("CORPUS_MAX_ENTRIES", "5000"))
                 except Exception:
                     pass
+
+                # Parse thinking block from final_output before storing
+                # Only store the final answer, not the thinking process
+                thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
+                if thinking_part:
+                    logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK]\n{thinking_part}")
+                response_to_store = final_answer if final_answer else final_output
+
                 await orchestrator.memory_system.store_interaction(
                     query=merged_input,
-                    response=final_output,
+                    response=response_to_store,
                     tags=tags
                 )
                 logger.info("[HANDLE_SUBMIT] Interaction successfully stored.")
@@ -345,22 +439,6 @@ async def handle_submit(
             except Exception as e:
                 logger.error(f"[HANDLE_SUBMIT] Failed to store interaction: {e}")
 
-            # Emit a final debug record only if not already emitted above
-            if not debug_emitted:
-                try:
-                    debug_record = {
-                        'mode': 'enhanced',
-                        'query': user_text,
-                        'prompt': full_prompt,
-                        'system_prompt': system_prompt,
-                        'response': final_output,
-                        'model': getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
-                        'prompt_tokens': prompt_tokens,
-                        'system_tokens': system_tokens,
-                        'total_tokens': total_tokens,
-                    }
-                    yield {"role": "assistant", "content": final_output, "debug": debug_record}
-                    debug_emitted = True
-                except Exception:
-                    # If yielding here fails (e.g., consumer closed), just continue silently
-                    pass
+            # Do not yield another assistant message here; the UI already
+            # received the final content during streaming. If needed, a debug
+            # record is captured in-stream above.
