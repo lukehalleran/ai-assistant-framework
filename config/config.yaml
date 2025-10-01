@@ -55,7 +55,7 @@ models:
   default_max_tokens: 8192
   default_top_p: 0.9
   default_top_k: 5
-  default_temperature: 1.5
+  default_temperature: 0.75
   openai_api_key: ''
   active: claude-opus
 gating:
@@ -90,10 +90,10 @@ features:
   enable_facts: true
   enable_dreams: false
   semantic_only_mode: false
-  enable_best_of: false
+  enable_best_of: true
   enable_query_rewrite: true
   disable_llm_summaries: false
-  best_of_latency_budget_s: 4.0
+  best_of_latency_budget_s: 11.0
   rewrite_timeout_s: 0
   best_of_model: gpt-4o
   best_of_max_tokens: 8816
