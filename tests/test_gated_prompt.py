@@ -1,13 +1,13 @@
 #tests/test_gated_prompt.py
 import asyncio
 from core.prompt import PromptBuilder
-from core.model_manager import ModelManager
-from core.file_processor import FileProcessor
+from models.model_manager import ModelManager
+from utils.file_processor import FileProcessor
 from core.response_generator import ResponseGenerator
 from core.orchestrator import DaemonOrchestrator
-from memory.multi_collection_store import MultiCollectionChromaStore
+from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from core.prompt_builder import UnifiedHierarchicalPromptBuilder
-from core.llm_gate_module import GatedPromptBuilder
+from processing.gate_system import GatedPromptBuilder
 
 # Set up dummy memory data
 dummy_memories = [

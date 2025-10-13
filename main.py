@@ -47,9 +47,8 @@ from memory.storage.multi_collection_chroma_store import MultiCollectionChromaSt
 from processing.gate_system import MultiStageGateSystem
 from gui.launch import launch_gui
 from utils.topic_manager import TopicManager
-from knowledge.WikiManager import WikiManager
-# during startup
 from knowledge.WikiManager import WikiManager, _get_embedder
+# Preload embedder during startup
 _ = _get_embedder("all-MiniLM-L6-v2")
 
 from processing.gate_system import set_topic_resolver
