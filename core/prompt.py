@@ -1042,6 +1042,7 @@ class UnifiedPromptBuilder:
         personality_config: Optional[Dict[str, Any]] = None,
         system_prompt: Optional[str] = None,
         current_topic: Optional[str] = None,
+        fresh_facts: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         """
         Parallelized prompt-context builder.
@@ -1241,6 +1242,7 @@ class UnifiedPromptBuilder:
             "system_prompt": system_prompt or "",
             "user_input": user_input or "",
             "raw_user_input": raw_user_input,
+            "fresh_facts": fresh_facts or [],  # Inline-extracted facts from heavy topics
         }
 
         # ----------------------------
@@ -1373,6 +1375,7 @@ class UnifiedPromptBuilder:
             "wiki": wiki_snip,
             "dreams": dreams_c,
             "raw_user_input": raw_user_input,
+            "fresh_facts": fresh_facts or [],  # Inline-extracted facts
 
         }
 
@@ -1600,6 +1603,24 @@ class UnifiedPromptBuilder:
         # Time context
         if context.get("time_context"):
             parts.append(f"\n[TIME CONTEXT]\n{context['time_context']}\n")
+
+        # Fresh facts (inline-extracted from current message)
+        if context.get("fresh_facts"):
+            _fresh_facts_list = context.get("fresh_facts") or []
+            parts.append(f"\n[CURRENT MESSAGE FACTS] (n={len(_fresh_facts_list)})\n")
+            parts.append("Facts extracted from the current user message:\n")
+            for f in _fresh_facts_list:
+                md = (f.get("metadata", {}) if isinstance(f, dict) else getattr(f, "metadata", {}) or {})
+                subj = md.get("subject"); rel = md.get("relation"); obj = md.get("object"); conf = md.get("confidence")
+                if subj and rel and obj:
+                    line = f"- {subj} {rel} {obj}"
+                    if isinstance(conf, (int, float)):
+                        line += f"  (conf={conf:.2f})"
+                    parts.append(line + "\n")
+                else:
+                    txt = (f.get("content") if isinstance(f, dict) else getattr(f, "content", "")) or ""
+                    if txt:
+                        parts.append(f"- {txt}\n")
 
         # Recent conversations
         if context.get("recent_conversations"):

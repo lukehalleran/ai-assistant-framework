@@ -100,8 +100,34 @@ class CorpusManager:
         except Exception as e:
             logger.error(f"Error saving corpus: {e}")
 
-    def add_entry(self, query: str, response: str, tags: List[str] = None, timestamp: datetime = None):
-        """Add a new interaction to corpus"""
+    def add_entry(
+        self,
+        query: str,
+        response: str,
+        tags: List[str] = None,
+        timestamp: datetime = None,
+        thread_id: Optional[str] = None,
+        thread_depth: Optional[int] = None,
+        thread_started: Optional[str] = None,
+        thread_topic: Optional[str] = None,
+        is_heavy_topic: Optional[bool] = None,
+        topic: Optional[str] = None,
+    ):
+        """
+        Add a new interaction to corpus with optional thread metadata.
+
+        Args:
+            query: User query
+            response: Assistant response
+            tags: List of tags
+            timestamp: Conversation timestamp
+            thread_id: Thread identifier (e.g., "thread_20251008_143000")
+            thread_depth: Position in thread (1-based)
+            thread_started: ISO timestamp when thread began
+            thread_topic: Topic of the thread
+            is_heavy_topic: Whether this is a heavy/crisis topic
+            topic: Detected topic for this conversation
+        """
         # Trim obvious trailing/leading whitespace to avoid blank lines in prompts
         q = (query or "").strip()
         r = (response or "").strip()
@@ -111,6 +137,21 @@ class CorpusManager:
             "timestamp": timestamp or datetime.now(),
             "tags": tags or []
         }
+
+        # Add thread metadata if provided
+        if thread_id:
+            entry["thread_id"] = thread_id
+        if thread_depth is not None:
+            entry["thread_depth"] = thread_depth
+        if thread_started:
+            entry["thread_started"] = thread_started
+        if thread_topic:
+            entry["thread_topic"] = thread_topic
+        if is_heavy_topic is not None:
+            entry["is_heavy_topic"] = is_heavy_topic
+        if topic:
+            entry["topic"] = topic
+
         self.corpus.append(entry)
 
 

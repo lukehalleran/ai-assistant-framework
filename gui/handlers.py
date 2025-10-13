@@ -161,8 +161,10 @@ async def handle_submit(
                     or (not BEST_OF_MIN_QUESTION)
                 )
             )
-        except Exception:
+            logger.info(f"[GUI] Best-of check: enabled={_enable_bestof}, is_question={qinfo.is_question}, tokens={qinfo.token_count}, min_question={BEST_OF_MIN_QUESTION}, use_bestof={use_bestof}")
+        except Exception as e:
             use_bestof = bool(_enable_bestof)
+            logger.info(f"[GUI] Best-of check failed: {e}, fallback use_bestof={use_bestof}")
 
         model_name = orchestrator.model_manager.get_active_model_name()
         # Token counts for debug trace
@@ -268,11 +270,51 @@ async def handle_submit(
                             )
                         )
                     best = await _a.wait_for(best_task, timeout=float(_budget))
-                    final_output = best
-                    # Parse thinking block - only show final answer to user
-                    _, final_answer = orchestrator._parse_thinking_block(final_output)
-                    display_output = final_answer if final_answer else final_output
-                    yield {"role": "assistant", "content": display_output}
+                    logger.info(f"[GUI] Got best result: type={type(best)}, is_dict={isinstance(best, dict)}, keys={best.keys() if isinstance(best, dict) else 'N/A'}")
+                    # Handle dict return from duel mode (with thinking blocks) or string from best-of
+                    if isinstance(best, dict) and 'answer' in best:
+                        final_output = best['answer']
+                        display_output = final_output
+                        # Yield thinking blocks for duel mode
+                        thinking_data = {
+                            'thinking_a': best.get('thinking_a', ''),
+                            'thinking_b': best.get('thinking_b', ''),
+                            'model_a': best.get('model_a', ''),
+                            'model_b': best.get('model_b', ''),
+                            'winner': best.get('winner', ''),
+                            'scores': best.get('scores', {})
+                        }
+                        logger.info(f"[GUI] YIELDING THINKING DATA (with budget): models={thinking_data.get('model_a')}/{thinking_data.get('model_b')}, winner={thinking_data.get('winner')}")
+                        yield {"role": "assistant", "content": "", "thinking": thinking_data}
+                    else:
+                        final_output = best
+                        # Parse thinking block - only show final answer to user
+                        _, final_answer = orchestrator._parse_thinking_block(final_output)
+                        display_output = final_answer if final_answer else final_output
+                    # Create debug record for best-of with latency budget
+                    try:
+                        tm = getattr(orchestrator, 'tokenizer_manager', None)
+                        model_for_tokens = bestof_model
+                        prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
+                        system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
+                        total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
+                    except Exception:
+                        prompt_tokens2 = None
+                        system_tokens2 = None
+                        total_tokens2 = None
+                    debug_record = {
+                        'mode': 'best-of-duel' if use_duel else 'best-of',
+                        'query': user_text,
+                        'prompt': full_prompt,
+                        'system_prompt': system_prompt,
+                        'response': final_output,
+                        'model': bestof_model,
+                        'prompt_tokens': prompt_tokens2,
+                        'system_tokens': system_tokens2,
+                        'total_tokens': total_tokens2,
+                    }
+                    yield {"role": "assistant", "content": display_output, "debug": debug_record}
+                    debug_emitted = True
                 else:
                     # No budget: run to completion (non-streaming)
                     if use_duel:
@@ -306,13 +348,55 @@ async def handle_submit(
                             temps=_temps_to_use,
                             max_tokens=BEST_OF_MAX_TOKENS,
                         )
-                    final_output = best
-                    # Parse thinking block - only show final answer to user
-                    _, final_answer = orchestrator._parse_thinking_block(final_output)
-                    display_output = final_answer if final_answer else final_output
-                    yield {"role": "assistant", "content": display_output}
-            except Exception:
+                    # Handle dict return from duel mode (with thinking blocks) or string from best-of
+                    if isinstance(best, dict) and 'answer' in best:
+                        final_output = best['answer']
+                        display_output = final_output
+                        # Yield thinking blocks for duel mode
+                        thinking_data = {
+                            'thinking_a': best.get('thinking_a', ''),
+                            'thinking_b': best.get('thinking_b', ''),
+                            'model_a': best.get('model_a', ''),
+                            'model_b': best.get('model_b', ''),
+                            'winner': best.get('winner', ''),
+                            'scores': best.get('scores', {})
+                        }
+                        logger.info(f"[GUI] YIELDING THINKING DATA (no budget): models={thinking_data.get('model_a')}/{thinking_data.get('model_b')}, winner={thinking_data.get('winner')}")
+                        yield {"role": "assistant", "content": "", "thinking": thinking_data}
+                    else:
+                        final_output = best
+                        # Parse thinking block - only show final answer to user
+                        _, final_answer = orchestrator._parse_thinking_block(final_output)
+                        display_output = final_answer if final_answer else final_output
+                    # Create debug record for best-of without latency budget
+                    try:
+                        tm = getattr(orchestrator, 'tokenizer_manager', None)
+                        model_for_tokens = bestof_model
+                        prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
+                        system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
+                        total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
+                    except Exception:
+                        prompt_tokens2 = None
+                        system_tokens2 = None
+                        total_tokens2 = None
+                    debug_record = {
+                        'mode': 'best-of-duel' if use_duel else 'best-of',
+                        'query': user_text,
+                        'prompt': full_prompt,
+                        'system_prompt': system_prompt,
+                        'response': final_output,
+                        'model': bestof_model,
+                        'prompt_tokens': prompt_tokens2,
+                        'system_tokens': system_tokens2,
+                        'total_tokens': total_tokens2,
+                    }
+                    yield {"role": "assistant", "content": display_output, "debug": debug_record}
+                    debug_emitted = True
+            except Exception as e:
                 # Timeout or error: fall back to streaming
+                logger.warning(f"[GUI] Best-of/duel mode failed, falling back to streaming: {e}")
+                import traceback
+                logger.debug(f"[GUI] Exception traceback:\n{traceback.format_exc()}")
                 try:
                     if 'best_task' in locals():
                         best_task.cancel()
@@ -328,6 +412,33 @@ async def handle_submit(
                     thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
                     display_output = final_answer if final_answer else final_output
                     yield {"role": "assistant", "content": display_output}
+                # After fallback streaming completes, emit debug record
+                thinking_part_fb, final_answer_fb = orchestrator._parse_thinking_block(final_output)
+                if thinking_part_fb:
+                    final_output = final_answer_fb if final_answer_fb else final_output
+                try:
+                    tm = getattr(orchestrator, 'tokenizer_manager', None)
+                    model_for_tokens = model_name
+                    prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
+                    system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
+                    total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
+                except Exception:
+                    prompt_tokens2 = None
+                    system_tokens2 = None
+                    total_tokens2 = None
+                debug_record = {
+                    'mode': 'fallback-streaming',
+                    'query': user_text,
+                    'prompt': full_prompt,
+                    'system_prompt': system_prompt,
+                    'response': final_output,
+                    'model': model_name,
+                    'prompt_tokens': prompt_tokens2,
+                    'system_tokens': system_tokens2,
+                    'total_tokens': total_tokens2,
+                }
+                yield {"role": "assistant", "content": display_output, "debug": debug_record}
+                debug_emitted = True
         else:
             # Default streaming path
             async for chunk in orchestrator.response_generator.generate_streaming_response(

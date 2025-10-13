@@ -90,17 +90,17 @@ features:
   enable_facts: true
   enable_dreams: false
   semantic_only_mode: false
-  enable_best_of: true
+  enable_best_of: false
   enable_query_rewrite: true
   disable_llm_summaries: false
-  best_of_latency_budget_s: 11.0
+  best_of_latency_budget_s: 0.0
   rewrite_timeout_s: 0
   best_of_model: gpt-4o
   best_of_max_tokens: 8816
   best_of_min_question: false
   best_of_generator_models:
+  - sonnet-4.5
   - gpt-5
-  - claude-opus
   best_of_selector_models:
   - gpt-4o-mini
   - gpt-4.1
@@ -109,7 +109,7 @@ features:
     llm: 0.6
   best_of_selector_top_k: 0
   best_of_selector_max_tokens: 80
-  best_of_duel_mode: true
+  best_of_duel_mode: false
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

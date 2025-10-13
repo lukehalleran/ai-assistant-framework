@@ -267,6 +267,11 @@ def launch_gui(orchestrator):
         chat_history.append({"role": "assistant", "content": "…"})  # ephemeral typing dots
         # Emit immediately so the user sees their message appear
         debug_entries = list(debug_entries or [])
+        # Thinking state for duel mode
+        thinking_a_text = ""
+        thinking_b_text = ""
+        thinking_visible = False
+        winner_text = ""
         # Initial emit: clear input, keep debug_state only (debug view updates via state.change)
         import time as _t, asyncio as _a
         _t0 = _t.time(); _updates = 0; _last_tick = _t0
@@ -275,7 +280,7 @@ def launch_gui(orchestrator):
         # Use a deep copy for the Chatbot output to avoid aliasing issues
         _chatbot_view = copy.deepcopy(chat_history)
         _state_view = copy.deepcopy(chat_history)
-        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text
+        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
 
         # Concurrent loop: tick timer while awaiting streamed chunks, without blocking loop
         agen = handle_submit(
@@ -304,7 +309,7 @@ def launch_gui(orchestrator):
                     timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
                     _chatbot_view = copy.deepcopy(chat_history)
                     _state_view = copy.deepcopy(chat_history)
-                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text
+                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
                 # Continue; next_task may also be done
             if next_task in done:
                 try:
@@ -317,20 +322,63 @@ def launch_gui(orchestrator):
                     timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
                     _chatbot_view = copy.deepcopy(chat_history)
                     _state_view = copy.deepcopy(chat_history)
-                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text
+                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
                     break
 
                 # Process streamed chunk
-                if isinstance(chunk, dict) and "content" in chunk:
+                if isinstance(chunk, dict) and "thinking" in chunk:
+                    # Handle thinking data from duel mode - embed in chat message
+                    logging.info(f"[GUI] THINKING CHUNK RECEIVED: {chunk.get('thinking', {}).keys()}")
+                    think = chunk["thinking"]
+                    model_a = think.get('model_a', 'Model A')
+                    model_b = think.get('model_b', 'Model B')
+                    thinking_a = think.get('thinking_a', '')
+                    thinking_b = think.get('thinking_b', '')
+                    winner = think.get('winner', '')
+                    scores = think.get('scores', {})
+
+                    # Build embedded thinking display as HTML details/summary
+                    thinking_html = "<details open><summary>💭 <b>Thinking Process (Duel Mode)</b></summary>\n\n"
+                    thinking_html += f"**{model_a}:**\n{thinking_a}\n\n"
+                    thinking_html += f"**{model_b}:**\n{thinking_b}\n\n"
+                    if winner and scores:
+                        thinking_html += f"🏆 **Winner: Model {winner}** (Scores: A={scores.get('A', 'N/A')}, B={scores.get('B', 'N/A')})\n"
+                    thinking_html += "</details>\n\n"
+
+                    # Update chat with thinking content
+                    if chat_history and isinstance(chat_history[-1], dict):
+                        chat_history[-1]["content"] = thinking_html
+
+                    # Yield immediately to show thinking
+                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text, gr.update(visible=False), "", "", ""
+                elif isinstance(chunk, dict) and "content" in chunk:
                     assistant_reply = chunk["content"]
+                    # Update the last assistant message's content
+                    if assistant_reply:  # Only update if there's actual content
+                        if chat_history and isinstance(chat_history[-1], dict):
+                            # If there's already thinking HTML, preserve it and add answer after
+                            current_content = chat_history[-1].get("content", "")
+                            if current_content and "<details" in current_content:
+                                # Extract thinking block and append new answer
+                                if "</details>" in current_content:
+                                    # Split at the end of details tag
+                                    parts = current_content.split("</details>\n\n", 1)
+                                    thinking_part = parts[0] + "</details>\n\n"
+                                    chat_history[-1]["content"] = thinking_part + assistant_reply
+                                else:
+                                    chat_history[-1]["content"] = current_content + assistant_reply
+                            else:
+                                chat_history[-1]["content"] = assistant_reply
+                        else:
+                            # Fallback in case state shape is unexpected
+                            chat_history.append({"role": "assistant", "content": assistant_reply})
                 else:
                     assistant_reply = str(chunk)
-                # Update the last assistant message's content
-                if chat_history and isinstance(chat_history[-1], dict):
-                    chat_history[-1]["content"] = assistant_reply
-                else:
-                    # Fallback in case state shape is unexpected
-                    chat_history.append({"role": "assistant", "content": assistant_reply})
+                    if chat_history and isinstance(chat_history[-1], dict):
+                        chat_history[-1]["content"] = assistant_reply
+                    else:
+                        chat_history.append({"role": "assistant", "content": assistant_reply})
+
                 if isinstance(chunk, dict) and "debug" in chunk:
                     try:
                         debug_entries.append(chunk["debug"])  # append single record
@@ -343,7 +391,7 @@ def launch_gui(orchestrator):
                     _dots = "." * (1 + (_updates % 3))
                     typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
                     timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
-                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text
+                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
 
                 # Schedule next chunk read
                 next_task = _a.create_task(agen.__anext__())
@@ -353,7 +401,7 @@ def launch_gui(orchestrator):
         timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
         _chatbot_view = copy.deepcopy(chat_history)
         _state_view = copy.deepcopy(chat_history)
-        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text
+        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
 
     # ---- Settings persistence helpers ----
     def _load_settings():
@@ -416,6 +464,17 @@ def launch_gui(orchestrator):
         with gr.Tabs():
             with gr.TabItem("Chat"):
                 chatbot = gr.Chatbot(label="Daemon", height=520, type="messages")
+                # Thinking process display for duel mode (two models side-by-side)
+                with gr.Accordion("💭 Thinking Process", open=True, visible=False) as thinking_accordion:
+                    gr.Markdown("### Model Reasoning Comparison")
+                    with gr.Row():
+                        with gr.Column():
+                            model_a_label = gr.Markdown("**Model A**")
+                            thinking_a_md = gr.Markdown(value="", elem_id="thinking_a")
+                        with gr.Column():
+                            model_b_label = gr.Markdown("**Model B**")
+                            thinking_b_md = gr.Markdown(value="", elem_id="thinking_b")
+                    winner_md = gr.Markdown(value="", elem_id="winner_display")
                 # Place typing + timer directly under the chat so they stay visible
                 typing_md = gr.Markdown(value="", elem_id="typing_indicator")
                 timer_md = gr.Markdown(value="", elem_id="response_timer")
@@ -441,28 +500,32 @@ def launch_gui(orchestrator):
                     return (
                         "<div style='text-align:right'>Assistant is typing …</div>",
                         "<div style='text-align:right'>⏱️ 0.0 s</div>",
+                        gr.update(visible=False),
+                        "",
+                        "",
+                        ""
                     )
 
                 submit_button.click(
                     _preset_typing,
                     inputs=[],
-                    outputs=[typing_md, timer_md],
+                    outputs=[typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md],
                 )
 
                 submit_button.click(
                     submit_chat,
                     inputs=[user_input, chat_state, files, use_raw, personality, debug_state],
-                    outputs=[chatbot, chat_state, user_input, debug_state, typing_md, timer_md],
+                    outputs=[chatbot, chat_state, user_input, debug_state, typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md],
                 )
 
                 # Clear chat handler
                 def _clear_chat():
-                    return [], [], "", "", ""
+                    return [], [], "", "", "", gr.update(visible=False), "", "", ""
 
                 clear_button.click(
                     fn=_clear_chat,
                     inputs=[],
-                    outputs=[chatbot, chat_state, user_input, typing_md, timer_md],
+                    outputs=[chatbot, chat_state, user_input, typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md],
                 )
 
             with gr.TabItem("Logs"):
@@ -473,8 +536,8 @@ def launch_gui(orchestrator):
                         choices=["App Log (.log)", "Conversation Log"],
                         value="App Log (.log)",
                     )
-                    tail_n = gr.Slider(label="Tail lines", minimum=50, maximum=5000, step=50, value=400)
                     auto_refresh = gr.Checkbox(label="Auto‑refresh", value=True)
+                tail_n = gr.Slider(label="Tail lines", minimum=50, maximum=5000, step=50, value=400)
 
                 # Helpful path hints
                 app_path_md = gr.Markdown(value=f"App log: `{get_app_log_path()}`", visible=True)
@@ -589,7 +652,7 @@ def launch_gui(orchestrator):
                     _bo_budget_default = float((_settings.get('features', {}) or {}).get('best_of_latency_budget_s', 0))
                 except Exception:
                     _bo_budget_default = 0.0
-                bestof_budget = gr.Slider(label="Best‑of Latency Budget (s)", minimum=0.0, maximum=15.0, step=0.5, value=_bo_budget_default)
+                bestof_budget = gr.Slider(label="Best‑of Latency Budget (s)", minimum=0.0, maximum=120.0, step=0.5, value=_bo_budget_default)
                 apply_fast_btn = gr.Button("Apply Streaming Settings")
                 fast_status = gr.Markdown(visible=True)
 
