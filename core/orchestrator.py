@@ -25,7 +25,6 @@ import processing.gate_system as gate_system
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List
 from utils.logging_utils import get_logger
-import processing.gate_system as gate_system
 from integrations.wikipedia_api import WikipediaAPI
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
@@ -105,9 +104,6 @@ class _FallbackMemoryCoordinator:
         }
         return {"memories": memories, "counts": counts}
 
-SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
-wiki_api = WikipediaAPI()
-gate_system.wikipedia_api = wiki_api  # This sets it globally
 class DaemonOrchestrator:
     """
     Single orchestrator (prepare + generate split).
@@ -269,6 +265,60 @@ class DaemonOrchestrator:
                 combined_text = user_input
 
         # ---------------------------------------------------------------------
+        # 1.5) Inline fact extraction for heavy topics/long messages
+        # ---------------------------------------------------------------------
+        fresh_facts: List[Dict] = []
+        if not use_raw_mode and getattr(self, "memory_system", None):
+            try:
+                # Use async query analysis with LLM for best accuracy
+                from utils.query_checker import analyze_query_async
+                qinfo = await analyze_query_async(user_input, model_manager=self.model_manager)
+
+                if qinfo.is_heavy_topic:
+                    if getattr(self, "logger", None):
+                        self.logger.info(
+                            f"[Orchestrator] Heavy topic detected (len={len(user_input)}), "
+                            "running inline fact extraction"
+                        )
+
+                    # Extract facts with timeout to avoid blocking
+                    import asyncio
+                    try:
+                        fact_task = asyncio.create_task(
+                            self.memory_system._extract_and_store_facts(
+                                query=user_input,
+                                response="",  # No response yet
+                                truth_score=0.7  # Default for user-provided content
+                            )
+                        )
+
+                        # Wait max 5 seconds
+                        await asyncio.wait_for(fact_task, timeout=5.0)
+
+                        # Retrieve just-extracted facts for prompt injection
+                        fresh_facts = await self.memory_system.get_facts(
+                            query=user_input,
+                            limit=10  # Top 10 most relevant
+                        )
+
+                        if getattr(self, "logger", None) and fresh_facts:
+                            self.logger.info(
+                                f"[Orchestrator] Extracted {len(fresh_facts)} inline facts"
+                            )
+
+                    except asyncio.TimeoutError:
+                        if getattr(self, "logger", None):
+                            self.logger.warning("[Orchestrator] Inline fact extraction timed out")
+                    except Exception as e:
+                        if getattr(self, "logger", None):
+                            self.logger.debug(f"[Orchestrator] Inline fact extraction failed: {e}")
+
+            except Exception as e:
+                # Never let fact extraction block the flow
+                if getattr(self, "logger", None):
+                    self.logger.debug(f"[Orchestrator] Heavy topic detection failed: {e}")
+
+        # ---------------------------------------------------------------------
         # 2) Optional query rewrite (for retrieval/search phrasing)
         # ---------------------------------------------------------------------
         rewritten_query: Optional[str] = None
@@ -376,6 +426,57 @@ class DaemonOrchestrator:
             pass
 
         # ---------------------------------------------------------------------
+        # 4.25) Inject conversation thread context for tone/style adjustment
+        # ---------------------------------------------------------------------
+        if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
+            try:
+                if self.memory_system and hasattr(self.memory_system, 'get_thread_context'):
+                    thread_ctx = self.memory_system.get_thread_context()
+
+                    if thread_ctx and thread_ctx.get("thread_id"):
+                        thread_depth = thread_ctx.get("thread_depth", 1)
+                        is_heavy = thread_ctx.get("is_heavy_topic", False)
+                        thread_topic = thread_ctx.get("thread_topic", "")
+
+                        # Build thread context message
+                        thread_msg = f"\n\n[THREAD CONTEXT]"
+                        thread_msg += f"\nThis is message #{thread_depth} in an ongoing conversation thread"
+
+                        if thread_topic:
+                            thread_msg += f" about {thread_topic}"
+
+                        if is_heavy:
+                            thread_msg += "\nThis is a sensitive/heavy topic. "
+
+                            if thread_depth >= 3:
+                                thread_msg += (
+                                    "You've been discussing this for multiple turns. "
+                                    "Focus on specific details and avoid repeating general therapeutic questions. "
+                                    "Reference concrete facts from earlier in the conversation."
+                                )
+                            else:
+                                thread_msg += (
+                                    "Be empathetic and specific. "
+                                    "Engage with concrete details rather than generic therapeutic responses."
+                                )
+                        else:
+                            # Non-heavy thread: subtle continuity hint
+                            if thread_depth >= 3:
+                                thread_msg += "\nMaintain conversational continuity and build on previous exchanges."
+
+                        system_prompt = system_prompt.rstrip() + thread_msg
+
+                        if getattr(self, "logger", None):
+                            self.logger.debug(
+                                f"[Orchestrator] Injected thread context: "
+                                f"depth={thread_depth}, heavy={is_heavy}, topic={thread_topic}"
+                            )
+            except Exception as e:
+                # Never let thread context injection break the flow
+                if getattr(self, "logger", None):
+                    self.logger.debug(f"[Orchestrator] Thread context injection failed: {e}")
+
+        # ---------------------------------------------------------------------
         # 4.5) Add thinking block instruction to system prompt
         # ---------------------------------------------------------------------
         if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
@@ -402,6 +503,7 @@ class DaemonOrchestrator:
             personality_config=persona_cfg,
             system_prompt=system_prompt,
             current_topic=getattr(self, "current_topic", "general"),
+            fresh_facts=fresh_facts,  # Pass inline-extracted facts
         )
 
         # Some builders return a context dict; assemble it to a single string

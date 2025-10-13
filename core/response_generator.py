@@ -509,8 +509,19 @@ class ResponseGenerator:
             except Exception:
                 pass
 
-        # Return only the final answer from the winner (thinking block already stripped)
-        return a_text if winner == "A" else b_text
+        # Return the final answer from the winner plus metadata about both thinking processes
+        final_answer = a_text if winner == "A" else b_text
+
+        # Return a dict with answer and thinking metadata for UI display
+        return {
+            'answer': final_answer,
+            'thinking_a': thinking_a,
+            'thinking_b': thinking_b,
+            'model_a': model_a,
+            'model_b': model_b,
+            'winner': winner,
+            'scores': {'A': result.get('score_A'), 'B': result.get('score_B')}
+        }
 
     async def generate_best_of_ensemble(
         self,

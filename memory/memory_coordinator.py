@@ -336,6 +336,90 @@ class MemoryCoordinator:
 
 
     # ---------------------------
+    # Thread detection
+    # ---------------------------
+
+    def get_thread_context(self) -> Optional[Dict]:
+        """
+        Retrieve thread context from the most recent conversation.
+        Returns thread metadata if a thread is active, None otherwise.
+        """
+        recent = self.corpus_manager.get_recent_memories(count=1)
+        if not recent:
+            return None
+
+        last_conv = recent[0]
+        thread_id = last_conv.get("thread_id")
+
+        if not thread_id:
+            return None
+
+        return {
+            "thread_id": thread_id,
+            "thread_depth": last_conv.get("thread_depth", 1),
+            "thread_started": last_conv.get("thread_started"),
+            "thread_topic": last_conv.get("thread_topic"),
+            "is_heavy_topic": last_conv.get("is_heavy_topic", False),
+        }
+
+    def _detect_or_create_thread(self, query: str, is_heavy: bool) -> Dict:
+        """
+        Detect if current query continues immediate previous conversation.
+        Returns thread metadata dict with thread_id, depth, started, topic.
+        Only checks the most recent conversation for strict consecutive threading.
+        """
+        from utils.query_checker import belongs_to_thread
+
+        # Get only the most recent conversation (limit=1 for strict consecutive check)
+        recent = self.corpus_manager.get_recent_memories(count=1)
+
+        if not recent:
+            # First conversation - create new thread
+            thread_id = f"thread_{self._now().strftime('%Y%m%d_%H%M%S')}"
+            logger.debug(f"[Thread] Creating new thread (first conversation): {thread_id}")
+            return {
+                "thread_id": thread_id,
+                "depth": 1,
+                "started": self._now_iso(),
+                "topic": self.current_topic,
+            }
+
+        last_conv = recent[0]
+
+        # Check if current query continues last conversation
+        if belongs_to_thread(query, last_conv, current_topic=self.current_topic):
+            # Continue existing thread
+            thread_id = last_conv.get("thread_id")
+            thread_depth = last_conv.get("thread_depth", 0) + 1
+            thread_started = last_conv.get("thread_started")
+            thread_topic = last_conv.get("thread_topic", self.current_topic)
+
+            logger.debug(
+                f"[Thread] Continuing thread {thread_id} at depth {thread_depth} "
+                f"(topic: {thread_topic})"
+            )
+
+            return {
+                "thread_id": thread_id,
+                "depth": thread_depth,
+                "started": thread_started,
+                "topic": thread_topic,
+            }
+        else:
+            # Topic switch or time gap - new thread
+            thread_id = f"thread_{self._now().strftime('%Y%m%d_%H%M%S')}"
+            logger.debug(
+                f"[Thread] Creating new thread (break detected): {thread_id} "
+                f"(previous: {last_conv.get('thread_id')})"
+            )
+            return {
+                "thread_id": thread_id,
+                "depth": 1,
+                "started": self._now_iso(),
+                "topic": self.current_topic,
+            }
+
+    # ---------------------------
     # Public API: store
     # ---------------------------
 
@@ -344,8 +428,23 @@ class MemoryCoordinator:
     async def store_interaction(self, query: str, response: str, tags: Optional[List[str]] = None):
         """Persist a turn in both corpus & Chroma with computed metadata"""
         try:
-            # Add to corpus (JSON) with stable timestamp
-            self.corpus_manager.add_entry(query, response, tags or [], timestamp=self._now())
+            # Detect heavy topic before anything else (used for both thread detection and facts)
+            from utils.query_checker import _is_heavy_topic_heuristic
+            is_heavy = _is_heavy_topic_heuristic(query)
+
+            # Thread detection: check if this continues previous conversation
+            thread_info = self._detect_or_create_thread(query, is_heavy)
+
+            # Add to corpus (JSON) with stable timestamp and thread metadata
+            self.corpus_manager.add_entry(
+                query, response, tags or [], timestamp=self._now(),
+                thread_id=thread_info.get("thread_id"),
+                thread_depth=thread_info.get("depth"),
+                thread_started=thread_info.get("started"),
+                thread_topic=thread_info.get("topic"),
+                is_heavy_topic=is_heavy,
+                topic=self.current_topic
+            )
 
             # Update conversation context
             self.conversation_context.append({

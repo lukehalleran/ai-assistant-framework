@@ -92,12 +92,18 @@ class ModelManager:
         self.default_max_tokens = DEFAULT_MAX_TOKENS
         # Common API model aliases
         self.api_models["claude-opus"] = "anthropic/claude-3-opus"
+        self.api_models["sonnet-4.5"] = "anthropic/claude-sonnet-4.5"
         # OpenAI models via OpenRouter
         self.api_models["gpt-4o-mini"] = "openai/gpt-4o-mini"
         self.api_models["gpt-4o"] = "openai/gpt-4o"
         self.api_models["gpt-4.1"] = "openai/gpt-4.1"
         # Add GPT‑5 support (via OpenRouter naming)
         self.api_models["gpt-5"] = "openai/gpt-5"
+        # GLM model
+        self.api_models["glm-4.6"] = "z-ai/glm-4.6"
+        # DeepSeek models
+        self.api_models["deepseek-v3.1"] = "deepseek/deepseek-chat-v3.1"
+        self.api_models["deepseek-r1"] = "deepseek/deepseek-r1-0528"
 
     def _stub_response(self, prompt: str) -> str:
         snippet = (prompt or "").strip().splitlines()[0] if prompt else ""
