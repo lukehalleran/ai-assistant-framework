@@ -1627,8 +1627,9 @@ class UnifiedPromptBuilder:
             _rc_list = context.get("recent_conversations") or []
             parts.append(
                 f"\n[RECENT CONVERSATION — FOR CONTEXT ONLY] (n={len(_rc_list)})\n"
-                "Do NOT quote, paraphrase, or restate anything from this section in your reply. "
-                "Use it only to avoid repeating yourself. Answer strictly the new USER INPUT.\n"
+                "Use this section to understand conversational context and avoid redundancy within ongoing threads. "
+                "However, if the user asks a factual question you've answered before, provide a complete answer again — "
+                "repeated queries may be intentional (testing, seeking detail, or wanting a fresh take).\n"
             )
 
             for conv in context["recent_conversations"]:
@@ -1677,8 +1678,8 @@ class UnifiedPromptBuilder:
             _sum_list = context.get("summaries") or []
             parts.append(
                 f"\n[CONVERSATION SUMMARIES — FOR CONTEXT ONLY] (n={len(_sum_list)})\n"
-                "Do NOT quote, paraphrase, praise, or restate anything from this section in your reply. "
-                "Use it only to recall past topics. Answer strictly the new USER INPUT.\n"
+                "Use this section to recall past topics and understand conversation history. "
+                "This provides background context but does not limit your ability to give complete, detailed answers to new or repeated questions.\n"
             )
             first = True
             for summary in _sum_list:
@@ -1725,11 +1726,6 @@ class UnifiedPromptBuilder:
             parts.append(
                 f"\n[RELEVANT INFORMATION] (n={len(context.get('semantic_chunks') or [])}, ~{total_sem_tokens} tokens)\n"
             )
-            # How many characters to show for each semantic item in the prompt (preview only)
-            try:
-                _sem_disp_chars = int(os.getenv("SEMANTIC_ITEM_DISPLAY_CHARS", "1500"))
-            except Exception:
-                _sem_disp_chars = 300
 
             for chunk in (context.get("semantic_chunks") or []):
                 # Prefer gated/cleaned text if available
@@ -1739,16 +1735,22 @@ class UnifiedPromptBuilder:
                     or chunk.get("content")
                     or ""
                 )
-                if ENABLE_MIDDLE_OUT and text:
-                    text = self._middle_out(text, SEMANTIC_ITEM_MAX_TOKENS)
+                # IMPORTANT: Do NOT apply middle-out compression to semantic chunks
+                # We want the full Wikipedia chunk text to be available to the LLM
+                # if ENABLE_MIDDLE_OUT and text:
+                #     text = self._middle_out(text, SEMANTIC_ITEM_MAX_TOKENS)
+
                 src  = chunk.get("source") or chunk.get("namespace") or "unknown"
                 ts   = chunk.get("timestamp") or chunk.get("ts") or ""
                 title = (chunk.get("title") or "").strip()
+                section = (chunk.get("section") or "").strip()
+
+                # Build metadata display
                 title_part = f" title=\"{title}\"" if title else ""
-                preview = text[: max(0, _sem_disp_chars)] if text else ""
-                if preview and len(text) > len(preview):
-                    preview += "..."
-                parts.append(f"- src={src}{title_part} ts={ts} :: {preview}\n")
+                section_part = f" section=\"{section}\"" if section else ""
+
+                # Show full text (no middle-out compression, no preview truncation)
+                parts.append(f"- src={src}{title_part}{section_part} ts={ts} :: {text}\n")
 
         # Background knowledge (wiki)
         wiki_text = context.get("wiki") or ""
