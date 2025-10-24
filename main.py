@@ -25,6 +25,10 @@ import sys
 import os
 from datetime import datetime
 
+# DEBUG: Check environment at the very start of main.py
+print(f"[DEBUG main.py START] SEM_INDEX_PATH = {os.environ.get('SEM_INDEX_PATH', 'NOT SET')}")
+print(f"[DEBUG main.py START] SEM_META_PATH = {os.environ.get('SEM_META_PATH', 'NOT SET')}")
+
 from utils.logging_utils import get_logger, configure_logging
 from utils.time_manager import TimeManager
 # Setup logging early to avoid duplicate handlers

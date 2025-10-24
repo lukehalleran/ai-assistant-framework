@@ -38,12 +38,13 @@ logger = get_logger("knowledge.semantic_search")
 # Configuration (env-tunable)
 # ------------------------
 EMBED_MODEL = os.getenv("SEM_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-INDEX_PATH  = os.getenv(
-    "SEM_INDEX_PATH",
-    "/home/lukeh/Daemon_RAG_Agent_working/data/vector_index_ivf.faiss"
-)
 
-META_PATH   = os.getenv("SEM_META_PATH",   "/run/media/lukeh/T9/test_parquet/metadata.parquet")
+# HARDCODED PATHS - ignoring environment variables to avoid override issues
+INDEX_PATH = "/run/media/lukeh/T9/wiki_data/vector_index_ivf.faiss"
+META_PATH = "/run/media/lukeh/T9/wiki_data/metadata.parquet"
+
+print(f"[DEBUG semantic_search.py] Using hardcoded INDEX_PATH: {INDEX_PATH}")
+print(f"[DEBUG semantic_search.py] Using hardcoded META_PATH: {META_PATH}")
 
 # Respect HF offline usage if you want to avoid network HEAD calls on boot
 HF_OFFLINE  = os.getenv("HF_HUB_OFFLINE", "1") == "1"
@@ -105,6 +106,11 @@ class SemanticSearchIndex:
             return
 
         t0 = time.time()
+
+        # DEBUG: Log the actual paths being checked
+        logger.debug("[Semantic] Attempting to load: INDEX_PATH=%s, META_PATH=%s", INDEX_PATH, META_PATH)
+        logger.debug("[Semantic] faiss=%s, index_exists=%s, meta_exists=%s",
+                    faiss is not None, os.path.exists(INDEX_PATH), os.path.exists(META_PATH))
 
         # If FAISS or files missing, fail open (return empty on search)
         if not (faiss and os.path.exists(INDEX_PATH) and os.path.exists(META_PATH)):
@@ -172,15 +178,21 @@ class SemanticSearchIndex:
         # Optional fields
         ts = getattr(row, "timestamp", "")
         title = getattr(row, "title", "")
+        section = getattr(row, "section", "")
+        section_level = getattr(row, "section_level", 0)
+        chunk_index = getattr(row, "chunk_index", 0)
 
         return {
-            "text": text[:1000],
-            "content": text[:1000],
+            "text": text,  # Return full text (no truncation)
+            "content": text,  # Return full text (no truncation)
             "source": source,
             "namespace": source,
             "similarity": float(score),   # cosine similarity (IP on normalized vectors)
             "timestamp": ts,
             "title": title,
+            "section": section,
+            "section_level": section_level,
+            "chunk_index": chunk_index,
         }
 
     def search(self, query: str, k: int = 8) -> List[Dict[str, Any]]:

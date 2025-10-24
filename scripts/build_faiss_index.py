@@ -9,14 +9,16 @@ import pyarrow.parquet as pq
 
 from pathlib import Path
 
-PARQUET_DIR       = "/run/media/lukeh/T9/test_parquet"
-EMBED_MMAP_FILE   = "embeddings_mmap.dat"
-METADATA_FILE     = "metadata.parquet"
-FAISS_INDEX_FILE  = "vector_index_ivf.faiss"
+PARQUET_DIR       = "/run/media/lukeh/T9/embedded_parquet"  # Updated to use semantic chunks
+EMBED_MMAP_FILE   = "/run/media/lukeh/T9/wiki_data/embeddings_mmap.dat"
+METADATA_FILE     = "/run/media/lukeh/T9/wiki_data/metadata.parquet"
+FAISS_INDEX_FILE  = "/run/media/lukeh/T9/wiki_data/vector_index_ivf.faiss"
 MODEL_NAME        = "all-MiniLM-L6-v2"
 
 def load_merged_parquet_mmap(parquet_dir: str):
     """Load parquet metadata only, create memory-mapped embeddings."""
+    from datetime import datetime
+
     # 1) Count total rows across all .parquet files
     parquet_files = list(Path(parquet_dir).glob("*.parquet"))
     total_rows = sum(pq.ParquetFile(pf).metadata.num_rows for pf in parquet_files)
@@ -33,23 +35,36 @@ def load_merged_parquet_mmap(parquet_dir: str):
     # 3) Iterate again and fill the mmap
     metadata_rows = []
     idx_offset = 0
+    index_timestamp = datetime.now().isoformat()
+
     for pf in parquet_files:
-        table = pq.read_table(pf, columns=["embedding", "id", "title", "text"])
+        # Read all columns (not just embedding, id, title, text)
+        table = pq.read_table(pf)
         df = table.to_pandas()
         n = len(df)
 
-        # assume each row’s "embedding" is a list or array of length embedding_dim
+        # assume each row's "embedding" is a list or array of length embedding_dim
         emb_block = np.vstack(df["embedding"].values).astype("float32")
         embeddings_mmap[idx_offset:idx_offset + n] = emb_block
 
-        # collect metadata for each row
+        # collect metadata for each row - preserve ALL fields
         for i, row in df.iterrows():
-            metadata_rows.append({
-                "idx":  idx_offset + i,
-                "id":   row["id"],
-                "title":row["title"],
-                "text": row["text"]
-            })
+            metadata_row = {
+                "idx": idx_offset + i,
+                "id": row.get("id", ""),
+                "title": row.get("title", ""),
+                "text": row.get("text", ""),
+                "source": "wikipedia",  # Add source field
+                "namespace": "wikipedia",  # Add namespace field
+                "timestamp": index_timestamp,  # Add indexing timestamp
+            }
+
+            # Preserve all other fields from the source parquet
+            for col in df.columns:
+                if col not in ["embedding", "idx", "id", "title", "text", "source", "namespace", "timestamp"]:
+                    metadata_row[col] = row.get(col, "")
+
+            metadata_rows.append(metadata_row)
         idx_offset += n
 
     # 4) Build a DataFrame & save it
