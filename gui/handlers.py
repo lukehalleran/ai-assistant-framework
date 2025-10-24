@@ -402,16 +402,36 @@ async def handle_submit(
                         best_task.cancel()
                 except Exception:
                     pass
+                thinking_started = False
+                thinking_complete = False
                 async for chunk in orchestrator.response_generator.generate_streaming_response(
                     prompt=full_prompt,
                     model_name=model_name,
                     system_prompt=system_prompt
                 ):
                     final_output = smart_join(final_output, chunk)
-                    # Parse in real-time to hide thinking block during streaming
+                    # Parse in real-time to separate thinking from answer
                     thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
-                    display_output = final_answer if final_answer else final_output
-                    yield {"role": "assistant", "content": display_output}
+
+                    # If we have thinking content and haven't shown the answer yet
+                    if thinking_part and not final_answer:
+                        # Stream thinking block with special marker
+                        thinking_started = True
+                        display_output = f"💭 **Thinking...**\n\n{thinking_part}"
+                        yield {"role": "assistant", "content": display_output, "is_thinking": True}
+                    elif thinking_part and final_answer and not thinking_complete:
+                        # Thinking is complete, answer is starting - switch to answer
+                        thinking_complete = True
+                        display_output = final_answer
+                        yield {"role": "assistant", "content": display_output, "is_thinking": False}
+                    elif final_answer:
+                        # Continue streaming the answer
+                        display_output = final_answer
+                        yield {"role": "assistant", "content": display_output}
+                    else:
+                        # No thinking block detected, stream normally
+                        display_output = final_output
+                        yield {"role": "assistant", "content": display_output}
                 # After fallback streaming completes, emit debug record
                 thinking_part_fb, final_answer_fb = orchestrator._parse_thinking_block(final_output)
                 if thinking_part_fb:
@@ -440,17 +460,37 @@ async def handle_submit(
                 yield {"role": "assistant", "content": display_output, "debug": debug_record}
                 debug_emitted = True
         else:
-            # Default streaming path
+            # Default streaming path with thinking block visibility
+            thinking_started = False
+            thinking_complete = False
             async for chunk in orchestrator.response_generator.generate_streaming_response(
                 prompt=full_prompt,
                 model_name=model_name,
                 system_prompt=system_prompt
             ):
                 final_output = smart_join(final_output, chunk)
-                # Parse in real-time to hide thinking block during streaming
+                # Parse in real-time to separate thinking from answer
                 thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
-                display_output = final_answer if final_answer else final_output
-                yield {"role": "assistant", "content": display_output}
+
+                # If we have thinking content and haven't shown the answer yet
+                if thinking_part and not final_answer:
+                    # Stream thinking block with special marker
+                    thinking_started = True
+                    display_output = f"💭 **Thinking...**\n\n{thinking_part}"
+                    yield {"role": "assistant", "content": display_output, "is_thinking": True}
+                elif thinking_part and final_answer and not thinking_complete:
+                    # Thinking is complete, answer is starting - switch to answer
+                    thinking_complete = True
+                    display_output = final_answer
+                    yield {"role": "assistant", "content": display_output, "is_thinking": False}
+                elif final_answer:
+                    # Continue streaming the answer
+                    display_output = final_answer
+                    yield {"role": "assistant", "content": display_output}
+                else:
+                    # No thinking block detected, stream normally
+                    display_output = final_output
+                    yield {"role": "assistant", "content": display_output}
 
             # After streaming completes, parse thinking block for logging and storage
             thinking_part_stream, final_answer_stream = orchestrator._parse_thinking_block(final_output)
