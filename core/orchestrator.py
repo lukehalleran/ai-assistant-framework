@@ -26,6 +26,13 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List
 from utils.logging_utils import get_logger
 from integrations.wikipedia_api import WikipediaAPI
+from utils.tone_detector import (
+    detect_crisis_level,
+    CrisisLevel,
+    should_log_tone_shift,
+    format_tone_shift_log,
+    format_tone_log,
+)
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
@@ -190,7 +197,73 @@ class DaemonOrchestrator:
         self.topic_confidence_threshold = float(self.config.get("topic_confidence_threshold", 0.7))
         self.system_prompt_path = self.config.get("system_prompt_path")
 
-    # ---------- 1) Commands & Topic ----------
+        # Tone tracking for crisis detection
+        self.current_tone_level: Optional[CrisisLevel] = None
+
+    # ---------- 1) Tone Mode Instructions ----------
+    def _get_tone_instructions(self, tone_level: CrisisLevel) -> str:
+        """
+        Return mode-specific response instructions based on detected crisis level.
+
+        Args:
+            tone_level: Detected crisis level from tone_detector
+
+        Returns:
+            String containing tone-specific instructions to append to system prompt
+        """
+        if tone_level == CrisisLevel.HIGH:
+            # CRISIS_SUPPORT: Full therapeutic mode for genuine crisis
+            return (
+                "\n\n## RESPONSE MODE: CRISIS SUPPORT\n"
+                "The user is experiencing a severe crisis or mental health emergency. "
+                "Respond with full therapeutic presence:\n"
+                "- Acknowledge the severity of their feelings with empathy and care\n"
+                "- Validate their experience without minimizing or rushing to solutions\n"
+                "- Multiple paragraphs are appropriate to show you're truly engaged\n"
+                "- Offer concrete support resources when relevant (crisis lines, professional help)\n"
+                "- Avoid platitudes like \"you've got this\" - focus on genuine connection\n"
+                "- Stay present with their pain rather than trying to immediately fix it\n"
+                "- Encourage professional help or crisis intervention if appropriate"
+            )
+        elif tone_level == CrisisLevel.MEDIUM:
+            # ELEVATED_SUPPORT: Supportive but measured for acute distress
+            return (
+                "\n\n## RESPONSE MODE: ELEVATED SUPPORT\n"
+                "The user is experiencing acute distress or emotional difficulty. "
+                "Respond with supportive care:\n"
+                "- 2-3 paragraphs maximum - be supportive but not overwhelming\n"
+                "- Validate their feelings and acknowledge the difficulty\n"
+                "- Offer perspective or gentle suggestions if appropriate\n"
+                "- Be warm and empathetic, but don't over-therapize\n"
+                "- Focus on their specific situation, not generic coping advice"
+            )
+        elif tone_level == CrisisLevel.CONCERN:
+            # LIGHT_SUPPORT: Brief validation for moderate concern
+            return (
+                "\n\n## RESPONSE MODE: LIGHT SUPPORT\n"
+                "The user is expressing concern, anxiety, or stress about something. "
+                "Respond with brief, grounded validation:\n"
+                "- 2-4 sentences - acknowledge without expanding unnecessarily\n"
+                "- \"That sucks\" + brief validation is often sufficient\n"
+                "- Don't offer unsolicited advice or try to solve their problem\n"
+                "- Match their energy - if they're venting, let them vent\n"
+                "- Only expand if they explicitly ask for more"
+            )
+        else:  # CrisisLevel.CONVERSATIONAL
+            # CONVERSATIONAL: Default friend mode - most interactions
+            return (
+                "\n\n## RESPONSE MODE: CONVERSATIONAL\n"
+                "This is casual conversation. Respond naturally as a friend:\n"
+                "- 1-3 sentences for status updates or simple observations\n"
+                "- Match the user's energy and length\n"
+                "- No therapeutic language unless the user is specifically asking for advice\n"
+                "- Be direct and natural - \"cool\" or \"yeah, that makes sense\" is often enough\n"
+                "- For world events/news they're observing: engage intellectually, not therapeutically\n"
+                "- Assume competence - they don't need validation for routine thoughts\n"
+                "- Save depth for when they actually request it or the topic warrants it"
+            )
+
+    # ---------- 2) Commands & Topic ----------
     def handle_commands(self, user_input: str) -> Optional[Tuple[str, Dict[str, Any]]]:
         if user_input.startswith("/topic "):
             new_topic = user_input.replace("/topic ", "").strip()
@@ -254,6 +327,44 @@ class DaemonOrchestrator:
             pass
 
         # ---------------------------------------------------------------------
+        # 0.5) Tone Detection (crisis vs. casual) - runs for both RAW and ENHANCED modes
+        # ---------------------------------------------------------------------
+        conversation_history = None
+        if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
+            try:
+                # Get recent conversation history for context-aware tone detection
+                recent = self.memory_system.corpus_manager.get_recent_memories(limit=3)
+                conversation_history = recent if recent else None
+            except Exception as e:
+                if self.logger:
+                    self.logger.debug(f"[Orchestrator] Failed to get conversation history for tone detection: {e}")
+
+        # Detect tone/crisis level
+        tone_analysis = detect_crisis_level(
+            message=user_input,
+            conversation_history=conversation_history,
+            model_manager=self.model_manager
+        )
+
+        # Log tone analysis (backend only)
+        tone_log_msg = format_tone_log(tone_analysis, user_input)
+        if self.logger:
+            self.logger.info(f"[TONE] {tone_log_msg}")
+
+        # Log tone shifts
+        if should_log_tone_shift(self.current_tone_level, tone_analysis.level):
+            shift_log = format_tone_shift_log(
+                self.current_tone_level,
+                tone_analysis.level,
+                tone_analysis.trigger
+            )
+            if self.logger:
+                self.logger.warning(f"[TONE_SHIFT] {shift_log}")
+
+        # Update current tone level (will be used later when injecting tone instructions)
+        self.current_tone_level = tone_analysis.level
+
+        # ---------------------------------------------------------------------
         # 1) File processing (enhanced path only)
         # ---------------------------------------------------------------------
         combined_text = user_input
@@ -268,11 +379,13 @@ class DaemonOrchestrator:
         # 1.5) Inline fact extraction for heavy topics/long messages
         # ---------------------------------------------------------------------
         fresh_facts: List[Dict] = []
+        is_heavy_topic = False  # Track for response token allocation
         if not use_raw_mode and getattr(self, "memory_system", None):
             try:
                 # Use async query analysis with LLM for best accuracy
                 from utils.query_checker import analyze_query_async
                 qinfo = await analyze_query_async(user_input, model_manager=self.model_manager)
+                is_heavy_topic = qinfo.is_heavy_topic  # Save for later use
 
                 if qinfo.is_heavy_topic:
                     if getattr(self, "logger", None):
@@ -477,7 +590,26 @@ class DaemonOrchestrator:
                     self.logger.debug(f"[Orchestrator] Thread context injection failed: {e}")
 
         # ---------------------------------------------------------------------
-        # 4.5) Add thinking block instruction to system prompt
+        # 4.5) Add tone mode instructions (crisis vs. casual)
+        # ---------------------------------------------------------------------
+        if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
+            # Get tone level from the orchestrator's state
+            tone_level = getattr(self, "current_tone_level", None)
+
+            if self.logger:
+                self.logger.info(f"[PREPARE_PROMPT] Tone level: {tone_level}")
+
+            if tone_level:
+                tone_instructions = self._get_tone_instructions(tone_level)
+                system_prompt = system_prompt.rstrip() + tone_instructions
+                if self.logger:
+                    self.logger.info(f"[PREPARE_PROMPT] Injected tone instructions for {tone_level.value}")
+            else:
+                if self.logger:
+                    self.logger.warning("[PREPARE_PROMPT] No tone level set - skipping tone instructions")
+
+        # ---------------------------------------------------------------------
+        # 4.6) Add thinking block instruction to system prompt
         # ---------------------------------------------------------------------
         if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
             thinking_instruction = (
@@ -621,6 +753,22 @@ class DaemonOrchestrator:
                 )
             except Exception:
                 use_bestof = bool(_enable_bestof)
+
+            # ---------------------------------------------------------------------
+            # Determine max_tokens based on topic heaviness
+            # ---------------------------------------------------------------------
+            try:
+                from config.app_config import DEFAULT_MAX_TOKENS, HEAVY_TOPIC_MAX_TOKENS
+                response_max_tokens = HEAVY_TOPIC_MAX_TOKENS if is_heavy_topic else DEFAULT_MAX_TOKENS
+                if self.logger:
+                    self.logger.info(
+                        f"[Orchestrator] Using {'HEAVY' if is_heavy_topic else 'NORMAL'} token allocation: "
+                        f"{response_max_tokens} tokens"
+                    )
+            except Exception as e:
+                response_max_tokens = None  # Use model defaults
+                if self.logger:
+                    self.logger.debug(f"[Orchestrator] Failed to load token config: {e}")
 
             if use_bestof and not use_raw_mode:
                 try:
@@ -783,7 +931,7 @@ class DaemonOrchestrator:
                     # Accumulate full response (no yielding yet - need to parse thinking block)
                     full_response = ""
                     async for chunk in self.response_generator.generate_streaming_response(
-                        prompt, model_name, system_prompt=system_prompt
+                        prompt, model_name, system_prompt=system_prompt, max_tokens=response_max_tokens
                     ):
                         full_response += (chunk + " ")
                     full_response = full_response.strip()
@@ -791,7 +939,7 @@ class DaemonOrchestrator:
                 # Accumulate full response (no yielding yet - need to parse thinking block first)
                 full_response = ""
                 async for chunk in self.response_generator.generate_streaming_response(
-                    prompt, model_name, system_prompt=system_prompt
+                    prompt, model_name, system_prompt=system_prompt, max_tokens=response_max_tokens
                 ):
                     full_response += (chunk + " ")
                 full_response = full_response.strip()
