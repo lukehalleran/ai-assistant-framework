@@ -37,7 +37,7 @@ memory:
 
     '
   retrieve_conversations: true
-  max_conversations: 10
+  max_conversations: 15
   conversation_collection: conversations
   retrieve_summaries: true
   max_summaries: 10
@@ -45,6 +45,10 @@ memory:
   summary_interval: 20
   max_facts: 15
   max_reflections: 6
+  # Hybrid retrieval: combine recent + semantic for summaries/reflections
+  # Enabled by default; falls back to pure recency if unavailable
+  hybrid_summaries_enabled: true
+  hybrid_reflections_enabled: true
 models:
   default: llama
   dream_model: gpt-neo
@@ -52,7 +56,8 @@ models:
   load_local_model: true
   local_model_context_limit: 4096
   api_model_context_limit: 128000
-  default_max_tokens: 8192
+  default_max_tokens: 1000
+  heavy_topic_max_tokens: 4096
   default_top_p: 0.9
   default_top_k: 5
   default_temperature: 0.75
@@ -71,6 +76,12 @@ gating:
   rerank_use_llm: false
   cross_encoder_weight: 0.9
   topic_confidence_threshold: 0.85
+  # Cosine filtering thresholds for summaries/reflections (0.0-1.0)
+  # Higher = more selective filtering
+  # Summaries: 0.30 (dense content should be clearly relevant)
+  # Reflections: 0.25 (more abstract, wider net)
+  summary_cosine_threshold: 0.30
+  reflection_cosine_threshold: 0.25
   score_weights:
     relevance: 0.55
     recency: 0.3

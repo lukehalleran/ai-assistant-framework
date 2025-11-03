@@ -23,6 +23,9 @@ Module Contract
 import asyncio
 import sys
 import os
+import signal
+import threading
+import time
 from datetime import datetime
 
 # DEBUG: Check environment at the very start of main.py
@@ -272,6 +275,103 @@ async def inspect_summaries():
         print(f"  {s.get('response', '')[:200]}...\n{'-' * 40}")
 
 
+# Globals for shutdown coordination
+_shutdown_requested = False
+_orchestrator_ref = None
+_last_activity_time = time.time()
+_idle_check_interval = int(os.getenv("IDLE_CHECK_INTERVAL_MINUTES", "30"))  # Default 30 minutes
+_idle_timeout_minutes = int(os.getenv("IDLE_TIMEOUT_MINUTES", "60"))  # Default 1 hour
+
+
+def _run_shutdown_tasks(orchestrator):
+    """Run reflection and summary tasks - callable from signal handler or idle thread."""
+    global _shutdown_requested
+    if _shutdown_requested:
+        return  # Already shutting down
+
+    _shutdown_requested = True
+    logger.info("[Shutdown] Running reflection and summary tasks...")
+
+    try:
+        # Gather session data
+        session_convos = []
+        session_summaries = []
+
+        try:
+            logger_obj = getattr(orchestrator, "conversation_logger", None)
+            if logger_obj and hasattr(logger_obj, "buffer"):
+                session_convos = list(logger_obj.buffer)
+        except Exception:
+            pass
+
+        try:
+            pb = getattr(orchestrator, "prompt_builder", None)
+            if pb and isinstance(getattr(pb, "_last_summaries", None), list):
+                session_summaries = list(pb._last_summaries)
+        except Exception:
+            pass
+
+        # Run shutdown tasks
+        async def _do_shutdown():
+            try:
+                await orchestrator.memory_system.run_shutdown_reflection(
+                    session_conversations=session_convos,
+                    session_summaries=session_summaries
+                )
+                logger.info("[Shutdown] Reflection completed")
+            except Exception as e:
+                logger.error(f"[Shutdown] Reflection failed: {e}")
+
+            try:
+                await orchestrator.memory_system.process_shutdown_memory(
+                    session_conversations=session_convos
+                )
+                logger.info("[Shutdown] Summary/fact processing completed")
+            except Exception as e:
+                logger.error(f"[Shutdown] Summary/fact processing failed: {e}")
+
+        # Run in new event loop
+        asyncio.run(_do_shutdown())
+
+    except Exception as e:
+        logger.error(f"[Shutdown] Task execution failed: {e}")
+
+
+def _signal_handler(signum, frame):
+    """Handle SIGTERM/SIGINT for graceful shutdown."""
+    logger.info(f"[Signal] Received signal {signum}, triggering shutdown tasks...")
+    if _orchestrator_ref:
+        _run_shutdown_tasks(_orchestrator_ref)
+    sys.exit(0)
+
+
+def _idle_monitor_thread():
+    """Background thread to detect GUI idle state and trigger shutdown tasks."""
+    global _last_activity_time, _shutdown_requested
+
+    while not _shutdown_requested:
+        time.sleep(_idle_check_interval * 60)  # Check every N minutes
+
+        if _shutdown_requested:
+            break
+
+        idle_seconds = time.time() - _last_activity_time
+        idle_minutes = idle_seconds / 60
+
+        if idle_minutes >= _idle_timeout_minutes:
+            logger.info(f"[Idle Monitor] GUI idle for {idle_minutes:.1f} minutes, running shutdown tasks...")
+            if _orchestrator_ref:
+                _run_shutdown_tasks(_orchestrator_ref)
+                # Reset activity time after shutdown tasks
+                _last_activity_time = time.time()
+
+
+def update_activity_timestamp():
+    """Call this whenever user interacts with GUI to reset idle timer."""
+    global _last_activity_time
+    _last_activity_time = time.time()
+
+
 if __name__ == "__main__":
     try:
         mode = sys.argv[1] if len(sys.argv) > 1 else "gui"
@@ -287,6 +387,20 @@ if __name__ == "__main__":
             asyncio.run(test_prompt_with_summaries())
         else:
             orchestrator = build_orchestrator()
+
+            # Store orchestrator reference for signal handlers and idle monitor
+            _orchestrator_ref = orchestrator
+
+            # Register signal handlers for graceful shutdown
+            signal.signal(signal.SIGTERM, _signal_handler)
+            signal.signal(signal.SIGINT, _signal_handler)
+            logger.info("[Startup] Registered signal handlers for SIGTERM and SIGINT")
+
+            # Start idle monitoring thread
+            idle_thread = threading.Thread(target=_idle_monitor_thread, daemon=True, name="IdleMonitor")
+            idle_thread.start()
+            logger.info(f"[Startup] Started idle monitor (check every {_idle_check_interval}m, timeout {_idle_timeout_minutes}m)")
+
             launch_gui(orchestrator)
 
     except KeyboardInterrupt:

@@ -253,6 +253,15 @@ class MemoryCoordinator:
     # In memory/memory_coordinator.py (add to the class)
 
 
+    async def get_recent_facts(self, limit: int = 5) -> List[Dict]:
+        """Fetch the most recent facts by timestamp, regardless of query relevance."""
+        try:
+            recent = self.chroma_store.get_recent("facts", limit=limit)
+            return recent or []
+        except Exception as e:
+            logger.debug(f"[MemoryCoordinator][RecentFacts] retrieval failed: {e}")
+            return []
+
     async def get_facts(self, query: str, limit: int = 8) -> List[Dict]:
         results: List[Dict] = []
         try:
@@ -713,6 +722,168 @@ class MemoryCoordinator:
 
         return out[:limit]
 
+    async def get_reflections_hybrid(self, query: str, limit: int = 3) -> List[Dict]:
+        """
+        Hybrid retrieval for reflections: n/3 recent + 2n/3 semantic, with deduplication.
+
+        Design Rationale: Why Different Ratio Than Summaries?
+        ======================================================
+
+        Reflections differ from summaries in temporal sensitivity:
+
+        Summaries (1:3 recent:semantic):
+        - Capture stable factual content about conversations
+        - Old summaries remain relevant (e.g., "Discussed Python typing")
+        - Favor semantic recall over recency
+
+        Reflections (1:2 recent:semantic):
+        - Capture behavioral patterns and meta-patterns
+        - User preferences/patterns evolve over time
+        - Recent reflections override outdated patterns
+        - Higher recency bias (33% vs 25%) ensures fresh behavioral context
+
+        Example:
+        -------
+        Reflection from 3 months ago: "User prefers verbose explanations"
+        Reflection from last week: "User prefers concise, bullet-point format"
+        → The 1:2 ratio ensures the recent behavioral shift surfaces
+
+        Budget Allocation:
+        -----------------
+        The 1:2 ratio (recent:semantic) optimizes for:
+        - At least 1 recent item for current behavioral context
+        - Majority semantic for long-term pattern recognition
+        - Example: limit=3 → 1 recent + 2 semantic
+
+        Deduplication Strategy:
+        ----------------------
+        Same as summaries: timestamp + content prefix matching
+        - Prevents duplicate reflections from corpus and ChromaDB
+        - Recent items appear first in results
+
+        Fallback Behavior:
+        -----------------
+        If semantic search fails or returns empty:
+        - Fill remaining budget with additional recent reflections
+        - Ensures we always return 'limit' items if available
+
+        Args:
+            query: User query or rewritten retrieval query for semantic search
+            limit: Total number of reflections to return (default 3)
+
+        Returns:
+            Deduplicated list of reflections (recent-first ordering), max length=limit
+            Each dict contains: content, timestamp, type='reflection', source, tags
+        """
+        if limit < 1:
+            return []
+
+        # Budget allocation: 1:2 ratio (higher recency than summaries)
+        recent_budget = max(1, limit // 3)
+        semantic_budget = limit - recent_budget
+
+        logger.debug(
+            f"[Reflections Hybrid] Fetching with budgets: recent={recent_budget}, "
+            f"semantic={semantic_budget}, total={limit}"
+        )
+
+        # Fetch recent (from corpus via existing get_reflections)
+        recent = []
+        try:
+            # get_reflections is already async
+            recent_all = await self.get_reflections(limit=recent_budget * 2)
+            recent = recent_all if recent_all else []
+        except Exception as e:
+            logger.debug(f"[Reflections Hybrid] Error fetching recent: {e}")
+            recent = []
+
+        # Fetch semantic (from ChromaDB)
+        semantic = []
+        if query and query.strip():
+            try:
+                coll = self.chroma_store.collections.get("reflections") if getattr(self, "chroma_store", None) else None
+                if coll and coll.count() > 0:
+                    # Fetch 2x for dedup buffer
+                    results = self.chroma_store.query_collection(
+                        'reflections',
+                        query,
+                        n_results=semantic_budget * 2
+                    )
+                    semantic = [
+                        {
+                            'content': r.get('content', ''),
+                            'timestamp': r.get('metadata', {}).get('timestamp'),
+                            'type': 'reflection',
+                            'tags': ['source:semantic'],
+                            'source': 'semantic'
+                        }
+                        for r in results
+                    ]
+            except Exception as e:
+                logger.debug(f"[Reflections Hybrid] Error fetching semantic: {e}")
+                semantic = []
+
+        # Deduplication: match by timestamp + content prefix
+        def get_item_id(item):
+            """Extract unique identifier for deduplication."""
+            if not isinstance(item, dict):
+                return str(item)[:50]
+
+            ts = item.get("timestamp", "")
+            # Handle both datetime and string timestamps
+            if hasattr(ts, 'isoformat'):
+                ts_str = ts.isoformat()
+            else:
+                ts_str = str(ts)
+
+            content_prefix = (item.get("content", "") or "")[:50].strip()
+            return f"ts:{ts_str}::{content_prefix}"
+
+        # Build result: recent first (preserves behavioral evolution)
+        result = []
+        seen_ids = set()
+
+        # Add recent items (up to budget)
+        for item in recent[:recent_budget]:
+            item_id = get_item_id(item)
+            if item_id not in seen_ids:
+                # Mark source for tracking
+                if isinstance(item, dict):
+                    item['source'] = 'recent'
+                result.append(item)
+                seen_ids.add(item_id)
+
+        # Fill remaining budget with semantic hits (skip dupes)
+        remaining = limit - len(result)
+        for item in semantic:
+            if remaining <= 0:
+                break
+            item_id = get_item_id(item)
+            if item_id not in seen_ids:
+                result.append(item)
+                seen_ids.add(item_id)
+                remaining -= 1
+
+        # Fallback: if semantic was empty/failed, fill with more recents
+        if len(result) < limit and not semantic:
+            for item in recent[recent_budget:]:
+                if len(result) >= limit:
+                    break
+                item_id = get_item_id(item)
+                if item_id not in seen_ids:
+                    if isinstance(item, dict):
+                        item['source'] = 'recent_fallback'
+                    result.append(item)
+                    seen_ids.add(item_id)
+
+        logger.debug(
+            f"[Reflections Hybrid] Retrieved {len(result)} reflections "
+            f"(recent={sum(1 for r in result if r.get('source','').startswith('recent'))}, "
+            f"semantic={sum(1 for r in result if r.get('source')=='semantic')})"
+        )
+
+        return result[:limit]
+
     # Optional: generic search by collection/type name (used by some callers)
     async def search_by_type(self, type_name: str, query: str = "", limit: int = 5):
         coll_name = {
@@ -933,9 +1104,20 @@ class MemoryCoordinator:
     async def get_memories(self, query: str, limit: int = 20, topic_filter: Optional[str] = None) -> List[Dict]:
         """
         Unified retrieval pipeline: gather → combine → gate → rank → (threshold) → update → (persist) → slice
+
+        Special handling for meta-conversational queries (e.g., "do you recall", "we discussed"):
+        - Prioritizes recent episodic memories with high recency weighting
+        - Skips semantic filtering to avoid cross-contamination from unrelated conversations
+        - Returns chronological results from current conversation thread
         """
+        # Check if this is a meta-conversational query
+        from utils.query_checker import is_meta_conversational
+        if is_meta_conversational(query):
+            logger.debug(f"[MemoryCoordinator] Detected meta-conversational query: {query[:50]}...")
+            return await self._get_meta_conversational_memories(query, limit, topic_filter)
+
         cfg = {
-            'recent_count': 5,
+            'recent_count': 1,
             'semantic_count': max(30, limit * 2),
             'max_memories': limit,
         }
@@ -997,6 +1179,127 @@ class MemoryCoordinator:
     # ---------------------------
     # Internals: gather
     # ---------------------------
+
+    async def _get_meta_conversational_memories(
+        self, query: str, limit: int = 20, topic_filter: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Special retrieval for meta-conversational queries asking about conversation history.
+
+        Strategy:
+        1. Detect temporal window from query (e.g., "yesterday", "last week")
+        2. Dynamically adjust retrieval limit based on temporal scope
+        3. Retrieve recent episodic memories
+        4. Sort chronologically (newest first)
+        5. Apply gentle recency weighting that preserves older memories
+        6. Skip semantic search to avoid cross-contamination from other conversations
+
+        Args:
+            query: The meta-conversational query (e.g., "do you recall...")
+            limit: Maximum memories to return
+            topic_filter: Optional topic to filter by
+
+        Returns:
+            List of recent episodic memories in reverse chronological order
+        """
+        logger.debug("[MemoryCoordinator] Using meta-conversational retrieval strategy")
+
+        # DYNAMIC TEMPORAL WINDOW DETECTION
+        # Detect how far back the user is asking about based on temporal markers
+        from utils.query_checker import extract_temporal_window
+        temporal_days = extract_temporal_window(query)
+
+        # Adjust retrieval limits based on temporal scope
+        if temporal_days == 0:
+            # No specific temporal marker - use default (3-5 days)
+            recent_limit = min(limit * 5, 50)
+            return_multiplier = 3
+            logger.debug("[MemoryCoordinator] No temporal marker detected, using default window (50 memories)")
+        elif temporal_days <= 2:
+            # Yesterday / recent (1-2 days)
+            recent_limit = min(limit * 3, 30)
+            return_multiplier = 2
+            logger.debug(f"[MemoryCoordinator] Short temporal window detected ({temporal_days}d), retrieving {recent_limit} memories")
+        elif temporal_days <= 7:
+            # Last week (3-7 days)
+            recent_limit = min(limit * 8, 80)
+            return_multiplier = 4
+            logger.debug(f"[MemoryCoordinator] Medium temporal window detected ({temporal_days}d), retrieving {recent_limit} memories")
+        else:
+            # Last month or longer (8+ days)
+            recent_limit = min(limit * 15, 150)
+            return_multiplier = 6
+            logger.debug(f"[MemoryCoordinator] Long temporal window detected ({temporal_days}d), retrieving {recent_limit} memories")
+
+        topic_filter = topic_filter or self.current_topic
+
+        # Gather recent conversations (episodic memories)
+        recent = self._get_recent_conversations(k=recent_limit)
+
+        # IMPORTANT: Do NOT filter by topic for meta-conversational queries!
+        # When user asks "do you recall...", they're explicitly asking about past conversations
+        # which may have been on ANY topic. Topic filtering would exclude relevant memories.
+        # Example: "Do you recall when I said I woke up at noon?" should find that memory
+        # even if it was tagged with a different topic than the current query.
+        logger.debug(f"[MemoryCoordinator] Meta-conversational: skipping topic filter (preserving all {len(recent)} recent memories)")
+
+        # For meta-conversational queries, we want to preserve ALL recent memories
+        # without aggressive filtering, since the user is explicitly asking about
+        # past conversations which may be from days/weeks ago.
+        #
+        # Apply LIGHT recency weighting (mostly for sorting order) but don't filter out
+        # older memories - the user might be asking about something from "last week"
+        #
+        # DYNAMIC DECAY: Adjust decay rate based on temporal window
+        # Larger temporal window = gentler decay (preserve older memories)
+        if temporal_days == 0:
+            decay_divisor = 48.0  # Default: 2 days (48 hours)
+        elif temporal_days <= 2:
+            decay_divisor = 24.0  # Short window: 1 day
+        elif temporal_days <= 7:
+            decay_divisor = 96.0  # Medium window: 4 days
+        else:
+            decay_divisor = 168.0  # Long window: 7 days
+
+        for mem in recent:
+            ts = mem.get('timestamp', datetime.now())
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except Exception:
+                    ts = datetime.now()
+
+            # Calculate age in hours
+            age_hours = (datetime.now() - ts).total_seconds() / 3600.0
+
+            # GENTLER recency decay than normal: preserve memories from several days ago
+            # Score = 1.0 for recent, decays slowly based on temporal window
+            recency_score = 1.0 / (1.0 + (age_hours / decay_divisor))
+
+            # Use recency primarily for sorting, not aggressive filtering
+            current_relevance = mem.get('relevance_score', 0.5)
+            mem['final_score'] = (recency_score * 0.4) + (current_relevance * 0.6)
+            mem['recency_score'] = recency_score
+
+            # Mark as meta-conversational for debugging
+            mem.setdefault('metadata', {})['meta_conversational'] = True
+
+        # Sort by timestamp (chronological - newest first) since all are relevant
+        recent.sort(key=lambda m: m.get('timestamp', datetime.min), reverse=True)
+
+        # Return MORE memories than requested to ensure we capture older conversations
+        # The multiplier is dynamically adjusted based on detected temporal window
+        result = recent[:min(len(recent), limit * return_multiplier)]
+
+        logger.debug(
+            f"[MemoryCoordinator] Meta-conversational retrieval returned {len(result)} memories "
+            f"(requested: {limit}, multiplier: {return_multiplier}x, temporal_days: {temporal_days}, available: {len(recent)})"
+        )
+
+        # Update access tracking
+        self._update_truth_scores_on_access(result)
+
+        return result
 
     def _get_recent_conversations(self, k: int = 5) -> List[Dict]:
         """Get recent conversations from corpus (JSON)"""
@@ -1122,7 +1425,16 @@ class MemoryCoordinator:
         """
         Return top-k semantic memories across conversations, summaries, reflections
         using the gate system's cosine score. No recent-corpus bypass.
+
+        Special handling: If this is a meta-conversational query (e.g., "do you recall"),
+        route to specialized retrieval that prioritizes recent episodic memories.
         """
+        # Check if this is a meta-conversational query asking about conversation history
+        from utils.query_checker import is_meta_conversational
+        if is_meta_conversational(query):
+            logger.debug(f"[MemoryCoordinator][Semantic] Detected meta-conversational query, routing to specialized retrieval: {query[:50]}...")
+            return await self._get_meta_conversational_memories(query, limit, topic_filter=None)
+
         try:
             raw = await self._get_semantic_memories(query, n_results=max(30, limit * 3))
         except Exception:
@@ -1837,6 +2149,155 @@ class MemoryCoordinator:
                     'type': 'summary'} for r in results]
         except:
             return []
+
+    def get_summaries_hybrid(self, query: str, limit: int = 4) -> List[Dict]:
+        """
+        Hybrid retrieval: n/4 recent + 3n/4 semantic, with deduplication.
+
+        Design Rationale: Why Hybrid Retrieval?
+        ========================================
+
+        Pure recency loses relevant history as conversations grow. Pure semantic
+        misses temporal context. Hybrid balances both:
+
+        - Recent summaries (n/4): Maintain conversation flow and temporal context
+        - Semantic summaries (3n/4): Surface relevant past topics via similarity
+        - Deduplication: Prevent wasting budget on duplicates when recent items
+          are also semantically relevant
+
+        Budget Allocation:
+        -----------------
+        The 1:3 ratio (recent:semantic) optimizes for:
+        - At least 1 recent item for temporal grounding (even if limit=4)
+        - Majority semantic for long-term recall as history scales
+        - Example: limit=4 → 1 recent + 3 semantic
+
+        Deduplication Strategy:
+        ----------------------
+        Items matched by: timestamp + content prefix (50 chars)
+        - Timestamp catches exact duplicates (same generation time)
+        - Content prefix catches rewrites/variations
+        - Recent items prioritized in final result (appear first)
+
+        Fallback Behavior:
+        -----------------
+        If semantic search fails or returns empty:
+        - Fill remaining budget with additional recent summaries
+        - Ensures we always return 'limit' items if available
+
+        Args:
+            query: User query or rewritten retrieval query for semantic search
+            limit: Total number of summaries to return (default 4)
+
+        Returns:
+            Deduplicated list of summaries (recent-first ordering), max length=limit
+            Each dict contains: content, timestamp, type='summary', source
+        """
+        if limit < 1:
+            return []
+
+        # Budget allocation: at least 1 recent
+        recent_budget = max(1, limit // 4)
+        semantic_budget = limit - recent_budget
+
+        logger.debug(
+            f"[Summaries Hybrid] Fetching with budgets: recent={recent_budget}, "
+            f"semantic={semantic_budget}, total={limit}"
+        )
+
+        # Fetch recent (from corpus, timestamp-sorted)
+        recent = []
+        try:
+            if hasattr(self.corpus_manager, 'get_summaries'):
+                # Fetch 2x for dedup buffer
+                recent = self.corpus_manager.get_summaries(recent_budget * 2)
+        except Exception as e:
+            logger.debug(f"[Summaries Hybrid] Error fetching recent: {e}")
+            recent = []
+
+        # Fetch semantic (from ChromaDB, similarity-sorted)
+        semantic = []
+        if query and query.strip():
+            try:
+                # Fetch 2x for dedup buffer
+                results = self.chroma_store.query_collection(
+                    'summaries',
+                    query,
+                    n_results=semantic_budget * 2
+                )
+                semantic = [
+                    {
+                        'content': r.get('content', ''),
+                        'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
+                        'type': 'summary',
+                        'source': 'semantic'
+                    }
+                    for r in results
+                ]
+            except Exception as e:
+                logger.debug(f"[Summaries Hybrid] Error fetching semantic: {e}")
+                semantic = []
+
+        # Deduplication: match by timestamp + content prefix
+        def get_item_id(item):
+            """Extract unique identifier for deduplication."""
+            if not isinstance(item, dict):
+                return str(item)[:50]
+
+            ts = item.get("timestamp", "")
+            # Handle both datetime and string timestamps
+            if hasattr(ts, 'isoformat'):
+                ts_str = ts.isoformat()
+            else:
+                ts_str = str(ts)
+
+            content_prefix = (item.get("content", "") or "")[:50].strip()
+            return f"ts:{ts_str}::{content_prefix}"
+
+        # Build result: recent first (preserves temporal flow)
+        result = []
+        seen_ids = set()
+
+        # Add recent items (up to budget)
+        for item in recent[:recent_budget]:
+            item_id = get_item_id(item)
+            if item_id not in seen_ids:
+                # Mark source for tracking
+                if isinstance(item, dict):
+                    item['source'] = 'recent'
+                result.append(item)
+                seen_ids.add(item_id)
+
+        # Fill remaining budget with semantic hits (skip dupes)
+        remaining = limit - len(result)
+        for item in semantic:
+            if remaining <= 0:
+                break
+            item_id = get_item_id(item)
+            if item_id not in seen_ids:
+                result.append(item)
+                seen_ids.add(item_id)
+                remaining -= 1
+
+        # Fallback: if semantic was empty/failed, fill with more recents
+        if len(result) < limit and not semantic:
+            for item in recent[recent_budget:]:
+                if len(result) >= limit:
+                    break
+                item_id = get_item_id(item)
+                if item_id not in seen_ids:
+                    if isinstance(item, dict):
+                        item['source'] = 'recent_fallback'
+                    result.append(item)
+                    seen_ids.add(item_id)
+
+        logger.debug(
+            f"[Summaries Hybrid] Retrieved {len(result)} summaries "
+            f"(recent={sum(1 for r in result if r.get('source','').startswith('recent'))}, "
+            f"semantic={sum(1 for r in result if r.get('source')=='semantic')})"
+        )
+
+        return result[:limit]
 
     def get_dreams(self, limit: int = 2) -> List[Dict]:
         if hasattr(self.corpus_manager, 'get_dreams'):

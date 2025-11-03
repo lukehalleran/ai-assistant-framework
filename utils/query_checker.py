@@ -8,6 +8,9 @@ lightweight heuristics that help the orchestrator and gate system make
 fast decisions without model calls.
 
 Now includes heavy topic classification for inline fact extraction.
+Heavy topics include: political violence, human rights crises, mental health
+emergencies (depression, anxiety, suicidal ideation), emotional distress
+(grief, trauma, relationship crises), and personal safety concerns.
 """
 
 import os
@@ -32,6 +35,51 @@ QUESTION_LEADS: tuple[str, ...] = (
 COMMAND_SIGNS: tuple[str, ...] = (
     "/", "please ", "do ", "tell me to ", "create ", "generate ", "write ", "summarize ",
 )
+
+META_CONVERSATIONAL_MARKERS: tuple[str, ...] = (
+    "do you recall", "do you remember", "did you", "did we",
+    "we discussed", "we talked about", "last time", "the other day",
+    "you said", "you mentioned", "you told me",
+    "earlier you", "before you", "didn't we", "haven't we",
+    "recall the", "remember when", "remember the"
+)
+
+# Temporal markers for detecting time-based memory queries
+TEMPORAL_MARKERS = {
+    # Yesterday/recent
+    "yesterday": 1,
+    "last night": 1,
+    "this morning": 1,
+    "earlier today": 1,
+
+    # Days ago
+    "days ago": 3,
+    "few days ago": 3,
+    "couple days ago": 2,
+    "other day": 2,
+
+    # Last week
+    "last week": 7,
+    "week ago": 7,
+    "few weeks ago": 14,
+    "couple weeks ago": 14,
+
+    # Longer periods
+    "last month": 30,
+    "month ago": 30,
+    "while back": 14,
+    "while ago": 14,
+    "long time ago": 30,
+
+    # Specific days
+    "monday": 7,
+    "tuesday": 7,
+    "wednesday": 7,
+    "thursday": 7,
+    "friday": 7,
+    "saturday": 7,
+    "sunday": 7,
+}
 
 
 def _normalize(q: str) -> str:
@@ -71,6 +119,66 @@ def is_command(q: str) -> bool:
     return ql.startswith(COMMAND_SIGNS)
 
 
+def is_meta_conversational(q: str) -> bool:
+    """True if the query is asking about the conversation history itself."""
+    if not q:
+        return False
+    ql = _normalize(q)
+    return any(marker in ql for marker in META_CONVERSATIONAL_MARKERS)
+
+
+def extract_temporal_window(q: str) -> int:
+    """
+    Extract the temporal window (in days) from a query based on time markers.
+
+    This analyzes queries for temporal references like "yesterday", "last week",
+    "few days ago" and returns an appropriate retrieval window in days.
+
+    Args:
+        q: Query text
+
+    Returns:
+        Number of days to look back. Returns 0 if no temporal markers found.
+        Examples:
+            "yesterday" -> 1
+            "few days ago" -> 3
+            "last week" -> 7
+            "last month" -> 30
+            "no temporal marker" -> 0
+    """
+    if not q:
+        return 0
+
+    ql = _normalize(q)
+
+    # Check for temporal markers and find the largest window
+    max_days = 0
+    for marker, days in TEMPORAL_MARKERS.items():
+        if marker in ql:
+            max_days = max(max_days, days)
+
+    # Also check for explicit date references (e.g., "Nov 1st", "November 1")
+    import re
+
+    # Pattern: Month name/abbreviation + day number (with optional suffixes like "st", "nd", "rd", "th")
+    date_pattern = r'\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|september|oct|october|nov|november|dec|december)\s*\d{1,2}(?:st|nd|rd|th)?\b'
+    if re.search(date_pattern, ql):
+        # If explicit date mentioned, assume up to 30 days back
+        max_days = max(max_days, 30)
+
+    # Pattern: "N days ago" where N is a number
+    num_days_pattern = r'(\d+)\s+days?\s+ago'
+    match = re.search(num_days_pattern, ql)
+    if match:
+        try:
+            num_days = int(match.group(1))
+            max_days = max(max_days, num_days)
+        except ValueError:
+            pass
+
+    return max_days
+
+
 def keyword_tokens(q: str, min_len: int = 3) -> List[str]:
     ql = _normalize(q)
     return [t for t in ql.split() if len(t) >= min_len]
@@ -88,6 +196,7 @@ class QueryAnalysis:
     char_count: int
     intents: Set[str]
     is_heavy_topic: bool = False  # Crisis/sensitive topics requiring inline fact extraction
+    is_meta_conversational: bool = False  # Query asking about conversation history itself
 
 
 def analyze_query(q: str, model_manager=None) -> QueryAnalysis:
@@ -108,11 +217,14 @@ def analyze_query(q: str, model_manager=None) -> QueryAnalysis:
     q_is_command = is_command(q)
     q_is_deictic = is_deictic(q)
     q_is_follow = is_deictic_followup(q)
+    q_is_meta = is_meta_conversational(q)
 
     if q_is_question:
         intents.add("question")
     if q_is_command:
         intents.add("command")
+    if q_is_meta:
+        intents.add("meta_conversational")
     if not intents:
         intents.add("statement")
 
@@ -130,6 +242,7 @@ def analyze_query(q: str, model_manager=None) -> QueryAnalysis:
         char_count=len(q or ""),
         intents=intents,
         is_heavy_topic=q_is_heavy,
+        is_meta_conversational=q_is_meta,
     )
 
 
@@ -167,6 +280,7 @@ async def analyze_query_async(q: str, model_manager=None) -> QueryAnalysis:
                 char_count=analysis.char_count,
                 intents=analysis.intents,
                 is_heavy_topic=is_heavy,
+                is_meta_conversational=analysis.is_meta_conversational,
             )
         except Exception as e:
             logger.debug(f"[QueryChecker] LLM heavy topic classification failed: {e}")
@@ -181,7 +295,7 @@ HEAVY_TOPIC_MODEL = os.getenv("HEAVY_TOPIC_MODEL", "gpt-4o-mini")
 HEAVY_TOPIC_TIMEOUT = float(os.getenv("HEAVY_TOPIC_TIMEOUT", "2.0"))
 HEAVY_TOPIC_MAX_TOKENS = int(os.getenv("HEAVY_TOPIC_MAX_TOKENS", "10"))
 
-# Heavy topic keywords (crisis, violence, human rights)
+# Heavy topic keywords (crisis, violence, human rights, emotional/mental health)
 HEAVY_KEYWORDS = {
     # Political violence & enforcement
     "raid", "raids", "ice", "deportation", "deported", "arrested", "arrest", "arrests",
@@ -206,19 +320,47 @@ HEAVY_KEYWORDS = {
     # Authoritarianism
     "authoritarian", "dictatorship", "oppression", "crackdown",
     "martial law", "curfew", "lockdown",
+
+    # Mental health & emotional distress
+    "depressed", "depression", "anxiety", "anxious", "panic", "panic attack",
+    "ptsd", "mental health", "mental illness", "bipolar", "schizophrenia",
+    "therapy", "therapist", "psychiatrist", "psychologist", "counseling",
+    "medication", "antidepressant", "psychiatric", "psych ward",
+    "suicidal", "suicide", "kill myself", "end my life", "self-harm", "self harm",
+    "cutting", "overdose", "pills",
+
+    # Emotional crisis states
+    "breakdown", "nervous breakdown", "meltdown", "losing it",
+    "can't take it", "can't cope", "overwhelmed", "hopeless", "helpless",
+    "despair", "devastated", "heartbroken", "broken", "shattered",
+    "lonely", "isolated", "alone", "abandoned", "worthless", "hate myself",
+    "scared", "terrified", "afraid", "frightened", "fear",
+
+    # Relationship distress & life crises
+    "breakup", "broke up", "divorce", "divorcing", "separated", "separation",
+    "cheating", "cheated", "affair", "betrayed", "betrayal",
+    "miscarriage", "stillborn", "pregnancy loss", "lost the baby",
+    "funeral", "mourning", "grieving", "grief", "loss",
+    "fired", "laid off", "lost my job", "unemployment",
+    "evicted", "eviction", "homeless", "foreclosure",
+
+    # Anger & violence (personal)
+    "angry", "furious", "rage", "enraged", "hate", "hatred",
+    "want to hurt", "want to kill", "violence", "fight", "assault",
+    "domestic violence", "abusive", "abuser",
 }
 
 
 def _is_heavy_topic_heuristic(q: str) -> bool:
     """
     Fast heuristic check for heavy topics.
-    
+
     Strategy:
       1. Length check (>2500 chars = likely article/news)
-      2. Keyword matching against crisis/violence/rights terms
-    
+      2. Keyword matching against crisis/violence/rights/emotional/mental health terms
+
     Returns:
-        True if heuristics suggest heavy topic
+        True if heuristics suggest heavy topic (political, emotional, or mental health crisis)
     """
     if not q or not isinstance(q, str):
         return False
@@ -318,12 +460,12 @@ def _build_heavy_topic_prompt(q: str) -> str:
     truncated = q[:1000]
     if len(q) > 1000:
         truncated += "..."
-    
+
     return f"""Classify this message as HEAVY or NORMAL.
 
-HEAVY topics: political violence, protests, raids, arrests, deportation, war, terrorism, human rights crises, personal safety threats, trauma, discrimination, persecution.
+HEAVY topics: political violence, protests, raids, arrests, deportation, war, terrorism, human rights crises, personal safety threats, trauma, discrimination, persecution, mental health crises (depression, anxiety, suicidal thoughts, self-harm, PTSD), emotional distress (grief, heartbreak, breakup, divorce, job loss), relationship crises (abuse, betrayal, domestic violence), personal emergencies.
 
-NORMAL topics: coding, general knowledge, casual conversation, entertainment, hobbies, academic topics, advice.
+NORMAL topics: coding, general knowledge, casual conversation, entertainment, hobbies, academic topics, advice, mild emotions (slightly happy/sad), everyday stress, general questions.
 
 MESSAGE:
 {truncated}

@@ -51,6 +51,14 @@ async def handle_submit(
 ):
     logger.debug(f"[Handle Submit] Received user_text: {user_text}")
 
+    # Update activity timestamp for idle monitor
+    try:
+        import main
+        if hasattr(main, 'update_activity_timestamp'):
+            main.update_activity_timestamp()
+    except Exception:
+        pass  # Silently ignore if main module not available
+
     # Get conversation logger
     conversation_logger = get_conversation_logger()
 
