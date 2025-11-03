@@ -163,10 +163,16 @@ class CorpusManager:
 
 
     def get_recent_memories(self, count: int = 3) -> List[Dict]:
-        """Get most recent non-summary memories"""
-        non_summary = [e for e in self.corpus if "@summary" not in e.get("tags", [])]
-        result = sorted(non_summary, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:count]
-        logger.debug(f"[CorpusManager] Returning {len(result)} recent memories from {len(non_summary)} non-summary entries")
+        """Get most recent episodic conversation memories (excludes summaries and reflections)"""
+        # Filter out both summaries and reflections to get actual conversation turns
+        # Reflections have type='reflection' but may have @summary tag, so check both
+        episodic = [
+            e for e in self.corpus
+            if e.get("type") not in ("summary", "reflection")
+            and "@summary" not in e.get("tags", [])
+        ]
+        result = sorted(episodic, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:count]
+        logger.debug(f"[CorpusManager] Returning {len(result)} recent episodic memories from {len(episodic)} entries (filtered out summaries + reflections)")
         return result
 
 
@@ -311,5 +317,19 @@ class CorpusManager:
     def get_items_by_type(self, type_name: str, limit: int = 5) -> List[Dict]:
         t = (type_name or "").lower()
         items = [e for e in self.corpus if (e.get("type") or "").lower() == t or f"type:{t}" in (e.get("tags") or [])]
-        items.sort(key=lambda x: x.get("timestamp", datetime.min), reverse=True)
+
+        # Sort by timestamp, handling both timezone-aware and naive datetimes
+        def _get_sortable_ts(x):
+            ts = x.get("timestamp", datetime.min)
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except:
+                    return datetime.min
+            if isinstance(ts, datetime) and ts.tzinfo is not None:
+                # Convert to naive UTC for comparison
+                ts = ts.replace(tzinfo=None)
+            return ts if isinstance(ts, datetime) else datetime.min
+
+        items.sort(key=_get_sortable_ts, reverse=True)
         return items[:limit]

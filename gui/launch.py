@@ -349,8 +349,10 @@ def launch_gui(orchestrator):
                     if chat_history and isinstance(chat_history[-1], dict):
                         chat_history[-1]["content"] = thinking_html
 
-                    # Yield immediately to show thinking
-                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text, gr.update(visible=False), "", "", ""
+                    # Yield immediately to show thinking (use deep copies to avoid aliasing)
+                    _chatbot_view = copy.deepcopy(chat_history)
+                    _state_view = copy.deepcopy(chat_history)
+                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=False), "", "", ""
                 elif isinstance(chunk, dict) and "content" in chunk:
                     assistant_reply = chunk["content"]
                     # Update the last assistant message's content
@@ -391,7 +393,9 @@ def launch_gui(orchestrator):
                     _dots = "." * (1 + (_updates % 3))
                     typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
                     timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
-                    yield chat_history, chat_history, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
+                    _chatbot_view = copy.deepcopy(chat_history)
+                    _state_view = copy.deepcopy(chat_history)
+                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
 
                 # Schedule next chunk read
                 next_task = _a.create_task(agen.__anext__())

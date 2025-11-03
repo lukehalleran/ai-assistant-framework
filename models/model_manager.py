@@ -215,6 +215,15 @@ class ModelManager:
             return self._stub_response(prompt)
 
         try:
+            # Stop sequences to prevent hallucinating user responses
+            stop_sequences = [
+                "\nUser:",
+                "\nUSER:",
+                "\nHuman:",
+                "\n\nUser:",
+                "\n\nUSER:",
+            ]
+
             # logger.debug(  Calling OpenAI API: {model_name}")
             response = self.client.chat.completions.create(
                 model=model_name,
@@ -225,6 +234,7 @@ class ModelManager:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                stop=stop_sequences,
             )
 
             return response.choices[0].message.content.strip()
@@ -406,6 +416,15 @@ class ModelManager:
             if self.async_client is None:
                 return self._stub_response(prompt)
             try:
+                # Stop sequences to prevent hallucinating user responses
+                stop_sequences = [
+                    "\nUser:",
+                    "\nUSER:",
+                    "\nHuman:",
+                    "\n\nUser:",
+                    "\n\nUSER:",
+                ]
+
                 messages = [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
@@ -417,6 +436,7 @@ class ModelManager:
                     max_tokens=(max_tokens if max_tokens is not None else self.default_max_tokens),
                     temperature=temperature if temperature is not None else self.default_temperature,
                     top_p=top_p if top_p is not None else DEFAULT_TOP_P,
+                    stop=stop_sequences,
                     stream=False  # Key change for non-streaming response
                 )
 
@@ -467,12 +487,22 @@ class ModelManager:
                     logger.debug(f"--- Prompt Message {i} ---")
                     logger.debug(f"Role: {msg['role']}")
                     logger.debug(f"Content:\n{msg['content']}")
+                # Stop sequences to prevent hallucinating user responses
+                stop_sequences = [
+                    "\nUser:",
+                    "\nUSER:",
+                    "\nHuman:",
+                    "\n\nUser:",
+                    "\n\nUSER:",
+                ]
+
                 stream = await self.async_client.chat.completions.create(
                     model=self.api_models[target_model],
                     messages=messages,
                     max_tokens=kwargs.get('max_tokens', self.default_max_tokens),
                     temperature=kwargs.get('temperature', self.default_temperature),
                     top_p=kwargs.get('top_p', DEFAULT_TOP_P),
+                    stop=stop_sequences,
                     stream=True
                 )
                 return stream
