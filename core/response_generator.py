@@ -37,10 +37,17 @@ class ResponseGenerator:
         self,
         prompt: str,
         model_name: str,
-        system_prompt: str = None
+        system_prompt: str = None,
+        max_tokens: int = None
     ) -> AsyncGenerator[str, None]:
         """
         Generate response with streaming support
+
+        Args:
+            prompt: The prompt to generate from
+            model_name: Model to use for generation
+            system_prompt: System prompt (optional)
+            max_tokens: Maximum tokens for response (optional, uses model default if None)
         """
         self.logger.debug(f"[GENERATE] Starting async generation with model: {model_name}")
         start_time = time.time()
@@ -67,11 +74,18 @@ class ResponseGenerator:
 
             effective_sp = (system_prompt or "").strip() or DEFAULT_SP
 
+            # Build kwargs for generation (only include max_tokens if specified)
+            gen_kwargs = {
+                "system_prompt": effective_sp,
+                "raw": False,
+            }
+            if max_tokens is not None:
+                gen_kwargs["max_tokens"] = max_tokens
+
             # Always include the system message; "raw" only controls upstream prompt building
             response_generator = await self.model_manager.generate_async(
                 prompt,
-                system_prompt=effective_sp,
-                raw=False,
+                **gen_kwargs
             )
 
             # Streaming path

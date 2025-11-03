@@ -851,6 +851,148 @@ class MultiStageGateSystem:
         logger.info(f"[Memory Filter] Gating complete: {len(filtered)}/{len(memories)} memories passed")
         return filtered
 
+    @log_and_time("Cosine Filter Summaries")
+    async def cosine_filter_summaries(
+        self,
+        query: str,
+        items: List[Dict],
+        threshold: Optional[float] = None,
+        source_type: str = "summary"
+    ) -> List[Dict]:
+        """
+        Lightweight cosine-only filter for summaries and reflections.
+
+        Design Rationale: Why Cosine-Only vs Full Gating?
+        ==================================================
+
+        This method intentionally skips cross-encoder reranking used by filter_memories().
+        The decision is based on four key differences between summaries/reflections and
+        episodic memories:
+
+        1. **Volume Characteristics**
+           - Summaries/reflections: Typically 3-5 items per query
+           - Episodic memories: Often 20-50+ candidates
+           - Impact: Cross-encoder overhead (50-200ms) not justified for small batches
+           - Reranking trigger (>5 items, line 819) rarely activates anyway
+
+        2. **Content Quality**
+           - Summaries/reflections: LLM-generated, dense abstractions of multi-turn conversations
+           - Episodic memories: Raw user/assistant exchanges with conversational noise
+           - Impact: High-quality content doesn't need aggressive reranking; cosine similarity
+             on well-structured summaries correlates strongly with relevance
+
+        3. **Retrieval Contract**
+           - Hybrid approach (n/4 recent + 3n/4 semantic) promises temporal context
+           - Aggressive filtering might drop recent summaries that provide conversation flow
+           - Cosine threshold (0.30) removes obvious mismatches while preserving recency
+           - Threshold slightly higher than memories (0.25) because summaries should be
+             clearly relevant, not borderline
+
+        4. **Latency Budget**
+           - Summaries fetched in parallel with facts, wiki, semantic chunks (prompt.py:1097)
+           - Every millisecond impacts first-token latency
+           - Benchmarks: Cosine ~10-15ms, Full gate ~50-70ms (when reranking triggers)
+           - For 3-5 items, cross-encoder adds 5-10x latency for marginal quality gain
+
+        5. **No Pinning Logic**
+           - Memories have episodic bypass (line 774): "always include" recent conversations
+           - Summaries don't have episodic/semantic distinction—all are equal
+           - Simpler scoring: pure cosine, no truth_score blending
+
+        Implementation Notes:
+        --------------------
+        - Reuses gate_system._encode_texts() to leverage embedding cache (line 787)
+        - Consistent with memory gating: same embedding model, same threshold semantics
+        - Fail-soft: returns items with score=0 on error (fail-open pattern)
+        - Adds 'relevance_score' to each item for downstream logging/debugging
+
+        Future Considerations:
+        ---------------------
+        If summary volume grows (e.g., >10 items typical), consider:
+        - Conditional reranking: if len(items) > threshold, apply cross-encoder
+        - Adaptive threshold: lower for sparse query results, higher for dense
+        - Temporal decay: boost recent summaries even if slightly below threshold
+
+        Args:
+            query: User query or rewritten retrieval query (from orchestrator.py:326)
+            items: List of summary/reflection dicts with 'content' key
+            threshold: Cosine similarity cutoff (0.0-1.0). If None, uses 0.30 for summaries,
+                      0.25 for reflections (reflections are more abstract, cast wider net)
+            source_type: 'summary' or 'reflection' (for logging and default threshold)
+
+        Returns:
+            Filtered items with 'relevance_score' added, sorted by score descending.
+            Empty list if no items pass threshold or on error (fail-open).
+
+        Example:
+            >>> summaries = corpus_manager.get_summaries(6)  # Fetch with buffer
+            >>> filtered = await gate.cosine_filter_summaries(
+            ...     query="Python async patterns",
+            ...     items=summaries,
+            ...     threshold=0.30
+            ... )
+            >>> # filtered contains only summaries with cosine_sim >= 0.30
+        """
+        if not items:
+            logger.debug(f"[Cosine Filter] No {source_type}s to filter")
+            return []
+
+        # Default thresholds based on content type
+        if threshold is None:
+            threshold = 0.25 if source_type == "reflection" else 0.30
+
+        try:
+            logger.info(
+                f"[Cosine Filter] Filtering {len(items)} {source_type}s "
+                f"(threshold={threshold:.2f})"
+            )
+
+            # Encode query (reuses cache from gate_system)
+            qv = await self.gate_system._encode_texts([query or ""])
+            query_emb = qv[0]
+
+            # Extract content and encode (truncate to 500 chars like memories)
+            contents = [
+                (item.get("content") or item.get("text") or "")[:500]
+                for item in items
+            ]
+            item_embs = await self.gate_system._encode_texts(contents)
+
+            # Compute cosine similarities (vectors already L2-normalized)
+            similarities = cosine_similarity([query_emb], item_embs)[0]
+
+            # Filter and score
+            filtered: List[Dict] = []
+            for item, score in zip(items, similarities):
+                if score >= threshold:
+                    # Add relevance score for downstream use
+                    item["relevance_score"] = float(score)
+                    # Preserve filtered_content for consistency with filter_memories
+                    item["filtered_content"] = (item.get("content") or "")[:300]
+                    filtered.append(item)
+                else:
+                    logger.debug(
+                        f"[Cosine Filter] {source_type.capitalize()} filtered out: "
+                        f"score={score:.3f}, threshold={threshold:.3f}"
+                    )
+
+            # Sort by relevance (highest first)
+            filtered.sort(key=lambda x: x["relevance_score"], reverse=True)
+
+            logger.info(
+                f"[Cosine Filter] {source_type.capitalize()} filtering complete: "
+                f"{len(filtered)}/{len(items)} passed (threshold={threshold:.2f})"
+            )
+
+            return filtered
+
+        except Exception as e:
+            logger.error(f"[Cosine Filter] Error filtering {source_type}s: {e}")
+            # Fail-open: return all items with dummy scores
+            for i, item in enumerate(items):
+                item["relevance_score"] = 0.5 - (i * 0.05)  # Descending scores
+            return items[:10]  # Cap at 10 for safety
+
     @log_and_time("Filter Wiki")
     async def filter_wiki_content(self, query: str, wiki_content: str) -> Tuple[bool, str]:
         """

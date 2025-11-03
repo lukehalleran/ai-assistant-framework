@@ -192,6 +192,7 @@ DEBUG_MODE = config.get("daemon", {}).get("debug_mode", True)
 DEFAULT_MODEL_NAME = config.get("models", {}).get("default", "llama")
 DREAM_MODEL_NAME = config.get("models", {}).get("dream_model", "gpt-neo")
 DEFAULT_MAX_TOKENS = config.get("models", {}).get("default_max_tokens", 2048)
+HEAVY_TOPIC_MAX_TOKENS = config.get("models", {}).get("heavy_topic_max_tokens", 8192)
 DEFAULT_TOP_P = config.get("models", {}).get("default_top_p", 0.9)
 DEFAULT_TOP_K = config.get("models", {}).get("default_top_k", 5)
 DEFAULT_TEMPERATURE = config.get("models", {}).get("default_temperature", 0.7)
@@ -210,6 +211,34 @@ MAX_WORKING_MEMORY = config.get("memory", {}).get("max_working_memory", 10)
 CHILD_MEM_LIMIT = config.get("memory", {}).get("child_mem_limit", 3)
 CORPUS_MAX_ENTRIES = int(config.get("memory", {}).get("corpus_max_entries", 2000))
 COSINE_SIMILARITY_THRESHOLD = config.get("gating", {}).get("cosine_similarity_threshold", 0.25)
+
+# Hybrid Retrieval Configuration
+# ------------------------------
+# Enable hybrid retrieval (recent + semantic) for summaries and reflections
+# When enabled, uses n/4 recent + 3n/4 semantic for summaries (1:3 ratio)
+# and n/3 recent + 2n/3 semantic for reflections (1:2 ratio)
+# Falls back to pure recency if disabled or unavailable
+HYBRID_SUMMARIES_ENABLED = bool(config.get("memory", {}).get("hybrid_summaries_enabled", True))
+HYBRID_REFLECTIONS_ENABLED = bool(config.get("memory", {}).get("hybrid_reflections_enabled", True))
+
+# Summary/Reflection Budget Ratios
+# --------------------------------
+# Ratio of recent:semantic items (default: 0.25 = 1:3 for summaries, 0.33 = 1:2 for reflections)
+# Lower values favor semantic retrieval, higher values favor recency
+# Note: These are applied in memory_coordinator, not here (hardcoded for now)
+# SUMMARY_RECENT_RATIO = float(config.get("memory", {}).get("summary_recent_ratio", 0.25))
+# REFLECTION_RECENT_RATIO = float(config.get("memory", {}).get("reflection_recent_ratio", 0.33))
+
+# Cosine Filtering Thresholds
+# ---------------------------
+# Threshold for cosine similarity filtering of summaries/reflections
+# Range: 0.0-1.0, higher = more selective
+# Summaries use 0.30 (should be clearly relevant, dense content)
+# Reflections use 0.25 (more abstract, cast wider net)
+SUMMARY_COSINE_THRESHOLD = float(config.get("gating", {}).get("summary_cosine_threshold", 0.30))
+REFLECTION_COSINE_THRESHOLD = float(config.get("gating", {}).get("reflection_cosine_threshold", 0.25))
+
+# Legacy config (keep for backward compatibility)
 DEFAULT_SUMMARY_PROMPT_HEADER = config.get("memory", {}).get("default_summary_prompt_header", "Summary of last 20 exchanges:\n")
 DEFAULT_TAGGING_PROMPT = config.get("memory", {}).get("default_tagging_prompt", "...")
 

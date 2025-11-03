@@ -217,6 +217,7 @@ def _cfg_int(key: str, default_val: int) -> int:
         return int(default_val)
 
 PROMPT_MAX_FACTS       = int(os.getenv("PROMPT_MAX_FACTS",       str(_cfg_int("max_facts", 12))))
+PROMPT_MAX_RECENT_FACTS = int(os.getenv("PROMPT_MAX_RECENT_FACTS", str(_cfg_int("max_recent_facts", 5))))
 PROMPT_MAX_RECENT      = int(os.getenv("PROMPT_MAX_RECENT",      str(_cfg_int("max_conversations", 5))))
 PROMPT_MAX_SEMANTIC    = int(os.getenv("PROMPT_MAX_SEMANTIC",    "8"))
 PROMPT_MAX_MEMS        = int(os.getenv("PROMPT_MAX_MEMS",        str(_cfg_int("num_memories", 10))))
@@ -421,14 +422,27 @@ class UnifiedPromptBuilder:
             return fallback
 
     # --- Middle-out compression helpers --------------------------------------
-    def _middle_out(self, text: str, max_tokens: int, head_ratio: float = 0.6) -> str:
+    def _middle_out(self, text: str, max_tokens: int, head_ratio: float = 0.6, force: bool = False) -> str:
         """Compress text by keeping the head and tail, trimming the middle.
 
         Uses tokenizer_manager to decide if compression is needed, but slices by characters
         to avoid requiring a full encode/decode path. Good enough for budget safety.
+
+        Args:
+            text: Text to potentially compress
+            max_tokens: Maximum tokens for this item
+            head_ratio: Ratio of head to tail (default 0.6 = 60% head, 40% tail)
+            force: If True, apply compression regardless of prompt size. If False (default),
+                   only compress when total prompt would exceed 20K tokens.
         """
         if not ENABLE_MIDDLE_OUT:
             return text
+
+        # Only apply middle-out if we're in high token usage territory (>20K)
+        # unless explicitly forced
+        if not force and hasattr(self, '_prompt_token_usage'):
+            if self._prompt_token_usage < 20000:
+                return text
 
         try:
             model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
@@ -488,6 +502,27 @@ class UnifiedPromptBuilder:
         return {"max_tokens": 1024, "temperature": 0.7, "top_p": 0.9}
 
     # --- Facts retrieval (kept intact, with logging & dedupe) -----------------
+    async def get_recent_facts(self, limit: int = 5):
+        """Fetch most recent facts by timestamp, regardless of query relevance."""
+        try:
+            if hasattr(self.memory_coordinator, "get_recent_facts"):
+                facts = await self.memory_coordinator.get_recent_facts(limit=limit)
+            else:
+                facts = []
+        except Exception as e:
+            logger.debug(f"[PROMPT][RecentFacts] retrieval failed: {e}")
+            facts = []
+
+        # De-dupe by canonical string
+        def _k(f):
+            if isinstance(f, dict):
+                return (f.get("content") or "").strip().lower()
+            return str(getattr(f, "content", "")).strip().lower()
+
+        deduped = _dedupe_keep_order(facts, key_fn=_k)
+        logger.debug(f"[PROMPT][RecentFacts] Included {len(deduped)} recent facts")
+        return deduped
+
     async def get_facts(self, query: str, limit: int = 8):
         """Fetch fact nodes from coordinator; fall back safely if API differs."""
         try:
@@ -934,6 +969,135 @@ class UnifiedPromptBuilder:
             pass
 
         return out[:count]
+
+    async def _get_summaries_hybrid_filtered(self, query: str, count: int) -> List[Dict]:
+        """
+        Fetch summaries using hybrid retrieval (recent + semantic) with cosine filtering.
+
+        This method combines three strategies:
+        1. Hybrid retrieval: n/4 recent + 3n/4 semantic (from memory_coordinator)
+        2. Cosine filtering: Remove summaries below relevance threshold (from gate_system)
+        3. Fallback: If hybrid unavailable, use existing _get_summaries
+
+        Design Decision: Why wrap instead of replace _get_summaries?
+        -----------------------------------------------------------
+        - _get_summaries has complex logic (forced LLM, multiple fallbacks)
+        - Hybrid + filtering is optional enhancement, not replacement
+        - Allows gradual rollout with feature flags
+        - Preserves existing behavior when gate_system unavailable
+
+        Args:
+            query: Retrieval query (user input or rewritten query)
+            count: Number of summaries to return
+
+        Returns:
+            Filtered and deduplicated summaries
+        """
+        logger.debug(f"[PROMPT][Summaries] Hybrid+filtered fetch (query={query[:50]}, count={count})")
+
+        # Check if hybrid retrieval available
+        has_hybrid = (
+            hasattr(self.memory_coordinator, 'get_summaries_hybrid') and
+            callable(getattr(self.memory_coordinator, 'get_summaries_hybrid'))
+        )
+
+        if not has_hybrid:
+            logger.debug("[PROMPT][Summaries] Hybrid method unavailable, using fallback")
+            return await self._get_summaries(count)
+
+        try:
+            # Fetch with hybrid retrieval
+            summaries = self.memory_coordinator.get_summaries_hybrid(
+                query=query,
+                limit=count * 2  # Fetch 2x for filtering buffer
+            )
+
+            logger.debug(f"[PROMPT][Summaries] Hybrid retrieval returned {len(summaries)} items")
+
+            # Apply cosine filtering if gate_system available
+            if hasattr(self, 'gate_system') and self.gate_system:
+                try:
+                    summaries = await self.gate_system.cosine_filter_summaries(
+                        query=query,
+                        items=summaries,
+                        threshold=None,  # Use default (0.30)
+                        source_type="summary"
+                    )
+                    logger.debug(f"[PROMPT][Summaries] Cosine filtering returned {len(summaries)} items")
+                except Exception as e:
+                    logger.debug(f"[PROMPT][Summaries] Cosine filtering failed: {e}, using unfiltered")
+                    # Continue with unfiltered summaries
+
+            return summaries[:count]
+
+        except Exception as e:
+            logger.error(f"[PROMPT][Summaries] Hybrid+filtered fetch failed: {e}, using fallback")
+            return await self._get_summaries(count)
+
+    async def _get_reflections_hybrid_filtered(self, query: str, count: int) -> List[Dict]:
+        """
+        Fetch reflections using hybrid retrieval (recent + semantic) with cosine filtering.
+
+        This method combines three strategies:
+        1. Hybrid retrieval: n/3 recent + 2n/3 semantic (from memory_coordinator)
+        2. Cosine filtering: Remove reflections below relevance threshold (from gate_system)
+        3. Fallback: If hybrid unavailable, use existing _get_reflections
+
+        Design Decision: Why different ratio than summaries?
+        ----------------------------------------------------
+        - Reflections capture behavioral patterns that evolve over time
+        - 1:2 ratio (33% recent) vs summaries 1:3 (25% recent)
+        - Higher recency bias ensures fresh behavioral context
+        - See memory_coordinator.get_reflections_hybrid docstring for details
+
+        Args:
+            query: Retrieval query (user input or rewritten query)
+            count: Number of reflections to return
+
+        Returns:
+            Filtered and deduplicated reflections
+        """
+        logger.debug(f"[PROMPT][Reflections] Hybrid+filtered fetch (query={query[:50]}, count={count})")
+
+        # Check if hybrid retrieval available
+        has_hybrid = (
+            hasattr(self.memory_coordinator, 'get_reflections_hybrid') and
+            callable(getattr(self.memory_coordinator, 'get_reflections_hybrid'))
+        )
+
+        if not has_hybrid:
+            logger.debug("[PROMPT][Reflections] Hybrid method unavailable, using fallback")
+            return await self._get_reflections(count)
+
+        try:
+            # Fetch with hybrid retrieval
+            reflections = await self.memory_coordinator.get_reflections_hybrid(
+                query=query,
+                limit=count * 2  # Fetch 2x for filtering buffer
+            )
+
+            logger.debug(f"[PROMPT][Reflections] Hybrid retrieval returned {len(reflections)} items")
+
+            # Apply cosine filtering if gate_system available
+            if hasattr(self, 'gate_system') and self.gate_system:
+                try:
+                    reflections = await self.gate_system.cosine_filter_summaries(
+                        query=query,
+                        items=reflections,
+                        threshold=None,  # Use default (0.25 for reflections)
+                        source_type="reflection"
+                    )
+                    logger.debug(f"[PROMPT][Reflections] Cosine filtering returned {len(reflections)} items")
+                except Exception as e:
+                    logger.debug(f"[PROMPT][Reflections] Cosine filtering failed: {e}, using unfiltered")
+                    # Continue with unfiltered reflections
+
+            return reflections[:count]
+
+        except Exception as e:
+            logger.error(f"[PROMPT][Reflections] Hybrid+filtered fetch failed: {e}, using fallback")
+            return await self._get_reflections(count)
+
     async def _reflect_on_demand(self, recent_conversations: list) -> list:
         """If stored/semantic reflections are empty, synthesize a tiny reflection now."""
         try:
@@ -1080,7 +1244,9 @@ class UnifiedPromptBuilder:
                 1.5, []
             ),
             "facts": self._bounded(self.get_facts(retrieval_query, limit=PROMPT_MAX_FACTS), 0.8, []),
-            "sums": self._bounded(self._get_summaries(PROMPT_MAX_SUMMARIES), SUMMARIES_TASK_TIMEOUT, []),
+            "recent_facts": self._bounded(self.get_recent_facts(limit=PROMPT_MAX_RECENT_FACTS), 0.5, []),
+            # Use hybrid retrieval + cosine filtering for summaries (falls back to old method if unavailable)
+            "sums": self._bounded(self._get_summaries_hybrid_filtered(retrieval_query, PROMPT_MAX_SUMMARIES), SUMMARIES_TASK_TIMEOUT, []),
             "dreams":
             self._bounded(self._get_dreams(PROMPT_MAX_DREAMS), 0.3, []) if include_dreams else asyncio.sleep(0, result=[]),
             # Use unified semantic retrieval (includes FAISS + Chroma fallback and hot-cache)
@@ -1088,17 +1254,18 @@ class UnifiedPromptBuilder:
                 self._get_semantic_chunks(retrieval_query),
                 SEM_TIMEOUT_S, []
             ),
-            "refl": self._bounded(self._get_reflections(PROMPT_MAX_REFLECTIONS), 1.5, []),
+            # Use hybrid retrieval + cosine filtering for reflections (falls back to old method if unavailable)
+            "refl": self._bounded(self._get_reflections_hybrid_filtered(retrieval_query, PROMPT_MAX_REFLECTIONS), 1.5, []),
 
             "wiki": asyncio.get_running_loop().run_in_executor(
                 None, self._get_wiki_snippet_cached, (current_topic or retrieval_query)
             ),
         }
 
-        recent, mems, facts, sums, dreams, sem, refl, wiki = await asyncio.gather(*tasks.values())
+        recent, mems, facts, recent_facts, sums, dreams, sem, refl, wiki = await asyncio.gather(*tasks.values())
         logger.debug(
             f"[PROMPT] fetched | recent={len(recent)} sums={len(sums)} sem={len(sem)} "
-            f"facts={len(facts)} dreams={len(dreams)} wiki_len={len(wiki) if wiki else 0}"
+            f"facts={len(facts)} recent_facts={len(recent_facts)} dreams={len(dreams)} wiki_len={len(wiki) if wiki else 0}"
         )
 
         # Do not auto-substitute recent Q/A pairs into the semantic memories slot.
@@ -1232,6 +1399,7 @@ class UnifiedPromptBuilder:
             "recent_conversations": recent or [],
             "memories": mems or [],
             "facts": facts or [],
+            "recent_facts": recent_facts or [],
             "summaries": sums or [],
             "dreams": dreams or [],
             "semantic_chunks": sem or [],
@@ -1264,6 +1432,7 @@ class UnifiedPromptBuilder:
             return x if isinstance(x, list) else []
 
         facts_c      = _truncate_list(_dedupe_keep_order(_safe_list(gated_ctx.get("facts"))), PROMPT_MAX_FACTS)
+        recent_facts_c = _truncate_list(_dedupe_keep_order(_safe_list(gated_ctx.get("recent_facts"))), PROMPT_MAX_RECENT_FACTS)
         summaries_c  = _truncate_list(_dedupe_keep_order(_safe_list(gated_ctx.get("summaries"))), PROMPT_MAX_SUMMARIES)
         refl_c = _truncate_list(_dedupe_keep_order(_safe_list(gated_ctx.get("reflections"))), PROMPT_MAX_REFLECTIONS)
 
@@ -1369,6 +1538,7 @@ class UnifiedPromptBuilder:
             "recent_conversations": recent_c,
             "memories": mems_c,
             "facts": facts_c,
+            "recent_facts": recent_facts_c,
             "summaries": summaries_c,
             "reflections": refl_c,
             "semantic_chunks": sem_chunks_c,
@@ -1578,6 +1748,23 @@ class UnifiedPromptBuilder:
         directives_file: str
     ) -> str:
         """Assemble the final prompt from all components."""
+        # Estimate token usage for middle-out threshold decision
+        # This is a rough estimate done before assembly to decide compression strategy
+        try:
+            model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
+            estimated_tokens = 0
+            for key, value in context.items():
+                if isinstance(value, list):
+                    for item in value:
+                        estimated_tokens += self.get_token_count(str(item), model_name)
+                elif isinstance(value, str):
+                    estimated_tokens += self.get_token_count(value, model_name)
+            self._prompt_token_usage = estimated_tokens
+            logger.debug(f"[PROMPT] Estimated token usage before assembly: {estimated_tokens}")
+        except Exception as e:
+            logger.debug(f"[PROMPT] Could not estimate token usage: {e}")
+            self._prompt_token_usage = 0
+
         parts: List[str] = []
 
         def _fmt_ts(ts) -> str:
@@ -1626,9 +1813,10 @@ class UnifiedPromptBuilder:
         if context.get("recent_conversations"):
             _rc_list = context.get("recent_conversations") or []
             parts.append(
-                f"\n[RECENT CONVERSATION — FOR CONTEXT ONLY] (n={len(_rc_list)})\n"
-                "Use this section to understand conversational context and avoid redundancy within ongoing threads. "
-                "However, if the user asks a factual question you've answered before, provide a complete answer again — "
+                f"\n[RECENT CONVERSATION — HISTORICAL CONTEXT ONLY, DO NOT RESPOND TO THESE] (n={len(_rc_list)})\n"
+                "These are PAST exchanges. Use them to understand conversation flow and avoid redundancy, "
+                "but DO NOT treat these past queries as new requests requiring responses. "
+                "If the user asks a factual question you've answered before, provide a complete answer again — "
                 "repeated queries may be intentional (testing, seeking detail, or wanting a fresh take).\n"
             )
 
@@ -1654,24 +1842,51 @@ class UnifiedPromptBuilder:
                 if isinstance(mem, dict) and (mem.get("response")):
                     mem = dict(mem)
                     mem["response"] = self._middle_out(mem.get("response", ""), MEMORY_ITEM_MAX_TOKENS)
-                parts.append(self._format_memory(mem))
+                parts.append(self._format_memory(mem, _fmt_ts))
 
-        # Facts
+        # Facts (query-relevant, semantic search)
         if context.get("facts"):
             _facts_list = context.get("facts") or []
-            parts.append(f"\n[FACTS] (n={len(_facts_list)})\n")
+            parts.append(f"\n[FACTS — QUERY-RELEVANT] (n={len(_facts_list)})\n")
+            parts.append("Facts retrieved by semantic similarity to your query.\n")
             for f in _facts_list:
                 md = (f.get("metadata", {}) if isinstance(f, dict) else getattr(f, "metadata", {}) or {})
                 subj = md.get("subject"); rel = md.get("relation"); obj = md.get("object"); conf = md.get("confidence")
+                ts = md.get("timestamp")
                 if subj and rel and obj:
                     line = f"- {subj} {rel} {obj}"
                     if isinstance(conf, (int, float)):
                         line += f"  (conf={conf:.2f})"
+                    if ts:
+                        line += f" [{_fmt_ts(ts)}]"
                     parts.append(line + "\n")
                 else:
                     txt = (f.get("content") if isinstance(f, dict) else getattr(f, "content", "")) or ""
-                    parts.append(f"- {txt}\n")
+                    ts_str = f" [{_fmt_ts(ts)}]" if ts else ""
+                    parts.append(f"- {txt}{ts_str}\n")
         logger.debug(f"[PROMPT][Facts] Rendering {len(context.get('facts', []))} facts")
+
+        # Recent Facts (most recent by timestamp, regardless of query)
+        if context.get("recent_facts"):
+            _recent_facts_list = context.get("recent_facts") or []
+            parts.append(f"\n[RECENT FACTS] (n={len(_recent_facts_list)})\n")
+            parts.append("Most recently learned facts, ordered by timestamp.\n")
+            for f in _recent_facts_list:
+                md = (f.get("metadata", {}) if isinstance(f, dict) else getattr(f, "metadata", {}) or {})
+                subj = md.get("subject"); rel = md.get("relation"); obj = md.get("object"); conf = md.get("confidence")
+                ts = md.get("timestamp")
+                if subj and rel and obj:
+                    line = f"- {subj} {rel} {obj}"
+                    if isinstance(conf, (int, float)):
+                        line += f"  (conf={conf:.2f})"
+                    if ts:
+                        line += f"  [{_fmt_ts(ts)}]"
+                    parts.append(line + "\n")
+                else:
+                    txt = (f.get("content") if isinstance(f, dict) else getattr(f, "content", "")) or ""
+                    ts_str = f" [{_fmt_ts(ts)}]" if ts else ""
+                    parts.append(f"- {txt}{ts_str}\n")
+        logger.debug(f"[PROMPT][RecentFacts] Rendering {len(context.get('recent_facts', []))} recent facts")
 
         # --- Summaries (single, guarded section; duplicates removed) ----------
         if context.get("summaries"):
@@ -1696,6 +1911,30 @@ class UnifiedPromptBuilder:
                 parts.append(f"{prefix}{text}\n")
                 first = False
         logger.debug("[PROMPT][TRACE] assemble summaries present? %s", bool(context.get("summaries")))
+
+        # Add RECENT REFLECTIONS - always show 3 most recent, regardless of query relevance
+        try:
+            cm = getattr(self.memory_coordinator, "corpus_manager", None)
+            if cm and hasattr(cm, "get_items_by_type"):
+                recent_reflections = cm.get_items_by_type("reflection", limit=3) or []
+                if recent_reflections:
+                    parts.append(f"\n[RECENT REFLECTIONS] (n={len(recent_reflections)})\n")
+                    parts.append("Most recent session reflections, ordered by timestamp.\n")
+                    for r in recent_reflections:
+                        txt = (r.get("content") or "").strip()
+                        ts = _fmt_ts(r.get("timestamp"))
+                        if txt:
+                            prefix = f"[{ts}] " if ts else ""
+                            # Aggressive truncation: just show first line (header) for token efficiency
+                            # Full reflections appear in SESSION REFLECTIONS if query-relevant
+                            first_line = txt.split('\n')[0]
+                            if len(first_line) > 100:
+                                first_line = first_line[:100] + "..."
+                            parts.append(f"- {prefix}{first_line}\n")
+        except Exception as e:
+            logger.error(f"[PROMPT] Could not fetch recent reflections: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
         if context.get("reflections") or SHOW_EMPTY_SECTIONS:
             # Clarify these are session-level reflections (typically generated at shutdown)
@@ -1777,7 +2016,7 @@ class UnifiedPromptBuilder:
         final_user_input = display_input
         if ENABLE_MIDDLE_OUT and final_user_input:
             final_user_input = self._middle_out(final_user_input, USER_INPUT_MAX_TOKENS)
-        parts.append(f"\n[USER INPUT]\n{final_user_input}\n")
+        parts.append(f"\n[CURRENT USER QUERY — RESPOND TO THIS]\n{final_user_input}\n")
 
         return "".join(parts)
 
@@ -1798,15 +2037,24 @@ class UnifiedPromptBuilder:
             return str(item)
         return str(item)
 
-    def _format_memory(self, memory: Dict) -> str:
-        """Format a memory for inclusion in prompt output."""
+    def _format_memory(self, memory: Dict, fmt_ts_func=None) -> str:
+        """Format a memory for inclusion in prompt output with optional timestamp."""
+        # Extract and format timestamp if available
+        ts_line = ""
+        if fmt_ts_func:
+            ts = memory.get('timestamp')
+            if ts:
+                ts_str = fmt_ts_func(ts)
+                if ts_str:
+                    ts_line = f"[{ts_str}] "
+
         if "query" in memory and "response" in memory:
             q = (memory.get('query') or '').strip()
             a = (memory.get('response') or '').strip()
-            return f"Q: {q}\nA: {a}\n"
+            return f"{ts_line}Q: {q}\nA: {a}\n"
         if "content" in memory:
-            return f"{memory['content']}\n"
-        return f"{str(memory)}\n"
+            return f"{ts_line}{memory['content']}\n"
+        return f"{ts_line}{str(memory)}\n"
 
     def _get_time_context(self) -> str:
         """Get current time context in a stable format."""

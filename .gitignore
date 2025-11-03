@@ -18,6 +18,20 @@ test_parquet/
 # Agent runtime data
 data/*.json
 
+# Local logs and caches
+daemon_debug.log
+.gradio/
+
+# Large local artifacts (keep scripts/pipeline tracked)
+embeddings_mmap.dat
+project/
+chroma/
+data/
+!data/scripts/
+!data/scripts/**
+!data/pipeline/
+!data/pipeline/**
+
 # Local logs
 preprocessor.log
 conversation_logs/
