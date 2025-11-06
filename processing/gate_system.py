@@ -453,10 +453,21 @@ def clean_wikiish(text: str) -> str:
     """
     # remove headings like == History ==
     text = re.sub(r"^=+[^=\n]+=+\s*$", "", text, flags=re.MULTILINE)
-    # remove [citation needed] / [1] style refs
+    # remove [citation needed] / numeric refs like [1]
     text = re.sub(r"\[\d+\]|\[citation needed\]", "", text)
     # remove template braces crud {{...}}
     text = re.sub(r"\{\{[^}]+\}\}", "", text)
+    # unwrap wiki links [[...]] -> ...
+    text = re.sub(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", r"\1", text)
+    # strip italic/bold markup '' and '''
+    text = re.sub(r"'{2,}", "", text)
+    # drop image/thumb directives
+    text = re.sub(r"\bthumb\|[^\n]*", "", text, flags=re.IGNORECASE)
+    # collapse repeated bullet asterisks like '* * * * '
+    text = re.sub(r"(?:\*\s*){2,}", "", text)
+    # normalize whitespace
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -1052,6 +1063,11 @@ class MultiStageGateSystem:
                 if _looks_wiki_noisy(text):
                     text = clean_wikiish(text)
                 if not text:
+                    continue
+                # Skip redirect stubs
+                t0 = text.strip().lower()
+                if t0.startswith("#redirect") or t0.startswith("redirect "):
+                    logger.debug(f"[Semantic Filter] Skip redirect stub for title='{title}'")
                     continue
 
                 # 2) Encode + cosine

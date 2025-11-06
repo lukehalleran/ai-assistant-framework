@@ -145,6 +145,7 @@ async def handle_submit(
     logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
 
     final_output = ""
+    display_output = ""
     debug_emitted = False
     try:
         logger.debug(
@@ -159,20 +160,27 @@ async def handle_submit(
         _cfg = getattr(orchestrator, 'config', {}) or {}
         _features = _cfg.get('features', {}) if isinstance(_cfg, dict) else {}
         _enable_bestof = bool(_features.get('enable_best_of', ENABLE_BEST_OF))
+        # Force streaming in GUI unless explicitly disabled via env FORCE_STREAMING=0
+        try:
+            import os as _os
+            if str(_os.getenv('FORCE_STREAMING', '1')).strip().lower() in {'1','true','yes','on'}:
+                _enable_bestof = False
+        except Exception:
+            pass
 
+        # Policy: always stream, except DUEL mode. Single-model best-of is disabled for streaming UX.
         use_bestof = False
         try:
-            qinfo = analyze_query(user_text)
-            use_bestof = bool(
-                _enable_bestof and (
-                    (qinfo.is_question and qinfo.token_count >= BEST_OF_MIN_TOKENS)
-                    or (not BEST_OF_MIN_QUESTION)
-                )
-            )
-            logger.info(f"[GUI] Best-of check: enabled={_enable_bestof}, is_question={qinfo.is_question}, tokens={qinfo.token_count}, min_question={BEST_OF_MIN_QUESTION}, use_bestof={use_bestof}")
+            # Detect duel-mode configuration from runtime features
+            GEN_MODELS = list(_features.get('best_of_generator_models', []))
+            SEL_MODELS = list(_features.get('best_of_selector_models', []))
+            _DUEL_MODE = bool(_features.get('best_of_duel_mode', False))
+            duel_possible = bool(_DUEL_MODE and len(GEN_MODELS) >= 2 and len(SEL_MODELS) >= 1)
+            use_bestof = duel_possible  # only enable best-of path when duel is configured
+            logger.info(f"[GUI] Duel check: duel_mode={_DUEL_MODE}, gen={len(GEN_MODELS)}, sel={len(SEL_MODELS)}, use_bestof(duel-only)={use_bestof}")
         except Exception as e:
-            use_bestof = bool(_enable_bestof)
-            logger.info(f"[GUI] Best-of check failed: {e}, fallback use_bestof={use_bestof}")
+            use_bestof = False
+            logger.info(f"[GUI] Duel check failed: {e}; default to streaming")
 
         model_name = orchestrator.model_manager.get_active_model_name()
         # Token counts for debug trace
@@ -430,15 +438,31 @@ async def handle_submit(
                     elif thinking_part and final_answer and not thinking_complete:
                         # Thinking is complete, answer is starting - switch to answer
                         thinking_complete = True
-                        display_output = final_answer
+                        # Remove XML-like wrappers (e.g., <result> … </result>) for GUI display
+                        try:
+                            import re
+                            m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
+                            display_output = (m.group(1).strip() if m else final_answer)
+                        except Exception:
+                            display_output = final_answer
                         yield {"role": "assistant", "content": display_output, "is_thinking": False}
                     elif final_answer:
                         # Continue streaming the answer
-                        display_output = final_answer
+                        try:
+                            import re
+                            m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
+                            display_output = (m.group(1).strip() if m else final_answer)
+                        except Exception:
+                            display_output = final_answer
                         yield {"role": "assistant", "content": display_output}
                     else:
                         # No thinking block detected, stream normally
-                        display_output = final_output
+                        try:
+                            import re
+                            m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
+                            display_output = (m.group(1).strip() if m else final_output)
+                        except Exception:
+                            display_output = final_output
                         yield {"role": "assistant", "content": display_output}
                 # After fallback streaming completes, emit debug record
                 thinking_part_fb, final_answer_fb = orchestrator._parse_thinking_block(final_output)
@@ -454,18 +478,20 @@ async def handle_submit(
                     prompt_tokens2 = None
                     system_tokens2 = None
                     total_tokens2 = None
+                # Ensure we have content to log even if no chunk set display_output yet
+                _resp_for_debug = display_output or final_output
                 debug_record = {
                     'mode': 'fallback-streaming',
                     'query': user_text,
                     'prompt': full_prompt,
                     'system_prompt': system_prompt,
-                    'response': final_output,
+                    'response': _resp_for_debug,
                     'model': model_name,
                     'prompt_tokens': prompt_tokens2,
                     'system_tokens': system_tokens2,
                     'total_tokens': total_tokens2,
                 }
-                yield {"role": "assistant", "content": display_output, "debug": debug_record}
+                yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
                 debug_emitted = True
         else:
             # Default streaming path with thinking block visibility
@@ -493,11 +519,21 @@ async def handle_submit(
                     yield {"role": "assistant", "content": display_output, "is_thinking": False}
                 elif final_answer:
                     # Continue streaming the answer
-                    display_output = final_answer
+                    try:
+                        import re
+                        m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
+                        display_output = (m.group(1).strip() if m else final_answer)
+                    except Exception:
+                        display_output = final_answer
                     yield {"role": "assistant", "content": display_output}
                 else:
                     # No thinking block detected, stream normally
-                    display_output = final_output
+                    try:
+                        import re
+                        m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
+                        display_output = (m.group(1).strip() if m else final_output)
+                    except Exception:
+                        display_output = final_output
                     yield {"role": "assistant", "content": display_output}
 
             # After streaming completes, parse thinking block for logging and storage
@@ -519,18 +555,20 @@ async def handle_submit(
                 system_tokens2 = None
                 total_tokens2 = None
 
+            # Ensure we have content to log even if no chunk set display_output yet
+            _resp_for_debug = display_output or final_output
             debug_record = {
                 'mode': 'enhanced',
                 'query': user_text,
                 'prompt': full_prompt,
                 'system_prompt': system_prompt,
-                'response': final_output,
+                'response': _resp_for_debug,
                 'model': model_name,
                 'prompt_tokens': prompt_tokens2,
                 'system_tokens': system_tokens2,
                 'total_tokens': total_tokens2,
             }
-            yield {"role": "assistant", "content": final_output, "debug": debug_record}
+            yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
             debug_emitted = True
 
     except Exception as e:
@@ -586,6 +624,40 @@ async def handle_submit(
                 if thinking_part:
                     logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK]\n{thinking_part}")
                 response_to_store = final_answer if final_answer else final_output
+                # Sanitize any echoed prompt headers before storing
+                try:
+                    import re
+                    header_patterns = [
+                        r"^\s*\[TIME CONTEXT\]",
+                        r"^\s*\[RECENT CONVERSATION[^\]]*\]",
+                        r"^\s*\[RELEVANT INFORMATION\]",
+                        r"^\s*\[RELEVANT MEMORIES\]",
+                        r"^\s*\[FACTS[ ^\]]*\]",
+                        r"^\s*\[RECENT FACTS\]",
+                        r"^\s*\[CURRENT MESSAGE FACTS\]",
+                        r"^\s*\[DIRECTIVES\]",
+                        r"^\s*\[CURRENT USER QUERY[ ^\]]*\]",
+                        r"^\s*\[USER INPUT\]",
+                        r"^\s*\[BACKGROUND KNOWLEDGE\]",
+                        r"^\s*\[CONVERSATION SUMMARIES[ ^\]]*\]",
+                        r"^\s*\[RECENT REFLECTIONS[ ^\]]*\]",
+                        r"^\s*\[SESSION REFLECTIONS[ ^\]]*\]",
+                    ]
+                    header_re = re.compile("(" + ")|(".join(header_patterns) + ")", re.IGNORECASE)
+                    lines = []
+                    skip = False
+                    for line in (response_to_store.splitlines() if response_to_store else []):
+                        if header_re.search(line):
+                            skip = True
+                            continue
+                        if skip:
+                            if not line.strip():
+                                skip = False
+                            continue
+                        lines.append(line)
+                    response_to_store = "\n".join(lines).strip()
+                except Exception:
+                    pass
 
                 await orchestrator.memory_system.store_interaction(
                     query=merged_input,

@@ -82,10 +82,13 @@ class MemoryNode:
             except:
                 tags = []
 
+        # Read type from top-level data (matches to_dict output), fall back to metadata for compatibility
+        type_str = data.get('type') or metadata.get('type', 'semantic')
+
         return cls(
             id=data["id"],
             content=data["content"],
-            type=MemoryType(metadata.get('type', 'semantic')),
+            type=MemoryType(type_str),
             timestamp=datetime.fromisoformat(data["timestamp"]),
             importance_score=data.get("importance_score", 0.5),
             decay_rate=data.get("decay_rate", 0.01),
