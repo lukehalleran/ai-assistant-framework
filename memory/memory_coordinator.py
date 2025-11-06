@@ -1444,12 +1444,24 @@ class MemoryCoordinator:
             return []
 
         # Build chunks for gating with back-reference to original memory
+        import re as _re
+        _hdr_re = _re.compile(r"^\s*\[[^\]]+\]", _re.IGNORECASE)
+        def _strip_headers(s: str) -> str:
+            if not s:
+                return s
+            out = []
+            for ln in (s.splitlines() or []):
+                if _hdr_re.search(ln):
+                    continue
+                out.append(ln)
+            return "\n".join(out).strip()
+
         def _gate_text(m: Dict) -> str:
-            txt = (m.get('content') or '').strip()
+            txt = _strip_headers((m.get('content') or '').strip())
             if txt:
                 return txt
-            q = (m.get('query') or '').strip(); a = (m.get('response') or '').strip()
-            return f"User: {q}\nAssistant: {a}"
+            q = _strip_headers((m.get('query') or '').strip()); a = _strip_headers((m.get('response') or '').strip())
+            return f"User: {q}\nAssistant: {a}".strip()
 
         chunks = [{
             "content": _gate_text(m)[:500],
@@ -1483,9 +1495,15 @@ class MemoryCoordinator:
             orig['pre_gated'] = True
             out.append(orig)
 
-        # If fewer than desired passed gating, top up from highest-scoring raw results
-        # This ensures the prompt's [RELEVANT MEMORIES] section has up to `limit` items.
-        if len(out) < limit and raw:
+        # Optional strict top-up: disabled by default to avoid noisy generic memories
+        try:
+            import os as _os
+            enable_topup = str(_os.getenv("MEM_TOPUP_ENABLE", "0")).strip().lower() in {"1","true","yes","on"}
+            min_score = float(_os.getenv("MEM_TOPUP_MIN_SCORE", "0.35"))
+        except Exception:
+            enable_topup = False; min_score = 0.35
+
+        if enable_topup and len(out) < limit and raw:
             # Build a set of keys for quick de-duplication (prefer stable id; fall back to content)
             def _k(m: Dict) -> str:
                 mid = str(m.get('id') or '').strip()
@@ -1494,12 +1512,19 @@ class MemoryCoordinator:
                 return f"content::{(m.get('content') or '').strip()[:160].lower()}"
 
             selected = {_k(m) for m in out}
-            # Sort raw by any available score (relevance_score or rank), descending
             def _score(m: Dict) -> float:
                 try:
                     return float(m.get('relevance_score', 0.0))
                 except Exception:
                     return 0.0
+            # Simple lexical overlap guard
+            def _overlap(a: str, b: str) -> float:
+                import re as __re
+                at = set(__re.findall(r"[a-zA-Z0-9]+", (a or "").lower()))
+                bt = set(__re.findall(r"[a-zA-Z0-9]+", (b or "").lower()))
+                if not at or not bt:
+                    return 0.0
+                return len(at & bt) / max(1, min(len(at), len(bt)))
 
             for cand in sorted(raw, key=_score, reverse=True):
                 if len(out) >= limit:
@@ -1507,14 +1532,13 @@ class MemoryCoordinator:
                 key = _k(cand)
                 if not key or key in selected:
                     continue
-                # Clone and mark as pre-gated so prompt builder doesn't re-gate and drop it
-                c = dict(cand)
-                c['pre_gated'] = True
-                # Carry forward any initial score if present
-                if 'relevance_score' not in c:
-                    c['relevance_score'] = 0.0
-                out.append(c)
-                selected.add(key)
+                sc = _score(cand)
+                txt = _gate_text(cand)
+                if sc >= min_score and _overlap(query, txt) >= 0.15:
+                    c = dict(cand)
+                    c['pre_gated'] = True
+                    out.append(c)
+                    selected.add(key)
 
         return out[:limit]
 

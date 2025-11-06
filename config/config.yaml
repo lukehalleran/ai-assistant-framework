@@ -45,8 +45,6 @@ memory:
   summary_interval: 20
   max_facts: 15
   max_reflections: 6
-  # Hybrid retrieval: combine recent + semantic for summaries/reflections
-  # Enabled by default; falls back to pure recency if unavailable
   hybrid_summaries_enabled: true
   hybrid_reflections_enabled: true
 models:
@@ -62,7 +60,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: claude-opus
+  active: glm-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.25
@@ -76,11 +74,7 @@ gating:
   rerank_use_llm: false
   cross_encoder_weight: 0.9
   topic_confidence_threshold: 0.85
-  # Cosine filtering thresholds for summaries/reflections (0.0-1.0)
-  # Higher = more selective filtering
-  # Summaries: 0.30 (dense content should be clearly relevant)
-  # Reflections: 0.25 (more abstract, wider net)
-  summary_cosine_threshold: 0.30
+  summary_cosine_threshold: 0.3
   reflection_cosine_threshold: 0.25
   score_weights:
     relevance: 0.55
