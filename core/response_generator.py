@@ -91,6 +91,20 @@ class ResponseGenerator:
             # Streaming path
             if hasattr(response_generator, "__aiter__"):
                 buffer = ""
+                STOP_MARKERS = {"<|user|>", "<|assistant|>", "<|system|>", "<|end|>", "<|eot_id|>"}
+                def _contains_stop(s: str) -> bool:
+                    if not s:
+                        return False
+                    for m in STOP_MARKERS:
+                        if m in s:
+                            return True
+                    return False
+                def _strip_special_tokens(s: str) -> str:
+                    if not s:
+                        return s
+                    for m in STOP_MARKERS:
+                        s = s.replace(m, "")
+                    return s
                 async for chunk in response_generator:
                     try:
                         # Extract content from different possible streaming chunk shapes
@@ -117,12 +131,23 @@ class ResponseGenerator:
 
                             buffer += delta_content
 
+                            # If we hit a stop marker, flush clean content and end streaming
+                            if _contains_stop(buffer):
+                                clean = _strip_special_tokens(buffer)
+                                if clean.strip():
+                                    # Yield remaining content as a single chunk
+                                    yield clean.strip()
+                                # End the generator early
+                                return
+
                             # Yield word-by-word, keep the last partial word in buffer
                             if " " in buffer:
                                 words = buffer.split(" ")
                                 for word in words[:-1]:
                                     if word:
-                                        yield word
+                                        w = _strip_special_tokens(word)
+                                        if w:
+                                            yield w
                                 buffer = words[-1] if words[-1] else ""
 
                     except Exception as e:
@@ -131,7 +156,9 @@ class ResponseGenerator:
 
                 # Yield any remaining buffer
                 if buffer.strip():
-                    yield buffer.strip()
+                    tail = _strip_special_tokens(buffer)
+                    if tail.strip():
+                        yield tail.strip()
 
                 end_time = time.time()
                 duration = self.time_manager.measure_response(

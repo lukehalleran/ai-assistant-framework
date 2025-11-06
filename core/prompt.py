@@ -46,6 +46,7 @@ import asyncio
 from typing import Dict, List, Optional, Any, Iterable
 from datetime import datetime
 from utils.time_manager import TimeManager
+from utils.query_checker import analyze_query
 
 from memory.memory_consolidator import MemoryConsolidator
 from utils.logging_utils import get_logger, log_and_time
@@ -175,6 +176,52 @@ def _truncate_list(items: List[Any], limit: int) -> List[Any]:
     return items[:limit] if len(items) > limit else items
 
 
+def _strip_prompt_artifacts(text: str) -> str:
+    """Remove known prompt header artifacts from prior turns to avoid nesting sections.
+
+    This targets our bracketed section headers only; normal user content/bullets remain.
+    """
+    if not text:
+        return text
+    try:
+        import re
+        # Known section headers (start-of-line, bracketed)
+        header_patterns = [
+            r"^\s*\[TIME CONTEXT\]",
+            r"^\s*\[RECENT CONVERSATION[^\]]*\]",
+            r"^\s*\[RELEVANT INFORMATION\]",
+            r"^\s*\[RELEVANT MEMORIES\]",
+            r"^\s*\[FACTS[ ^\]]*\]",
+            r"^\s*\[RECENT FACTS\]",
+            r"^\s*\[CURRENT MESSAGE FACTS\]",
+            r"^\s*\[DIRECTIVES\]",
+            r"^\s*\[CURRENT USER QUERY[ ^\]]*\]",
+            r"^\s*\[USER INPUT\]",
+            r"^\s*\[BACKGROUND KNOWLEDGE\]",
+            r"^\s*\[CONVERSATION SUMMARIES[ ^\]]*\]",
+            r"^\s*\[RECENT REFLECTIONS[ ^\]]*\]",
+            r"^\s*\[SESSION REFLECTIONS[ ^\]]*\]",
+        ]
+        header_re = re.compile("(" + ")|(".join(header_patterns) + ")", re.IGNORECASE)
+        lines = []
+        skip_block = False
+        for line in (text.splitlines() or []):
+            if header_re.search(line):
+                # drop header line and start skipping until next blank line
+                skip_block = True
+                continue
+            if skip_block:
+                if not line.strip():
+                    # blank line ends the header block
+                    skip_block = False
+                continue
+            lines.append(line)
+        return "\n".join(lines).strip()
+    except Exception:
+        # Fail-safe: if anything goes wrong, return original text
+        return text
+
+
 # === Prompt-wide knobs (env overridable) =====================================
 
 # Model capacity (tokens). If not provided, default to a sane ceiling.
@@ -235,9 +282,14 @@ SEM_K = int(os.getenv("SEM_K", "8"))
 SEM_TIMEOUT_S = float(os.getenv("SEM_TIMEOUT_S", "5.0"))  # allow first-load index/model costs
 
 # Semantic stitching knobs
-SEM_STITCH_MAX_CHARS = int(os.getenv("SEM_STITCH_MAX_CHARS", "0"))  # 0 disables stitching
-SEM_STITCH_TOP_TITLES = int(os.getenv("SEM_STITCH_TOP_TITLES", "1"))
+SEM_STITCH_MAX_CHARS = int(os.getenv("SEM_STITCH_MAX_CHARS", "24000"))  # Large default to reassemble near-full articles
+SEM_STITCH_TOP_TITLES = int(os.getenv("SEM_STITCH_TOP_TITLES", "3"))
 SEM_STITCH_MIN_CHUNKS = int(os.getenv("SEM_STITCH_MIN_CHUNKS", "2"))
+
+# Small-talk gating knobs (skip heavy retrieval for non-questions/greetings)
+SMALLTALK_SKIP_SEMANTIC = _parse_bool(os.getenv("SMALLTALK_SKIP_SEMANTIC", "1"))
+SMALLTALK_SKIP_WIKI = _parse_bool(os.getenv("SMALLTALK_SKIP_WIKI", "1"))
+SMALLTALK_TOKEN_MAX = int(os.getenv("SMALLTALK_TOKEN_MAX", "12"))
 
 
 # LLM summaries controls (timeouts + force switch)
@@ -261,6 +313,8 @@ DREAMS_ENABLED = _parse_bool(os.getenv("DREAMS_ENABLED", "0"))
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "0"))
 REFLECTIONS_ON_DEMAND_TOKENS = int(os.getenv("REFLECTIONS_ON_DEMAND_TOKENS", "180"))
 REFLECTIONS_TOP_UP = _parse_bool(os.getenv("REFLECTIONS_TOP_UP", "1"))
+REFLECTIONS_PREVIEW_LINES = int(os.getenv("REFLECTIONS_PREVIEW_LINES", "2"))
+REFLECTIONS_PREVIEW_CHARS = int(os.getenv("REFLECTIONS_PREVIEW_CHARS", "220"))
 
 
 # === Unified Prompt Builder ===================================================
@@ -1223,6 +1277,23 @@ class UnifiedPromptBuilder:
         # Choose the retrieval query
         retrieval_query = (search_query or user_input or "").strip()
 
+        # Lightweight query analysis to inform retrieval (skip heavy context for small-talk)
+        try:
+            qinfo = analyze_query(user_input)
+        except Exception:
+            qinfo = None
+        def _is_smalltalk(qi) -> bool:
+            if not qi:
+                return False
+            return (
+                (not qi.is_question)
+                and (not qi.is_command)
+                and (not qi.is_meta_conversational)
+                and (not qi.is_deictic)
+                and qi.token_count <= SMALLTALK_TOKEN_MAX
+            )
+        smalltalk = _is_smalltalk(qinfo)
+
         # Dreams toggle (unified boolean parse)
         include_dreams = DREAMS_ENABLED
 
@@ -1250,15 +1321,17 @@ class UnifiedPromptBuilder:
             "dreams":
             self._bounded(self._get_dreams(PROMPT_MAX_DREAMS), 0.3, []) if include_dreams else asyncio.sleep(0, result=[]),
             # Use unified semantic retrieval (includes FAISS + Chroma fallback and hot-cache)
-            "sem": self._bounded(
-                self._get_semantic_chunks(retrieval_query),
-                SEM_TIMEOUT_S, []
+            "sem": (
+                self._bounded(self._get_semantic_chunks(retrieval_query), SEM_TIMEOUT_S, [])
+                if not (SMALLTALK_SKIP_SEMANTIC and smalltalk) else asyncio.sleep(0, result=[])
             ),
             # Use hybrid retrieval + cosine filtering for reflections (falls back to old method if unavailable)
             "refl": self._bounded(self._get_reflections_hybrid_filtered(retrieval_query, PROMPT_MAX_REFLECTIONS), 1.5, []),
 
-            "wiki": asyncio.get_running_loop().run_in_executor(
-                None, self._get_wiki_snippet_cached, (current_topic or retrieval_query)
+            "wiki": (
+                asyncio.get_running_loop().run_in_executor(
+                    None, self._get_wiki_snippet_cached, (current_topic or retrieval_query)
+                ) if not (SMALLTALK_SKIP_WIKI and smalltalk) else asyncio.sleep(0, result="")
             ),
         }
 
@@ -1433,7 +1506,26 @@ class UnifiedPromptBuilder:
 
         facts_c      = _truncate_list(_dedupe_keep_order(_safe_list(gated_ctx.get("facts"))), PROMPT_MAX_FACTS)
         recent_facts_c = _truncate_list(_dedupe_keep_order(_safe_list(gated_ctx.get("recent_facts"))), PROMPT_MAX_RECENT_FACTS)
-        summaries_c  = _truncate_list(_dedupe_keep_order(_safe_list(gated_ctx.get("summaries"))), PROMPT_MAX_SUMMARIES)
+        # Always include most recent stored summaries in addition to query-relevant ones
+        try:
+            cm = getattr(self.memory_coordinator, "corpus_manager", None)
+            recent_summaries = cm.get_summaries(PROMPT_MAX_SUMMARIES) if cm and hasattr(cm, "get_summaries") else []
+        except Exception:
+            recent_summaries = []
+        # Merge: recent first, then gated summaries; de-dupe by normalized content
+        merged_summaries = []
+        def _sum_key(x):
+            if isinstance(x, dict):
+                return (x.get("content") or "").strip().lower()
+            return str(x).strip().lower()
+        seen_keys = set()
+        for s in (recent_summaries or []) + (_safe_list(gated_ctx.get("summaries")) or []):
+            k = _sum_key(s)
+            if not k or k in seen_keys:
+                continue
+            merged_summaries.append(s)
+            seen_keys.add(k)
+        summaries_c  = _truncate_list(_dedupe_keep_order(merged_summaries, key_fn=_sum_key), PROMPT_MAX_SUMMARIES)
         refl_c = _truncate_list(_dedupe_keep_order(_safe_list(gated_ctx.get("reflections"))), PROMPT_MAX_REFLECTIONS)
 
         recent_c     = _truncate_list(_safe_list(gated_ctx.get("recent_conversations") or []), PROMPT_MAX_RECENT)
@@ -1790,6 +1882,7 @@ class UnifiedPromptBuilder:
         # Time context
         if context.get("time_context"):
             parts.append(f"\n[TIME CONTEXT]\n{context['time_context']}\n")
+            parts.append("Global clock reference. Prefer item-level timestamps in sections below when present.\n")
 
         # Fresh facts (inline-extracted from current message)
         if context.get("fresh_facts"):
@@ -1821,8 +1914,8 @@ class UnifiedPromptBuilder:
             )
 
             for conv in context["recent_conversations"]:
-                q = (conv.get("query") or "").strip()
-                r = (conv.get("response") or "").strip()
+                q = _strip_prompt_artifacts((conv.get("query") or "").strip())
+                r = _strip_prompt_artifacts((conv.get("response") or "").strip())
                 # Middle-out very long Q/A pairs
                 if ENABLE_MIDDLE_OUT and q:
                     q = self._middle_out(q, MEMORY_ITEM_MAX_TOKENS)
@@ -1837,6 +1930,7 @@ class UnifiedPromptBuilder:
         if context.get("memories") or SHOW_EMPTY_SECTIONS:
             mems = context.get("memories") or []
             parts.append(f"\n[RELEVANT MEMORIES] (n={len(mems)})\n")
+            parts.append("Top semantic hits from conversation memory (cosine + overlap gated). Use for personal/context recall.\n")
             for mem in mems:
                 # Format and compress long memory responses
                 if isinstance(mem, dict) and (mem.get("response")):
@@ -1925,12 +2019,8 @@ class UnifiedPromptBuilder:
                         ts = _fmt_ts(r.get("timestamp"))
                         if txt:
                             prefix = f"[{ts}] " if ts else ""
-                            # Aggressive truncation: just show first line (header) for token efficiency
-                            # Full reflections appear in SESSION REFLECTIONS if query-relevant
-                            first_line = txt.split('\n')[0]
-                            if len(first_line) > 100:
-                                first_line = first_line[:100] + "..."
-                            parts.append(f"- {prefix}{first_line}\n")
+                            # Do not truncate: include full reflection text
+                            parts.append(f"- {prefix}{txt}\n")
         except Exception as e:
             logger.error(f"[PROMPT] Could not fetch recent reflections: {e}")
             import traceback
@@ -1940,6 +2030,7 @@ class UnifiedPromptBuilder:
             # Clarify these are session-level reflections (typically generated at shutdown)
             refl_list = context.get("reflections") or []
             parts.append(f"\n[SESSION REFLECTIONS] (n={len(refl_list)})\n")
+            parts.append("Session-level reflections (shutdown-generated); query-relevant selections shown in full.\n")
             for r in refl_list:
                 if isinstance(r, dict):
                     txt = (r.get("content") or "").strip()
@@ -1965,6 +2056,7 @@ class UnifiedPromptBuilder:
             parts.append(
                 f"\n[RELEVANT INFORMATION] (n={len(context.get('semantic_chunks') or [])}, ~{total_sem_tokens} tokens)\n"
             )
+            parts.append("Knowledge snippets (Wikipedia/knowledge base via FAISS/Chroma), cleaned and gated. Not conversation logs.\n")
 
             for chunk in (context.get("semantic_chunks") or []):
                 # Prefer gated/cleaned text if available
@@ -1996,6 +2088,8 @@ class UnifiedPromptBuilder:
         if wiki_text or SHOW_EMPTY_SECTIONS:
             parts.append("\n[BACKGROUND KNOWLEDGE]\n")
             if wiki_text:
+                parts.append("Topic-based wiki snippet (post-gate, cleaned).\n")
+            if wiki_text:
                 parts.append(wiki_text.strip() + "\n")
 
         # Dreams (if any)
@@ -2017,6 +2111,7 @@ class UnifiedPromptBuilder:
         if ENABLE_MIDDLE_OUT and final_user_input:
             final_user_input = self._middle_out(final_user_input, USER_INPUT_MAX_TOKENS)
         parts.append(f"\n[CURRENT USER QUERY — RESPOND TO THIS]\n{final_user_input}\n")
+        parts.append("Respond only to this message. Use other sections strictly as context.\n")
 
         return "".join(parts)
 
@@ -2048,12 +2143,15 @@ class UnifiedPromptBuilder:
                 if ts_str:
                     ts_line = f"[{ts_str}] "
 
+        def _clean(text: str) -> str:
+            return _strip_prompt_artifacts(text or "")
+
         if "query" in memory and "response" in memory:
-            q = (memory.get('query') or '').strip()
-            a = (memory.get('response') or '').strip()
+            q = _clean((memory.get('query') or '').strip())
+            a = _clean((memory.get('response') or '').strip())
             return f"{ts_line}Q: {q}\nA: {a}\n"
         if "content" in memory:
-            return f"{ts_line}{memory['content']}\n"
+            return f"{ts_line}{_clean(memory['content'])}\n"
         return f"{ts_line}{str(memory)}\n"
 
     def _get_time_context(self) -> str:
@@ -2070,14 +2168,20 @@ class UnifiedPromptBuilder:
           2) General (tag == "topic:general")
           3) Any remaining recent entries
         """
-        all_recent = self.memory_coordinator.corpus_manager.get_recent_memories(max(count * 2, count))
+        # Fetch a wider window to improve topic filtering and add debug visibility
+        fetch_n = max(count * 4, 20)
+        all_recent = self.memory_coordinator.corpus_manager.get_recent_memories(fetch_n)
 
         if topic is None and hasattr(self.memory_coordinator, "current_topic"):
             topic = self.memory_coordinator.current_topic
         topic = (topic or "general").strip().lower()
 
         if topic == "general":
-            return all_recent[:count]
+            result = all_recent[:count]
+            logger.debug(
+                f"[PROMPT][Recent] requested={count} available={len(all_recent)} topic=general returned={len(result)}"
+            )
+            return result
 
         def has_tag(entry, tag: str) -> bool:
             tags = entry.get("tags") or []
@@ -2101,7 +2205,15 @@ class UnifiedPromptBuilder:
             if len(merged) >= count:
                 break
 
-        return merged[:count]
+        out = merged[:count]
+        try:
+            logger.debug(
+                f"[PROMPT][Recent] requested={count} available={len(all_recent)} topic={topic} "
+                f"on_topic={len(on_topic)} general={len(general)} remainder={len(remainder)} returned={len(out)}"
+            )
+        except Exception:
+            pass
+        return out
 
     def _synthesize_summaries_from_recent(self, recents: List[Dict], max_items: int = 5) -> List[Dict]:
         """

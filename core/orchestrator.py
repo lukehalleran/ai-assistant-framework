@@ -151,6 +151,69 @@ class DaemonOrchestrator:
         # No thinking block found - return empty thinking and full response as answer
         return "", response
 
+    @staticmethod
+    def _strip_xml_wrappers(text: str) -> str:
+        """Remove simple XML-like wrappers such as <result>...</result>, <answer>...</answer>.
+
+        Keeps inner content; tolerant if tags are missing.
+        """
+        if not text:
+            return text
+        try:
+            import re
+            s = text.strip()
+            # Unwrap common tags if they span the whole string
+            for tag in ("result", "answer", "final"):
+                pattern = rf"^\s*<\s*{tag}[^>]*>([\s\S]*?)<\s*/\s*{tag}\s*>\s*$"
+                m = re.match(pattern, s, flags=re.IGNORECASE)
+                if m:
+                    s = m.group(1).strip()
+            return s
+        except Exception:
+            return text
+
+    @staticmethod
+    def _strip_prompt_artifacts(text: str) -> str:
+        """Remove known bracketed prompt headers if the model echoes them.
+
+        Conservative: removes header lines and their immediate block until a blank line.
+        """
+        if not text:
+            return text
+        try:
+            import re
+            header_patterns = [
+                r"^\s*\[TIME CONTEXT\]",
+                r"^\s*\[RECENT CONVERSATION[^\]]*\]",
+                r"^\s*\[RELEVANT INFORMATION\]",
+                r"^\s*\[RELEVANT MEMORIES\]",
+                r"^\s*\[FACTS[ ^\]]*\]",
+                r"^\s*\[RECENT FACTS\]",
+                r"^\s*\[CURRENT MESSAGE FACTS\]",
+                r"^\s*\[DIRECTIVES\]",
+                r"^\s*\[CURRENT USER QUERY[ ^\]]*\]",
+                r"^\s*\[USER INPUT\]",
+                r"^\s*\[BACKGROUND KNOWLEDGE\]",
+                r"^\s*\[CONVERSATION SUMMARIES[ ^\]]*\]",
+                r"^\s*\[RECENT REFLECTIONS[ ^\]]*\]",
+                r"^\s*\[SESSION REFLECTIONS[ ^\]]*\]",
+            ]
+            header_re = re.compile("(" + ")|(".join(header_patterns) + ")", re.IGNORECASE)
+            lines = []
+            skip_block = False
+            for line in (text.splitlines() or []):
+                if header_re.search(line):
+                    skip_block = True
+                    continue
+                if skip_block:
+                    if not line.strip():
+                        skip_block = False
+                    continue
+                lines.append(line)
+            return "\n".join(lines).strip()
+        except Exception:
+            return text
+
     def __init__(
         self,
         *,
@@ -946,6 +1009,8 @@ class DaemonOrchestrator:
 
             # --- Parse thinking block and extract final answer ---
             thinking_part, final_answer = self._parse_thinking_block(full_response)
+            # Strip XML-like wrappers (e.g., <result> … </result>) from final answer
+            final_answer = self._strip_xml_wrappers(final_answer)
 
             # Log thinking part for debugging if present
             if thinking_part:
@@ -954,7 +1019,9 @@ class DaemonOrchestrator:
                 debug_info["thinking_length"] = len(thinking_part)
 
             # Store final answer (not the thinking part) in memory
-            answer_for_storage = final_answer if final_answer else full_response
+            answer_for_storage = final_answer if final_answer else self._strip_xml_wrappers(full_response)
+            # Sanitize prompt header echoes before returning/storing
+            answer_for_storage = self._strip_prompt_artifacts(answer_for_storage)
 
             # --- Store Interaction ---
             if self.memory_system and not use_raw_mode:

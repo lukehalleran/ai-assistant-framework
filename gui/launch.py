@@ -386,6 +386,15 @@ def launch_gui(orchestrator):
                         debug_entries.append(chunk["debug"])  # append single record
                     except Exception:
                         pass
+                    # Fallback: if no assistant content was streamed, set it from debug.response
+                    try:
+                        if (not isinstance(chunk, dict)) or ("content" not in chunk or not chunk.get("content")):
+                            final_from_debug = (chunk.get("debug") or {}).get("response")
+                            if final_from_debug:
+                                if chat_history and isinstance(chat_history[-1], dict) and chat_history[-1].get("role") == "assistant":
+                                    chat_history[-1]["content"] = final_from_debug
+                    except Exception:
+                        pass
                 # Re-yield current state along with typing + timer
                 now = _t.time(); _updates += 1
                 if (now - _last_tick) >= 0.10 or (_updates % 2 == 0):
