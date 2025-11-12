@@ -299,25 +299,22 @@ def launch_gui(orchestrator):
             tick = _a.create_task(_a.sleep(0.25))
             done, pending = await _a.wait({next_task, tick}, return_when=_a.FIRST_COMPLETED)
 
-            if tick in done:
-                # Timer tick: update indicators
-                now = _t.time(); _updates += 1
-                if (now - _last_tick) >= 0.20 or (_updates % 3 == 0):
-                    _last_tick = now
-                    _dots = "." * (1 + (_updates % 3))
-                    typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
-                    timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
-                    _chatbot_view = copy.deepcopy(chat_history)
-                    _state_view = copy.deepcopy(chat_history)
-                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
-                # Continue; next_task may also be done
+            # Always handle next_task first if it's done
             if next_task in done:
                 try:
                     chunk = next_task.result()
                 except StopAsyncIteration:
                     break
-                except Exception:
-                    # If streaming errored, stop typing and break
+                except Exception as e:
+                    # If streaming errored, log it and show error to user
+                    logging.error(f"[GUI] Streaming error: {type(e).__name__}: {e}")
+                    import traceback
+                    logging.error(f"[GUI] Traceback:\n{traceback.format_exc()}")
+
+                    error_msg = f"⚠️ Connection error: {str(e)}"
+                    if chat_history and isinstance(chat_history[-1], dict):
+                        chat_history[-1]["content"] = error_msg
+
                     typing_text = ""
                     timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
                     _chatbot_view = copy.deepcopy(chat_history)
@@ -408,6 +405,17 @@ def launch_gui(orchestrator):
 
                 # Schedule next chunk read
                 next_task = _a.create_task(agen.__anext__())
+            elif tick in done:
+                # Timer tick: update indicators only if next_task wasn't processed
+                now = _t.time(); _updates += 1
+                if (now - _last_tick) >= 0.20 or (_updates % 3 == 0):
+                    _last_tick = now
+                    _dots = "." * (1 + (_updates % 3))
+                    typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
+                    timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
+                    _chatbot_view = copy.deepcopy(chat_history)
+                    _state_view = copy.deepcopy(chat_history)
+                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
 
         # Final update: clear typing indicator, freeze timer
         typing_text = ""
@@ -588,6 +596,90 @@ def launch_gui(orchestrator):
             with gr.TabItem("Debug Trace"):
                 gr.Markdown("### 🔎 Query → Prompt → Response")
                 debug_view = gr.Markdown(value=_format_debug_entries([]))
+
+                # Download button for full prompt
+                with gr.Row():
+                    download_prompt_btn = gr.Button("📥 Download Full Prompt as TXT", variant="secondary")
+                    download_status = gr.Markdown(value="", visible=True)
+                download_file = gr.File(label="Download", visible=False)
+
+                def _download_full_prompt(entries):
+                    """Extract the most recent full prompt and prepare it for download"""
+                    try:
+                        if not entries:
+                            return gr.update(visible=False), "❌ No debug entries available. Submit a message first."
+
+                        # Get the most recent entry
+                        latest = entries[-1] if isinstance(entries, list) else entries
+
+                        # Extract components
+                        system_prompt = latest.get('system_prompt', '')
+                        prompt = latest.get('prompt', '')
+                        query = latest.get('query', '')
+                        mode = latest.get('mode', 'unknown')
+                        model = latest.get('model', 'unknown')
+
+                        # Build the full prompt text
+                        lines = []
+                        lines.append("="*80)
+                        lines.append("DAEMON RAG AGENT - FULL PROMPT EXPORT")
+                        lines.append("="*80)
+                        lines.append(f"Mode: {mode}")
+                        lines.append(f"Model: {model}")
+                        lines.append("="*80)
+                        lines.append("")
+
+                        if system_prompt:
+                            lines.append("[SYSTEM PROMPT]")
+                            lines.append("-"*80)
+                            lines.append(system_prompt)
+                            lines.append("")
+                            lines.append("="*80)
+                            lines.append("")
+
+                        lines.append("[USER QUERY]")
+                        lines.append("-"*80)
+                        lines.append(query)
+                        lines.append("")
+                        lines.append("="*80)
+                        lines.append("")
+
+                        lines.append("[FULL CONTEXT PROMPT]")
+                        lines.append("-"*80)
+                        lines.append(prompt)
+                        lines.append("")
+                        lines.append("="*80)
+
+                        content = "\n".join(lines)
+
+                        # Write to temporary file
+                        from pathlib import Path
+                        import tempfile
+                        from datetime import datetime
+
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"daemon_prompt_{timestamp}.txt"
+
+                        # Use a temporary directory
+                        temp_dir = Path(tempfile.gettempdir()) / "daemon_prompts"
+                        temp_dir.mkdir(exist_ok=True)
+                        filepath = temp_dir / filename
+
+                        with open(filepath, 'w', encoding='utf-8') as f:
+                            f.write(content)
+
+                        return gr.update(value=str(filepath), visible=True), f"✅ Prompt exported to {filename}"
+
+                    except Exception as e:
+                        import traceback
+                        logging.error(f"[GUI] Download prompt error: {e}\n{traceback.format_exc()}")
+                        return gr.update(visible=False), f"❌ Error: {str(e)}"
+
+                download_prompt_btn.click(
+                    _download_full_prompt,
+                    inputs=[debug_state],
+                    outputs=[download_file, download_status]
+                )
 
                 # Update debug view whenever debug_state changes
                 def _render_debug(entries):

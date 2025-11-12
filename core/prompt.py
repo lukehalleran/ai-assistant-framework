@@ -956,6 +956,21 @@ class UnifiedPromptBuilder:
             "tags": ["summary:fallback_micro"],
             "source": "fallback_micro"
         }]
+
+    def _fallback_micro_summary(self, recents: List[Dict]) -> str:
+        """
+        Very small, safe summary derived from most recent exchanges.
+        Falls back to a static string if nothing usable is present.
+        """
+        try:
+            items = self._synthesize_summaries_from_recent(recents or [], max_items=1)
+            if items and isinstance(items[0], dict):
+                text = (items[0].get("content") or "").strip()
+                if text:
+                    return text
+        except Exception:
+            pass
+        return "No recent conversation summary available."
     async def _get_reflections(self, count: int):
         """Fetch small reflection notes, with safe fallbacks.
 
@@ -1261,6 +1276,22 @@ class UnifiedPromptBuilder:
         system_prompt: Optional[str] = None,
         current_topic: Optional[str] = None,
         fresh_facts: Optional[List[Dict]] = None,
+        # Optional pre-filtered data (for GatedPromptBuilder)
+        memories: Optional[List[Dict]] = None,
+        summaries: Optional[List[Dict]] = None,
+        dreams: Optional[List[Dict]] = None,
+        wiki_snippet: Optional[str] = None,
+        semantic_chunks: Optional[List[Dict]] = None,
+        semantic_memory_results: Optional[List[Dict]] = None,
+        time_context: Optional[str] = None,
+        recent_conversations: Optional[List[Dict]] = None,
+        model_name: Optional[str] = None,
+        is_api: bool = False,
+        include_dreams: bool = True,
+        include_code_snapshot: bool = False,
+        include_changelog: bool = False,
+        directives_file: Optional[str] = None,
+        **kwargs  # Accept and ignore other kwargs for compatibility
     ) -> Dict[str, Any]:
         """
         Parallelized prompt-context builder.
@@ -1307,28 +1338,30 @@ class UnifiedPromptBuilder:
         # silently falling back to recency here (recency already appears in its own section).
         _get_sem_top = getattr(self.memory_coordinator, 'get_semantic_top_memories', None)
 
+        # Use pre-filtered data if provided (for GatedPromptBuilder), otherwise fetch
         tasks = {
             # Respect PROMPT_MAX_RECENT if manually set; avoid hidden cap of 5
-            "recent": self._bounded(self._get_recent_conversations(PROMPT_MAX_RECENT), 0.3, []),
-            "mems": self._bounded(
+            "recent": asyncio.sleep(0, result=recent_conversations or []) if recent_conversations is not None else self._bounded(self._get_recent_conversations(PROMPT_MAX_RECENT), 0.3, []),
+            "mems": asyncio.sleep(0, result=memories or []) if memories is not None else self._bounded(
                 (_get_sem_top(retrieval_query, limit=PROMPT_MAX_MEMS) if callable(_get_sem_top) else asyncio.sleep(0, result=[])),
                 1.5, []
             ),
             "facts": self._bounded(self.get_facts(retrieval_query, limit=PROMPT_MAX_FACTS), 0.8, []),
             "recent_facts": self._bounded(self.get_recent_facts(limit=PROMPT_MAX_RECENT_FACTS), 0.5, []),
             # Use hybrid retrieval + cosine filtering for summaries (falls back to old method if unavailable)
-            "sums": self._bounded(self._get_summaries_hybrid_filtered(retrieval_query, PROMPT_MAX_SUMMARIES), SUMMARIES_TASK_TIMEOUT, []),
-            "dreams":
-            self._bounded(self._get_dreams(PROMPT_MAX_DREAMS), 0.3, []) if include_dreams else asyncio.sleep(0, result=[]),
+            "sums": asyncio.sleep(0, result=summaries or []) if summaries is not None else self._bounded(self._get_summaries_hybrid_filtered(retrieval_query, PROMPT_MAX_SUMMARIES), SUMMARIES_TASK_TIMEOUT, []),
+            "dreams": asyncio.sleep(0, result=dreams or []) if dreams is not None else (
+                self._bounded(self._get_dreams(PROMPT_MAX_DREAMS), 0.3, []) if include_dreams else asyncio.sleep(0, result=[])
+            ),
             # Use unified semantic retrieval (includes FAISS + Chroma fallback and hot-cache)
-            "sem": (
+            "sem": asyncio.sleep(0, result=semantic_chunks or []) if semantic_chunks is not None else (
                 self._bounded(self._get_semantic_chunks(retrieval_query), SEM_TIMEOUT_S, [])
                 if not (SMALLTALK_SKIP_SEMANTIC and smalltalk) else asyncio.sleep(0, result=[])
             ),
             # Use hybrid retrieval + cosine filtering for reflections (falls back to old method if unavailable)
             "refl": self._bounded(self._get_reflections_hybrid_filtered(retrieval_query, PROMPT_MAX_REFLECTIONS), 1.5, []),
 
-            "wiki": (
+            "wiki": asyncio.sleep(0, result=wiki_snippet or "") if wiki_snippet is not None else (
                 asyncio.get_running_loop().run_in_executor(
                     None, self._get_wiki_snippet_cached, (current_topic or retrieval_query)
                 ) if not (SMALLTALK_SKIP_WIKI and smalltalk) else asyncio.sleep(0, result="")
@@ -2402,11 +2435,16 @@ class UnifiedPromptBuilder:
         # Nothing from any source
         return []
 
-    def _load_directives(self, directives_file: str) -> str:
-        """Load directives file if present (kept)."""
-        if os.path.exists(directives_file):
-            with open(directives_file, 'r') as f:
-                return f.read()
+    def _load_directives(self, directives_file: Optional[str]) -> str:
+        """Load directives file if present; tolerate None/missing path."""
+        try:
+            if not directives_file:
+                return ""
+            if os.path.exists(directives_file):
+                with open(directives_file, 'r', encoding='utf-8') as f:
+                    return f.read()
+        except Exception:
+            return ""
         return ""
 
 

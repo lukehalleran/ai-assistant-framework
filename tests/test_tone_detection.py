@@ -247,13 +247,13 @@ TEST_CASES = [
 
 # ===== Test Functions =====
 
-def _run_crisis_detection_test(test_case):
+async def _run_crisis_detection_test(test_case):
     """Test individual crisis detection cases (shared implementation)."""
     message = test_case["message"]
     expected = test_case["expected"]
     description = test_case["description"]
 
-    result = detect_crisis_level(message)
+    result = await detect_crisis_level(message)
 
     # Log the result for debugging
     logger.info(
@@ -277,13 +277,13 @@ def _run_crisis_detection_test(test_case):
 # Pytest-compatible wrapper
 if HAS_PYTEST:
     @pytest.mark.parametrize("test_case", TEST_CASES)
-    def test_crisis_detection(test_case):
+    async def test_crisis_detection(test_case):
         """Test individual crisis detection cases."""
-        _run_crisis_detection_test(test_case)
+        await _run_crisis_detection_test(test_case)
 else:
-    def test_crisis_detection(test_case):
+    async def test_crisis_detection(test_case):
         """Test individual crisis detection cases (non-pytest version)."""
-        _run_crisis_detection_test(test_case)
+        await _run_crisis_detection_test(test_case)
 
 
 def test_observational_language_detection():
@@ -339,13 +339,13 @@ def test_keyword_detection():
     assert none_result is None
 
 
-def test_context_escalation():
+async def test_context_escalation():
     """Test that prior distress context boosts current detection."""
 
     message = "I'm still feeling really bad"
 
     # Without context - should be conversational or low concern
-    result_no_context = detect_crisis_level(message, conversation_history=None)
+    result_no_context = await detect_crisis_level(message, conversation_history=None)
 
     # With heavy topic context - should escalate
     heavy_context = [
@@ -355,7 +355,7 @@ def test_context_escalation():
             "is_heavy_topic": True,
         }
     ]
-    result_with_context = detect_crisis_level(message, conversation_history=heavy_context)
+    result_with_context = await detect_crisis_level(message, conversation_history=heavy_context)
 
     logger.info(
         f"Context escalation test:\n"
@@ -372,7 +372,7 @@ def test_context_escalation():
     ]
 
 
-def test_semantic_detection_examples():
+async def test_semantic_detection_examples():
     """Test that semantic detection works for paraphrased crisis language."""
 
     # Paraphrased suicidal ideation (no exact keywords)
@@ -383,7 +383,7 @@ def test_semantic_detection_examples():
     ]
 
     for msg in semantic_high:
-        result = detect_crisis_level(msg)
+        result = await detect_crisis_level(msg)
         logger.info(f"Semantic HIGH test: '{msg}' → {result.level.value} (confidence: {result.confidence:.2f})")
         # Should be at least MEDIUM (semantic might not always reach HIGH without exact keywords)
         assert result.level in [CrisisLevel.HIGH, CrisisLevel.MEDIUM], (

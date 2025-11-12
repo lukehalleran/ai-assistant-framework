@@ -147,6 +147,18 @@ def _score_triple(subj: str, rel: str, obj: str, nlp=None) -> float:
     """Light, generic confidence shaping; no domain knowledge."""
     base = 0.6
     bonus = 0.0
+    penalty = 0.0
+
+    # Penalize generic/vague terms
+    generic_terms = {"thing", "stuff", "something", "anything", "everything"}
+    if subj.lower() in generic_terms or obj.lower() in generic_terms:
+        penalty += 0.15
+
+    # Penalize stop words in subject/object
+    stop_words = {"it", "this", "that", "these", "those", "the", "a", "an"}
+    if subj.lower() in stop_words or obj.lower() in stop_words:
+        penalty += 0.15
+
     txt = f"{subj} {rel} {obj}"
     if _has_number_unit(txt):
         bonus += 0.05
@@ -159,7 +171,7 @@ def _score_triple(subj: str, rel: str, obj: str, nlp=None) -> float:
                 bonus += 0.05
         except Exception:
             pass
-    return max(0.4, min(0.9, base + bonus))
+    return max(0.4, min(0.9, base + bonus - penalty))
 
 # ---------------- Optional deps (lazy) ----------------
 _NLP = None
@@ -199,9 +211,9 @@ def _normalize_subject_obj(subj: str, rel: str, obj: str, user_name: str = "Luke
     """Promote generic subjects, keep obvious entity casing lightly."""
     s, r, o = (subj or "").strip(), (rel or "").strip(), (obj or "").strip()
 
-    # Map first-person pronouns/possessives to canonical 'user'
+    # Map first-person pronouns/possessives to user_name
     if s.lower() in {"i", "me", "my", "mine", "we", "our", "ours", "us"}:
-        s = "user"
+        s = user_name
 
     # If subject is too generic and object looks like the real entity, promote object to subject
     generic_subjects = {"game", "brew", "coffee", "beer", "dunkel", "dunkels"}
