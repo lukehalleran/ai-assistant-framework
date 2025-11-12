@@ -189,6 +189,9 @@ class MultiCollectionChromaStore:
             self.create_collection(name)
         coll = self.collections[name]
         clean_md = _flatten_for_chroma(dict(metadata or {}))
+        # ChromaDB requires non-empty metadata - add timestamp if empty
+        if not clean_md:
+            clean_md["timestamp"] = datetime.now().isoformat()
         doc_id = str(uuid.uuid4())
         coll.add(ids=[doc_id], documents=[text or ""], metadatas=[clean_md])
         return doc_id
@@ -231,13 +234,17 @@ class MultiCollectionChromaStore:
             logger.debug(f"[ChromaStore] Adding conversation memory with metadata: {metadata}")
 
             # Double-check metadata values
-            for key, value in metadata.items():
+            for key, value in list(metadata.items()):
                 if value is None:
                     logger.warning(f"[ChromaStore] Metadata key '{key}' has None value, removing it")
                     metadata.pop(key)
                 elif not isinstance(value, (str, int, float, bool)):
                     logger.warning(f"[ChromaStore] Converting metadata key '{key}' from {type(value)} to string")
                     metadata[key] = str(value)
+
+            # ChromaDB requires non-empty metadata - add timestamp if empty
+            if not metadata:
+                metadata["timestamp"] = datetime.now().isoformat()
 
             # Create the document ID
             doc_id = str(uuid.uuid4())

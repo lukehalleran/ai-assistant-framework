@@ -57,7 +57,8 @@ class ModelManager:
 
         self.base_url = "https://openrouter.ai/api/v1"
 
-        if OpenAI is not None and AsyncOpenAI is not None:
+        # Initialize OpenAI clients only when the package is available AND an API key is provided.
+        if OpenAI is not None and AsyncOpenAI is not None and self.api_key:
             sync_http_client = httpx.Client(
                 timeout=httpx.Timeout(30.0),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=10),
@@ -82,11 +83,23 @@ class ModelManager:
                 http_client=async_http_client,
             )
         else:
+            # No API key or OpenAI package unavailable — operate in stub/offline mode.
             self.client = None  # type: ignore[assignment]
             self.async_client = None  # type: ignore[assignment]
 
         self.default_model = "gpt-4-turbo"
-        self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+        # Embedding model used across memory/gating paths. Fall back to a stub in
+        # restricted environments where the SentenceTransformer model cannot load.
+        try:
+            self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+        except Exception:
+            class _StubEmbedder:
+                def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False):
+                    import numpy as np
+                    n = len(texts or [])
+                    return np.zeros((n, 384), dtype=np.float32)
+
+            self.embed_model = _StubEmbedder()  # type: ignore[assignment]
         # Runtime-overridable defaults (mutable via GUI and persisted to config)
         self.default_temperature = DEFAULT_TEMPERATURE
         self.default_max_tokens = DEFAULT_MAX_TOKENS
@@ -197,8 +210,8 @@ class ModelManager:
         if hasattr(self.client, "_client"):
             self.client._client.close()
     async def aclose(self):
-        if hasattr(self.client, "_client"):
-            await self.client._client.aclose()
+        if hasattr(self.async_client, "_client"):
+            await self.async_client._client.aclose()
     def is_api_model(self, model_name):
         """Check if a given model is an API-based model."""
         return model_name in self.api_models
