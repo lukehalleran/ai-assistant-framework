@@ -1,54 +1,58 @@
 # tests/test_memory_coordinator.py
 import asyncio
-from chromadb import PersistentClient
+import os
+import tempfile
 from memory.corpus_manager import CorpusManager
 from memory.memory_coordinator import MemoryCoordinator
+from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 
 async def test_memory_coordinator():
     print("Testing Memory Coordinator...")
 
-    # Initialize components
-    corpus_manager = CorpusManager("test_corpus.json")
+    # Use temp directory for test
+    with tempfile.TemporaryDirectory() as tmpdir:
+        corpus_path = os.path.join(tmpdir, "test_corpus.json")
+        chroma_path = os.path.join(tmpdir, "test_chroma_db")
 
-    # Initialize ChromaDB
-    client = PersistentClient(path="test_chroma_db")
-    collection = client.get_or_create_collection("test-memory")
+        # Initialize components
+        corpus_manager = CorpusManager(corpus_path)
 
-    # Create coordinator
-    coordinator = MemoryCoordinator(
-        corpus_manager=corpus_manager,
-        chroma_collection=collection
-    )
+        # Initialize ChromaDB store
+        chroma_store = MultiCollectionChromaStore(persist_directory=chroma_path)
 
-    # Test storing
-    print("\n1. Testing storage...")
-    await coordinator.store_interaction(
-        "What's the weather?",
-        "I don't have access to weather data.",
-        ["weather", "query"]
-    )
+        # Create coordinator
+        coordinator = MemoryCoordinator(
+            corpus_manager=corpus_manager,
+            chroma_store=chroma_store
+        )
 
-    # Test retrieval
-    print("\n2. Testing retrieval...")
-    config = {
-        'recent_count': 3,
-        'semantic_count': 10,
-        'max_memories': 5
-    }
+        # Test storing
+        print("\n1. Testing storage...")
+        await coordinator.store_interaction(
+            "What's the weather?",
+            "I don't have access to weather data.",
+            ["weather", "query"]
+        )
 
-    result = await coordinator.retrieve_relevant_memories(
-        "Tell me about the weather",
-        config
-    )
+        # Test retrieval
+        print("\n2. Testing retrieval...")
+        limit = 5
 
-    print(f"\nRetrieved {len(result['memories'])} memories:")
-    for i, mem in enumerate(result['memories']):
-        print(f"\n{i+1}. Source: {mem.get('source', 'unknown')}")
-        print(f"   Q: {mem['query'][:50]}...")
-        print(f"   A: {mem['response'][:50]}...")
+        memories = await coordinator.get_memories(
+            "Tell me about the weather",
+            limit=limit
+        )
 
-    print(f"\nCounts: {result['counts']}")
-    print("\n✅ Memory coordinator test complete!")
+        print(f"\nRetrieved {len(memories)} memories:")
+        for i, mem in enumerate(memories):
+            query = mem.get('query', '')
+            response = mem.get('response', '')
+            print(f"\n{i+1}. Source: {mem.get('metadata', {}).get('source', 'unknown')}")
+            if query:
+                print(f"   Q: {query[:50]}...")
+            if response:
+                print(f"   A: {response[:50]}...")
+        print("\n✅ Memory coordinator test complete!")
 
 if __name__ == "__main__":
     asyncio.run(test_memory_coordinator())

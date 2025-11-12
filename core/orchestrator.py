@@ -396,14 +396,14 @@ class DaemonOrchestrator:
         if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
             try:
                 # Get recent conversation history for context-aware tone detection
-                recent = self.memory_system.corpus_manager.get_recent_memories(limit=3)
+                recent = self.memory_system.corpus_manager.get_recent_memories(count=3)
                 conversation_history = recent if recent else None
             except Exception as e:
                 if self.logger:
                     self.logger.debug(f"[Orchestrator] Failed to get conversation history for tone detection: {e}")
 
         # Detect tone/crisis level
-        tone_analysis = detect_crisis_level(
+        tone_analysis = await detect_crisis_level(
             message=user_input,
             conversation_history=conversation_history,
             model_manager=self.model_manager

@@ -1,53 +1,49 @@
 #tests/test_gated_prompt.py
+"""Test the gated prompt builder's multi-stage filtering."""
 import asyncio
-from core.prompt import PromptBuilder
 from models.model_manager import ModelManager
-from utils.file_processor import FileProcessor
-from core.response_generator import ResponseGenerator
-from core.orchestrator import DaemonOrchestrator
-from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
-from core.prompt_builder import UnifiedHierarchicalPromptBuilder
 from processing.gate_system import GatedPromptBuilder
+from core.prompt import PromptBuilder
 
 # Set up dummy memory data
 dummy_memories = [
-    {"content": "The mitochondria is the powerhouse of the cell."},
-    {"content": "Luke’s project uses cosine similarity and reranking for filtering memories."},
-    {"content": "Bananas are yellow and contain potassium."},
+    {"content": "The mitochondria is the powerhouse of the cell.", "metadata": {"source": "test"}},
+    {"content": "Luke's project uses cosine similarity and reranking for filtering memories.", "metadata": {"source": "test"}},
+    {"content": "Bananas are yellow and contain potassium.", "metadata": {"source": "test"}},
 ]
 
-async def run_test():
+async def test_gated_builder():
+    """Test that GatedPromptBuilder can build a prompt with memories."""
     model_manager = ModelManager()
-    model_manager.load_openai_model("gpt-4-turbo", "gpt-4-turbo")
-    model_manager.switch_model("gpt-4-turbo")
 
+    # Create base and gated builders
     base_pb = PromptBuilder(model_manager)
     gated_pb = GatedPromptBuilder(base_pb, model_manager)
 
-    chroma_store = MultiCollectionChromaStore(persist_directory="daemon_memory")
-
-    prompt_builder = UnifiedHierarchicalPromptBuilder(
-        prompt_builder=gated_pb,
-        model_manager=model_manager,
-        chroma_store=chroma_store
-    )
-
-    file_processor = FileProcessor()
-    response_generator = ResponseGenerator(model_manager)
-
-    orchestrator = DaemonOrchestrator(
-        model_manager=model_manager,
-        response_generator=response_generator,
-        file_processor=file_processor,
-        prompt_builder=prompt_builder
-    )
-
+    # Build a gated prompt
     query = "How do cosine similarity gates work in memory filtering?"
 
-    print("Sending query to orchestrator...\n")
-    reply = await orchestrator.generate_reply(query, injected_context={"memories": dummy_memories})
+    print("Building gated prompt...\n")
+    prompt = await gated_pb.build_gated_prompt(
+        user_input=query,
+        memories=dummy_memories,
+        summaries=[],
+        dreams=[],
+        wiki_snippet="",
+        semantic_chunks=None,
+        semantic_memory_results=None,
+        time_context=None,
+        recent_conversations=None,
+    )
 
-    print("📤 Final Response:\n")
-    print(reply)
+    print("Gated Prompt Built Successfully!")
+    print(f"Prompt length: {len(prompt)} chars")
 
-asyncio.run(run_test())
+    # Basic assertions
+    assert len(prompt) > 0, "Prompt should not be empty"
+    assert query in prompt, "Query should appear in prompt"
+
+    print("\n✅ Test passed!")
+
+if __name__ == "__main__":
+    asyncio.run(test_gated_builder())

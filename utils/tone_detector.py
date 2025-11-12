@@ -28,9 +28,11 @@ logger = get_logger("tone_detector")
 
 TONE_CONFIG = {
     # Semantic similarity thresholds for crisis detection
-    "threshold_high": float(os.getenv("TONE_THRESHOLD_HIGH", "0.75")),
-    "threshold_medium": float(os.getenv("TONE_THRESHOLD_MEDIUM", "0.65")),
-    "threshold_concern": float(os.getenv("TONE_THRESHOLD_CONCERN", "0.55")),
+    # Tuned for all-MiniLM-L6-v2 model (lighter model has lower similarity scores)
+    # Values based on empirical testing: HIGH ~0.40-0.60, MEDIUM ~0.45-0.55, mild phrases ~0.35-0.50
+    "threshold_high": float(os.getenv("TONE_THRESHOLD_HIGH", "0.58")),
+    "threshold_medium": float(os.getenv("TONE_THRESHOLD_MEDIUM", "0.50")),
+    "threshold_concern": float(os.getenv("TONE_THRESHOLD_CONCERN", "0.43")),
 
     # Context window for conversation history
     "context_window": int(os.getenv("TONE_CONTEXT_WINDOW", "3")),
@@ -87,11 +89,13 @@ CONCERN_KEYWORDS = {
 # World event/observational phrases (should NOT trigger crisis mode)
 # These indicate the user is discussing external events, not personal distress
 OBSERVATIONAL_MARKERS = {
-    "people are", "people can't", "people suffering", "millions", "thousands",
+    "people are", "people can't", "people suffering", "people are suffering", "millions", "thousands",
     "they are", "they can't", "the government", "society", "the world",
     "according to", "reports say", "news", "article",
     "study shows", "data shows", "statistics", "the reports",
     "civilians", "residents", "citizens",
+    "cracking down", "protests", "protesters", "authorities", "officials",
+    "struggling with", "policies", "regulations", "legislation",
 }
 
 
@@ -109,6 +113,7 @@ CRISIS_EXEMPLARS = {
         "I don't want to be alive anymore",
         "I'm planning to kill myself",
         "Everything would be better if I was gone",
+        "Everything would be better if I just wasn't here",
         "I can't take this pain anymore",
         "I'm going to end my life",
         "I want to disappear and never come back",
@@ -118,6 +123,8 @@ CRISIS_EXEMPLARS = {
         "I can't survive this",
         "I'm losing the will to live",
         "Nothing matters anymore, I give up",
+        "Everything feels pointless and empty",
+        "Everything feels pointless and I don't see a way forward",
         "I want to stop existing",
         "I'm ready to end it all",
         "Life isn't worth living",
@@ -165,6 +172,27 @@ CRISIS_EXEMPLARS = {
         "I'm feeling helpless about this",
         "I'm really upset and don't know what to do",
         "I'm scared this won't work out",
+    ],
+    "conversational": [
+        # Mild fatigue/tiredness (should NOT trigger crisis)
+        "I'm a bit tired today",
+        "I'm feeling a little tired",
+        "I'm sleepy",
+        "I need some rest",
+        "I'm exhausted from work",
+        "I could use a nap",
+        "I'm worn out",
+        # General conversation
+        "How are you doing?",
+        "What's up?",
+        "I'm doing okay",
+        "Thanks for checking in",
+        "I'm fine",
+        "Just a regular day",
+        "Nothing much",
+        "I'm alright",
+        "Pretty good",
+        "I'm okay",
     ],
 }
 
@@ -344,7 +372,7 @@ def _semantic_crisis_detection(
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
 
     similarity_scores = {}
-    for level in ["high", "medium", "concern"]:
+    for level in ["high", "medium", "concern", "conversational"]:
         if level in exemplar_embeddings:
             sim = cosine_similarity(message_embedding, exemplar_embeddings[level])
             similarity_scores[level] = float(sim)
@@ -366,35 +394,118 @@ def _semantic_crisis_detection(
         except Exception as e:
             logger.debug(f"[ToneDetector] Failed to check conversation history: {e}")
 
-    # Apply escalation boost if recent distress detected
+    # Apply escalation boost if recent distress detected (but not to conversational)
     if recent_distress > 0.5:
-        boosted_scores = {k: v * TONE_CONFIG["escalation_boost"] for k, v in similarity_scores.items()}
+        boosted_scores = {k: (v * TONE_CONFIG["escalation_boost"] if k != "conversational" else v) for k, v in similarity_scores.items()}
         logger.debug(f"[ToneDetector] Applied escalation boost: {boosted_scores}")
         similarity_scores = boosted_scores
 
-    # Determine crisis level based on thresholds
+    # Determine crisis level based on thresholds AND conversational similarity
+    # If conversational similarity is significantly higher, prefer conversational
+    conversational_score = similarity_scores.get("conversational", 0.0)
+
+    # Check each level in order of severity, but only return if it's clearly higher than conversational
     if similarity_scores["high"] > TONE_CONFIG["threshold_high"]:
-        return (CrisisLevel.HIGH, similarity_scores["high"], similarity_scores)
-    elif similarity_scores["medium"] > TONE_CONFIG["threshold_medium"]:
-        return (CrisisLevel.MEDIUM, similarity_scores["medium"], similarity_scores)
-    elif similarity_scores["concern"] > TONE_CONFIG["threshold_concern"]:
-        return (CrisisLevel.CONCERN, similarity_scores["concern"], similarity_scores)
-    else:
-        return (CrisisLevel.CONVERSATIONAL, 0.0, similarity_scores)
+        if similarity_scores["high"] > conversational_score + 0.05:
+            return (CrisisLevel.HIGH, similarity_scores["high"], similarity_scores)
+
+    if similarity_scores["medium"] > TONE_CONFIG["threshold_medium"]:
+        if similarity_scores["medium"] > conversational_score + 0.05:
+            return (CrisisLevel.MEDIUM, similarity_scores["medium"], similarity_scores)
+
+    if similarity_scores["concern"] > TONE_CONFIG["threshold_concern"]:
+        if similarity_scores["concern"] > conversational_score + 0.05:
+            return (CrisisLevel.CONCERN, similarity_scores["concern"], similarity_scores)
+
+    # Even if below threshold, use the highest non-conversational score if significantly above conversational
+    # This catches borderline cases like "Everything feels pointless" (high=0.509, conversational=0.339)
+    # BUT only if the score meets a minimum absolute threshold to avoid false positives
+    max_crisis_level = None
+    max_crisis_score = 0.0
+    MIN_ABSOLUTE_SCORE = 0.40  # Minimum score to trigger any crisis level
+    MIN_MARGIN = 0.08  # Minimum margin above conversational (lowered from 0.10 to catch more borderline cases)
+
+    for level_name, score in [("high", similarity_scores["high"]),
+                               ("medium", similarity_scores["medium"]),
+                               ("concern", similarity_scores["concern"])]:
+        if score > max_crisis_score and score > conversational_score + MIN_MARGIN and score >= MIN_ABSOLUTE_SCORE:
+            max_crisis_score = score
+            if level_name == "high":
+                max_crisis_level = CrisisLevel.HIGH
+            elif level_name == "medium":
+                max_crisis_level = CrisisLevel.MEDIUM
+            else:
+                max_crisis_level = CrisisLevel.CONCERN
+
+    if max_crisis_level:
+        return (max_crisis_level, max_crisis_score, similarity_scores)
+
+    # Default to conversational
+    return (CrisisLevel.CONVERSATIONAL, conversational_score, similarity_scores)
 
 
-def detect_crisis_level(
+async def _llm_crisis_fallback(message: str, model_manager=None) -> Optional[Tuple[CrisisLevel, float]]:
+    """
+    LLM-based fallback for edge cases where semantic similarity is uncertain.
+    Uses a small, fast model to classify crisis level.
+
+    Returns (CrisisLevel, confidence) or None if LLM unavailable.
+    """
+    if not model_manager:
+        return None
+
+    try:
+        # Construct a simple classification prompt
+        prompt = f"""Analyze this message and classify the crisis level. Respond with ONLY one word: HIGH, MEDIUM, CONCERN, or CONVERSATIONAL.
+
+HIGH: Suicidal ideation, self-harm, severe crisis requiring immediate intervention
+MEDIUM: Panic attack, breakdown, severe emotional distress
+CONCERN: Anxiety, worry, stress needing light support
+CONVERSATIONAL: Casual conversation, no crisis
+
+Message: "{message}"
+
+Classification:"""
+
+        # Use async generation with small model preference
+        response = await model_manager.generate_async(
+            prompt,
+            max_tokens=10,
+            temperature=0.1
+        )
+
+        if not response:
+            return None
+
+        # Parse response
+        response_clean = response.strip().upper()
+
+        if "HIGH" in response_clean:
+            return (CrisisLevel.HIGH, 0.8)
+        elif "MEDIUM" in response_clean:
+            return (CrisisLevel.MEDIUM, 0.75)
+        elif "CONCERN" in response_clean:
+            return (CrisisLevel.CONCERN, 0.7)
+        else:
+            return (CrisisLevel.CONVERSATIONAL, 0.6)
+
+    except Exception as e:
+        logger.debug(f"[ToneDetector] LLM fallback failed: {e}")
+        return None
+
+
+async def detect_crisis_level(
     message: str,
     conversation_history: Optional[List[dict]] = None,
     model_manager=None
 ) -> ToneAnalysis:
     """
-    Hybrid crisis detection combining keyword and semantic approaches.
+    Hybrid crisis detection combining keyword, semantic, and LLM approaches.
 
     Args:
         message: User message to analyze
         conversation_history: Recent conversation turns (optional)
-        model_manager: Optional model manager for embedder access
+        model_manager: Optional model manager for embedder and LLM access
 
     Returns:
         ToneAnalysis with detected crisis level and metadata
@@ -426,6 +537,42 @@ def detect_crisis_level(
     level, confidence, raw_scores = _semantic_crisis_detection(
         message, conversation_history, model_manager
     )
+
+    # Stage 3: LLM fallback for borderline cases
+    # Use LLM when semantic scores are close to thresholds (within 0.10)
+    use_llm_fallback = False
+    if level != CrisisLevel.CONVERSATIONAL:
+        # Check if score is borderline for its detected level
+        threshold_map = {
+            CrisisLevel.HIGH: TONE_CONFIG["threshold_high"],
+            CrisisLevel.MEDIUM: TONE_CONFIG["threshold_medium"],
+            CrisisLevel.CONCERN: TONE_CONFIG["threshold_concern"],
+        }
+        threshold = threshold_map.get(level, 0)
+        if confidence - threshold < 0.10:  # Within 0.10 of threshold
+            use_llm_fallback = True
+            logger.debug(f"[ToneDetector] Borderline {level.value}: confidence={confidence:.2f}, threshold={threshold:.2f}")
+    elif level == CrisisLevel.CONVERSATIONAL:
+        # Use LLM if highest score is close to CONCERN threshold
+        highest_score = max(raw_scores.values())
+        concern_threshold = TONE_CONFIG["threshold_concern"]
+        if highest_score > concern_threshold - 0.15:
+            use_llm_fallback = True
+            logger.debug(f"[ToneDetector] Borderline CONVERSATIONAL: highest={highest_score:.2f}, threshold-0.15={concern_threshold-0.15:.2f}")
+
+    if use_llm_fallback and model_manager:
+        logger.debug(f"[ToneDetector] Attempting LLM fallback for: {message[:50]}...")
+        llm_result = await _llm_crisis_fallback(message, model_manager)
+        if llm_result:
+            llm_level, llm_confidence = llm_result
+            logger.info(f"[ToneDetector] LLM fallback: {llm_level.value} (confidence: {llm_confidence:.2f})")
+            return ToneAnalysis(
+                level=llm_level,
+                confidence=llm_confidence,
+                trigger="llm_fallback",
+                raw_scores=raw_scores,
+                explanation=f"LLM classification: {llm_level.value}"
+            )
 
     # Build explanation
     if level == CrisisLevel.CONVERSATIONAL:

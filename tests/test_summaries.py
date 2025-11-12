@@ -22,10 +22,10 @@ async def test_summary_integration():
     logger.info("Manually creating 10-entry summary...")
     summary = corpus_manager.create_summary_now(10)
     if summary:
-        logger.info(f"Manual summary created:\n{summary['response'][:200]}...")
+        logger.info(f"Manual summary created:\n{summary[:200]}...")
 
     logger.info("Inspecting all summaries:")
-    for i, s in enumerate(corpus_manager.get_summaries(limit=5)):
+    for i, s in enumerate(corpus_manager.get_summaries(count=5)):
         logger.info(f"[{i}] Tags: {s.get('tags')}, Preview: {s.get('response', '')[:100]}...")
 
 if __name__ == "__main__":
