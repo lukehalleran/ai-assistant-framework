@@ -1,33 +1,57 @@
 # memory/memory_scorer.py
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 class MemoryScorer:
-    def __init__(self):
-        pass
+    def __init__(self, time_manager=None):
+        """
+        Initialize MemoryScorer with optional time_manager for active day decay.
+
+        Args:
+            time_manager: Optional TimeManager instance for active day decay calculation.
+                         If None, falls back to hourly decay.
+        """
+        self.time_manager = time_manager
 
     def apply_temporal_decay(self, memories: List[Dict]) -> List[Dict]:
         """Apply temporal decay to memory scores"""
         now = datetime.now()
 
         for mem_dict in memories:
-            memory = mem_dict['memory']
+            # Handle flat dictionary structure (both reflections and conversations)
+            timestamp = mem_dict.get('timestamp') or mem_dict.get('metadata', {}).get('timestamp')
+            if isinstance(timestamp, str):
+                try:
+                    from dateutil import parser
+                    timestamp = parser.parse(timestamp)
+                except:
+                    # If parsing fails, skip this memory
+                    continue
 
-            # Calculate age in hours
-            age_hours = (now - memory.timestamp).total_seconds() / 3600.0
-            decay_factor = 1.0 / (1.0 + memory.decay_rate * (age_hours/24.0))
+            # Get decay rate with fallback
+            decay_rate = mem_dict.get('metadata', {}).get('decay_rate', 0.01)
 
-            # Boost recently accessed memories
-            access_recency = (now - memory.last_accessed).days
-            access_boost = 1.0 if access_recency < 1 else 1.0 / (1.0 + 0.1 * access_recency)
+            # Get importance score with fallback
+            importance_score = mem_dict.get('importance_score', 0.5)
+
+            # Get truth score with fallback
+            truth_score = mem_dict.get('truth_score', mem_dict.get('metadata', {}).get('truth_score', 0.5))
+
+            # Use active day decay if time_manager supports it, otherwise fallback to hourly decay
+            if (self.time_manager is not None and
+                hasattr(self.time_manager, 'calculate_active_day_decay')):
+                decay_factor = self.time_manager.calculate_active_day_decay(timestamp, decay_rate)
+            else:
+                # Fallback to original hourly decay (less aggressive)
+                age_hours = (now - timestamp).total_seconds() / 3600.0
+                decay_factor = 1.0 / (1.0 + decay_rate * (age_hours/168.0))  # Weekly instead of daily decay
 
             # Calculate final score
-            truth = getattr(memory, 'truth_score', memory.metadata.get('truth_score', 0.5))
             mem_dict['final_score'] = (
-                mem_dict['relevance_score'] *
-                max(0.1, memory.importance_score) *
+                mem_dict.get('relevance_score', 0.0) *
+                max(0.1, importance_score) *
                 max(0.1, decay_factor) *
-                (0.75 + 0.5*truth)
+                (0.75 + 0.5*truth_score)
             )
 
         return memories

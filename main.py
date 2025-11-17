@@ -99,6 +99,10 @@ except ImportError:
 
 
 # main.py
+# RE-ENABLE UNIFIED PROMPT BUILDER NOW THAT MEMORY ISSUES ARE RESOLVED
+HAS_UNIFIED_PROMPT = True
+logger.info("✅ Unified prompt builder re-enabled - memory system working correctly")
+
 try:
     from core.prompt_builder import UnifiedPromptBuilder as _UnifiedPromptBuilder
     HAS_UNIFIED_PROMPT = True
@@ -108,9 +112,64 @@ except Exception as e:  # catch *any* import-time failure, not just ImportError
     logger.warning(f"Prompt builders not available: {e}; falling back to raw mode")
 # after HAS_UNIFIED_PROMPT is set
 class _SimplePromptBuilder:
-    async def build_prompt(self, user_input: str, **kwargs) -> str:
-        # ultra-simple fallback: just return user_input as the "prompt"
-        return user_input
+    def __init__(self, memory_coordinator=None):
+        self.memory_coordinator = memory_coordinator
+
+    async def build_prompt(self, user_input: str, include_memories=True, max_memories=10, **kwargs) -> str:
+        """
+        Simple fallback prompt builder.
+
+        The orchestrator passes many kwargs (system_prompt, search_query, personality_config, etc.)
+        but this simple builder ignores them since the orchestrator handles the system prompt separately.
+        """
+        # Build context-only prompt (system prompt is handled separately by orchestrator)
+        context_parts = []
+
+        # Add relevant memories
+        if include_memories and self.memory_coordinator:
+            try:
+                # Use search_query if provided for better retrieval
+                query_for_search = kwargs.get('search_query') or user_input
+
+                memories = await self.memory_coordinator.get_memories(query_for_search, limit=max_memories)
+
+                if memories:
+                    logger.info(f"[_SimplePromptBuilder] Retrieved {len(memories)} memories for prompt")
+                    context_parts.append("RELEVANT MEMORIES:")
+                    for i, memory in enumerate(memories[:5]):  # Limit to top 5
+                        # Memory field structure varies by source:
+                        # - Hybrid retriever uses 'content' field
+                        # - Corpus manager uses 'query'/'response' fields
+                        # - Timestamps may be in root or metadata
+
+                        content = memory.get('content', '')
+                        if not content:
+                            # Fallback to query/response format
+                            query = memory.get('query', '')
+                            response = memory.get('response', '')
+                            content = f"Q: {query}\nA: {response}" if query or response else ''
+
+                        # Get timestamp from metadata or root
+                        timestamp = memory.get('metadata', {}).get('timestamp', memory.get('timestamp', 'No timestamp'))
+
+                        # Truncate content to reasonable length
+                        content_preview = content[:300] if content else '[Empty memory]'
+
+                        context_parts.append(f"{i+1}. [{timestamp}]\n   {content_preview}\n")
+                    context_parts.append("")
+                else:
+                    logger.warning(f"[_SimplePromptBuilder] No memories retrieved for query: {user_input[:50]}")
+            except Exception as e:
+                logger.error(f"[_SimplePromptBuilder] Failed to retrieve memories: {e}", exc_info=True)
+
+        # Just return the user input - let the orchestrator handle system prompt
+        if not context_parts:
+            logger.debug(f"[_SimplePromptBuilder] No context parts, returning raw user input")
+            return user_input
+
+        # Return memories + current query
+        context_parts.append(f"USER: {user_input}")
+        return "\n".join(context_parts)
 # main.py (updated build_orchestrator function)
 def build_orchestrator():
     """Builds and returns a configured orchestrator"""
@@ -192,7 +251,7 @@ def build_orchestrator():
 
     else:
         logger.warning("Using simple fallback prompt builder")
-        prompt_builder = _SimplePromptBuilder()
+        prompt_builder = _SimplePromptBuilder(memory_coordinator=coord)
 
     from personality.personality_manager import PersonalityManager
     return DaemonOrchestrator(
