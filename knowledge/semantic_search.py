@@ -75,14 +75,22 @@ def _load_embedder(name: str):
     and choose CUDA when available. Loading happens once per process.
     """
     # Avoid repeated remote HEADs; respect local cache/offline.
-    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
-    if HF_OFFLINE:
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    # Try to use cached embedder first, fallback to loading directly
+    try:
+        from models.model_manager import ModelManager
+        model = ModelManager._get_cached_embedder()
+        logger.debug("Using cached embedder for semantic search")
+        return model
+    except Exception:
+        # Fallback: load directly
+        os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+        if HF_OFFLINE:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-    from sentence_transformers import SentenceTransformer
-    device = "cuda" if _cuda_available() else "cpu"
-    model = SentenceTransformer(name, device=device)
-    return model
+        from sentence_transformers import SentenceTransformer
+        device = "cuda" if _cuda_available() else "cpu"
+        model = SentenceTransformer(name, device=device)
+        return model
 
 
 # ------------------------

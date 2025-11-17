@@ -219,14 +219,14 @@ def _get_embedder(model_manager=None):
         except Exception as e:
             logger.warning(f"[ToneDetector] Failed to get embedder from model_manager: {e}")
 
-    # Fallback: create our own embedder
+    # Fallback: use cached embedder to avoid re-loading
     try:
-        from sentence_transformers import SentenceTransformer
-        _embedder_cache = SentenceTransformer("all-MiniLM-L6-v2")
-        logger.info("[ToneDetector] Created fallback embedder")
+        from models.model_manager import ModelManager
+        _embedder_cache = ModelManager._get_cached_embedder()
+        logger.info("[ToneDetector] Using cached embedder from ModelManager")
         return _embedder_cache
     except Exception as e:
-        logger.error(f"[ToneDetector] Failed to create embedder: {e}")
+        logger.error(f"[ToneDetector] Failed to get cached embedder: {e}")
         return None
 
 

@@ -3,20 +3,22 @@ daemon:
   data_dir: ./data
   log_dir: ./conversation_logs
   in_harm_test: false
-  debug_mode: true
+  debug_mode: false
+  log_level: WARNING
   device: cuda
 memory:
   corpus_file: ./data/corpus_v4.json
   chroma_path: ./data/chroma_db_v4
   max_recent: 50
-  max_memories: 8
-  max_final_memories: 2
-  max_working_memory: 8
+  max_memories: 30
+  max_final_memories: 30
+  max_working_memory: 30
   mem_no: 5
   mem_importance_score: 0.75
-  num_memories: 10
+  num_memories: 30
+  prompt_max_mems: 30
   child_mem_limit: 3
-  recency_decay_rate: 0.1
+  recency_decay_rate: 0.05
   truth_score_update_rate: 0.02
   truth_score_max: 0.95
   collection_boosts:
@@ -47,6 +49,10 @@ memory:
   max_reflections: 6
   hybrid_summaries_enabled: true
   hybrid_reflections_enabled: true
+  prompt_max_recent: 10
+  semantic_retrieval_limit: 200
+  prompt_max_semantic: 15
+  force_min_memories: true
 models:
   default: llama
   dream_model: gpt-neo
@@ -54,35 +60,35 @@ models:
   load_local_model: true
   local_model_context_limit: 4096
   api_model_context_limit: 128000
-  default_max_tokens: 1000
+  default_max_tokens: 1850
   heavy_topic_max_tokens: 4096
   default_top_p: 0.9
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: glm-4.6
+  active: claude-opus
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.25
-  cosine_threshold: 0.25
-  cosine_similarity_threshold: 0.45
-  deictic_threshold: 0.75
-  normal_threshold: 0.55
+  cosine_threshold: 0.15
+  cosine_similarity_threshold: 0.15
+  deictic_threshold: 0.25
+  normal_threshold: 0.15
   deictic_anchor_penalty: 0.25
   deictic_continuity_min: 0.25
   use_reranking: true
   rerank_use_llm: false
   cross_encoder_weight: 0.9
   topic_confidence_threshold: 0.85
-  summary_cosine_threshold: 0.3
-  reflection_cosine_threshold: 0.25
+  summary_cosine_threshold: 0.2
+  reflection_cosine_threshold: 0.15
   score_weights:
-    relevance: 0.55
-    recency: 0.3
-    truth: 0.15
-    importance: 0.0
-    continuity: 0.03
-    structure: 0.02
+    relevance: 0.6
+    recency: 0.15
+    truth: 0.2
+    importance: 0.02
+    continuity: 0.02
+    structure: 0.01
 paths:
   system_prompt: core/system_prompt.txt
   directives: structured_directives.txt

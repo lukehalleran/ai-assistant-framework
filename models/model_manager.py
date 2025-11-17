@@ -38,6 +38,14 @@ import os
 import asyncio
 import json
 
+# Global embedding model cache to prevent re-loading SentenceTransformer
+_global_embed_model = None
+_embed_model_lock = asyncio.Lock()
+
+# Global cross-encoder model cache to prevent re-loading CrossEncoder models
+_global_cross_encoders = {}
+_cross_encoder_lock = asyncio.Lock()
+
 
 # Set OpenAI API key for API calls
 class ModelManager:
@@ -88,18 +96,8 @@ class ModelManager:
             self.async_client = None  # type: ignore[assignment]
 
         self.default_model = "gpt-4-turbo"
-        # Embedding model used across memory/gating paths. Fall back to a stub in
-        # restricted environments where the SentenceTransformer model cannot load.
-        try:
-            self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-        except Exception:
-            class _StubEmbedder:
-                def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False):
-                    import numpy as np
-                    n = len(texts or [])
-                    return np.zeros((n, 384), dtype=np.float32)
-
-            self.embed_model = _StubEmbedder()  # type: ignore[assignment]
+        # Embedding model used across memory/gating paths. Use global cache to prevent re-loading
+        self.embed_model = self._get_cached_embedder()
         # Runtime-overridable defaults (mutable via GUI and persisted to config)
         self.default_temperature = DEFAULT_TEMPERATURE
         self.default_max_tokens = DEFAULT_MAX_TOKENS
@@ -162,6 +160,76 @@ class ModelManager:
     @log_and_time("Get Embedder")
     def get_embedder(self):
         return self.embed_model
+
+    @staticmethod
+    def _get_cached_embedder():
+        """Get or create a cached SentenceTransformer model to avoid re-loading"""
+        global _global_embed_model
+
+        if _global_embed_model is not None:
+            return _global_embed_model
+
+        try:
+            logger.debug("Loading SentenceTransformer model (first time only)...")
+            _global_embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+            logger.debug("SentenceTransformer model cached successfully")
+            return _global_embed_model
+        except Exception:
+            logger.warning("Failed to load SentenceTransformer, using stub embedder")
+            class _StubEmbedder:
+                def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False):
+                    import numpy as np
+                    n = len(texts or [])
+                    return np.zeros((n, 384), dtype=np.float32)
+
+            # Cache the stub embedder too to avoid re-creating it
+            _global_embed_model = _StubEmbedder()
+            return _global_embedder
+
+    @log_and_time("Get Cross-Encoder")
+    def get_cross_encoder(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        """
+        Get or create a cached CrossEncoder model to avoid re-loading.
+
+        Args:
+            model_name: Name of the cross-encoder model to load
+
+        Returns:
+            CrossEncoder: Cached or newly created cross-encoder instance
+        """
+        global _global_cross_encoders
+
+        # Check cache first
+        if model_name in _global_cross_encoders:
+            logger.debug(f"Using cached cross-encoder: {model_name}")
+            return _global_cross_encoders[model_name]
+
+        try:
+            logger.debug(f"Loading CrossEncoder model (first time only): {model_name}")
+            from sentence_transformers import CrossEncoder
+
+            cross_encoder = CrossEncoder(model_name)
+
+            # Cache the model for future use
+            _global_cross_encoders[model_name] = cross_encoder
+            logger.debug(f"CrossEncoder model cached successfully: {model_name}")
+
+            return cross_encoder
+
+        except Exception as e:
+            logger.warning(f"Failed to load CrossEncoder '{model_name}': {e}")
+            # Return a stub cross-encoder that always returns neutral scores
+            class _StubCrossEncoder:
+                def predict(self, pairs, batch_size=32, show_progress_bar=False):
+                    import numpy as np
+                    n = len(pairs or [])
+                    return np.ones(n, dtype=np.float32) * 0.5  # Neutral score
+
+            # Cache the stub cross-encoder too to avoid re-creating it
+            stub_encoder = _StubCrossEncoder()
+            _global_cross_encoders[model_name] = stub_encoder
+            return stub_encoder
+
     @log_and_time("Load Model")
     def load_model(self, model_name, model_path):
         """Load a local Huggingface model and tokenizer."""
@@ -228,13 +296,11 @@ class ModelManager:
             return self._stub_response(prompt)
 
         try:
-            # Stop sequences to prevent hallucinating user responses
+            # Stop sequences to prevent hallucinating user responses (less restrictive)
             stop_sequences = [
-                "\nUser:",
-                "\nUSER:",
-                "\nHuman:",
                 "\n\nUser:",
                 "\n\nUSER:",
+                "\n\nHuman:",
             ]
 
             # logger.debug(  Calling OpenAI API: {model_name}")
@@ -429,13 +495,11 @@ class ModelManager:
             if self.async_client is None:
                 return self._stub_response(prompt)
             try:
-                # Stop sequences to prevent hallucinating user responses
+                # Stop sequences to prevent hallucinating user responses (less restrictive)
                 stop_sequences = [
-                    "\nUser:",
-                    "\nUSER:",
-                    "\nHuman:",
                     "\n\nUser:",
                     "\n\nUSER:",
+                    "\n\nHuman:",
                 ]
 
                 messages = [
@@ -500,13 +564,11 @@ class ModelManager:
                     logger.debug(f"--- Prompt Message {i} ---")
                     logger.debug(f"Role: {msg['role']}")
                     logger.debug(f"Content:\n{msg['content']}")
-                # Stop sequences to prevent hallucinating user responses
+                # Stop sequences to prevent hallucinating user responses (less restrictive)
                 stop_sequences = [
-                    "\nUser:",
-                    "\nUSER:",
-                    "\nHuman:",
                     "\n\nUser:",
                     "\n\nUSER:",
+                    "\n\nHuman:",
                 ]
 
                 stream = await self.async_client.chat.completions.create(

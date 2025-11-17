@@ -26,6 +26,7 @@ import os
 import uuid
 import logging
 import re
+import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 from collections import deque
@@ -37,6 +38,7 @@ from memory.fact_extractor import FactExtractor
 from memory.memory_consolidator import MemoryConsolidator
 from memory.llm_fact_extractor import LLMFactExtractor
 from memory.memory_scorer import MemoryScorer
+from memory.hybrid_retriever import HybridRetriever
 from processing.gate_system import MultiStageGateSystem
 from config.app_config import (
     RECENCY_DECAY_RATE,
@@ -169,6 +171,8 @@ class MemoryCoordinator:
         self.scorer = MemoryScorer()
         self.topic_manager = topic_manager or TopicManager()
         self.conversation_context = deque(maxlen=5)
+        # Initialize hybrid retriever for improved semantic search
+        self.hybrid_retriever = HybridRetriever(chroma_store=chroma_store)
         self.access_history: Dict[str, int] = {}  # Track memory access for truth updates
         self.interactions_since_consolidation = 0
         self.time_manager = time_manager
@@ -371,6 +375,31 @@ class MemoryCoordinator:
             "is_heavy_topic": last_conv.get("is_heavy_topic", False),
         }
 
+    def _detect_topic_for_query(self, query: str) -> str:
+        """
+        Detect topic for a specific query string.
+        Used by thread detection to avoid stale topic issues.
+        """
+        try:
+            if self.topic_manager:
+                # Update topic manager with this specific query
+                self.topic_manager.update_from_user_input(query)
+                # Get primary topic for this query
+                primary = self.topic_manager.get_primary_topic()
+                return primary or "general"
+            else:
+                # Fallback: simple keyword-based topic detection
+                query_lower = query.lower()
+                if any(word in query_lower for word in ["flapjack", "cat", "kitty"]):
+                    return "cats"
+                elif any(word in query_lower for word in ["glm", "claude", "model", "ai"]):
+                    return "ai models"
+                else:
+                    return "general"
+        except Exception as e:
+            logger.debug(f"[Thread] Topic detection failed: {e}")
+            return "general"
+
     def _detect_or_create_thread(self, query: str, is_heavy: bool) -> Dict:
         """
         Detect if current query continues immediate previous conversation.
@@ -382,6 +411,9 @@ class MemoryCoordinator:
         # Get only the most recent conversation (limit=1 for strict consecutive check)
         recent = self.corpus_manager.get_recent_memories(count=1)
 
+        # Detect topic for current query to avoid using stale topic
+        current_query_topic = self._detect_topic_for_query(query)
+
         if not recent:
             # First conversation - create new thread
             thread_id = f"thread_{self._now().strftime('%Y%m%d_%H%M%S')}"
@@ -390,18 +422,18 @@ class MemoryCoordinator:
                 "thread_id": thread_id,
                 "depth": 1,
                 "started": self._now_iso(),
-                "topic": self.current_topic,
+                "topic": current_query_topic,
             }
 
         last_conv = recent[0]
 
         # Check if current query continues last conversation
-        if belongs_to_thread(query, last_conv, current_topic=self.current_topic):
+        if belongs_to_thread(query, last_conv, current_topic=current_query_topic):
             # Continue existing thread
             thread_id = last_conv.get("thread_id")
             thread_depth = last_conv.get("thread_depth", 0) + 1
             thread_started = last_conv.get("thread_started")
-            thread_topic = last_conv.get("thread_topic", self.current_topic)
+            thread_topic = last_conv.get("thread_topic", current_query_topic)
 
             logger.debug(
                 f"[Thread] Continuing thread {thread_id} at depth {thread_depth} "
@@ -425,7 +457,7 @@ class MemoryCoordinator:
                 "thread_id": thread_id,
                 "depth": 1,
                 "started": self._now_iso(),
-                "topic": self.current_topic,
+                "topic": current_query_topic,
             }
 
     # ---------------------------
@@ -1075,12 +1107,15 @@ class MemoryCoordinator:
                 src  = md.get("source", "conversation")
 
                 try:
-                    self.chroma_store.add_fact(
+                    result = self.chroma_store.add_fact(
                         fact=fact_text,
                         source=src,
                         confidence=conf,
                     )
-                    stored += 1
+                    if result is not None:  # Only count if fact was actually added
+                        stored += 1
+                    else:
+                        logger.debug(f"[MemoryCoordinator] Fact skipped as duplicate: {fact_text}")
                     logger.info(
                         f"[MemoryCoordinator][Facts] Stored {idx}/{total}: {fact_text} (conf={conf:.2f})"
                     )
@@ -1116,22 +1151,57 @@ class MemoryCoordinator:
             logger.debug(f"[MemoryCoordinator] Detected meta-conversational query: {query[:50]}...")
             return await self._get_meta_conversational_memories(query, limit, topic_filter)
 
-        cfg = {
-            'recent_count': 1,
-            'semantic_count': max(30, limit * 2),
-            'max_memories': limit,
-        }
+        # Dynamic configuration based on query content
+        query_lower = query.lower()
+        is_gym_health_query = any(word in query_lower for word in [
+            'gym', 'workout', 'work out', 'exercise', 'fitness', 'bench', 'squat',
+            'amantadine', 'medication', 'health', 'body', 'tired'
+        ])
+
+        if is_gym_health_query:
+            # For gym/health queries, prioritize semantic search over recent
+            cfg = {
+                'recent_count': 0,  # Skip recent conversations
+                'semantic_count': max(50, limit * 5),  # Get more semantic candidates
+                'max_memories': limit,
+            }
+            logger.info(f"[get_memories] Using gym/health query config: {cfg}")
+            print(f"[DEBUG] Gym/health query detected! Using config: {cfg}")  # Debug print
+        else:
+            cfg = {
+                'recent_count': 1,
+                'semantic_count': max(30, limit * 2),
+                'max_memories': limit,
+            }
 
         topic_filter = topic_filter or self.current_topic
 
-        # 1) Gather from both sources
-        very_recent = self._get_recent_conversations(k=cfg['recent_count'])
-        semantic = await self._get_semantic_memories(query, n_results=cfg['semantic_count'])
+        # Skip topic filtering for gym/health queries to get more results
+        if is_gym_health_query:
+            original_topic_filter = topic_filter
+            topic_filter = None
+            logger.info(f"[get_memories] Skipping topic filter for gym/health query (was: {original_topic_filter})")
+
+        # 1) Gather from both sources in parallel
+        tasks = [
+            asyncio.to_thread(self._get_recent_conversations, k=cfg['recent_count']),
+            self._get_semantic_memories(query, n_results=cfg['semantic_count'])
+        ]
+
+        # Execute parallel retrieval
+        very_recent, semantic = await asyncio.gather(*tasks)
+
+        print(f"[DEBUG] very_recent: {len(very_recent)} memories")
+        print(f"[DEBUG] semantic: {len(semantic)} memories")
+        if semantic:
+            print(f"[DEBUG] First semantic memory: {semantic[0].get('metadata', {}).get('timestamp', 'unknown')}")
+        if very_recent:
+            print(f"[DEBUG] First recent memory: {very_recent[0].get('timestamp', 'unknown')}")
 
         # Placeholder for hierarchical memories if/when your subsystem is available
         hierarchical: List[Dict] = []
 
-        # 2) Topic pre-filter if specified
+        # 2) Topic pre-filter if specified (with fallback to avoid empty results)
         if topic_filter and topic_filter != "general":
             def _has_topic_tag(m: Dict) -> bool:
                 tags = m.get('tags', [])
@@ -1139,9 +1209,25 @@ class MemoryCoordinator:
                     tags = [t.strip() for t in tags.split(",") if t.strip()]
                 return f"topic:{topic_filter}" in tags
 
-            very_recent = [m for m in very_recent if _has_topic_tag(m)]
-            semantic = [m for m in semantic if _has_topic_tag(m)]
-            hierarchical = [m for m in hierarchical if _has_topic_tag(m)]
+            # Try filtering by topic
+            filtered_recent = [m for m in very_recent if _has_topic_tag(m)]
+            filtered_semantic = [m for m in semantic if _has_topic_tag(m)]
+            filtered_hierarchical = [m for m in hierarchical if _has_topic_tag(m)]
+
+            # Only apply filter if it doesn't remove ALL memories
+            total_before = len(very_recent) + len(semantic) + len(hierarchical)
+            total_after = len(filtered_recent) + len(filtered_semantic) + len(filtered_hierarchical)
+
+            if total_after > 0:
+                very_recent = filtered_recent
+                semantic = filtered_semantic
+                hierarchical = filtered_hierarchical
+                logger.debug(f"[get_memories] Topic filter '{topic_filter}' kept {total_after}/{total_before} memories")
+            else:
+                logger.warning(
+                    f"[get_memories] Topic filter '{topic_filter}' would remove ALL memories "
+                    f"({total_before} total), ignoring filter to avoid empty results"
+                )
 
         # 3) Combine with gating (recent bypass N)
         combined = await self._combine_memories(
@@ -1149,18 +1235,38 @@ class MemoryCoordinator:
             semantic=semantic,
             hierarchical=hierarchical,
             query=query,
-            config={'max_memories': max(limit * 2, 30)}
+            config={'max_memories': max(limit * 2, 30)},
+            bypass_gate=is_gym_health_query  # Pass bypass flag
         )
+        print(f"[DEBUG] After combine/gating: {len(combined)} memories")
 
         # 4) Rank memories
         ranked = self._rank_memories(combined, query)
+        print(f"[DEBUG] After ranking: {len(ranked)} memories")
 
         # 5) Optional acceptance threshold (configurable)
         is_deictic = _is_deictic_followup(query)
         cutoff = DEICTIC_THRESHOLD if is_deictic else NORMAL_THRESHOLD
+
+        # DEBUG: Log threshold filtering
+        logger.info(f"[get_memories] Applying threshold filter: cutoff={cutoff:.3f}, is_deictic={is_deictic}")
+        logger.info(f"[get_memories] Ranked memories before threshold: {len(ranked)}")
+        print(f"[DEBUG] Threshold filter: cutoff={cutoff:.3f}, is_deictic={is_deictic}")
+
         accepted = [m for m in ranked if m.get('final_score', 0.0) >= cutoff]
+
+        # Log how many were filtered
+        logger.info(f"[get_memories] Memories after threshold: {len(accepted)} (filtered {len(ranked) - len(accepted)})")
+        print(f"[DEBUG] After threshold: {len(accepted)} memories (filtered {len(ranked) - len(accepted)})")
+
+        # Show some sample scores
+        if len(ranked) > 0:
+            sample_scores = [m.get('final_score', 0) for m in ranked[:5]]
+            print(f"[DEBUG] Sample scores: {sample_scores}")
+
         # If threshold is too strict and empties list, fall back to ranked
         if not accepted:
+            logger.warning(f"[get_memories] Threshold too strict, using all {len(ranked)} ranked memories")
             accepted = ranked
 
         # 6) Update truth scores for accessed memories
@@ -1269,12 +1375,17 @@ class MemoryCoordinator:
                 except Exception:
                     ts = datetime.now()
 
-            # Calculate age in hours
-            age_hours = (datetime.now() - ts).total_seconds() / 3600.0
-
-            # GENTLER recency decay than normal: preserve memories from several days ago
-            # Score = 1.0 for recent, decays slowly based on temporal window
-            recency_score = 1.0 / (1.0 + (age_hours / decay_divisor))
+            # Calculate recency score using active days if available, otherwise hours
+            if (self.time_manager is not None and
+                hasattr(self.time_manager, 'calculate_active_day_decay')):
+                # Convert decay_divisor from hours to active days for similar behavior
+                # decay_divisor ranges from 24-168 hours, so active_days_divisor = 1-7 days
+                active_days_divisor = decay_divisor / 24.0
+                recency_score = self.time_manager.calculate_active_day_decay(ts, 1.0/active_days_divisor)
+            else:
+                # Fallback to original hourly calculation
+                age_hours = (datetime.now() - ts).total_seconds() / 3600.0
+                recency_score = 1.0 / (1.0 + (age_hours / decay_divisor))
 
             # Use recency primarily for sorting, not aggressive filtering
             current_relevance = mem.get('relevance_score', 0.5)
@@ -1369,56 +1480,91 @@ class MemoryCoordinator:
             'importance_score': float(meta.get('importance_score', 0.5)),
         }
 
-    # In memory_coordinator.py, fix the _get_semantic_memories method
+    # Optimized _get_semantic_memories method using batch queries
     async def _get_semantic_memories(self, query: str, n_results: int = 30) -> List[Dict]:
-        """Get semantic memories from Chroma collections"""
+        """
+        Get semantic memories using hybrid retrieval (query rewriting + semantic + keyword).
+        This replaces the original ChromaDB-only approach with enhanced relevance matching.
+        """
+        logger.info(f"[Semantic] Using hybrid retrieval for query: '{query[:50]}...'")
+
+        try:
+            # Use hybrid retriever for better semantic search quality
+            hybrid_results = await self.hybrid_retriever.retrieve(query, limit=n_results)
+
+            # Convert hybrid results to expected format for memory coordinator
+            memories = []
+            for result in hybrid_results:
+                # Create standardized memory format
+                # Calculate boosted final_score to pass gate system threshold (0.35)
+                hybrid_score = result.get("hybrid_score", 0.0)
+                keyword_score = result.get("keyword_score", 0.0)
+
+                # Boost scores to ensure relevant memories pass the 0.35 threshold
+                # Hybrid scores are 0.1-0.3, gate threshold is 0.35, so we boost them
+                boosted_score = hybrid_score + 0.3  # Add 0.3 to pass threshold
+                if keyword_score > 0.5:  # Strong keyword matches get extra boost
+                    boosted_score = max(boosted_score, 0.6)
+
+                memory = {
+                    "id": result.get("id", str(hash(str(result)))),
+                    "content": result.get("content", ""),
+                    "query": result.get("query", ""),
+                    "response": result.get("response", ""),
+                    "metadata": result.get("metadata", {}),
+                    "collection": result.get("collection", "unknown"),
+                    "final_score": boosted_score,  # Boosted to pass gate threshold
+                    "semantic_score": result.get("semantic_score", 0.0),
+                    "keyword_score": keyword_score,
+                    "hybrid_score": hybrid_score,
+                    "scoring": result.get("scoring", {}),
+                    "relevance": boosted_score  # For gate system compatibility
+                }
+                memories.append(memory)
+
+            logger.info(f"[Semantic] Hybrid retrieval returned {len(memories)} memories")
+            print(f"[DEBUG] Hybrid retriever returning {len(memories)} memories")
+            for i, mem in enumerate(memories[:3]):
+                print(f"[DEBUG]   {i+1}. {mem.get('metadata', {}).get('timestamp', 'unknown')} - {mem.get('query', '')[:40]}...")
+            return memories
+
+        except Exception as e:
+            logger.error(f"[Semantic] Hybrid retrieval failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # Fallback to basic semantic search if hybrid fails
+            logger.warning("[Semantic] Falling back to basic semantic search")
+            return await self._fallback_semantic_search(query, n_results)
+
+    async def _fallback_semantic_search(self, query: str, n_results: int = 30) -> List[Dict]:
+        """
+        Fallback semantic search using original ChromaDB approach if hybrid retrieval fails.
+        """
         memories: List[Dict] = []
-        # Ensure we're querying target collections (semantic across 3 DBs)
         collections_to_query = ['conversations', 'summaries', 'reflections']
 
-        for collection_name in collections_to_query:
-            try:
-                # Check if collection exists
-                if collection_name not in self.chroma_store.collections:
-                    logger.debug(f"[Semantic] Collection {collection_name} not found")
+        try:
+            # Basic batch query
+            batch_results = await self.chroma_store.query_multiple_collections(
+                collections_to_query,
+                query_text=query,
+                n_results=n_results
+            )
+
+            for collection_name, results in batch_results.items():
+                if not results:
                     continue
-
-                # Get the collection count
-                collection = self.chroma_store.collections[collection_name]
-                count = collection.count()
-
-                if count == 0:
-                    logger.debug(f"[Semantic] Collection {collection_name} is empty")
-                    continue
-
-                logger.debug(f"[Semantic] Querying {collection_name} (has {count} docs)")
-
-                # Query with proper parameters
-                results = self.chroma_store.query_collection(
-                    collection_name,
-                    query_text=query,
-                    n_results=min(n_results, count)  # Don't query for more than exists
-                )
-
-                # Ensure results is a list of dictionaries
-                if results is None:
-                    results = []
-                elif not isinstance(results, list):
-                    results = [results]
 
                 for item in results:
                     if item is not None:
-                        # Ensure item is a dictionary
                         if not isinstance(item, dict):
                             item = {"content": str(item), "id": str(uuid.uuid4())}
                         memories.append(self._parse_result(item, collection_name))
 
-            except Exception as e:
-                logger.error(f"[Semantic] Failed to query {collection_name}: {e}")
-                import traceback
-                traceback.print_exc()
+        except Exception as e:
+            logger.error(f"[Semantic] Fallback search also failed: {e}")
 
-        logger.info(f"[Semantic] Retrieved {len(memories)} total memories from all collections")
         return memories
 
     async def get_semantic_top_memories(self, query: str, limit: int = 10) -> List[Dict]:
@@ -1549,7 +1695,7 @@ class MemoryCoordinator:
     # ---------------------------
 
     async def _combine_memories(self, very_recent: List[Dict], semantic: List[Dict],
-                                hierarchical: List[Dict], query: str, config: Dict) -> List[Dict]:
+                                hierarchical: List[Dict], query: str, config: Dict, bypass_gate: bool = False) -> List[Dict]:
         """Combine memory pools with (optional) gating; allow some recent to bypass."""
         combined: List[Dict] = []
         candidates: List[Dict] = []
@@ -1573,11 +1719,15 @@ class MemoryCoordinator:
                 seen.add(key)
 
         # semantic → candidates
+        print(f"[DEBUG] Processing {len(semantic)} semantic memories into candidates")
+        semantic_added = 0
         for mem in semantic:
             key = self._get_memory_key(mem)
             if key not in seen:
                 candidates.append(mem)
                 seen.add(key)
+                semantic_added += 1
+        print(f"[DEBUG] Added {semantic_added} semantic memories to candidates (seen: {len(seen)})")
 
         # hierarchical (if present) → normalize & candidates
         for h in hierarchical:
@@ -1590,14 +1740,20 @@ class MemoryCoordinator:
                     seen.add(key)
 
         # Optional gating for candidates
-        if self.gate_system and candidates:
+        # Skip gate system for gym/health queries to ensure relevant memories get through
+        use_gate_system = self.gate_system and candidates and not bypass_gate
+        print(f"[DEBUG] _combine_memories: candidates={len(candidates)}, bypass_gate={bypass_gate}, use_gate_system={use_gate_system}")
+
+        if use_gate_system:
             gated = await self._gate_memories(query, candidates)
+            print(f"[DEBUG] Gate system filtered {len(candidates)} -> {len(gated)} memories")
             for mem in gated:
                 mem['gated'] = True
                 combined.append(mem)
         else:
             # If no gate, just cap the number of candidates added
             cap = config.get('max_memories', 20)
+            print(f"[DEBUG] Bypassing gate system, taking top {min(cap, len(candidates))} candidates")
             for mem in candidates[:cap]:
                 mem['gated'] = False
                 combined.append(mem)
@@ -1676,7 +1832,7 @@ class MemoryCoordinator:
             if collection_key in COLLECTION_BOOSTS:
                 rel += COLLECTION_BOOSTS[collection_key]
 
-            # 2) recency with decay
+            # 2) recency with decay (using active days)
             ts = m.get('timestamp')
             if isinstance(ts, str):
                 try:
@@ -1685,8 +1841,15 @@ class MemoryCoordinator:
                     ts = now
             elif not isinstance(ts, datetime):
                 ts = now
-            age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
-            recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * age_hours)
+
+            # Use active day decay if time_manager supports it, otherwise fall back to hourly decay
+            if (self.time_manager is not None and
+                hasattr(self.time_manager, 'calculate_active_day_decay')):
+                recency = self.time_manager.calculate_active_day_decay(ts, RECENCY_DECAY_RATE)
+            else:
+                # Fallback to original hourly decay
+                age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
+                recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * age_hours)
 
             # 3) truth (access-aware)
             md = m.get('metadata', {}) or {}
@@ -2018,11 +2181,13 @@ class MemoryCoordinator:
                     facts = []
                 for fact in (facts or []):
                     try:
-                        self.chroma_store.add_fact(
+                        result = self.chroma_store.add_fact(
                             fact=getattr(fact, 'content', str(fact)),
                             source='shutdown_extraction',
                             confidence=0.7
                         )
+                        if result is None:
+                            logger.debug(f"[MemoryCoordinator] Shutdown fact skipped as duplicate: {getattr(fact, 'content', str(fact))}")
                     except Exception:
                         continue
             
@@ -2085,12 +2250,15 @@ class MemoryCoordinator:
                             continue
                         fact_text = f"{subj} | {rel} | {obj}"
                         try:
-                            self.chroma_store.add_fact(
+                            result = self.chroma_store.add_fact(
                                 fact=fact_text,
                                 source='llm_shutdown',
                                 confidence=0.75,
                             )
-                            kept += 1
+                            if result is not None:
+                                kept += 1
+                            else:
+                                logger.debug(f"[MemoryCoordinator] LLM fact skipped as duplicate: {fact_text}")
                         except Exception:
                             continue
                     logger.info(f"[LLM Facts] kept={kept} (model={model_alias})")
@@ -2106,9 +2274,19 @@ class MemoryCoordinator:
 
     def _get_memory_key(self, memory: Dict) -> str:
         """Generate unique key for deduplication"""
-        q = (memory.get('query', '') or '')[:80]
-        r = (memory.get('response', '') or '')[:80]
-        return f"{q}__{r}"
+        # Include ID or timestamp to avoid false duplicates
+        mem_id = memory.get('id', '')
+        timestamp = memory.get('timestamp', memory.get('metadata', {}).get('timestamp', ''))
+        q = (memory.get('query', '') or '')[:40]  # Shorter to leave room for ID
+        r = (memory.get('response', '') or '')[:40]
+
+        # Use multiple identifiers to ensure uniqueness
+        if mem_id:
+            return f"id:{mem_id}__{q[:20]}__{r[:20]}"
+        elif timestamp:
+            return f"ts:{timestamp}__{q[:20]}__{r[:20]}"
+        else:
+            return f"hash:{hash(str(memory))}__{q[:30]}__{r[:30]}"
 
     def _safe_detect_topic(self, text: str) -> str:
         try:
@@ -2166,13 +2344,27 @@ class MemoryCoordinator:
     # ---------------------------
 
     def get_summaries(self, limit: int = 3) -> List[Dict]:
+        # First try ChromaDB
         try:
             results = self.chroma_store.query_collection('summaries', '', n_results=limit)
-            return [{'content': r.get('content', ''),
-                    'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
-                    'type': 'summary'} for r in results]
+            chroma_summaries = [{'content': r.get('content', ''),
+                                'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
+                                'type': 'summary'} for r in results]
+            if chroma_summaries:
+                return chroma_summaries
         except:
-            return []
+            pass
+
+        # Fallback to corpus manager if ChromaDB is empty
+        try:
+            if hasattr(self, 'corpus_manager') and hasattr(self.corpus_manager, 'get_summaries'):
+                corpus_summaries = self.corpus_manager.get_summaries(limit)
+                if corpus_summaries:
+                    return corpus_summaries
+        except:
+            pass
+
+        return []
 
     def get_summaries_hybrid(self, query: str, limit: int = 4) -> List[Dict]:
         """

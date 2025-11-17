@@ -23,6 +23,7 @@ from datetime import datetime
 import hashlib
 import json
 import uuid
+import asyncio
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.utils import embedding_functions
 import os
@@ -330,6 +331,11 @@ class MultiCollectionChromaStore:
             # anything else stays as extra metadata
             extra_md = md_in
 
+        # Check for duplicates before adding
+        if self._is_duplicate_fact(fact):
+            logger.info(f"[ChromaStore] Skipping duplicate fact: {fact}")
+            return None  # Return None to indicate fact was not added
+
         memory_id = self._generate_id(fact, "fact")
         logger.debug(f"[ChromaStore] Adding fact with ID {memory_id}: {fact}")
 
@@ -366,6 +372,53 @@ class MultiCollectionChromaStore:
             raise
 
         return memory_id
+
+    def delete_fact(self, fact_id: str) -> bool:
+        """Delete a fact by ID from the facts collection."""
+        try:
+            if "facts" not in self.collections:
+                logger.warning("[ChromaStore] Facts collection not found")
+                return False
+
+            # ChromaDB delete by ID
+            self.collections["facts"].delete(ids=[fact_id])
+            logger.debug(f"[ChromaStore] Deleted fact with ID: {fact_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"[ChromaStore] Error deleting fact {fact_id}: {e}")
+            return False
+
+    def _is_duplicate_fact(self, fact: str, similarity_threshold: float = 0.90) -> bool:
+        """Check if a fact is duplicate or very similar to existing facts."""
+        try:
+            # Quick exact match check first
+            existing_facts = self.list_all('facts')
+            for existing_fact in existing_facts:
+                existing_content = existing_fact.get('content', '')
+
+                # Exact match
+                if fact.strip().lower() == existing_content.strip().lower():
+                    return True
+
+                # High similarity check (simple token overlap)
+                fact_tokens = set(fact.lower().split())
+                existing_tokens = set(existing_content.lower().split())
+
+                if fact_tokens and existing_tokens:
+                    intersection = fact_tokens.intersection(existing_tokens)
+                    union = fact_tokens.union(existing_tokens)
+                    similarity = len(intersection) / len(union)
+
+                    if similarity >= similarity_threshold:
+                        logger.debug(f"[ChromaStore] Found similar fact (similarity: {similarity:.2f}): '{fact}' ~ '{existing_content}'")
+                        return True
+
+            return False
+
+        except Exception as e:
+            logger.warning(f"[ChromaStore] Error checking for duplicate fact: {e}")
+            return False  # If check fails, allow the fact to be added
 
     # Methods for reflections (new)
     def add_reflection(self, reflection: str, source_ids: List[str], reflection_type: str) -> str:
@@ -452,6 +505,52 @@ class MultiCollectionChromaStore:
                 all_results[name] = []
 
         return all_results
+
+    async def query_multiple_collections(self, collection_names: List[str], query_text: str,
+                                        n_results: int = 10) -> Dict[str, List[Dict]]:
+        """Query multiple collections in parallel for better performance"""
+        async def query_single_collection(collection_name: str) -> tuple[str, List[Dict]]:
+            try:
+                if collection_name not in self.collections:
+                    logger.debug(f"[BatchQuery] Collection {collection_name} not found")
+                    return collection_name, []
+
+                # Check if collection is empty
+                collection = self.collections[collection_name]
+                count = collection.count()
+
+                if count == 0:
+                    logger.debug(f"[BatchQuery] Collection {collection_name} is empty")
+                    return collection_name, []
+
+                # Run query in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                results = await loop.run_in_executor(
+                    None,
+                    self.query_collection,
+                    collection_name,
+                    query_text,
+                    min(n_results, count)
+                )
+
+                return collection_name, results or []
+
+            except Exception as e:
+                logger.error(f"[BatchQuery] Error querying {collection_name}: {e}")
+                return collection_name, []
+
+        # Run all queries in parallel
+        tasks = [query_single_collection(name) for name in collection_names]
+        results_dict = {}
+
+        for collection_name, results in await asyncio.gather(*tasks, return_exceptions=True):
+            if isinstance(results, Exception):
+                logger.error(f"[BatchQuery] Exception in {collection_name}: {results}")
+                results_dict[collection_name] = []
+            else:
+                results_dict[collection_name] = results
+
+        return results_dict
 
     def get_collection_stats(self) -> Dict[str, Dict]:
         """Get statistics for all collections"""

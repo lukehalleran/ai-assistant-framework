@@ -201,7 +201,14 @@ _EMBEDDER = None
 def _get_embedder(model_name: str):
     global _EMBEDDER
     if _EMBEDDER is None:
-        _EMBEDDER = SentenceTransformer(model_name)
+        try:
+            from models.model_manager import ModelManager
+            _EMBEDDER = ModelManager._get_cached_embedder()
+            log.debug("WikiManager using cached embedder from ModelManager")
+        except Exception:
+            # Fallback: create our own instance
+            _EMBEDDER = SentenceTransformer(model_name)
+            log.debug("WikiManager created fallback embedder")
     return _EMBEDDER
 
 
