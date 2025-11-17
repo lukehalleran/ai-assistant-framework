@@ -152,6 +152,41 @@ class DaemonOrchestrator:
         return "", response
 
     @staticmethod
+    def _strip_reflection_blocks(response: str) -> str:
+        """
+        Strip reflection blocks from response before storing/showing as conversation.
+
+        Reflections are stored separately as reflection memories, so they shouldn't
+        also be saved as part of the conversation response.
+
+        Handles both formats:
+        - <reflect>...</reflect>
+        - [SYSTEM QUALITY REFLECTION]...
+
+        Args:
+            response: Full LLM response potentially containing reflection blocks
+
+        Returns:
+            Response with all reflection blocks removed
+        """
+        if not response or not isinstance(response, str):
+            return response or ""
+
+        import re
+        # Remove <reflect>...</reflect> blocks
+        cleaned = re.sub(r'<reflect>.*?</reflect>', '', response, flags=re.DOTALL)
+
+        # Remove [SYSTEM QUALITY REFLECTION] and everything after it
+        cleaned = re.sub(r'\[SYSTEM QUALITY REFLECTION\].*', '', cleaned, flags=re.DOTALL)
+
+        # Remove standalone <reflection> tags (legacy format)
+        cleaned = re.sub(r'<reflection>.*?</reflection>', '', cleaned, flags=re.DOTALL)
+
+        # Clean up any extra whitespace left behind
+        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)  # Collapse multiple blank lines
+        return cleaned.strip()
+
+    @staticmethod
     def _strip_xml_wrappers(text: str) -> str:
         """Remove simple XML-like wrappers such as <result>...</result>, <answer>...</answer>.
 
@@ -316,15 +351,42 @@ class DaemonOrchestrator:
             # CONVERSATIONAL: Default friend mode - most interactions
             return (
                 "\n\n## RESPONSE MODE: CONVERSATIONAL\n"
-                "This is casual conversation. Respond naturally as a friend:\n"
-                "- 1-3 sentences for status updates or simple observations\n"
-                "- Match the user's energy and length\n"
-                "- No therapeutic language unless the user is specifically asking for advice\n"
-                "- Be direct and natural - \"cool\" or \"yeah, that makes sense\" is often enough\n"
-                "- For world events/news they're observing: engage intellectually, not therapeutically\n"
-                "- Assume competence - they don't need validation for routine thoughts\n"
-                "- Save depth for when they actually request it or the topic warrants it"
+                "**CRITICAL CONSTRAINT: MAXIMUM 3 SENTENCES PER RESPONSE**\n\n"
+                "Length rules (STRICTLY ENFORCED):\n"
+                "- Status/acknowledgments: 1 sentence ONLY\n"
+                "- Technical answers: 2-3 sentences MAXIMUM\n"
+                "- NEVER exceed 3 sentences total\n\n"
+                "ABSOLUTELY FORBIDDEN (response will be rejected if present):\n"
+                "- Paragraphs or multi-line explanations\n"
+                "- Thanks/gratitude/appreciation\n"
+                "- Excitement markers (excited, stoked, love, great)\n"
+                "- Meta-commentary about the conversation\n"
+                "- Suggestions unless directly requested\n"
+                "- Flowery/verbose language\n\n"
+                "Required style:\n"
+                "- Single sentence for simple queries\n"
+                "- Direct, factual, no padding\n"
+                "- Examples: \"Cool.\" / \"Got it.\" / \"Makes sense.\" / \"That's weird.\"\n\n"
+                "If you generate more than 3 sentences, your response is WRONG."
             )
+
+    # ---------- 1b) Session Headers Instructions ----------
+    def _get_session_headers_instructions(self) -> str:
+        """
+        Return concise instructions about temporal reasoning with prompt headers.
+
+        Returns:
+            String containing session header guidance to append to system prompt
+        """
+        return (
+            "\n\n## TEMPORAL REASONING\n"
+            "**[TIME CONTEXT]**: Current datetime. Always use this to calculate elapsed time from memory timestamps.\n"
+            "- Memory from 2025-09-15, TIME CONTEXT 2025-11-17 = \"2 months ago\" (not \"recently\")\n"
+            "- For sleep/schedule: compare timestamps across memories\n"
+            "**[RECENT CONVERSATION]**: Last 15 exchanges, newest first. Use for immediate context.\n"
+            "**[RELEVANT MEMORIES]**: Semantically relevant past conversations with timestamps. Calculate recency from TIME CONTEXT.\n"
+            "**[CURRENT USER QUERY]**: The only query to respond to. All other sections are context only."
+        )
 
     # ---------- 2) Commands & Topic ----------
     def handle_commands(self, user_input: str) -> Optional[Tuple[str, Dict[str, Any]]]:
@@ -671,6 +733,12 @@ class DaemonOrchestrator:
                 if self.logger:
                     self.logger.warning("[PREPARE_PROMPT] No tone level set - skipping tone instructions")
 
+            # Add session headers instructions for temporal reasoning and memory usage
+            session_headers_instructions = self._get_session_headers_instructions()
+            system_prompt = system_prompt.rstrip() + session_headers_instructions
+            if self.logger:
+                self.logger.debug("[PREPARE_PROMPT] Injected session headers instructions")
+
         # ---------------------------------------------------------------------
         # 4.6) Add thinking block instruction to system prompt
         # ---------------------------------------------------------------------
@@ -704,10 +772,9 @@ class DaemonOrchestrator:
         # Some builders return a context dict; assemble it to a single string
         if isinstance(prompt, dict):
             prompt = self.prompt_builder._assemble_prompt(
-                user_input=combined_text,
                 context=prompt,
-                system_prompt=system_prompt,
-                directives_file="structured_directives.txt",
+                user_input=combined_text,
+                system_prompt=system_prompt
             )
 
         return prompt, system_prompt
@@ -818,15 +885,33 @@ class DaemonOrchestrator:
                 use_bestof = bool(_enable_bestof)
 
             # ---------------------------------------------------------------------
-            # Determine max_tokens based on topic heaviness
+            # Determine max_tokens based on tone level AND topic heaviness
             # ---------------------------------------------------------------------
             try:
                 from config.app_config import DEFAULT_MAX_TOKENS, HEAVY_TOPIC_MAX_TOKENS
-                response_max_tokens = HEAVY_TOPIC_MAX_TOKENS if is_heavy_topic else DEFAULT_MAX_TOKENS
+                from utils.tone_detector import CrisisLevel
+
+                # Heavy topics override tone-based limits
+                if is_heavy_topic:
+                    response_max_tokens = HEAVY_TOPIC_MAX_TOKENS
+                    token_reason = "HEAVY topic"
+                # Adjust max_tokens based on tone/crisis level for speed and brevity
+                elif tone_level == CrisisLevel.CONVERSATIONAL:
+                    response_max_tokens = 600  # Force brief responses in conversational mode
+                    token_reason = "CONVERSATIONAL mode"
+                elif tone_level == CrisisLevel.SUPPORT:
+                    response_max_tokens = 1500  # Allow more room for supportive responses
+                    token_reason = "SUPPORT mode"
+                elif tone_level == CrisisLevel.CRISIS:
+                    response_max_tokens = 2000  # Maximum room for crisis responses
+                    token_reason = "CRISIS mode"
+                else:
+                    response_max_tokens = DEFAULT_MAX_TOKENS
+                    token_reason = "DEFAULT"
+
                 if self.logger:
                     self.logger.info(
-                        f"[Orchestrator] Using {'HEAVY' if is_heavy_topic else 'NORMAL'} token allocation: "
-                        f"{response_max_tokens} tokens"
+                        f"[Orchestrator] Token limit: {response_max_tokens} ({token_reason})"
                     )
             except Exception as e:
                 response_max_tokens = None  # Use model defaults
@@ -1020,6 +1105,8 @@ class DaemonOrchestrator:
 
             # Store final answer (not the thinking part) in memory
             answer_for_storage = final_answer if final_answer else self._strip_xml_wrappers(full_response)
+            # Strip reflection blocks (they're stored separately as reflection memories)
+            answer_for_storage = self._strip_reflection_blocks(answer_for_storage)
             # Sanitize prompt header echoes before returning/storing
             answer_for_storage = self._strip_prompt_artifacts(answer_for_storage)
 

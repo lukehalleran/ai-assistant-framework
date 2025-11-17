@@ -31,7 +31,11 @@ from typing import Callable, Awaitable, List, Tuple, Dict, Any, Optional
 # --- third-party ---
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from sentence_transformers import SentenceTransformer
+try:
+    from sentence_transformers import CrossEncoder
+except ImportError:
+    CrossEncoder = None
 import httpx  # <— added for title search + summary fallback
 
 # --- app-local ---
@@ -562,12 +566,15 @@ class CosineSimilarityGateSystem:
 
         # Single embedder used everywhere. Default to MiniLM if none provided.
         # Fall back to a tiny stub embedder if the SentenceTransformer model is unavailable
-        # (e.g., offline CI or restricted environments).
+        # Use provided embedder or get cached embedder to avoid re-loading
         if embedder is not None:
             self.embedder: SentenceTransformer = embedder
         else:
             try:
-                self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
+                # Import here to avoid circular import
+                from models.model_manager import ModelManager
+                self.embedder = ModelManager._get_cached_embedder()
+                logger.debug("[Cosine Gate] Using cached embedder from ModelManager")
             except Exception:
                 logger.debug("[Cosine Gate] Using stub embedder (offline mode)")
 
@@ -585,15 +592,26 @@ class CosineSimilarityGateSystem:
         # Back-compat alias used by some call sites in this file.
         self.embed_model = self.embedder
 
-        # Optional reranker; we keep it best-effort so we don’t fail hard if unavailable.
+        # Optional reranker; use cached cross-encoder from ModelManager to avoid re-loading
         try:
-            self.cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-            self.use_reranking = True
-            logger.debug("[Cosine Gate] Cross-encoder loaded for reranking")
+            if hasattr(model_manager, 'get_cross_encoder'):
+                self.cross_encoder = model_manager.get_cross_encoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+                self.use_reranking = True
+                logger.debug("[Cosine Gate] Using cached cross-encoder from ModelManager")
+            else:
+                # Fallback to direct loading if no ModelManager provided
+                if CrossEncoder is not None:
+                    self.cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+                    self.use_reranking = True
+                    logger.debug("[Cosine Gate] Cross-encoder loaded directly (fallback)")
+                else:
+                    self.cross_encoder = None
+                    self.use_reranking = False
+                    logger.debug("[Cosine Gate] CrossEncoder not available, using cosine only")
         except Exception:
             self.cross_encoder = None
             self.use_reranking = False
-            logger.debug("[Cosine Gate] No cross-encoder, using cosine only")
+            logger.debug("[Cosine Gate] No cross-encoder available, using cosine only")
 
         # Lightweight in-class cache for gate_content_async
         self.cache: dict[str, GateResult] = {}
@@ -814,41 +832,107 @@ class MultiStageGateSystem:
             if not to_gate:
                 return episodic  # nothing to gate
 
+            # Helper function to extract meaningful content for gating
+            def _extract_gate_content(mem: Dict) -> str:
+                """Extract meaningful content for gating, handling multiple schema formats."""
+                # Try content field first (summaries/reflections/facts)
+                content = mem.get("content", "").strip()
+                if content:
+                    return content[:800]  # Increased from 500 to capture more context
+
+                # Fallback: build from Q/A (conversations)
+                query_text = mem.get("query", "").strip()
+                response_text = mem.get("response", "").strip()
+                if query_text and response_text:
+                    # Include more of response where key info often appears
+                    combined = f"{query_text}\n{response_text}"[:1000]
+                    return combined
+
+                # Last resort: metadata content
+                return str(mem.get("metadata", {}).get("content", ""))[:500]
+
             # Encode once (offload to executor/aencode for responsiveness)
             qv = await self.gate_system._encode_texts([query or ""])  # (1,D)
             query_emb = qv[0]
-            contents = [mem.get("content", "")[:500] for mem in to_gate]
+            contents = [_extract_gate_content(mem) for mem in to_gate]
             memory_embs = await self.gate_system._encode_texts(contents)
 
             similarities = cosine_similarity([query_emb], memory_embs)[0]
 
-            # Deictic queries are often vague; don’t lower the bar for them.
+            # Deictic queries are often vague; don't lower the bar for them.
             is_deictic = is_deictic_followup(query)
 
             gated: List[Dict] = []
+
+            # Adjust scoring blend: rely more on cosine, less on truth
+            # Old memories may have stale truth scores
+            cosine_weight = float(os.getenv("GATE_COSINE_WEIGHT", "0.85"))  # Up from 0.7
+            truth_weight = 1.0 - cosine_weight  # Down from 0.3 to 0.15
+
             for mem, sim in zip(to_gate, similarities):
                 truth = float(mem.get("metadata", {}).get("truth_score", 0.5))
-                score = 0.7 * float(sim) + 0.3 * truth
+                score = cosine_weight * float(sim) + truth_weight * truth
 
                 threshold = self.gate_system.cosine_threshold
                 if is_deictic:
                     # Keep a floor for deictic follow-ups but allow env override; default to 0.25
                     try:
-                        deictic_min = float(os.getenv("GATE_DEICTIC_MIN", "0.25"))
+                        deictic_min = float(os.getenv("GATE_DEICTIC_MIN", "0.20"))  # Reduced from 0.25
                     except Exception:
-                        deictic_min = 0.25
+                        deictic_min = 0.20
                     threshold = max(threshold, deictic_min)
 
                 if score >= threshold:
                     mem["relevance_score"] = float(score)
-                    mem["filtered_content"] = mem.get("content", "")[:300]
+                    mem["filtered_content"] = _extract_gate_content(mem)[:300]
+                    mem["cosine_sim"] = float(sim)  # Store raw cosine for debugging
                     gated.append(mem)
                 else:
-                    logger.debug(f"[Batch Gate] Memory filtered out: score={score:.3f}, threshold={threshold:.3f}")
+                    # Enhanced debug logging
+                    ts = mem.get('timestamp', 'unknown')
+                    logger.debug(
+                        f"[Batch Gate] Memory filtered out: "
+                        f"timestamp={ts}, cosine={float(sim):.3f}, truth={truth:.3f}, "
+                        f"blended={score:.3f}, threshold={threshold:.3f}, "
+                        f"preview={_extract_gate_content(mem)[:60]}"
+                    )
+
+            # PHASE 1.3: Force minimum memories even if below threshold (fail-soft)
+            MIN_GATED_MEMORIES = int(os.getenv("GATE_MIN_MEMORIES", "8"))
+            original_gated_count = len(gated)
+
+            if len(gated) < MIN_GATED_MEMORIES and len(to_gate) > 0:
+                logger.info(f"[Batch Gate] Only {len(gated)} memories passed, forcing minimum of {MIN_GATED_MEMORIES}")
+
+                # Create list of all memories with their scores
+                all_scored = []
+                for i, mem in enumerate(to_gate):
+                    truth = float(mem.get("metadata", {}).get("truth_score", 0.5))
+                    blended_score = cosine_weight * similarities[i] + truth_weight * truth
+                    all_scored.append((mem, blended_score, similarities[i]))
+
+                # Sort by blended score (descending)
+                all_scored.sort(key=lambda x: x[1], reverse=True)
+
+                # Add top-scoring memories until we hit minimum
+                gated_ids = {id(m) for m in gated}  # Use id() for identity check
+                for mem, blended_score, cosine_sim in all_scored:
+                    if len(gated) >= MIN_GATED_MEMORIES:
+                        break
+                    if id(mem) not in gated_ids:
+                        mem["relevance_score"] = float(blended_score)
+                        mem["filtered_content"] = _extract_gate_content(mem)[:300]
+                        mem["cosine_sim"] = float(cosine_sim)
+                        mem["forced_minimum"] = True  # Mark for debugging
+                        gated.append(mem)
+                        gated_ids.add(id(mem))
+                        logger.debug(f"[Batch Gate] Forced add: blended={blended_score:.3f}, cosine={cosine_sim:.3f}")
+
+                logger.info(f"[Batch Gate] Forced minimum added {len(gated) - original_gated_count} memories")
 
             # Optional reranking when a lot survives (topical tie-breaker).
             if self.gate_system.use_reranking and len(gated) > 5:
-                pairs = [[query, mem.get("content", "")[:300]] for mem in gated]
+                pairs = [[query, _extract_gate_content(mem)[:300]] for mem in gated]
                 rerank_scores = self.gate_system.cross_encoder.predict(pairs)
                 for mem, score in zip(gated, rerank_scores):
                     mem["rerank_score"] = float(score)
