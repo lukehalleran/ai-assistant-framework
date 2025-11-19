@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -f "gui/gradio_gui.py" ]; then
+  sed -n '1,250p' gui/gradio_gui.py
+  echo "--- SPLIT ---"
+  sed -n '251,500p' gui/gradio_gui.py || true
+  echo "--- SPLIT ---"
+  sed -n '501,750p' gui/gradio_gui.py || true
+else
+  echo "File gui/gradio_gui.py not found" >&2
+  exit 1
+fi
+
