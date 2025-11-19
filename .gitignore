@@ -1,100 +1,43 @@
-# --- Python & Build ---
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-.spec
-*.manifest
-
-# --- Environments ---
-.env
-.venv
-env/
-venv/
-ENV/
-
-# --- IDE & Tools ---
-.idea/
-.vscode/
-.cursorignore
-.cursorindexingignore
+# --- JUNK TO IGNORE ---
+mutants/
+stitched.txt
+stitched_project.txt
+*DEBUG.txt
+*.backup
+trace_clean.py
+debug_spacy_parse.py
+demo_mutation_testing.py
+demo_thinking_blocks.py
+devtools/
 *.kate-swp
-.spyderproject
-.spyproject
-.ropeproject
 
-# --- Logs & Debugging ---
+# --- LOGS ---
 *.log
 conversation_logs/
-pip-log.txt
-*_DEBUG.txt
-debug_prompt_*.txt
-2025*.txt
 
-# --- Testing & Mutation ---
-.tox/
-.nox/
-.coverage
-.coverage.*
-htmlcov/
+# --- PYTHON ---
+__pycache__/
+*.py[cod]
+.venv
 .pytest_cache/
-mutants/
-mutation_confidence.py
-.hypothesis/
+.coverage
+htmlcov/
 
-# --- Data & Artifacts (The Heavy Stuff) ---
-# Ignore all data by default
-data/
-wiki_data/
-wiki_articles/
-wiki_chunks/
-semantic_chunks/
-embedded_parquet/
-test_wiki_dump/
-test_parquet/
-
-# Specific large files
-*.gguf
-*.bin
-embeddings_mmap.dat
-metadata.parquet
-vector_index_ivf.faiss
-embed_checkpoint.json
-
-# ChromaDB
+# --- DATA HANDLING ---
+# Ignore all data contents by default
+data/*
 chroma/
 chroma_db/
 chroma_db_*/
+embedded_parquet/
+semantic_chunks/
+daemon_memory/
+project/
+.cache/
+embeddings_mmap.dat
+embed_checkpoint.json
 
-# --- Exceptions (Things we WANT to track) ---
+# --- EXCEPTIONS (White-list) ---
 !data/pipeline/
 !data/scripts/
 !data/corpus_v4.json
-# If you want to track your config/scripts inside data, add them here
-
-# --- Temporary/Script Clutter ---
-stitched.txt
-stitched_project.txt
-project/
-stitch_project.py
-devtools/
-scripts/read_gradio_gui
-trace_clean.py
-*.backup
