@@ -265,16 +265,19 @@ def test_calculate_importance_score_numbers():
 # apply_temporal_decay Tests
 # =============================================================================
 
-def create_mock_memory(timestamp, last_accessed, importance=0.5, decay_rate=0.1, truth_score=0.5):
-    """Helper to create mock memory object"""
-    memory = Mock()
-    memory.timestamp = timestamp
-    memory.last_accessed = last_accessed
-    memory.importance_score = importance
-    memory.decay_rate = decay_rate
-    memory.truth_score = truth_score
-    memory.metadata = {'truth_score': truth_score}
-    return memory
+def create_memory_dict(timestamp, last_accessed=None, importance=0.5, decay_rate=0.1, truth_score=0.5, relevance_score=0.8):
+    """Helper to create memory dict for temporal decay tests"""
+    return {
+        'timestamp': timestamp,
+        'importance_score': importance,
+        'truth_score': truth_score,
+        'relevance_score': relevance_score,
+        'metadata': {
+            'decay_rate': decay_rate,
+            'truth_score': truth_score,
+            'last_accessed': last_accessed or timestamp
+        }
+    }
 
 
 def test_apply_temporal_decay_basic():
@@ -283,15 +286,10 @@ def test_apply_temporal_decay_basic():
     now = datetime.now()
 
     # Recent memory (1 hour ago)
-    memory = create_mock_memory(
+    memories = [create_memory_dict(
         timestamp=now - timedelta(hours=1),
         last_accessed=now - timedelta(minutes=5)
-    )
-
-    memories = [{
-        'memory': memory,
-        'relevance_score': 0.8
-    }]
+    )]
 
     result = scorer.apply_temporal_decay(memories)
 
@@ -306,26 +304,16 @@ def test_apply_temporal_decay_old_memory():
     now = datetime.now()
 
     # Recent memory
-    recent_memory = create_mock_memory(
+    recent_mems = [create_memory_dict(
         timestamp=now - timedelta(hours=1),
         last_accessed=now
-    )
+    )]
 
     # Old memory (30 days ago)
-    old_memory = create_mock_memory(
+    old_mems = [create_memory_dict(
         timestamp=now - timedelta(days=30),
         last_accessed=now - timedelta(days=30)
-    )
-
-    recent_mems = [{
-        'memory': recent_memory,
-        'relevance_score': 0.8
-    }]
-
-    old_mems = [{
-        'memory': old_memory,
-        'relevance_score': 0.8
-    }]
+    )]
 
     recent_result = scorer.apply_temporal_decay(recent_mems)[0]['final_score']
     old_result = scorer.apply_temporal_decay(old_mems)[0]['final_score']
@@ -342,25 +330,19 @@ def test_apply_temporal_decay_access_recency_boost():
     # Both 10 days old, but different access times
     old_timestamp = now - timedelta(days=10)
 
-    recently_accessed = create_mock_memory(
+    recently_accessed = create_memory_dict(
         timestamp=old_timestamp,
         last_accessed=now  # Accessed today
     )
 
-    not_accessed = create_mock_memory(
+    not_accessed = create_memory_dict(
         timestamp=old_timestamp,
         last_accessed=old_timestamp  # Not accessed since creation
     )
 
-    recent_mems = [{
-        'memory': recently_accessed,
-        'relevance_score': 0.8
-    }]
+    recent_mems = [recently_accessed]
 
-    old_mems = [{
-        'memory': not_accessed,
-        'relevance_score': 0.8
-    }]
+    old_mems = [not_accessed]
 
     recent_result = scorer.apply_temporal_decay(recent_mems)[0]['final_score']
     old_result = scorer.apply_temporal_decay(old_mems)[0]['final_score']
@@ -374,27 +356,21 @@ def test_apply_temporal_decay_importance_score():
     scorer = MemoryScorer()
     now = datetime.now()
 
-    high_importance = create_mock_memory(
+    high_importance = create_memory_dict(
         timestamp=now - timedelta(hours=1),
         last_accessed=now,
         importance=0.9
     )
 
-    low_importance = create_mock_memory(
+    low_importance = create_memory_dict(
         timestamp=now - timedelta(hours=1),
         last_accessed=now,
         importance=0.1
     )
 
-    high_mems = [{
-        'memory': high_importance,
-        'relevance_score': 0.8
-    }]
+    high_mems = [high_importance]
 
-    low_mems = [{
-        'memory': low_importance,
-        'relevance_score': 0.8
-    }]
+    low_mems = [low_importance]
 
     high_result = scorer.apply_temporal_decay(high_mems)[0]['final_score']
     low_result = scorer.apply_temporal_decay(low_mems)[0]['final_score']
@@ -407,27 +383,21 @@ def test_apply_temporal_decay_truth_score():
     scorer = MemoryScorer()
     now = datetime.now()
 
-    high_truth = create_mock_memory(
+    high_truth = create_memory_dict(
         timestamp=now - timedelta(hours=1),
         last_accessed=now,
         truth_score=1.0
     )
 
-    low_truth = create_mock_memory(
+    low_truth = create_memory_dict(
         timestamp=now - timedelta(hours=1),
         last_accessed=now,
         truth_score=0.0
     )
 
-    high_mems = [{
-        'memory': high_truth,
-        'relevance_score': 0.8
-    }]
+    high_mems = [high_truth]
 
-    low_mems = [{
-        'memory': low_truth,
-        'relevance_score': 0.8
-    }]
+    low_mems = [low_truth]
 
     high_result = scorer.apply_temporal_decay(high_mems)[0]['final_score']
     low_result = scorer.apply_temporal_decay(low_mems)[0]['final_score']
@@ -440,20 +410,17 @@ def test_apply_temporal_decay_relevance_score():
     scorer = MemoryScorer()
     now = datetime.now()
 
-    memory = create_mock_memory(
+    high_rel = [create_memory_dict(
         timestamp=now - timedelta(hours=1),
-        last_accessed=now
-    )
+        last_accessed=now,
+        relevance_score=0.9
+    )]
 
-    high_rel = [{
-        'memory': memory,
-        'relevance_score': 0.9
-    }]
-
-    low_rel = [{
-        'memory': memory,
-        'relevance_score': 0.1
-    }]
+    low_rel = [create_memory_dict(
+        timestamp=now - timedelta(hours=1),
+        last_accessed=now,
+        relevance_score=0.1
+    )]
 
     high_result = scorer.apply_temporal_decay(high_rel)[0]['final_score']
     low_result = scorer.apply_temporal_decay(low_rel)[0]['final_score']
@@ -467,18 +434,9 @@ def test_apply_temporal_decay_multiple_memories():
     now = datetime.now()
 
     memories = [
-        {
-            'memory': create_mock_memory(now - timedelta(hours=1), now),
-            'relevance_score': 0.8
-        },
-        {
-            'memory': create_mock_memory(now - timedelta(days=1), now),
-            'relevance_score': 0.7
-        },
-        {
-            'memory': create_mock_memory(now - timedelta(days=7), now - timedelta(days=7)),
-            'relevance_score': 0.6
-        }
+        create_memory_dict(now - timedelta(hours=1), now, relevance_score=0.8),
+        create_memory_dict(now - timedelta(days=1), now, relevance_score=0.7),
+        create_memory_dict(now - timedelta(days=7), now - timedelta(days=7), relevance_score=0.6)
     ]
 
     result = scorer.apply_temporal_decay(memories)
@@ -501,27 +459,21 @@ def test_apply_temporal_decay_decay_rate():
     now = datetime.now()
     old_timestamp = now - timedelta(days=30)
 
-    slow_decay = create_mock_memory(
+    slow_decay = create_memory_dict(
         timestamp=old_timestamp,
         last_accessed=old_timestamp,
         decay_rate=0.01  # Slow decay
     )
 
-    fast_decay = create_mock_memory(
+    fast_decay = create_memory_dict(
         timestamp=old_timestamp,
         last_accessed=old_timestamp,
         decay_rate=0.5  # Fast decay
     )
 
-    slow_mems = [{
-        'memory': slow_decay,
-        'relevance_score': 0.8
-    }]
+    slow_mems = [slow_decay]
 
-    fast_mems = [{
-        'memory': fast_decay,
-        'relevance_score': 0.8
-    }]
+    fast_mems = [fast_decay]
 
     slow_result = scorer.apply_temporal_decay(slow_mems)[0]['final_score']
     fast_result = scorer.apply_temporal_decay(fast_mems)[0]['final_score']
@@ -536,17 +488,14 @@ def test_apply_temporal_decay_minimum_floor():
     now = datetime.now()
 
     # Very old, very unimportant memory
-    memory = create_mock_memory(
+    memory = create_memory_dict(
         timestamp=now - timedelta(days=365),
         last_accessed=now - timedelta(days=365),
         importance=0.0,  # Will be floored to 0.1
         decay_rate=1.0
     )
 
-    memories = [{
-        'memory': memory,
-        'relevance_score': 0.8
-    }]
+    memories = [memory]
 
     result = scorer.apply_temporal_decay(memories)
 
@@ -559,10 +508,7 @@ def test_apply_temporal_decay_returns_same_list():
     scorer = MemoryScorer()
     now = datetime.now()
 
-    memories = [{
-        'memory': create_mock_memory(now - timedelta(hours=1), now),
-        'relevance_score': 0.8
-    }]
+    memories = [create_memory_dict(now - timedelta(hours=1), now)]
 
     result = scorer.apply_temporal_decay(memories)
 

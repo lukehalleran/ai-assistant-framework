@@ -245,34 +245,36 @@ async def test_build_prompt_multiple_calls(prompt_builder, memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_get_summaries_with_stored(prompt_builder, memory_coordinator):
-    """Test _get_summaries retrieves stored summaries."""
+    """Test getting summaries retrieves stored summaries."""
     # Add a summary to corpus
     memory_coordinator.corpus_manager.add_summary(
         content="This is a stored summary of recent conversations",
         timestamp=datetime.now()
     )
 
-    summaries = await prompt_builder._get_summaries(count=3)
+    # Use context_gatherer to get summaries
+    result = await prompt_builder.context_gatherer._get_summaries_separate("test", 3, 3)
 
-    assert isinstance(summaries, list)
+    assert isinstance(result, dict)
 
 
 @pytest.mark.asyncio
 async def test_get_summaries_empty(prompt_builder):
-    """Test _get_summaries when no summaries exist."""
-    summaries = await prompt_builder._get_summaries(count=3)
+    """Test getting summaries when no summaries exist."""
+    result = await prompt_builder.context_gatherer._get_summaries_separate("test", 3, 3)
 
-    assert isinstance(summaries, list)
+    assert isinstance(result, dict)
 
 
 @pytest.mark.asyncio
 async def test_get_recent_conversations(prompt_builder, memory_coordinator):
-    """Test _get_recent_conversations retrieves conversations."""
+    """Test getting recent conversations."""
     # Add conversations
     await memory_coordinator.store_interaction("Q1", "A1")
     await memory_coordinator.store_interaction("Q2", "A2")
 
-    recent = await prompt_builder._get_recent_conversations(count=5)
+    # Use context_gatherer to get recent conversations (uses 'limit' not 'count')
+    recent = await prompt_builder.context_gatherer._get_recent_conversations(limit=5)
 
     assert isinstance(recent, list)
 

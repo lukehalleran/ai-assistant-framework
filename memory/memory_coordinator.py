@@ -39,6 +39,9 @@ from memory.memory_consolidator import MemoryConsolidator
 from memory.llm_fact_extractor import LLMFactExtractor
 from memory.memory_scorer import MemoryScorer
 from memory.hybrid_retriever import HybridRetriever
+from memory.memory_storage import MemoryStorage
+from memory.memory_retriever import MemoryRetriever
+from memory.thread_manager import ThreadManager
 from processing.gate_system import MultiStageGateSystem
 from config.app_config import (
     RECENCY_DECAY_RATE,
@@ -168,9 +171,8 @@ class MemoryCoordinator:
             model_manager=model_manager
         )
         self.model_manager = model_manager
-        self.scorer = MemoryScorer()
         self.topic_manager = topic_manager or TopicManager()
-        self.conversation_context = deque(maxlen=5)
+        self.conversation_context = deque(maxlen=50)
         # Initialize hybrid retriever for improved semantic search
         self.hybrid_retriever = HybridRetriever(chroma_store=chroma_store)
         self.access_history: Dict[str, int] = {}  # Track memory access for truth updates
@@ -183,6 +185,41 @@ class MemoryCoordinator:
         except Exception:
             from datetime import datetime as _dt
             self.session_start = _dt.now()
+
+        # Initialize modular components for delegation
+        self.scorer = MemoryScorer(
+            time_manager=time_manager,
+            conversation_context=self.conversation_context
+        )
+
+        self.thread_manager = ThreadManager(
+            corpus_manager=corpus_manager,
+            topic_manager=self.topic_manager,
+            time_manager=time_manager
+        )
+
+        self._storage = MemoryStorage(
+            corpus_manager=corpus_manager,
+            chroma_store=chroma_store,
+            fact_extractor=self.fact_extractor,
+            consolidator=self.consolidator,
+            topic_manager=self.topic_manager,
+            scorer=self.scorer,
+            time_manager=time_manager
+        )
+        # Connect thread detection to storage
+        self._storage._thread_detect_fn = self.thread_manager.detect_or_create_thread
+        self._storage.conversation_context = self.conversation_context
+
+        self._retriever = MemoryRetriever(
+            corpus_manager=corpus_manager,
+            chroma_store=chroma_store,
+            gate_system=gate_system,
+            scorer=self.scorer,
+            hybrid_retriever=self.hybrid_retriever,
+            time_manager=time_manager
+        )
+        self._retriever.conversation_context = list(self.conversation_context)
 
     # --------- time helpers (prefer TimeManager) ---------
     def _now(self):
@@ -258,91 +295,18 @@ class MemoryCoordinator:
 
 
     async def get_recent_facts(self, limit: int = 5) -> List[Dict]:
-        """Fetch the most recent facts by timestamp, regardless of query relevance."""
-        try:
-            recent = self.chroma_store.get_recent("facts", limit=limit)
-            return recent or []
-        except Exception as e:
-            logger.debug(f"[MemoryCoordinator][RecentFacts] retrieval failed: {e}")
-            return []
+        """Fetch the most recent facts by timestamp.
+
+        Delegates to MemoryRetriever component.
+        """
+        return await self._retriever.get_recent_facts(limit)
 
     async def get_facts(self, query: str, limit: int = 8) -> List[Dict]:
-        results: List[Dict] = []
-        try:
-            coll = self.chroma_store.collections.get("facts")
+        """Get facts for query.
 
-            # 1) Semantic search only if there are rows
-            if coll and coll.count() > 0:
-                raw = self.chroma_store.query_collection(
-                    "facts",
-                    query_text=query or "",
-                    n_results=min(max(1, limit), coll.count()),
-                ) or []
-
-                if not isinstance(raw, list):
-                    raw = [raw]
-
-                for item in raw:
-                    if not isinstance(item, dict):
-                        item = {"content": str(item)}
-                    meta = item.get("metadata", {}) or {}
-                    content = item.get("content") or meta.get("content") or ""
-                    if not content:
-                        continue
-                    results.append({
-                        "id": item.get("id"),
-                        "content": content,
-                        "confidence": float(meta.get("confidence", 0.6)),
-                        "source": meta.get("source", "facts"),
-                        "timestamp": meta.get("timestamp"),
-                        "tags": meta.get("tags", []),
-                        "metadata": meta,
-                    })
-
-            # 2) Fallback to most recent if nothing semantic
-            if not results and hasattr(self.chroma_store, "get_recent"):
-                fallback = []
-                for item in self.chroma_store.get_recent("facts", limit) or []:
-                    content = item.get("content") or ""
-                    if not content:
-                        continue
-                    meta = item.get("metadata", {}) or {}
-                    fallback.append({
-                        "id": item.get("id"),
-                        "content": content,
-                        "confidence": float(meta.get("confidence", 0.6)),
-                        "source": meta.get("source", "facts"),
-                        "timestamp": meta.get("timestamp"),
-                        "metadata": meta,
-                    })
-                results = fallback
-
-        except Exception as e:
-            logger.debug(f"[Facts] retrieval error: {e}", exc_info=True)
-
-        # 3) Rank (confidence + light recency)
-        def _score(x: Dict) -> float:
-            ts = x.get("timestamp")
-            rec = 1.0
-            try:
-                from datetime import datetime
-                if isinstance(ts, str):
-                    ts = datetime.fromisoformat(ts)
-                if ts:
-                    age_h = (datetime.now() - ts).total_seconds() / 3600.0
-                    rec = 1.0 / (1.0 + 0.05 * max(0.0, age_h))
-            except Exception:
-                pass
-            return 0.7 * float(x.get("confidence", 0.6)) + 0.3 * rec
-
-        results.sort(key=_score, reverse=True)
-
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"[Facts] Returning {len(results)} facts for query={query!r}")
-            for i, it in enumerate(results[:5], 1):
-                logger.debug(f"  #{i}: {it.get('content')!r} (conf={it.get('confidence')})")
-
-        return results[:limit]
+        Delegates to MemoryRetriever component.
+        """
+        return await self._retriever.get_facts(query, limit)
 
 
 
@@ -355,52 +319,25 @@ class MemoryCoordinator:
     def get_thread_context(self) -> Optional[Dict]:
         """
         Retrieve thread context from the most recent conversation.
-        Returns thread metadata if a thread is active, None otherwise.
+        Delegates to ThreadManager.
         """
-        recent = self.corpus_manager.get_recent_memories(count=1)
-        if not recent:
-            return None
-
-        last_conv = recent[0]
-        thread_id = last_conv.get("thread_id")
-
-        if not thread_id:
-            return None
-
-        return {
-            "thread_id": thread_id,
-            "thread_depth": last_conv.get("thread_depth", 1),
-            "thread_started": last_conv.get("thread_started"),
-            "thread_topic": last_conv.get("thread_topic"),
-            "is_heavy_topic": last_conv.get("is_heavy_topic", False),
-        }
+        return self.thread_manager.get_thread_context()
 
     def _detect_topic_for_query(self, query: str) -> str:
         """
         Detect topic for a specific query string.
-        Used by thread detection to avoid stale topic issues.
+        Delegates to ThreadManager.
         """
-        try:
-            if self.topic_manager:
-                # Update topic manager with this specific query
-                self.topic_manager.update_from_user_input(query)
-                # Get primary topic for this query
-                primary = self.topic_manager.get_primary_topic()
-                return primary or "general"
-            else:
-                # Fallback: simple keyword-based topic detection
-                query_lower = query.lower()
-                if any(word in query_lower for word in ["flapjack", "cat", "kitty"]):
-                    return "cats"
-                elif any(word in query_lower for word in ["glm", "claude", "model", "ai"]):
-                    return "ai models"
-                else:
-                    return "general"
-        except Exception as e:
-            logger.debug(f"[Thread] Topic detection failed: {e}")
-            return "general"
+        return self.thread_manager.detect_topic_for_query(query)
 
     def _detect_or_create_thread(self, query: str, is_heavy: bool) -> Dict:
+        """
+        Detect if current query continues immediate previous conversation.
+        Delegates to ThreadManager.
+        """
+        return self.thread_manager.detect_or_create_thread(query, is_heavy)
+
+    def _detect_or_create_thread_legacy(self, query: str, is_heavy: bool) -> Dict:
         """
         Detect if current query continues immediate previous conversation.
         Returns thread metadata dict with thread_id, depth, started, topic.
@@ -467,484 +404,58 @@ class MemoryCoordinator:
     # In memory_coordinator.py, update the store_interaction method
     # In memory_coordinator.py, update the store_interaction method with more debugging
     async def store_interaction(self, query: str, response: str, tags: Optional[List[str]] = None):
-        """Persist a turn in both corpus & Chroma with computed metadata"""
-        try:
-            # Detect heavy topic before anything else (used for both thread detection and facts)
-            from utils.query_checker import _is_heavy_topic_heuristic
-            is_heavy = _is_heavy_topic_heuristic(query)
+        """Persist a turn in both corpus & Chroma with computed metadata.
 
-            # Thread detection: check if this continues previous conversation
-            thread_info = self._detect_or_create_thread(query, is_heavy)
+        Delegates to MemoryStorage component.
+        """
+        # Sync state before delegation
+        self._storage.current_topic = self.current_topic
+        self._storage.conversation_context = self.conversation_context
 
-            # Add to corpus (JSON) with stable timestamp and thread metadata
-            self.corpus_manager.add_entry(
-                query, response, tags or [], timestamp=self._now(),
-                thread_id=thread_info.get("thread_id"),
-                thread_depth=thread_info.get("depth"),
-                thread_started=thread_info.get("started"),
-                thread_topic=thread_info.get("topic"),
-                is_heavy_topic=is_heavy,
-                topic=self.current_topic
-            )
+        await self._storage.store_interaction(query, response, tags)
 
-            # Update conversation context
-            self.conversation_context.append({
-                "query": query,
-                "response": response,
-                "timestamp": self._now()
-            })
-
-            # Topic detection
-            if hasattr(self.topic_manager, "update_from_user_input"):
-                topics = self.topic_manager.update_from_user_input(query)
-                primary_topic = topics[0] if topics else "general"
-            elif hasattr(self.topic_manager, "detect_topic"):
-                primary_topic = self.topic_manager.detect_topic(f"{query} {response}")
-            else:
-                primary_topic = "general"
-
-            # Ensure tags list exists and includes the topic
-            tags = tags or []
-            if f"topic:{primary_topic}" not in tags:
-                tags.append(f"topic:{primary_topic}")
-
-            # Calculate scores
-            truth_score = self._calculate_truth_score(query, response)
-            importance_score = self._calculate_importance_score(f"{query} {response}")
-
-            # Create metadata with proper type checking
-            # Note: Store full query/response in metadata for retrieval context
-            raw_metadata = {
-                "timestamp": self._now_iso(),
-                "query": query if query else "",
-                "response": response if response else "",
-                "tags": ",".join(tags) if tags else "",
-                "topic": primary_topic or "general",
-                "truth_score": float(truth_score),
-                "importance_score": float(importance_score),
-                "access_count": 0,
-                "last_accessed": self._now_iso(),
-            }
-
-            # Debug: log the raw metadata
-            logger.debug(f"[MemoryCoordinator] Raw metadata: {raw_metadata}")
-
-            # Filter out None values and ensure all values are of the correct type
-            clean_metadata = {}
-            for k, v in raw_metadata.items():
-                logger.debug(f"[Metadata Check] Key: {k}, Value: {v}, Type: {type(v)}")
-                if v is not None:
-                    if isinstance(v, (str, int, float, bool)):
-                        clean_metadata[k] = v
-                    else:
-                        # Convert to string if not a basic type
-                        clean_metadata[k] = str(v)
-                        logger.debug(f"[Metadata Conversion] Converted {k} from {type(v)} to string: {clean_metadata[k]}")
-                else:
-                    logger.warning(f"[Metadata Warning] Key {k} has None value, skipping")
-
-            # Final validation
-            for k, v in clean_metadata.items():
-                if not isinstance(v, (str, int, float, bool)):
-                    logger.error(f"[Metadata Error] Key {k} still has invalid type: {type(v)} after cleaning")
-
-            # Debug: log the clean metadata
-            logger.debug(f"[MemoryCoordinator] Clean metadata: {clean_metadata}")
-
-            # Store in Chroma
-            memory_id = self.chroma_store.add_conversation_memory(query, response, clean_metadata)
-            # --- Facts: by default, only run at shutdown. Per-turn is opt-in via FACTS_EXTRACT_EACH_TURN=1 ---
-            if FACTS_EXTRACT_EACH_TURN:
-                try:
-                    # avoid wasted work on very short/empty outputs
-                    if (response or "").strip() and len(response) >= 8:
-                        before = datetime.now()
-                        facts_before = getattr(self.chroma_store.collections["facts"], "count", lambda: 0)()
-                        await self._extract_and_store_facts(query, response, truth_score)
-                        facts_after = getattr(self.chroma_store.collections["facts"], "count", lambda: 0)()
-                        logger.debug(
-                            f"[MemoryCoordinator][Facts] stored {max(0, facts_after - facts_before)} "
-                            f"facts in {(datetime.now()-before).total_seconds():.3f}s"
-                        )
-                    else:
-                        logger.debug("[MemoryCoordinator][Facts] skipped (response too short/empty)")
-                except Exception as fe:
-                    logger.warning(f"[MemoryCoordinator][Facts] extraction/store failed: {fe}", exc_info=True)
-            else:
-                logger.debug("[MemoryCoordinator][Facts] per-turn extraction disabled (shutdown-only mode)")
-
-            # Increment counter and (optionally) consolidate mid-session unless disabled
-            if not SUMMARIZE_AT_SHUTDOWN_ONLY:
-                self.interactions_since_consolidation += 1
-                if self.interactions_since_consolidation >= self.consolidator.consolidation_threshold:
-                    await self._consolidate_and_store_summary()
-                    self.interactions_since_consolidation = 0
-
-            logger.debug(f"[MemoryCoordinator] Stored memory {memory_id} (topic={primary_topic}, truth={truth_score:.2f})")
-        except Exception as e:
-            logger.error(f"Error storing interaction: {e}")
-            import traceback
-            traceback.print_exc()
+        # Sync state back from storage
+        self.conversation_context = self._storage.conversation_context
+        self.interactions_since_consolidation = self._storage.interactions_since_consolidation
 
     async def _consolidate_and_store_summary(self):
-        """Consolidate recent memories and store the summary"""
-        if not self.consolidator:
-            logger.debug("[MemoryCoordinator] No consolidator available, skipping consolidation")
-            return
+        """Consolidate recent memories and store the summary.
 
-        try:
-            # Get recent memories for consolidation
-            recent_memories = self.corpus_manager.get_recent_memories(
-                count=self.consolidator.consolidation_threshold
-            )
-
-            if not recent_memories:
-                logger.debug("[MemoryCoordinator] No recent memories to consolidate")
-                return
-
-            # Generate summary
-            summary_node = await self.consolidator.consolidate_memories(recent_memories)
-
-            if summary_node:
-                # Store summary in corpus
-                if hasattr(self.corpus_manager, 'add_summary'):
-                    self.corpus_manager.add_summary(
-                        content=summary_node.content,
-                        tags=summary_node.tags,
-                        timestamp=summary_node.timestamp
-                    )
-
-                # Store summary in Chroma
-                if hasattr(self.chroma_store, 'add_to_collection'):
-                    summary_metadata = {
-                        "timestamp": summary_node.timestamp.isoformat(),
-                        "type": "summary",
-                        "importance_score": summary_node.importance_score,
-                        "tags": ",".join(summary_node.tags) if summary_node.tags else "",
-                        "memory_count": len(recent_memories)
-                    }
-
-                    self.chroma_store.add_to_collection(
-                        "summaries",
-                        summary_node.content,
-                        summary_metadata
-                    )
-
-                self.last_consolidation_time = datetime.now()
-                logger.info(f"[MemoryCoordinator] Consolidated {len(recent_memories)} memories into summary")
-            else:
-                logger.debug("[MemoryCoordinator] Consolidation returned no summary")
-        except Exception as e:
-            logger.error(f"Error during memory consolidation: {e}")
+        Delegates to MemoryStorage component.
+        """
+        await self._storage.consolidate_and_store_summary()
+        self.last_consolidation_time = self._storage.last_consolidation_time or datetime.now()
 
 
     # --- inside class MemoryCoordinator ---
     async def add_reflection(self, text: str, *, tags=None, source="reflection", timestamp=None) -> bool:
-        if not text:
-            return False
-        ts = timestamp or self._now()
-        tags = list(tags or [])
-        if "type:reflection" not in tags:
-            tags.append("type:reflection")
-        if source and f"source:{source}" not in tags:
-            tags.append(f"source:{source}")
+        """Store a reflection memory.
 
-        # 1) Corpus (reuse your add_summary schema for compatibility)
-        try:
-            if hasattr(self.corpus_manager, "add_summary"):
-                self.corpus_manager.add_summary({
-                    "content": text,
-                    "timestamp": ts,
-                    "type": "reflection",
-                    "tags": tags
-                })
-        except Exception:
-            pass
-
-        # 2) Chroma (semantic)
-        try:
-            if hasattr(self.chroma_store, "add_to_collection"):
-                md = {
-                    "timestamp": ts.isoformat(),
-                    "type": "reflection",
-                    "tags": ",".join(tags),
-                    "source": source,
-                    "importance_score": 0.7,
-                }
-                if getattr(self.chroma_store, "collections", None) is not None \
-                and "reflections" not in self.chroma_store.collections \
-                and hasattr(self.chroma_store, "create_collection"):
-                    try:
-                        self.chroma_store.create_collection("reflections")
-                    except Exception:
-                        pass
-                self.chroma_store.add_to_collection("reflections", text, md)
-        except Exception:
-            pass
-
-        return True
+        Delegates to MemoryStorage component.
+        """
+        return await self._storage.add_reflection(text, tags=tags, source=source, timestamp=timestamp)
 
     async def get_reflections(self, limit: int = 2):
+        """Fetch recent reflections.
+
+        Delegates to MemoryRetriever component.
         """
-        Fetch recent reflections (prefer corpus; then semantic). Never silently rely on get_summaries()
-        returning non-summary types.
-        """
-        out = []
-
-        # 1) Corpus-first with multiple compatibility shims
-        try:
-            cm = self.corpus_manager
-
-            # Preferred: a typed getter if your corpus has one
-            get_by_type = getattr(cm, "get_items_by_type", None)
-            if callable(get_by_type):
-                items = get_by_type("reflection", limit=limit * 2) or []
-            else:
-                # Alternate: summaries-of-type if available
-                get_summaries_of_type = getattr(cm, "get_summaries_of_type", None)
-                if callable(get_summaries_of_type):
-                    items = get_summaries_of_type(types=("reflection",), limit=limit * 2) or []
-                else:
-                    # Fallback: a generic getter (may be named differently in your codebase)
-                    get_all = getattr(cm, "get_all", None) or getattr(cm, "get_recent_memories", None)
-                    if callable(get_all):
-                        # Pull a wider window then filter to reflections
-                        items = get_all(limit * 10) or []
-                    else:
-                        items = []
-
-            # Normalize/filter to reflections
-            for n in items or []:
-                if isinstance(n, dict):
-                    t = (n.get("type") or "").strip().lower()
-                    tags = n.get("tags") or []
-                    if t == "reflection" or "type:reflection" in tags:
-                        out.append({
-                            "content": n.get("content", "").strip(),
-                            "type": "reflection",
-                            "tags": tags,
-                            "source": n.get("source", "corpus"),
-                            "timestamp": n.get("timestamp"),
-                        })
-                        if len(out) >= limit:
-                            return out
-        except Exception:
-            pass
-
-        # 2) Semantic fallback (Chroma “reflections” collection)
-        try:
-            coll = self.chroma_store.collections.get("reflections") if getattr(self, "chroma_store", None) else None
-            if coll and coll.count() > 0:
-                items = self.chroma_store.get_recent("reflections", limit=limit)
-                for r in items or []:
-                    txt = (r.get("content") if isinstance(r, dict) else str(r)).strip()
-                    ts  = (r.get("metadata") or {}).get("timestamp") if isinstance(r, dict) else None
-                    if txt:
-                        out.append({
-                            "content": txt,
-                            "type": "reflection",
-                            "tags": ["source:semantic"],
-                            "source": "semantic",
-                            "timestamp": ts,
-                        })
-                        if len(out) >= limit:
-                            break
-        except Exception:
-            pass
-
-        return out[:limit]
+        return await self._retriever.get_reflections(limit)
 
     async def get_reflections_hybrid(self, query: str, limit: int = 3) -> List[Dict]:
+        """Hybrid retrieval for reflections.
+
+        Delegates to MemoryRetriever component.
         """
-        Hybrid retrieval for reflections: n/3 recent + 2n/3 semantic, with deduplication.
-
-        Design Rationale: Why Different Ratio Than Summaries?
-        ======================================================
-
-        Reflections differ from summaries in temporal sensitivity:
-
-        Summaries (1:3 recent:semantic):
-        - Capture stable factual content about conversations
-        - Old summaries remain relevant (e.g., "Discussed Python typing")
-        - Favor semantic recall over recency
-
-        Reflections (1:2 recent:semantic):
-        - Capture behavioral patterns and meta-patterns
-        - User preferences/patterns evolve over time
-        - Recent reflections override outdated patterns
-        - Higher recency bias (33% vs 25%) ensures fresh behavioral context
-
-        Example:
-        -------
-        Reflection from 3 months ago: "User prefers verbose explanations"
-        Reflection from last week: "User prefers concise, bullet-point format"
-        → The 1:2 ratio ensures the recent behavioral shift surfaces
-
-        Budget Allocation:
-        -----------------
-        The 1:2 ratio (recent:semantic) optimizes for:
-        - At least 1 recent item for current behavioral context
-        - Majority semantic for long-term pattern recognition
-        - Example: limit=3 → 1 recent + 2 semantic
-
-        Deduplication Strategy:
-        ----------------------
-        Same as summaries: timestamp + content prefix matching
-        - Prevents duplicate reflections from corpus and ChromaDB
-        - Recent items appear first in results
-
-        Fallback Behavior:
-        -----------------
-        If semantic search fails or returns empty:
-        - Fill remaining budget with additional recent reflections
-        - Ensures we always return 'limit' items if available
-
-        Args:
-            query: User query or rewritten retrieval query for semantic search
-            limit: Total number of reflections to return (default 3)
-
-        Returns:
-            Deduplicated list of reflections (recent-first ordering), max length=limit
-            Each dict contains: content, timestamp, type='reflection', source, tags
-        """
-        if limit < 1:
-            return []
-
-        # Budget allocation: 1:2 ratio (higher recency than summaries)
-        recent_budget = max(1, limit // 3)
-        semantic_budget = limit - recent_budget
-
-        logger.debug(
-            f"[Reflections Hybrid] Fetching with budgets: recent={recent_budget}, "
-            f"semantic={semantic_budget}, total={limit}"
-        )
-
-        # Fetch recent (from corpus via existing get_reflections)
-        recent = []
-        try:
-            # get_reflections is already async
-            recent_all = await self.get_reflections(limit=recent_budget * 2)
-            recent = recent_all if recent_all else []
-        except Exception as e:
-            logger.debug(f"[Reflections Hybrid] Error fetching recent: {e}")
-            recent = []
-
-        # Fetch semantic (from ChromaDB)
-        semantic = []
-        if query and query.strip():
-            try:
-                coll = self.chroma_store.collections.get("reflections") if getattr(self, "chroma_store", None) else None
-                if coll and coll.count() > 0:
-                    # Fetch 2x for dedup buffer
-                    results = self.chroma_store.query_collection(
-                        'reflections',
-                        query,
-                        n_results=semantic_budget * 2
-                    )
-                    semantic = [
-                        {
-                            'content': r.get('content', ''),
-                            'timestamp': r.get('metadata', {}).get('timestamp'),
-                            'type': 'reflection',
-                            'tags': ['source:semantic'],
-                            'source': 'semantic'
-                        }
-                        for r in results
-                    ]
-            except Exception as e:
-                logger.debug(f"[Reflections Hybrid] Error fetching semantic: {e}")
-                semantic = []
-
-        # Deduplication: match by timestamp + content prefix
-        def get_item_id(item):
-            """Extract unique identifier for deduplication."""
-            if not isinstance(item, dict):
-                return str(item)[:50]
-
-            ts = item.get("timestamp", "")
-            # Handle both datetime and string timestamps
-            if hasattr(ts, 'isoformat'):
-                ts_str = ts.isoformat()
-            else:
-                ts_str = str(ts)
-
-            content_prefix = (item.get("content", "") or "")[:50].strip()
-            return f"ts:{ts_str}::{content_prefix}"
-
-        # Build result: recent first (preserves behavioral evolution)
-        result = []
-        seen_ids = set()
-
-        # Add recent items (up to budget)
-        for item in recent[:recent_budget]:
-            item_id = get_item_id(item)
-            if item_id not in seen_ids:
-                # Mark source for tracking
-                if isinstance(item, dict):
-                    item['source'] = 'recent'
-                result.append(item)
-                seen_ids.add(item_id)
-
-        # Fill remaining budget with semantic hits (skip dupes)
-        remaining = limit - len(result)
-        for item in semantic:
-            if remaining <= 0:
-                break
-            item_id = get_item_id(item)
-            if item_id not in seen_ids:
-                result.append(item)
-                seen_ids.add(item_id)
-                remaining -= 1
-
-        # Fallback: if semantic was empty/failed, fill with more recents
-        if len(result) < limit and not semantic:
-            for item in recent[recent_budget:]:
-                if len(result) >= limit:
-                    break
-                item_id = get_item_id(item)
-                if item_id not in seen_ids:
-                    if isinstance(item, dict):
-                        item['source'] = 'recent_fallback'
-                    result.append(item)
-                    seen_ids.add(item_id)
-
-        logger.debug(
-            f"[Reflections Hybrid] Retrieved {len(result)} reflections "
-            f"(recent={sum(1 for r in result if r.get('source','').startswith('recent'))}, "
-            f"semantic={sum(1 for r in result if r.get('source')=='semantic')})"
-        )
-
-        return result[:limit]
+        return await self._retriever.get_reflections_hybrid(query, limit)
 
     # Optional: generic search by collection/type name (used by some callers)
     async def search_by_type(self, type_name: str, query: str = "", limit: int = 5):
-        coll_name = {
-            "memories": "conversations",
-            "conversations": "conversations",
-            "facts": "facts",
-            "summaries": "summaries",
-            "reflections": "reflections",
-        }.get((type_name or "").lower(), (type_name or "").lower())
+        """Search by memory type.
 
-        try:
-            coll = self.chroma_store.collections.get(coll_name)
-            if not coll or coll.count() == 0:
-                return []
-            results = self.chroma_store.query_collection(
-                coll_name, query_text=query or "", n_results=min(limit, coll.count())
-            ) or []
-            if not isinstance(results, list):
-                results = [results]
-            # Ensure timestamp key surfaces when present in metadata
-            norm = []
-            for r in results[:limit]:
-                if isinstance(r, dict):
-                    if "timestamp" not in r and isinstance(r.get("metadata"), dict):
-                        r["timestamp"] = r["metadata"].get("timestamp")
-                norm.append(r)
-            return norm
-        except Exception:
-            return []
+        Delegates to MemoryRetriever component.
+        """
+        return await self._retriever.search_by_type(type_name, query, limit)
 
 
     async def run_shutdown_reflection(self, session_conversations: list[dict] | None = None,
@@ -1059,228 +570,25 @@ class MemoryCoordinator:
         return await self.add_reflection(text, tags=["session:end"], source="shutdown")
 
     async def _extract_and_store_facts(self, query: str, response: str, truth_score: float):
-        """Extract and store facts from a turn; robust to mixed return types."""
-        try:
-            logger.debug(f"[MemoryCoordinator] Extracting facts from query: {query[:100]}...")
-            # Extract strictly from user input; ignore assistant response to avoid long-model overflows
-            facts = await self.fact_extractor.extract_facts(query, "") or []
-            total = len(facts)
-            logger.debug(f"[MemoryCoordinator] Extracted {total} facts (raw)")
+        """Extract and store facts from a turn.
 
-            def _to_dict(item):
-                # Normalize MemoryNode / dict / str into a dict with content + metadata
-                if isinstance(item, dict):
-                    return {"content": item.get("content", ""), "metadata": item.get("metadata", {})}
-                # MemoryNode-like
-                content = getattr(item, "content", None)
-                metadata = getattr(item, "metadata", None)
-                if content is not None or metadata is not None:
-                    return {"content": content or "", "metadata": metadata or {}}
-                # string fallback
-                return {"content": str(item or ""), "metadata": {}}
-
-            stored = 0
-            for idx, raw in enumerate(facts, 1):
-                safe = _to_dict(raw)
-                md = safe.get("metadata", {}) or {}
-
-                # Prefer canonical triple if present
-                subj = (md.get("subject") or md.get("subj") or "").strip()
-                rel  = (md.get("relation") or md.get("rel") or "").strip()
-                obj  = (md.get("object") or md.get("obj") or "").strip()
-
-                if subj and rel and obj:
-                    fact_text = f"{subj} | {rel} | {obj}"
-                else:
-                    # fallback to content or a short synthesis
-                    fact_text = (safe.get("content") or "").strip()
-                    if not fact_text:
-                        # last ditch: try composing from query/response snippets
-                        fact_text = (query + " -> " + response[:140]).strip()
-
-                if not fact_text:
-                    logger.debug(f"[MemoryCoordinator][Facts] Skipping empty fact at index {idx}")
-                    continue
-
-                # confidence/source defaults
-                conf = float(md.get("confidence", truth_score))
-                src  = md.get("source", "conversation")
-
-                try:
-                    result = self.chroma_store.add_fact(
-                        fact=fact_text,
-                        source=src,
-                        confidence=conf,
-                    )
-                    if result is not None:  # Only count if fact was actually added
-                        stored += 1
-                    else:
-                        logger.debug(f"[MemoryCoordinator] Fact skipped as duplicate: {fact_text}")
-                    logger.info(
-                        f"[MemoryCoordinator][Facts] Stored {idx}/{total}: {fact_text} (conf={conf:.2f})"
-                    )
-                except Exception as inner:
-                    logger.warning(
-                        f"[MemoryCoordinator][Facts] add_fact failed at #{idx}: {inner}. "
-                        f"fact_text={fact_text!r} meta={md}",
-                        exc_info=True
-                    )
-                    continue
-
-            logger.debug(f"[MemoryCoordinator][Facts] total stored this turn: {stored}")
-
-        except Exception as e:
-            logger.warning(f"Fact extraction failed: {e}", exc_info=True)
+        Delegates to MemoryStorage component.
+        """
+        await self._storage.extract_and_store_facts(query, response, truth_score)
 
     # ---------------------------
     # Public API: retrieve
     # ---------------------------
 
     async def get_memories(self, query: str, limit: int = 20, topic_filter: Optional[str] = None) -> List[Dict]:
+        """Unified retrieval pipeline.
+
+        Delegates to MemoryRetriever component.
         """
-        Unified retrieval pipeline: gather → combine → gate → rank → (threshold) → update → (persist) → slice
-
-        Special handling for meta-conversational queries (e.g., "do you recall", "we discussed"):
-        - Prioritizes recent episodic memories with high recency weighting
-        - Skips semantic filtering to avoid cross-contamination from unrelated conversations
-        - Returns chronological results from current conversation thread
-        """
-        # Check if this is a meta-conversational query
-        from utils.query_checker import is_meta_conversational
-        if is_meta_conversational(query):
-            logger.debug(f"[MemoryCoordinator] Detected meta-conversational query: {query[:50]}...")
-            return await self._get_meta_conversational_memories(query, limit, topic_filter)
-
-        # Dynamic configuration based on query content
-        query_lower = query.lower()
-        is_gym_health_query = any(word in query_lower for word in [
-            'gym', 'workout', 'work out', 'exercise', 'fitness', 'bench', 'squat',
-            'amantadine', 'medication', 'health', 'body', 'tired'
-        ])
-
-        if is_gym_health_query:
-            # For gym/health queries, prioritize semantic search over recent
-            cfg = {
-                'recent_count': 0,  # Skip recent conversations
-                'semantic_count': max(50, limit * 5),  # Get more semantic candidates
-                'max_memories': limit,
-            }
-            logger.info(f"[get_memories] Using gym/health query config: {cfg}")
-            print(f"[DEBUG] Gym/health query detected! Using config: {cfg}")  # Debug print
-        else:
-            cfg = {
-                'recent_count': 1,
-                'semantic_count': max(30, limit * 2),
-                'max_memories': limit,
-            }
-
-        topic_filter = topic_filter or self.current_topic
-
-        # Skip topic filtering for gym/health queries to get more results
-        if is_gym_health_query:
-            original_topic_filter = topic_filter
-            topic_filter = None
-            logger.info(f"[get_memories] Skipping topic filter for gym/health query (was: {original_topic_filter})")
-
-        # 1) Gather from both sources in parallel
-        tasks = [
-            asyncio.to_thread(self._get_recent_conversations, k=cfg['recent_count']),
-            self._get_semantic_memories(query, n_results=cfg['semantic_count'])
-        ]
-
-        # Execute parallel retrieval
-        very_recent, semantic = await asyncio.gather(*tasks)
-
-        print(f"[DEBUG] very_recent: {len(very_recent)} memories")
-        print(f"[DEBUG] semantic: {len(semantic)} memories")
-        if semantic:
-            print(f"[DEBUG] First semantic memory: {semantic[0].get('metadata', {}).get('timestamp', 'unknown')}")
-        if very_recent:
-            print(f"[DEBUG] First recent memory: {very_recent[0].get('timestamp', 'unknown')}")
-
-        # Placeholder for hierarchical memories if/when your subsystem is available
-        hierarchical: List[Dict] = []
-
-        # 2) Topic pre-filter if specified (with fallback to avoid empty results)
-        if topic_filter and topic_filter != "general":
-            def _has_topic_tag(m: Dict) -> bool:
-                tags = m.get('tags', [])
-                if isinstance(tags, str):
-                    tags = [t.strip() for t in tags.split(",") if t.strip()]
-                return f"topic:{topic_filter}" in tags
-
-            # Try filtering by topic
-            filtered_recent = [m for m in very_recent if _has_topic_tag(m)]
-            filtered_semantic = [m for m in semantic if _has_topic_tag(m)]
-            filtered_hierarchical = [m for m in hierarchical if _has_topic_tag(m)]
-
-            # Only apply filter if it doesn't remove ALL memories
-            total_before = len(very_recent) + len(semantic) + len(hierarchical)
-            total_after = len(filtered_recent) + len(filtered_semantic) + len(filtered_hierarchical)
-
-            if total_after > 0:
-                very_recent = filtered_recent
-                semantic = filtered_semantic
-                hierarchical = filtered_hierarchical
-                logger.debug(f"[get_memories] Topic filter '{topic_filter}' kept {total_after}/{total_before} memories")
-            else:
-                logger.warning(
-                    f"[get_memories] Topic filter '{topic_filter}' would remove ALL memories "
-                    f"({total_before} total), ignoring filter to avoid empty results"
-                )
-
-        # 3) Combine with gating (recent bypass N)
-        combined = await self._combine_memories(
-            very_recent=very_recent,
-            semantic=semantic,
-            hierarchical=hierarchical,
-            query=query,
-            config={'max_memories': max(limit * 2, 30)},
-            bypass_gate=is_gym_health_query  # Pass bypass flag
-        )
-        print(f"[DEBUG] After combine/gating: {len(combined)} memories")
-
-        # 4) Rank memories
-        ranked = self._rank_memories(combined, query)
-        print(f"[DEBUG] After ranking: {len(ranked)} memories")
-
-        # 5) Optional acceptance threshold (configurable)
-        is_deictic = _is_deictic_followup(query)
-        cutoff = DEICTIC_THRESHOLD if is_deictic else NORMAL_THRESHOLD
-
-        # DEBUG: Log threshold filtering
-        logger.info(f"[get_memories] Applying threshold filter: cutoff={cutoff:.3f}, is_deictic={is_deictic}")
-        logger.info(f"[get_memories] Ranked memories before threshold: {len(ranked)}")
-        print(f"[DEBUG] Threshold filter: cutoff={cutoff:.3f}, is_deictic={is_deictic}")
-
-        accepted = [m for m in ranked if m.get('final_score', 0.0) >= cutoff]
-
-        # Log how many were filtered
-        logger.info(f"[get_memories] Memories after threshold: {len(accepted)} (filtered {len(ranked) - len(accepted)})")
-        print(f"[DEBUG] After threshold: {len(accepted)} memories (filtered {len(ranked) - len(accepted)})")
-
-        # Show some sample scores
-        if len(ranked) > 0:
-            sample_scores = [m.get('final_score', 0) for m in ranked[:5]]
-            print(f"[DEBUG] Sample scores: {sample_scores}")
-
-        # If threshold is too strict and empties list, fall back to ranked
-        if not accepted:
-            logger.warning(f"[get_memories] Threshold too strict, using all {len(ranked)} ranked memories")
-            accepted = ranked
-
-        # 6) Update truth scores for accessed memories
-        top_memories = accepted[:limit]
-        self._update_truth_scores_on_access(top_memories)
-
-        # 7) (Optional) persist metadata updates back to store
-        try:
-            if hasattr(self.chroma_store, "bulk_update_metadata"):
-                self.chroma_store.bulk_update_metadata(top_memories)  # no-op if unimplemented
-        except Exception as e:
-            logger.debug(f"[MemoryCoordinator] bulk_update_metadata skipped/failed: {e}")
-
-        return top_memories
+        # Sync state before delegation
+        self._retriever.current_topic = self.current_topic
+        self._retriever.conversation_context = list(self.conversation_context)
+        return await self._retriever.get_memories(query, limit, topic_filter)
 
     # ---------------------------
     # Internals: gather
@@ -1799,11 +1107,21 @@ class MemoryCoordinator:
             return memories[: min(10, len(memories))]
 
     # ---------------------------
-    # Internals: ranker
+    # Internals: ranker (delegated to MemoryScorer)
     # ---------------------------
 
     def _rank_memories(self, memories: List[Dict], current_query: str) -> List[Dict]:
         """
+        Score each memory using the MemoryScorer component.
+        Delegates to self.scorer.rank_memories() for the actual scoring logic.
+        """
+        # Sync conversation context to scorer
+        self.scorer.conversation_context = list(self.conversation_context)
+        return self.scorer.rank_memories(memories, current_query)
+
+    def _rank_memories_legacy(self, memories: List[Dict], current_query: str) -> List[Dict]:
+        """
+        Legacy implementation - kept for reference.
         Score each memory using:
           - base relevance (+ collection/source boost)
           - recency (configurable decay)
@@ -2344,182 +1662,22 @@ class MemoryCoordinator:
     # ---------------------------
 
     def get_summaries(self, limit: int = 3) -> List[Dict]:
-        # First try ChromaDB
-        try:
-            results = self.chroma_store.query_collection('summaries', '', n_results=limit)
-            chroma_summaries = [{'content': r.get('content', ''),
-                                'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
-                                'type': 'summary'} for r in results]
-            if chroma_summaries:
-                return chroma_summaries
-        except:
-            pass
+        """Get recent summaries.
 
-        # Fallback to corpus manager if ChromaDB is empty
-        try:
-            if hasattr(self, 'corpus_manager') and hasattr(self.corpus_manager, 'get_summaries'):
-                corpus_summaries = self.corpus_manager.get_summaries(limit)
-                if corpus_summaries:
-                    return corpus_summaries
-        except:
-            pass
-
-        return []
+        Delegates to MemoryRetriever component.
+        """
+        return self._retriever.get_summaries(limit)
 
     def get_summaries_hybrid(self, query: str, limit: int = 4) -> List[Dict]:
+        """Hybrid retrieval for summaries.
+
+        Delegates to MemoryRetriever component.
         """
-        Hybrid retrieval: n/4 recent + 3n/4 semantic, with deduplication.
-
-        Design Rationale: Why Hybrid Retrieval?
-        ========================================
-
-        Pure recency loses relevant history as conversations grow. Pure semantic
-        misses temporal context. Hybrid balances both:
-
-        - Recent summaries (n/4): Maintain conversation flow and temporal context
-        - Semantic summaries (3n/4): Surface relevant past topics via similarity
-        - Deduplication: Prevent wasting budget on duplicates when recent items
-          are also semantically relevant
-
-        Budget Allocation:
-        -----------------
-        The 1:3 ratio (recent:semantic) optimizes for:
-        - At least 1 recent item for temporal grounding (even if limit=4)
-        - Majority semantic for long-term recall as history scales
-        - Example: limit=4 → 1 recent + 3 semantic
-
-        Deduplication Strategy:
-        ----------------------
-        Items matched by: timestamp + content prefix (50 chars)
-        - Timestamp catches exact duplicates (same generation time)
-        - Content prefix catches rewrites/variations
-        - Recent items prioritized in final result (appear first)
-
-        Fallback Behavior:
-        -----------------
-        If semantic search fails or returns empty:
-        - Fill remaining budget with additional recent summaries
-        - Ensures we always return 'limit' items if available
-
-        Args:
-            query: User query or rewritten retrieval query for semantic search
-            limit: Total number of summaries to return (default 4)
-
-        Returns:
-            Deduplicated list of summaries (recent-first ordering), max length=limit
-            Each dict contains: content, timestamp, type='summary', source
-        """
-        if limit < 1:
-            return []
-
-        # Budget allocation: at least 1 recent
-        recent_budget = max(1, limit // 4)
-        semantic_budget = limit - recent_budget
-
-        logger.debug(
-            f"[Summaries Hybrid] Fetching with budgets: recent={recent_budget}, "
-            f"semantic={semantic_budget}, total={limit}"
-        )
-
-        # Fetch recent (from corpus, timestamp-sorted)
-        recent = []
-        try:
-            if hasattr(self.corpus_manager, 'get_summaries'):
-                # Fetch 2x for dedup buffer
-                recent = self.corpus_manager.get_summaries(recent_budget * 2)
-        except Exception as e:
-            logger.debug(f"[Summaries Hybrid] Error fetching recent: {e}")
-            recent = []
-
-        # Fetch semantic (from ChromaDB, similarity-sorted)
-        semantic = []
-        if query and query.strip():
-            try:
-                # Fetch 2x for dedup buffer
-                results = self.chroma_store.query_collection(
-                    'summaries',
-                    query,
-                    n_results=semantic_budget * 2
-                )
-                semantic = [
-                    {
-                        'content': r.get('content', ''),
-                        'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
-                        'type': 'summary',
-                        'source': 'semantic'
-                    }
-                    for r in results
-                ]
-            except Exception as e:
-                logger.debug(f"[Summaries Hybrid] Error fetching semantic: {e}")
-                semantic = []
-
-        # Deduplication: match by timestamp + content prefix
-        def get_item_id(item):
-            """Extract unique identifier for deduplication."""
-            if not isinstance(item, dict):
-                return str(item)[:50]
-
-            ts = item.get("timestamp", "")
-            # Handle both datetime and string timestamps
-            if hasattr(ts, 'isoformat'):
-                ts_str = ts.isoformat()
-            else:
-                ts_str = str(ts)
-
-            content_prefix = (item.get("content", "") or "")[:50].strip()
-            return f"ts:{ts_str}::{content_prefix}"
-
-        # Build result: recent first (preserves temporal flow)
-        result = []
-        seen_ids = set()
-
-        # Add recent items (up to budget)
-        for item in recent[:recent_budget]:
-            item_id = get_item_id(item)
-            if item_id not in seen_ids:
-                # Mark source for tracking
-                if isinstance(item, dict):
-                    item['source'] = 'recent'
-                result.append(item)
-                seen_ids.add(item_id)
-
-        # Fill remaining budget with semantic hits (skip dupes)
-        remaining = limit - len(result)
-        for item in semantic:
-            if remaining <= 0:
-                break
-            item_id = get_item_id(item)
-            if item_id not in seen_ids:
-                result.append(item)
-                seen_ids.add(item_id)
-                remaining -= 1
-
-        # Fallback: if semantic was empty/failed, fill with more recents
-        if len(result) < limit and not semantic:
-            for item in recent[recent_budget:]:
-                if len(result) >= limit:
-                    break
-                item_id = get_item_id(item)
-                if item_id not in seen_ids:
-                    if isinstance(item, dict):
-                        item['source'] = 'recent_fallback'
-                    result.append(item)
-                    seen_ids.add(item_id)
-
-        logger.debug(
-            f"[Summaries Hybrid] Retrieved {len(result)} summaries "
-            f"(recent={sum(1 for r in result if r.get('source','').startswith('recent'))}, "
-            f"semantic={sum(1 for r in result if r.get('source')=='semantic')})"
-        )
-
-        return result[:limit]
+        return self._retriever.get_summaries_hybrid(query, limit)
 
     def get_dreams(self, limit: int = 2) -> List[Dict]:
-        if hasattr(self.corpus_manager, 'get_dreams'):
-            return [{
-                'content': d,
-                'timestamp': datetime.now(),
-                'source': 'dream'
-            } for d in (self.corpus_manager.get_dreams(limit) or [])]
-        return []
+        """Get dreams.
+
+        Delegates to MemoryRetriever component.
+        """
+        return self._retriever.get_dreams(limit)
