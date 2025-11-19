@@ -1,0 +1,1255 @@
+# Daemon RAG Agent - Project Skeleton
+
+**Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
+
+**Last Updated**: 2025-11-18
+
+---
+
+## 1. Architecture Overview
+
+```
+USER QUERY
+    ↓
+[Orchestrator] ← Main entry point, coordinates all systems
+    ↓
+[Tone Detection] → Crisis level detection (keyword + semantic + LLM fallback)
+    ↓
+[Topic Extraction] → spaCy NER + optional LLM fallback
+    ↓
+[Heavy Topic Check] → Inline fact extraction for crisis/sensitive content
+    ↓
+[Hybrid Memory Retrieval] → Query rewriting + Semantic + Keyword matching
+    ↓
+[Multi-Stage Gating] → FAISS → Cosine → Cross-Encoder
+    ↓
+[Prompt Building] → Token-budgeted context with separated sections
+    ↓
+[Thinking Block] → LLM generates <thinking>...</thinking> + final answer
+    ↓
+[LLM Generation] → Multi-provider streaming with Best-of-N/Duel modes
+    ↓
+[Memory Storage] → Corpus JSON + Vector embeddings
+    ↓
+RESPONSE (thinking stripped) + MEMORY PERSISTENCE
+```
+
+---
+
+## 2. Core Components
+
+### 2.1 core/orchestrator.py (Main Controller)
+**Purpose**: Central request handler coordinating all subsystems
+
+**Key Methods**:
+- `process_user_query(user_input, files, use_raw_mode, personality)` → Main entry point
+  - Detects tone/crisis level via ToneDetector
+  - Extracts topics via TopicManager
+  - Checks for heavy topics (triggers inline fact extraction)
+  - Builds prompt via PromptBuilder
+  - Generates response with thinking blocks
+  - Parses thinking block and strips from final response
+  - Stores interaction back to memory
+
+- `prepare_prompt(user_input, files, use_raw_mode)` → Prompt preparation
+  - Tone detection (HIGH/MEDIUM/CONCERN/CONVERSATIONAL)
+  - File processing (PDF/DOCX/CSV)
+  - Heavy topic inline fact extraction
+  - Optional query rewrite for retrieval
+  - System prompt resolution with tone instructions
+  - Thread context injection
+
+- `_parse_thinking_block(response)` → Extract thinking from response
+- `_strip_reflection_blocks(response)` → Remove reflections before storage
+- `_strip_xml_wrappers(text)` → Remove `<result>`, `<answer>` wrappers
+- `_strip_prompt_artifacts(text)` → Remove echoed prompt headers
+- `_get_tone_instructions(tone_level)` → Mode-specific response guidelines
+- `_get_session_headers_instructions()` → Temporal reasoning guidance
+
+**Data Flow Pattern**:
+```python
+query → detect_crisis_level() → extract_topics()
+→ check_heavy_topic() → [inline_fact_extraction if heavy]
+→ prepare_prompt(query, tone_instructions, thread_context)
+→ generate_response(prompt) → parse_thinking_block()
+→ strip_reflections() → store_interaction(query, final_answer)
+→ return final_answer
+```
+
+**Tone Modes** (injected into system prompt):
+- `CRISIS_SUPPORT`: Full therapeutic mode, multi-paragraph, resources
+- `ELEVATED_SUPPORT`: 2-3 paragraphs, empathetic validation
+- `LIGHT_SUPPORT`: 2-4 sentences, brief acknowledgment
+- `CONVERSATIONAL`: Max 3 sentences, direct, no fluff
+
+**Dependencies**: MemoryCoordinator, PromptBuilder, ResponseGenerator, TopicManager, ToneDetector, QueryChecker
+
+---
+
+### 2.2 memory/memory_coordinator.py (Memory Hub)
+**Purpose**: Unified interface for all memory operations
+
+**5 Memory Types** (MemoryType enum):
+1. `EPISODIC` - Raw conversation turns (query/response pairs)
+2. `SEMANTIC` - Extracted facts and entities
+3. `PROCEDURAL` - Learned patterns and behaviors
+4. `SUMMARY` - Compressed conversation blocks
+5. `META` - Reflections and meta-patterns
+
+**Key Methods**:
+- `get_memories(query, limit, topics)` → async retrieval pipeline
+  ```python
+  1. Get recent from corpus (last N conversations)
+  2. Query 5 ChromaDB collections in parallel
+  3. Gate results (MultiStageGateSystem)
+  4. Rank by composite score (_rank_memories)
+  5. Return top K
+  ```
+
+- `store_interaction(query, response, tags)` → persist to corpus + Chroma
+- `_rank_memories(memories, query)` → Scoring algorithm:
+  ```
+  final_score =
+    0.35 * relevance +
+    0.25 * recency_decay +
+    0.20 * truth_score +
+    0.05 * importance +
+    0.10 * continuity +
+    0.15 * structural_alignment +
+    anchor_bonus - penalties
+  ```
+
+**Hierarchical Memory**:
+- Parent-child relationships between memories
+- Temporal decay: `1.0 / (1.0 + decay_rate * age_hours)`
+- Access count boosts truth score
+
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryConsolidator
+
+---
+
+### 2.3 memory/corpus_manager.py (JSON Persistence)
+**Purpose**: Short-term memory storage in JSON
+
+**Structure**:
+```python
+{
+  "conversations": [
+    {
+      "id": "uuid",
+      "query": "user input",
+      "response": "assistant output",
+      "timestamp": "ISO-8601",
+      "truth_score": 0.0-1.0,
+      "importance_score": 0.0-1.0,
+      "tags": ["topic1", "topic2"],
+      "memory_type": "episodic|semantic|procedural|summary|meta",
+      "metadata": {...}
+    }
+  ]
+}
+```
+
+**Key Methods**:
+- `add_memory(memory, memory_type)` → Append to JSON
+- `get_recent_memories(n, memory_type)` → Last N entries
+- `save()` → Write to disk (atomic with temp file)
+
+---
+
+### 2.4 memory/storage/multi_collection_chroma_store.py (Vector Store)
+**Purpose**: Semantic search across 5 ChromaDB collections
+
+**Collections**: episodic, semantic, procedural, summary, meta
+
+**Key Methods**:
+- `add_memory(text, metadata, collection)` → Embed and store
+- `query(text, collection, n_results)` → Semantic search
+  - Uses sentence-transformers for embeddings
+  - Returns: {ids, documents, metadatas, distances}
+
+**Embedding Model**: `all-MiniLM-L6-v2` (default, configurable)
+
+---
+
+### 2.5 processing/gate_system.py (Multi-Stage Filter)
+**Purpose**: 3-stage relevance filtering
+
+**Pipeline**:
+```python
+Stage 1: FAISS semantic search
+  → Returns top 50 candidates
+
+Stage 2: Cosine similarity threshold
+  → Filter by threshold (default ~0.45-0.65)
+  → Reduces to ~20-30 results
+
+Stage 3: Cross-encoder reranking
+  → MS-MARCO cross-encoder
+  → Rerank and return top K
+```
+
+**Key Methods**:
+- `filter_memories(query, memories, k)` → Run all 3 stages
+- `_cosine_filter(query, memories, threshold)` → Stage 2
+- `_cross_encoder_rerank(query, memories, k)` → Stage 3
+
+**Configuration**: `GATE_COSINE_THRESHOLD` controls Stage 2 aggressiveness
+
+---
+
+### 2.6 core/prompt/ (Modular Prompt System)
+**Purpose**: Refactored prompt building split into specialized components
+
+**Architecture**:
+```python
+UnifiedPromptBuilder (core/prompt/builder.py)
+    ↓
+├── ContextGatherer (context_gatherer.py) - Data collection
+├── PromptFormatter (formatter.py) - Text assembly
+├── TokenManager (token_manager.py) - Budget management
+├── LLMSummarizer (summarizer.py) - LLM operations
+└── Base utilities (base.py) - Common functions
+```
+
+**Token Budget Strategy**:
+```python
+Total budget: 15000 tokens (default, configurable)
+
+Allocation with separated sections:
+1. System prompt (fixed ~500-800)
+2. Current query (variable)
+3. Recent conversation (last 15 turns)
+4. Relevant memories (15 semantic search results)
+5. Semantic facts (30) + Recent facts (30)
+6. Recent summaries (5) + Semantic summaries (5)
+7. Recent reflections (5) + Semantic reflections (5)
+8. Wikipedia context (3 max)
+9. Dreams (3 max)
+
+Priority order (with weights):
+- recent_conversations: 7
+- semantic_chunks: 6
+- memories: 5
+- semantic_facts/fresh_facts: 4
+- summaries: 3
+- reflections/dreams: 2
+- wiki: 1
+```
+
+**Context Dict Structure**:
+```python
+{
+  "recent_conversations": [...],
+  "memories": [...],
+  "semantic_facts": [...],
+  "fresh_facts": [...],
+  "summaries": [...],
+  "recent_summaries": [...],      # Separated for distinct headers
+  "semantic_summaries": [...],    # Separated for distinct headers
+  "reflections": [...],
+  "recent_reflections": [...],    # Separated for distinct headers
+  "semantic_reflections": [...],  # Separated for distinct headers
+  "dreams": [...],
+  "semantic_chunks": [...],
+  "wiki": [...]
+}
+```
+
+**Key Methods**:
+- `builder.py::build_prompt(user_input, config)` → Complete context dict
+- `builder.py::_assemble_prompt(context, user_input)` → Format to string with headers
+- `builder.py::_hygiene_and_caps(context)` → Dedupe with semantic similarity (0.90 threshold)
+- `builder.py::_backfill_recent_conversations()` → Top-up after deduplication
+- `builder.py::_build_lightweight_context()` → Minimal context for small-talk
+- `token_manager.py::_manage_token_budget(context)` → Budget enforcement
+- `context_gatherer.py::_get_summaries_separate()` → Hybrid recent+semantic retrieval
+- `summarizer.py::_reflect_on_demand()` → Generate reflections if below threshold
+
+**Deduplication Features**:
+- Cross-section semantic deduplication using embedder
+- SIMILARITY_THRESHOLD = 0.90 for duplicate detection
+- Chunk stitching by title (max 4000 chars)
+- Automatic backfill when dedup removes too many items
+
+**Prompt Assembly Format**:
+```
+[TIME CONTEXT]
+Current time: 2025-11-18 10:30:00
+
+[RECENT CONVERSATION] n=15
+1) 2025-11-18 10:00:00: User: ... Daemon: ...
+2) ...
+
+[RELEVANT MEMORIES] n=15
+1) 2025-11-17 14:00:00: User: ... Daemon: ...
+...
+
+[SEMANTIC FACTS] n=30
+1) subject | relation | object
+...
+
+[RECENT SUMMARIES] n=5
+1) 2025-11-15: Summary content...
+...
+
+[SEMANTIC SUMMARIES] n=5
+...
+
+[RECENT REFLECTIONS] n=5
+...
+
+[CURRENT USER QUERY]
+User input here
+```
+
+**Dependencies**: All prompt submodules, memory system, gate system, HybridRetriever
+
+---
+
+### 2.7 core/response_generator.py (LLM Interface)
+**Purpose**: Streaming response generation with multi-provider support
+
+**Providers**: OpenAI, Anthropic (Claude), OpenRouter, Local models
+
+**Key Methods**:
+- `generate_streaming_response(prompt, model_name, system_prompt, max_tokens)` → async generator
+- `generate_full(prompt, model_name, system_prompt, temperature)` → complete response
+- `generate_best_of(prompt, model_name, system_prompt, n, temps, max_tokens)` → best of N
+- `generate_duel_and_judge(prompt, model_a, model_b, judge_model, ...)` → A vs B
+- `generate_best_of_ensemble(prompt, generator_models, selector_models, ...)` → multi-model
+
+**Generation Modes**:
+- **Standard streaming**: Single model, async chunks
+- **Best-of-N**: Generate N responses at different temps, heuristic scoring picks best
+- **Duel mode**: Two models compete, judge model picks winner
+- **Ensemble**: Multiple generator models, multiple selector models vote
+
+**Best-of-N Scoring** (heuristic):
+- Relevance to question (keyword overlap)
+- Response length appropriateness
+- Coherence markers
+- No repetition penalties
+
+**Dependencies**: ModelManager, CompetitiveScorer
+
+---
+
+### 2.8 models/model_manager.py (Multi-Provider LLM)
+**Purpose**: Unified interface for multiple LLM providers
+
+**Supported APIs**:
+- OpenAI (GPT-3.5, GPT-4, GPT-4o)
+- Anthropic (Claude Sonnet, Opus, Haiku)
+- OpenRouter (aggregator)
+- Local models via OpenAI-compatible endpoints
+
+**Key Methods**:
+- `generate(prompt, model_alias, stream)` → async response
+- `_get_client(provider)` → Provider-specific client
+- `_map_alias_to_model(alias)` → "gpt-4o-mini" → "gpt-4o-mini"
+
+**Environment Variables**:
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `OPENROUTER_API_KEY`
+
+---
+
+### 2.9 utils/topic_manager.py (Topic Extraction)
+**Purpose**: Hybrid topic extraction (spaCy + optional LLM)
+
+**Methods**:
+1. **spaCy NER** (primary, fast):
+   ```python
+   doc = nlp(query)
+   topics = [ent.text for ent in doc.ents]
+   ```
+
+2. **LLM fallback** (optional, slow):
+   - If spaCy returns nothing
+   - Or if query is complex
+   - Calls LLM to extract topics
+
+**Key Methods**:
+- `extract_topics(query, use_llm_fallback)` → List[str]
+
+---
+
+### 2.10 knowledge/WikiManager.py (Wikipedia Search)
+**Purpose**: FAISS-based Wikipedia semantic search
+
+**Data Sources**:
+- Preprocessed Wikipedia dump
+- FAISS index (~350MB)
+- Memory-mapped embeddings (~800MB)
+
+**Key Methods**:
+- `search(query, k)` → Top K Wikipedia passages
+- `_embed_query(query)` → Query embedding
+- `_faiss_search(embedding, k)` → FAISS retrieval
+
+**Integration**: Called by PromptBuilder if query matches Wikipedia patterns
+
+---
+
+### 2.11 utils/time_manager.py (Temporal Context)
+**Purpose**: Time-aware operations and decay
+
+**Key Functions**:
+- `current()` → datetime.now()
+- `current_iso()` → ISO-8601 string
+- `calculate_decay(age_hours, decay_rate)` → float
+  ```python
+  decay = 1.0 / (1.0 + decay_rate * age_hours)
+  ```
+
+**Used By**: MemoryCoordinator for recency scoring
+
+---
+
+### 2.12 memory/memory_consolidator.py (Summarization)
+**Purpose**: LLM-based conversation summarization
+
+**Trigger**: Every N conversations (default 20) at shutdown
+
+**Process**:
+```python
+1. Collect last N unsummarized conversations
+2. Build summarization prompt
+3. Call LLM (default: gpt-4o-mini)
+4. Store summary as SUMMARY memory type
+5. Link to parent conversations
+```
+
+**Key Methods**:
+- `consolidate_memories(conversations, max_tokens)` → async summary
+
+---
+
+### 2.13 memory/fact_extractor.py (Entity/Fact Extraction)
+**Purpose**: Extract facts from conversations for semantic memory
+
+**Methods**:
+1. **Regex patterns** (fast):
+   - "X is Y" patterns
+   - "X does Y" patterns
+   - Entity definitions
+
+2. **LLM extraction** (optional):
+   - For complex facts
+   - Calls LLMFactExtractor
+
+**Key Methods**:
+- `extract_facts(conversation)` → List[Dict]
+  ```python
+  {
+    "entity": "Python",
+    "fact": "is a programming language",
+    "confidence": 0.8
+  }
+  ```
+
+---
+
+### 2.14 utils/tone_detector.py (Crisis Detection)
+**Purpose**: Detect distress/crisis language to adjust response tone
+
+**Crisis Levels** (CrisisLevel enum):
+- `CONVERSATIONAL` - Default friend mode (85% of conversations)
+- `CONCERN` - Light support, brief validation (10%)
+- `MEDIUM` - Elevated support, empathetic (4%)
+- `HIGH` - Crisis support, full therapeutic mode (1%)
+
+**3-Stage Detection Pipeline**:
+1. **Observational check** - Is user discussing world events vs personal crisis?
+2. **Keyword match** - Fast pattern matching for explicit crisis terms
+3. **Semantic similarity** - Compare embeddings to crisis exemplars
+4. **LLM fallback** - For borderline cases near thresholds
+
+**Configuration** (env vars):
+```python
+TONE_THRESHOLD_HIGH = 0.58
+TONE_THRESHOLD_MEDIUM = 0.50
+TONE_THRESHOLD_CONCERN = 0.43
+TONE_CONTEXT_WINDOW = 3  # Prior turns to check
+TONE_ESCALATION_BOOST = 1.2  # Boost if prior distress detected
+```
+
+**Key Methods**:
+- `detect_crisis_level(message, conversation_history, model_manager)` → async ToneAnalysis
+- `_check_keyword_crisis(message)` → Fast keyword check
+- `_semantic_crisis_detection(message, history)` → Embedding similarity
+- `_llm_crisis_fallback(message, model_manager)` → LLM classification
+
+**Returns**:
+```python
+ToneAnalysis(
+  level=CrisisLevel.HIGH,
+  confidence=0.72,
+  trigger="semantic",
+  raw_scores={"high": 0.72, "medium": 0.45, "concern": 0.38, "conversational": 0.35},
+  explanation="Semantic similarity to crisis_support: 0.72"
+)
+```
+
+---
+
+### 2.15 utils/query_checker.py (Query Analysis)
+**Purpose**: Fast query analysis for routing and heavy topic detection
+
+**Key Functions**:
+- `analyze_query(q)` → QueryAnalysis dataclass
+- `is_deictic(query)` → True if refers to earlier context
+- `is_meta_conversational(query)` → True if asking about conversation history
+- `extract_temporal_window(query)` → Days to look back (e.g., "yesterday" → 1)
+- `_is_heavy_topic_heuristic(q)` → Fast keyword check for crisis/sensitive content
+- `analyze_query_async(q, model_manager)` → Async with LLM heavy topic classification
+
+**Heavy Topic Keywords** (triggers inline fact extraction):
+- Political violence: raid, deportation, protest, military
+- Crisis/trauma: suicide, panic attack, breakdown
+- Human rights: persecution, discrimination, refugee
+- Mental health: depression, anxiety, PTSD
+- Emotional distress: breakup, grief, job loss
+
+**Thread Detection**:
+- `belongs_to_thread(current_query, last_conversation, current_topic)` → bool
+- `calculate_thread_continuity_score()` → 0.0-1.0 score
+- Factors: keyword overlap, time proximity, both heavy, same topic
+- `THREAD_CONTINUITY_THRESHOLD = 0.5`
+
+**QueryAnalysis Result**:
+```python
+QueryAnalysis(
+  text="...",
+  tokens=["..."],
+  is_question=True,
+  is_command=False,
+  is_deictic=False,
+  is_followup=False,
+  token_count=8,
+  char_count=45,
+  intents={"question"},
+  is_heavy_topic=True,
+  is_meta_conversational=False
+)
+```
+
+---
+
+### 2.16 memory/hybrid_retriever.py (Hybrid Search)
+**Purpose**: Combine query rewriting, semantic search, and keyword matching
+
+**3-Tier Approach**:
+1. **Query rewriting** - Expand casual queries with synonyms
+2. **Semantic search** - ChromaDB embedding similarity
+3. **Keyword matching** - Exact term boosting
+
+**Scoring Weights**:
+```python
+semantic_weight = 0.7
+keyword_weight = 0.3
+hybrid_score = semantic_weight * semantic_score + keyword_weight * keyword_score
+```
+
+**Key Methods**:
+- `retrieve(query, limit)` → List of memories with hybrid scores
+- `_semantic_search(query, n_results)` → Query multiple ChromaDB collections
+- `_keyword_match(query, candidates)` → Score with keyword overlap
+- `_hybrid_score(semantic_results, keyword_results, query)` → Combine scores
+
+**Collections Queried**: conversations, summaries, reflections
+
+**Dependencies**: MultiCollectionChromaStore, query_rewriter, keyword_matcher
+
+---
+
+### 2.17 utils/query_rewriter.py (Query Expansion)
+**Purpose**: Expand casual/slang queries for better retrieval
+
+**Key Functions**:
+- `rewrite_query(query)` → Expanded query with synonyms
+- `extract_keywords(query)` → List of meaningful keywords
+
+---
+
+### 2.18 utils/keyword_matcher.py (Term Matching)
+**Purpose**: Calculate keyword overlap scores for retrieval boosting
+
+**Key Functions**:
+- `calculate_keyword_score(keywords, candidate)` → 0.0-1.0 score
+
+---
+
+## 3. Configuration (config/app_config.py)
+
+**Key Settings**:
+```python
+# Paths
+CORPUS_FILE = "./data/corpus_v4.json"
+CHROMA_PATH = "./data/chroma_db_v4_v2"
+SYSTEM_PROMPT_PATH = "./core/system_prompt.txt"
+
+# Memory Limits (in prompt/builder.py)
+PROMPT_TOKEN_BUDGET = 15000  # Higher for middle-out compression
+PROMPT_MAX_RECENT = 15
+PROMPT_MAX_MEMS = 15  # Semantic search results only
+PROMPT_MAX_FACTS = 30
+PROMPT_MAX_RECENT_FACTS = 30
+PROMPT_MAX_SUMMARIES = 10  # Hybrid: 5 recent + 5 semantic
+PROMPT_MAX_REFLECTIONS = 10  # Hybrid: 5 recent + 5 semantic
+PROMPT_MAX_DREAMS = 3
+PROMPT_MAX_SEMANTIC = 8
+PROMPT_MAX_WIKI = 3
+
+# Decay & Scoring
+RECENCY_DECAY_RATE = 0.05
+TRUTH_SCORE_UPDATE_RATE = 0.02
+TRUTH_SCORE_MAX = 0.95
+
+# Gating
+GATE_REL_THRESHOLD = 0.18
+DEICTIC_THRESHOLD = 0.60
+NORMAL_THRESHOLD = 0.35
+SUMMARY_COSINE_THRESHOLD = 0.30
+REFLECTION_COSINE_THRESHOLD = 0.25
+
+# Collection Boosts
+COLLECTION_BOOSTS = {
+    "facts": 0.15,
+    "summaries": 0.10,
+    "conversations": 0.0,
+    "semantic": 0.05,
+    "wiki": 0.05
+}
+
+# Score Weights
+SCORE_WEIGHTS = {
+    "relevance": 0.35,
+    "recency": 0.25,
+    "truth": 0.20,
+    "importance": 0.05,
+    "continuity": 0.10,
+    "structure": 0.05
+}
+
+# Hybrid Retrieval
+HYBRID_SUMMARIES_ENABLED = True
+HYBRID_REFLECTIONS_ENABLED = True
+
+# Best-of-N Generation
+ENABLE_BEST_OF = True
+BEST_OF_N = 2
+BEST_OF_TEMPS = [0.2, 0.7]
+BEST_OF_MAX_TOKENS = 256
+BEST_OF_LATENCY_BUDGET_S = 2.0
+BEST_OF_DUEL_MODE = False  # Optional 2-model duel
+
+# Query Rewrite
+ENABLE_QUERY_REWRITE = True
+REWRITE_TIMEOUT_S = 1.2
+
+# Models
+DEFAULT_MAX_TOKENS = 2048
+HEAVY_TOPIC_MAX_TOKENS = 8192
+DEFAULT_TEMPERATURE = 0.7
+
+# Wikipedia
+WIKI_FETCH_FULL_DEFAULT = True
+WIKI_MAX_CHARS_DEFAULT = 15000
+WIKI_TIMEOUT_DEFAULT = 1.2
+
+# Corpus Management
+CORPUS_MAX_ENTRIES = 2000
+```
+
+**Environment Overrides**: Any setting can be overridden via environment variables
+
+---
+
+## 4. Data Flow Examples
+
+### 4.1 Basic Query Flow
+```python
+# User asks: "What is Python?"
+
+1. orchestrator.process_user_query("What is Python?")
+2. tone_detector.detect_crisis_level() → CONVERSATIONAL
+3. topic_manager.extract_topics() → ["Python"]
+4. query_checker.analyze_query() → is_heavy_topic=False
+5. orchestrator.prepare_prompt():
+   a. Inject tone instructions (CONVERSATIONAL: max 3 sentences)
+   b. prompt_builder.build_prompt():
+      - context_gatherer._get_recent_conversations(15)
+      - context_gatherer._get_semantic_memories(query, 15)
+      - context_gatherer.get_facts(query, 30)
+      - context_gatherer._get_summaries_separate() → {recent: 5, semantic: 5}
+      - context_gatherer._get_reflections_separate() → {recent: 5, semantic: 5}
+      - _hygiene_and_caps() → Dedupe with semantic similarity
+      - token_manager._manage_token_budget()
+   c. _assemble_prompt(context, user_input) → Formatted string
+6. response_generator.generate_streaming_response(prompt)
+   → "<thinking>Python is a general-purpose language...</thinking>\nPython is a high-level programming language."
+7. orchestrator._parse_thinking_block() → Extract final answer
+8. memory_coordinator.store_interaction(query, final_answer)
+9. Return final_answer to user
+```
+
+### 4.2 Heavy Topic Flow
+```python
+# User shares news article about ICE raids
+
+1. orchestrator.process_user_query(article_text)
+2. tone_detector.detect_crisis_level() → CONCERN (keyword: "raid")
+3. query_checker.analyze_query() → is_heavy_topic=True
+4. orchestrator.prepare_prompt():
+   a. Inline fact extraction (with 5s timeout):
+      - memory_system._extract_and_store_facts(query, "", 0.7)
+      - memory_system.get_facts(query, 10) → fresh_facts
+   b. Inject tone instructions (LIGHT_SUPPORT: 2-4 sentences)
+   c. Set response_max_tokens = HEAVY_TOPIC_MAX_TOKENS (8192)
+   d. prompt_builder.build_prompt() with fresh_facts
+5. response_generator.generate_streaming_response()
+6. Store interaction and return
+```
+
+### 4.3 Shutdown Consolidation
+```python
+# At application shutdown:
+
+1. orchestrator.shutdown()
+2. memory_coordinator.process_shutdown_memory()
+   a. Count total conversations vs summaries
+   b. If (convos / SUMMARY_EVERY_N) > summaries:
+      i. Get last N unsummarized conversations
+      ii. memory_consolidator.consolidate_memories(convos)
+      iii. Store summary as SUMMARY memory type
+   c. fact_extractor.extract_facts(recent_conversations)
+   d. Store facts as SEMANTIC memory type
+3. corpus_manager.save()
+```
+
+---
+
+## 5. Key Algorithms
+
+### 5.1 Memory Ranking (memory_coordinator._rank_memories)
+```python
+def _rank_memories(memories, query):
+    for memory in memories:
+        # 1. Relevance + collection boost
+        rel = memory.get('relevance_score', 0.5)
+        rel += COLLECTION_BOOSTS.get(memory.get('collection'), 0)
+
+        # 2. Recency decay
+        age_hours = (now - memory['timestamp']).total_seconds() / 3600
+        recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * age_hours)
+
+        # 3. Truth (boosted by access count)
+        truth = memory.get('truth_score', 0.6)
+        access_count = memory.get('metadata', {}).get('access_count', 0)
+        truth = min(1.0, truth + TRUTH_SCORE_UPDATE_RATE * access_count)
+
+        # 4. Importance
+        importance = memory.get('importance_score', 0.5)
+
+        # 5. Continuity (recent + token overlap)
+        continuity = 0.0
+        if (now - memory['timestamp']) < timedelta(minutes=10):
+            continuity += 0.1
+        token_overlap = len(query_tokens & memory_tokens) / len(query_tokens)
+        continuity += 0.3 * token_overlap
+
+        # 6. Structural alignment (math density)
+        query_density = _num_op_density(query)
+        memory_density = _num_op_density(memory_text)
+        alignment = 1.0 - min(1.0, abs(query_density - memory_density) * 3.0)
+        structure = 0.15 * alignment
+
+        # 7. Penalties/bonuses
+        penalty = 0.0
+        if is_math_query and has_analogy_markers(memory):
+            penalty -= 0.1
+        if has_negative_tone(memory):
+            truth -= 0.2
+
+        # 8. Anchor bonus (deictic queries)
+        anchor_bonus = 0.0
+        if is_deictic(query):
+            anchor_tokens = extract_from_conversation_context()
+            anchor_overlap = len(anchor_tokens & memory_tokens) / len(anchor_tokens)
+            anchor_bonus = 0.2 * anchor_overlap if anchor_overlap > 0.05 else -PENALTY
+
+        # Final score
+        memory['final_score'] = (
+            SCORE_WEIGHTS['relevance'] * rel +
+            SCORE_WEIGHTS['recency'] * recency +
+            SCORE_WEIGHTS['truth'] * truth +
+            SCORE_WEIGHTS['importance'] * importance +
+            SCORE_WEIGHTS['continuity'] * continuity +
+            structure +
+            anchor_bonus +
+            penalty
+        )
+
+    return sorted(memories, key=lambda m: m['final_score'], reverse=True)
+```
+
+### 5.2 Multi-Stage Gating (gate_system.filter_memories)
+```python
+def filter_memories(query, memories, k=20):
+    # Stage 1: FAISS semantic search (top 50)
+    query_embedding = embed(query)
+    faiss_results = faiss_index.search(query_embedding, k=50)
+
+    # Stage 2: Cosine similarity filter
+    filtered = []
+    for memory in faiss_results:
+        memory_embedding = embed(memory['text'])
+        similarity = cosine_similarity(query_embedding, memory_embedding)
+        if similarity >= GATE_COSINE_THRESHOLD:
+            memory['relevance_score'] = similarity
+            filtered.append(memory)
+
+    # Stage 3: Cross-encoder reranking
+    pairs = [(query, mem['text']) for mem in filtered]
+    scores = cross_encoder.predict(pairs)
+
+    for i, memory in enumerate(filtered):
+        memory['relevance_score'] = scores[i]
+
+    reranked = sorted(filtered, key=lambda m: m['relevance_score'], reverse=True)
+    return reranked[:k]
+```
+
+### 5.3 Token Budget Allocation (prompt_builder._allocate_tokens)
+```python
+def _allocate_tokens(query, memories, facts, summaries, wiki, budget):
+    # Fixed allocations
+    system_prompt_tokens = count_tokens(SYSTEM_PROMPT)
+    query_tokens = count_tokens(query)
+    reserved = system_prompt_tokens + query_tokens + 100  # buffer
+
+    remaining = budget - reserved
+
+    # Priority allocation
+    allocations = {
+        'recent_context': min(500, remaining * 0.3),
+        'episodic': min(800, remaining * 0.35),
+        'semantic': min(400, remaining * 0.15),
+        'summaries': min(300, remaining * 0.10),
+        'wiki': min(200, remaining * 0.10)
+    }
+
+    # Fill sections in priority order
+    sections = []
+    for key, token_limit in allocations.items():
+        content = get_content(key)
+        truncated = truncate_to_tokens(content, token_limit)
+        sections.append(truncated)
+
+    return "\n\n".join(sections)
+```
+
+---
+
+## 6. File Organization
+
+```
+daemon/
+├── config/
+│   ├── app_config.py          # Central configuration loader
+│   └── config.yaml            # YAML config (optional)
+│
+├── core/
+│   ├── orchestrator.py        # Main controller (tone, thinking blocks)
+│   ├── response_generator.py  # LLM streaming + Best-of-N/Duel
+│   ├── competitive_scorer.py  # Judge-based response selection
+│   ├── dependencies.py        # Dependency injection setup
+│   ├── wiki_util.py          # Wikipedia utility functions
+│   ├── prompt_builder.py      # Legacy prompt builder (deprecated)
+│   ├── prompt.py             # Legacy unified prompt (deprecated)
+│   └── prompt/               # Modular prompt system
+│       ├── __init__.py       # Public API and imports
+│       ├── builder.py        # Main UnifiedPromptBuilder
+│       ├── context_gatherer.py # Data collection + hybrid retrieval
+│       ├── formatter.py      # Text formatting
+│       ├── token_manager.py  # Budget management
+│       ├── summarizer.py     # LLM summarization + on-demand reflections
+│       └── base.py          # Utilities and fallbacks
+│
+├── memory/
+│   ├── memory_coordinator.py      # Memory hub
+│   ├── corpus_manager.py          # JSON persistence
+│   ├── memory_consolidator.py     # Summarization
+│   ├── fact_extractor.py          # Pattern-based extraction
+│   ├── llm_fact_extractor.py      # LLM-based extraction
+│   ├── memory_scorer.py           # Scoring utilities
+│   ├── memory_interface.py        # Interface contracts
+│   ├── hybrid_retriever.py        # Query rewrite + semantic + keyword
+│   └── storage/
+│       └── multi_collection_chroma_store.py  # Vector DB
+│
+├── processing/
+│   └── gate_system.py         # Multi-stage filtering
+│
+├── models/
+│   ├── model_manager.py       # Multi-provider LLM client
+│   └── tokenizer_manager.py   # Token counting
+│
+├── utils/
+│   ├── topic_manager.py       # Topic extraction
+│   ├── time_manager.py        # Temporal utilities
+│   ├── tone_detector.py       # Crisis detection (keyword + semantic + LLM)
+│   ├── query_checker.py       # Query analysis + heavy topic + thread detection
+│   ├── query_rewriter.py      # Query expansion for retrieval
+│   ├── keyword_matcher.py     # Keyword overlap scoring
+│   ├── logging_utils.py       # Centralized logging
+│   ├── file_processor.py      # PDF/DOCX ingestion
+│   └── conversation_logger.py # Conversation persistence
+│
+├── knowledge/
+│   ├── WikiManager.py         # Wikipedia FAISS search
+│   ├── semantic_search.py     # General semantic utilities
+│   └── topic_manager.py       # Topic-specific utilities
+│
+├── gui/
+│   ├── launch.py              # Gradio web interface
+│   └── handlers.py            # UI event handlers
+│
+├── integrations/
+│   └── wikipedia_api.py       # Wikipedia API client
+│
+├── data/
+│   ├── corpus_v4.json         # Short-term memory store (current)
+│   ├── vector_index_ivf.faiss # FAISS index (781MB)
+│   ├── chroma_db_v4_v2/       # ChromaDB vector store (current)
+│   ├── wiki/                  # Wikipedia source data (102GB)
+│   └── pipeline/              # Wikipedia processing scripts (43GB)
+│
+└── tests/
+    ├── unit/                  # Unit tests (20+ files)
+    │   ├── test_tone_detector.py
+    │   ├── test_query_checker.py
+    │   ├── test_corpus_manager.py
+    │   └── ...
+    ├── integration.bak/       # Backup integration tests
+    ├── test_*.py             # Integration tests (40+ files)
+    │   ├── test_integration_prompt_builder.py
+    │   ├── test_integration_gate_system.py
+    │   ├── test_memory_coordinator_advanced.py
+    │   ├── test_tone_detection.py
+    │   ├── test_llm_fallback.py
+    │   └── ...
+    └── demo_*.py             # Demo scripts
+```
+
+---
+
+## 7. Common Patterns
+
+### 7.1 Async/Await Pattern
+```python
+# Most public methods are async for I/O operations
+async def handle_request(query: str) -> str:
+    memories = await memory_coordinator.get_memories(query)
+    response = await response_generator.generate(prompt)
+    await memory_coordinator.store_interaction(query, response)
+    return response
+
+# Call with: asyncio.run(handle_request(query))
+```
+
+### 7.2 Dependency Injection
+```python
+# Dependencies initialized once, passed to components
+deps = Dependencies(
+    config=app_config,
+    corpus_manager=CorpusManager(config),
+    chroma_store=MultiCollectionChromaStore(config),
+    model_manager=ModelManager(config)
+)
+
+orchestrator = Orchestrator(deps)
+```
+
+### 7.3 Scoring Heuristics
+```python
+# All scoring functions follow pattern:
+def calculate_score(content: str, context: dict) -> float:
+    score = BASE_SCORE  # e.g., 0.5
+
+    # Apply boosts
+    if condition1:
+        score += BOOST1
+    if condition2:
+        score += BOOST2
+
+    # Apply penalties
+    if bad_condition:
+        score -= PENALTY
+
+    # Cap at limits
+    return max(0.0, min(1.0, score))
+```
+
+### 7.4 Memory Storage Pattern
+```python
+# All memory additions follow:
+1. Create memory dict with required fields
+2. Calculate scores (truth, importance)
+3. Add to corpus JSON
+4. Add to ChromaDB with embeddings
+5. Update metadata (access count, timestamps)
+```
+
+### 7.5 Error Handling
+```python
+# Graceful degradation pattern
+try:
+    result = primary_method()
+except Exception as e:
+    logger.warning(f"Primary failed: {e}")
+    result = fallback_method()
+
+# Common fallbacks:
+# - spaCy fails → use LLM extraction
+# - ChromaDB fails → use corpus only
+# - LLM fails → return cached response
+```
+
+---
+
+## 8. Testing Strategy
+
+### 8.1 Unit Tests
+- **Location**: `tests/unit/`
+- **Count**: 20+ test files
+- **Pattern**: Mock dependencies, test methods in isolation
+
+**Key Unit Test Files**:
+- `test_tone_detector.py` - Crisis detection levels and thresholds
+- `test_query_checker.py` - Heavy topic and thread detection
+- `test_corpus_manager.py` - JSON persistence operations
+- `test_memory_coordinator_helpers.py` - Ranking and scoring
+- `test_prompt_builder_methods.py` - Context assembly
+- `test_orchestrator_helpers.py` - Thinking block parsing
+
+### 8.2 Integration Tests
+- **Location**: `tests/`
+- **Count**: 40+ test files
+- **Pattern**: Test full pipelines with real components
+
+**Key Integration Test Files**:
+- `test_tone_detection.py` - End-to-end crisis detection
+- `test_llm_fallback.py` - LLM fallback behavior
+- `test_memory_coordinator.py` - Full memory retrieval pipeline
+- `test_gated_prompt.py` - Gating + prompt building
+- `test_summaries.py` - Summary generation and retrieval
+- `test_competitive_scorer.py` - Best-of-N scoring
+
+### 8.3 Mutation Testing
+- **Tool**: Custom mutation testing framework
+- **Location**: `demo_mutation_testing.py`
+- **Purpose**: Verify tests catch code mutations
+
+### 8.4 Test Count
+- **Total test files**: 65
+- **Unit tests**: ~20 files in `tests/unit/`
+- **Integration tests**: ~45 files in `tests/`
+
+---
+
+## 9. Performance Considerations
+
+### 9.1 Bottlenecks
+1. **ChromaDB queries** - Embedding generation is slow
+   - Mitigation: Batch operations, cache embeddings
+2. **Cross-encoder reranking** - CPU-intensive
+   - Mitigation: Limit to top 20-30 candidates
+3. **LLM calls** - Network latency + generation time
+   - Mitigation: Streaming, async operations
+
+### 9.2 Optimization Flags
+```bash
+# CPU-only mode (no GPU)
+export CHROMA_DEVICE=cpu
+
+# Reduce memory footprint
+export PROMPT_TOKEN_BUDGET=2048
+export PROMPT_MAX_MEMS=20
+
+# Fast profile
+make -f Makefile.fast run
+```
+
+---
+
+## 10. Extension Points
+
+### 10.1 Adding New Memory Type
+```python
+1. Add to MemoryType enum in corpus_manager.py
+2. Create collection in multi_collection_chroma_store.py
+3. Add handling in memory_coordinator.py
+4. Update core/prompt/context_gatherer.py to retrieve new type
+5. Update core/prompt/formatter.py to format new type
+```
+
+### 10.2 Adding New LLM Provider
+```python
+1. Add credentials to environment
+2. Update model_manager.py with new provider client
+3. Add alias mappings in config
+4. Test with: python main.py --model new-provider-model
+```
+
+### 10.3 Custom Scoring Functions
+```python
+1. Add scoring function to memory_coordinator.py
+2. Integrate into _rank_memories()
+3. Add weight to SCORE_WEIGHTS in config
+4. Test with unit tests
+```
+
+---
+
+## 11. Key Invariants
+
+1. **All memories have timestamps** - Required for decay calculation
+2. **Scores are 0.0-1.0** - All scoring functions capped
+3. **Token budgets are respected** - Prompts never exceed limits
+4. **Async operations use await** - No blocking I/O in main thread
+5. **ChromaDB and corpus stay in sync** - Same memories in both
+6. **Memory types are immutable** - Once set, never changed
+7. **Summaries link to parents** - Hierarchical relationships preserved
+
+---
+
+## 12. Debug/Introspection
+
+### 12.1 Logging Levels
+```python
+# Set in environment
+export LOG_LEVEL=DEBUG  # Shows all scoring details
+export LOG_LEVEL=INFO   # Shows major operations
+export LOG_LEVEL=WARNING  # Errors only
+```
+
+### 12.2 Inspection Commands
+```bash
+# View conversation logs
+ls -ltr conversation_logs/
+
+# Inspect corpus
+python -c "import json; print(json.load(open('data/corpus.json'))['conversations'][-5:])"
+
+# Check ChromaDB collections
+python tests/inspect_chroma.py
+
+# Test summaries
+python main.py inspect-summaries
+```
+
+---
+
+## 13. Compressed Cheat Sheet
+
+**One-line descriptions** for quick reference:
+
+| Component | One-Liner |
+|-----------|-----------|
+| orchestrator.py | Main loop: tone → topic → heavy check → prompt → thinking → LLM → store |
+| memory_coordinator.py | Hub: retrieve from 5 collections, gate, rank, return top K |
+| corpus_manager.py | JSON CRUD: load/save/query short-term memories |
+| multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 5 types |
+| gate_system.py | Filter: FAISS → cosine → cross-encoder → top K |
+| prompt/builder.py | Assemble: system + separated context sections within 15K tokens |
+| response_generator.py | Stream: async LLM + Best-of-N + Duel modes |
+| model_manager.py | Unified: OpenAI/Claude/OpenRouter/Local via single interface |
+| topic_manager.py | Extract: spaCy NER + optional LLM fallback |
+| memory_consolidator.py | Summarize: LLM compresses N conversations at shutdown |
+| fact_extractor.py | Parse: regex + optional LLM for entity/fact extraction |
+| WikiManager.py | Search: FAISS over Wikipedia dump for context injection |
+| tone_detector.py | Detect: 4-level crisis (keyword + semantic + LLM fallback) |
+| query_checker.py | Analyze: heavy topics, thread detection, temporal windows |
+| hybrid_retriever.py | Retrieve: query rewrite + semantic + keyword scoring |
+| time_manager.py | Utils: timestamps and temporal decay calculations |
+
+---
+
+## 14. Critical Constants (Quick Reference)
+
+```python
+# Scoring
+RECENCY_DECAY_RATE = 0.05
+TRUTH_SCORE_UPDATE_RATE = 0.02
+DEICTIC_ANCHOR_PENALTY = 0.1
+DEICTIC_CONTINUITY_MIN = 0.12
+
+# Weights
+SCORE_WEIGHTS = {
+    'relevance': 0.35,
+    'recency': 0.25,
+    'truth': 0.20,
+    'importance': 0.05,
+    'continuity': 0.10,
+    'structure': 0.05
+}
+
+# Collection Boosts
+COLLECTION_BOOSTS = {
+    'facts': 0.15,
+    'summaries': 0.10,
+    'conversations': 0.0,
+    'semantic': 0.05,
+    'wiki': 0.05
+}
+
+# Thresholds
+GATE_REL_THRESHOLD = 0.18
+DEICTIC_THRESHOLD = 0.60
+NORMAL_THRESHOLD = 0.35
+SUMMARY_COSINE_THRESHOLD = 0.30
+REFLECTION_COSINE_THRESHOLD = 0.25
+THREAD_CONTINUITY_THRESHOLD = 0.5
+
+# Tone Detection Thresholds
+TONE_THRESHOLD_HIGH = 0.58
+TONE_THRESHOLD_MEDIUM = 0.50
+TONE_THRESHOLD_CONCERN = 0.43
+
+# Hybrid Retrieval Weights
+HYBRID_SEMANTIC_WEIGHT = 0.7
+HYBRID_KEYWORD_WEIGHT = 0.3
+
+# Prompt Limits
+PROMPT_TOKEN_BUDGET = 15000
+PROMPT_MAX_RECENT = 15
+PROMPT_MAX_MEMS = 15
+PROMPT_MAX_FACTS = 30
+PROMPT_MAX_SUMMARIES = 10  # 5 recent + 5 semantic
+PROMPT_MAX_REFLECTIONS = 10
+PROMPT_MAX_WIKI = 3
+
+# Heavy Topic Detection
+HEAVY_TOPIC_CHAR_THRESHOLD = 2500
+HEAVY_TOPIC_TIMEOUT = 2.0  # seconds
+
+# Feature Toggles
+REFLECTIONS_ON_DEMAND = True  # Generate reflections if below threshold
+REFLECTIONS_SESSION_FILTER = False  # Filter to session-level only
+REFLECTIONS_TOPUP = True  # Top up reflections from storage
+
+# Deduplication
+SIMILARITY_THRESHOLD = 0.90  # Semantic similarity for duplicates
+```
+
+---
+
+**End of Skeleton**
+
+This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
+
+**Last Updated**: 2025-11-18
