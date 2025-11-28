@@ -502,6 +502,7 @@ async def handle_submit(
                 model_name=model_name,
                 system_prompt=system_prompt
             ):
+                logger.warning(f"[GUI HANDLER DEBUG] Received chunk: {chunk!r}")
                 final_output = smart_join(final_output, chunk)
                 # Parse in real-time to separate thinking from answer
                 thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
@@ -521,8 +522,10 @@ async def handle_submit(
                     # Continue streaming the answer
                     try:
                         import re
-                        m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
-                        display_output = (m.group(1).strip() if m else final_answer)
+                        # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
+                        # Use non-greedy match and ensure we capture everything between outer tags
+                        m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
+                        display_output = (m.group(2).strip() if m else final_answer)
                     except Exception:
                         display_output = final_answer
                     yield {"role": "assistant", "content": display_output}
@@ -530,8 +533,9 @@ async def handle_submit(
                     # No thinking block detected, stream normally
                     try:
                         import re
-                        m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
-                        display_output = (m.group(1).strip() if m else final_output)
+                        # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
+                        m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
+                        display_output = (m.group(2).strip() if m else final_output)
                     except Exception:
                         display_output = final_output
                     yield {"role": "assistant", "content": display_output}

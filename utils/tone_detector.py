@@ -86,6 +86,35 @@ CONCERN_KEYWORDS = {
     "worried sick", "can't sleep", "helpless",
 }
 
+# Event distress keywords (strong reactions to upsetting world events)
+# These indicate emotional distress about external events that deserve validation/support
+# Triggers CONCERN mode (2-3 paragraphs) rather than CONVERSATIONAL (3 sentences)
+EVENT_DISTRESS_KEYWORDS = {
+    # Strong expletive reactions
+    "what the fuck", "what the actual fuck", "wtf is", "wtf this",
+    "fuck this", "this is fucked", "so fucked", "absolutely fucked",
+    "completely fucked", "totally fucked",
+
+    # Emotional reactions to events
+    "can't believe this", "can't believe they", "can't believe we",
+    "horrified by", "horrifying", "appalled", "disgusted by",
+    "sickened by", "outraged by", "enraged by",
+
+    # Despair/helplessness about world
+    "this is why i stopped", "this is why i don't", "this is why i'm",
+    "giving up on", "lost faith in", "no hope for",
+    "heading for collapse", "heading for disaster", "moral reckoning",
+
+    # Institutional betrayals
+    "betrayal of", "normalizing", "rebranding", "whitewashing",
+    "erasure of", "rewriting history", "sanitizing",
+
+    # Expressions of despair about society
+    "this country", "this administration", "this government",
+    "where we're headed", "where this is going",
+    "can't live in a country", "leaving this country", "leaving the country",
+}
+
 # World event/observational phrases (should NOT trigger crisis mode)
 # These indicate the user is discussing external events, not personal distress
 OBSERVATIONAL_MARKERS = {
@@ -319,6 +348,12 @@ def _check_keyword_crisis(message: str) -> Optional[Tuple[CrisisLevel, str]]:
         if keyword in message_lower:
             logger.debug(f"[ToneDetector] CONCERN keyword detected: '{keyword}'")
             return (CrisisLevel.CONCERN, f"keyword: {keyword}")
+
+    # Check EVENT_DISTRESS keywords (reactions to upsetting world events)
+    for keyword in EVENT_DISTRESS_KEYWORDS:
+        if keyword in message_lower:
+            logger.debug(f"[ToneDetector] EVENT_DISTRESS keyword detected: '{keyword}'")
+            return (CrisisLevel.CONCERN, f"event_distress: {keyword}")
 
     # Special handling for "overwhelmed" - check if it's in a positive/neutral context
     if "overwhelmed" in message_lower:

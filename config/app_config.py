@@ -288,6 +288,16 @@ BEST_OF_MAX_TOKENS = int(config.get("features", {}).get("best_of_max_tokens", 25
 BEST_OF_MODEL = config.get("features", {}).get("best_of_model", None)
 BEST_OF_MIN_TOKENS = int(config.get("features", {}).get("best_of_min_tokens", 8))
 
+# STM (Short-Term Memory) Pass Configuration
+# ------------------------------------------
+# Enable multi-pass STM analysis: lightweight LLM pass to summarize recent context
+# before main response generation
+USE_STM_PASS = bool(config.get("features", {}).get("use_stm_pass", True))
+STM_MODEL_NAME = config.get("features", {}).get("stm_model_name", "gpt-4o-mini")
+STM_MAX_RECENT_MESSAGES = int(config.get("features", {}).get("stm_max_recent_messages", 8))
+# Minimum conversation depth before STM kicks in (avoid overhead for trivial exchanges)
+STM_MIN_CONVERSATION_DEPTH = int(config.get("features", {}).get("stm_min_conversation_depth", 3))
+
 # Optional multi-model generators/selectors (defaults keep current behavior)
 BEST_OF_GENERATOR_MODELS = list(
     config.get("features", {}).get("best_of_generator_models", [])

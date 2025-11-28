@@ -265,6 +265,25 @@ class PromptFormatter:
         if time_ctx:
             sections.append(f"[TIME CONTEXT]\n{time_ctx}")
 
+        # STM (Short-Term Memory) Summary
+        stm_summary = context.get("stm_summary")
+        if stm_summary:
+            stm_lines = []
+            stm_lines.append(f"Topic: {stm_summary.get('topic', 'unknown')}")
+            stm_lines.append(f"User Question: {stm_summary.get('user_question', '')}")
+            stm_lines.append(f"Intent: {stm_summary.get('intent', '')}")
+            stm_lines.append(f"Tone: {stm_summary.get('tone', 'neutral')}")
+
+            open_threads = stm_summary.get('open_threads', [])
+            if open_threads:
+                stm_lines.append(f"Open Threads: {', '.join(open_threads)}")
+
+            constraints = stm_summary.get('constraints', [])
+            if constraints:
+                stm_lines.append(f"Constraints: {', '.join(constraints)}")
+
+            sections.append(f"[SHORT-TERM CONTEXT SUMMARY]\n" + "\n".join(stm_lines))
+
         # Recent conversations
         recent = context.get("recent_conversations", [])
         recent_text = []
@@ -460,9 +479,60 @@ class PromptFormatter:
             if dream_text:
                 sections.append(f"[DREAMS] n={len(dream_text)}\n" + "\n\n".join(dream_text))
 
-        # User input
+        # User input with last Q/A pair for coherence
         if user_input:
-            sections.append(f"[CURRENT USER QUERY]\n{user_input}")
+            query_section = f"[CURRENT USER QUERY]\n"
+
+            # Attach last Q/A pair for maximum coherence (high attention area)
+            recent = context.get("recent_conversations", [])
+            if recent and len(recent) > 0:
+                last_exchange = recent[0]  # First item is most recent (list ordered newest-first)
+                last_q = last_exchange.get("query", "")
+                last_a = last_exchange.get("response", "")
+                if last_q and last_a:
+                    query_section += f"[LAST EXCHANGE FOR CONTEXT]\n"
+                    query_section += f"User: {last_q}\n"
+                    query_section += f"Assistant: {last_a}\n\n"
+
+            query_section += f"[CURRENT QUERY]\n{user_input}"
+            sections.append(query_section)
 
         # Join all sections with double newlines
-        return "\n\n".join(sections)
+        full_prompt = "\n\n".join(sections)
+
+        # Emergency whole-prompt compression if still over budget after per-item compression
+        # CRITICAL: Protect [CURRENT USER QUERY] section from compression
+        if hasattr(self.token_manager, 'token_budget') and hasattr(self.token_manager, 'model_manager'):
+            try:
+                model_name = self.token_manager.model_manager.get_active_model_name()
+                token_count = self.token_manager.get_token_count(full_prompt, model_name)
+                budget = self.token_manager.token_budget
+
+                if token_count > budget:
+                    logger.warning(f"[EMERGENCY MIDDLE-OUT] Prompt STILL exceeds budget after per-item compression: {token_count} > {budget} tokens")
+                    logger.warning(f"[EMERGENCY MIDDLE-OUT] Applying whole-prompt compression as last resort...")
+
+                    # Split off [CURRENT USER QUERY] section to protect it
+                    query_marker = "[CURRENT USER QUERY]"
+                    if query_marker in full_prompt:
+                        parts = full_prompt.split(query_marker, 1)
+                        before_query = parts[0]
+                        query_section = query_marker + parts[1]
+
+                        # Compress only the context BEFORE the query
+                        compressed_before = self.token_manager._middle_out(before_query, budget - 500, force=True)
+                        full_prompt = compressed_before + "\n\n" + query_section
+
+                        new_count = self.token_manager.get_token_count(full_prompt, model_name)
+                        logger.warning(f"[EMERGENCY MIDDLE-OUT] Compressed context (protected query): {token_count} → {new_count} tokens")
+                    else:
+                        # Fallback: compress entire prompt if no query marker found
+                        full_prompt = self.token_manager._middle_out(full_prompt, budget, force=True)
+                        new_count = self.token_manager.get_token_count(full_prompt, model_name)
+                        logger.warning(f"[EMERGENCY MIDDLE-OUT] Compressed entire prompt: {token_count} → {new_count} tokens")
+                else:
+                    logger.debug(f"[PROMPT] Final token count: {token_count}/{budget} (within budget)")
+            except Exception as e:
+                logger.warning(f"[EMERGENCY MIDDLE-OUT] Compression failed: {e}, using full prompt")
+
+        return full_prompt
