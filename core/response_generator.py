@@ -17,6 +17,7 @@ Module Contract
 """
 from utils.logging_utils import get_logger
 import time
+import asyncio
 from typing import AsyncGenerator, List, Tuple, Optional, Sequence, Dict, Any
 from datetime import datetime
 from utils.time_manager import TimeManager
@@ -91,7 +92,9 @@ class ResponseGenerator:
             # Streaming path
             if hasattr(response_generator, "__aiter__"):
                 buffer = ""
-                STOP_MARKERS = {"<|user|>", "<|assistant|>", "<|system|>", "<|end|>", "<|eot_id|>"}
+                STOP_MARKERS = {"<|user|>", "<|assistant|>", "<|system|>", "<|end|>", "<|eot_id|>", "<｜end▁of▁sentence｜>"}
+                STREAM_TIMEOUT = 60.0  # 1 minute timeout for streaming
+
                 def _contains_stop(s: str) -> bool:
                     if not s:
                         return False
@@ -105,30 +108,52 @@ class ResponseGenerator:
                     for m in STOP_MARKERS:
                         s = s.replace(m, "")
                     return s
-                async for chunk in response_generator:
-                    try:
-                        # Extract content from different possible streaming chunk shapes
-                        delta_content = ""
-                        # OpenAI-style ChatCompletionChunk
-                        if hasattr(chunk, "choices") and len(getattr(chunk, "choices", [])) > 0:
-                            delta = chunk.choices[0].delta
-                            delta_content = getattr(delta, "content", "") or ""
-                        # Plain string chunk (e.g., stub/local streams)
-                        elif isinstance(chunk, str):
-                            delta_content = chunk
-                        # Dict-like chunk with direct content
-                        elif isinstance(chunk, dict):
-                            delta_content = (chunk.get("content") or chunk.get("text") or "")
 
-                        if delta_content:
-                            now = time.time()
-                            if first_token_time is None:
-                                first_token_time = now
-                                self.logger.debug(
-                                    "[STREAMING] First token arrived after %.2f seconds",
-                                    now - start_time
-                                )
+                # Wrap streaming with timeout protection
+                stream_start = time.time()
 
+                try:
+                    # Convert async iterator to support timeout on each chunk
+                    stream_iter = response_generator.__aiter__()
+                    while True:
+                        # Timeout for each chunk (including first chunk)
+                        try:
+                            chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=STREAM_TIMEOUT)
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            elapsed = time.time() - stream_start
+                            self.logger.error(f"[STREAMING] Timeout after {elapsed:.1f}s waiting for chunk")
+                            yield "[Error: Stream timeout - no response from API]"
+                            return
+
+                        try:
+                            # Extract content from different possible streaming chunk shapes
+                            delta_content = ""
+                            # OpenAI-style ChatCompletionChunk
+                            if hasattr(chunk, "choices") and len(getattr(chunk, "choices", [])) > 0:
+                                delta = chunk.choices[0].delta
+                                delta_content = getattr(delta, "content", "") or ""
+                            # Plain string chunk (e.g., stub/local streams)
+                            elif isinstance(chunk, str):
+                                delta_content = chunk
+                            # Dict-like chunk with direct content
+                            elif isinstance(chunk, dict):
+                                delta_content = (chunk.get("content") or chunk.get("text") or "")
+
+                            if delta_content:
+                                self.logger.warning(f"[STREAMING DEBUG] Yielding chunk: '{delta_content[:50]}...' (len={len(delta_content)})")
+                                now = time.time()
+                                if first_token_time is None:
+                                    first_token_time = now
+                                    self.logger.debug(
+                                        "[STREAMING] First token arrived after %.2f seconds",
+                                        now - start_time
+                                    )
+                            else:
+                                self.logger.warning(f"[STREAMING DEBUG] Skipping empty chunk")
+
+                            # Add content to buffer (this should happen for ALL non-empty delta_content)
                             buffer += delta_content
 
                             # If we hit a stop marker, flush clean content and end streaming
@@ -150,22 +175,26 @@ class ResponseGenerator:
                                             yield w
                                 buffer = words[-1] if words[-1] else ""
 
-                    except Exception as e:
-                        self.logger.error(f"[STREAMING] Error processing chunk: {e}")
-                        continue
+                        except Exception as e:
+                            self.logger.error(f"[STREAMING] Error processing chunk: {e}")
+                            continue
 
-                # Yield any remaining buffer
-                if buffer.strip():
-                    tail = _strip_special_tokens(buffer)
-                    if tail.strip():
-                        yield tail.strip()
+                    # Yield any remaining buffer
+                    if buffer.strip():
+                        tail = _strip_special_tokens(buffer)
+                        if tail.strip():
+                            yield tail.strip()
 
-                end_time = time.time()
-                duration = self.time_manager.measure_response(
-                    datetime.fromtimestamp(start_time),
-                    datetime.fromtimestamp(end_time)
-                )
-                self.logger.info(f"[TIMING] Full response duration: {duration}")
+                    end_time = time.time()
+                    duration = self.time_manager.measure_response(
+                        datetime.fromtimestamp(start_time),
+                        datetime.fromtimestamp(end_time)
+                    )
+                    self.logger.info(f"[TIMING] Full response duration: {duration}")
+
+                except Exception as e:
+                    self.logger.error(f"[STREAMING] Stream error: {e}")
+                    yield f"[Streaming Error: {e}]"
 
             else:
                 # Non-streaming fallback: simulate streaming by words

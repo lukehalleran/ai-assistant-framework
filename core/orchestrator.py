@@ -298,6 +298,49 @@ class DaemonOrchestrator:
         # Tone tracking for crisis detection
         self.current_tone_level: Optional[CrisisLevel] = None
 
+        # STM (Short-Term Memory) analyzer for multi-pass context summarization
+        self.stm_analyzer = None
+        try:
+            from config.app_config import USE_STM_PASS, STM_MODEL_NAME, STM_MIN_CONVERSATION_DEPTH
+            if USE_STM_PASS and model_manager:
+                from core.stm_analyzer import STMAnalyzer
+                self.stm_analyzer = STMAnalyzer(
+                    model_manager=model_manager,
+                    model_name=STM_MODEL_NAME
+                )
+                self.stm_min_depth = STM_MIN_CONVERSATION_DEPTH
+                self.logger.info(f"[Orchestrator] STM analyzer enabled (model={STM_MODEL_NAME}, min_depth={STM_MIN_CONVERSATION_DEPTH})")
+            else:
+                self.logger.debug("[Orchestrator] STM analyzer disabled via config")
+        except Exception as e:
+            self.logger.warning(f"[Orchestrator] Failed to initialize STM analyzer: {e}")
+
+    # ---------- STM Helper Methods ----------
+    def _should_use_stm(self, conversation_history: Optional[List[Dict]], user_input: str) -> bool:
+        """
+        Determine if STM pass should be used for this query.
+
+        Args:
+            conversation_history: Recent conversation turns
+            user_input: Current user query
+
+        Returns:
+            True if STM should be used, False otherwise
+        """
+        if not self.stm_analyzer:
+            return False
+
+        # Skip for very short, trivial queries
+        if len(user_input.strip()) < 10:
+            return False
+
+        # Require minimum conversation depth
+        min_depth = getattr(self, 'stm_min_depth', 3)
+        if not conversation_history or len(conversation_history) < min_depth:
+            return False
+
+        return True
+
     # ---------- 1) Tone Mode Instructions ----------
     def _get_tone_instructions(self, tone_level: CrisisLevel) -> str:
         """
@@ -348,26 +391,37 @@ class DaemonOrchestrator:
                 "- Only expand if they explicitly ask for more"
             )
         else:  # CrisisLevel.CONVERSATIONAL
-            # CONVERSATIONAL: Default friend mode - most interactions
+            # CONVERSATIONAL: Natural friend voice - most interactions
             return (
-                "\n\n## RESPONSE MODE: CONVERSATIONAL\n"
-                "**CRITICAL CONSTRAINT: MAXIMUM 3 SENTENCES PER RESPONSE**\n\n"
-                "Length rules (STRICTLY ENFORCED):\n"
-                "- Status/acknowledgments: 1 sentence ONLY\n"
-                "- Technical answers: 2-3 sentences MAXIMUM\n"
-                "- NEVER exceed 3 sentences total\n\n"
-                "ABSOLUTELY FORBIDDEN (response will be rejected if present):\n"
-                "- Paragraphs or multi-line explanations\n"
-                "- Thanks/gratitude/appreciation\n"
-                "- Excitement markers (excited, stoked, love, great)\n"
-                "- Meta-commentary about the conversation\n"
-                "- Suggestions unless directly requested\n"
-                "- Flowery/verbose language\n\n"
-                "Required style:\n"
-                "- Single sentence for simple queries\n"
-                "- Direct, factual, no padding\n"
-                "- Examples: \"Cool.\" / \"Got it.\" / \"Makes sense.\" / \"That's weird.\"\n\n"
-                "If you generate more than 3 sentences, your response is WRONG."
+                "\n\n## RESPONSE MODE: CONVERSATIONAL (Natural Friend Voice)\n"
+                "**Goal: Be a confident, grounded friend - not a service agent, hype-man, or therapist**\n\n"
+                "**LENGTH: Maximum 3 sentences for most responses**\n\n"
+                "Voice Calibration - The Sweet Spot:\n"
+                "❌ TOO HYPE: \"Hell yeah you're crushing it king! 💪 Die mad haters!\"\n"
+                "❌ TOO SERVICE-Y: \"Thanks so much, that's awesome to hear! I'm here anytime!\"\n"
+                "✓ JUST RIGHT: \"Ha, glad that's better. Hope work goes smooth.\"\n\n"
+                "Core Principles:\n"
+                "1. **Match his energy** - casual when he's casual, focused when he's technical\n"
+                "   - ✓ \"Nice work on that.\" / \"Solid progress.\"\n"
+                "   - ✗ \"Thanks so much, that's awesome to hear! Always striving to provide value!\"\n\n"
+                "2. **Brief acknowledgments** - you don't need to validate every interaction\n"
+                "   - ✓ \"Glad that worked\" / \"Makes sense\" / \"Cool\"\n"
+                "   - ✗ \"Thank you for your feedback! I'm excited to keep improving!\"\n\n"
+                "3. **Confident friend** - comfortable in the relationship, not anxious to please\n"
+                "   - ✓ \"That's frustrating, but you handled it well.\"\n"
+                "   - ✗ \"Please let me know if there's anything else I can help with!\"\n\n"
+                "4. **Helpful without being formal** - offer perspective naturally\n"
+                "   - ✓ \"Makes sense you're annoyed. Moving on sounds right.\"\n"
+                "   - ✗ \"I appreciate your patience as I strive to deliver relevant information.\"\n\n"
+                "FORBIDDEN:\n"
+                "- Customer service language (\"Thanks so much!\", \"I'm here anytime!\", \"Please let me know\")\n"
+                "- Emojis and excessive exclamation points\n"
+                "- Hype language (crushing it, you got this king, Hell yeah)\n"
+                "- Corporate speak (\"striving to provide\", \"relevant and valuable info\")\n"
+                "- Excessive gratitude or validation-seeking\n"
+                "- Multi-paragraph responses for simple updates\n\n"
+                "Think: You're the friend who knows the relationship is solid, so you don't need "
+                "to constantly prove your value or seek approval. Be supportive, honest, and chill."
             )
 
     # ---------- 1b) Session Headers Instructions ----------
@@ -758,6 +812,52 @@ class DaemonOrchestrator:
             return combined_text, None
 
         # ---------------------------------------------------------------------
+        # 4.7) STM (Short-Term Memory) Pass - Analyze recent context
+        # ---------------------------------------------------------------------
+        stm_summary = None
+        # Fetch MORE conversation history for STM (tone detection only needed 3)
+        stm_conversation_history = None
+        if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
+            try:
+                stm_conversation_history = self.memory_system.corpus_manager.get_recent_memories(count=10) or []
+            except Exception:
+                pass
+
+        if self.stm_analyzer and self._should_use_stm(stm_conversation_history, user_input):
+            try:
+                from config.app_config import STM_MAX_RECENT_MESSAGES
+                # Get more recent messages for STM
+                stm_recent = stm_conversation_history or []
+                if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
+                    stm_recent = self.memory_system.corpus_manager.get_recent_memories(
+                        count=STM_MAX_RECENT_MESSAGES
+                    ) or []
+
+                # Extract last assistant response for coherence
+                last_assistant_response = None
+                for mem in reversed(stm_recent):
+                    if mem.get('response'):
+                        last_assistant_response = mem.get('response')
+                        break
+
+                # Run STM analysis
+                stm_summary = await self.stm_analyzer.analyze(
+                    recent_memories=stm_recent,
+                    user_query=user_input,
+                    last_assistant_response=last_assistant_response
+                )
+
+                if self.logger:
+                    self.logger.info(
+                        f"[STM] Analysis complete: topic={stm_summary.get('topic')}, "
+                        f"tone={stm_summary.get('tone')}, threads={len(stm_summary.get('open_threads', []))}"
+                    )
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"[STM] Analysis failed, continuing without STM: {e}")
+                stm_summary = None
+
+        # ---------------------------------------------------------------------
         # 5) Build prompt (unified)
         # ---------------------------------------------------------------------
         prompt = await self.prompt_builder.build_prompt(
@@ -767,6 +867,7 @@ class DaemonOrchestrator:
             system_prompt=system_prompt,
             current_topic=getattr(self, "current_topic", "general"),
             fresh_facts=fresh_facts,  # Pass inline-extracted facts
+            stm_summary=stm_summary,  # Pass STM context summary
         )
 
         # Some builders return a context dict; assemble it to a single string

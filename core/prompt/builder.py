@@ -187,6 +187,7 @@ class UnifiedPromptBuilder:
                           search_query: Optional[str] = None, personality_config: Optional[Dict[str, Any]] = None,
                           system_prompt: Optional[str] = None, current_topic: Optional[str] = None,
                           fresh_facts: Optional[List[Any]] = None, memories: Optional[List[Any]] = None,
+                          stm_summary: Optional[Dict[str, Any]] = None,
                           **kwargs) -> Dict[str, Any]:
         """
         Build a complete prompt context for the given user input.
@@ -230,7 +231,7 @@ class UnifiedPromptBuilder:
             logger.warning(f"SMALL_TALK CHECK: is_small_talk={is_small_talk}")
             if is_small_talk:
                 logger.warning("USING LIGHTWEIGHT CONTEXT - this will drop separated keys!")
-                return await self._build_lightweight_context(user_input)
+                return await self._build_lightweight_context(user_input, stm_summary=stm_summary)
 
             # Step 2: Launch parallel data gathering tasks
             tasks = {}
@@ -379,8 +380,15 @@ class UnifiedPromptBuilder:
             gathered_memories = gathered.get("memories", [])
             logger.debug(f"CONTEXT BUILD: gathered memories count = {len(gathered_memories)}")
 
+            # DEBUG: Check what's in recent conversations
+            recent_convos = gathered.get("recent", [])
+            logger.warning(f"[DEBUG] recent_conversations has {len(recent_convos)} items")
+            if recent_convos:
+                logger.warning(f"[DEBUG] First recent: {recent_convos[0].get('query', '')[:50]}...")
+                logger.warning(f"[DEBUG] Last recent: {recent_convos[-1].get('query', '')[:50]}...")
+
             context = {
-                "recent_conversations": gathered.get("recent", []),
+                "recent_conversations": recent_convos,
                 "memories": gathered_memories,
                 "semantic_facts": gathered.get("semantic_facts", []),
                 "fresh_facts": gathered.get("recent_facts", []),
@@ -422,7 +430,7 @@ class UnifiedPromptBuilder:
 
             # Step 6: Apply hygiene and caps
             logger.warning(f"BEFORE HYGIENE_AND_CAPS: memories count = {len(context.get('memories', []))}")
-            context = await self._hygiene_and_caps(context)
+            context = await self._hygiene_and_caps(context, stm_summary=stm_summary)
             logger.warning(f"AFTER HYGIENE_AND_CAPS: context has {len(context)} keys: {list(context.keys())}")
             logger.warning(f"AFTER HYGIENE_AND_CAPS: memories count = {len(context.get('memories', []))}")
             logger.warning(f"AFTER HYGIENE_AND_CAPS: recent_summaries={len(context.get('recent_summaries', []))}, semantic_summaries={len(context.get('semantic_summaries', []))}")
@@ -637,7 +645,8 @@ class UnifiedPromptBuilder:
                 "semantic_reflections": context.get("semantic_reflections", []),
                 "dreams": context.get("dreams", []),
                 "semantic_chunks": context.get("semantic_chunks", []),
-                "wiki": context.get("wiki", [])
+                "wiki": context.get("wiki", []),
+                "stm_summary": context.get("stm_summary")  # STM context summary (dict or None)
             }
 
             build_time = time.time() - start_time
@@ -648,8 +657,10 @@ class UnifiedPromptBuilder:
 
         except Exception as e:
             logger.error(f"Prompt building failed: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             # Return minimal context on error
-            return {
+            error_context = {
                 "recent_conversations": [],
                 "memories": [],
                 "semantic_facts": [],
@@ -660,14 +671,18 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": [],
                 "wiki": []
             }
+            # Include stm_summary if it was provided
+            if stm_summary is not None:
+                error_context["stm_summary"] = stm_summary
+            return error_context
 
-    async def _build_lightweight_context(self, user_input: str) -> Dict[str, Any]:
+    async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build lightweight context for small-talk queries."""
         try:
             # Just get recent conversations for small-talk
             recent = await self.context_gatherer._get_recent_conversations(3)
 
-            return {
+            context = {
                 "recent_conversations": recent,
                 "memories": [],
                 "semantic_facts": [],
@@ -682,6 +697,12 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": [],
                 "wiki": []
             }
+
+            # Add STM summary if provided
+            if stm_summary is not None:
+                context["stm_summary"] = stm_summary
+
+            return context
         except Exception as e:
             logger.warning(f"Lightweight context building failed: {e}")
             return {
@@ -700,7 +721,7 @@ class UnifiedPromptBuilder:
                 "wiki": []
             }
 
-    async def _hygiene_and_caps(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def _hygiene_and_caps(self, context: Dict[str, Any], stm_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Apply deduplication and caps to all context sections.
 
@@ -892,6 +913,11 @@ class UnifiedPromptBuilder:
 
             context["semantic_chunks"] = list(chunks_by_title.values())
 
+        # Add STM summary if provided
+        if stm_summary is not None:
+            context["stm_summary"] = stm_summary
+            logger.debug(f"Added STM summary to context: topic={stm_summary.get('topic')}")
+
         return context
 
     async def _backfill_recent_conversations(
@@ -1070,6 +1096,7 @@ class UnifiedPromptBuilder:
         from datetime import datetime
         logger.warning(f"PROMPT ASSEMBLY START: context has {len(context)} keys: {list(context.keys())}")
         logger.warning(f"PROMPT ASSEMBLY START: recent_summaries={len(context.get('recent_summaries', []))}, semantic_summaries={len(context.get('semantic_summaries', []))}")
+        logger.warning(f"PROMPT ASSEMBLY START: stm_summary present = {context.get('stm_summary') is not None}, value = {context.get('stm_summary')}")
 
         def mem_parts(mem: Dict[str, Any]) -> tuple[str, str]:
             try:
@@ -1300,8 +1327,47 @@ class UnifiedPromptBuilder:
         if dr_lines:
             sections.append(f"[DREAMS] n={len(dr_lines)}\n" + "\n\n".join(dr_lines))
 
+        # STM (Short-Term Memory) Summary - placed right before query for maximum attention
+        stm_summary = context.get("stm_summary")
+        logger.warning(f"STM RENDERING CHECK: stm_summary = {stm_summary}")
+        if stm_summary:
+            logger.warning("STM RENDERING: Rendering STM section before query")
+            stm_lines = []
+            stm_lines.append(f"Topic: {stm_summary.get('topic', 'unknown')}")
+            stm_lines.append(f"User Question: {stm_summary.get('user_question', '')}")
+            stm_lines.append(f"Intent: {stm_summary.get('intent', '')}")
+            stm_lines.append(f"Tone: {stm_summary.get('tone', 'neutral')}")
+
+            open_threads = stm_summary.get('open_threads', [])
+            if open_threads:
+                stm_lines.append(f"Open Threads: {', '.join(open_threads)}")
+
+            constraints = stm_summary.get('constraints', [])
+            if constraints:
+                stm_lines.append(f"Constraints: {', '.join(constraints)}")
+
+            sections.append(f"[SHORT-TERM CONTEXT SUMMARY]\n" + "\n".join(stm_lines))
+            logger.warning(f"STM RENDERING: Added STM section before query")
+        else:
+            logger.warning("STM RENDERING: No stm_summary in context, skipping section")
+
+        # User input with last Q/A pair for coherence
         if user_input:
-            sections.append(f"[CURRENT USER QUERY]\n{user_input}")
+            query_section = f"[CURRENT USER QUERY]\n"
+
+            # Attach last Q/A pair for maximum coherence (high attention area)
+            recent = context.get("recent_conversations", [])
+            if recent and len(recent) > 0:
+                last_exchange = recent[0]  # First item is most recent (list ordered newest-first)
+                last_q = last_exchange.get("query", "")
+                last_a = last_exchange.get("response", "")
+                if last_q and last_a:
+                    query_section += f"[LAST EXCHANGE FOR CONTEXT]\n"
+                    query_section += f"User: {last_q}\n"
+                    query_section += f"Assistant: {last_a}\n\n"
+
+            query_section += f"[CURRENT QUERY]\n{user_input}"
+            sections.append(query_section)
 
         return "\n\n".join(sections)
 
