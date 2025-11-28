@@ -31,6 +31,7 @@ logger = get_logger("prompt_token_manager")
 
 # Constants for token management
 PRIORITY_ORDER = [
+    ("stm_summary",          10),  # Highest priority - STM context should never be trimmed
     ("recent_conversations", 7),
     ("semantic_chunks",      6),
     ("memories",             5),
@@ -126,8 +127,7 @@ class TokenManager:
         approx_chars = max_tokens * 4
         head_chars = int(approx_chars * head_ratio)
         tail_chars = max(0, approx_chars - head_chars)
-        if len(s) <= approx_chars:
-            return s
+        # Always compress if we're over the token limit (removed character length check)
         head = s[:head_chars]
         tail = s[-tail_chars:] if tail_chars > 0 else ""
         snip = f"\\n… [middle-out snipped {len(s) - (head_chars + tail_chars)} chars] …\\n"
@@ -148,16 +148,44 @@ class TokenManager:
             text = self._extract_text(item)
             return self.get_token_count(text, model_name)
 
-        # First pass: optimistic inclusion respecting soft caps already applied
+        # First pass: optimistic inclusion with per-item compression
         for name, _prio in PRIORITY_ORDER:
             val = trimmed.get(name)
             if not val:
                 continue
+
+            # Special handling: stm_summary is metadata, not content - preserve without token counting
+            if name == "stm_summary":
+                logger.warning(f"[TOKEN BUDGET] Preserving stm_summary (metadata, no token cost)")
+                continue
+
             logger.warning(f"[TOKEN BUDGET] Processing section '{name}' with {len(val) if isinstance(val, list) else 1} items, current_tokens={current_tokens}")
             if isinstance(val, list):
                 kept = []
                 for i, item in enumerate(val):
-                    t = _item_tokens(item)
+                    # Get item text and token count
+                    item_text = self._extract_text(item)
+                    t = self.get_token_count(item_text, model_name)
+
+                    # Apply middle-out to oversized individual items before considering removal
+                    max_item_tokens = MEMORY_ITEM_MAX_TOKENS if name == "memories" else SEMANTIC_ITEM_MAX_TOKENS
+                    if t > max_item_tokens and ENABLE_MIDDLE_OUT:
+                        compressed_text = self._middle_out(item_text, max_item_tokens, force=True)
+                        # Update item with compressed text
+                        if isinstance(item, dict):
+                            compressed_item = dict(item)
+                            # Update the text field (could be 'content', 'text', 'query', etc.)
+                            for text_key in ['content', 'text', 'query', 'response']:
+                                if text_key in compressed_item:
+                                    compressed_item[text_key] = compressed_text
+                                    break
+                            item = compressed_item
+                        else:
+                            item = compressed_text
+                        # Recount tokens after compression
+                        t = self.get_token_count(compressed_text, model_name)
+                        logger.debug(f"[MIDDLE-OUT] Compressed {name}[{i}]: {self.get_token_count(item_text, model_name)} → {t} tokens")
+
                     if current_tokens + t <= self.token_budget:
                         kept.append(item)
                         current_tokens += t
@@ -169,7 +197,15 @@ class TokenManager:
                     logger.warning(f"[TOKEN BUDGET] Kept {len(kept)}/{len(val)} memories, budget={self.token_budget}, used={current_tokens}")
                 trimmed[name] = kept
             else:
-                t = self.get_token_count(str(val), model_name)
+                # For string sections (like wiki content), apply middle-out if too large
+                item_text = str(val)
+                t = self.get_token_count(item_text, model_name)
+                if t > SEMANTIC_ITEM_MAX_TOKENS and ENABLE_MIDDLE_OUT:
+                    item_text = self._middle_out(item_text, SEMANTIC_ITEM_MAX_TOKENS, force=True)
+                    t = self.get_token_count(item_text, model_name)
+                    trimmed[name] = item_text
+                    logger.debug(f"[MIDDLE-OUT] Compressed {name} section: {self.get_token_count(str(val), model_name)} → {t} tokens")
+
                 if current_tokens + t <= self.token_budget:
                     current_tokens += t
                 else:
@@ -182,6 +218,9 @@ class TokenManager:
             for name, _ in PRIORITY_ORDER:
                 v = ctx.get(name)
                 if not v:
+                    continue
+                # Skip stm_summary - it's metadata, not content
+                if name == "stm_summary":
                     continue
                 if isinstance(v, list):
                     for it in v:

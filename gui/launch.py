@@ -352,6 +352,7 @@ def launch_gui(orchestrator):
                     yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=False), "", "", ""
                 elif isinstance(chunk, dict) and "content" in chunk:
                     assistant_reply = chunk["content"]
+                    logging.warning(f"[GUI LAUNCH DEBUG] Processing chunk content: '{assistant_reply[:100] if assistant_reply else 'EMPTY'}'")
                     # Update the last assistant message's content
                     if assistant_reply:  # Only update if there's actual content
                         if chat_history and isinstance(chat_history[-1], dict):
@@ -726,7 +727,12 @@ def launch_gui(orchestrator):
                     try:
                         _mm = orchestrator.model_manager
                         _mm.switch_model(_name)
-                        _ok, _err = _save_settings(lambda d: d.setdefault('models', {}).update({'active': _name}))
+                        # Fixed: Make sure the update actually modifies the dict
+                        def _update_active(d):
+                            if 'models' not in d:
+                                d['models'] = {}
+                            d['models']['active'] = _name
+                        _ok, _err = _save_settings(_update_active)
                         if not _ok:
                             return f"Switched to '{_name}'. Persist failed: {_err}"
                         return f"Active model set to: {_name} (persisted)."
@@ -1013,6 +1019,10 @@ def launch_gui(orchestrator):
                         return f"Failed to apply: {e}"
 
                 apply_btn.click(_apply_summary_n, inputs=[summary_n], outputs=[status_md])
+
+    # --- Configure queue with timeout ---
+    # Set max_size to allow long-running streaming responses (120s timeout)
+    demo.queue(default_concurrency_limit=10, max_size=120)
 
     # --- Launch logic with graceful fallback ---
     # prevent_thread_lock so we can inspect URLs or handle fallback

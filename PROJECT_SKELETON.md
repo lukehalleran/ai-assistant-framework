@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2025-11-18
+**Last Updated**: 2025-11-24
 
 ---
 
@@ -19,15 +19,19 @@ USER QUERY
     ↓
 [Heavy Topic Check] → Inline fact extraction for crisis/sensitive content
     ↓
+[STM Analysis] → Short-term memory pass (topic, intent, tone, threads) [NEW]
+    ↓
 [Hybrid Memory Retrieval] → Query rewriting + Semantic + Keyword matching
     ↓
 [Multi-Stage Gating] → FAISS → Cosine → Cross-Encoder
     ↓
-[Prompt Building] → Token-budgeted context with separated sections
+[Prompt Building] → Token-budgeted context with separated sections + STM summary
     ↓
 [Thinking Block] → LLM generates <thinking>...</thinking> + final answer
     ↓
 [LLM Generation] → Multi-provider streaming with Best-of-N/Duel modes
+    ↓
+[Response Tag Stripping] → Remove <reply>, <response>, <answer>, EOS markers
     ↓
 [Memory Storage] → Corpus JSON + Vector embeddings
     ↓
@@ -82,11 +86,57 @@ query → detect_crisis_level() → extract_topics()
 - `LIGHT_SUPPORT`: 2-4 sentences, brief acknowledgment
 - `CONVERSATIONAL`: Max 3 sentences, direct, no fluff
 
-**Dependencies**: MemoryCoordinator, PromptBuilder, ResponseGenerator, TopicManager, ToneDetector, QueryChecker
+**Dependencies**: MemoryCoordinator, PromptBuilder, ResponseGenerator, TopicManager, ToneDetector, QueryChecker, STMAnalyzer
 
 ---
 
-### 2.2 memory/memory_coordinator.py (Memory Hub)
+### 2.2 core/stm_analyzer.py (Short-Term Memory Analyzer) **[NEW]**
+**Purpose**: Lightweight LLM pass to analyze recent conversation context and generate structured summaries
+
+**Key Methods**:
+- `analyze(recent_memories, user_query, last_assistant_response)` → Dict[str, Any]
+  - Formats recent conversation history (last 10 lines, truncated to 200 chars each)
+  - Calls LLM (gpt-4o-mini) with low temperature (0.3) for structured JSON output
+  - Returns parsed JSON with: topic, user_question, intent, tone, open_threads, constraints
+  - Fallback to empty summary on failures
+
+- `_format_memories(memories)` → Formatted conversation string
+- `_parse_json(raw)` → Robust JSON parser (handles markdown wrapping, validates fields)
+- `_empty_summary()` → Fallback for failures
+
+**Activation Logic** (in orchestrator):
+- Requires `STM_MIN_CONVERSATION_DEPTH` (default: 3) conversation turns
+- Skips queries < 10 characters
+- Uses last `STM_MAX_RECENT_MESSAGES` (default: 8) for analysis
+
+**Output Structure**:
+```python
+{
+  "topic": "Python debugging",                    # 2-5 words
+  "user_question": "How to fix timeout error",    # One sentence
+  "intent": "Get practical solution",             # One sentence
+  "tone": "frustrated",                           # Single word
+  "open_threads": ["Performance", "Error handling"], # List
+  "constraints": ["Standard library only"]        # List
+}
+```
+
+**Integration**:
+- Injected into prompt RIGHT BEFORE `[CURRENT USER QUERY]` (maximum attention window)
+- Token manager preserves STM (priority=10, no token cost - metadata only)
+- Passed through: orchestrator → prompt_builder.build_prompt() → formatter._assemble_prompt()
+
+**Configuration**:
+- `USE_STM_PASS`: Enable/disable STM system (default: True)
+- `STM_MODEL_NAME`: Model for analysis (default: "gpt-4o-mini")
+- `STM_MAX_RECENT_MESSAGES`: Messages to analyze (default: 8)
+- `STM_MIN_CONVERSATION_DEPTH`: Minimum depth to trigger (default: 3)
+
+**Dependencies**: ModelManager
+
+---
+
+### 2.3 memory/memory_coordinator.py (Memory Hub)
 **Purpose**: Unified interface for all memory operations
 
 **5 Memory Types** (MemoryType enum):
@@ -128,7 +178,7 @@ query → detect_crisis_level() → extract_topics()
 
 ---
 
-### 2.3 memory/corpus_manager.py (JSON Persistence)
+### 2.4 memory/corpus_manager.py (JSON Persistence)
 **Purpose**: Short-term memory storage in JSON
 
 **Structure**:
@@ -157,7 +207,7 @@ query → detect_crisis_level() → extract_topics()
 
 ---
 
-### 2.4 memory/storage/multi_collection_chroma_store.py (Vector Store)
+### 2.5 memory/storage/multi_collection_chroma_store.py (Vector Store)
 **Purpose**: Semantic search across 5 ChromaDB collections
 
 **Collections**: episodic, semantic, procedural, summary, meta
@@ -172,7 +222,7 @@ query → detect_crisis_level() → extract_topics()
 
 ---
 
-### 2.5 processing/gate_system.py (Multi-Stage Filter)
+### 2.6 processing/gate_system.py (Multi-Stage Filter)
 **Purpose**: 3-stage relevance filtering
 
 **Pipeline**:
@@ -198,7 +248,7 @@ Stage 3: Cross-encoder reranking
 
 ---
 
-### 2.6 core/prompt/ (Modular Prompt System)
+### 2.7 core/prompt/ (Modular Prompt System)
 **Purpose**: Refactored prompt building split into specialized components
 
 **Architecture**:
@@ -228,6 +278,7 @@ Allocation with separated sections:
 9. Dreams (3 max)
 
 Priority order (with weights):
+- stm_summary: 10               # HIGHEST - metadata only, no token cost [NEW]
 - recent_conversations: 7
 - semantic_chunks: 6
 - memories: 5
@@ -240,6 +291,7 @@ Priority order (with weights):
 **Context Dict Structure**:
 ```python
 {
+  "stm_summary": {...},           # STM context summary dict (topic, intent, tone, etc.) [NEW]
   "recent_conversations": [...],
   "memories": [...],
   "semantic_facts": [...],
@@ -299,6 +351,14 @@ Current time: 2025-11-18 10:30:00
 [RECENT REFLECTIONS] n=5
 ...
 
+[SHORT-TERM CONTEXT SUMMARY] [NEW - placed immediately before query]
+Topic: Python debugging
+User Question: How to fix the timeout error
+Intent: Get practical solution to immediate technical problem
+Tone: frustrated
+Open Threads: Performance optimization, Error handling strategy
+Constraints: Limited to standard library, Production environment
+
 [CURRENT USER QUERY]
 User input here
 ```
@@ -307,7 +367,7 @@ User input here
 
 ---
 
-### 2.7 core/response_generator.py (LLM Interface)
+### 2.8 core/response_generator.py (LLM Interface)
 **Purpose**: Streaming response generation with multi-provider support
 
 **Providers**: OpenAI, Anthropic (Claude), OpenRouter, Local models
@@ -331,11 +391,67 @@ User input here
 - Coherence markers
 - No repetition penalties
 
+**Streaming Implementation** (FIXED 2025-11-24):
+- Word-by-word yielding with buffer accumulation
+- STOP_MARKERS for special token filtering: `<|user|>`, `<|assistant|>`, `<|system|>`, `<|end|>`, `<|eot_id|>`, `<｜end▁of▁sentence｜>` (DeepSeek)
+- Timeout protection (60s per chunk)
+- Critical fix: `buffer += delta_content` must execute for ALL non-empty chunks (not inside else block)
+
 **Dependencies**: ModelManager, CompetitiveScorer
 
 ---
 
-### 2.8 models/model_manager.py (Multi-Provider LLM)
+### 2.9 gui/ (Gradio Web Interface) **[MAJOR FIXES 2025-11-24]**
+**Purpose**: Async streaming GUI with thinking block support and response tag handling
+
+**Key Components**:
+
+**gui/handlers.py** - Event handlers and streaming relay
+- `handle_submit()` → Main async generator yielding response chunks to GUI
+  - Receives streaming chunks from response_generator
+  - Parses thinking blocks in real-time
+  - Applies response tag stripping
+  - Yields dict chunks: `{"role": "assistant", "content": text}`
+
+**Tag Stripping Logic** (FIXED):
+- Strips outer wrapper tags: `<reply>`, `<response>`, `<answer>`, `<result>`
+- Uses backreference regex `\1` to match opening/closing tags properly
+- Regex: `r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$"`
+- ONLY strips tags at start/end of string (not tags mentioned in content)
+- Prevents truncation when LLM discusses tags in response
+
+**gui/launch.py** - Gradio app setup and async iteration
+- `submit_chat()` → Async iteration over handler chunks
+  - Creates placeholder assistant message
+  - Updates chat_history with streamed content
+  - Handles thinking blocks with HTML collapsible sections
+  - Yields to Gradio for real-time display
+
+**Streaming Flow**:
+```
+response_generator.generate_streaming_response()
+    → yields word chunks
+handlers.py async for loop
+    → accumulates in final_output
+    → parses thinking/answer
+    → strips tags
+    → yields {"role": "assistant", "content": display_output}
+launch.py async iteration
+    → updates chat_history[-1]["content"]
+    → yields to Gradio
+Gradio renders updated chat_history
+```
+
+**Critical Fixes**:
+1. Added `<reply>` and `<response>` to tag stripping (was only `<result>`)
+2. Fixed regex to use backreference preventing content truncation
+3. Ensured chunks flow through all three stages (generator → handler → launch)
+
+**Dependencies**: Orchestrator, Gradio
+
+---
+
+### 2.10 models/model_manager.py (Multi-Provider LLM)
 **Purpose**: Unified interface for multiple LLM providers
 
 **Supported APIs**:
@@ -356,7 +472,7 @@ User input here
 
 ---
 
-### 2.9 utils/topic_manager.py (Topic Extraction)
+### 2.11 utils/topic_manager.py (Topic Extraction)
 **Purpose**: Hybrid topic extraction (spaCy + optional LLM)
 
 **Methods**:
@@ -376,7 +492,7 @@ User input here
 
 ---
 
-### 2.10 knowledge/WikiManager.py (Wikipedia Search)
+### 2.12 knowledge/WikiManager.py (Wikipedia Search)
 **Purpose**: FAISS-based Wikipedia semantic search
 
 **Data Sources**:
@@ -393,7 +509,7 @@ User input here
 
 ---
 
-### 2.11 utils/time_manager.py (Temporal Context)
+### 2.13 utils/time_manager.py (Temporal Context)
 **Purpose**: Time-aware operations and decay
 
 **Key Functions**:
@@ -408,7 +524,7 @@ User input here
 
 ---
 
-### 2.12 memory/memory_consolidator.py (Summarization)
+### 2.14 memory/memory_consolidator.py (Summarization)
 **Purpose**: LLM-based conversation summarization
 
 **Trigger**: Every N conversations (default 20) at shutdown
@@ -427,7 +543,7 @@ User input here
 
 ---
 
-### 2.13 memory/fact_extractor.py (Entity/Fact Extraction)
+### 2.15 memory/fact_extractor.py (Entity/Fact Extraction)
 **Purpose**: Extract facts from conversations for semantic memory
 
 **Methods**:
@@ -452,7 +568,7 @@ User input here
 
 ---
 
-### 2.14 utils/tone_detector.py (Crisis Detection)
+### 2.16 utils/tone_detector.py (Crisis Detection)
 **Purpose**: Detect distress/crisis language to adjust response tone
 
 **Crisis Levels** (CrisisLevel enum):
@@ -495,7 +611,7 @@ ToneAnalysis(
 
 ---
 
-### 2.15 utils/query_checker.py (Query Analysis)
+### 2.17 utils/query_checker.py (Query Analysis)
 **Purpose**: Fast query analysis for routing and heavy topic detection
 
 **Key Functions**:
@@ -538,7 +654,7 @@ QueryAnalysis(
 
 ---
 
-### 2.16 memory/hybrid_retriever.py (Hybrid Search)
+### 2.18 memory/hybrid_retriever.py (Hybrid Search)
 **Purpose**: Combine query rewriting, semantic search, and keyword matching
 
 **3-Tier Approach**:
@@ -565,7 +681,7 @@ hybrid_score = semantic_weight * semantic_score + keyword_weight * keyword_score
 
 ---
 
-### 2.17 utils/query_rewriter.py (Query Expansion)
+### 2.19 utils/query_rewriter.py (Query Expansion)
 **Purpose**: Expand casual/slang queries for better retrieval
 
 **Key Functions**:
@@ -574,7 +690,7 @@ hybrid_score = semantic_weight * semantic_score + keyword_weight * keyword_score
 
 ---
 
-### 2.18 utils/keyword_matcher.py (Term Matching)
+### 2.20 utils/keyword_matcher.py (Term Matching)
 **Purpose**: Calculate keyword overlap scores for retrieval boosting
 
 **Key Functions**:
@@ -637,6 +753,12 @@ SCORE_WEIGHTS = {
 # Hybrid Retrieval
 HYBRID_SUMMARIES_ENABLED = True
 HYBRID_REFLECTIONS_ENABLED = True
+
+# Short-Term Memory (STM) [NEW]
+USE_STM_PASS = True                    # Enable STM analysis
+STM_MODEL_NAME = "gpt-4o-mini"         # Model for STM (fast/cheap)
+STM_MAX_RECENT_MESSAGES = 8            # Messages to analyze
+STM_MIN_CONVERSATION_DEPTH = 3         # Minimum depth to trigger
 
 # Best-of-N Generation
 ENABLE_BEST_OF = True
@@ -863,14 +985,15 @@ daemon/
 │   └── config.yaml            # YAML config (optional)
 │
 ├── core/
-│   ├── orchestrator.py        # Main controller (tone, thinking blocks)
-│   ├── response_generator.py  # LLM streaming + Best-of-N/Duel
+│   ├── orchestrator.py        # Main controller (tone, STM, thinking blocks)
+│   ├── stm_analyzer.py        # Short-term memory analyzer [NEW]
+│   ├── response_generator.py  # LLM streaming + Best-of-N/Duel (FIXED)
 │   ├── competitive_scorer.py  # Judge-based response selection
 │   ├── dependencies.py        # Dependency injection setup
 │   ├── wiki_util.py          # Wikipedia utility functions
 │   ├── prompt_builder.py      # Legacy prompt builder (deprecated)
 │   ├── prompt.py             # Legacy unified prompt (deprecated)
-│   └── prompt/               # Modular prompt system
+│   └── prompt/               # Modular prompt system (STM integrated)
 │       ├── __init__.py       # Public API and imports
 │       ├── builder.py        # Main UnifiedPromptBuilder
 │       ├── context_gatherer.py # Data collection + hybrid retrieval
@@ -915,8 +1038,8 @@ daemon/
 │   └── topic_manager.py       # Topic-specific utilities
 │
 ├── gui/
-│   ├── launch.py              # Gradio web interface
-│   └── handlers.py            # UI event handlers
+│   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)
+│   └── handlers.py            # UI event handlers (streaming response relay, thinking block support)
 │
 ├── integrations/
 │   └── wikipedia_api.py       # Wikipedia API client
@@ -1160,13 +1283,15 @@ python main.py inspect-summaries
 
 | Component | One-Liner |
 |-----------|-----------|
-| orchestrator.py | Main loop: tone → topic → heavy check → prompt → thinking → LLM → store |
+| orchestrator.py | Main loop: tone → topic → heavy check → STM → prompt → thinking → LLM → store |
+| stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
 | memory_coordinator.py | Hub: retrieve from 5 collections, gate, rank, return top K |
 | corpus_manager.py | JSON CRUD: load/save/query short-term memories |
 | multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 5 types |
 | gate_system.py | Filter: FAISS → cosine → cross-encoder → top K |
-| prompt/builder.py | Assemble: system + separated context sections within 15K tokens |
-| response_generator.py | Stream: async LLM + Best-of-N + Duel modes |
+| prompt/builder.py | Assemble: system + separated context sections + STM within 15K tokens |
+| response_generator.py | Stream: async LLM + Best-of-N + Duel modes (buffer fix + DeepSeek EOS) [FIXED] |
+| gui/handlers.py | Relay: streaming chunks + thinking blocks + tag stripping (reply/response/answer) [FIXED] |
 | model_manager.py | Unified: OpenAI/Claude/OpenRouter/Local via single interface |
 | topic_manager.py | Extract: spaCy NER + optional LLM fallback |
 | memory_consolidator.py | Summarize: LLM compresses N conversations at shutdown |
@@ -1236,6 +1361,12 @@ PROMPT_MAX_WIKI = 3
 # Heavy Topic Detection
 HEAVY_TOPIC_CHAR_THRESHOLD = 2500
 HEAVY_TOPIC_TIMEOUT = 2.0  # seconds
+
+# Short-Term Memory (STM) [NEW]
+USE_STM_PASS = True
+STM_MODEL_NAME = "gpt-4o-mini"
+STM_MAX_RECENT_MESSAGES = 8
+STM_MIN_CONVERSATION_DEPTH = 3
 
 # Feature Toggles
 REFLECTIONS_ON_DEMAND = True  # Generate reflections if below threshold

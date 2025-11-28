@@ -115,6 +115,8 @@ class ModelManager:
         # DeepSeek models
         self.api_models["deepseek-v3.1"] = "deepseek/deepseek-chat-v3.1"
         self.api_models["deepseek-r1"] = "deepseek/deepseek-r1-0528"
+        # Google Gemini models
+        self.api_models["gemini-3-pro"] = "google/gemini-3-pro-preview"
 
     def _stub_response(self, prompt: str) -> str:
         snippet = (prompt or "").strip().splitlines()[0] if prompt else ""
@@ -284,6 +286,76 @@ class ModelManager:
         """Check if a given model is an API-based model."""
         return model_name in self.api_models
 
+    def supports_prompt_caching(self, model_name):
+        """Check if a given API model supports prompt caching."""
+        if model_name not in self.api_models:
+            return False
+
+        full_model_name = self.api_models[model_name]
+
+        # Anthropic Claude models (all versions)
+        if full_model_name.startswith("anthropic/claude"):
+            return True
+
+        # Google Gemini 2.5+ and 3+ models
+        # TEMPORARILY DISABLED: Gemini 3 Pro just released, OpenRouter support pending
+        # if full_model_name.startswith("google/gemini"):
+        #     # Extract version number - format: google/gemini-X.Y-...
+        #     try:
+        #         version_part = full_model_name.split("gemini-")[1].split("-")[0]
+        #         major_version = float(version_part.split(".")[0])
+        #         if major_version >= 2:
+        #             minor_version = float(version_part.split(".")[1]) if "." in version_part else 0
+        #             if major_version > 2 or (major_version == 2 and minor_version >= 5):
+        #                 return True
+        #     except (IndexError, ValueError):
+        #         pass
+
+        # OpenAI GPT-4o and newer models
+        if full_model_name.startswith("openai/gpt"):
+            # gpt-4o, gpt-4o-mini, gpt-4.1+, gpt-5+ support caching
+            if "gpt-4o" in full_model_name or "gpt-5" in full_model_name:
+                return True
+            # gpt-4.1 and above
+            if "gpt-4." in full_model_name:
+                try:
+                    version = full_model_name.split("gpt-4.")[1].split("-")[0].split("/")[0]
+                    if float(version) >= 1:
+                        return True
+                except (IndexError, ValueError):
+                    pass
+
+        return False
+
+    def _format_messages_with_cache(self, system_prompt, user_prompt):
+        """
+        Format messages with cache_control breakpoints for supported models.
+        Caches the system prompt (unchanging) but not the user prompt (changes each request).
+
+        Args:
+            system_prompt: The system prompt to cache
+            user_prompt: The user prompt (not cached)
+
+        Returns:
+            List of message dictionaries with cache_control breakpoints
+        """
+        return [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": user_prompt
+            }
+        ]
+
     @log_and_time("Generate with openAI")
     def generate_with_openai(self, prompt, model_name, system_prompt=None, max_tokens=None, temperature=None, top_p=None):
         """Generate text using OpenAI API, with global defaults fallback."""
@@ -303,13 +375,30 @@ class ModelManager:
                 "\n\nHuman:",
             ]
 
+            # Check if model supports caching and format messages accordingly
+            # Need to check against the alias name (e.g., "claude-opus" not "anthropic/claude-3-opus")
+            model_alias = None
+            for alias, full_name in self.api_models.items():
+                if full_name == model_name:
+                    model_alias = alias
+                    break
+
+            if model_alias and self.supports_prompt_caching(model_alias):
+                logger.debug(f"Using prompt caching for model: {model_name}")
+                messages = self._format_messages_with_cache(
+                    system_prompt or SYSTEM_PROMPT,
+                    prompt
+                )
+            else:
+                messages = [
+                    {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ]
+
             # logger.debug(  Calling OpenAI API: {model_name}")
             response = self.client.chat.completions.create(
                 model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
+                messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
@@ -502,10 +591,15 @@ class ModelManager:
                     "\n\nHuman:",
                 ]
 
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ]
+                # Check if model supports caching and format messages accordingly
+                if self.supports_prompt_caching(target_model):
+                    logger.debug(f"Using prompt caching for model: {target_model}")
+                    messages = self._format_messages_with_cache(system_prompt, prompt)
+                else:
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt}
+                    ]
 
                 response = await self.async_client.chat.completions.create(
                     model=self.api_models[target_model],
@@ -546,24 +640,31 @@ class ModelManager:
 
             try:
                 logger.debug(f"[ModelManager] Using OpenAI async model: {target_model}")
+
+                # Build messages based on raw mode and system prompt
                 if raw:
                     messages = [{"role": "user", "content": prompt}]
                 else:
-                    system_prompt = kwargs.get('system_prompt')
-                    if system_prompt is not None:
-                        messages = [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": prompt}
-                        ]
+                    system_prompt_text = kwargs.get('system_prompt')
+                    if system_prompt_text is None:
+                        system_prompt_text = SYSTEM_PROMPT
+
+                    # Check if model supports caching and format messages accordingly
+                    if self.supports_prompt_caching(target_model):
+                        logger.debug(f"Using prompt caching for model: {target_model}")
+                        messages = self._format_messages_with_cache(system_prompt_text, prompt)
                     else:
                         messages = [
-                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "system", "content": system_prompt_text},
                             {"role": "user", "content": prompt}
                         ]
+
                 for i, msg in enumerate(messages):
                     logger.debug(f"--- Prompt Message {i} ---")
                     logger.debug(f"Role: {msg['role']}")
-                    logger.debug(f"Content:\n{msg['content']}")
+                    content_preview = str(msg['content'])[:200] if isinstance(msg['content'], str) else "Complex content structure"
+                    logger.debug(f"Content: {content_preview}...")
+
                 # Stop sequences to prevent hallucinating user responses (less restrictive)
                 stop_sequences = [
                     "\n\nUser:",
