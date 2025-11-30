@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2025-11-24
+**Last Updated**: 2025-11-29
 
 ---
 
@@ -22,6 +22,10 @@ USER QUERY
 [STM Analysis] → Short-term memory pass (topic, intent, tone, threads) [NEW]
     ↓
 [Hybrid Memory Retrieval] → Query rewriting + Semantic + Keyword matching
+    ↓               ↓ (via MemoryCoordinatorV2) [REFACTORED]
+    ↓               ├─> MemoryRetriever (parallel ChromaDB queries)
+    ↓               ├─> MemoryScorer (ranking with composite scores)
+    ↓               └─> ThreadManager (conversation continuity)
     ↓
 [Multi-Stage Gating] → FAISS → Cosine → Cross-Encoder
     ↓
@@ -34,9 +38,22 @@ USER QUERY
 [Response Tag Stripping] → Remove <reply>, <response>, <answer>, EOS markers
     ↓
 [Memory Storage] → Corpus JSON + Vector embeddings
+    ↓               ↓ (via MemoryStorage) [REFACTORED]
+    ↓               ├─> CorpusManager (JSON persistence)
+    ↓               ├─> ChromaStore (vector embeddings)
+    ↓               └─> FactExtractor (optional fact extraction)
     ↓
 RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 ```
+
+**Note**: Memory system refactored (Nov 2025) into modular components:
+- `memory/coordinator.py` (V2) - Thin orchestration layer
+- `memory/memory_retriever.py` - Retrieval operations
+- `memory/memory_storage.py` - Storage operations
+- `memory/thread_manager.py` - Thread tracking
+- `memory/memory_interface.py` - Protocol contracts
+
+Legacy `memory/memory_coordinator.py` still in use but being migrated.
 
 ---
 
@@ -136,8 +153,10 @@ query → detect_crisis_level() → extract_topics()
 
 ---
 
-### 2.3 memory/memory_coordinator.py (Memory Hub)
-**Purpose**: Unified interface for all memory operations
+### 2.3 memory/memory_coordinator.py (Memory Hub - Legacy)
+**Purpose**: Unified interface for all memory operations (original monolithic version)
+
+**Status**: Still in use, but refactored into modular components in `memory/coordinator.py` (MemoryCoordinatorV2)
 
 **5 Memory Types** (MemoryType enum):
 1. `EPISODIC` - Raw conversation turns (query/response pairs)
@@ -175,6 +194,117 @@ query → detect_crisis_level() → extract_topics()
 - Access count boosts truth score
 
 **Dependencies**: CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryConsolidator
+
+---
+
+### 2.3.1 memory/coordinator.py (Modular Memory Coordinator V2) **[NEW - REFACTORED]**
+**Purpose**: Thin orchestration layer delegating to specialized components
+
+**Architecture**:
+```python
+MemoryCoordinatorV2 (coordinator.py)
+    ↓
+├── MemoryScorer (memory_scorer.py) - Scoring and ranking
+├── MemoryStorage (memory_storage.py) - Persistence operations
+├── MemoryRetriever (memory_retriever.py) - Retrieval operations
+└── ThreadManager (thread_manager.py) - Conversation thread tracking
+```
+
+**Key Methods** (same public API as legacy coordinator):
+- `get_memories(query, limit, topics)` → Delegates to MemoryRetriever
+- `store_interaction(query, response, tags)` → Delegates to MemoryStorage
+- `process_shutdown_memory()` → Delegates to MemoryStorage
+
+**Refactoring Benefits**:
+- Single Responsibility: Each module handles one concern
+- Easier testing: Components can be tested in isolation
+- Better maintainability: Changes isolated to specific modules
+- Protocol-based: Uses memory_interface.py contracts
+
+**Dependencies**: MemoryScorer, MemoryStorage, MemoryRetriever, ThreadManager, CorpusManager, MultiCollectionChromaStore
+
+---
+
+### 2.3.2 memory/memory_retriever.py **[NEW - REFACTORED]**
+**Purpose**: Memory retrieval operations extracted from coordinator
+
+**Key Methods**:
+- `get_memories(query, limit, topics)` → Main retrieval pipeline
+- `_get_recent_from_corpus(n)` → Fetch recent conversations
+- `_query_chroma_collections(query, collection_limits)` → Parallel ChromaDB queries
+- `_apply_gating(query, memories, threshold, is_deictic)` → Filter with gate system
+
+**Retrieval Pipeline**:
+```python
+1. Get recent conversations from corpus
+2. Query ChromaDB collections in parallel
+3. Apply multi-stage gating
+4. Rank with MemoryScorer
+5. Return top K
+```
+
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryScorer
+
+---
+
+### 2.3.3 memory/memory_storage.py **[NEW - REFACTORED]**
+**Purpose**: Memory persistence operations extracted from coordinator
+
+**Key Methods**:
+- `store_interaction(query, response, tags)` → Persist to corpus + Chroma
+- `_extract_and_store_facts(query, response, threshold, timeout_s)` → Fact extraction with timeout
+- `process_shutdown_memory()` → Consolidation and summarization at shutdown
+- `_ensure_topics(tags, query)` → Topic extraction fallback
+
+**Storage Flow**:
+```python
+1. Create memory dict with metadata
+2. Calculate truth/importance scores (via MemoryScorer)
+3. Add to corpus JSON
+4. Add to ChromaDB with embeddings
+5. Optional: Extract facts if configured
+```
+
+**Configuration**:
+- `FACTS_EXTRACT_EACH_TURN`: Extract facts every turn (default: False)
+- `SUMMARIZE_AT_SHUTDOWN_ONLY`: Defer summarization (default: True)
+
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, FactExtractor, MemoryConsolidator, MemoryScorer
+
+---
+
+### 2.3.4 memory/thread_manager.py **[NEW - REFACTORED]**
+**Purpose**: Conversation thread tracking extracted from coordinator
+
+**Key Methods**:
+- `get_thread_context(query, topic, max_turns)` → Retrieve related thread messages
+- `_belongs_to_thread(current_query, last_conv, current_topic)` → Thread continuity check
+- `_calculate_thread_continuity_score(...)` → Scoring for thread membership
+
+**Thread Detection Factors**:
+- Keyword overlap between queries
+- Time proximity (<10 minutes)
+- Both heavy topics (crisis continuity)
+- Same topic match
+- Threshold: `THREAD_CONTINUITY_THRESHOLD = 0.5`
+
+**Dependencies**: CorpusManager, TopicManager, TimeManager
+
+---
+
+### 2.3.5 memory/memory_interface.py **[NEW - REFACTORED]**
+**Purpose**: Protocol contracts for memory components
+
+**Protocols Defined**:
+- `MemoryRetrieverProtocol` - Interface for retrieval operations
+- `MemoryStorageProtocol` - Interface for storage operations
+- `MemoryCoordinatorProtocol` - Interface for coordinator
+- `ThreadManagerProtocol` - Interface for thread tracking
+
+**Benefits**:
+- Type safety with Protocol typing
+- Clear contracts for component interactions
+- Enables mock implementations for testing
 
 ---
 
@@ -1003,13 +1133,17 @@ daemon/
 │       └── base.py          # Utilities and fallbacks
 │
 ├── memory/
-│   ├── memory_coordinator.py      # Memory hub
+│   ├── memory_coordinator.py      # Memory hub (legacy monolithic)
+│   ├── coordinator.py             # Memory hub V2 (modular refactor) [NEW]
+│   ├── memory_retriever.py        # Retrieval operations [NEW - REFACTORED]
+│   ├── memory_storage.py          # Storage/persistence operations [NEW - REFACTORED]
+│   ├── thread_manager.py          # Thread tracking [NEW - REFACTORED]
+│   ├── memory_scorer.py           # Scoring utilities [REFACTORED]
+│   ├── memory_interface.py        # Protocol contracts [NEW - REFACTORED]
 │   ├── corpus_manager.py          # JSON persistence
 │   ├── memory_consolidator.py     # Summarization
 │   ├── fact_extractor.py          # Pattern-based extraction
 │   ├── llm_fact_extractor.py      # LLM-based extraction
-│   ├── memory_scorer.py           # Scoring utilities
-│   ├── memory_interface.py        # Interface contracts
 │   ├── hybrid_retriever.py        # Query rewrite + semantic + keyword
 │   └── storage/
 │       └── multi_collection_chroma_store.py  # Vector DB
@@ -1285,7 +1419,12 @@ python main.py inspect-summaries
 |-----------|-----------|
 | orchestrator.py | Main loop: tone → topic → heavy check → STM → prompt → thinking → LLM → store |
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
-| memory_coordinator.py | Hub: retrieve from 5 collections, gate, rank, return top K |
+| memory_coordinator.py | Hub (legacy): retrieve from 5 collections, gate, rank, return top K |
+| coordinator.py | Hub V2: thin orchestration delegating to modular components [NEW - REFACTORED] |
+| memory_retriever.py | Retrieval: get_memories pipeline with gating and ranking [NEW - REFACTORED] |
+| memory_storage.py | Storage: store_interaction and fact extraction [NEW - REFACTORED] |
+| thread_manager.py | Threads: conversation continuity tracking [NEW - REFACTORED] |
+| memory_interface.py | Protocols: type contracts for memory components [NEW - REFACTORED] |
 | corpus_manager.py | JSON CRUD: load/save/query short-term memories |
 | multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 5 types |
 | gate_system.py | Filter: FAISS → cosine → cross-encoder → top K |
@@ -1383,4 +1522,10 @@ SIMILARITY_THRESHOLD = 0.90  # Semantic similarity for duplicates
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2025-11-18
+**Last Updated**: 2025-11-29
+
+**Recent Changes**:
+- Added memory system refactoring documentation (coordinator.py V2 and modular components)
+- Documented new files: memory_retriever.py, memory_storage.py, thread_manager.py, memory_interface.py
+- Updated architecture diagrams to show modular memory flow
+- Added refactoring notes and protocol contract information

@@ -28,6 +28,9 @@ htmlcov/
 data/*
 chroma/
 chroma_db/
+
+# --- SECRETS ---
+.env
 chroma_db_*/
 embedded_parquet/
 semantic_chunks/
@@ -41,3 +44,4 @@ embed_checkpoint.json
 !data/pipeline/
 !data/scripts/
 !data/corpus_v4.json
+data/corpus_v4.json
