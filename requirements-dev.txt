@@ -1,0 +1,21 @@
+# requirements-dev.txt
+# Development and testing dependencies for Daemon RAG Agent
+
+# Include all production dependencies
+-r requirements.txt
+
+# Testing frameworks
+pytest==8.4.2
+pytest-asyncio==1.2.0
+pytest-cov==7.0.0
+
+# Code quality and linting
+# (Add these if/when needed)
+# black>=23.0.0
+# flake8>=6.0.0
+# mypy>=1.0.0
+# pylint>=3.0.0
+
+# Development tools
+# ipython>=8.0.0
+# jupyter>=1.0.0

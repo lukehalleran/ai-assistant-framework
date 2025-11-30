@@ -2,11 +2,12 @@
 # gui/launch.py
 
 Module Contract
-- Purpose: Define and launch the Gradio UI. Provides Chat, Debug Trace, Status, and Settings tabs; wires UI events to handlers and state.
+- Purpose: Define and launch the Gradio UI. Provides Chat, Debug Trace, Status, and Settings tabs; wires UI events to handlers and state. Registers health check endpoint.
 - Inputs:
   - Orchestrator instance (built in main). Environment flags for networking.
 - Outputs:
   - Running web app (local or shared); exposes live chat and debug views.
+  - Health check endpoint at /health (HTTP 200 for healthy, 503 for degraded)
 - Key pieces:
   - submit_chat(): async driver that streams tokens + timer updates
   - Tabs:
@@ -14,8 +15,15 @@ Module Contract
     • Debug Trace: renders debug_state entries
     • Status: shows counters (summaries, corpus counts, logs)
     • Settings: slider to control summary cadence (every N exchanges)
+  - Health endpoint: Lightweight checks (corpus, ChromaDB, API key) for Docker/K8s
+- Dependencies:
+  - gui.handlers (handle_submit)
+  - utils.health_check (add_health_endpoint)
+  - utils.conversation_logger
 - Side effects:
-  - None beyond UI + logging.
+  - Registers /health endpoint on FastAPI app after launch
+  - Logs URLs and health endpoint to console
+  - Runs indefinite event loop (until KeyboardInterrupt)
 """
 import os
 import logging
@@ -1037,10 +1045,16 @@ def launch_gui(orchestrator):
             inbrowser=_env_flag("GRADIO_OPEN_BROWSER", False),
             prevent_thread_lock=True,
         )
+        # Add health check endpoint
+        from utils.health_check import add_health_endpoint
+        add_health_endpoint(app, orchestrator)
+
         # Print URLs for visibility
         print(f"[GUI] Local:  {local_url}")
+        print(f"[GUI] Health: {local_url}/health")
         if SHARE and share_url:
             print(f"[GUI] Public: {share_url}")
+            print(f"[GUI] Health: {share_url}/health")
         elif SHARE and not share_url:
             print("[GUI] Requested share=True but no share URL returned.")
 
@@ -1060,7 +1074,12 @@ def launch_gui(orchestrator):
                 inbrowser=_env_flag("GRADIO_OPEN_BROWSER", False),
                 prevent_thread_lock=True,
             )
+            # Add health check endpoint (fallback path)
+            from utils.health_check import add_health_endpoint
+            add_health_endpoint(app, orchestrator)
+
             print(f"[GUI] Local: {local_url}")
+            print(f"[GUI] Health: {local_url}/health")
         else:
             raise
 
