@@ -1,0 +1,246 @@
+# .dockerignore
+# Excludes files from Docker build context for faster builds and smaller images
+
+# ============================================================================
+# VERSION CONTROL
+# ============================================================================
+.git/
+.gitignore
+.gitattributes
+
+# ============================================================================
+# PYTHON CACHE & ARTIFACTS
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# ============================================================================
+# TESTING & COVERAGE
+# ============================================================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Test files
+tests/
+test_*.py
+*_test.py
+demo_*.py
+mutation_confidence.py
+
+# Mutation testing artifacts
+mutants/
+
+# ============================================================================
+# LOGS & TEMPORARY FILES
+# ============================================================================
+*.log
+*.log.*
+conversation_logs/
+daemon_debug.log
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+*.kate-swp
+*.backup
+
+# Debug files
+*DEBUG.txt
+trace_clean.py
+debug_spacy_parse.py
+
+# ============================================================================
+# DATA DIRECTORIES (Mount as volumes instead)
+# ============================================================================
+# Large data directories that should be mounted, not copied
+data/
+!data/.gitkeep
+
+# Vector databases (should be volumes)
+chroma/
+chroma_db/
+chroma_db_*/
+
+# Memory and embeddings (should be volumes)
+daemon_memory/
+embedded_parquet/
+semantic_chunks/
+embeddings_mmap.dat
+embed_checkpoint.json
+
+# Project-specific data
+project/
+.cache/
+
+# ============================================================================
+# DOCUMENTATION (Optional - include README)
+# ============================================================================
+*.md
+!README.md
+
+# Documentation that's not needed at runtime
+CLAUDE.md
+PROJECT_SKELETON.md
+QUICK_REFERENCE.md
+META_CONVERSATIONAL_FIX.md
+REFACTORING_INTEGRATION_ISSUES.md
+STM_AND_GUI_DEBUG_HANDOFF.md
+THINKING_BLOCKS_IMPLEMENTATION.md
+TONE_DETECTION_SUMMARY.md
+AGENTS.md
+
+# ============================================================================
+# IDE & EDITOR FILES
+# ============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================================
+# ENVIRONMENT & CONFIG
+# ============================================================================
+.env
+.env.local
+.env.*.local
+*.env
+
+# Keep the example
+!.env.example
+
+# ============================================================================
+# CI/CD & DEPLOYMENT
+# ============================================================================
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+docker-compose.override.yml
+
+# ============================================================================
+# BUILD ARTIFACTS & COMPILED FILES
+# ============================================================================
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# ============================================================================
+# LARGE MODEL FILES (Should be downloaded or mounted)
+# ============================================================================
+# Wikipedia data (102GB+)
+data/wiki/
+
+# Google Cloud SDK and large dependencies
+data/pipeline/
+
+# FAISS indices (should be generated or mounted)
+*.faiss
+vector_index_*.faiss
+full_pipeline_run.log
+
+# ============================================================================
+# SCRIPTS & UTILITIES (Not needed at runtime)
+# ============================================================================
+scripts/
+devtools/
+stitch_project.py
+stitched.txt
+stitched_project.txt
+
+# Makefile variants (keep main Dockerfile/docker-compose)
+Makefile.*
+
+# ============================================================================
+# DEVELOPMENT HELPERS
+# ============================================================================
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# ============================================================================
+# PERSONALITY & CUSTOM PROMPTS (Optional - may want to include)
+# ============================================================================
+# Uncomment if you want to exclude custom personality files
+# personality/
+
+# ============================================================================
+# MISC
+# ============================================================================
+# System files
+Thumbs.DB
+.directory
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Backup files
+*.bak
+*.backup
+*~

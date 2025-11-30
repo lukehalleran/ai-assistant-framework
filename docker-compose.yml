@@ -1,0 +1,200 @@
+# docker-compose.yml
+# Docker Compose configuration for Daemon RAG Agent
+# Provides production-ready deployment with persistent storage and health monitoring
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # GUI Service (Default)
+  # ============================================================================
+  daemon-gui:
+    image: daemon-rag-agent:latest
+    container_name: daemon-rag-gui
+
+    # Build configuration (if image not pre-built)
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # Port mappings
+    ports:
+      - "7860:7860"  # Gradio web interface
+
+    # Environment variables
+    # Load from .env file in project root
+    env_file:
+      - .env
+
+    # Additional environment overrides
+    environment:
+      # Gradio server settings
+      GRADIO_SERVER_NAME: 0.0.0.0
+      GRADIO_PORT: 7860
+
+      # ChromaDB device (cpu or cuda)
+      CHROMA_DEVICE: cpu
+
+      # Hugging Face offline mode (models pre-downloaded in image)
+      HF_HUB_OFFLINE: 1
+      HF_HOME: /app/data/cache/huggingface
+
+    # Volume mounts for persistent data
+    volumes:
+      # Main data directory (corpus, ChromaDB, cache)
+      - daemon-data:/app/data
+
+      # Conversation logs (optional, for debugging)
+      - daemon-logs:/app/conversation_logs
+
+      # Custom configuration (optional override)
+      # Uncomment to use host config instead of container defaults
+      # - ./config:/app/config:ro
+
+      # Custom .env file (alternative to env_file)
+      # - ./.env:/app/.env:ro
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'       # Max 4 CPU cores
+          memory: 8G        # Max 8GB RAM
+        reservations:
+          cpus: '2.0'       # Reserve 2 CPU cores
+          memory: 4G        # Reserve 4GB RAM
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Default command (GUI mode)
+    command: ["gui"]
+
+  # ============================================================================
+  # CLI Service (Alternative - disabled by default)
+  # ============================================================================
+  # Uncomment to run CLI mode instead of GUI
+  # daemon-cli:
+  #   image: daemon-rag-agent:latest
+  #   container_name: daemon-rag-cli
+  #
+  #   env_file:
+  #     - .env
+  #
+  #   volumes:
+  #     - daemon-data:/app/data
+  #     - daemon-logs:/app/conversation_logs
+  #
+  #   stdin_open: true    # Keep STDIN open
+  #   tty: true           # Allocate pseudo-TTY
+  #
+  #   restart: "no"       # Don't auto-restart CLI
+  #
+  #   command: ["cli"]
+
+# ============================================================================
+# Named Volumes
+# ============================================================================
+volumes:
+  # Persistent data volume
+  # Contains: corpus JSON, ChromaDB, Hugging Face cache, Wikipedia indices
+  daemon-data:
+    driver: local
+    # Optional: Use specific host path for data
+    # driver_opts:
+    #   type: none
+    #   o: bind
+    #   device: /path/to/host/data
+
+  # Conversation logs volume
+  daemon-logs:
+    driver: local
+
+# ============================================================================
+# Networks (optional - using default bridge network)
+# ============================================================================
+# networks:
+#   daemon-network:
+#     driver: bridge
+
+# ============================================================================
+# Usage Instructions
+# ============================================================================
+#
+# Build and start:
+#   docker-compose up -d
+#
+# View logs:
+#   docker-compose logs -f daemon-gui
+#
+# Stop services:
+#   docker-compose down
+#
+# Stop and remove volumes:
+#   docker-compose down -v
+#
+# Rebuild image:
+#   docker-compose build
+#
+# Run CLI mode (interactive):
+#   docker-compose run --rm daemon-gui cli
+#
+# Access health check:
+#   curl http://localhost:7860/health
+#
+# Inspect volumes:
+#   docker volume ls
+#   docker volume inspect daemon-rag-agent_daemon-data
+#
+# ============================================================================
+# Environment Variables
+# ============================================================================
+#
+# Required in .env file:
+#   - OPENAI_API_KEY (or other LLM provider API key)
+#
+# Optional overrides:
+#   - CORPUS_FILE (default: /app/data/corpus_v4.json)
+#   - CHROMA_PATH (default: /app/data/chroma_db_v4_v2)
+#   - MODEL_MAX_TOKENS (default: 4096)
+#   - PROMPT_TOKEN_BUDGET (default: 2048)
+#
+# See .env.example for full list of 105+ configuration options
+#
+# ============================================================================
+# GPU Support (Optional)
+# ============================================================================
+#
+# To enable GPU support for ChromaDB and transformers:
+#
+# 1. Install nvidia-docker2:
+#    https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#
+# 2. Modify daemon-gui service:
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              count: 1
+#              capabilities: [gpu]
+#
+# 3. Set environment variable:
+#    CHROMA_DEVICE: cuda
+#
+# ============================================================================
