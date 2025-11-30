@@ -809,8 +809,6 @@ This project represents 8 months of learning, experimentation, and iteration. Sp
 
 - The open-source ML community for tools like sentence-transformers, FAISS, and ChromaDB
 - Anthropic and OpenAI for accessible LLM APIs
-- The countless Stack Overflow answers that helped debug async/await patterns
-
 ---
 
 <div align="center">
