@@ -2,25 +2,29 @@
 # core/prompt/context_gatherer.py
 
 Module Contract
-- Purpose: Data collection and retrieval for prompt building context assembly.
+- Purpose: Data collection and retrieval for prompt building context assembly. ENHANCED: Replaces flat facts with categorized UserProfile using hybrid retrieval (2/3 semantic + 1/3 recent).
 - Inputs:
   - gather_context(query: str, limit_memories: int, limit_facts: int) -> Dict[str, Any]
   - get_recent_conversations(limit: int) -> List[Dict]
   - retrieve_semantic_memories(query: str, limit: int) -> List[Dict]
   - get_wiki_content(query: str, limit: int) -> List[Dict]
+  - UPDATED: get_user_profile_context(query: str) -> str [NEW: replaces semantic_facts + fresh_facts]
 - Outputs:
   - Comprehensive context dictionary with all gathered data
   - Recent conversation history within specified limits
   - Semantically relevant memories and facts
   - Wikipedia content and semantic chunks
+  - UPDATED: 'user_profile' key with categorized facts (replaces 'semantic_facts' and 'fresh_facts')
 - Behavior:
   - Retrieves data from multiple memory collections (episodic, semantic, procedural)
   - Applies filtering and relevance scoring to retrieved content
   - Implements caching for expensive operations (wiki lookups, semantic search)
   - Coordinates parallel data fetching with timeout management
   - Handles graceful fallbacks when data sources are unavailable
+  - UPDATED: Uses UserProfile hybrid retrieval (2/3 semantic + 1/3 recent per category) instead of flat facts
 - Dependencies:
   - memory.memory_coordinator (memory retrieval)
+  - memory.user_profile (NEW: categorized fact storage)
   - core.wiki_util (Wikipedia content)
   - utils.time_manager (temporal context)
   - processing.gate_system (relevance filtering)
@@ -83,6 +87,7 @@ PROMPT_MAX_FACTS = _cfg_int("prompt_max_facts", 15)    # 15 facts
 PROMPT_MAX_RECENT_FACTS = _cfg_int("prompt_max_recent_facts", 15)  # 15 recent facts
 PROMPT_MAX_SUMMARIES = _cfg_int("prompt_max_summaries", 10)  # Total summaries (recent + semantic)
 PROMPT_MAX_REFLECTIONS = _cfg_int("prompt_max_reflections", 10)  # Total reflections (recent + semantic)
+USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)  # Facts per category in user profile
 
 # Separate limits for recent vs semantic
 PROMPT_MAX_RECENT_SUMMARIES = _cfg_int("prompt_max_recent_summaries", 5)  # Recent summaries only
@@ -125,6 +130,17 @@ class ContextGatherer:
         self.time_manager = TimeManager()
         # Use provided gate system or create cached one
         self._gate_system = gate_system
+
+        # Initialize user profile (gets from memory_coordinator if available)
+        self.user_profile = None
+        if hasattr(memory_coordinator, 'user_profile'):
+            self.user_profile = memory_coordinator.user_profile
+            logger.debug("[ContextGatherer] Using UserProfile from memory_coordinator")
+        else:
+            # Fallback: create our own instance
+            from memory.user_profile import UserProfile
+            self.user_profile = UserProfile()
+            logger.debug("[ContextGatherer] Created new UserProfile instance")
 
     @property
     def gate_system(self):
@@ -890,3 +906,31 @@ class ContextGatherer:
             logger.warning(f"Semantic search error: {e}")
 
         return []
+
+    async def get_user_profile_context(self, query: str, max_tokens: int = 500) -> str:
+        """
+        Get user profile context with hybrid retrieval (2/3 semantic + 1/3 recent).
+        Replaces the old semantic_facts and fresh_facts approach.
+
+        Args:
+            query: Current user query for semantic relevance
+            max_tokens: Token budget for profile context
+
+        Returns:
+            Formatted profile string ready for prompt injection
+        """
+        if not self.user_profile:
+            logger.debug("[ContextGatherer] No user profile available")
+            return ""
+
+        try:
+            profile_context = self.user_profile.get_context_injection(
+                max_tokens=max_tokens,
+                query=query,
+                facts_per_category=USER_PROFILE_FACTS_PER_CATEGORY
+            )
+            logger.debug(f"[ContextGatherer] Generated profile context ({len(profile_context)} chars)")
+            return profile_context
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get profile context: {e}")
+            return ""

@@ -55,7 +55,9 @@ def test_normalize_triple_valid():
     assert result is not None
     assert result["subject"] == "user"
     assert result["relation"] == "likes"
-    assert result["object"] == "python"
+    assert result["object"] == "Python"  # Preserves case for proper nouns
+    assert result["category"]  # Should have category
+    assert result["confidence"]  # Should have confidence
 
 
 def test_normalize_triple_pronouns():
@@ -93,7 +95,7 @@ def test_normalize_triple_strips_periods():
     """Test _normalize_triple strips trailing periods."""
     triple = {"subject": "User", "relation": "likes", "object": "Python."}
     result = _normalize_triple(triple)
-    assert result["object"] == "python"
+    assert result["object"] == "Python"  # Preserves case, strips period
 
 
 # Test LLMFactExtractor initialization
@@ -102,7 +104,7 @@ def test_llm_extractor_init(llm_extractor):
     assert llm_extractor is not None
     assert llm_extractor.model_alias == "gpt-4o-mini"
     assert llm_extractor.max_input_chars == 4000
-    assert llm_extractor.max_triples == 10
+    assert llm_extractor.max_triples == 15  # Increased from 10
 
 
 def test_llm_extractor_custom_params(model_manager):
@@ -148,8 +150,11 @@ def test_build_prompt_enforces_char_budget(model_manager):
     extractor = LLMFactExtractor(model_manager, max_input_chars=100)
     messages = ["A" * 200, "B" * 200, "C" * 200]
     prompt = extractor._build_prompt(messages)
-    # Prompt should be limited by budget
-    assert len(prompt) < 500  # Much less than 3*200=600
+    # Prompt has template + limited messages; template is ~1200 chars
+    # With 100 char budget, should not include all 600 chars of messages
+    assert "A" * 200 not in prompt  # First message too long for budget
+    assert "B" * 200 not in prompt  # Second message too long for budget
+    assert "C" * 200 not in prompt  # Third message too long for budget
 
 
 def test_build_prompt_limits_messages(llm_extractor):
@@ -223,7 +228,7 @@ async def test_extract_triples_with_valid_json(llm_extractor, monkeypatch):
     assert len(result) == 1
     assert result[0]["subject"] == "user"
     assert result[0]["relation"] == "likes"
-    assert result[0]["object"] == "python"
+    assert result[0]["object"] == "Python"  # Preserves case
 
 
 @pytest.mark.asyncio

@@ -301,6 +301,38 @@ class FactExtractor:
             ("occupation", r"\b(?:i|we)\s+(?:work|worked|have\s+worked|currently\s+work)\s+as\s+(?:an?\s+)?([^\.;,!?:\n]+?)(?:[\.;,!?:]|$)"),
         ]
 
+        # ENHANCED: Temporal/age patterns
+        self.temporal_patterns = [
+            # "I'm 32" / "I am 32 years old"
+            ("age", r"\b(?:i(?:'m|\s+am))\s+(\d{1,3})(?:\s+years?\s+old)?\b"),
+            # "I'll be 33 in February"
+            ("age", r"\b(?:i(?:'ll|\s+will)\s+be)\s+(\d{1,3})\s+(?:in|on|next)\s+(\w+)"),
+            # "I graduate in 2026"
+            ("graduate_year", r"\b(?:i|we)\s+(?:graduate|finish|complete)\s+(?:in|by)\s+(\d{4})"),
+            # "I've been doing X for N months/years"
+            ("experience_duration", r"\b(?:i(?:'ve|\s+have)\s+been)\s+(\w+ing)\s+(?:for\s+)?(\d+)\s+(months?|years?|weeks?)"),
+        ]
+
+        # ENHANCED: Location patterns
+        self.location_patterns = [
+            # "I live in X" / "I'm from X" / "I moved to X"
+            ("lives_in", r"\b(?:i|we)\s+(?:live|lived|reside|am\s+from|moved\s+to|relocated\s+to)\s+(?:in\s+)?([A-Z][a-zA-Z\s,]+?)(?:[\.;,!?:]|$)"),
+            # "I'm in Chicago" / "I'm based in X"
+            ("lives_in", r"\b(?:i(?:'m|\s+am))\s+(?:in|based\s+in|located\s+in)\s+([A-Z][a-zA-Z\s,]+?)(?:[\.;,!?:]|$)"),
+        ]
+
+        # ENHANCED: Relationship patterns
+        self.relationship_patterns = [
+            # "my cat X" / "my friend X" / "my manager X"
+            (None, r"\bmy\s+(cat|dog|pet|friend|manager|wife|husband|partner|mom|dad|sister|brother)(?:'s\s+name\s+is|,?\s+named?|,?\s+called)?\s*([A-Z][a-zA-Z]+)"),
+        ]
+
+        # ENHANCED: Plans/goals patterns
+        self.goal_patterns = [
+            # "I plan to X" / "I'm going to X" / "I want to X"
+            ("goal", r"\b(?:i|we)\s+(?:plan\s+to|(?:am\s+)?going\s+to|want\s+to|intend\s+to|aim\s+to)\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)"),
+        ]
+
         logger.debug(
             f"[FactExtractor.__init__] use_rebel={self.use_rebel} "
             f"(pipeline={'yes' if _REBEL else 'no'}), use_regex={self.use_regex}, "
@@ -897,6 +929,112 @@ class FactExtractor:
                     found.append((subj2, rel2, obj2, 0.72, "regex"))
             if lm_total:
                 logger.debug(f"[FactExtractor] LiftPattern[{li}] matched {lm_total}")
+
+        # 3) ENHANCED: Temporal/age patterns
+        for ti, (rel_key, pattern) in enumerate(self.temporal_patterns):
+            temp_total = 0
+            for ln in norm_lines:
+                try:
+                    matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"[FactExtractor] Temporal regex error idx={ti}: {e}")
+                    continue
+                temp_total += len(matches)
+                for m in matches[:4]:
+                    if isinstance(m, tuple):
+                        # Extract value (first capture group typically)
+                        val = m[0] if m else ""
+                    else:
+                        val = m
+                    val = (val or '').strip()
+                    if not val:
+                        continue
+
+                    cleaned = _clean_triple('user', rel_key, val, nlp=_NLP)
+                    if cleaned:
+                        sj, rl, ob = cleaned
+                        found.append((sj, rl, ob, 0.75, "regex"))
+            if temp_total:
+                logger.debug(f"[FactExtractor] TemporalPattern[{ti}:{rel_key}] matched {temp_total}")
+
+        # 4) ENHANCED: Location patterns
+        for loc_i, (rel_key, pattern) in enumerate(self.location_patterns):
+            loc_total = 0
+            for ln in norm_lines:
+                try:
+                    matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"[FactExtractor] Location regex error idx={loc_i}: {e}")
+                    continue
+                loc_total += len(matches)
+                for m in matches[:4]:
+                    val = m[0] if isinstance(m, tuple) else m
+                    val = (val or '').strip()
+                    # Clean trailing punctuation
+                    val = val.rstrip('.,;:!?')
+                    if not val or len(val) < 2:
+                        continue
+
+                    cleaned = _clean_triple('user', rel_key, val, nlp=_NLP)
+                    if cleaned:
+                        sj, rl, ob = cleaned
+                        found.append((sj, rl, ob, 0.75, "regex"))
+            if loc_total:
+                logger.debug(f"[FactExtractor] LocationPattern[{loc_i}:{rel_key}] matched {loc_total}")
+
+        # 5) ENHANCED: Relationship patterns
+        for rel_i, (rel_hint, pattern) in enumerate(self.relationship_patterns):
+            rel_total = 0
+            for ln in norm_lines:
+                try:
+                    matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"[FactExtractor] Relationship regex error idx={rel_i}: {e}")
+                    continue
+                rel_total += len(matches)
+                for m in matches[:4]:
+                    if not isinstance(m, tuple) or len(m) < 2:
+                        continue
+                    # m = (cat/dog/friend, Name)
+                    rel_type, name = m[0], m[1]
+                    rel_type = (rel_type or '').strip().lower()
+                    name = (name or '').strip()
+
+                    # Build relation like "cat_name", "friend_name", etc.
+                    rel = f"{rel_type}_name" if rel_type else "name"
+
+                    cleaned = _clean_triple('user', rel, name, nlp=_NLP)
+                    if cleaned:
+                        sj, rl, ob = cleaned
+                        found.append((sj, rl, ob, 0.78, "regex"))
+            if rel_total:
+                logger.debug(f"[FactExtractor] RelationshipPattern[{rel_i}] matched {rel_total}")
+
+        # 6) ENHANCED: Goal/plan patterns
+        for goal_i, (rel_key, pattern) in enumerate(self.goal_patterns):
+            goal_total = 0
+            for ln in norm_lines:
+                try:
+                    matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"[FactExtractor] Goal regex error idx={goal_i}: {e}")
+                    continue
+                goal_total += len(matches)
+                for m in matches[:4]:
+                    val = m[0] if isinstance(m, tuple) else m
+                    val = (val or '').strip()
+                    # Limit length
+                    if len(val) > 150:
+                        val = val[:150]
+                    if not val or len(val) < 3:
+                        continue
+
+                    cleaned = _clean_triple('user', rel_key, val, nlp=_NLP)
+                    if cleaned:
+                        sj, rl, ob = cleaned
+                        found.append((sj, rl, ob, 0.70, "regex"))
+            if goal_total:
+                logger.debug(f"[FactExtractor] GoalPattern[{goal_i}:{rel_key}] matched {goal_total}")
 
         return found
 

@@ -13,15 +13,18 @@ Module Contract
 - Side effects:
   - Writes to conversation logger; stores to memory_system; updates debug_state for Debug Trace tab.
 """
-import pandas as pd
 import logging
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
+from utils.file_processor import FileProcessor
 import json
 from config.app_config import load_system_prompt, ENABLE_BEST_OF, BEST_OF_N, BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_MIN_QUESTION, BEST_OF_MODEL, BEST_OF_MIN_TOKENS
 from utils.query_checker import analyze_query
 DEFAULT_SYSTEM_PROMPT = load_system_prompt()
 logger = logging.getLogger("gradio_gui")
+
+# Initialize FileProcessor for secure file handling
+file_processor = FileProcessor()
 
 
 def smart_join(prev: str, new: str) -> str:
@@ -66,29 +69,10 @@ async def handle_submit(
         yield {"role": "assistant", "content": "⚠️ Empty input received."}
         return
 
-    # Process files into the 'file_data' list
-    file_data = []
-    file_names = []  # Track file names for metadata
-    if files:
-        for file in files:
-            file_names.append(file.name)
-            try:
-                if file.name.endswith(".txt"):
-                    with open(file.name, 'r', encoding='utf-8') as f:
-                        file_data.append(f.read())
-                elif file.name.endswith(".csv"):
-                    df = pd.read_csv(file.name)
-                    file_data.append(df.to_string())
-                elif file.name.endswith(".py"):
-                    with open(file.name, 'r', encoding='utf-8') as f:
-                        file_data.append(f.read())
-                else:
-                    file_data.append(f"[Unsupported file type: {file.name}]")
-            except Exception as e:
-                file_data.append(f"[Error reading {file.name}: {str(e)}]")
-
-    # Merge file content into user_input
-    merged_input = user_text + "\n\n" + "\n\n".join(file_data)
+    # Process files using security-hardened FileProcessor
+    # This supports .txt, .csv, .py, and .docx files with security checks
+    file_names = [file.name for file in files] if files else []
+    merged_input = await file_processor.process_files(user_text, files or [])
 
     # RAW MODE: go straight through orchestrator (personality hook is handled inside process_user_query)
     if use_raw_gpt:

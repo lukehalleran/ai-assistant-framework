@@ -2,21 +2,24 @@
 # memory/memory_coordinator.py
 
 Module Contract
-- Purpose: Central coordinator for conversational memory. Persists each turn, retrieves relevant memories (recent + semantic), runs shutdown reflections, and synthesizes/stores block summaries at shutdown.
+- Purpose: Central coordinator for conversational memory. Persists each turn, retrieves relevant memories (recent + semantic), runs shutdown reflections, and synthesizes/stores block summaries at shutdown. ENHANCED: Now integrates UserProfile for structured fact storage with categorization.
 - Inputs:
   - store_interaction(query, response, tags?): adds a turn to corpus + Chroma
   - get_memories(query, limit, topic_filter?): unified retrieval/gating/ranking
-  - process_shutdown_memory(): summarize blocks (size N) and extract end‑of‑session facts
+  - process_shutdown_memory(): summarize blocks (size N) and extract end‑of‑session facts → UPDATED: also populates UserProfile with categorized facts
   - run_shutdown_reflection(...): generate a short reflection at session end
 - Outputs:
   - Lists of normalized memory dicts with scores/metadata; new summary/reflection/fact nodes in storage.
+  - UPDATED: UserProfile populated with categorized facts (fitness, identity, career, etc.) saved to data/user_profile.json
 - Key collaborators:
   - CorpusManager (JSON short‑term store)
   - MultiCollectionChromaStore (semantic collections)
   - MemoryConsolidator (LLM summarization API, may be bypassed for micro‑summaries)
   - MultiStageGateSystem (cosine/rerank gating)
+  - UserProfile (NEW: structured user fact storage with 12 categories)
 - Side effects:
   - Writes to corpus JSON and Chroma collections; updates access/score metadata.
+  - UPDATED: Writes to data/user_profile.json with categorized user facts at shutdown
 - Async behavior:
   - Most public methods are async to coordinate with model calls and gating.
 """
@@ -42,6 +45,7 @@ from memory.hybrid_retriever import HybridRetriever
 from memory.memory_storage import MemoryStorage
 from memory.memory_retriever import MemoryRetriever
 from memory.thread_manager import ThreadManager
+from memory.user_profile import UserProfile
 from processing.gate_system import MultiStageGateSystem
 from config.app_config import (
     RECENCY_DECAY_RATE,
@@ -220,6 +224,10 @@ class MemoryCoordinator:
             time_manager=time_manager
         )
         self._retriever.conversation_context = list(self.conversation_context)
+
+        # Initialize user profile for structured fact storage
+        self.user_profile = UserProfile()
+        logger.debug("[MemoryCoordinator] UserProfile initialized")
 
     # --------- time helpers (prefer TimeManager) ---------
     def _now(self):
@@ -1580,6 +1588,14 @@ class MemoryCoordinator:
                         except Exception:
                             continue
                     logger.info(f"[LLM Facts] kept={kept} (model={model_alias})")
+
+                    # NEW: Also update user profile with extracted facts
+                    if triples and hasattr(self, 'user_profile'):
+                        try:
+                            added = self.user_profile.add_facts_batch(triples)
+                            logger.info(f"[MemoryCoordinator] Added {added} facts to user profile")
+                        except Exception as profile_err:
+                            logger.warning(f"[MemoryCoordinator] Failed to update user profile: {profile_err}")
 
             logger.info("[Shutdown] Memory processing complete")
 
