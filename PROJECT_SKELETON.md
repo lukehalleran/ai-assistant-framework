@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2025-11-29
+**Last Updated**: 2025-11-30
 
 ---
 
@@ -197,6 +197,43 @@ query → detect_crisis_level() → extract_topics()
 
 ---
 
+### 2.3.0 memory/memory_scorer.py **[NEW - REFACTORED]**
+**Purpose**: Memory scoring and ranking operations
+
+**Key Methods** (implements MemoryScorerProtocol):
+- `calculate_truth_score(query, response)` → Calculate truth/reliability score (0.0-1.0)
+- `calculate_importance_score(content)` → Calculate importance based on content analysis (0.0-1.0)
+- `rank_memories(memories, query)` → Rank memories by composite score for given query
+- `update_truth_scores_on_access(memories)` → Boost truth scores when memories are accessed
+
+**Additional Methods**:
+- `apply_temporal_decay(memories)` → Apply time-based decay to memory scores
+
+**Scoring Algorithm** (in rank_memories):
+```python
+final_score = (
+    SCORE_WEIGHTS['relevance'] * (relevance + collection_boost) +
+    SCORE_WEIGHTS['recency'] * recency_decay +
+    SCORE_WEIGHTS['truth'] * truth_score +
+    SCORE_WEIGHTS['importance'] * importance_score +
+    SCORE_WEIGHTS['continuity'] * continuity_score +
+    structural_alignment +
+    anchor_bonus +
+    penalties
+)
+```
+
+**Heuristics**:
+- Deictic follow-up detection (keywords: "that", "it", "this", "explain", "again")
+- Salient token extraction (removes stopwords, frequency-based)
+- Math density calculation (numbers and operators)
+- Analogy marker detection ("it's like", "imagine", etc.)
+- Anchor token building from recent conversation context
+
+**Dependencies**: TimeManager (optional)
+
+---
+
 ### 2.3.1 memory/coordinator.py (Modular Memory Coordinator V2) **[NEW - REFACTORED]**
 **Purpose**: Thin orchestration layer delegating to specialized components
 
@@ -228,33 +265,54 @@ MemoryCoordinatorV2 (coordinator.py)
 ### 2.3.2 memory/memory_retriever.py **[NEW - REFACTORED]**
 **Purpose**: Memory retrieval operations extracted from coordinator
 
-**Key Methods**:
-- `get_memories(query, limit, topics)` → Main retrieval pipeline
-- `_get_recent_from_corpus(n)` → Fetch recent conversations
-- `_query_chroma_collections(query, collection_limits)` → Parallel ChromaDB queries
-- `_apply_gating(query, memories, threshold, is_deictic)` → Filter with gate system
+**Key Methods** (implements MemoryRetrieverProtocol):
+- `async get_memories(query, limit, topic_filter)` → Main retrieval pipeline
+- `async get_facts(query, limit)` → Retrieve semantic facts
+- `async get_recent_facts(limit)` → Retrieve most recent facts
+- `async get_reflections(limit)` → Retrieve recent reflections
+- `async get_reflections_hybrid(query, limit)` → Hybrid recent+semantic reflections
+- `get_summaries(limit)` → Retrieve recent summaries (sync)
+- `get_summaries_hybrid(query, limit)` → Hybrid recent+semantic summaries (sync)
+- `get_dreams(limit)` → Retrieve dream memories
+- `async search_by_type(type_name, query, limit)` → Search by memory type
+
+**Helper Methods**:
+- `_get_recent_conversations(k)` → Fetch recent conversations from corpus
+- `async _get_semantic_memories(query, limit)` → Semantic search via ChromaDB
+- `async _fallback_semantic_search(query, limit)` → Fallback when primary fails
+- `async _combine_memories(recent, semantic)` → Merge and deduplicate results
+- `async _gate_memories(query, memories, threshold)` → Apply gating filter
+- `_get_memory_key(memory)` → Generate unique key for deduplication
+- `_parse_result(item, source)` → Parse ChromaDB result to standard format
 
 **Retrieval Pipeline**:
 ```python
 1. Get recent conversations from corpus
 2. Query ChromaDB collections in parallel
-3. Apply multi-stage gating
-4. Rank with MemoryScorer
-5. Return top K
+3. Combine recent + semantic results
+4. Apply multi-stage gating
+5. Rank with MemoryScorer
+6. Deduplicate by memory key
+7. Return top K
 ```
 
-**Dependencies**: CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryScorer
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryScorer, HybridRetriever
 
 ---
 
 ### 2.3.3 memory/memory_storage.py **[NEW - REFACTORED]**
 **Purpose**: Memory persistence operations extracted from coordinator
 
-**Key Methods**:
-- `store_interaction(query, response, tags)` → Persist to corpus + Chroma
-- `_extract_and_store_facts(query, response, threshold, timeout_s)` → Fact extraction with timeout
-- `process_shutdown_memory()` → Consolidation and summarization at shutdown
-- `_ensure_topics(tags, query)` → Topic extraction fallback
+**Key Methods** (implements MemoryStorageProtocol):
+- `async store_interaction(query, response, tags)` → Persist to corpus + Chroma
+- `async add_reflection(text, tags, source, timestamp)` → Store reflection memory
+- `async extract_and_store_facts(query, response, truth_score)` → Fact extraction and storage
+- `async consolidate_and_store_summary()` → Generate and store conversation summary
+
+**Helper Methods**:
+- `_calculate_truth_score(query, response)` → Calculate truth score via scorer or fallback
+- `_calculate_importance_score(content)` → Calculate importance via scorer or fallback
+- `_now()`, `_now_iso()` → Time utilities
 
 **Storage Flow**:
 ```python
@@ -276,10 +334,13 @@ MemoryCoordinatorV2 (coordinator.py)
 ### 2.3.4 memory/thread_manager.py **[NEW - REFACTORED]**
 **Purpose**: Conversation thread tracking extracted from coordinator
 
-**Key Methods**:
-- `get_thread_context(query, topic, max_turns)` → Retrieve related thread messages
-- `_belongs_to_thread(current_query, last_conv, current_topic)` → Thread continuity check
-- `_calculate_thread_continuity_score(...)` → Scoring for thread membership
+**Key Methods** (implements ThreadManagerProtocol):
+- `get_thread_context()` → Retrieve current thread metadata if active
+- `detect_or_create_thread(query, is_heavy)` → Detect existing thread or create new one
+- `detect_topic_for_query(query)` → Extract topic from specific query
+
+**Helper Methods**:
+- `_now()`, `_now_iso()` → Time utilities
 
 **Thread Detection Factors**:
 - Keyword overlap between queries
@@ -287,6 +348,17 @@ MemoryCoordinatorV2 (coordinator.py)
 - Both heavy topics (crisis continuity)
 - Same topic match
 - Threshold: `THREAD_CONTINUITY_THRESHOLD = 0.5`
+
+**Thread Context Returns**:
+```python
+{
+  "thread_id": str,
+  "thread_depth": int,
+  "thread_started": datetime,
+  "thread_topic": str,
+  "is_heavy_topic": bool
+}
+```
 
 **Dependencies**: CorpusManager, TopicManager, TimeManager
 
@@ -296,15 +368,173 @@ MemoryCoordinatorV2 (coordinator.py)
 **Purpose**: Protocol contracts for memory components
 
 **Protocols Defined**:
+- `MemoryScorerProtocol` - Interface for scoring and ranking operations
+  - `calculate_truth_score(query, response) -> float`
+  - `calculate_importance_score(content) -> float`
+  - `rank_memories(memories, query) -> List[Dict]`
+  - `update_truth_scores_on_access(memories) -> None`
+
+- `MemoryStorageProtocol` - Interface for storage/persistence operations
+  - `async store_interaction(query, response, tags) -> None`
+  - `async add_reflection(text, tags, source, timestamp) -> bool`
+  - `async extract_and_store_facts(query, response, truth_score) -> None`
+
 - `MemoryRetrieverProtocol` - Interface for retrieval operations
-- `MemoryStorageProtocol` - Interface for storage operations
-- `MemoryCoordinatorProtocol` - Interface for coordinator
+  - `async get_memories(query, limit, topic_filter) -> List[Dict]`
+  - `async get_facts(query, limit) -> List[Dict]`
+  - `async get_recent_facts(limit) -> List[Dict]`
+  - `async get_reflections(limit) -> List[Dict]`
+  - `async get_reflections_hybrid(query, limit) -> List[Dict]`
+  - `get_summaries(limit) -> List[Dict]` (sync)
+  - `get_summaries_hybrid(query, limit) -> List[Dict]` (sync)
+  - `get_dreams(limit) -> List[Dict]`
+  - `async search_by_type(type_name, query, limit) -> List[Dict]`
+
 - `ThreadManagerProtocol` - Interface for thread tracking
+  - `get_thread_context() -> Optional[Dict]`
+  - `detect_or_create_thread(query, is_heavy) -> Dict`
+  - `detect_topic_for_query(query) -> str`
+
+- `MemoryConsolidatorProtocol` - Interface for memory consolidation
+  - `async process_shutdown_memory(session_conversations) -> None`
+  - `async run_shutdown_reflection(session_conversations, model_manager) -> Optional[str]`
+  - `async consolidate_and_store_summary() -> None`
 
 **Benefits**:
 - Type safety with Protocol typing
 - Clear contracts for component interactions
 - Enables mock implementations for testing
+- All implementations verified compliant as of 2025-11-30
+
+---
+
+### 2.3.2 memory/user_profile.py & user_profile_schema.py (User Profile System) **[NEW - 2025-12-01]**
+**Purpose**: ChatGPT-style categorized user profile with persistent fact storage and hybrid retrieval
+
+**Architecture Overview**:
+```
+Query → LLMFactExtractor (categorizes) → UserProfile.add_facts_batch() → JSON persistence
+                                              ↓
+Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE] in prompt
+```
+
+**Replaces**: Previous [SEMANTIC FACTS] and [RECENT FACTS] sections in prompts
+
+**Key Components**:
+
+**user_profile_schema.py**:
+- `ProfileCategory` enum: 12 life domains (identity, education, career, projects, health, fitness, preferences, hobbies, study, finance, relationships, goals)
+- `ProfileFact` dataclass: Structured facts with relation, value, category, confidence, timestamp, source_excerpt, supersedes
+- `RELATION_CATEGORY_MAP`: 40+ predefined relation→category mappings
+- `categorize_relation(relation)`: Direct lookup + heuristic fallbacks (pattern matching)
+
+**user_profile.py**:
+- `UserProfile` class: Persistent manager for categorized user facts
+- Storage: `data/user_profile.json` with atomic writes (temp file + os.replace())
+- Thread-safe: threading.Lock() for concurrent access
+- Conflict resolution: Newer + higher confidence wins, tracks supersedes
+
+**Key Methods**:
+- `add_fact(relation, value, category, confidence, source_excerpt)` → Add single fact with conflict resolution
+- `add_facts_batch(triples)` → Batch add from LLM extraction (used at shutdown)
+- `get_relevant_facts(query, category, limit=3)` → **Hybrid retrieval (2/3 semantic + 1/3 recent)**:
+  ```python
+  # Semantic scoring: keyword overlap between query and fact values/relations
+  query_words = set(query.lower().split())
+  fact_words = set(value.lower().split()) | set(relation.lower().split())
+  semantic_score = len(query_words & fact_words) / len(query_words)
+
+  # Get top 2/3 by semantic score
+  semantic_facts = top_scored[:semantic_count]
+
+  # Get remaining 1/3 most recent (not in semantic set)
+  recent_facts = sorted_by_timestamp[:recent_count]
+
+  return semantic_facts + recent_facts
+  ```
+- `get_context_injection(max_tokens, query)` → Format profile for prompt injection
+- `export_markdown()` → Generate markdown export of all facts by category
+- `get_quick_profile()` → Extract identity fields (name, location, age) for compact summary
+
+**Integration Points**:
+
+1. **memory/memory_coordinator.py** (process_shutdown_memory):
+   ```python
+   # After LLM fact extraction
+   if triples and hasattr(self, 'user_profile'):
+       added = self.user_profile.add_facts_batch(triples)
+   ```
+
+2. **memory/llm_fact_extractor.py** (Enhanced):
+   - Increased max_triples: 10 → 15
+   - Increased max_tokens: 400 → 600
+   - Auto-categorization via `categorize_relation()` in `_normalize_triple()`
+   - Enhanced prompt with 12 category descriptions
+   - Confidence scoring (0.0-1.0)
+   - Case preservation for proper nouns
+
+3. **memory/fact_extractor.py** (Enhanced regex patterns):
+   - Temporal patterns: age, graduation year, experience duration
+   - Location patterns: lives_in with various phrasings
+   - Relationship patterns: pet names, family, friends
+   - Goal patterns: plans, intentions
+
+4. **core/prompt/context_gatherer.py** (NEW):
+   - `get_user_profile_context(query, max_tokens=500)` → Calls UserProfile.get_context_injection()
+   - Replaces old `get_facts()` and `get_recent_facts()` methods
+
+5. **core/prompt/builder.py** (UPDATED):
+   - Removed tasks: `semantic_facts`, `recent_facts`
+   - Added task: `user_profile` → async call to get_user_profile_context()
+   - Context dict changed: `{"user_profile": str}` replaces `{"semantic_facts": list, "fresh_facts": list}`
+
+6. **core/prompt/formatter.py** (UPDATED):
+   - Removed sections: `[SEMANTIC FACTS]`, `[RECENT FACTS]`
+   - Added section: `[USER PROFILE]` → Pre-formatted string from context["user_profile"]
+
+**CLI Commands** (main.py):
+- `python main.py export-profile` → Write markdown to `data/user_profile_export.md`
+- `python main.py show-profile` → Print profile to console with fact count
+
+**Data Flow**:
+```
+User conversation
+    ↓
+process_shutdown_memory() (at session end)
+    ↓
+LLMFactExtractor.extract_batch() → categorized triples with confidence
+    ↓
+UserProfile.add_facts_batch() → conflict resolution + JSON persistence
+    ↓
+[Next conversation]
+    ↓
+get_user_profile_context(query) → hybrid retrieval per category
+    ↓
+[USER PROFILE] section in formatted prompt
+```
+
+**Example Profile Output**:
+```
+## Quick Profile
+- name: Luke
+- location: San Francisco
+- age: 28
+
+## fitness (3 facts)
+- squat_max: 365 lb (confidence: 0.9)
+- bench_max: 275 lb (confidence: 0.85)
+- training_frequency: 5x per week (confidence: 0.8)
+
+## career (2 facts)
+- current_role: Senior Engineer (confidence: 0.9)
+- programming_languages: Python, Go, Rust (confidence: 0.85)
+```
+
+**Testing**:
+- tests/unit/test_user_profile_schema.py (5 tests): Schema validation, categorization, serialization
+- tests/unit/test_user_profile.py (10 tests): Persistence, conflict resolution, hybrid retrieval, markdown export
+
+**Dependencies**: threading, datetime, pathlib, logging
 
 ---
 
@@ -1135,10 +1365,10 @@ daemon/
 ├── memory/
 │   ├── memory_coordinator.py      # Memory hub (legacy monolithic)
 │   ├── coordinator.py             # Memory hub V2 (modular refactor) [NEW]
+│   ├── memory_scorer.py           # Scoring and ranking operations [NEW - REFACTORED]
 │   ├── memory_retriever.py        # Retrieval operations [NEW - REFACTORED]
 │   ├── memory_storage.py          # Storage/persistence operations [NEW - REFACTORED]
 │   ├── thread_manager.py          # Thread tracking [NEW - REFACTORED]
-│   ├── memory_scorer.py           # Scoring utilities [REFACTORED]
 │   ├── memory_interface.py        # Protocol contracts [NEW - REFACTORED]
 │   ├── corpus_manager.py          # JSON persistence
 │   ├── memory_consolidator.py     # Summarization
@@ -1421,6 +1651,7 @@ python main.py inspect-summaries
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
 | memory_coordinator.py | Hub (legacy): retrieve from 5 collections, gate, rank, return top K |
 | coordinator.py | Hub V2: thin orchestration delegating to modular components [NEW - REFACTORED] |
+| memory_scorer.py | Scoring: calculate truth/importance, rank by composite score with temporal decay [NEW - REFACTORED] |
 | memory_retriever.py | Retrieval: get_memories pipeline with gating and ranking [NEW - REFACTORED] |
 | memory_storage.py | Storage: store_interaction and fact extraction [NEW - REFACTORED] |
 | thread_manager.py | Threads: conversation continuity tracking [NEW - REFACTORED] |
@@ -1518,13 +1749,215 @@ SIMILARITY_THRESHOLD = 0.90  # Semantic similarity for duplicates
 
 ---
 
+## 15. Docker Containerization **[NEW]**
+
+### 15.1 Architecture
+**Purpose**: Production-ready Docker deployment with offline model baking and persistent storage
+
+**Components**:
+- `Dockerfile` - Multi-stage build (builder + runtime)
+- `docker-compose.yml` - Service orchestration with volumes
+- `docker-entrypoint.sh` - Container initialization script
+- `.dockerignore` - Excludes large data dirs (149GB) from build context
+- `.env.example` - Minimal Docker-specific environment template
+- `utils/health_check.py` - Health endpoint for monitoring
+
+### 15.2 Multi-Stage Build
+
+**Stage 1: Builder**
+```dockerfile
+FROM python:3.11-slim AS builder
+- Install build tools (gcc, g++, git)
+- Create venv at /opt/venv
+- Install Python dependencies
+- Pre-download AI models:
+  - spaCy: en_core_web_sm
+  - sentence-transformers: all-MiniLM-L6-v2
+  - Result: Models baked into image (no download on startup)
+```
+
+**Stage 2: Runtime**
+```dockerfile
+FROM python:3.11-slim
+- Copy venv from builder
+- Copy pre-downloaded models to /app/data/cache/huggingface
+- Install only runtime dependencies (libgomp1, curl)
+- Create non-root daemon user
+- Copy application code
+- Set HF_HUB_OFFLINE=1 (use baked models)
+- EXPOSE 7860 (Gradio)
+- HEALTHCHECK /health endpoint
+```
+
+**Result**: ~60% smaller final image, 2-3 min faster startup
+
+### 15.3 Configuration Strategy
+
+**Minimal .env Approach** (selected):
+```bash
+# Only Docker-specific essentials
+OPENAI_API_KEY=sk-...
+GRADIO_SERVER_NAME=0.0.0.0
+GRADIO_PORT=7860
+CHROMA_DEVICE=cpu
+HF_HUB_OFFLINE=1
+HF_HOME=/app/data/cache/huggingface
+```
+
+**Rationale**:
+- Let config.yaml remain single source of truth
+- Prevents accidental feature disabling (e.g., MEM_TOPUP_ENABLE=0)
+- Environment variables override config.yaml (precedence issue)
+
+**Alternative** (not selected): Comprehensive .env with 105+ variables
+- Pro: All configuration in one place
+- Con: Env vars override config.yaml, causing unexpected behavior
+- Con: Previous testing showed disabled reflections, summaries, memory top-up
+
+### 15.4 Data Persistence
+
+**Volumes** (docker-compose.yml):
+```yaml
+volumes:
+  daemon-data:  # Persists corpus, ChromaDB, logs, cache
+  daemon-logs:  # Separate logging persistence
+```
+
+**Mounted Paths**:
+- `/app/data/corpus_v4.json` - Conversation memory
+- `/app/data/chroma_db_v4` - Vector embeddings
+- `/app/conversation_logs` - Session transcripts
+- `/app/data/cache/huggingface` - Pre-downloaded models
+
+**Container Initialization** (docker-entrypoint.sh):
+```bash
+1. Create directories: /app/data, /app/logs, /app/conversation_logs
+2. Initialize fresh corpus if missing: echo '[]' > corpus_v4.json
+3. Validate environment variables
+4. Support multiple modes: gui (default), cli, test-summaries
+```
+
+### 15.5 Memory Consolidation on Shutdown
+
+**Graceful Shutdown Flow**:
+```
+SIGTERM (podman stop daemon-rag-agent)
+    ↓
+main.py catches signal
+    ↓
+orchestrator.shutdown()
+    ↓
+memory_coordinator.process_shutdown_memory()
+    ├─> Fact extraction from recent conversations
+    ├─> Summary generation (every N conversations)
+    ├─> Reflection generation (session-end)
+    ├─> Corpus persistence to JSON
+    └─> ChromaDB embeddings written to disk
+    ↓
+Container exits gracefully
+```
+
+**Critical**: Use `podman stop` (sends SIGTERM) NOT `podman kill` (sends SIGKILL immediately)
+
+### 15.6 Health Check
+
+**Endpoint**: `GET /health`
+
+**Checks**:
+- Corpus file exists and is readable
+- ChromaDB connectivity (can query collections)
+- API key present in environment
+
+**Response**:
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-11-29T21:00:00Z"
+}
+```
+
+**Integration**:
+- Docker HEALTHCHECK directive (30s interval, 10s timeout)
+- Kubernetes liveness/readiness probes
+- Load balancer health monitoring
+
+### 15.7 Build & Run
+
+**Build** (auto-detects podman/docker):
+```bash
+./build-docker.sh
+# Produces: daemon-rag-agent:v4, daemon-rag-agent:latest
+```
+
+**Run with docker-compose**:
+```bash
+docker-compose up -d
+# Access at http://localhost:7860
+```
+
+**Run directly**:
+```bash
+docker run -p 7860:7860 --env-file .env daemon-rag-agent:latest
+```
+
+**Monitor logs**:
+```bash
+docker logs -f daemon-rag-agent
+```
+
+### 15.8 Production Deployment
+
+**Kubernetes Example**:
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: daemon-rag-agent
+spec:
+  replicas: 1
+  containers:
+  - name: daemon-rag
+    image: daemon-rag-agent:latest
+    ports:
+    - containerPort: 7860
+    volumeMounts:
+    - name: data
+      mountPath: /app/data
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 7860
+      initialDelaySeconds: 60
+      periodSeconds: 30
+```
+
+**File References**:
+- `Dockerfile` - Multi-stage build definition
+- `docker-compose.yml` - Service orchestration
+- `docker-entrypoint.sh` - Initialization script (chmod +x)
+- `build-docker.sh` - Build helper (auto-detects podman/docker)
+- `docker-compose-helper.sh` - Compose wrapper for podman compatibility
+- `.dockerignore` - Excludes data/, wiki/, pipeline/ (149GB)
+- `utils/health_check.py` - Health endpoint implementation
+- `DOCKER_README.md` - Comprehensive Docker documentation
+
+---
+
 **End of Skeleton**
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2025-11-29
+**Last Updated**: 2025-11-30
 
-**Recent Changes**:
+**Recent Changes** (2025-11-30):
+- **Verified and updated all Protocol contracts** - Added MemoryScorerProtocol and MemoryConsolidatorProtocol with complete method signatures
+- **Added Section 2.3.0 (MemoryScorer)** - Documented scoring and ranking operations with algorithm details
+- **Updated all refactored module sections** - Corrected method signatures for MemoryRetriever, MemoryStorage, ThreadManager to match actual implementations
+- **Contract compliance verified** - All 4 core modules (Scorer, Storage, Retriever, ThreadManager) confirmed fully compliant with Protocol contracts
+- All async/sync specifications, parameter types, and return types verified accurate
+
+**Previous Changes** (2025-11-29):
+- Added Docker containerization section (Section 15) - Multi-stage builds, persistent volumes, graceful shutdown, health checks
 - Added memory system refactoring documentation (coordinator.py V2 and modular components)
 - Documented new files: memory_retriever.py, memory_storage.py, thread_manager.py, memory_interface.py
 - Updated architecture diagrams to show modular memory flow

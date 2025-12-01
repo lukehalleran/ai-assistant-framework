@@ -2,7 +2,7 @@
 # core/prompt/formatter.py
 
 Module Contract
-- Purpose: Text formatting and assembly for final prompt rendering.
+- Purpose: Text formatting and assembly for final prompt rendering. ENHANCED: Replaces [SEMANTIC FACTS] + [RECENT FACTS] with [USER PROFILE] using categorized hybrid retrieval.
 - Inputs:
   - render_prompt_sections(context: Dict[str, Any]) -> str
   - format_memories(memories: List[Dict]) -> str
@@ -12,12 +12,14 @@ Module Contract
   - Formatted prompt sections ready for model consumption
   - Structured text with proper headers and spacing
   - Deduplicated and truncated content within limits
+  - UPDATED: [USER PROFILE] section with categorized facts (identity, fitness, preferences, etc.)
 - Behavior:
   - Assembles context sections into readable prompt format
   - Applies consistent formatting to memories, facts, conversations
   - Handles time context and metadata display
   - Deduplicates similar content and applies truncation
   - Maintains prompt structure and readability
+  - UPDATED: Renders UserProfile string directly (no parsing needed - already formatted)
 - Dependencies:
   - utils.logging_utils (logging)
   - datetime (time formatting)
@@ -320,66 +322,11 @@ class PromptFormatter:
             )
         )
 
-        # Semantic facts (query-relevant facts)
-        semantic_facts = context.get("semantic_facts", [])
-        if semantic_facts:
-            fact_strs = []
-            for fact in semantic_facts:
-                if isinstance(fact, dict):
-                    # Structured fact
-                    subj = fact.get("subject", "")
-                    rel = fact.get("relation", "")
-                    obj = fact.get("object", "")
-                    # Check both fact-level timestamp and metadata timestamp
-                    timestamp = fact.get("timestamp", "")
-                    if not timestamp:
-                        metadata = fact.get("metadata", {})
-                        timestamp = metadata.get("timestamp", "")
-                    if subj and rel and obj:
-                        fact_line = f"{subj} | {rel} | {obj}"
-                        if timestamp:
-                            fact_line += f" | {timestamp}"
-                        fact_strs.append(fact_line)
-                    else:
-                        content = str(fact.get("content", fact))
-                        if timestamp:
-                            content += f" | {timestamp}"
-                        fact_strs.append(content)
-                else:
-                    fact_strs.append(str(fact))
-            if fact_strs:
-                sections.append(f"[SEMANTIC FACTS] n={len(fact_strs)}\n" + "\n".join(fact_strs))
-
-        # Recent facts
-        recent_facts = context.get("fresh_facts", [])
-        if recent_facts:
-            recent_fact_strs = []
-            for fact in recent_facts:
-                if isinstance(fact, dict):
-                    # Structured fact with timestamp support
-                    subj = fact.get("subject", "")
-                    rel = fact.get("relation", "")
-                    obj = fact.get("object", "")
-                    # Check both fact-level timestamp and metadata timestamp
-                    timestamp = fact.get("timestamp", "")
-                    if not timestamp:
-                        metadata = fact.get("metadata", {})
-                        timestamp = metadata.get("timestamp", "")
-
-                    if subj and rel and obj:
-                        fact_line = f"{subj} | {rel} | {obj}"
-                        if timestamp:
-                            fact_line += f" | {timestamp}"
-                        recent_fact_strs.append(fact_line)
-                    else:
-                        content = fact.get("content", "") or str(fact)
-                        if timestamp:
-                            content += f" | {timestamp}"
-                        recent_fact_strs.append(content)
-                else:
-                    recent_fact_strs.append(str(fact))
-            if recent_fact_strs:
-                sections.append(f"[RECENT FACTS] n={len(recent_fact_strs)}\n" + "\n".join(recent_fact_strs))
+        # User Profile (replaces semantic_facts + fresh_facts)
+        user_profile = context.get("user_profile", "")
+        if user_profile and isinstance(user_profile, str):
+            # Profile is already formatted from UserProfile.get_context_injection()
+            sections.append(f"[USER PROFILE]\n{user_profile}")
 
         # Summaries
         summaries = context.get("summaries", [])
