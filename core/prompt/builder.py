@@ -91,6 +91,7 @@ PROMPT_MAX_REFLECTIONS = _cfg_int("prompt_max_reflections", 10)
 PROMPT_MAX_DREAMS = _cfg_int("prompt_max_dreams", 3)
 PROMPT_MAX_SEMANTIC = _cfg_int("prompt_max_semantic", 8)
 PROMPT_MAX_WIKI = _cfg_int("prompt_max_wiki", 3)
+USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
@@ -246,14 +247,9 @@ class UnifiedPromptBuilder:
                 self.context_gatherer._get_semantic_memories(user_input, PROMPT_MAX_MEMS)
             )
 
-            # Facts (semantic search-based)
-            tasks["semantic_facts"] = asyncio.create_task(
-                self.context_gatherer.get_facts(user_input, PROMPT_MAX_FACTS)
-            )
-
-            # Recent facts (timestamp-based)
-            tasks["recent_facts"] = asyncio.create_task(
-                self.context_gatherer.get_recent_facts(PROMPT_MAX_RECENT_FACTS)
+            # User Profile (replaces semantic_facts + fresh_facts with categorized hybrid retrieval)
+            tasks["user_profile"] = asyncio.create_task(
+                self.context_gatherer.get_user_profile_context(user_input, max_tokens=500)
             )
 
             # Summaries (separated into recent + semantic)
@@ -390,8 +386,7 @@ class UnifiedPromptBuilder:
             context = {
                 "recent_conversations": recent_convos,
                 "memories": gathered_memories,
-                "semantic_facts": gathered.get("semantic_facts", []),
-                "fresh_facts": gathered.get("recent_facts", []),
+                "user_profile": gathered.get("user_profile", ""),  # Replaces semantic_facts + fresh_facts
                 "summaries": all_summaries,
                 "recent_summaries": recent_summaries,
                 "semantic_summaries": semantic_summaries,
@@ -406,8 +401,7 @@ class UnifiedPromptBuilder:
             logger.debug(f"CONTEXT BUILD: context memories count = {len(context['memories'])}")
 
             # Override with directly provided parameters (legacy interface)
-            if fresh_facts is not None:
-                context["fresh_facts"] = fresh_facts
+            # Note: fresh_facts removed - now using user_profile instead
             if memories is not None:
                 context["memories"] = memories
 
@@ -635,8 +629,7 @@ class UnifiedPromptBuilder:
             prompt_ctx = {
                 "recent_conversations": context.get("recent_conversations", []),
                 "memories": context.get("memories", []),
-                "semantic_facts": context.get("semantic_facts", []),
-                "fresh_facts": context.get("fresh_facts", []),
+                "user_profile": context.get("user_profile", ""),  # Replaces semantic_facts + fresh_facts
                 "summaries": context.get("summaries", []),
                 "recent_summaries": context.get("recent_summaries", []),
                 "semantic_summaries": context.get("semantic_summaries", []),
@@ -663,8 +656,7 @@ class UnifiedPromptBuilder:
             error_context = {
                 "recent_conversations": [],
                 "memories": [],
-                "semantic_facts": [],
-                "fresh_facts": [],
+                "user_profile": "",
                 "summaries": [],
                 "reflections": [],
                 "dreams": [],
@@ -685,8 +677,7 @@ class UnifiedPromptBuilder:
             context = {
                 "recent_conversations": recent,
                 "memories": [],
-                "semantic_facts": [],
-                "fresh_facts": [],
+                "user_profile": "",
                 "summaries": [],
                 "recent_summaries": [],
                 "semantic_summaries": [],
@@ -708,8 +699,7 @@ class UnifiedPromptBuilder:
             return {
                 "recent_conversations": [],
                 "memories": [],
-                "semantic_facts": [],
-                "fresh_facts": [],
+                "user_profile": "",
                 "summaries": [],
                 "recent_summaries": [],
                 "semantic_summaries": [],
@@ -734,7 +724,7 @@ class UnifiedPromptBuilder:
 
         # Apply deduplication and caps to all sections
         sections_to_process = [
-            "recent_conversations", "memories", "semantic_facts", "fresh_facts",
+            "recent_conversations", "memories",
             "summaries", "recent_summaries", "semantic_summaries",
             "reflections", "recent_reflections", "semantic_reflections",
             "dreams", "semantic_chunks", "wiki"
@@ -1185,41 +1175,10 @@ class UnifiedPromptBuilder:
         else:
             logger.warning("PROMPT BUILD: FINAL COUNT - No memories to display in [RELEVANT MEMORIES] section")
 
-        # Semantic facts
-        sem_facts = context.get("semantic_facts", []) or []
-        sf_lines: list[str] = []
-        for i, f in enumerate(sem_facts, start=1):
-            ts = ""
-            text = ""
-            if isinstance(f, dict):
-                ts = f.get("timestamp", "") or (f.get("metadata", {}) or {}).get("timestamp", "")
-                s = f.get("subject", "")
-                r = f.get("relation", "")
-                o = f.get("object", "")
-                text = f"{s} | {r} | {o}" if s and r and o else str(f.get("content", f))
-            else:
-                text = str(f)
-            sf_lines.append(f"{i}) {ts}: {text}" if ts else f"{i}) {text}")
-        if sf_lines:
-            sections.append(f"[SEMANTIC FACTS] n={len(sf_lines)}\n" + "\n".join(sf_lines))
-
-        # Recent facts
-        rec_facts = context.get("fresh_facts", []) or []
-        rf_lines: list[str] = []
-        for i, f in enumerate(rec_facts, start=1):
-            ts = ""
-            text = ""
-            if isinstance(f, dict):
-                ts = f.get("timestamp", "") or (f.get("metadata", {}) or {}).get("timestamp", "")
-                s = f.get("subject", "")
-                r = f.get("relation", "")
-                o = f.get("object", "")
-                text = f"{s} | {r} | {o}" if s and r and o else (f.get("content", "") or str(f))
-            else:
-                text = str(f)
-            rf_lines.append(f"{i}) {ts}: {text}" if ts else f"{i}) {text}")
-        if rf_lines:
-            sections.append(f"[RECENT FACTS] n={len(rf_lines)}\n" + "\n".join(rf_lines))
+        # User Profile (replaces semantic_facts + fresh_facts)
+        user_profile = context.get("user_profile", "")
+        if user_profile and isinstance(user_profile, str):
+            sections.append(f"[USER PROFILE]\n{user_profile}")
 
         # Recent Summaries
         recent_summaries = context.get("recent_summaries", []) or []
@@ -1435,8 +1394,7 @@ class PromptBuilder:
             context = {
                 "recent_conversations": recent_conversations or [],
                 "memories": memories or [],
-                "semantic_facts": [],
-                "fresh_facts": [],
+                "user_profile": "",
                 "summaries": summaries or [],
                 "reflections": [],
                 "dreams": dreams or [],

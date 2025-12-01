@@ -330,6 +330,22 @@ REWRITE_TIMEOUT_S = float(config.get("features", {}).get("rewrite_timeout_s", 1.
 # Soft latency budget for best-of reranking before falling back to streaming
 BEST_OF_LATENCY_BUDGET_S = float(config.get("features", {}).get("best_of_latency_budget_s", 2.0))
 
+# --------------------------------------------------------------------
+# File Upload Security Configuration (Added 2025-11-30)
+# --------------------------------------------------------------------
+# Maximum file size per individual file (10MB default)
+FILE_UPLOAD_MAX_SIZE = int(config.get("security", {}).get("file_upload_max_size", 10 * 1024 * 1024))
+# Maximum total size across all files in a single request (50MB default)
+FILE_UPLOAD_MAX_TOTAL_SIZE = int(config.get("security", {}).get("file_upload_max_total_size", 50 * 1024 * 1024))
+# Allowed file extensions for upload
+FILE_UPLOAD_ALLOWED_EXTENSIONS = list(config.get("security", {}).get("file_upload_allowed_extensions", ['.txt', '.docx', '.csv', '.py']))
+# CSV formula prefixes to escape (prevent formula injection)
+FILE_UPLOAD_CSV_FORMULA_PREFIXES = tuple(config.get("security", {}).get("file_upload_csv_formula_prefixes", ['=', '+', '-', '@', '\t', '\r', '\n']))
+
+# Environment variable overrides for file upload security
+FILE_UPLOAD_MAX_SIZE = int(os.getenv("FILE_UPLOAD_MAX_SIZE", FILE_UPLOAD_MAX_SIZE))
+FILE_UPLOAD_MAX_TOTAL_SIZE = int(os.getenv("FILE_UPLOAD_MAX_TOTAL_SIZE", FILE_UPLOAD_MAX_TOTAL_SIZE))
+
 system_prompt_file = config.get("paths", {}).get("system_prompt_file", {})
 
 DEFAULT_CORE_DIRECTIVE = config.get("prompts", {}).get("default_core_directive", {

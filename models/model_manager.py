@@ -103,6 +103,7 @@ class ModelManager:
         self.default_max_tokens = DEFAULT_MAX_TOKENS
         # Common API model aliases
         self.api_models["claude-opus"] = "anthropic/claude-3-opus"
+        self.api_models["claude-opus-4.5"] = "anthropic/claude-opus-4.5"  # New Opus 4.5
         self.api_models["sonnet-4.5"] = "anthropic/claude-sonnet-4.5"
         # OpenAI models via OpenRouter
         self.api_models["gpt-4o-mini"] = "openai/gpt-4o-mini"
@@ -110,6 +111,7 @@ class ModelManager:
         self.api_models["gpt-4.1"] = "openai/gpt-4.1"
         # Add GPT‑5 support (via OpenRouter naming)
         self.api_models["gpt-5"] = "openai/gpt-5"
+        self.api_models["gpt-5.1"] = "openai/gpt-5.1"  # New ChatGPT 5.1
         # GLM model
         self.api_models["glm-4.6"] = "z-ai/glm-4.6"
         # DeepSeek models

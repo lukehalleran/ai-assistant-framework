@@ -102,6 +102,42 @@ class MemoryStorage:
             score += 0.1
         return min(score, 1.0)
 
+    def _is_file_error_response(self, response: str) -> bool:
+        """
+        Check if response contains file processing error messages.
+
+        These are ephemeral technical errors that should not be stored in long-term memory,
+        as they create false memories of problems that may have been fixed.
+
+        Args:
+            response: Assistant's response text
+
+        Returns:
+            True if response contains file errors that should not be stored
+        """
+        if not response:
+            return False
+
+        # File error patterns from utils/file_processor.py
+        # These patterns are specific enough that their presence indicates a file error
+        file_error_patterns = [
+            "[security error processing",       # Security validation errors
+            "[error reading",                   # General file reading errors
+            "[unsupported file type:",          # Unsupported extensions
+            "[empty file:",                     # Empty file notices
+            "[no text content extracted from",  # DOCX extraction failures
+            "[total file size exceeds limit:",  # Size limit violations
+        ]
+
+        # Check if response contains any file error patterns (case-insensitive)
+        response_lower = response.lower()
+        for pattern in file_error_patterns:
+            if pattern in response_lower:
+                logger.debug(f"[MemoryStorage] Detected file error pattern: {pattern}")
+                return True
+
+        return False
+
     async def store_interaction(
         self,
         query: str,
@@ -110,6 +146,12 @@ class MemoryStorage:
     ) -> None:
         """Persist a turn in both corpus & Chroma with computed metadata"""
         try:
+            # SKIP STORAGE: Don't persist file error responses
+            # These are ephemeral technical issues that create false memories
+            if self._is_file_error_response(response):
+                logger.info(f"[MemoryStorage] Skipped storing file error response to prevent false memories")
+                return
+
             # Detect heavy topic before anything else
             from utils.query_checker import _is_heavy_topic_heuristic
             is_heavy = _is_heavy_topic_heuristic(query)

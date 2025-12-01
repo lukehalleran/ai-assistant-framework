@@ -2,21 +2,23 @@
 # main.py
 
 Module Contract
-- Purpose: Application entry point. Builds the orchestrator stack, launches GUI or runs small CLI tests, and coordinates graceful shutdown work (reflections + summaries/facts).
+- Purpose: Application entry point. Builds the orchestrator stack, launches GUI or runs small CLI tests, and coordinates graceful shutdown work (reflections + summaries/facts). ENHANCED: Added user profile export commands.
 - Inputs:
-  - CLI arg `mode`: "gui" (default), "cli", "test-summaries", "inspect-summaries", "test-prompt-summaries"
+  - CLI arg `mode`: "gui" (default), "cli", "test-summaries", "inspect-summaries", "test-prompt-summaries", "export-profile", "show-profile"
   - Environment: GRADIO_* networking flags; config/app_config.py settings (paths, memory, models)
 - Outputs:
   - Starts a Gradio app (GUI) or runs test routines; at shutdown triggers memory_system tasks.
+  - UPDATED: "export-profile" writes data/user_profile_export.md; "show-profile" prints to console
 - Key functions/classes:
   - build_orchestrator() → DaemonOrchestrator fully wired with model_manager, prompt_builder, memory_system, etc.
   - test_orchestrator(), test_prompt_with_summaries(), inspect_summaries(): small helpers for ad‑hoc testing.
   - __main__ block: selects mode, launches, and on shutdown runs:
       • memory_system.run_shutdown_reflection(...)
-      • memory_system.process_shutdown_memory() (summary blocks + facts)
-- Important dependencies: core.orchestrator.DaemonOrchestrator, gui.launch.launch_gui, config.app_config constants, memory components, processing.gate_system.
+      • memory_system.process_shutdown_memory() (summary blocks + facts → UPDATED: now populates UserProfile)
+- Important dependencies: core.orchestrator.DaemonOrchestrator, gui.launch.launch_gui, config.app_config constants, memory components, processing.gate_system, memory.user_profile (NEW).
 - Side effects:
   - Launches local web server; writes to conversation logs and corpus/chroma via orchestrator.
+  - UPDATED: Writes to data/user_profile.json at shutdown with categorized facts
 - Threading/Async:
   - Uses asyncio to stream model output and to run shutdown tasks deterministically.
 """
@@ -444,6 +446,27 @@ if __name__ == "__main__":
             asyncio.run(inspect_summaries())
         elif mode == "test-prompt-summaries":
             asyncio.run(test_prompt_with_summaries())
+        elif mode == "export-profile":
+            # Export user profile to markdown
+            from memory.user_profile import UserProfile
+            profile = UserProfile()
+            md = profile.export_markdown()
+            output_path = "data/user_profile_export.md"
+            with open(output_path, 'w') as f:
+                f.write(md)
+            print(f"✓ Profile exported to {output_path}")
+            print(f"  Total facts: {profile.get_fact_count()}")
+            sys.exit(0)
+        elif mode == "show-profile":
+            # Print profile summary to console
+            from memory.user_profile import UserProfile
+            profile = UserProfile()
+            print(f"\n{'='*60}")
+            print(f"USER PROFILE ({profile.get_fact_count()} facts)")
+            print(f"{'='*60}\n")
+            print(profile.get_context_injection(max_tokens=1000))
+            print(f"\n{'='*60}")
+            sys.exit(0)
         else:
             orchestrator = build_orchestrator()
 

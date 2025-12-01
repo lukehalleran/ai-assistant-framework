@@ -714,8 +714,8 @@ def launch_gui(orchestrator):
                     _model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
                     _current_active = _mm.get_active_model_name() or (_model_choices[0] if _model_choices else 'gpt-4-turbo')
                 except Exception:
-                    _model_choices = ['gpt-5', 'gpt-4-turbo', 'claude-opus']
-                    _current_active = 'gpt-5'
+                    _model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.5']
+                    _current_active = 'gpt-5.1'
 
                 with gr.Row():
                     model_dd = gr.Dropdown(
@@ -824,7 +824,7 @@ def launch_gui(orchestrator):
                     _local_models = list(getattr(_mm, 'models', {}).keys())
                     _all_model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
                 except Exception:
-                    _all_model_choices = ['gpt-5', 'gpt-4-turbo', 'claude-opus', 'gpt-4o', 'gpt-4o-mini']
+                    _all_model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.5', 'gpt-4o', 'gpt-4o-mini']
 
                 _m1_value = _gens_default[0] if len(_gens_default) > 0 else (_all_model_choices[0] if _all_model_choices else None)
                 # Pick a second default different from the first, if possible

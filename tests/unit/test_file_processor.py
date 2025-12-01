@@ -51,9 +51,25 @@ def temp_csv_file(tmp_path):
 
 
 def create_mock_file(name: str, path: str = None):
-    """Helper to create a mock file object"""
+    """Helper to create a mock file object
+
+    Args:
+        name: Filename (without path) for security validation
+        path: Full path to the actual file for reading
+
+    Note: After security update (2025-11-30), mock.name should only contain
+    the filename without directory components to pass security checks.
+    """
     mock_file = Mock()
-    mock_file.name = path if path else name
+    # Security: name should only be the filename, not the full path
+    mock_file.name = name
+    # Store the actual path for file reading if provided
+    if path:
+        # Read the actual file content
+        with open(path, 'rb') as f:
+            content = f.read()
+        mock_file.read = Mock(return_value=content)
+        mock_file.seek = Mock()
     return mock_file
 
 
