@@ -4,9 +4,10 @@ Test to verify the meta-conversational fix is working.
 This tests the actual code path used by the prompt builder.
 """
 
+import os
 import asyncio
 import sys
-sys.path.insert(0, '/home/lukeh/Daemon_RAG_Agent_working')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from memory.memory_coordinator import MemoryCoordinator
 from memory.corpus_manager import CorpusManager

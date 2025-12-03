@@ -28,8 +28,8 @@ RUN_CMD = env $(RUN_ENV)
 
 run:
 	@echo "Starting Daemon (balanced profile)..."
-	@$(RUN_CMD) $(PYTHON) main.py
+	@cd .. && $(RUN_CMD) $(PYTHON) main.py
 
 pipeline:
 	@echo "Running pipeline (balanced profile)..."
-	@$(RUN_CMD) $(PYTHON) data/pipeline/unified_pipeline.py --download --semantic --chunk-size=1000 --chunk-overlap=180 --max-articles=400
+	@cd .. && $(RUN_CMD) $(PYTHON) data/pipeline/unified_pipeline.py --download --semantic --chunk-size=1000 --chunk-overlap=180 --max-articles=400

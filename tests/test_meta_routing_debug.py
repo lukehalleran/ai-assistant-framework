@@ -4,8 +4,9 @@ Debug script to verify meta-conversational routing in memory_coordinator.
 """
 
 import asyncio
+import os
 import sys
-sys.path.insert(0, '/home/lukeh/Daemon_RAG_Agent_working')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from memory.memory_coordinator import MemoryCoordinator
 from memory.corpus_manager import CorpusManager
