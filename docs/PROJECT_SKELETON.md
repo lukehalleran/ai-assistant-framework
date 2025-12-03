@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2025-11-30
+**Last Updated**: 2025-12-02
 
 ---
 
@@ -1448,21 +1448,39 @@ daemon/
 │   ├── wiki/                  # Wikipedia source data (102GB)
 │   └── pipeline/              # Wikipedia processing scripts (43GB)
 │
-└── tests/
-    ├── unit/                  # Unit tests (20+ files)
-    │   ├── test_tone_detector.py
-    │   ├── test_query_checker.py
-    │   ├── test_corpus_manager.py
-    │   └── ...
-    ├── integration.bak/       # Backup integration tests
-    ├── test_*.py             # Integration tests (40+ files)
-    │   ├── test_integration_prompt_builder.py
-    │   ├── test_integration_gate_system.py
-    │   ├── test_memory_coordinator_advanced.py
-    │   ├── test_tone_detection.py
-    │   ├── test_llm_fallback.py
-    │   └── ...
-    └── demo_*.py             # Demo scripts
+├── tests/                     # All test files (70+ files)
+│   ├── unit/                  # Unit tests (20+ files)
+│   │   ├── test_tone_detector.py
+│   │   ├── test_query_checker.py
+│   │   ├── test_corpus_manager.py
+│   │   └── ...
+│   ├── integration.bak/       # Backup integration tests
+│   ├── test_*.py             # Integration tests (50+ files)
+│   │   ├── test_integration_prompt_builder.py
+│   │   ├── test_integration_gate_system.py
+│   │   ├── test_memory_coordinator_advanced.py
+│   │   ├── test_tone_detection.py
+│   │   ├── test_llm_fallback.py
+│   │   └── ...
+│   └── fixtures/             # Test fixtures
+│
+├── scripts/                   # Utility scripts and demos
+│   ├── demo_*.py             # Demo scripts
+│   ├── debug_*.py            # Debug utilities
+│   ├── mutation_*.py         # Mutation testing
+│   ├── *.sh                  # Shell scripts
+│   └── ...
+│
+├── docs/                      # Documentation
+│   ├── PROJECT_SKELETON.md   # This file
+│   ├── QUICK_REFERENCE.md    # Quick reference guide
+│   ├── DOCKER_README.md      # Docker setup
+│   └── ...
+│
+└── build/                     # Build configuration
+    ├── Makefile.fast         # Fast profile
+    ├── Makefile.balanced     # Balanced profile
+    └── Makefile.max          # Maximum quality
 ```
 
 ---
@@ -1601,7 +1619,7 @@ export PROMPT_TOKEN_BUDGET=2048
 export PROMPT_MAX_MEMS=20
 
 # Fast profile
-make -f Makefile.fast run
+make -f build/Makefile.fast run
 ```
 
 ---
@@ -1981,7 +1999,7 @@ spec:
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2025-11-30
+**Last Updated**: 2025-12-02
 
 **Recent Changes** (2025-11-30):
 - **Verified and updated all Protocol contracts** - Added MemoryScorerProtocol and MemoryConsolidatorProtocol with complete method signatures

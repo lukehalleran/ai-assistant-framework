@@ -4,9 +4,10 @@ Test script for temporal window detection in meta-conversational queries.
 This tests the hybrid retrieval approach (Option C) that dynamically adjusts
 the retrieval window based on temporal markers in the query.
 """
+import os
 
 import sys
-sys.path.insert(0, '/home/lukeh/Daemon_RAG_Agent_working')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.query_checker import extract_temporal_window, is_meta_conversational
 
