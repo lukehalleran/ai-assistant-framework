@@ -4,10 +4,11 @@ Detailed diagnostic for meta-conversational query flow.
 Shows exactly what's happening at each step.
 """
 
+import os
 import asyncio
 import sys
 import logging
-sys.path.insert(0, '/home/lukeh/Daemon_RAG_Agent_working')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Enable debug logging
 logging.basicConfig(level=logging.DEBUG, format='%(name)s - %(levelname)s - %(message)s')

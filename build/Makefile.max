@@ -35,8 +35,8 @@ RUN_CMD = env $(RUN_ENV)
 
 run:
 	@echo "Starting Daemon (max fidelity profile)..."
-	@$(RUN_CMD) $(PYTHON) main.py
+	@cd .. && $(RUN_CMD) $(PYTHON) main.py
 
 pipeline:
 	@echo "Running pipeline (max fidelity profile)..."
-	@$(RUN_CMD) $(PYTHON) data/pipeline/unified_pipeline.py --download --semantic --max-articles=1000 --chunk-size=1200 --chunk-overlap=200
+	@cd .. && $(RUN_CMD) $(PYTHON) data/pipeline/unified_pipeline.py --download --semantic --max-articles=1000 --chunk-size=1200 --chunk-overlap=200
