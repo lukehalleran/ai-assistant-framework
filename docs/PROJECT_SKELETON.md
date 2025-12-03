@@ -853,22 +853,47 @@ Gradio renders updated chat_history
 ---
 
 ### 2.11 utils/topic_manager.py (Topic Extraction)
-**Purpose**: Hybrid topic extraction (spaCy + optional LLM)
+**Purpose**: Hybrid topic extraction (3-stage: heuristics → spaCy NER → LLM fallback)
 
-**Methods**:
-1. **spaCy NER** (primary, fast):
-   ```python
-   doc = nlp(query)
-   topics = [ent.text for ent in doc.ents]
-   ```
+**3-Stage Detection Pipeline**:
+1. **Heuristic extraction** (fast ~1ms):
+   - Strip leading prompts ("can you", "what is", etc.)
+   - Extract capitalized spans (proper nouns, entities)
+   - Prefer "role of the entity" patterns
+   - Title-case for wiki compatibility
+   - Guardrails: detect whole-utterance topics (>70% word overlap or >6 words) → return "general"
 
-2. **LLM fallback** (optional, slow):
-   - If spaCy returns nothing
-   - Or if query is complex
-   - Calls LLM to extract topics
+2. **spaCy NER extraction** (when ambiguous ~10-20ms):
+   - Triggered when: heuristic is ambiguous (returns "general", >6 words, or vague terms)
+   - Lazy-loaded spaCy model (en_core_web_sm)
+   - Entity priority: PERSON > ORG > GPE > PRODUCT > EVENT > WORK_OF_ART > LAW > NORP
+   - Filters: skip single-letter entities, skip stopwords/vague terms
+   - Returns highest priority entity or None
+
+3. **LLM fallback** (when no entities found ~50ms):
+   - Triggered when: spaCy returns None (no entities)
+   - Enhanced prompt: handles emotional/conversational messages
+   - Examples: "I am lonely" → "Loneliness", "School starts soon" → "School starting"
+   - Returns 2-5 word noun phrase
+
+**Ambiguity Detection**:
+- Always triggers stages 2-3 if heuristic returns "general"
+- Catches conversational messages without clear entities
+- Detects overly long candidates (>6 words)
 
 **Key Methods**:
-- `extract_topics(query, use_llm_fallback)` → List[str]
+- `update_from_user_input(text)` → None (updates internal state)
+- `get_primary_topic(text=None)` → str | None
+- `_extract_primary_from_text(text)` → str (heuristic)
+- `_is_ambiguous(candidate, source)` → bool
+- `_spacy_ner_extraction(text)` → str | None (spaCy NER)
+- `_llm_fallback(text)` → str | None (LLM extraction)
+
+**Configuration**:
+- `enable_llm_fallback`: Default True
+- `llm_model`: Default "gpt-4o-mini"
+
+**Cost Optimization**: spaCy NER as stage 2 reduces LLM costs for entity-heavy messages (free, fast)
 
 ---
 
@@ -991,7 +1016,106 @@ ToneAnalysis(
 
 ---
 
-### 2.17 utils/query_checker.py (Query Analysis)
+### 2.17 utils/need_detector.py (Need-Type Detection)
+**Purpose**: Detect what type of response the user needs (presence vs perspective)
+
+**Need Types** (NeedType enum):
+- `PRESENCE` - User needs warmth, acknowledgment, "I'm here with you"
+- `PERSPECTIVE` - User wants engagement, questions, reframes, problem-solving
+- `NEUTRAL` - Mixed or unclear signals
+
+**Detection Strategy**:
+- **PRESENCE markers**: Short emotional statements ("I am lonely", "ugh"), no questions, high emotional word density
+- **PERSPECTIVE markers**: Problem-framing ("I think", "should I"), questions, causal/contrastive connectors ("because", "but")
+
+**2-Stage Detection Pipeline**:
+1. **Keyword detection** (fast path ~1ms) - Pattern matching + structural signals (length, punctuation)
+2. **Semantic detection** (~50ms) - Embedding similarity to exemplar prototypes (20 examples per type)
+
+**Hybrid Combination**:
+```python
+# Weighted scoring
+keyword_weight = 0.4
+semantic_weight = 0.6
+
+# Agreement boost: if both detect same type, boost confidence by +0.1
+# Disagreement: use higher confidence result, reduce by 0.8x
+```
+
+**Configuration** (env vars):
+```python
+NEED_THRESHOLD_PRESENCE = 0.60
+NEED_THRESHOLD_PERSPECTIVE = 0.60
+NEED_KEYWORD_WEIGHT = 0.4
+NEED_SEMANTIC_WEIGHT = 0.6
+NEED_HIGH_CONF = 0.8  # Fast-path threshold
+```
+
+**Key Methods**:
+- `detect_need_type(message, model_manager)` → NeedAnalysis
+- `_keyword_need_detection(message)` → Fast keyword check
+- `_semantic_need_detection(message, model_manager)` → Embedding similarity
+- `_combine_scores(keyword_result, semantic_result)` → Weighted hybrid
+
+**Returns**:
+```python
+NeedAnalysis(
+  need_type=NeedType.PRESENCE,
+  confidence=0.83,
+  trigger="keyword",
+  raw_scores={"presence": 1.5, "perspective": 0.0},
+  explanation="Keyword presence signals: 1.5"
+)
+```
+
+**Embedder Sharing**: Uses same sentence-transformers model as tone_detector to avoid duplicate memory usage.
+
+---
+
+### 2.18 utils/emotional_context.py (Combined Emotional Analysis)
+**Purpose**: Unified emotional analysis combining severity (tone) and need-type
+
+**Combines**:
+- Tone detector (CrisisLevel): CONVERSATIONAL → CONCERN → MEDIUM → HIGH
+- Need detector (NeedType): PRESENCE vs PERSPECTIVE vs NEUTRAL
+
+**Data Structure**:
+```python
+@dataclass
+class EmotionalContext:
+    crisis_level: CrisisLevel      # From tone_detector
+    need_type: NeedType            # From need_detector
+    tone_confidence: float
+    need_confidence: float
+    tone_trigger: str
+    need_trigger: str
+    explanation: str
+```
+
+**Key Method**:
+- `analyze_emotional_context(message, conversation_history, model_manager)` → async EmotionalContext
+
+**Integration with Orchestrator**:
+1. Orchestrator calls `analyze_emotional_context()` early in prepare_prompt
+2. Stores result in `self.current_emotional_context`
+3. Uses `_get_response_instructions(ctx)` to generate mode-specific instructions
+4. Injects combined instructions into system prompt
+
+**Response Mode Matrix**:
+| Crisis Level | Need Type | Instructions |
+|--------------|-----------|--------------|
+| HIGH | any | Crisis support (safety first, ignores need type) |
+| MEDIUM | PRESENCE | Base elevated support + "Lead with warmth first" |
+| MEDIUM | PERSPECTIVE | Base elevated support + "Engage with their framing" |
+| CONCERN | PRESENCE | Base light support + "Brief acknowledgment, stay present" |
+| CONCERN | PERSPECTIVE | Base light support + "Light engagement, offer reframes" |
+| CONVERSATIONAL | PRESENCE | Base casual + "Short, warm responses preferred" |
+| CONVERSATIONAL | PERSPECTIVE | Base casual + "Questions and reframes welcome" |
+| any | NEUTRAL | Base tone instructions only |
+
+---
+
+### 2.19 utils/query_checker.py (Query Analysis)
 **Purpose**: Fast query analysis for routing and heavy topic detection
 
 **Key Functions**:
@@ -1034,7 +1158,7 @@ QueryAnalysis(
 
 ---
 
-### 2.18 memory/hybrid_retriever.py (Hybrid Search)
+### 2.20 memory/hybrid_retriever.py (Hybrid Search)
 **Purpose**: Combine query rewriting, semantic search, and keyword matching
 
 **3-Tier Approach**:
@@ -1061,7 +1185,7 @@ hybrid_score = semantic_weight * semantic_score + keyword_weight * keyword_score
 
 ---
 
-### 2.19 utils/query_rewriter.py (Query Expansion)
+### 2.21 utils/query_rewriter.py (Query Expansion)
 **Purpose**: Expand casual/slang queries for better retrieval
 
 **Key Functions**:
@@ -1070,7 +1194,7 @@ hybrid_score = semantic_weight * semantic_score + keyword_weight * keyword_score
 
 ---
 
-### 2.20 utils/keyword_matcher.py (Term Matching)
+### 2.22 utils/keyword_matcher.py (Term Matching)
 **Purpose**: Calculate keyword overlap scores for retrieval boosting
 
 **Key Functions**:
@@ -1422,6 +1546,8 @@ daemon/
 │   ├── topic_manager.py       # Topic extraction
 │   ├── time_manager.py        # Temporal utilities
 │   ├── tone_detector.py       # Crisis detection (keyword + semantic + LLM)
+│   ├── need_detector.py       # Need-type detection (PRESENCE vs PERSPECTIVE) [NEW]
+│   ├── emotional_context.py   # Combined emotional analysis (tone + need) [NEW]
 │   ├── query_checker.py       # Query analysis + heavy topic + thread detection
 │   ├── query_rewriter.py      # Query expansion for retrieval
 │   ├── keyword_matcher.py     # Keyword overlap scoring
@@ -1451,6 +1577,7 @@ daemon/
 ├── tests/                     # All test files (70+ files)
 │   ├── unit/                  # Unit tests (20+ files)
 │   │   ├── test_tone_detector.py
+│   │   ├── test_need_detection.py  # [NEW]
 │   │   ├── test_query_checker.py
 │   │   ├── test_corpus_manager.py
 │   │   └── ...
@@ -1460,6 +1587,7 @@ daemon/
 │   │   ├── test_integration_gate_system.py
 │   │   ├── test_memory_coordinator_advanced.py
 │   │   ├── test_tone_detection.py
+│   │   ├── test_need_detection.py  # [NEW]
 │   │   ├── test_llm_fallback.py
 │   │   └── ...
 │   └── fixtures/             # Test fixtures
@@ -1581,6 +1709,7 @@ except Exception as e:
 
 **Key Integration Test Files**:
 - `test_tone_detection.py` - End-to-end crisis detection
+- `test_need_detection.py` - Need-type detection (PRESENCE vs PERSPECTIVE) [NEW]
 - `test_llm_fallback.py` - LLM fallback behavior
 - `test_memory_coordinator.py` - Full memory retrieval pipeline
 - `test_gated_prompt.py` - Gating + prompt building
@@ -1714,11 +1843,13 @@ python main.py inspect-summaries
 | response_generator.py | Stream: async LLM + Best-of-N + Duel modes (buffer fix + DeepSeek EOS) [FIXED] |
 | gui/handlers.py | Relay: streaming chunks + thinking blocks + tag stripping (reply/response/answer) [FIXED] |
 | model_manager.py | Unified: OpenAI/Claude/OpenRouter/Local via single interface |
-| topic_manager.py | Extract: spaCy NER + optional LLM fallback |
+| topic_manager.py | Extract: Heuristics + LLM fallback (handles conversational/emotional) |
 | memory_consolidator.py | Summarize: LLM compresses N conversations at shutdown |
 | fact_extractor.py | Parse: regex + optional LLM for entity/fact extraction |
 | WikiManager.py | Search: FAISS over Wikipedia dump for context injection |
 | tone_detector.py | Detect: 4-level crisis (keyword + semantic + LLM fallback) |
+| need_detector.py | Detect: need-type (PRESENCE vs PERSPECTIVE, keyword + semantic hybrid) |
+| emotional_context.py | Combine: tone + need type for unified emotional analysis |
 | query_checker.py | Analyze: heavy topics, thread detection, temporal windows |
 | hybrid_retriever.py | Retrieve: query rewrite + semantic + keyword scoring |
 | time_manager.py | Utils: timestamps and temporal decay calculations |
