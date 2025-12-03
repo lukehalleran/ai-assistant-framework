@@ -300,6 +300,7 @@ class DaemonOrchestrator:
 
         # STM (Short-Term Memory) analyzer for multi-pass context summarization
         self.stm_analyzer = None
+        self.last_stm_topic = None  # Track last topic for change detection
         try:
             from config.app_config import USE_STM_PASS, STM_MODEL_NAME, STM_MIN_CONVERSATION_DEPTH
             if USE_STM_PASS and model_manager:
@@ -320,6 +321,12 @@ class DaemonOrchestrator:
         """
         Determine if STM pass should be used for this query.
 
+        Skips STM for:
+        - Meta-conversational queries (asking about the conversation itself)
+        - Topic changes (detected via topic_manager)
+        - Very short/trivial queries
+        - Insufficient conversation depth
+
         Args:
             conversation_history: Recent conversation turns
             user_input: Current user query
@@ -338,6 +345,43 @@ class DaemonOrchestrator:
         min_depth = getattr(self, 'stm_min_depth', 3)
         if not conversation_history or len(conversation_history) < min_depth:
             return False
+
+        # Skip for meta-conversational queries (asking about the conversation itself)
+        try:
+            from utils.query_checker import is_meta_conversational
+            if is_meta_conversational(user_input):
+                self.logger.debug("[STM] Skipping STM for meta-conversational query")
+                return False
+        except Exception as e:
+            self.logger.warning(f"[STM] Failed to check meta-conversational status: {e}")
+
+        # Detect topic changes - reset STM context on topic shift
+        try:
+            if self.topic_manager:
+                # Get current topic from topic manager
+                self.topic_manager.update_from_user_input(user_input)
+                current_topic = self.topic_manager.get_primary_topic()
+
+                # If we have a significant topic change, skip STM (clear contamination)
+                if current_topic and self.last_stm_topic:
+                    # Normalize for comparison
+                    current_norm = current_topic.lower().strip()
+                    last_norm = self.last_stm_topic.lower().strip()
+
+                    if current_norm != last_norm and current_norm != "general":
+                        self.logger.info(
+                            f"[STM] Topic change detected: '{self.last_stm_topic}' -> '{current_topic}'. "
+                            "Resetting STM context to prevent contamination."
+                        )
+                        self.last_stm_topic = current_topic
+                        return False  # Skip STM on topic transitions
+
+                # Update topic tracking
+                if current_topic:
+                    self.last_stm_topic = current_topic
+
+        except Exception as e:
+            self.logger.warning(f"[STM] Failed to check topic change: {e}")
 
         return True
 

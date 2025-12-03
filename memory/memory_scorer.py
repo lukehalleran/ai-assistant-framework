@@ -24,6 +24,14 @@ from config.app_config import (
 logger = get_logger("memory_scorer")
 
 # ---------------------------
+# Size Penalty Configuration
+# ---------------------------
+
+LARGE_DOC_SIZE_THRESHOLD = 10000  # 10KB in bytes
+LARGE_DOC_KEYWORD_THRESHOLD = 0.3  # Minimum keyword_score to avoid penalty
+LARGE_DOC_BASE_PENALTY = -0.25    # Base penalty for large irrelevant docs
+
+# ---------------------------
 # Heuristics & token helpers
 # ---------------------------
 
@@ -158,7 +166,83 @@ class MemoryScorer:
             md['access_count'] = md.get('access_count', 0) + 1
             md['last_accessed'] = datetime.now().isoformat()
 
-    def rank_memories(self, memories: List[Dict], current_query: str) -> List[Dict]:
+    def _calculate_topic_match(self, memory: Dict, current_topic: Optional[str]) -> float:
+        """
+        Calculate topic alignment score (0.0-1.0).
+
+        Returns:
+            1.0 - Exact topic match
+            0.5 - No topic info available (neutral)
+            0.2 - Different topic (penalty)
+        """
+        # Extract topics from memory metadata
+        memory_topics = memory.get('metadata', {}).get('topics', [])
+
+        # Also check tags field for topic tags
+        tags = memory.get('tags', [])
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(',') if t.strip()]
+
+        # Extract topic: prefixed tags
+        topic_tags = [t.replace('topic:', '') for t in tags if t.startswith('topic:')]
+        memory_topics.extend(topic_tags)
+
+        # Neutral if no topic info on either side
+        if not memory_topics or not current_topic:
+            return 0.5
+
+        # Case-insensitive matching
+        current_lower = current_topic.lower()
+        memory_topics_lower = [t.lower() for t in memory_topics]
+
+        if current_lower in memory_topics_lower:
+            return 1.0  # Exact match
+
+        return 0.2  # Different topic
+
+    def _calculate_size_penalty(self, memory: Dict) -> float:
+        """
+        Penalize large documents that lack keyword relevance.
+
+        Penalty scales with document size:
+        - Under 10KB: no penalty (return 0.0)
+        - Over 10KB with keyword_score > 0.3: no penalty (return 0.0)
+        - Over 10KB with keyword_score <= 0.3: scaled penalty
+          Example: 20KB doc = -0.25 × (20/10) = -0.50
+                   95KB doc = -0.25 × (95/10) = -2.375 (capped at -1.0)
+
+        Returns:
+            0.0 or negative penalty value (capped at -1.0)
+        """
+        # Get content from either field
+        content = memory.get('content', '') or memory.get('response', '')
+
+        # Calculate size in bytes
+        size_bytes = len(content.encode('utf-8')) if content else 0
+
+        # Under threshold - no penalty
+        if size_bytes < LARGE_DOC_SIZE_THRESHOLD:
+            return 0.0
+
+        # Large doc - check keyword relevance
+        keyword_score = memory.get('keyword_score', 0.0)
+        if keyword_score > LARGE_DOC_KEYWORD_THRESHOLD:
+            return 0.0  # Has keyword relevance, no penalty
+
+        # Calculate scaled penalty
+        size_multiplier = size_bytes / LARGE_DOC_SIZE_THRESHOLD
+        penalty = LARGE_DOC_BASE_PENALTY * size_multiplier
+
+        # Cap penalty at -1.0 (prevents extreme penalties for very large docs)
+        return max(-1.0, penalty)
+
+    def rank_memories(
+        self,
+        memories: List[Dict],
+        current_query: str,
+        current_topic: Optional[str] = None,
+        is_meta_conversational: bool = False
+    ) -> List[Dict]:
         """
         Score each memory using:
           - base relevance (+ collection/source boost)
@@ -166,8 +250,11 @@ class MemoryScorer:
           - truth / importance
           - continuity (token overlap + last-10m)
           - structure alignment (numeric/op density)
+          - topic match (alignment with current topic)
           - analogy penalty for mathy queries
           - anchor bonus (esp. for deictic follow-ups)
+          - meta-conversational bonus (for history queries)
+          - size penalty (for large irrelevant docs)
           - optional acceptance threshold (applied by caller after scoring)
         """
         if not memories:
@@ -238,6 +325,10 @@ class MemoryScorer:
             if cq_density > 0.08 and _analogy_markers(blob) > 0 and "analogy" not in current_query.lower():
                 penalty -= 0.1
 
+            # NEW: Size penalty for large documents
+            size_penalty = self._calculate_size_penalty(m)
+            penalty += size_penalty
+
             anchor_bonus = 0.0
             if anchors:
                 anchor_overlap = len(anchors & m_toks) / max(1, len(anchors))
@@ -253,14 +344,33 @@ class MemoryScorer:
             if any(t in blob for t in ("idiot", "stupid", "dumb", "toddler")):
                 truth = max(0.0, truth - 0.2)
 
+            # 9) topic match score
+            topic_match = self._calculate_topic_match(m, current_topic)
+
+            # 10) meta-conversational bonus
+            meta_bonus = 0.0
+            if is_meta_conversational:
+                # Boost episodic memories for meta queries about conversation history
+                mem_type = m.get('memory_type', '')
+                collection = m.get('collection', '')
+                if mem_type == 'EPISODIC' or collection == 'episodic':
+                    meta_bonus = 0.15
+                # Also boost summaries/reflections that capture conversation patterns
+                elif mem_type == 'SUMMARY' or collection == 'summaries':
+                    meta_bonus = 0.10
+                elif mem_type == 'META' or collection == 'meta':
+                    meta_bonus = 0.12
+
             m['final_score'] = (
                 SCORE_WEIGHTS.get('relevance', 0.35) * rel +
                 SCORE_WEIGHTS.get('recency', 0.25) * recency +
                 SCORE_WEIGHTS.get('truth', 0.20) * truth +
                 SCORE_WEIGHTS.get('importance', 0.05) * importance +
                 SCORE_WEIGHTS.get('continuity', 0.10) * continuity +
+                SCORE_WEIGHTS.get('topic_match', 0.00) * topic_match +
                 structure +
                 anchor_bonus +
+                meta_bonus +
                 penalty
             )
 
@@ -268,7 +378,10 @@ class MemoryScorer:
                 m['debug'] = {
                     'rel': rel, 'recency': recency, 'truth': truth,
                     'importance': importance, 'continuity': continuity,
+                    'topic_match': topic_match,
                     'structure': structure, 'anchor_bonus': anchor_bonus,
+                    'meta_bonus': meta_bonus,
+                    'size_penalty': size_penalty,
                     'penalty': penalty,
                 }
 
@@ -286,8 +399,9 @@ class MemoryScorer:
                     f"  #{i}: score={mm.get('final_score', 0):.3f} "
                     f"(rel={dbg.get('rel', 0):.2f}, rec={dbg.get('recency', 0):.2f}, "
                     f"truth={dbg.get('truth', 0):.2f}, imp={dbg.get('importance', 0):.2f}, "
-                    f"cont={dbg.get('continuity', 0):.2f}, struct={dbg.get('structure', 0):.2f}, "
-                    f"anchor={dbg.get('anchor_bonus', 0):.2f}, pen={dbg.get('penalty', 0):.2f}) "
+                    f"cont={dbg.get('continuity', 0):.2f}, topic={dbg.get('topic_match', 0):.2f}, "
+                    f"struct={dbg.get('structure', 0):.2f}, anchor={dbg.get('anchor_bonus', 0):.2f}, "
+                    f"meta={dbg.get('meta_bonus', 0):.2f}, pen={dbg.get('penalty', 0):.2f}) "
                     f"Q: {mm.get('query', '')[:48]!r}"
                 )
 
