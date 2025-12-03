@@ -41,7 +41,11 @@ META_CONVERSATIONAL_MARKERS: tuple[str, ...] = (
     "we discussed", "we talked about", "last time", "the other day",
     "you said", "you mentioned", "you told me",
     "earlier you", "before you", "didn't we", "haven't we",
-    "recall the", "remember when", "remember the"
+    "recall the", "remember when", "remember the",
+    # Queries about the conversation/responses themselves
+    "that response", "that off topic response", "your response", "your answer",
+    "that message", "earlier message", "previous response", "last response",
+    "what causes that", "why did you", "geared to", "seems like it was"
 )
 
 # Temporal markers for detecting time-based memory queries

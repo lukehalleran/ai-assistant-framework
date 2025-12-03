@@ -198,16 +198,18 @@ query → detect_crisis_level() → extract_topics()
 ---
 
 ### 2.3.0 memory/memory_scorer.py **[NEW - REFACTORED]**
-**Purpose**: Memory scoring and ranking operations
+**Purpose**: Memory scoring and ranking operations with multi-factor composite scoring
 
 **Key Methods** (implements MemoryScorerProtocol):
 - `calculate_truth_score(query, response)` → Calculate truth/reliability score (0.0-1.0)
 - `calculate_importance_score(content)` → Calculate importance based on content analysis (0.0-1.0)
-- `rank_memories(memories, query)` → Rank memories by composite score for given query
+- `rank_memories(memories, query, current_topic=None, is_meta_conversational=False)` → Rank memories by composite score for given query
 - `update_truth_scores_on_access(memories)` → Boost truth scores when memories are accessed
 
 **Additional Methods**:
 - `apply_temporal_decay(memories)` → Apply time-based decay to memory scores
+- `_calculate_topic_match(memory, current_topic)` → **[NEW]** Score topic alignment (1.0 exact, 0.5 neutral, 0.2 different)
+- `_calculate_size_penalty(memory)` → **[NEW]** Penalize large documents without keyword relevance (scaled: -0.25 × size_multiplier, capped at -1.0)
 
 **Scoring Algorithm** (in rank_memories):
 ```python
@@ -217,11 +219,28 @@ final_score = (
     SCORE_WEIGHTS['truth'] * truth_score +
     SCORE_WEIGHTS['importance'] * importance_score +
     SCORE_WEIGHTS['continuity'] * continuity_score +
+    SCORE_WEIGHTS['topic_match'] * topic_match +  # NEW
     structural_alignment +
     anchor_bonus +
-    penalties
+    meta_bonus +  # NEW - for meta-conversational queries
+    penalties +
+    size_penalty  # NEW - scaled document size penalty
 )
 ```
+
+**Configuration Constants**:
+```python
+# Size Penalty (for large documents)
+LARGE_DOC_SIZE_THRESHOLD = 10000      # 10KB threshold
+LARGE_DOC_KEYWORD_THRESHOLD = 0.3     # Min keyword_score to avoid penalty
+LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
+```
+
+**Meta-Conversational Bonuses** (when is_meta_conversational=True):
+- EPISODIC memories: +0.15
+- SUMMARY memories: +0.10
+- META memories: +0.12
+- SEMANTIC memories: +0.00 (no bonus)
 
 **Heuristics**:
 - Deictic follow-up detection (keywords: "that", "it", "this", "explain", "again")
@@ -229,6 +248,7 @@ final_score = (
 - Math density calculation (numbers and operators)
 - Analogy marker detection ("it's like", "imagine", etc.)
 - Anchor token building from recent conversation context
+- Topic match scoring (checks topic tags and metadata)
 
 **Dependencies**: TimeManager (optional)
 
@@ -1091,6 +1111,15 @@ NORMAL_THRESHOLD = 0.35
 SUMMARY_COSINE_THRESHOLD = 0.30
 REFLECTION_COSINE_THRESHOLD = 0.25
 
+# Graceful Threshold Fallback (NEW)
+GATING_MIN_RESULTS = 5              # Minimum results before relaxing threshold
+GATING_RELAXED_MULTIPLIER = 0.7     # Relaxation multiplier (70% of original)
+
+# Size Penalty Configuration (NEW)
+LARGE_DOC_SIZE_THRESHOLD = 10000      # 10KB threshold
+LARGE_DOC_KEYWORD_THRESHOLD = 0.3     # Min keyword_score to avoid penalty
+LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
+
 # Collection Boosts
 COLLECTION_BOOSTS = {
     "facts": 0.15,
@@ -1102,11 +1131,12 @@ COLLECTION_BOOSTS = {
 
 # Score Weights
 SCORE_WEIGHTS = {
-    "relevance": 0.35,
-    "recency": 0.25,
-    "truth": 0.20,
-    "importance": 0.05,
-    "continuity": 0.10,
+    "relevance": 0.30,      # Reduced from 0.60 (old config value)
+    "recency": 0.22,        # Increased from 0.15 (old config value)
+    "truth": 0.18,          # Reduced from 0.20 (old config value)
+    "importance": 0.05,     # Increased from 0.02 (old config value)
+    "continuity": 0.10,     # Increased from 0.02 (old config value)
+    "topic_match": 0.10,    # NEW - topic alignment scoring
     "structure": 0.05
 }
 
@@ -1270,9 +1300,12 @@ def _rank_memories(memories, query):
             SCORE_WEIGHTS['truth'] * truth +
             SCORE_WEIGHTS['importance'] * importance +
             SCORE_WEIGHTS['continuity'] * continuity +
+            SCORE_WEIGHTS['topic_match'] * topic_match +  # NEW
             structure +
             anchor_bonus +
-            penalty
+            meta_bonus +      # NEW - for meta-conversational queries
+            penalty +
+            size_penalty      # NEW - scaled document size penalty
         )
 
     return sorted(memories, key=lambda m: m['final_score'], reverse=True)
@@ -1685,11 +1718,12 @@ DEICTIC_CONTINUITY_MIN = 0.12
 
 # Weights
 SCORE_WEIGHTS = {
-    'relevance': 0.35,
-    'recency': 0.25,
-    'truth': 0.20,
-    'importance': 0.05,
-    'continuity': 0.10,
+    'relevance': 0.30,      # Reduced from 0.60 (old config value)
+    'recency': 0.22,        # Increased from 0.15 (old config value)
+    'truth': 0.18,          # Reduced from 0.20 (old config value)
+    'importance': 0.05,     # Increased from 0.02 (old config value)
+    'continuity': 0.10,     # Increased from 0.02 (old config value)
+    'topic_match': 0.10,    # NEW - topic alignment scoring
     'structure': 0.05
 }
 

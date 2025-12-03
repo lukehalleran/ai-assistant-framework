@@ -20,6 +20,10 @@ from config.app_config import (
 
 logger = get_logger("memory_retriever")
 
+# Graceful Threshold Fallback Configuration
+GATING_MIN_RESULTS = 5           # Minimum results before relaxing threshold
+GATING_RELAXED_MULTIPLIER = 0.7  # Relaxation multiplier (70% of original threshold)
+
 
 class MemoryRetriever:
     """
@@ -720,17 +724,40 @@ class MemoryRetriever:
 
         # Rank memories
         if self.scorer:
-            ranked = self.scorer.rank_memories(combined, query)
+            # Pass topic and meta-conversational status to scorer
+            # Note: is_meta_conversational already checked above, so False here
+            ranked = self.scorer.rank_memories(
+                combined,
+                query,
+                current_topic=topic_filter,
+                is_meta_conversational=False  # Meta queries use separate path
+            )
         else:
             ranked = sorted(combined, key=lambda x: x.get('relevance_score', 0.5), reverse=True)
 
-        # Threshold filtering
+        # Graceful threshold filtering with 3-stage fallback
         is_deictic = _is_deictic_followup(query)
-        cutoff = DEICTIC_THRESHOLD if is_deictic else NORMAL_THRESHOLD
-        accepted = [m for m in ranked if m.get('final_score', 0.0) >= cutoff]
+        primary_threshold = DEICTIC_THRESHOLD if is_deictic else NORMAL_THRESHOLD
 
-        if not accepted:
-            accepted = ranked
+        # Stage 1: Try primary threshold
+        accepted = [m for m in ranked if m.get('final_score', 0.0) >= primary_threshold]
+
+        # Stage 2: If insufficient results, relax to 70% of threshold
+        if len(accepted) < GATING_MIN_RESULTS:
+            relaxed_threshold = primary_threshold * GATING_RELAXED_MULTIPLIER
+            logger.info(
+                f"[Retrieval] Only {len(accepted)} results at threshold "
+                f"{primary_threshold:.2f}, relaxing to {relaxed_threshold:.2f}"
+            )
+            accepted = [m for m in ranked if m.get('final_score', 0.0) >= relaxed_threshold]
+
+            # Stage 3: If still insufficient, take top N as final fallback
+            if len(accepted) < GATING_MIN_RESULTS:
+                logger.warning(
+                    f"[Retrieval] Still only {len(accepted)} results after relaxation, "
+                    f"taking top {GATING_MIN_RESULTS}"
+                )
+                accepted = ranked[:GATING_MIN_RESULTS]
 
         # Update truth scores
         top_memories = accepted[:limit]
@@ -776,14 +803,24 @@ class MemoryRetriever:
 
         very_recent.sort(key=_ts, reverse=True)
 
-        # Apply gentle recency weighting
-        now = datetime.now()
-        for m in very_recent:
-            ts = _ts(m)
-            if ts:
-                age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
-                recency_score = 1.0 / (1.0 + 0.01 * age_hours)
-                m['final_score'] = recency_score
-                m['relevance_score'] = recency_score
+        # Use scorer with meta-conversational bonus if available
+        if self.scorer:
+            ranked = self.scorer.rank_memories(
+                very_recent,
+                query,
+                current_topic=topic_filter,
+                is_meta_conversational=True  # Enable meta-conversational bonus
+            )
+            return ranked[:limit]
+        else:
+            # Fallback: Apply gentle recency weighting
+            now = datetime.now()
+            for m in very_recent:
+                ts = _ts(m)
+                if ts:
+                    age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
+                    recency_score = 1.0 / (1.0 + 0.01 * age_hours)
+                    m['final_score'] = recency_score
+                    m['relevance_score'] = recency_score
 
-        return very_recent[:limit]
+            return very_recent[:limit]
