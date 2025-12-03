@@ -4,11 +4,11 @@
 import asyncio
 from core.prompt.builder import UnifiedPromptBuilder
 from config.app_config import config
-from core.dependencies import Dependencies
+from core.dependencies import DependencyContainer
 
 async def main():
     # Initialize dependencies
-    deps = Dependencies(config)
+    deps = DependencyContainer(config)
 
     # Create builder
     builder = UnifiedPromptBuilder(

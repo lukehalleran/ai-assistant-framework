@@ -7,6 +7,20 @@ from typing import Optional, List, Set
 
 from utils.logging_utils import get_logger
 
+# Optional spaCy NER for stage 2 entity extraction
+_spacy_nlp = None
+def _load_spacy():
+    """Lazy load spaCy model (only when needed)."""
+    global _spacy_nlp
+    if _spacy_nlp is None:
+        try:
+            import spacy
+            _spacy_nlp = spacy.load("en_core_web_sm")
+        except Exception as e:
+            # If spaCy unavailable, silently skip (fallback to LLM)
+            _spacy_nlp = False
+    return _spacy_nlp if _spacy_nlp is not False else None
+
 @dataclass
 class TopicSpan:
     text: str
@@ -61,12 +75,24 @@ class TopicManager:
         """
         Update internal state based on a new user utterance.
         Never commit clearly ambiguous candidates (e.g., "it", "this").
-        If LLM fallback is disabled/unavailable, keep the previous topic.
+
+        3-stage pipeline:
+        1. Heuristics (fast)
+        2. spaCy NER (if ambiguous, extract entities)
+        3. LLM fallback (if no entities, extract from conversational text)
         """
+        # Stage 1: Heuristics
         candidate = self._extract_primary_from_text(text)
 
-        # If ambiguous, try LLM; if that fails, do not overwrite last_topic
+        # If ambiguous, try stages 2 & 3
         if self._is_ambiguous(candidate, text):
+            # Stage 2: spaCy NER (extract named entities)
+            spacy_topic = self._spacy_ner_extraction(text)
+            if spacy_topic:
+                self.last_topic = spacy_topic
+                return
+
+            # Stage 3: LLM fallback (for conversational/emotional messages)
             resolved = self._llm_fallback(text)
             if resolved:
                 self.last_topic = resolved
@@ -80,12 +106,24 @@ class TopicManager:
         """
         Return a single best topic string. If `text` is provided, derive from it;
         else return the last seen topic (may be None).
-        Ambiguous candidates are ignored unless the LLM fallback resolves them.
+
+        3-stage pipeline:
+        1. Heuristics (fast)
+        2. spaCy NER (if ambiguous, extract entities)
+        3. LLM fallback (if no entities, extract from conversational text)
         """
         if text:
+            # Stage 1: Heuristics
             candidate = self._extract_primary_from_text(text)
 
             if self._is_ambiguous(candidate, text):
+                # Stage 2: spaCy NER (extract named entities)
+                spacy_topic = self._spacy_ner_extraction(text)
+                if spacy_topic:
+                    self.last_topic = spacy_topic
+                    return self.last_topic
+
+                # Stage 3: LLM fallback (for conversational/emotional messages)
                 resolved = self._llm_fallback(text)
                 if resolved:
                     self.last_topic = resolved
@@ -169,6 +207,18 @@ class TopicManager:
 
         norm_q = _norm(text)
         norm_c = _norm(candidate)
+
+        # Stricter guardrail: return 'general' if candidate is too similar to source
+        q_words = set(norm_q.split())
+        c_words = set(norm_c.split())
+
+        # If candidate contains >70% of source words, or is very long, it's the whole utterance
+        if len(c_words) > 0:
+            overlap = len(q_words & c_words) / len(q_words)
+            if overlap > 0.7 or len(c_words) > 6:
+                return "general"
+
+        # Original check: exact match with 4+ words
         if norm_c == norm_q and len(norm_q.split()) >= 4:
             return "general"
 
@@ -208,14 +258,15 @@ class TopicManager:
         if len(tokens) <= 2 and all(t.lower() in self._stop_topics or len(t) <= 2 for t in tokens):
             return True
 
-        # If heuristics returned 'general', try to get something better
+        # If heuristics returned 'general', ALWAYS use LLM to extract something better
+        # This handles conversational/emotional messages that don't have clear entities
         if c.lower() == "general":
-            # Only treat as ambiguous if source is short or pronoun-heavy
-            if len(re.findall(r"\b(that|this|it|here|there)\b", source_text.lower())) > 0:
-                return True
-            # Also if the source has no nouns-ish pattern (very rough)
-            if not re.search(r"[a-zA-Z]{3,}", source_text):
-                return True
+            return True
+
+        # Also check if candidate is too long (>6 words) - likely the whole message
+        tokens = [t for t in re.split(r"\s+", c) if t]
+        if len(tokens) > 6:
+            return True
 
         return False
 
@@ -227,6 +278,58 @@ class TopicManager:
         except Exception:
             return None
 
+    def _spacy_ner_extraction(self, text: str) -> Optional[str]:
+        """
+        Extract named entities using spaCy NER (stage 2).
+        Returns the most relevant entity or None if no entities found.
+
+        Priority order: PERSON > ORG > GPE > PRODUCT > EVENT > other entities
+        """
+        nlp = _load_spacy()
+        if nlp is None:
+            return None
+
+        try:
+            doc = nlp(text)
+
+            # Filter entities by priority
+            priority_order = ["PERSON", "ORG", "GPE", "PRODUCT", "EVENT", "WORK_OF_ART", "LAW", "NORP"]
+
+            # Group entities by type
+            entities_by_type = {}
+            for ent in doc.ents:
+                # Skip very short entities (single letters, numbers)
+                if len(ent.text.strip()) <= 1:
+                    continue
+                # Skip stopwords/vague terms
+                if ent.text.lower().strip() in self._stop_topics:
+                    continue
+
+                if ent.label_ not in entities_by_type:
+                    entities_by_type[ent.label_] = []
+                entities_by_type[ent.label_].append(ent.text.strip())
+
+            # Select best entity based on priority
+            for entity_type in priority_order:
+                if entity_type in entities_by_type:
+                    # Return the first (usually most relevant) entity of this type
+                    candidate = entities_by_type[entity_type][0]
+                    self.logger.debug(f"[TopicManager] spaCy NER found {entity_type}: {candidate}")
+                    return candidate
+
+            # If no priority entities, return any entity found
+            if entities_by_type:
+                first_type = list(entities_by_type.keys())[0]
+                candidate = entities_by_type[first_type][0]
+                self.logger.debug(f"[TopicManager] spaCy NER found {first_type}: {candidate}")
+                return candidate
+
+            return None
+
+        except Exception as e:
+            self.logger.debug(f"[TopicManager] spaCy NER failed: {e}")
+            return None
+
     def _llm_fallback(self, text: str) -> Optional[str]:
         """
         Invoke a small LLM to extract a concrete topic when heuristics are
@@ -236,8 +339,11 @@ class TopicManager:
             return None
 
         system = (
-            "You extract one short, concrete topic (2–4 words, noun phrase). "
-            "No pronouns or vague words (that/this/it/stuff/none). "
+            "You extract one short, concrete topic (2–5 words, noun phrase). "
+            "For emotional/conversational messages, identify the main subject or theme. "
+            "Examples: 'I am lonely' → 'Loneliness', 'School starts soon' → 'School starting', "
+            "'Having trouble with dating' → 'Dating struggles'. "
+            "No pronouns or vague words (that/this/it/stuff). "
             "No punctuation. If impossible, return CONTINUE."
         )
         prompt = text.strip()

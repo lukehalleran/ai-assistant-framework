@@ -33,6 +33,12 @@ from utils.tone_detector import (
     format_tone_shift_log,
     format_tone_log,
 )
+from utils.emotional_context import (
+    EmotionalContext,
+    analyze_emotional_context,
+    format_emotional_context_log,
+)
+from utils.need_detector import NeedType
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
@@ -295,8 +301,9 @@ class DaemonOrchestrator:
         self.topic_confidence_threshold = float(self.config.get("topic_confidence_threshold", 0.7))
         self.system_prompt_path = self.config.get("system_prompt_path")
 
-        # Tone tracking for crisis detection
-        self.current_tone_level: Optional[CrisisLevel] = None
+        # Emotional context tracking (tone + need type)
+        self.current_tone_level: Optional[CrisisLevel] = None  # Keep for compatibility
+        self.current_emotional_context: Optional[EmotionalContext] = None
 
         # STM (Short-Term Memory) analyzer for multi-pass context summarization
         self.stm_analyzer = None
@@ -468,6 +475,59 @@ class DaemonOrchestrator:
                 "to constantly prove your value or seek approval. Be supportive, honest, and chill."
             )
 
+    def _get_response_instructions(self, ctx: EmotionalContext) -> str:
+        """
+        Generate response instructions based on combined emotional context.
+
+        Matrix:
+        - HIGH + any need → Full crisis support (existing)
+        - MEDIUM + PRESENCE → Warmth first, then measured support
+        - MEDIUM + PERSPECTIVE → Supportive engagement
+        - CONCERN + PRESENCE → Brief acknowledgment, warmth, stay present
+        - CONCERN + PERSPECTIVE → Light engagement, offer reframe
+        - CONVERSATIONAL + any → Default casual mode
+
+        Args:
+            ctx: EmotionalContext with crisis level and need type
+
+        Returns:
+            String containing response instructions to append to system prompt
+        """
+
+        # Crisis levels override need-type (safety first)
+        if ctx.crisis_level == CrisisLevel.HIGH:
+            return self._get_tone_instructions(CrisisLevel.HIGH)
+
+        # Combined instructions for non-crisis
+        base = self._get_tone_instructions(ctx.crisis_level)
+
+        if ctx.need_type == NeedType.PRESENCE:
+            presence_addon = """
+
+## PRESENCE MODE: User needs warmth and acknowledgment
+The user is expressing emotional state, not seeking analysis.
+- Lead with warmth and acknowledgment
+- Stay with them before offering perspective
+- Short, warm responses preferred
+- Avoid immediate problem-solving or reframes
+- "I hear you" before "here's what I think"
+"""
+            return base + presence_addon
+
+        elif ctx.need_type == NeedType.PERSPECTIVE:
+            perspective_addon = """
+
+## PERSPECTIVE MODE: User is open to engagement
+The user is processing/analyzing, open to engagement.
+- Engage with their framing
+- Questions and reframes welcome
+- Can offer alternative viewpoints
+- Problem-solving appropriate if relevant
+"""
+            return base + perspective_addon
+
+        return base  # NEUTRAL - use base tone instructions only
+
     # ---------- 1b) Session Headers Instructions ----------
     def _get_session_headers_instructions(self) -> str:
         """
@@ -562,30 +622,31 @@ class DaemonOrchestrator:
                 if self.logger:
                     self.logger.debug(f"[Orchestrator] Failed to get conversation history for tone detection: {e}")
 
-        # Detect tone/crisis level
-        tone_analysis = await detect_crisis_level(
+        # Detect emotional context (tone + need type)
+        emotional_context = await analyze_emotional_context(
             message=user_input,
             conversation_history=conversation_history,
             model_manager=self.model_manager
         )
 
-        # Log tone analysis (backend only)
-        tone_log_msg = format_tone_log(tone_analysis, user_input)
+        # Log emotional context (backend only)
+        emotional_log_msg = format_emotional_context_log(emotional_context, user_input)
         if self.logger:
-            self.logger.info(f"[TONE] {tone_log_msg}")
+            self.logger.info(f"[EMOTIONAL_CONTEXT] {emotional_log_msg}")
 
         # Log tone shifts
-        if should_log_tone_shift(self.current_tone_level, tone_analysis.level):
+        if should_log_tone_shift(self.current_tone_level, emotional_context.crisis_level):
             shift_log = format_tone_shift_log(
                 self.current_tone_level,
-                tone_analysis.level,
-                tone_analysis.trigger
+                emotional_context.crisis_level,
+                emotional_context.tone_trigger
             )
             if self.logger:
                 self.logger.warning(f"[TONE_SHIFT] {shift_log}")
 
-        # Update current tone level (will be used later when injecting tone instructions)
-        self.current_tone_level = tone_analysis.level
+        # Update current emotional context (will be used later when injecting response instructions)
+        self.current_emotional_context = emotional_context
+        self.current_tone_level = emotional_context.crisis_level  # Keep for compatibility
 
         # ---------------------------------------------------------------------
         # 1) File processing (enhanced path only)
@@ -813,23 +874,32 @@ class DaemonOrchestrator:
                     self.logger.debug(f"[Orchestrator] Thread context injection failed: {e}")
 
         # ---------------------------------------------------------------------
-        # 4.5) Add tone mode instructions (crisis vs. casual)
+        # 4.5) Add response mode instructions (emotional context: tone + need type)
         # ---------------------------------------------------------------------
         if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
-            # Get tone level from the orchestrator's state
-            tone_level = getattr(self, "current_tone_level", None)
+            # Get emotional context from the orchestrator's state
+            emotional_ctx = getattr(self, "current_emotional_context", None)
 
             if self.logger:
-                self.logger.info(f"[PREPARE_PROMPT] Tone level: {tone_level}")
+                if emotional_ctx:
+                    self.logger.info(
+                        f"[PREPARE_PROMPT] Emotional context: "
+                        f"Crisis={emotional_ctx.crisis_level.value}, Need={emotional_ctx.need_type.value}"
+                    )
+                else:
+                    self.logger.info("[PREPARE_PROMPT] No emotional context set")
 
-            if tone_level:
-                tone_instructions = self._get_tone_instructions(tone_level)
-                system_prompt = system_prompt.rstrip() + tone_instructions
+            if emotional_ctx:
+                response_instructions = self._get_response_instructions(emotional_ctx)
+                system_prompt = system_prompt.rstrip() + response_instructions
                 if self.logger:
-                    self.logger.info(f"[PREPARE_PROMPT] Injected tone instructions for {tone_level.value}")
+                    self.logger.info(
+                        f"[PREPARE_PROMPT] Injected response instructions for "
+                        f"{emotional_ctx.crisis_level.value}/{emotional_ctx.need_type.value}"
+                    )
             else:
                 if self.logger:
-                    self.logger.warning("[PREPARE_PROMPT] No tone level set - skipping tone instructions")
+                    self.logger.warning("[PREPARE_PROMPT] No emotional context set - skipping response instructions")
 
             # Add session headers instructions for temporal reasoning and memory usage
             session_headers_instructions = self._get_session_headers_instructions()
