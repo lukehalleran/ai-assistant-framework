@@ -182,11 +182,11 @@ class MemoryStorage:
             # Topic detection
             primary_topic = "general"
             if self.topic_manager:
-                if hasattr(self.topic_manager, "update_from_user_input"):
-                    topics = self.topic_manager.update_from_user_input(query)
-                    primary_topic = topics[0] if topics else "general"
+                if hasattr(self.topic_manager, "get_primary_topic"):
+                    # get_primary_topic() updates internal state and returns the topic
+                    primary_topic = self.topic_manager.get_primary_topic(query) or "general"
                 elif hasattr(self.topic_manager, "detect_topic"):
-                    primary_topic = self.topic_manager.detect_topic(f"{query} {response}")
+                    primary_topic = self.topic_manager.detect_topic(f"{query} {response}") or "general"
 
             # Ensure tags list exists and includes the topic
             tags = tags or []

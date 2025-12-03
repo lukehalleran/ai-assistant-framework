@@ -84,6 +84,18 @@ MEDIUM_CRISIS_KEYWORDS = {
 CONCERN_KEYWORDS = {
     "really anxious", "freaking out", "scared", "terrified",
     "worried sick", "can't sleep", "helpless",
+    # Emotional state expressions
+    "lonely", "i am lonely", "i'm lonely", "i feel lonely",
+    "vulnerable", "i feel vulnerable", "feeling vulnerable",
+    "i'm scared", "i feel scared", "feeling scared",
+    "isolated", "i feel isolated", "feeling isolated",
+    "empty", "i feel empty", "feeling empty",
+    "hopeless", "i feel hopeless", "feeling hopeless",
+    "lost", "i feel lost", "feeling lost",
+    "alone", "i feel alone", "feeling alone",
+    "abandoned", "i feel abandoned", "feeling abandoned",
+    "worthless", "i feel worthless", "feeling worthless",
+    "numb", "i feel numb", "feeling numb",
 }
 
 # Event distress keywords (strong reactions to upsetting world events)

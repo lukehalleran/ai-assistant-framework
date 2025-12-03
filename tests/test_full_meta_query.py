@@ -6,7 +6,7 @@ Tests the complete flow from query → detection → retrieval → response.
 
 import asyncio
 import sys
-from core.orchestrator import Orchestrator
+from core.orchestrator import DaemonOrchestrator
 
 async def test_full_flow():
     print(f"\n{'='*70}")
@@ -15,7 +15,7 @@ async def test_full_flow():
 
     # Initialize orchestrator
     print("Initializing orchestrator...")
-    orchestrator = Orchestrator()
+    orchestrator = DaemonOrchestrator()
 
     # Test query
     query = "Do you recall what time I said I woke up yesterday?"
