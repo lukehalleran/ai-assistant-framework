@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: glm-4.6
+  active: deepseek-r1
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.25
@@ -84,12 +84,13 @@ gating:
   summary_cosine_threshold: 0.2
   reflection_cosine_threshold: 0.15
   score_weights:
-    relevance: 0.6
-    recency: 0.15
-    truth: 0.2
-    importance: 0.02
-    continuity: 0.02
-    structure: 0.01
+    relevance: 0.3
+    recency: 0.22
+    truth: 0.18
+    importance: 0.05
+    continuity: 0.1
+    structure: 0.05
+    topic_match: 0.1
 paths:
   system_prompt: core/system_prompt.txt
   directives: structured_directives.txt
