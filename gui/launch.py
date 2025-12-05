@@ -265,8 +265,11 @@ def launch_gui(orchestrator):
         except Exception as e:
             return f"Error reading app log: {e}"
 
-    async def submit_chat(user_text, chat_history, files, use_raw_gpt, personality, debug_entries):
+    async def submit_chat(user_text, chat_history, files, use_raw_gpt, enable_citations_flag, personality, debug_entries):
         personality_manager.switch_personality(personality)
+
+        # Update orchestrator citation mode
+        orchestrator.enable_citations = enable_citations_flag
 
         # Ensure we have a list to work with
         chat_history = list(chat_history or [])
@@ -516,6 +519,7 @@ def launch_gui(orchestrator):
                 with gr.Row():
                     files = gr.File(file_types=[".txt", ".docx", ".csv", ".py"], file_count="multiple", label="Files")
                     use_raw = gr.Checkbox(label="Bypass Memory (Raw GPT)", value=False)
+                    enable_citations = gr.Checkbox(label="Enable Memory Citations", value=False, info="Show which memories Claude references")
                     personality = gr.Dropdown(
                         label="Personality",
                         choices=list(personality_manager.personalities.keys()),
@@ -544,7 +548,7 @@ def launch_gui(orchestrator):
 
                 submit_button.click(
                     submit_chat,
-                    inputs=[user_input, chat_state, files, use_raw, personality, debug_state],
+                    inputs=[user_input, chat_state, files, use_raw, enable_citations, personality, debug_state],
                     outputs=[chatbot, chat_state, user_input, debug_state, typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md],
                 )
 
@@ -695,6 +699,22 @@ def launch_gui(orchestrator):
                     return _format_debug_entries(entries)
                 # Bind state change to view update
                 debug_state.change(fn=_render_debug, inputs=[debug_state], outputs=[debug_view])
+
+            with gr.TabItem("Citations"):
+                gr.Markdown("### 📚 Memory Citations")
+                gr.Markdown("Shows which memories Claude referenced in responses (when citation mode enabled)")
+                citations_view = gr.JSON(value=[], label="Citations")
+
+                def _format_citations(entries):
+                    """Extract and format citations from debug entries"""
+                    if not entries:
+                        return []
+                    # Get latest entry's citations
+                    latest = entries[-1] if isinstance(entries, list) else entries
+                    return latest.get('citations', [])
+
+                # Update citations view whenever debug_state changes
+                debug_state.change(fn=_format_citations, inputs=[debug_state], outputs=[citations_view])
 
             with gr.TabItem("Status"):
                 gr.Markdown("### 📊 Runtime Status")

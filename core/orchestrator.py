@@ -21,6 +21,7 @@ Module Contract
   - Uses async streaming from response_generator; overall methods are async.
 """
 import os
+import re
 import processing.gate_system as gate_system
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List
@@ -279,6 +280,9 @@ class DaemonOrchestrator:
         self.memory_system = memory_system
         self.personality_manager = personality_manager
         self.topic_manager = topic_manager
+
+        # Extract time_manager from response_generator (shared instance)
+        self.time_manager = getattr(response_generator, 'time_manager', None)
         # inside __init__ after self.topic_manager = topic_manager
         try:
             if self.topic_manager and hasattr(gate_system, "set_topic_resolver"):
@@ -322,6 +326,10 @@ class DaemonOrchestrator:
                 self.logger.debug("[Orchestrator] STM analyzer disabled via config")
         except Exception as e:
             self.logger.warning(f"[Orchestrator] Failed to initialize STM analyzer: {e}")
+
+        # Memory citation system
+        self.enable_citations = False  # Will be set from GUI checkbox
+        self.citation_pattern = re.compile(r'\[(MEM_\w+_\d+|FACT_\d+|SUM_\d+|PROFILE_\w+)\]')
 
     # ---------- STM Helper Methods ----------
     def _should_use_stm(self, conversation_history: Optional[List[Dict]], user_input: str) -> bool:
@@ -538,11 +546,37 @@ The user is processing/analyzing, open to engagement.
         """
         return (
             "\n\n## TEMPORAL REASONING\n"
-            "**[TIME CONTEXT]**: Current datetime. Always use this to calculate elapsed time from memory timestamps.\n"
-            "- Memory from 2025-09-15, TIME CONTEXT 2025-11-17 = \"2 months ago\" (not \"recently\")\n"
+            "**[TIME CONTEXT]**: Contains current datetime AND conversation pacing metrics.\n"
+            "- **Current time**: Use to calculate elapsed time from memory timestamps\n"
+            "- **Time since last message**: Gap between consecutive messages in this session\n"
+            "  - Quick replies (seconds) = active engagement, possible urgency\n"
+            "  - Long pauses (minutes/hours) = user returned after break, may need context refresh\n"
+            "  - 'N/A (first message in session)' = session just started\n"
+            "- **Time since last session**: Gap between previous session end and now\n"
+            "  - Hours/days = acknowledge the gap (\"welcome back\", \"it's been a while\")\n"
+            "  - Seconds/minutes = continuation, no greeting needed\n"
+            "  - 'N/A (first session)' = first time ever using the system\n"
+            "\n"
+            "**Use pacing metrics for appropriate responses:**\n"
+            "- Rapid messages (few seconds apart) → Keep responses concise, match their pace\n"
+            "- Long gaps (hours/days since last session) → Warmer greeting, summarize where we left off\n"
+            "- First message in session after break → Natural to acknowledge return\n"
+            "- Mid-session messages → No need for greetings, continue conversation naturally\n"
+            "\n"
+            "**All sections below contain timestamps - use them for temporal reasoning:**\n"
+            "- **[RECENT CONVERSATION]**: Last exchanges with timestamps, newest first\n"
+            "- **[RELEVANT MEMORIES]**: Semantically relevant past conversations with timestamps\n"
+            "- **[USER PROFILE]**: User facts with timestamps in [ISO format] brackets after each fact\n"
+            "- **[FACTS]** / **[SEMANTIC FACTS]** / **[RECENT FACTS]**: Extracted facts with timestamps\n"
+            "- **[SUMMARIES]** / **[RECENT SUMMARIES]** / **[SEMANTIC SUMMARIES]**: Conversation summaries with timestamps\n"
+            "- **[REFLECTIONS]** / **[RECENT REFLECTIONS]** / **[SEMANTIC REFLECTIONS]**: Meta-reflections with timestamps\n"
+            "\n"
+            "**Calculate recency from timestamps, not relative terms:**\n"
+            "- Memory from 2025-09-15, Current time 2025-11-17 = \"2 months ago\" (not \"recently\")\n"
+            "- Use item's own timestamp when available, not just Current time\n"
+            "- \"2 months ago\" (explicit) > \"recently\" (vague)\n"
             "- For sleep/schedule: compare timestamps across memories\n"
-            "**[RECENT CONVERSATION]**: Last 15 exchanges, newest first. Use for immediate context.\n"
-            "**[RELEVANT MEMORIES]**: Semantically relevant past conversations with timestamps. Calculate recency from TIME CONTEXT.\n"
+            "\n"
             "**[CURRENT USER QUERY]**: The only query to respond to. All other sections are context only."
         )
 
@@ -920,6 +954,24 @@ The user is processing/analyzing, open to engagement.
             system_prompt = system_prompt.rstrip() + thinking_instruction
 
         # ---------------------------------------------------------------------
+        # 4.8) Citation instructions (if enabled)
+        # ---------------------------------------------------------------------
+        if self.enable_citations:
+            citation_instruction = (
+                "\n\n"
+                "MEMORY CITATION PROTOCOL:\n"
+                "When referencing specific memories from the provided context, include inline citations using this format:\n"
+                "- [MEM_RECENT_{index}] for recent conversation memories (numbered from the [RECENT CONVERSATION] section)\n"
+                "- [MEM_SEMANTIC_{index}] for semantic memories (numbered from the [RELEVANT MEMORIES] section)\n"
+                "- [PROFILE_CONTEXT] for user profile facts\n"
+                "\n"
+                "Example: \"You mentioned [MEM_RECENT_2] that you're starting OMSA in January\"\n"
+                "\n"
+                "The citations help track which memories inform each part of your response."
+            )
+            system_prompt = system_prompt.rstrip() + citation_instruction
+
+        # ---------------------------------------------------------------------
         # 5) Raw mode: return plain text, no system prompt
         # ---------------------------------------------------------------------
         if use_raw_mode:
@@ -984,15 +1036,60 @@ The user is processing/analyzing, open to engagement.
             stm_summary=stm_summary,  # Pass STM context summary
         )
 
-        # Some builders return a context dict; assemble it to a single string
+        # Capture memory_id_map for citation extraction before prompt is converted to string
+        memory_id_map = {}
         if isinstance(prompt, dict):
+            memory_id_map = prompt.get('memory_id_map', {})
             prompt = self.prompt_builder._assemble_prompt(
                 context=prompt,
                 user_input=combined_text,
                 system_prompt=system_prompt
             )
 
+        # Store memory_id_map for citation extraction
+        self._current_memory_id_map = memory_id_map
+
         return prompt, system_prompt
+
+    # ---------- Memory Citation Methods ----------
+    def _extract_citations(self, response: str, memory_map: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Extract memory citations from response.
+
+        Args:
+            response: Raw response with citation tags like [MEM_RECENT_3]
+            memory_map: Dictionary mapping citation IDs to memory metadata
+
+        Returns:
+            Tuple of (clean_response, citations_list)
+            - clean_response: Response with citation tags removed
+            - citations_list: List of cited memory metadata dicts
+        """
+        # Find all cited memory IDs
+        cited_ids = set(self.citation_pattern.findall(response))
+
+        citations = []
+        if memory_map:
+            for mem_id in cited_ids:
+                if mem_id in memory_map:
+                    citations.append({
+                        'memory_id': mem_id,
+                        'type': memory_map[mem_id].get('type', 'unknown'),
+                        'timestamp': memory_map[mem_id].get('timestamp', ''),
+                        'content': memory_map[mem_id].get('content', '')[:200],  # Truncate for display
+                        'relevance_score': memory_map[mem_id].get('relevance_score', 0.0)
+                    })
+
+        # Remove citation tags for clean display (always, even if memory_map is empty)
+        clean_response = self.citation_pattern.sub('', response)
+
+        # Clean up multiple spaces left by removal
+        clean_response = re.sub(r'\s+', ' ', clean_response)
+        clean_response = clean_response.strip()
+
+        self.logger.debug(f"[Citation] Extracted {len(citations)} citations from response")
+
+        return clean_response, citations
 
     # ---------- 3) Generate & Store ----------
     async def process_user_query(
@@ -1325,6 +1422,16 @@ The user is processing/analyzing, open to engagement.
             # Sanitize prompt header echoes before returning/storing
             answer_for_storage = self._strip_prompt_artifacts(answer_for_storage)
 
+            # Extract citations if enabled
+            citations = []
+            if self.enable_citations and hasattr(self, '_current_memory_id_map') and self._current_memory_id_map:
+                raw_response_with_citations = answer_for_storage
+                answer_for_storage, citations = self._extract_citations(
+                    answer_for_storage,
+                    self._current_memory_id_map
+                )
+                debug_info['raw_response_with_citations'] = raw_response_with_citations
+
             # --- Store Interaction ---
             if self.memory_system and not use_raw_mode:
                 try:
@@ -1345,6 +1452,8 @@ The user is processing/analyzing, open to engagement.
                 "full_response_length": len(full_response),
                 "end_time": datetime.now(),
                 "prompt_length": len(prompt),
+                "citations": citations,  # Add extracted citations
+                "citations_enabled": self.enable_citations,
             })
             debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
 

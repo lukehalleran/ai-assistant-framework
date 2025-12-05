@@ -121,9 +121,13 @@ class UserProfile:
                  value: str,
                  confidence: float = 0.7,
                  source_excerpt: str = "",
-                 category: ProfileCategory = None) -> bool:
+                 category: ProfileCategory = None,
+                 timestamp: datetime = None) -> bool:
         """
         Add a fact to the profile, handling conflicts.
+
+        Args:
+            timestamp: Optional timestamp to preserve from imports (defaults to now)
 
         Returns True if fact was added/updated, False if rejected.
         """
@@ -137,27 +141,40 @@ class UserProfile:
         if category is None:
             category = categorize_relation(relation)
 
+        # Use provided timestamp or default to now
+        if timestamp is None:
+            timestamp = datetime.now()
+        elif isinstance(timestamp, str):
+            # Parse ISO format timestamp strings
+            try:
+                timestamp = datetime.fromisoformat(timestamp)
+            except (ValueError, AttributeError):
+                timestamp = datetime.now()
+
         fact = ProfileFact(
             relation=relation,
             value=value,
             category=category,
             confidence=confidence,
             source_excerpt=source_excerpt[:200],
-            timestamp=datetime.now()
+            timestamp=timestamp
         )
 
         with self._lock:
             cat_key = category.value
 
-            # Check for existing fact with same relation
+            # Check for existing fact with same relation AND value (to allow multiple facts with same relation but different values)
             existing_idx = None
             for i, existing in enumerate(self.profile["categories"][cat_key]):
                 if isinstance(existing, dict):
                     existing_rel = existing.get("relation", "")
+                    existing_val = existing.get("value", "")
                 else:
                     existing_rel = existing.relation if hasattr(existing, 'relation') else ""
+                    existing_val = existing.value if hasattr(existing, 'value') else ""
 
-                if existing_rel == relation:
+                # Match on both relation AND value to allow multiple facts with same relation
+                if existing_rel == relation and existing_val == value:
                     existing_idx = i
                     break
 
@@ -217,8 +234,9 @@ class UserProfile:
             value = fact.get("value") or fact.get("object", "")
             confidence = fact.get("confidence", 0.7)
             source = fact.get("source_excerpt", "")
+            timestamp = fact.get("timestamp")  # Preserve original timestamp if provided
 
-            if self.add_fact(relation, value, confidence, source):
+            if self.add_fact(relation, value, confidence, source, timestamp=timestamp):
                 added += 1
 
         if added > 0:
@@ -302,8 +320,8 @@ class UserProfile:
         if not facts:
             return []
 
-        # Filter to high-confidence facts only
-        high_conf = [f for f in facts if isinstance(f, dict) and f.get("confidence", 0) >= 0.7]
+        # Filter to medium+ confidence facts (lowered from 0.7 to include more imported facts)
+        high_conf = [f for f in facts if isinstance(f, dict) and f.get("confidence", 0) >= 0.55]
         if not high_conf:
             return []
 
@@ -357,9 +375,15 @@ class UserProfile:
         parts = []
 
         # Quick profile (always include)
+        # Note: Quick profile doesn't have individual timestamps, but we can add the profile updated_at
         quick = self.get_quick_profile()
         if quick:
-            parts.append("User: " + ", ".join(f"{k}={v}" for k, v in quick.items()))
+            profile_updated = self.profile.get("updated_at", "")
+            quick_str = ", ".join(f"{k}={v}" for k, v in quick.items())
+            if profile_updated:
+                parts.append(f"User: {quick_str} [profile_updated: {profile_updated}]")
+            else:
+                parts.append(f"User: {quick_str}")
 
         for cat in ProfileCategory:
             if query:
@@ -369,13 +393,23 @@ class UserProfile:
                 # Fallback to most recent high-confidence facts
                 facts = self.get_category(cat)
                 relevant_facts = sorted(
-                    [f for f in facts if isinstance(f, dict) and f.get("confidence", 0) >= 0.7],
+                    [f for f in facts if isinstance(f, dict) and f.get("confidence", 0) >= 0.55],
                     key=lambda x: x.get("timestamp", ""),
                     reverse=True
                 )[:facts_per_category]
 
             if relevant_facts:
-                fact_strs = [f"{f['relation']}={f['value']}" for f in relevant_facts]
+                fact_strs = []
+                for f in relevant_facts:
+                    # Include timestamp for temporal reasoning
+                    ts = f.get('timestamp', '')
+                    if isinstance(ts, str):
+                        # Format: relation=value [timestamp]
+                        fact_strs.append(f"{f['relation']}={f['value']} [{ts}]")
+                    else:
+                        # Fallback if timestamp is datetime object
+                        ts_str = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
+                        fact_strs.append(f"{f['relation']}={f['value']} [{ts_str}]")
                 parts.append(f"{cat.value}: {'; '.join(fact_strs)}")
 
         result = "\n".join(parts)

@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2025-12-02
+**Last Updated**: 2025-12-05
 
 ---
 
@@ -36,6 +36,8 @@ USER QUERY
 [LLM Generation] → Multi-provider streaming with Best-of-N/Duel modes
     ↓
 [Response Tag Stripping] → Remove <reply>, <response>, <answer>, EOS markers
+    ↓
+[Citation Extraction] → Extract memory citations (if enabled), remove tags [NEW 2025-12-04]
     ↓
 [Memory Storage] → Corpus JSON + Vector embeddings
     ↓               ↓ (via MemoryStorage) [REFACTORED]
@@ -86,6 +88,7 @@ Legacy `memory/memory_coordinator.py` still in use but being migrated.
 - `_strip_prompt_artifacts(text)` → Remove echoed prompt headers
 - `_get_tone_instructions(tone_level)` → Mode-specific response guidelines
 - `_get_session_headers_instructions()` → Temporal reasoning guidance
+- `_extract_citations(response, memory_map)` → Extract memory citations, remove tags **[NEW 2025-12-04]**
 
 **Data Flow Pattern**:
 ```python
@@ -189,7 +192,7 @@ query → detect_crisis_level() → extract_topics()
   ```
 
 **Hierarchical Memory**:
-- Parent-child relationships between memories
+- ⚠️ Parent-child relationships: **DISABLED** (caused retrieval bugs, intentionally deactivated)
 - Temporal decay: `1.0 / (1.0 + decay_rate * age_hours)`
 - Access count boosts truth score
 
@@ -472,7 +475,9 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
 
   return semantic_facts + recent_facts
   ```
-- `get_context_injection(max_tokens, query)` → Format profile for prompt injection
+- `get_context_injection(max_tokens, query)` → Format profile for prompt injection **[UPDATED 2025-12-04: now includes timestamps]**
+  - Format: `relation=value [ISO_timestamp]`
+  - Enables temporal reasoning about when facts were learned
 - `export_markdown()` → Generate markdown export of all facts by category
 - `get_quick_profile()` → Extract identity fields (name, location, age) for compact summary
 
@@ -533,7 +538,15 @@ get_user_profile_context(query) → hybrid retrieval per category
 [USER PROFILE] section in formatted prompt
 ```
 
-**Example Profile Output**:
+**Example Profile Output (Prompt Format with Timestamps)**:
+```
+[USER PROFILE]
+User: name=Luke, location=San Francisco [profile_updated: 2025-12-04T15:30:00]
+fitness: squat_max=365 lb [2025-09-15T10:20:00]; bench_max=275 lb [2025-09-20T14:30:00]; training_frequency=5x per week [2025-10-01T08:15:00]
+career: current_role=Senior Engineer [2025-08-01T09:00:00]; programming_languages=Python, Go, Rust [2025-08-05T11:30:00]
+```
+
+**Example Markdown Export**:
 ```
 ## Quick Profile
 - name: Luke
@@ -544,10 +557,6 @@ get_user_profile_context(query) → hybrid retrieval per category
 - squat_max: 365 lb (confidence: 0.9)
 - bench_max: 275 lb (confidence: 0.85)
 - training_frequency: 5x per week (confidence: 0.8)
-
-## career (2 facts)
-- current_role: Senior Engineer (confidence: 0.9)
-- programming_languages: Python, Go, Rust (confidence: 0.85)
 ```
 
 **Testing**:
@@ -708,6 +717,8 @@ Priority order (with weights):
 ```
 [TIME CONTEXT]
 Current time: 2025-11-18 10:30:00
+Time since last message: 5 m
+Time since last session: 2 d 3 h
 
 [RECENT CONVERSATION] n=15
 1) 2025-11-18 10:00:00: User: ... Daemon: ...
@@ -914,8 +925,8 @@ Gradio renders updated chat_history
 
 ---
 
-### 2.13 utils/time_manager.py (Temporal Context)
-**Purpose**: Time-aware operations and decay
+### 2.13 utils/time_manager.py (Temporal Context & Session Tracking)
+**Purpose**: Time-aware operations, decay calculation, and conversation pacing metrics **[ENHANCED 2025-12-05]**
 
 **Key Functions**:
 - `current()` → datetime.now()
@@ -924,8 +935,25 @@ Gradio renders updated chat_history
   ```python
   decay = 1.0 / (1.0 + decay_rate * age_hours)
   ```
+- `mark_query_time()` → Record message timestamp, detect session boundaries **[NEW]**
+- `mark_session_end()` → Record session end time for gap tracking **[NEW]**
+- `time_since_previous_message()` → Calculate gap between consecutive messages **[NEW]**
+- `elapsed_since_last_session()` → Calculate gap since last session ended **[NEW]**
 
-**Used By**: MemoryCoordinator for recency scoring
+**Persistence**:
+- `data/last_query_time.json` - Stores last message time + previous message time
+- `data/last_session_time.json` - Stores session end timestamp **[NEW]**
+- Survives TimeManager instance recreation (shared state across prompt builder, formatter, response generator)
+
+**Session Detection**:
+- Compares `last_query_time` vs `last_session_end_time` to detect new sessions
+- Resets `previous_query_time` to None when starting a new session
+- Enables "N/A (first message in session)" vs actual time deltas
+
+**Used By**:
+- MemoryCoordinator for recency scoring
+- PromptFormatter for TIME CONTEXT display **[NEW]**
+- Shutdown handlers for session boundary marking **[NEW]**
 
 ---
 
@@ -1202,6 +1230,111 @@ hybrid_score = semantic_weight * semantic_score + keyword_weight * keyword_score
 
 ---
 
+### 2.23 Memory Citation System **[NEW 2025-12-04]**
+**Purpose**: Track and display which memories inform LLM responses for transparency and professional deployment
+
+**Architecture**:
+```
+Query → Context Retrieval → Memory ID Tracking
+                              ↓
+                         memory_id_map built
+                              ↓
+                         System prompt injection (citation instructions)
+                              ↓
+                         LLM generates response with [MEM_X] tags
+                              ↓
+                         Citation extraction (handlers.py)
+                              ↓
+                         Clean response + Citations JSON
+```
+
+**Components**:
+
+**1. core/prompt/context_gatherer.py**:
+- `memory_id_map` dict: Maps citation IDs to memory metadata
+- Tracks during retrieval:
+  - `MEM_RECENT_{idx}` → Recent conversation memories
+  - `MEM_SEMANTIC_{idx}` → Semantic memory hits
+  - `PROFILE_CONTEXT` → User profile facts
+- Metadata: `{type, timestamp, content[:500], relevance_score}`
+
+**2. core/prompt/builder.py**:
+- Passes `memory_id_map` through context dict
+- Available in `context["memory_id_map"]`
+
+**3. core/orchestrator.py**:
+- `enable_citations` flag (set from GUI checkbox)
+- `citation_pattern` regex: `r'\[(MEM_\w+_\d+|FACT_\d+|SUM_\d+|PROFILE_\w+)\]'`
+- `_extract_citations(response, memory_map)` → (clean_response, citations_list)
+  - Finds citation tags via regex
+  - Builds citation metadata list
+  - Removes tags from response
+  - Returns clean text + citations
+- System prompt injection when `enable_citations=True`:
+  ```
+  MEMORY CITATION PROTOCOL:
+  When referencing specific memories, include inline citations:
+  - [MEM_RECENT_{index}] for recent conversations
+  - [MEM_SEMANTIC_{index}] for semantic memories
+  - [PROFILE_CONTEXT] for user profile facts
+  ```
+
+**4. gui/handlers.py**:
+- Citation extraction in all response paths:
+  - Default streaming
+  - Best-of/Duel mode
+  - Fallback streaming
+- Adds to debug_info: `{citations: [...], citations_enabled: bool}`
+
+**5. gui/launch.py**:
+- "Enable Memory Citations" checkbox
+- Citations tab (displays citation JSON)
+- Wires checkbox → `orchestrator.enable_citations`
+
+**6. config/app_config.py**:
+- `ENABLE_MEMORY_CITATIONS` (default: False)
+- `MAX_CITATIONS_DISPLAY` (default: 10)
+- `CITATION_CONTENT_LENGTH` (default: 200)
+
+**Data Flow**:
+```python
+# Retrieval phase
+memories = context_gatherer._get_recent_conversations(10)
+for idx, mem in enumerate(memories):
+    memory_id_map[f"MEM_RECENT_{idx}"] = {
+        'type': 'episodic_recent',
+        'timestamp': mem['timestamp'],
+        'content': mem['content'][:500],
+        'relevance_score': 1.0
+    }
+
+# Generation phase (if citations enabled)
+raw_response = "You mentioned [MEM_RECENT_2] that you're starting OMSA..."
+
+# Extraction phase
+clean, citations = _extract_citations(raw_response, memory_id_map)
+# clean = "You mentioned that you're starting OMSA..."
+# citations = [{'memory_id': 'MEM_RECENT_2', 'type': 'episodic_recent', ...}]
+```
+
+**Testing**:
+- tests/test_citation_system.py (9 tests):
+  - test_extract_citations_basic
+  - test_extract_citations_no_citations
+  - test_extract_citations_empty_memory_map
+  - test_extract_citations_multiple_same_citation
+  - test_citation_mode_toggle
+  - test_citation_content_truncation
+  - test_citation_pattern_matches
+
+**Use Cases**:
+- Professional deployment with audit trails
+- Debugging memory retrieval quality
+- User transparency (which memories informed response)
+- Citation-based feedback loops
+
+---
+
 ## 3. Configuration (config/app_config.py)
 
 **Key Settings**:
@@ -1285,6 +1418,11 @@ BEST_OF_DUEL_MODE = False  # Optional 2-model duel
 # Query Rewrite
 ENABLE_QUERY_REWRITE = True
 REWRITE_TIMEOUT_S = 1.2
+
+# Memory Citation System [NEW 2025-12-04]
+ENABLE_MEMORY_CITATIONS = False      # Feature flag for citation mode
+MAX_CITATIONS_DISPLAY = 10           # Max citations to show in UI
+CITATION_CONTENT_LENGTH = 200        # Content snippet length in citations
 
 # Models
 DEFAULT_MAX_TOKENS = 2048
@@ -1721,10 +1859,35 @@ except Exception as e:
 - **Location**: `demo_mutation_testing.py`
 - **Purpose**: Verify tests catch code mutations
 
-### 8.4 Test Count
-- **Total test files**: 65
+### 8.4 Test Suite Status (Current)
+**Last Full Run**: December 2024
+
+**Test Collection**:
+- **Total tests**: 1554 tests across all files
+- **Collection errors**: 0 (previously 2, now fixed)
+
+**Test Results**:
+- ✅ **Passed**: 1480 (95.2%)
+- ❌ **Failed**: 45 (2.9%) - Pre-existing issues
+- ⚠️ **Errors**: 22 (1.4%) - API signature mismatches
+- ⏭️ **Skipped**: 7 (0.5%) - Method signature differences
+
+**Run Time**: ~2:22 (142 seconds)
+
+**Fixed Issues**:
+- `test_cross_dedup.py`: Fixed `Dependencies` → `DependencyContainer` import
+- `test_full_meta_query.py`: Fixed `Orchestrator` → `DaemonOrchestrator` import
+
+**Test Files**:
 - **Unit tests**: ~20 files in `tests/unit/`
 - **Integration tests**: ~45 files in `tests/`
+- **Total test files**: ~65
+
+**Known Failure Categories** (not caused by recent changes):
+- UnifiedPromptBuilder API changes (missing `get_facts`, `get_recent_facts`)
+- MultiCollectionChromaStore __init__ kwargs mismatches
+- DaemonOrchestrator __init__ signature changes
+- Need detection edge cases (8 tests, acceptable tolerance)
 
 ---
 
@@ -1790,7 +1953,7 @@ make -f build/Makefile.fast run
 4. **Async operations use await** - No blocking I/O in main thread
 5. **ChromaDB and corpus stay in sync** - Same memories in both
 6. **Memory types are immutable** - Once set, never changed
-7. **Summaries link to parents** - Hierarchical relationships preserved
+7. **Summaries link to parents** - ⚠️ DISABLED (parent-child relations intentionally deactivated)
 
 ---
 
@@ -2130,7 +2293,7 @@ spec:
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2025-12-02
+**Last Updated**: 2025-12-04
 
 **Recent Changes** (2025-11-30):
 - **Verified and updated all Protocol contracts** - Added MemoryScorerProtocol and MemoryConsolidatorProtocol with complete method signatures

@@ -123,8 +123,9 @@ def _strip_prompt_artifacts(text: str) -> str:
 class PromptFormatter:
     """Handles text formatting and prompt assembly for prompt building."""
 
-    def __init__(self, token_manager):
+    def __init__(self, token_manager, time_manager=None):
         self.token_manager = token_manager
+        self.time_manager = time_manager
 
     def _load_directives(self) -> str:
         """Load directives from file with fallback to empty string."""
@@ -147,7 +148,16 @@ class PromptFormatter:
 
     def _get_time_context(self) -> str:
         """Get current time context for the prompt."""
-        return f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        lines = [f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
+
+        # Add time deltas if time_manager is available
+        if self.time_manager:
+            time_since_msg = self.time_manager.time_since_previous_message()
+            time_since_session = self.time_manager.elapsed_since_last_session()
+            lines.append(f"Time since last message: {time_since_msg}")
+            lines.append(f"Time since last session: {time_since_session}")
+
+        return "\n".join(lines)
 
     def _format_memory(self, mem: Dict[str, Any]) -> str:
         """Format a single memory for display."""
@@ -325,8 +335,10 @@ class PromptFormatter:
         # User Profile (replaces semantic_facts + fresh_facts)
         user_profile = context.get("user_profile", "")
         if user_profile and isinstance(user_profile, str):
+            # Count facts (each fact ends with [timestamp])
+            fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
             # Profile is already formatted from UserProfile.get_context_injection()
-            sections.append(f"[USER PROFILE]\n{user_profile}")
+            sections.append(f"[USER PROFILE] n={fact_count}\n{user_profile}")
 
         # Summaries
         summaries = context.get("summaries", [])
