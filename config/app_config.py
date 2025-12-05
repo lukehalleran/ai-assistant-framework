@@ -327,6 +327,14 @@ ENABLE_QUERY_REWRITE = bool(config.get("features", {}).get("enable_query_rewrite
 # Bound rewrite latency to keep first-token time low
 REWRITE_TIMEOUT_S = float(config.get("features", {}).get("rewrite_timeout_s", 1.2))
 
+# Memory Citation System
+# Enable tracking and display of memory provenance in responses
+# When enabled, Claude cites which memories it references, and citations
+# are displayed in a separate tab (toggleable via GUI checkbox)
+ENABLE_MEMORY_CITATIONS = bool(config.get("features", {}).get("enable_memory_citations", False))
+MAX_CITATIONS_DISPLAY = int(config.get("features", {}).get("max_citations_display", 10))
+CITATION_CONTENT_LENGTH = int(config.get("features", {}).get("citation_content_length", 200))
+
 # Soft latency budget for best-of reranking before falling back to streaming
 BEST_OF_LATENCY_BUDGET_S = float(config.get("features", {}).get("best_of_latency_budget_s", 2.0))
 

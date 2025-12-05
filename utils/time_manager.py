@@ -2,13 +2,21 @@
 # utils/time_manager.py
 
 Module Contract
-- Purpose: Track last query/response timing, active days for memory decay, and provide formatted timestamps used across the app.
+- Purpose: Track last query/response timing, active days for memory decay, session boundaries, and provide formatted timestamps used across the app. ENHANCED: Added time delta calculations for message gaps and session gaps.
 - Inputs/Outputs:
-  - current(), current_iso(), mark_query_time(), measure_response(start, end)
+  - current(), current_iso(), mark_query_time(), mark_session_end()
+  - measure_response(start, end), elapsed_since_last(), time_since_previous_message()
+  - elapsed_since_last_session() [NEW]
   - get_active_days_since(timestamp), calculate_active_day_decay(timestamp, decay_rate)
 - Side effects:
   - Maintains in‑memory timestamps for latency reporting.
   - Tracks active days in persistent storage for decay calculation.
+  - Persists last query time to data/last_query_time.json
+  - Persists last session end time to data/last_session_time.json [NEW]
+- New Features:
+  - time_since_previous_message(): Calculate gap between consecutive messages within a session
+  - elapsed_since_last_session(): Calculate gap between session end and current message
+  - Both deltas displayed in [TIME CONTEXT] prompt header for temporal awareness
 """
 import json, os, logging
 from datetime import datetime, date, timedelta
@@ -20,16 +28,28 @@ class TimeManager:
         self.time_file = time_file
         self.last_query_time = self._load_last_query_time()
         self.last_response_time = None
+        self.current_message_time = None  # Timestamp of current message being processed
+        self.previous_query_time = None  # Initialize - will be set by mark_query_time()
         # Active days tracking for memory decay
         self.active_days_file = "data/active_days.json"
         self.active_days = self._load_active_days()
+        # Session tracking - fixed path since sessions are app-wide, not per-instance
+        self.session_file = "data/last_session_time.json"
+        self.last_session_end_time = self._load_last_session_time()
 
     # ---------- persistence ----------
     def _load_last_query_time(self):
         if os.path.exists(self.time_file):
             try:
                 with open(self.time_file, "r") as f:
-                    return datetime.fromisoformat(json.load(f)["last_query_time"])
+                    data = json.load(f)
+                    # Also load previous_query_time if it exists
+                    if "previous_query_time" in data and data["previous_query_time"]:
+                        try:
+                            self.previous_query_time = datetime.fromisoformat(data["previous_query_time"])
+                        except (ValueError, AttributeError):
+                            pass
+                    return datetime.fromisoformat(data["last_query_time"])
             except (json.JSONDecodeError, KeyError, ValueError):
                 pass
         return None
@@ -37,7 +57,26 @@ class TimeManager:
     def _save_last_query_time(self):
         if self.last_query_time:
             with open(self.time_file, "w") as f:
-                json.dump({"last_query_time": self.last_query_time.isoformat()}, f)
+                data = {"last_query_time": self.last_query_time.isoformat()}
+                # Also save previous_query_time for next load
+                if self.previous_query_time:
+                    data["previous_query_time"] = self.previous_query_time.isoformat()
+                json.dump(data, f)
+
+    def _load_last_session_time(self):
+        if os.path.exists(self.session_file):
+            try:
+                with open(self.session_file, "r") as f:
+                    return datetime.fromisoformat(json.load(f)["last_session_end_time"])
+            except (json.JSONDecodeError, KeyError, ValueError):
+                pass
+        return None
+
+    def _save_last_session_time(self):
+        if self.last_session_end_time:
+            os.makedirs(os.path.dirname(self.session_file), exist_ok=True)
+            with open(self.session_file, "w") as f:
+                json.dump({"last_session_end_time": self.last_session_end_time.isoformat()}, f)
 
     # ---------- active days tracking ----------
     def _load_active_days(self) -> set:
@@ -126,9 +165,38 @@ class TimeManager:
         return self.current().isoformat(sep=" ", timespec="seconds")
 
     def elapsed_since_last(self) -> str:
+        """Get formatted elapsed time since last message."""
         if not self.last_query_time:
-            return "N/A (first query)"
+            return "N/A (first message)"
         delta = self.current() - self.last_query_time
+        if delta.days:
+            return f"{delta.days} d {delta.seconds//3600} h"
+        if delta.seconds >= 3600:
+            return f"{delta.seconds//3600} h {(delta.seconds%3600)//60} m"
+        if delta.seconds >= 60:
+            return f"{delta.seconds//60} m"
+        return f"{delta.seconds} s"
+
+    def time_since_previous_message(self) -> str:
+        """Get formatted elapsed time between previous message and current message."""
+        if not hasattr(self, 'previous_query_time') or not self.previous_query_time:
+            return "N/A (first message in session)"
+        if not self.current_message_time:
+            return "N/A"
+        delta = self.current_message_time - self.previous_query_time
+        if delta.days:
+            return f"{delta.days} d {delta.seconds//3600} h"
+        if delta.seconds >= 3600:
+            return f"{delta.seconds//3600} h {(delta.seconds%3600)//60} m"
+        if delta.seconds >= 60:
+            return f"{delta.seconds//60} m"
+        return f"{delta.seconds} s"
+
+    def elapsed_since_last_session(self) -> str:
+        """Get formatted elapsed time since last session ended."""
+        if not self.last_session_end_time:
+            return "N/A (first session)"
+        delta = self.current() - self.last_session_end_time
         if delta.days:
             return f"{delta.days} d {delta.seconds//3600} h"
         if delta.seconds >= 3600:
@@ -139,11 +207,32 @@ class TimeManager:
 
     def mark_query_time(self) -> datetime:
         """Call at the *start* of request handling."""
-        self.last_query_time = self.current()
+        # Detect if this is the first message of a new session
+        # A new session is when last_session_end_time exists and is more recent than last_query_time
+        is_new_session = False
+        if self.last_session_end_time and self.last_query_time:
+            # If the last query was before or at session end, this is a new session
+            if self.last_query_time <= self.last_session_end_time:
+                is_new_session = True
+
+        # Store previous query time before updating (but reset if new session)
+        if is_new_session:
+            self.previous_query_time = None  # First message of new session
+        else:
+            self.previous_query_time = self.last_query_time
+
+        self.current_message_time = self.current()
+        self.last_query_time = self.current_message_time
         self._save_last_query_time()
         # Register this as an active day for decay calculation
         self._register_active_day(self.last_query_time)
         return self.last_query_time
+
+    def mark_session_end(self) -> datetime:
+        """Call at the *end* of a conversation session."""
+        self.last_session_end_time = self.current()
+        self._save_last_session_time()
+        return self.last_session_end_time
 
     def measure_response(self, start_time, end_time):
         elapsed = end_time - start_time

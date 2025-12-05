@@ -308,6 +308,15 @@ class MultiCollectionChromaStore:
     # --- replace your add_fact with this version (keeps your logic, adds compat/flatten) ---
     # In multi_collection_chroma_store.py, update the add_fact method:
 
+    # ⚠️ WARNING: Parent-child relationships (parent_id, child_ids) are DISABLED
+    # This feature caused retrieval issues and has been INTENTIONALLY DEACTIVATED.
+    # The parameters remain for API compatibility but are NOT used by any retrieval logic.
+    # DO NOT re-enable without addressing the original solved issues:
+    #   - Circular reference bugs in memory traversal
+    #   - Cascade deletion failures
+    #   - Query performance degradation with deep hierarchies
+    # These fields are stored but intentionally ignored to maintain system stability.
+
     def add_fact(
         self,
         fact: str,
