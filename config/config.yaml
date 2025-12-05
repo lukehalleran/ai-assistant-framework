@@ -49,7 +49,7 @@ memory:
   max_reflections: 6
   hybrid_summaries_enabled: true
   hybrid_reflections_enabled: true
-  user_profile_facts_per_category: 3
+  user_profile_facts_per_category: 18  # Force more facts per category (216 facts total = 18 per category × 12 categories)
   prompt_max_recent: 10
   semantic_retrieval_limit: 200
   prompt_max_semantic: 15
@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: sonnet-4.5
+  active: claude-opus-4.5
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.25

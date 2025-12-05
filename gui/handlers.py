@@ -115,6 +115,8 @@ async def handle_submit(
             'prompt_tokens': prompt_tokens,
             'system_tokens': 0,
             'total_tokens': (prompt_tokens or 0),
+            'citations': [],  # Raw mode bypasses memory
+            'citations_enabled': False,
         }
         yield {"role": "assistant", "content": response_text, "debug": debug_record}
         return
@@ -302,16 +304,29 @@ async def handle_submit(
                         prompt_tokens2 = None
                         system_tokens2 = None
                         total_tokens2 = None
+                    # Extract citations if enabled
+                    citations = []
+                    debug_output = final_output
+                    if getattr(orchestrator, 'enable_citations', False):
+                        try:
+                            memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
+                            if memory_id_map:
+                                debug_output, citations = orchestrator._extract_citations(final_output, memory_id_map)
+                        except Exception as e:
+                            logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
+
                     debug_record = {
                         'mode': 'best-of-duel' if use_duel else 'best-of',
                         'query': user_text,
                         'prompt': full_prompt,
                         'system_prompt': system_prompt,
-                        'response': final_output,
+                        'response': debug_output,
                         'model': bestof_model,
                         'prompt_tokens': prompt_tokens2,
                         'system_tokens': system_tokens2,
                         'total_tokens': total_tokens2,
+                        'citations': citations,
+                        'citations_enabled': getattr(orchestrator, 'enable_citations', False),
                     }
                     yield {"role": "assistant", "content": display_output, "debug": debug_record}
                     debug_emitted = True
@@ -379,16 +394,29 @@ async def handle_submit(
                         prompt_tokens2 = None
                         system_tokens2 = None
                         total_tokens2 = None
+                    # Extract citations if enabled
+                    citations = []
+                    debug_output = final_output
+                    if getattr(orchestrator, 'enable_citations', False):
+                        try:
+                            memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
+                            if memory_id_map:
+                                debug_output, citations = orchestrator._extract_citations(final_output, memory_id_map)
+                        except Exception as e:
+                            logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
+
                     debug_record = {
                         'mode': 'best-of-duel' if use_duel else 'best-of',
                         'query': user_text,
                         'prompt': full_prompt,
                         'system_prompt': system_prompt,
-                        'response': final_output,
+                        'response': debug_output,
                         'model': bestof_model,
                         'prompt_tokens': prompt_tokens2,
                         'system_tokens': system_tokens2,
                         'total_tokens': total_tokens2,
+                        'citations': citations,
+                        'citations_enabled': getattr(orchestrator, 'enable_citations', False),
                     }
                     yield {"role": "assistant", "content": display_output, "debug": debug_record}
                     debug_emitted = True
@@ -464,6 +492,17 @@ async def handle_submit(
                     total_tokens2 = None
                 # Ensure we have content to log even if no chunk set display_output yet
                 _resp_for_debug = display_output or final_output
+
+                # Extract citations if enabled
+                citations = []
+                if getattr(orchestrator, 'enable_citations', False):
+                    try:
+                        memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
+                        if memory_id_map:
+                            _resp_for_debug, citations = orchestrator._extract_citations(_resp_for_debug, memory_id_map)
+                    except Exception as e:
+                        logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
+
                 debug_record = {
                     'mode': 'fallback-streaming',
                     'query': user_text,
@@ -474,6 +513,8 @@ async def handle_submit(
                     'prompt_tokens': prompt_tokens2,
                     'system_tokens': system_tokens2,
                     'total_tokens': total_tokens2,
+                    'citations': citations,
+                    'citations_enabled': getattr(orchestrator, 'enable_citations', False),
                 }
                 yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
                 debug_emitted = True
@@ -545,6 +586,18 @@ async def handle_submit(
 
             # Ensure we have content to log even if no chunk set display_output yet
             _resp_for_debug = display_output or final_output
+
+            # Extract citations if enabled
+            citations = []
+            if getattr(orchestrator, 'enable_citations', False):
+                try:
+                    # Get memory_id_map from orchestrator if available
+                    memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
+                    if memory_id_map:
+                        _resp_for_debug, citations = orchestrator._extract_citations(_resp_for_debug, memory_id_map)
+                except Exception as e:
+                    logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
+
             debug_record = {
                 'mode': 'enhanced',
                 'query': user_text,
@@ -555,6 +608,8 @@ async def handle_submit(
                 'prompt_tokens': prompt_tokens2,
                 'system_tokens': system_tokens2,
                 'total_tokens': total_tokens2,
+                'citations': citations,
+                'citations_enabled': getattr(orchestrator, 'enable_citations', False),
             }
             yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
             debug_emitted = True

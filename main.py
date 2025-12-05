@@ -246,6 +246,7 @@ def build_orchestrator():
             wiki_manager=wiki_manager,
             topic_manager=topic_manager,
             gate_system=gate_system,
+            time_manager=time_manager,  # Pass shared time_manager instance
     )
         mc = getattr(prompt_builder, "memory_coordinator", None)
         logger.info("[orchestrator] coord wired: type=%s has get_memories=%s get_facts=%s",
@@ -352,6 +353,15 @@ def _run_shutdown_tasks(orchestrator):
 
     _shutdown_requested = True
     logger.info("[Shutdown] Running reflection and summary tasks...")
+
+    # Mark session end for time tracking
+    try:
+        time_mgr = getattr(orchestrator, "time_manager", None)
+        if time_mgr and hasattr(time_mgr, "mark_session_end"):
+            time_mgr.mark_session_end()
+            logger.info("[Shutdown] Session end time recorded")
+    except Exception as e:
+        logger.debug(f"[Shutdown] Could not mark session end: {e}")
 
     try:
         # Gather session data

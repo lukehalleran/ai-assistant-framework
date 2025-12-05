@@ -123,13 +123,16 @@ _wiki_cache = {}  # Simple in-memory cache for wiki snippets
 class ContextGatherer:
     """Handles all data collection and retrieval for prompt building."""
 
-    def __init__(self, memory_coordinator, model_manager, token_manager, gate_system=None):
+    def __init__(self, memory_coordinator, model_manager, token_manager, gate_system=None, time_manager=None):
         self.memory_coordinator = memory_coordinator
         self.model_manager = model_manager
         self.token_manager = token_manager
-        self.time_manager = TimeManager()
+        self.time_manager = time_manager or TimeManager()
         # Use provided gate system or create cached one
         self._gate_system = gate_system
+
+        # Memory citation tracking
+        self.memory_id_map = {}  # Maps citation IDs to memory metadata
 
         # Initialize user profile (gets from memory_coordinator if available)
         self.user_profile = None
@@ -267,7 +270,18 @@ class ContextGatherer:
                 except Exception as e:
                     logger.warning(f"Fallback memory retrieval failed: {e}")
 
-            return memories or []
+            # Track memory IDs for citations
+            result_memories = memories or []
+            for idx, mem in enumerate(result_memories):
+                mem_id = f"MEM_RECENT_{idx}"
+                self.memory_id_map[mem_id] = {
+                    'type': 'episodic_recent',
+                    'timestamp': mem.get('timestamp', ''),
+                    'content': str(mem.get('content', ''))[:500],  # Truncate for citation display
+                    'relevance_score': 1.0  # Recent memories always relevant
+                }
+
+            return result_memories
 
         except Exception as e:
             logger.warning(f"Error getting recent conversations: {e}")
@@ -484,6 +498,16 @@ class ContextGatherer:
             # Apply enhanced deduplication
             result = self._deduplicate_memories(semantic_memories)
             result = result[:limit]  # Final limit in case deduplication removed items
+
+            # Track memory IDs for citations
+            for idx, mem in enumerate(result):
+                mem_id = f"MEM_SEMANTIC_{idx}"
+                self.memory_id_map[mem_id] = {
+                    'type': 'episodic_semantic',
+                    'timestamp': mem.get('timestamp', ''),
+                    'content': str(mem.get('content', ''))[:500],  # Truncate for citation display
+                    'relevance_score': mem.get('relevance_score', mem.get('score', 0.0))
+                }
 
             logger.debug(f"[CONTEXT_GATHERER] Final result: {len(result)} semantic memories (limit was {limit})")
             if len(result) > 0:
@@ -930,6 +954,16 @@ class ContextGatherer:
                 facts_per_category=USER_PROFILE_FACTS_PER_CATEGORY
             )
             logger.debug(f"[ContextGatherer] Generated profile context ({len(profile_context)} chars)")
+
+            # Track user profile for citations (single entry for the whole profile)
+            if profile_context:
+                self.memory_id_map["PROFILE_CONTEXT"] = {
+                    'type': 'user_profile',
+                    'timestamp': datetime.now().isoformat(),
+                    'content': profile_context[:500],  # Truncate for citation display
+                    'relevance_score': 1.0  # Profile always relevant when included
+                }
+
             return profile_context
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get profile context: {e}")

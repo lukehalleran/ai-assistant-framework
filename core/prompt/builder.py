@@ -164,11 +164,13 @@ class UnifiedPromptBuilder:
             memory_coordinator=self.memory_coordinator,
             model_manager=self.model_manager,
             token_manager=self.token_manager,
-            gate_system=self.gate_system
+            gate_system=self.gate_system,
+            time_manager=self.time_manager
         )
 
         self.formatter = PromptFormatter(
-            token_manager=self.token_manager
+            token_manager=self.token_manager,
+            time_manager=self.time_manager
         )
 
         self.summarizer = LLMSummarizer(
@@ -248,8 +250,9 @@ class UnifiedPromptBuilder:
             )
 
             # User Profile (replaces semantic_facts + fresh_facts with categorized hybrid retrieval)
+            # Increased max_tokens to 3000 to accommodate 12 facts per category (up to 144 facts total)
             tasks["user_profile"] = asyncio.create_task(
-                self.context_gatherer.get_user_profile_context(user_input, max_tokens=500)
+                self.context_gatherer.get_user_profile_context(user_input, max_tokens=3000)
             )
 
             # Summaries (separated into recent + semantic)
@@ -639,7 +642,8 @@ class UnifiedPromptBuilder:
                 "dreams": context.get("dreams", []),
                 "semantic_chunks": context.get("semantic_chunks", []),
                 "wiki": context.get("wiki", []),
-                "stm_summary": context.get("stm_summary")  # STM context summary (dict or None)
+                "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
+                "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
             }
 
             build_time = time.time() - start_time
@@ -661,7 +665,8 @@ class UnifiedPromptBuilder:
                 "reflections": [],
                 "dreams": [],
                 "semantic_chunks": [],
-                "wiki": []
+                "wiki": [],
+                "memory_id_map": {}
             }
             # Include stm_summary if it was provided
             if stm_summary is not None:
@@ -693,6 +698,9 @@ class UnifiedPromptBuilder:
             if stm_summary is not None:
                 context["stm_summary"] = stm_summary
 
+            # Add memory ID map for citations
+            context["memory_id_map"] = self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
+
             return context
         except Exception as e:
             logger.warning(f"Lightweight context building failed: {e}")
@@ -702,6 +710,7 @@ class UnifiedPromptBuilder:
                 "user_profile": "",
                 "summaries": [],
                 "recent_summaries": [],
+                "memory_id_map": {},
                 "semantic_summaries": [],
                 "reflections": [],
                 "recent_reflections": [],
@@ -1178,7 +1187,9 @@ class UnifiedPromptBuilder:
         # User Profile (replaces semantic_facts + fresh_facts)
         user_profile = context.get("user_profile", "")
         if user_profile and isinstance(user_profile, str):
-            sections.append(f"[USER PROFILE]\n{user_profile}")
+            # Count facts (each fact ends with [timestamp])
+            fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
+            sections.append(f"[USER PROFILE] n={fact_count}\n{user_profile}")
 
         # Recent Summaries
         recent_summaries = context.get("recent_summaries", []) or []
