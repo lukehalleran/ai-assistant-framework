@@ -278,7 +278,8 @@ class ContextGatherer:
                     'type': 'episodic_recent',
                     'timestamp': mem.get('timestamp', ''),
                     'content': str(mem.get('content', ''))[:500],  # Truncate for citation display
-                    'relevance_score': 1.0  # Recent memories always relevant
+                    'relevance_score': 1.0,  # Recent memories always relevant
+                    'db_id': mem.get('id', None)  # Track database ID (UUID or generated ID)
                 }
 
             return result_memories
@@ -409,6 +410,27 @@ class ContextGatherer:
                     logger.debug(f"No semantic filtering applied, returning {len(result['recent'])} recent summaries only")
                     result["semantic"] = []
 
+            # Track summary IDs for citations
+            for idx, summ in enumerate(result.get("recent", [])):
+                sum_id = f"SUM_RECENT_{idx}"
+                self.memory_id_map[sum_id] = {
+                    'type': 'summary_recent',
+                    'timestamp': summ.get('timestamp', ''),
+                    'content': str(summ.get('content', ''))[:500],
+                    'relevance_score': 1.0,  # Recent summaries always relevant
+                    'db_id': summ.get('id', None)  # Track database ID
+                }
+
+            for idx, summ in enumerate(result.get("semantic", [])):
+                sum_id = f"SUM_SEMANTIC_{idx}"
+                self.memory_id_map[sum_id] = {
+                    'type': 'summary_semantic',
+                    'timestamp': summ.get('timestamp', ''),
+                    'content': str(summ.get('content', ''))[:500],
+                    'relevance_score': summ.get('relevance_score', summ.get('score', 0.0)),
+                    'db_id': summ.get('id', None)  # Track database ID
+                }
+
             return result
 
         except Exception as e:
@@ -506,7 +528,8 @@ class ContextGatherer:
                     'type': 'episodic_semantic',
                     'timestamp': mem.get('timestamp', ''),
                     'content': str(mem.get('content', ''))[:500],  # Truncate for citation display
-                    'relevance_score': mem.get('relevance_score', mem.get('score', 0.0))
+                    'relevance_score': mem.get('relevance_score', mem.get('score', 0.0)),
+                    'db_id': mem.get('id', None)  # Track database ID (UUID or generated ID)
                 }
 
             logger.debug(f"[CONTEXT_GATHERER] Final result: {len(result)} semantic memories (limit was {limit})")
@@ -754,6 +777,27 @@ class ContextGatherer:
                     logger.warning(f"Semantic reflection filtering failed: {e}")
                     result["semantic"] = []
 
+            # Track reflection IDs for citations
+            for idx, refl in enumerate(result.get("recent", [])):
+                refl_id = f"REFL_RECENT_{idx}"
+                self.memory_id_map[refl_id] = {
+                    'type': 'reflection_recent',
+                    'timestamp': refl.get('timestamp', ''),
+                    'content': str(refl.get('content', ''))[:500],
+                    'relevance_score': 1.0,  # Recent reflections always relevant
+                    'db_id': refl.get('id', None)  # Track database ID
+                }
+
+            for idx, refl in enumerate(result.get("semantic", [])):
+                refl_id = f"REFL_SEMANTIC_{idx}"
+                self.memory_id_map[refl_id] = {
+                    'type': 'reflection_semantic',
+                    'timestamp': refl.get('timestamp', ''),
+                    'content': str(refl.get('content', ''))[:500],
+                    'relevance_score': refl.get('relevance_score', refl.get('score', 0.0)),
+                    'db_id': refl.get('id', None)  # Track database ID
+                }
+
             return result
 
         except Exception as e:
@@ -961,7 +1005,8 @@ class ContextGatherer:
                     'type': 'user_profile',
                     'timestamp': datetime.now().isoformat(),
                     'content': profile_context[:500],  # Truncate for citation display
-                    'relevance_score': 1.0  # Profile always relevant when included
+                    'relevance_score': 1.0,  # Profile always relevant when included
+                    'db_id': None  # User profile is generated on-the-fly, not stored in DB
                 }
 
             return profile_context

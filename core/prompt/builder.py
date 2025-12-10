@@ -1086,7 +1086,27 @@ class UnifiedPromptBuilder:
 
     def _assemble_prompt(self, context: Dict[str, Any] = None, user_input: str = "",
                         directives: str = "", system_prompt: str = "", **kwargs) -> str:
-        """Assemble final prompt string from context with numbering and timestamp-first entries."""
+        """
+        Assemble final prompt string from context with numbering and timestamp-first entries.
+
+        Section order (optimized for attention and token efficiency):
+        1. Recent conversations (baseline context)
+        2. Relevant memories (semantic hits)
+        3. Recent summaries (compressed recent history)
+        4. Semantic summaries (relevant compressed history)
+        5. Background knowledge (wiki)
+        6. Relevant information (semantic chunks)
+        7. Recent reflections (meta insights)
+        8. Semantic reflections (relevant meta insights)
+        9. Dreams (if enabled)
+        10. User profile (cheap, high attention, personalization)
+        11. Time context (cheap, high attention, temporal grounding)
+        12. STM summary (short-term context, maximum attention)
+        13. Current user query (always last)
+
+        Note: User profile and time context moved to positions 10-11 (from 4 and 1) to leverage
+        recency bias in LLM attention while keeping token cost minimal.
+        """
         if context is None:
             context = {}
         if system_prompt and not directives:
@@ -1154,14 +1174,6 @@ class UnifiedPromptBuilder:
 
         sections: list[str] = []
 
-        # Time context
-        try:
-            time_ctx = self.formatter._get_time_context()  # prefer formatter's version if present
-        except Exception:
-            time_ctx = f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        if time_ctx:
-            sections.append(f"[TIME CONTEXT]\n{time_ctx}")
-
         # Recent conversations
         recent = context.get("recent_conversations", []) or []
         recent_lines: list[str] = []
@@ -1183,13 +1195,6 @@ class UnifiedPromptBuilder:
             logger.warning(f"PROMPT BUILD: FINAL COUNT - [RELEVANT MEMORIES] section will contain {len(memory_lines)} memories")
         else:
             logger.warning("PROMPT BUILD: FINAL COUNT - No memories to display in [RELEVANT MEMORIES] section")
-
-        # User Profile (replaces semantic_facts + fresh_facts)
-        user_profile = context.get("user_profile", "")
-        if user_profile and isinstance(user_profile, str):
-            # Count facts (each fact ends with [timestamp])
-            fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
-            sections.append(f"[USER PROFILE] n={fact_count}\n{user_profile}")
 
         # Recent Summaries
         recent_summaries = context.get("recent_summaries", []) or []
@@ -1296,6 +1301,23 @@ class UnifiedPromptBuilder:
             dr_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
         if dr_lines:
             sections.append(f"[DREAMS] n={len(dr_lines)}\n" + "\n\n".join(dr_lines))
+
+        # User Profile (replaces semantic_facts + fresh_facts)
+        # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
+        user_profile = context.get("user_profile", "")
+        if user_profile and isinstance(user_profile, str):
+            # Count facts (each fact ends with [timestamp])
+            fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
+            sections.append(f"[USER PROFILE] n={fact_count}\n{user_profile}")
+
+        # Time context
+        # MOVED: Placed here (right before STM and query) for temporal grounding with high attention
+        try:
+            time_ctx = self.formatter._get_time_context()  # prefer formatter's version if present
+        except Exception:
+            time_ctx = f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        if time_ctx:
+            sections.append(f"[TIME CONTEXT]\n{time_ctx}")
 
         # STM (Short-Term Memory) Summary - placed right before query for maximum attention
         stm_summary = context.get("stm_summary")

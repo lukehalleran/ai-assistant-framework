@@ -258,43 +258,23 @@ class PromptFormatter:
 
         This is the final step that converts the context dict into a formatted string
         ready for the LLM. The prompt structure follows a consistent format:
-        - Time context
-        - Recent conversations
-        - Relevant memories
-        - Facts and recent facts
-        - Summaries
-        - Reflections
-        - Wiki content
-        - Semantic chunks
-        - Dreams
-        - Directives
-        - User input
+
+        Section order (optimized for attention and token efficiency):
+        1. Recent conversations (baseline context)
+        2. Relevant memories (semantic hits)
+        3. User profile (personalization) [MOVED from early position]
+        4. Summaries (compressed history)
+        5. Reflections (meta insights)
+        6. Wiki content (background knowledge)
+        7. Semantic chunks (relevant information)
+        8. Dreams (if enabled)
+        9. Time context (temporal grounding) [MOVED from first position]
+        10. User input (always last)
+
+        Note: This method may be deprecated in favor of UnifiedPromptBuilder._assemble_prompt
+        which has more detailed section ordering including STM and split recent/semantic sections.
         """
         sections = []
-
-        # Time context
-        time_ctx = self._get_time_context()
-        if time_ctx:
-            sections.append(f"[TIME CONTEXT]\n{time_ctx}")
-
-        # STM (Short-Term Memory) Summary
-        stm_summary = context.get("stm_summary")
-        if stm_summary:
-            stm_lines = []
-            stm_lines.append(f"Topic: {stm_summary.get('topic', 'unknown')}")
-            stm_lines.append(f"User Question: {stm_summary.get('user_question', '')}")
-            stm_lines.append(f"Intent: {stm_summary.get('intent', '')}")
-            stm_lines.append(f"Tone: {stm_summary.get('tone', 'neutral')}")
-
-            open_threads = stm_summary.get('open_threads', [])
-            if open_threads:
-                stm_lines.append(f"Open Threads: {', '.join(open_threads)}")
-
-            constraints = stm_summary.get('constraints', [])
-            if constraints:
-                stm_lines.append(f"Constraints: {', '.join(constraints)}")
-
-            sections.append(f"[SHORT-TERM CONTEXT SUMMARY]\n" + "\n".join(stm_lines))
 
         # Recent conversations
         recent = context.get("recent_conversations", [])
@@ -331,14 +311,6 @@ class PromptFormatter:
                 "\n" + "\n\n".join(memory_text) if memory_text else ""
             )
         )
-
-        # User Profile (replaces semantic_facts + fresh_facts)
-        user_profile = context.get("user_profile", "")
-        if user_profile and isinstance(user_profile, str):
-            # Count facts (each fact ends with [timestamp])
-            fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
-            # Profile is already formatted from UserProfile.get_context_injection()
-            sections.append(f"[USER PROFILE] n={fact_count}\n{user_profile}")
 
         # Summaries
         summaries = context.get("summaries", [])
@@ -437,6 +409,21 @@ class PromptFormatter:
                     dream_text.append(str(dream))
             if dream_text:
                 sections.append(f"[DREAMS] n={len(dream_text)}\n" + "\n\n".join(dream_text))
+
+        # User Profile (replaces semantic_facts + fresh_facts)
+        # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
+        user_profile = context.get("user_profile", "")
+        if user_profile and isinstance(user_profile, str):
+            # Count facts (each fact ends with [timestamp])
+            fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
+            # Profile is already formatted from UserProfile.get_context_injection()
+            sections.append(f"[USER PROFILE] n={fact_count}\n{user_profile}")
+
+        # Time context
+        # MOVED: Placed here (right before query) for temporal grounding with high attention
+        time_ctx = self._get_time_context()
+        if time_ctx:
+            sections.append(f"[TIME CONTEXT]\n{time_ctx}")
 
         # User input with last Q/A pair for coherence
         if user_input:

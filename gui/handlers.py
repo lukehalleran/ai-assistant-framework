@@ -635,19 +635,8 @@ async def handle_submit(
         # Persist interaction and debug after streaming, but do not emit additional
         # assistant content here (avoid overwriting the last streamed UI state).
         if final_output and len(user_text.strip()) > 0:
-            # Log successful conversation
-            conversation_logger.log_interaction(
-                user_input=user_text,  # Log original input for clarity
-                assistant_response=final_output,
-                metadata={
-                    'mode': 'enhanced',
-                    'files': file_names if file_names else None,
-                    'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
-                    'topic': getattr(orchestrator, 'current_topic', None)
-                }
-            )
-
-            # Store in memory system (existing code)
+            # Store in memory system FIRST to get the db_id
+            memory_id = None
             try:
                 logger.info("[HANDLE_SUBMIT] Storing interaction in memory...")
                 tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
@@ -702,16 +691,29 @@ async def handle_submit(
                 except Exception:
                     pass
 
-                await orchestrator.memory_system.store_interaction(
+                memory_id = await orchestrator.memory_system.store_interaction(
                     query=merged_input,
                     response=response_to_store,
                     tags=tags
                 )
-                logger.info("[HANDLE_SUBMIT] Interaction successfully stored.")
+                logger.info(f"[HANDLE_SUBMIT] Interaction successfully stored with ID: {memory_id}")
 
                 # No mid-session consolidation: summaries are generated at shutdown
             except Exception as e:
                 logger.error(f"[HANDLE_SUBMIT] Failed to store interaction: {e}")
+
+            # Log conversation with db_id (after storing to get the ID)
+            conversation_logger.log_interaction(
+                user_input=user_text,  # Log original input for clarity
+                assistant_response=final_output,
+                metadata={
+                    'mode': 'enhanced',
+                    'files': file_names if file_names else None,
+                    'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
+                    'topic': getattr(orchestrator, 'current_topic', None),
+                    'db_id': memory_id  # Add database ID for traceability
+                }
+            )
 
             # Do not yield another assistant message here; the UI already
             # received the final content during streaming. If needed, a debug

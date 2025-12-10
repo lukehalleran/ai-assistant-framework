@@ -184,13 +184,14 @@ class MemoryCoordinatorV2:
         query: str,
         response: str,
         tags: Optional[List[str]] = None
-    ) -> None:
+    ) -> Optional[str]:
         # Sync state before delegation
         self.storage.current_topic = self.current_topic
-        await self.storage.store_interaction(query, response, tags)
+        memory_id = await self.storage.store_interaction(query, response, tags)
         # Sync state back
         self.conversation_context = self.storage.conversation_context
         self.interactions_since_consolidation = self.storage.interactions_since_consolidation
+        return memory_id
 
     async def add_reflection(
         self,

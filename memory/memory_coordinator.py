@@ -411,20 +411,26 @@ class MemoryCoordinator:
 
     # In memory_coordinator.py, update the store_interaction method
     # In memory_coordinator.py, update the store_interaction method with more debugging
-    async def store_interaction(self, query: str, response: str, tags: Optional[List[str]] = None):
-        """Persist a turn in both corpus & Chroma with computed metadata.
+    async def store_interaction(self, query: str, response: str, tags: Optional[List[str]] = None) -> Optional[str]:
+        """
+        Persist a turn in both corpus & Chroma with computed metadata.
 
         Delegates to MemoryStorage component.
+
+        Returns:
+            str: Database ID (UUID) of the stored memory, or None if storage failed
         """
         # Sync state before delegation
         self._storage.current_topic = self.current_topic
         self._storage.conversation_context = self.conversation_context
 
-        await self._storage.store_interaction(query, response, tags)
+        memory_id = await self._storage.store_interaction(query, response, tags)
 
         # Sync state back from storage
         self.conversation_context = self._storage.conversation_context
         self.interactions_since_consolidation = self._storage.interactions_since_consolidation
+
+        return memory_id
 
     async def _consolidate_and_store_summary(self):
         """Consolidate recent memories and store the summary.
