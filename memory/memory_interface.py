@@ -135,8 +135,13 @@ class MemoryStorageProtocol(Protocol):
         query: str,
         response: str,
         tags: Optional[List[str]] = None
-    ) -> None:
-        """Store a conversation interaction"""
+    ) -> Optional[str]:
+        """
+        Store a conversation interaction.
+
+        Returns:
+            str: Database ID (UUID) of the stored memory, or None if storage failed
+        """
         ...
 
     async def add_reflection(

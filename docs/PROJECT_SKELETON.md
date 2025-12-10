@@ -13,7 +13,7 @@ USER QUERY
     ↓
 [Orchestrator] ← Main entry point, coordinates all systems
     ↓
-[Tone Detection] → Crisis level detection (keyword + semantic + LLM fallback)
+[Tone Detection] → Crisis level detection (harm scoring + semantic + LLM fallback)
     ↓
 [Topic Extraction] → spaCy NER + optional LLM fallback
     ↓
@@ -1010,14 +1010,51 @@ Gradio renders updated chat_history
 - `MEDIUM` - Elevated support, empathetic (4%)
 - `HIGH` - Crisis support, full therapeutic mode (1%)
 
-**3-Stage Detection Pipeline**:
+**3-Stage Detection Pipeline** [ENHANCED 2025-12-09]:
 1. **Observational check** - Is user discussing world events vs personal crisis?
-2. **Keyword match** - Fast pattern matching for explicit crisis terms
-3. **Semantic similarity** - Compare embeddings to crisis exemplars
+2. **Harm scoring** - Composite keyword system (replaces "first keyword wins")
+   - Scans entire message for ALL crisis indicators
+   - Accumulates weighted points: HIGH (10pts), MEDIUM (5pts), CONCERN (2pts)
+   - Applies pattern multipliers for dangerous combinations (1.2x-1.4x)
+   - Routes based on thresholds: ≥20 HIGH, ≥10 MEDIUM, ≥4 CONCERN
+3. **Semantic similarity** - Compare embeddings to crisis exemplars (fallback for nuanced language)
 4. **LLM fallback** - For borderline cases near thresholds
+
+**Harm Scoring System** (NEW):
+- **250+ keywords** across HIGH/MEDIUM/CONCERN categories
+- **Keyword points**:
+  - HIGH (10 pts): Suicidal ideation, self-harm, severe crying ("want to die", "sobbing", "peel off my skin")
+  - MEDIUM (5 pts): Panic attacks, dissociation, abuse/trauma, substance relapse ("breaking down", "flashback", "abusive")
+  - CONCERN (2 pts): Anxiety, stress, emotional distress ("anxious", "lonely", "worried")
+- **Pattern multipliers** (for dangerous combinations):
+  - Hopelessness + suicidal ideation: 1.4x
+  - Self-harm + crying: 1.3x
+  - Dissociation + trauma: 1.3x
+  - Substance relapse + crisis: 1.3x
+  - Multiple HIGH indicators: 1.2x
+  - Abuse + distress: 1.2x
+  - Sleep deprivation + mental distress: 1.2x
+
+**Example Scoring**:
+```python
+Message: "I'm sobbing. She was abusive. I want to peel off all my skin."
+Keywords matched:
+  - "sobbing" (HIGH): 10 pts
+  - "peel off all my skin" (HIGH): 10 pts
+  - "abusive" (MEDIUM): 5 pts
+Base score: 25 pts
+
+Pattern multipliers:
+  - Self-harm + crying: 1.3x
+  - Abuse + distress: 1.2x
+Total multiplier: 1.56x
+
+Final score: 25 × 1.56 = 39 pts → HIGH crisis (≥20)
+```
 
 **Configuration** (env vars):
 ```python
+# Semantic thresholds (for fallback when harm score < 4)
 TONE_THRESHOLD_HIGH = 0.58
 TONE_THRESHOLD_MEDIUM = 0.50
 TONE_THRESHOLD_CONCERN = 0.43
@@ -1027,7 +1064,8 @@ TONE_ESCALATION_BOOST = 1.2  # Boost if prior distress detected
 
 **Key Methods**:
 - `detect_crisis_level(message, conversation_history, model_manager)` → async ToneAnalysis
-- `_check_keyword_crisis(message)` → Fast keyword check
+- `_calculate_harm_score(message)` → Composite scoring with pattern multipliers
+- `_check_keyword_crisis(message)` → Harm score-based routing
 - `_semantic_crisis_detection(message, history)` → Embedding similarity
 - `_llm_crisis_fallback(message, model_manager)` → LLM classification
 
@@ -1035,10 +1073,10 @@ TONE_ESCALATION_BOOST = 1.2  # Boost if prior distress detected
 ```python
 ToneAnalysis(
   level=CrisisLevel.HIGH,
-  confidence=0.72,
-  trigger="semantic",
-  raw_scores={"high": 0.72, "medium": 0.45, "concern": 0.38, "conversational": 0.35},
-  explanation="Semantic similarity to crisis_support: 0.72"
+  confidence=1.0,
+  trigger="harm_score: 39.0 (2H, 1M, 0C)",
+  raw_scores={},
+  explanation="Explicit crisis language detected: harm_score: 39.0 (2H, 1M, 0C)"
 )
 ```
 
@@ -1251,12 +1289,17 @@ Query → Context Retrieval → Memory ID Tracking
 **Components**:
 
 **1. core/prompt/context_gatherer.py**:
-- `memory_id_map` dict: Maps citation IDs to memory metadata
+- `memory_id_map` dict: Maps citation IDs to memory metadata (hybrid relative/absolute ID system)
 - Tracks during retrieval:
   - `MEM_RECENT_{idx}` → Recent conversation memories
   - `MEM_SEMANTIC_{idx}` → Semantic memory hits
+  - `SUM_RECENT_{idx}` → Recent summaries
+  - `SUM_SEMANTIC_{idx}` → Semantic summary hits
+  - `REFL_RECENT_{idx}` → Recent reflections
+  - `REFL_SEMANTIC_{idx}` → Semantic reflection hits
   - `PROFILE_CONTEXT` → User profile facts
-- Metadata: `{type, timestamp, content[:500], relevance_score}`
+- Metadata: `{type, timestamp, content[:500], relevance_score, db_id}`
+  - `db_id`: Absolute database ID (UUID or generated ID) for traceability to ChromaDB/corpus records
 
 **2. core/prompt/builder.py**:
 - Passes `memory_id_map` through context dict
@@ -1305,7 +1348,8 @@ for idx, mem in enumerate(memories):
         'type': 'episodic_recent',
         'timestamp': mem['timestamp'],
         'content': mem['content'][:500],
-        'relevance_score': 1.0
+        'relevance_score': 1.0,
+        'db_id': mem.get('id', None)  # UUID or generated ID from ChromaDB/corpus
     }
 
 # Generation phase (if citations enabled)
@@ -1314,7 +1358,12 @@ raw_response = "You mentioned [MEM_RECENT_2] that you're starting OMSA..."
 # Extraction phase
 clean, citations = _extract_citations(raw_response, memory_id_map)
 # clean = "You mentioned that you're starting OMSA..."
-# citations = [{'memory_id': 'MEM_RECENT_2', 'type': 'episodic_recent', ...}]
+# citations = [{'memory_id': 'MEM_RECENT_2', 'type': 'episodic_recent', 'db_id': 'b9e22f59-f5cb-...', ...}]
+
+# Lookup phase (if needed)
+citation_id = 'MEM_RECENT_2'  # Relative ID from citation
+db_id = memory_id_map[citation_id]['db_id']  # Get absolute DB ID
+full_memory = chroma_store.get(ids=[db_id])  # Query database for full record
 ```
 
 **Testing**:
@@ -1332,6 +1381,31 @@ clean, citations = _extract_citations(raw_response, memory_id_map)
 - Debugging memory retrieval quality
 - User transparency (which memories informed response)
 - Citation-based feedback loops
+
+**Conversation Log Integration** [NEW 2025-12-10]:
+- Database IDs (`db_id`) now tracked in conversation logs (utils/conversation_logger.py)
+- `store_interaction()` returns database ID (UUID or generated ID) from ChromaDB
+- TEXT FORMAT logs: Shows "Memory ID: {db_id}" in metadata header and "[Memory ID: {db_id}]" after response
+- JSON FORMAT logs: Includes `db_id` at top level for easy querying + in metadata for completeness
+- Flow: store_interaction() → capture db_id → pass to conversation_logger → write to log file
+- Enables full audit trail: conversation_logs/{timestamp}.txt → db_id → ChromaDB/corpus query
+- Gracefully handles missing db_ids (older memories without UUIDs, generated profiles)
+
+**Example Conversation Log**:
+```
+--- Conversation #1 ---
+Time: 2025-12-10 12:07:50
+Topic: pets
+Memory ID: 4c78d78e-f093-4818-a2eb-144576db6788
+
+USER:
+Tell me about Flapjack
+
+A:
+Flapjack is your black cat [MEM_SEMANTIC_4]...
+
+[Memory ID: 4c78d78e-f093-4818-a2eb-144576db6788]
+```
 
 ---
 
@@ -1683,7 +1757,7 @@ daemon/
 ├── utils/
 │   ├── topic_manager.py       # Topic extraction
 │   ├── time_manager.py        # Temporal utilities
-│   ├── tone_detector.py       # Crisis detection (keyword + semantic + LLM)
+│   ├── tone_detector.py       # Crisis detection (harm scoring + semantic + LLM)
 │   ├── need_detector.py       # Need-type detection (PRESENCE vs PERSPECTIVE) [NEW]
 │   ├── emotional_context.py   # Combined emotional analysis (tone + need) [NEW]
 │   ├── query_checker.py       # Query analysis + heavy topic + thread detection
@@ -2010,7 +2084,7 @@ python main.py inspect-summaries
 | memory_consolidator.py | Summarize: LLM compresses N conversations at shutdown |
 | fact_extractor.py | Parse: regex + optional LLM for entity/fact extraction |
 | WikiManager.py | Search: FAISS over Wikipedia dump for context injection |
-| tone_detector.py | Detect: 4-level crisis (keyword + semantic + LLM fallback) |
+| tone_detector.py | Detect: 4-level crisis (harm scoring + semantic + LLM fallback) |
 | need_detector.py | Detect: need-type (PRESENCE vs PERSPECTIVE, keyword + semantic hybrid) |
 | emotional_context.py | Combine: tone + need type for unified emotional analysis |
 | query_checker.py | Analyze: heavy topics, thread detection, temporal windows |
