@@ -122,12 +122,16 @@ class ConversationLogger:
                     f.write(f"Files: {', '.join(metadata['files'])}\n")
                 if metadata.get('mode'):
                     f.write(f"Mode: {metadata['mode']}\n")
+                if metadata.get('db_id'):
+                    f.write(f"Memory ID: {metadata['db_id']}\n")
 
             # Write the conversation
             f.write("\nUSER:\n")
             f.write(f"{user_input}\n")
             f.write("\nASSISTANT:\n")
             f.write(f"{assistant_response}\n")
+            if metadata and metadata.get('db_id'):
+                f.write(f"\n[Memory ID: {metadata['db_id']}]\n")
             f.write("\n" + "-" * 40 + "\n\n")
             f.flush()
 
@@ -137,12 +141,14 @@ class ConversationLogger:
                   assistant_response: str,
                   metadata: Optional[Dict] = None):
         """Write structured JSON format (one JSON object per line)."""
+        meta = metadata or {}
         entry = {
             "conversation_id": self.conversation_count,
             "timestamp": timestamp.isoformat(),
             "user_input": user_input,
             "assistant_response": assistant_response,
-            "metadata": metadata or {}
+            "metadata": meta,
+            "db_id": meta.get('db_id', None)  # Include db_id at top level for easy querying
         }
 
         with open(self.current_log_file, 'a', encoding='utf-8') as f:

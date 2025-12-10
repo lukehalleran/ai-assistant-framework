@@ -1,17 +1,34 @@
 """
 utils/tone_detector.py
 
-Crisis vs. casual tone detection system.
+Crisis vs. casual tone detection system with composite harm scoring.
 
-Provides hybrid detection (keyword + semantic) to determine appropriate response tone
-based on user message content. Distinguishes genuine crisis/distress from casual conversation,
-world event observations, and routine updates.
+Provides 3-stage detection (harm scoring → semantic → LLM fallback) to determine
+appropriate response tone based on user message content. Distinguishes genuine crisis/distress
+from casual conversation, world event observations, and routine updates.
+
+Detection Pipeline:
+1. Observational check - Filter world events vs personal crisis
+2. Harm scoring - Composite keyword system (NEW 2025-12-09):
+   - Scans entire message for ALL crisis indicators (250+ keywords)
+   - Accumulates weighted points: HIGH (10pts), MEDIUM (5pts), CONCERN (2pts)
+   - Applies pattern multipliers for dangerous combinations (1.2x-1.4x)
+   - Routes: ≥20 HIGH, ≥10 MEDIUM, ≥4 CONCERN
+3. Semantic similarity - Embedding comparison to crisis exemplars (fallback)
+4. LLM fallback - For borderline cases near thresholds
 
 Crisis levels:
 - HIGH: Suicidal ideation, severe mental health crisis, immediate danger
 - MEDIUM: Panic attacks, breakdown, severe emotional distress
 - CONCERN: Significant anxiety, worry, stress (light support)
 - CONVERSATIONAL: Default casual/friend mode (most interactions)
+
+Key improvements (2025-12-09):
+- Replaced "first keyword wins" with composite harm scoring
+- Catches messages with multiple distress signals
+- Pattern multipliers escalate severity for dangerous combinations
+  (e.g., self-harm + crying, abuse + distress, hopelessness + suicidal)
+- Comprehensive keyword coverage (50+ HIGH, 80+ MEDIUM, 100+ CONCERN)
 """
 
 import os
@@ -63,27 +80,110 @@ class ToneAnalysis:
 # ===== Crisis Keywords =====
 
 # Explicit high-severity crisis indicators (immediate keyword match → HIGH)
+# Each keyword contributes 10 points to harm score
 HIGH_CRISIS_KEYWORDS = {
+    # Direct suicidal ideation
     "want to die", "end it all", "kill myself", "no point living",
     "can't go on", "hurt myself", "suicide", "suicidal",
     "end my life", "better off dead", "want to disappear forever",
     "don't want to be here", "don't want to exist", "want to disappear",
-    "better off dead", "no reason to live", "no point in living",
+    "no reason to live", "no point in living",
+    "nothing to live for", "life isn't worth", "not worth living",
+    "ready to die", "wish i was dead", "wish i were dead",
+    "everyone would be better", "better without me",
+
+    # Self-harm imagery and expressions
+    "peel off my skin", "peel off all my skin", "split off my limbs",
+    "cut myself", "cutting myself", "harm myself", "harming myself",
+    "hurt myself", "hurting myself", "burn myself",
+    "want to cut", "need to cut", "going to cut",
+    "blade", "razors", "cutting again",
+
+    # Self-harm ideation with body
+    "hate my body", "destroy myself", "rip myself apart",
+    "tear myself apart", "mutilate", "disfigure myself",
+
+    # Severe emotional crisis with crying
+    "sobbing", "crying uncontrollably", "can't stop crying",
+    "cried so much", "crying so hard", "crying all night",
+    "can't stop sobbing", "sobbing uncontrollably",
+    "crying myself to sleep", "cry myself to sleep",
+
+    # Hopelessness and giving up
+    "no hope left", "lost all hope", "given up completely",
+    "nothing matters anymore", "don't care anymore",
+    "what's the point", "why bother living", "can't do this anymore",
+    "too much to bear", "unbearable", "can't take it",
+
+    # Crisis states
+    "in crisis", "mental health crisis", "breaking point",
+    "edge of breaking", "about to break", "going to break",
 }
 
 # Medium severity keywords
+# Each keyword contributes 5 points to harm score
 MEDIUM_CRISIS_KEYWORDS = {
+    # Acute mental distress
     "panic attack", "can't breathe", "spiraling", "losing control",
     "breaking down", "lose it", "can't handle this",
     "having a breakdown", "nervous breakdown", "complete breakdown",
-    "mental breakdown", "falling apart",
+    "mental breakdown", "falling apart", "losing my mind",
+    "going insane", "going crazy", "can't cope",
+    "drowning", "suffocating", "choking on",
+
+    # Dissociation and detachment
+    "dissociating", "dissociated", "out of my body",
+    "not real", "nothing feels real", "floating away",
+    "watching myself", "not in my body",
+
+    # Flashbacks and trauma responses
+    "flashback", "flashbacks", "triggered", "having a trigger",
+    "reliving it", "back there again", "ptsd episode",
+    "trauma response", "in a trauma loop",
+
+    # Abuse and trauma
+    "abusive", "the abusive", "abuser", "gaslighting", "gaslighted",
+    "manipulative", "manipulated me", "toxic relationship",
+    "medical abuse", "forced me off", "denied my illness",
+    "denied I was", "made me feel", "blamed me for",
+    "emotionally abusive", "verbally abusive", "physically abusive",
+    "narcissist", "narcissistic abuse", "controlling",
+
+    # Substance abuse crisis
+    "relapsed", "using again", "drinking again",
+    "can't stay sober", "want to drink", "need a drink",
+    "want to use", "need to use", "craving badly",
+
+    # Severe anxiety states
+    "heart racing", "chest tight", "hyperventilating",
+    "shaking uncontrollably", "trembling", "can't calm down",
+    "panic mode", "full panic", "anxiety attack",
+
+    # Depressive episodes
+    "depressive episode", "major depression", "in a dark place",
+    "deep depression", "severely depressed", "can't get out of bed",
+    "no energy", "complete exhaustion", "drained completely",
+
+    # Sleep crisis
+    "haven't slept in days", "can't sleep at all",
+    "insomnia", "sleep deprived", "no sleep",
+
+    # Relationship crisis
+    "left me", "abandoned me", "walked out",
+    "breakup", "divorce", "ended it",
 }
 
 # Concern-level keywords (distress but not crisis)
+# Each keyword contributes 2 points to harm score
 # Note: "overwhelmed" is handled separately due to context ambiguity
 CONCERN_KEYWORDS = {
+    # Anxiety and worry
     "really anxious", "freaking out", "scared", "terrified",
-    "worried sick", "can't sleep", "helpless",
+    "worried sick", "can't sleep", "anxious about",
+    "nervous about", "stressed out", "stressing",
+    "so anxious", "very anxious", "super anxious",
+    "worried about", "worrying about", "worry about",
+
     # Emotional state expressions
     "lonely", "i am lonely", "i'm lonely", "i feel lonely",
     "vulnerable", "i feel vulnerable", "feeling vulnerable",
@@ -96,6 +196,51 @@ CONCERN_KEYWORDS = {
     "abandoned", "i feel abandoned", "feeling abandoned",
     "worthless", "i feel worthless", "feeling worthless",
     "numb", "i feel numb", "feeling numb",
+    "sad", "i feel sad", "feeling sad", "so sad",
+    "depressed", "i feel depressed", "feeling depressed",
+    "down", "feeling down", "really down",
+
+    # Helplessness and struggle
+    "helpless", "feel helpless", "feeling helpless",
+    "stuck", "feel stuck", "feeling stuck",
+    "trapped", "feel trapped", "feeling trapped",
+    "powerless", "feel powerless",
+    "struggling", "really struggling", "struggling with",
+
+    # Physical anxiety symptoms
+    "heart pounding", "sweating", "nauseous",
+    "stomach in knots", "tense", "on edge",
+
+    # Sleep issues
+    "can't sleep", "trouble sleeping", "bad dreams",
+    "nightmares", "woke up anxious", "restless",
+
+    # Social anxiety
+    "don't want to go", "can't face", "avoiding",
+    "hiding", "withdrawing", "shutting down",
+
+    # Self-doubt and negative self-talk
+    "hate myself", "disgusted with myself",
+    "disappointed in myself", "failing",
+    "not good enough", "can't do anything right",
+
+    # Grief and loss
+    "grieving", "mourning", "miss them", "miss her", "miss him",
+    "can't believe they're gone", "still hurts",
+
+    # Financial stress
+    "broke", "can't afford", "financial stress",
+    "money problems", "debt", "bills",
+
+    # Work/school stress
+    "work stress", "job stress", "school stress",
+    "deadline", "pressure", "performance anxiety",
+    "burnout", "burned out", "exhausted",
+
+    # Health anxiety
+    "health anxiety", "worried about my health",
+    "scared of being sick", "medical anxiety",
+    "afraid of dying", "death anxiety",
 }
 
 # Event distress keywords (strong reactions to upsetting world events)
@@ -335,50 +480,184 @@ def _check_observational_language(message: str) -> bool:
     return False
 
 
-def _check_keyword_crisis(message: str) -> Optional[Tuple[CrisisLevel, str]]:
+def _calculate_harm_score(message: str) -> Tuple[float, List[str], Dict[str, int]]:
     """
-    Fast keyword-based crisis detection.
+    Calculate composite harm score by scanning entire message for crisis indicators.
 
-    Returns (CrisisLevel, trigger_phrase) if explicit keywords found, else None.
+    Scoring system:
+    - HIGH keywords: 10 points each
+    - MEDIUM keywords: 5 points each
+    - CONCERN keywords: 2 points each
+    - EVENT_DISTRESS: 2 points each
+
+    Pattern multipliers:
+    - Multiple HIGH indicators (2+): 1.2x
+    - Abuse + distress combination: 1.2x
+    - Self-harm imagery + crying: 1.3x
+
+    Returns:
+        (total_score, matched_keywords, category_counts)
     """
     message_lower = message.lower()
+    score = 0.0
+    matched = []
+    category_counts = {"high": 0, "medium": 0, "concern": 0, "event": 0}
 
-    # Check HIGH crisis keywords first (most urgent)
+    # Scan for HIGH keywords (10 points each)
     for keyword in HIGH_CRISIS_KEYWORDS:
         if keyword in message_lower:
-            logger.info(f"[ToneDetector] HIGH crisis keyword detected: '{keyword}'")
-            return (CrisisLevel.HIGH, f"keyword: {keyword}")
+            score += 10
+            matched.append(f"HIGH: {keyword}")
+            category_counts["high"] += 1
+            logger.debug(f"[HarmScore] HIGH keyword: '{keyword}' (+10)")
 
-    # Check MEDIUM crisis keywords
+    # Scan for MEDIUM keywords (5 points each)
     for keyword in MEDIUM_CRISIS_KEYWORDS:
         if keyword in message_lower:
-            logger.info(f"[ToneDetector] MEDIUM crisis keyword detected: '{keyword}'")
-            return (CrisisLevel.MEDIUM, f"keyword: {keyword}")
+            score += 5
+            matched.append(f"MEDIUM: {keyword}")
+            category_counts["medium"] += 1
+            logger.debug(f"[HarmScore] MEDIUM keyword: '{keyword}' (+5)")
 
-    # Check CONCERN keywords (with context awareness for ambiguous ones)
+    # Scan for CONCERN keywords (2 points each)
     for keyword in CONCERN_KEYWORDS:
         if keyword in message_lower:
-            logger.debug(f"[ToneDetector] CONCERN keyword detected: '{keyword}'")
-            return (CrisisLevel.CONCERN, f"keyword: {keyword}")
+            score += 2
+            matched.append(f"CONCERN: {keyword}")
+            category_counts["concern"] += 1
+            logger.debug(f"[HarmScore] CONCERN keyword: '{keyword}' (+2)")
 
-    # Check EVENT_DISTRESS keywords (reactions to upsetting world events)
+    # Scan for EVENT_DISTRESS (2 points each)
     for keyword in EVENT_DISTRESS_KEYWORDS:
         if keyword in message_lower:
-            logger.debug(f"[ToneDetector] EVENT_DISTRESS keyword detected: '{keyword}'")
-            return (CrisisLevel.CONCERN, f"event_distress: {keyword}")
+            score += 2
+            matched.append(f"EVENT: {keyword}")
+            category_counts["event"] += 1
+            logger.debug(f"[HarmScore] EVENT_DISTRESS: '{keyword}' (+2)")
 
-    # Special handling for "overwhelmed" - check if it's in a positive/neutral context
+    # Handle "overwhelmed" specially
     if "overwhelmed" in message_lower:
-        # Positive indicators that suggest this is NOT distress
         positive_markers = ["gift", "birthday", "excited", "happy", "amazing", "wonderful", "options", "choices"]
-        if any(marker in message_lower for marker in positive_markers):
-            logger.debug(f"[ToneDetector] 'overwhelmed' detected but in positive context, skipping")
-            return None
-        # Otherwise treat as concern
-        logger.debug(f"[ToneDetector] CONCERN keyword detected: 'overwhelmed'")
-        return (CrisisLevel.CONCERN, f"keyword: overwhelmed")
+        if not any(marker in message_lower for marker in positive_markers):
+            score += 2
+            matched.append(f"CONCERN: overwhelmed")
+            category_counts["concern"] += 1
+            logger.debug(f"[HarmScore] CONCERN keyword: 'overwhelmed' (+2)")
 
-    return None
+    base_score = score
+    multiplier = 1.0
+
+    # Apply pattern multipliers for dangerous combinations
+    # Multiple HIGH indicators (compounding crisis)
+    if category_counts["high"] >= 2:
+        multiplier *= 1.2
+        logger.info(f"[HarmScore] Multiple HIGH indicators detected (x1.2)")
+
+    # Abuse + distress combination
+    abuse_keywords = ["abusive", "abuser", "gaslighting", "toxic relationship", "medical abuse",
+                      "narcissist", "manipulative", "controlling"]
+    distress_keywords = ["sobbing", "crying", "can't stop crying", "breaking down",
+                        "falling apart", "losing control"]
+    has_abuse = any(kw in message_lower for kw in abuse_keywords)
+    has_distress = any(kw in message_lower for kw in distress_keywords)
+    if has_abuse and has_distress:
+        multiplier *= 1.2
+        logger.info(f"[HarmScore] Abuse + distress combination detected (x1.2)")
+
+    # Self-harm imagery + crying (severe distress)
+    self_harm_keywords = ["peel off", "split off", "cut myself", "hurt myself", "harm myself",
+                          "blade", "cutting", "burn myself"]
+    crying_keywords = ["sobbing", "crying", "cried so much", "can't stop crying"]
+    has_self_harm = any(kw in message_lower for kw in self_harm_keywords)
+    has_crying = any(kw in message_lower for kw in crying_keywords)
+    if has_self_harm and has_crying:
+        multiplier *= 1.3
+        logger.info(f"[HarmScore] Self-harm + crying pattern detected (x1.3)")
+
+    # Substance relapse + crisis (dual crisis)
+    substance_keywords = ["relapsed", "using again", "drinking again", "can't stay sober"]
+    crisis_keywords = ["can't go on", "want to die", "breaking down", "in crisis"]
+    has_substance = any(kw in message_lower for kw in substance_keywords)
+    has_crisis = any(kw in message_lower for kw in crisis_keywords)
+    if has_substance and has_crisis:
+        multiplier *= 1.3
+        logger.info(f"[HarmScore] Substance relapse + crisis detected (x1.3)")
+
+    # Sleep deprivation + mental distress (compounding vulnerability)
+    sleep_keywords = ["haven't slept in days", "can't sleep at all", "no sleep", "sleep deprived"]
+    mental_keywords = ["losing my mind", "going crazy", "can't cope", "breaking point"]
+    has_sleep = any(kw in message_lower for kw in sleep_keywords)
+    has_mental = any(kw in message_lower for kw in mental_keywords)
+    if has_sleep and has_mental:
+        multiplier *= 1.2
+        logger.info(f"[HarmScore] Sleep deprivation + mental distress detected (x1.2)")
+
+    # Dissociation + trauma (severe trauma response)
+    dissoc_keywords = ["dissociating", "out of my body", "not real", "floating away"]
+    trauma_keywords = ["flashback", "triggered", "reliving it", "ptsd", "trauma"]
+    has_dissoc = any(kw in message_lower for kw in dissoc_keywords)
+    has_trauma = any(kw in message_lower for kw in trauma_keywords)
+    if has_dissoc and has_trauma:
+        multiplier *= 1.3
+        logger.info(f"[HarmScore] Dissociation + trauma response detected (x1.3)")
+
+    # Hopelessness + suicidal ideation (extreme danger)
+    hopeless_keywords = ["no hope", "given up", "nothing matters", "no point"]
+    suicidal_keywords = ["want to die", "kill myself", "end it all", "better off dead"]
+    has_hopeless = any(kw in message_lower for kw in hopeless_keywords)
+    has_suicidal = any(kw in message_lower for kw in suicidal_keywords)
+    if has_hopeless and has_suicidal:
+        multiplier *= 1.4
+        logger.info(f"[HarmScore] Hopelessness + suicidal ideation detected (x1.4)")
+
+    final_score = base_score * multiplier
+
+    if multiplier > 1.0:
+        logger.info(f"[HarmScore] Base score: {base_score:.1f}, Multiplier: {multiplier:.1f}x, Final: {final_score:.1f}")
+    else:
+        logger.debug(f"[HarmScore] Final score: {final_score:.1f}")
+
+    return final_score, matched, category_counts
+
+
+def _check_keyword_crisis(message: str) -> Optional[Tuple[CrisisLevel, str]]:
+    """
+    Harm score-based crisis detection.
+
+    Routes based on composite harm score:
+    - Score >= 20: HIGH crisis (multiple HIGH keywords or severe combinations)
+    - Score >= 10: MEDIUM crisis (multiple MEDIUM keywords or serious distress)
+    - Score >= 4: CONCERN (mild distress, several concern indicators)
+    - Score < 4: None (use semantic detection)
+
+    Returns (CrisisLevel, trigger_phrase) if score-based routing applies, else None.
+    """
+    score, matched, category_counts = _calculate_harm_score(message)
+
+    # No keywords found
+    if score == 0:
+        return None
+
+    # Route based on harm score thresholds
+    if score >= 20:
+        logger.info(f"[ToneDetector] HIGH crisis via harm score: {score:.1f} (matched: {len(matched)})")
+        trigger = f"harm_score: {score:.1f} ({category_counts['high']}H, {category_counts['medium']}M, {category_counts['concern']}C)"
+        return (CrisisLevel.HIGH, trigger)
+
+    elif score >= 10:
+        logger.info(f"[ToneDetector] MEDIUM crisis via harm score: {score:.1f} (matched: {len(matched)})")
+        trigger = f"harm_score: {score:.1f} ({category_counts['high']}H, {category_counts['medium']}M, {category_counts['concern']}C)"
+        return (CrisisLevel.MEDIUM, trigger)
+
+    elif score >= 4:
+        logger.debug(f"[ToneDetector] CONCERN via harm score: {score:.1f} (matched: {len(matched)})")
+        trigger = f"harm_score: {score:.1f} ({category_counts['high']}H, {category_counts['medium']}M, {category_counts['concern']}C)"
+        return (CrisisLevel.CONCERN, trigger)
+
+    # Score between 1-3: low signal, defer to semantic detection
+    else:
+        logger.debug(f"[ToneDetector] Low harm score ({score:.1f}), deferring to semantic detection")
+        return None
 
 
 def _semantic_crisis_detection(

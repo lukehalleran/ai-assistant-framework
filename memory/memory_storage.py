@@ -143,14 +143,19 @@ class MemoryStorage:
         query: str,
         response: str,
         tags: Optional[List[str]] = None
-    ) -> None:
-        """Persist a turn in both corpus & Chroma with computed metadata"""
+    ) -> Optional[str]:
+        """
+        Persist a turn in both corpus & Chroma with computed metadata.
+
+        Returns:
+            str: Database ID (UUID) of the stored memory, or None if storage failed
+        """
         try:
             # SKIP STORAGE: Don't persist file error responses
             # These are ephemeral technical issues that create false memories
             if self._is_file_error_response(response):
                 logger.info(f"[MemoryStorage] Skipped storing file error response to prevent false memories")
-                return
+                return None
 
             # Detect heavy topic before anything else
             from utils.query_checker import _is_heavy_topic_heuristic
@@ -235,11 +240,13 @@ class MemoryStorage:
                     self.interactions_since_consolidation = 0
 
             logger.debug(f"[MemoryStorage] Stored memory {memory_id} (topic={primary_topic}, truth={truth_score:.2f})")
+            return memory_id
 
         except Exception as e:
             logger.error(f"Error storing interaction: {e}")
             import traceback
             traceback.print_exc()
+            return None
 
     async def add_reflection(
         self,

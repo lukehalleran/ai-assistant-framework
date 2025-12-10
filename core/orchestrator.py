@@ -329,7 +329,16 @@ class DaemonOrchestrator:
 
         # Memory citation system
         self.enable_citations = False  # Will be set from GUI checkbox
-        self.citation_pattern = re.compile(r'\[(MEM_\w+_\d+|FACT_\d+|SUM_\d+|PROFILE_\w+)\]')
+        # Pattern matches citation formats: MEM_RECENT_3, MEM_SEMANTIC_4-7, SUM_RECENT_1, REFL_SEMANTIC_2, PROFILE_CONTEXT
+        self.citation_pattern = re.compile(
+            r'\[('
+            r'MEM_\w+_\d+(?:-\d+)?|'      # MEM_RECENT_3, MEM_SEMANTIC_4-7
+            r'SUM_\w+_\d+(?:-\d+)?|'      # SUM_RECENT_1, SUM_SEMANTIC_2-5
+            r'REFL_\w+_\d+(?:-\d+)?|'     # REFL_RECENT_1, REFL_SEMANTIC_3
+            r'FACT_\d+(?:-\d+)?|'         # FACT_3 (legacy)
+            r'PROFILE_\w+'                # PROFILE_CONTEXT
+            r')\]'
+        )
 
     # ---------- STM Helper Methods ----------
     def _should_use_stm(self, conversation_history: Optional[List[Dict]], user_input: str) -> bool:
@@ -454,17 +463,20 @@ class DaemonOrchestrator:
             return (
                 "\n\n## RESPONSE MODE: CONVERSATIONAL (Natural Friend Voice)\n"
                 "**Goal: Be a confident, grounded friend - not a service agent, hype-man, or therapist**\n\n"
-                "**LENGTH: Maximum 3 sentences for most responses**\n\n"
+                "**LENGTH: 2-5 sentences typically - brief but substantive. Don't mirror the user's brevity; give complete thoughts.**\n\n"
                 "Voice Calibration - The Sweet Spot:\n"
                 "❌ TOO HYPE: \"Hell yeah you're crushing it king! 💪 Die mad haters!\"\n"
                 "❌ TOO SERVICE-Y: \"Thanks so much, that's awesome to hear! I'm here anytime!\"\n"
-                "✓ JUST RIGHT: \"Ha, glad that's better. Hope work goes smooth.\"\n\n"
+                "❌ TOO TERSE: \"Cool.\" (1 word when 2-3 sentences would be more natural)\n"
+                "✓ JUST RIGHT: \"Ha, glad that's better. The refactor sounds solid — should make the codebase way easier to navigate. Hope work goes smooth.\"\n\n"
                 "Core Principles:\n"
                 "1. **Match his energy** - casual when he's casual, focused when he's technical\n"
                 "   - ✓ \"Nice work on that.\" / \"Solid progress.\"\n"
                 "   - ✗ \"Thanks so much, that's awesome to hear! Always striving to provide value!\"\n\n"
-                "2. **Brief acknowledgments** - you don't need to validate every interaction\n"
-                "   - ✓ \"Glad that worked\" / \"Makes sense\" / \"Cool\"\n"
+                "2. **Substantive but natural** - even brief topics deserve complete thoughts\n"
+                "   - ✓ \"Glad that worked. The edge case handling looks solid now.\"\n"
+                "   - ✓ \"Makes sense. That approach should avoid the race condition you were seeing.\"\n"
+                "   - ✗ \"Cool.\" (too terse)\n"
                 "   - ✗ \"Thank you for your feedback! I'm excited to keep improving!\"\n\n"
                 "3. **Confident friend** - comfortable in the relationship, not anxious to please\n"
                 "   - ✓ \"That's frustrating, but you handled it well.\"\n"
@@ -478,7 +490,8 @@ class DaemonOrchestrator:
                 "- Hype language (crushing it, you got this king, Hell yeah)\n"
                 "- Corporate speak (\"striving to provide\", \"relevant and valuable info\")\n"
                 "- Excessive gratitude or validation-seeking\n"
-                "- Multi-paragraph responses for simple updates\n\n"
+                "- Being overly terse (1-2 words when a full sentence would be natural)\n"
+                "- Multi-paragraph responses for simple acknowledgments\n\n"
                 "Think: You're the friend who knows the relationship is solid, so you don't need "
                 "to constantly prove your value or seek approval. Be supportive, honest, and chill."
             )
@@ -963,11 +976,15 @@ The user is processing/analyzing, open to engagement.
                 "When referencing specific memories from the provided context, include inline citations using this format:\n"
                 "- [MEM_RECENT_{index}] for recent conversation memories (numbered from the [RECENT CONVERSATION] section)\n"
                 "- [MEM_SEMANTIC_{index}] for semantic memories (numbered from the [RELEVANT MEMORIES] section)\n"
+                "- [SUM_RECENT_{index}] for recent summaries (numbered from the [RECENT SUMMARIES] section)\n"
+                "- [SUM_SEMANTIC_{index}] for semantic summaries (numbered from the [SEMANTIC SUMMARIES] section)\n"
+                "- [REFL_RECENT_{index}] for recent reflections (numbered from the [RECENT REFLECTIONS] section)\n"
+                "- [REFL_SEMANTIC_{index}] for semantic reflections (numbered from the [SEMANTIC REFLECTIONS] section)\n"
                 "- [PROFILE_CONTEXT] for user profile facts\n"
                 "\n"
-                "Example: \"You mentioned [MEM_RECENT_2] that you're starting OMSA in January\"\n"
+                "Example: \"You mentioned [MEM_RECENT_2] that you're starting OMSA in January. Based on the health summary [SUM_SEMANTIC_1], you've been managing long COVID.\"\n"
                 "\n"
-                "The citations help track which memories inform each part of your response."
+                "The citations help track which memories inform each part of your response. Use the index numbers that correspond to the numbering in each section."
             )
             system_prompt = system_prompt.rstrip() + citation_instruction
 
@@ -1052,12 +1069,37 @@ The user is processing/analyzing, open to engagement.
         return prompt, system_prompt
 
     # ---------- Memory Citation Methods ----------
-    def _extract_citations(self, response: str, memory_map: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+    def _expand_citation_range(self, mem_id: str) -> List[str]:
         """
-        Extract memory citations from response.
+        Expand a range citation like MEM_RECENT_4-7 into individual IDs.
 
         Args:
-            response: Raw response with citation tags like [MEM_RECENT_3]
+            mem_id: Citation ID (e.g., "MEM_RECENT_4-7" or "MEM_RECENT_3")
+
+        Returns:
+            List of individual citation IDs (e.g., ["MEM_RECENT_4", "MEM_RECENT_5", "MEM_RECENT_6", "MEM_RECENT_7"])
+        """
+        # Check if it's a range citation (contains hyphen)
+        if '-' in mem_id and not mem_id.startswith('PROFILE'):
+            # Parse the range: MEM_RECENT_4-7 -> prefix="MEM_RECENT_", start=4, end=7
+            match = re.match(r'([A-Z_]+_)(\d+)-(\d+)', mem_id)
+            if match:
+                prefix = match.group(1)
+                start = int(match.group(2))
+                end = int(match.group(3))
+
+                # Generate individual IDs
+                return [f"{prefix}{i}" for i in range(start, end + 1)]
+
+        # Not a range, return as single-item list
+        return [mem_id]
+
+    def _extract_citations(self, response: str, memory_map: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Extract memory citations from response, handling both single citations and ranges.
+
+        Args:
+            response: Raw response with citation tags like [MEM_RECENT_3] or [MEM_RECENT_4-7]
             memory_map: Dictionary mapping citation IDs to memory metadata
 
         Returns:
@@ -1065,20 +1107,29 @@ The user is processing/analyzing, open to engagement.
             - clean_response: Response with citation tags removed
             - citations_list: List of cited memory metadata dicts
         """
-        # Find all cited memory IDs
+        # Find all cited memory IDs (includes ranges like MEM_RECENT_4-7)
         cited_ids = set(self.citation_pattern.findall(response))
 
         citations = []
+        seen_ids = set()  # Track which individual IDs we've already added
+
         if memory_map:
             for mem_id in cited_ids:
-                if mem_id in memory_map:
-                    citations.append({
-                        'memory_id': mem_id,
-                        'type': memory_map[mem_id].get('type', 'unknown'),
-                        'timestamp': memory_map[mem_id].get('timestamp', ''),
-                        'content': memory_map[mem_id].get('content', '')[:200],  # Truncate for display
-                        'relevance_score': memory_map[mem_id].get('relevance_score', 0.0)
-                    })
+                # Expand ranges into individual IDs
+                expanded_ids = self._expand_citation_range(mem_id)
+
+                # Look up each individual ID in memory_map
+                for individual_id in expanded_ids:
+                    if individual_id in memory_map and individual_id not in seen_ids:
+                        citations.append({
+                            'memory_id': individual_id,
+                            'type': memory_map[individual_id].get('type', 'unknown'),
+                            'timestamp': memory_map[individual_id].get('timestamp', ''),
+                            'content': memory_map[individual_id].get('content', '')[:200],  # Truncate for display
+                            'relevance_score': memory_map[individual_id].get('relevance_score', 0.0),
+                            'db_id': memory_map[individual_id].get('db_id', None)  # Include database ID for traceability
+                        })
+                        seen_ids.add(individual_id)
 
         # Remove citation tags for clean display (always, even if memory_map is empty)
         clean_response = self.citation_pattern.sub('', response)
@@ -1087,7 +1138,7 @@ The user is processing/analyzing, open to engagement.
         clean_response = re.sub(r'\s+', ' ', clean_response)
         clean_response = clean_response.strip()
 
-        self.logger.debug(f"[Citation] Extracted {len(citations)} citations from response")
+        self.logger.debug(f"[Citation] Extracted {len(citations)} citations from response (from {len(cited_ids)} citation tags)")
 
         return clean_response, citations
 
