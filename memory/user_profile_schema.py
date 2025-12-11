@@ -2,19 +2,26 @@
 # memory/user_profile_schema.py
 
 Module Contract
-- Purpose: Schema definitions for structured user profile extraction. Defines categories, relations, and validation rules for user facts organized by life domains (identity, career, fitness, etc.).
+- Purpose: Schema definitions for structured user profile extraction. Defines categories, relations, and validation rules for user facts organized by life domains (identity, career, fitness, etc.). Also defines system preferences and identity metadata for onboarding wizard.
 - Inputs:
   - categorize_relation(relation: str) → ProfileCategory
   - ProfileFact.to_dict() → dict
   - ProfileFact.from_dict(data: dict) → ProfileFact
+  - ProfilePreferences.to_dict() → dict
+  - ProfilePreferences.from_dict(data: dict) → ProfilePreferences
+  - ProfileIdentity.to_dict() → dict
+  - ProfileIdentity.from_dict(data: dict) → ProfileIdentity
 - Outputs:
   - ProfileCategory enum values
   - ProfileFact dataclass instances
-  - Dictionary representations of facts
+  - ProfilePreferences dataclass instances (system preferences like conversation style)
+  - ProfileIdentity dataclass instances (name, pronouns)
+  - Dictionary representations of facts, preferences, and identity
 - Key behaviors:
   - Maps relations to 12 profile categories (identity, education, career, projects, health, fitness, preferences, hobbies, study, finance, relationships, goals)
   - Provides heuristic fallbacks for unknown relations (pattern matching)
   - Serializes/deserializes facts with full metadata (confidence, timestamp, supersedes)
+  - Manages schema versioning for future migrations
 - Side effects:
   - None (pure data structures and mapping logic)
 """
@@ -23,6 +30,9 @@ from enum import Enum
 from typing import Dict, List, Set
 from dataclasses import dataclass
 from datetime import datetime
+
+# Schema version for migrations
+SCHEMA_VERSION = "1.0"
 
 class ProfileCategory(str, Enum):
     """Categories for organizing user facts - matches ChatGPT's structure."""
@@ -163,6 +173,47 @@ class ProfileFact:
             source_excerpt=data.get("source_excerpt", ""),
             timestamp=datetime.fromisoformat(data["timestamp"]),
             supersedes=data.get("supersedes"),
+        )
+
+@dataclass
+class ProfilePreferences:
+    """System preferences collected during onboarding wizard."""
+    style: str = "balanced"
+    check_distress: bool = True
+    brief_responses: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "style": self.style,
+            "check_distress": self.check_distress,
+            "brief_responses": self.brief_responses,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ProfilePreferences":
+        return cls(
+            style=data.get("style", "balanced"),
+            check_distress=data.get("check_distress", True),
+            brief_responses=data.get("brief_responses", False),
+        )
+
+@dataclass
+class ProfileIdentity:
+    """User identity metadata (name, pronouns) collected during onboarding."""
+    name: str = ""
+    pronouns: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "pronouns": self.pronouns,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ProfileIdentity":
+        return cls(
+            name=data.get("name", ""),
+            pronouns=data.get("pronouns", ""),
         )
 
 def categorize_relation(relation: str) -> ProfileCategory:

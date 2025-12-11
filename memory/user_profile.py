@@ -35,7 +35,8 @@ import threading
 
 from utils.logging_utils import get_logger
 from memory.user_profile_schema import (
-    ProfileCategory, ProfileFact, categorize_relation
+    ProfileCategory, ProfileFact, categorize_relation,
+    ProfilePreferences, ProfileIdentity, SCHEMA_VERSION
 )
 
 logger = get_logger("user_profile")
@@ -73,7 +74,29 @@ class UserProfile:
         self.profile_path = profile_path or self.DEFAULT_PATH
         self._lock = threading.Lock()
         self.profile = self._load_or_init()
-        logger.info(f"[UserProfile] Initialized from {self.profile_path}")
+
+        # Initialize new fields (will be populated by _load_or_init or migrate_schema)
+        self.version = self.profile.get("version", "0.0")
+        self.identity = ProfileIdentity()
+        self.preferences = ProfilePreferences()
+
+        # Load identity and preferences from profile dict if they exist
+        if "identity" in self.profile:
+            self.identity = ProfileIdentity.from_dict(self.profile["identity"])
+            logger.debug(f"[UserProfile] Loaded identity: name='{self.identity.name}', pronouns='{self.identity.pronouns}'")
+        else:
+            logger.debug("[UserProfile] No identity found in profile, using defaults")
+
+        if "preferences" in self.profile:
+            self.preferences = ProfilePreferences.from_dict(self.profile["preferences"])
+            logger.debug(f"[UserProfile] Loaded preferences: style='{self.preferences.style}'")
+        else:
+            logger.debug("[UserProfile] No preferences found in profile, using defaults")
+
+        # Run schema migration if needed
+        self.migrate_schema()
+
+        logger.info(f"[UserProfile] Initialized from {self.profile_path} - identity.name='{self.identity.name}'")
 
     def _load_or_init(self) -> Dict:
         """Load existing profile or create new one."""
@@ -100,6 +123,11 @@ class UserProfile:
         """Persist profile to disk (atomic write)."""
         with self._lock:
             self.profile["updated_at"] = datetime.now().isoformat()
+
+            # Update profile dict with new fields before saving
+            self.profile["version"] = self.version
+            self.profile["identity"] = self.identity.to_dict()
+            self.profile["preferences"] = self.preferences.to_dict()
 
             # Ensure directory exists
             Path(self.profile_path).parent.mkdir(parents=True, exist_ok=True)
@@ -419,3 +447,130 @@ class UserProfile:
             result = result[:max_tokens * 4] + "..."
 
         return result
+
+    # ========================================================================
+    # Onboarding Wizard Methods
+    # ========================================================================
+
+    def is_first_run(self, corpus_manager) -> bool:
+        """
+        Determine if wizard should run.
+
+        Returns True if:
+        - Corpus has fewer than 5 entries AND
+        - Profile identity.name is empty/unset
+
+        This handles edge cases:
+        - New user with empty corpus: True (run wizard)
+        - User who cleared corpus but has profile: False (skip wizard)
+        - User with imported corpus but no profile: False (>5 entries means existing user)
+
+        Args:
+            corpus_manager: CorpusManager instance to check corpus size
+
+        Returns:
+            bool: True if wizard should run, False otherwise
+        """
+        corpus_count = 0
+        try:
+            corpus_count = len(corpus_manager.corpus) if hasattr(corpus_manager, 'corpus') else 0
+        except Exception as e:
+            logger.debug(f"[UserProfile] Failed to get corpus count: {e}")
+            corpus_count = 0
+
+        has_identity = bool(self.identity.name and self.identity.name.strip())
+        is_first = corpus_count < 5 and not has_identity
+
+        logger.info(f"[UserProfile] First-run check: corpus_count={corpus_count}, identity.name='{self.identity.name}', has_identity={has_identity}, is_first_run={is_first}")
+
+        return is_first
+
+    VALID_STYLES = {"warm", "balanced", "direct"}
+
+    def update_preferences(self, style: str, check_distress: bool = True, brief_responses: bool = False) -> None:
+        """
+        Update user preference settings.
+
+        Args:
+            style: Conversation style (warm, balanced, or direct)
+            check_distress: Whether to enable distress detection
+            brief_responses: Whether to prefer brief responses
+
+        Raises:
+            ValueError: If style is not one of: warm, balanced, direct
+        """
+        if style not in self.VALID_STYLES:
+            raise ValueError(f"Invalid style '{style}'. Must be one of: {self.VALID_STYLES}")
+
+        self.preferences.style = style
+        self.preferences.check_distress = check_distress
+        self.preferences.brief_responses = brief_responses
+        self.save()
+        logger.info(f"[UserProfile] Updated preferences: style={style}")
+
+    def update_identity(self, name: str, pronouns: str) -> None:
+        """
+        Update user identity metadata (name and pronouns).
+
+        Args:
+            name: User's name or nickname
+            pronouns: User's pronouns (e.g., he/him, she/her, they/them)
+        """
+        self.identity.name = name.strip() if name else ""
+        self.identity.pronouns = pronouns.strip() if pronouns else ""
+        self.save()
+        logger.info(f"[UserProfile] Updated identity: name={self.identity.name}, pronouns={self.identity.pronouns}")
+
+    # Style modifier strings for orchestrator injection
+    STYLE_MODIFIERS = {
+        "warm": """
+STYLE: WARM & SUPPORTIVE
+
+Lean into empathy and acknowledgment
+Longer responses are welcome when emotional content is present
+Prioritize connection over efficiency
+""",
+        "balanced": "",  # No modifier for default/balanced style
+        "direct": """
+STYLE: DIRECT & CONCISE
+
+Keep responses shorter than default
+Lead with the answer, minimize preamble
+Skip emotional scaffolding unless crisis detected
+1-3 sentences preferred for most exchanges
+""",
+    }
+
+    def get_style_modifier(self) -> str:
+        """
+        Get tone instruction modifier based on user's style preference.
+
+        Returns:
+            str: Style modifier string for injection into system prompt, or empty string for balanced
+        """
+        return self.STYLE_MODIFIERS.get(self.preferences.style, "")
+
+    def migrate_schema(self) -> None:
+        """
+        Handle schema migrations between versions.
+
+        Currently handles:
+        - Migration from 0.0 (no version) to 1.0 (adds identity, preferences, version)
+        """
+        if not hasattr(self, 'version') or self.version is None:
+            self.version = "0.0"
+
+        # Migration: 0.0 → 1.0 (add identity and preferences)
+        if self.version == "0.0":
+            logger.info("[UserProfile] Migrating schema from 0.0 to 1.0")
+
+            # Initialize new fields if they don't exist
+            if not hasattr(self, 'identity'):
+                self.identity = ProfileIdentity()
+            if not hasattr(self, 'preferences'):
+                self.preferences = ProfilePreferences()
+
+            # Update version
+            self.version = SCHEMA_VERSION
+            self.save()
+            logger.info(f"[UserProfile] Schema migration complete: {self.version}")

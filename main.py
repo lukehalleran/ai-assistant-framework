@@ -446,6 +446,12 @@ def update_activity_timestamp():
 if __name__ == "__main__":
     try:
         mode = sys.argv[1] if len(sys.argv) > 1 else "gui"
+        force_wizard = (mode == "wizard" or "--wizard" in sys.argv)
+
+        if mode == "wizard":
+            # Force wizard mode for testing
+            print("[WIZARD MODE] Forcing wizard to launch regardless of first-run status")
+            mode = "gui"  # Continue to GUI launch
 
         if mode == "cli":
             asyncio.run(test_orchestrator())
@@ -478,7 +484,9 @@ if __name__ == "__main__":
             print(f"\n{'='*60}")
             sys.exit(0)
         else:
+            print(f"[DEBUG] Building orchestrator (mode={mode}, force_wizard={force_wizard})...")
             orchestrator = build_orchestrator()
+            print("[DEBUG] Orchestrator built successfully")
 
             # Store orchestrator reference for signal handlers and idle monitor
             _orchestrator_ref = orchestrator
@@ -493,7 +501,9 @@ if __name__ == "__main__":
             idle_thread.start()
             logger.info(f"[Startup] Started idle monitor (check every {_idle_check_interval}m, timeout {_idle_timeout_minutes}m)")
 
-            launch_gui(orchestrator)
+            print(f"[DEBUG] About to call launch_gui(orchestrator, force_wizard={force_wizard})")
+            launch_gui(orchestrator, force_wizard=force_wizard)
+            print("[DEBUG] launch_gui() returned")
 
     except KeyboardInterrupt:
         print("\nInterrupted by user")

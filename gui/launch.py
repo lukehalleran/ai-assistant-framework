@@ -32,6 +32,7 @@ import gradio as gr
 import copy
 from gui.handlers import handle_submit
 from utils.conversation_logger import get_conversation_logger
+from gui.wizard import WizardState, process_wizard_message, get_welcome_message
 
 def _env_flag(name: str, default: bool) -> bool:
     val = os.getenv(name)
@@ -51,7 +52,154 @@ def _find_free_port(preferred: int = 7860) -> int:
         s.bind(("", 0))
         return s.getsockname()[1]
 
-def launch_gui(orchestrator):
+def _launch_wizard_ui(orchestrator, share, server_name, port):
+    """
+    Launch the onboarding wizard UI for first-run users.
+
+    Args:
+        orchestrator: DaemonOrchestrator instance
+        share: Whether to create public gradio.live link
+        server_name: Server hostname/IP
+        port: Server port
+
+    Returns:
+        None (launches Gradio app)
+    """
+    print("[DEBUG] _launch_wizard_ui called")
+    print(f"[DEBUG]   share={share}, server_name={server_name}, port={port}")
+
+    async def wizard_submit(user_input, wizard_state_dict, chat_history):
+        """
+        Handle wizard message submission.
+
+        Args:
+            user_input: User's message
+            wizard_state_dict: Dict representation of WizardState
+            chat_history: Chat history for display
+
+        Returns:
+            Tuple of (updated_chat_history, updated_wizard_state_dict, cleared_input, completion_message)
+        """
+        # Check if wizard was already completed (identity exists)
+        # This handles page refresh after completion
+        if orchestrator.user_profile and orchestrator.user_profile.identity.name:
+            print("[DEBUG] Wizard already completed (identity exists), ignoring input")
+            completion_msg = "✅ **Setup already complete!** Please restart the app with `python main.py` (no wizard flag) to start chatting."
+
+            # Return current state without processing
+            chat_history = list(chat_history or [])
+            return chat_history, wizard_state_dict, "", completion_msg
+
+        # Reconstruct WizardState from dict
+        from gui.wizard import WizardStep
+        state = WizardState(
+            step=WizardStep(wizard_state_dict['step']),
+            collected_data=wizard_state_dict['collected_data'],
+            error_count=wizard_state_dict['error_count'],
+            max_retries=wizard_state_dict['max_retries']
+        )
+
+        # Process wizard message
+        response, new_state, is_complete = await process_wizard_message(user_input, state, orchestrator)
+
+        # Update chat history
+        chat_history = list(chat_history or [])
+        chat_history.append({"role": "user", "content": user_input})
+        chat_history.append({"role": "assistant", "content": response})
+
+        # Convert state back to dict for Gradio state
+        new_state_dict = {
+            'step': new_state.step.value,
+            'collected_data': new_state.collected_data,
+            'error_count': new_state.error_count,
+            'max_retries': new_state.max_retries
+        }
+
+        # If wizard is complete, show completion message
+        completion_msg = ""
+        if is_complete:
+            completion_msg = "✅ **Setup complete!** Please restart the app with `python main.py` (no wizard flag) to start chatting."
+
+        return chat_history, new_state_dict, "", completion_msg
+
+    print("[DEBUG] Building Gradio wizard interface...")
+
+    # Check if wizard was already completed
+    wizard_already_complete = (
+        orchestrator.user_profile
+        and orchestrator.user_profile.identity.name
+    )
+
+    if wizard_already_complete:
+        print(f"[DEBUG] Wizard already completed (identity: '{orchestrator.user_profile.identity.name}')")
+        initial_message = "✅ **Setup already complete!**\n\nYour profile has been saved. Please restart the app with `python main.py` (no wizard flag) to start chatting."
+    else:
+        initial_message = get_welcome_message()
+
+    with gr.Blocks(theme="soft") as demo:
+        gr.Markdown("## 🤖 Daemon - First Time Setup")
+        if not wizard_already_complete:
+            gr.Markdown("Welcome! Let's get you set up. This should only take a minute.")
+        else:
+            gr.Markdown("**Note:** Wizard has already been completed. Please restart the app.")
+
+        chatbot = gr.Chatbot(
+            label="Setup Wizard",
+            height=400,
+            type="messages",
+            value=[{"role": "assistant", "content": initial_message}]
+        )
+
+        user_input = gr.Textbox(
+            lines=2,
+            placeholder="Type your response here...",
+            label="Your Response"
+        )
+
+        with gr.Row():
+            submit_button = gr.Button("Submit", variant="primary")
+
+        # Completion message (appears when wizard finishes)
+        completion_md = gr.Markdown(value="", visible=True)
+
+        # Wizard state stored as dict (Gradio State can't handle custom classes directly)
+        # Start at API_KEY since welcome message is already displayed in initial chatbot value
+        from gui.wizard import WizardStep
+        wizard_state = gr.State({
+            'step': WizardStep.API_KEY.value,  # Start at API_KEY, not WELCOME
+            'collected_data': {},
+            'error_count': 0,
+            'max_retries': 3
+        })
+
+        submit_button.click(
+            wizard_submit,
+            inputs=[user_input, wizard_state, chatbot],
+            outputs=[chatbot, wizard_state, user_input, completion_md]
+        )
+
+    # Launch wizard UI
+    print("[DEBUG] Gradio interface built successfully")
+    print(f"\n🚀 Launching Daemon Setup Wizard on http://{server_name}:{port}")
+    if share:
+        print("📡 Creating public gradio.live link...")
+
+    print("[DEBUG] Calling demo.launch()...")
+    try:
+        demo.launch(
+            server_name=server_name,
+            server_port=port,
+            share=share,
+            inbrowser=False  # Don't auto-open browser during first setup
+        )
+        print("[DEBUG] demo.launch() returned")
+    except Exception as e:
+        print(f"[ERROR] demo.launch() failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+def launch_gui(orchestrator, force_wizard=False):
     personality_manager = orchestrator.personality_manager
     conversation_logger = get_conversation_logger()
 
@@ -64,6 +212,56 @@ def launch_gui(orchestrator):
     PORT = int(os.getenv("GRADIO_PORT", "7860"))
     PORT = _find_free_port(PORT)
 
+    # ------- First-run wizard check -------
+    try:
+        # If wizard was completed (identity.name exists), ignore force_wizard flag
+        # This prevents wizard from re-running on refresh after completion
+        if force_wizard:
+            has_profile = orchestrator.user_profile is not None
+            if has_profile and orchestrator.user_profile.identity.name:
+                print("[DEBUG] Force wizard mode enabled BUT wizard already completed (identity exists)")
+                print(f"[DEBUG]   - Identity name: '{orchestrator.user_profile.identity.name}'")
+                print("[DEBUG]   - Ignoring force_wizard flag, will launch normal chat")
+                force_wizard = False  # Override - wizard already completed
+
+        if force_wizard:
+            print("[DEBUG] Force wizard mode enabled")
+            is_first_run = True
+        else:
+            has_profile = orchestrator.user_profile is not None
+            if has_profile:
+                corpus_mgr = orchestrator.memory_system.corpus_manager
+                is_first_run = orchestrator.user_profile.is_first_run(corpus_mgr)
+
+                # Debug logging
+                print(f"[DEBUG] First-run check:")
+                print(f"  - User profile exists: {has_profile}")
+                print(f"  - Corpus count: {len(corpus_mgr.corpus) if hasattr(corpus_mgr, 'corpus') else 0}")
+                print(f"  - Identity name: '{orchestrator.user_profile.identity.name}'")
+                print(f"  - Is first run: {is_first_run}")
+            else:
+                print("[DEBUG] No user profile found, skipping wizard")
+                is_first_run = False
+    except Exception as e:
+        print(f"[DEBUG] First-run check failed: {e}")
+        import traceback
+        traceback.print_exc()
+        is_first_run = False
+
+    if is_first_run:
+        print("[DEBUG] Launching wizard UI...")
+        try:
+            # Show wizard UI instead of normal chat
+            return _launch_wizard_ui(orchestrator, SHARE, SERVER_NAME, PORT)
+        except Exception as e:
+            print(f"[ERROR] Wizard UI failed to launch: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    else:
+        print("[DEBUG] Launching normal chat UI...")
+
+    # ------- Normal chat UI (non-first-run) -------
     def get_summary_status():
         cm = orchestrator.memory_system.corpus_manager
         corpus = cm.corpus
