@@ -842,6 +842,85 @@ Gradio renders updated chat_history
 
 ---
 
+### 2.9.1 gui/wizard.py (Onboarding Wizard) **[NEW 2025-12-11]**
+**Purpose**: Conversational first-run setup wizard for new users
+
+**Wizard Flow**:
+```
+WELCOME → API_KEY → STYLE → NAME → PRONOUNS → BACKGROUND → COMPLETE
+```
+
+**Key Components**:
+- **WizardStep** (Enum) - Tracks current step in wizard flow
+- **WizardState** (Dataclass) - Maintains wizard state (step, collected_data, error_count)
+- **process_wizard_message()** - Main async handler routing to step-specific handlers
+
+**Step Handlers**:
+1. `_handle_welcome()` - Acknowledges first interaction, advances to API_KEY
+2. `_handle_api_key()` - Validates format + tests API key with live call, writes to .env
+3. `_handle_style()` - Parses style preference (warm/balanced/direct)
+4. `_handle_name()` - Collects user name (optional, supports skip)
+5. `_handle_pronouns()` - Collects pronouns (optional, supports skip)
+6. `_handle_background()` - Extracts facts from background text via LLMFactExtractor
+7. `_finalize_wizard()` - Saves profile, returns completion message
+
+**API Key Validation**:
+- Format check: Must start with 'sk-or-' and length > 20
+- Live test: Calls `model_manager.generate_once()` with gpt-4o-mini
+- Success: Writes to `.env` as `OPENAI_API_KEY=<key>` AND sets `os.environ`
+- Failure: Returns error message, stays on API_KEY step
+
+**Style Parsing** (parse_style_preference):
+- Numeric: "1" → warm, "2" → balanced, "3" → direct
+- Text: "warm & supportive" → warm, "direct & concise" → direct
+- Keywords: "empathy/caring" → warm, "short/brief" → direct
+- Default: balanced
+
+**Skip Detection** (is_skip):
+- Recognized: "skip", "none", "n/a", "pass", "no", "-", ""
+- Applied to: NAME, PRONOUNS, BACKGROUND steps
+
+**Error Recovery**:
+- Max retries: 3 (configurable via WizardState.max_retries)
+- Error count tracked across failures
+- After max retries: Helpful error message with manual fallback instructions
+
+**Integration with UserProfile**:
+- Calls `profile.update_identity(name, pronouns)`
+- Calls `profile.update_preferences(style, ...)`
+- Adds background facts via `profile.add_fact()`
+- Profile automatically saved to `data/user_profile.json`
+
+**Wizard Routing** (gui/launch.py):
+- First-run check: `user_profile.is_first_run(corpus_manager)`
+  - Condition: `corpus_count < 5 AND no identity.name`
+- If first-run: Launch `_launch_wizard_ui()` instead of normal chat
+- Force mode: `python main.py wizard` bypasses first-run check
+
+**Wizard UI** (_launch_wizard_ui):
+- Simple Gradio interface: Chatbot + Text Input + Submit Button
+- Initial message: Wizard welcome automatically displayed
+- State storage: WizardState serialized to dict for Gradio State
+- Completion: Shows "✅ Setup complete! Please refresh the page to start chatting."
+
+**Files Modified for Wizard**:
+- `memory/user_profile_schema.py` - Added ProfilePreferences, ProfileIdentity, SCHEMA_VERSION
+- `memory/user_profile.py` - Added is_first_run(), update_preferences(), update_identity(), get_style_modifier()
+- `core/orchestrator.py` - Runtime placeholder substitution ({USER_NAME}, {USER_PRONOUNS})
+- `gui/launch.py` - First-run detection and wizard routing
+- `core/system_prompt.txt` - Replaced hardcoded "Luke" with {USER_NAME} placeholders
+- `main.py` - Added `python main.py wizard` command for testing
+
+**Test Coverage**: 100 new tests (6 test files)
+- test_user_profile_schema_preferences.py (13 tests)
+- test_user_profile_manager.py (22 tests)
+- test_wizard.py (34 tests)
+- test_orchestrator_profile_injection.py (14 tests)
+- test_wizard_routing.py (10 tests)
+- test_system_prompt_placeholders.py (7 tests)
+
+---
+
 ### 2.10 models/model_manager.py (Multi-Provider LLM)
 **Purpose**: Unified interface for multiple LLM providers
 

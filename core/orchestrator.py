@@ -305,6 +305,15 @@ class DaemonOrchestrator:
         self.topic_confidence_threshold = float(self.config.get("topic_confidence_threshold", 0.7))
         self.system_prompt_path = self.config.get("system_prompt_path")
 
+        # Load user profile for identity and preferences
+        try:
+            from memory.user_profile import UserProfile
+            self.user_profile = UserProfile()
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"[Orchestrator] Failed to load user profile: {e}")
+            self.user_profile = None
+
         # Emotional context tracking (tone + need type)
         self.current_tone_level: Optional[CrisisLevel] = None  # Keep for compatibility
         self.current_emotional_context: Optional[EmotionalContext] = None
@@ -420,6 +429,16 @@ class DaemonOrchestrator:
         Returns:
             String containing tone-specific instructions to append to system prompt
         """
+        # Inject style modifier BEFORE tone instructions (unless in HIGH crisis mode)
+        style_modifier = ""
+        if tone_level != CrisisLevel.HIGH:
+            try:
+                profile = getattr(self, 'user_profile', None)
+                if profile:
+                    style_modifier = profile.get_style_modifier()
+            except Exception:
+                style_modifier = ""
+
         if tone_level == CrisisLevel.HIGH:
             # CRISIS_SUPPORT: Full therapeutic mode for genuine crisis
             return (
@@ -436,7 +455,7 @@ class DaemonOrchestrator:
             )
         elif tone_level == CrisisLevel.MEDIUM:
             # ELEVATED_SUPPORT: Supportive but measured for acute distress
-            return (
+            base_instructions = (
                 "\n\n## RESPONSE MODE: ELEVATED SUPPORT\n"
                 "The user is experiencing acute distress or emotional difficulty. "
                 "Respond with supportive care:\n"
@@ -446,9 +465,10 @@ class DaemonOrchestrator:
                 "- Be warm and empathetic, but don't over-therapize\n"
                 "- Focus on their specific situation, not generic coping advice"
             )
+            return style_modifier + base_instructions if style_modifier else base_instructions
         elif tone_level == CrisisLevel.CONCERN:
             # LIGHT_SUPPORT: Brief validation for moderate concern
-            return (
+            base_instructions = (
                 "\n\n## RESPONSE MODE: LIGHT SUPPORT\n"
                 "The user is expressing concern, anxiety, or stress about something. "
                 "Respond with brief, grounded validation:\n"
@@ -458,9 +478,10 @@ class DaemonOrchestrator:
                 "- Match their energy - if they're venting, let them vent\n"
                 "- Only expand if they explicitly ask for more"
             )
+            return style_modifier + base_instructions if style_modifier else base_instructions
         else:  # CrisisLevel.CONVERSATIONAL
             # CONVERSATIONAL: Natural friend voice - most interactions
-            return (
+            base_instructions = (
                 "\n\n## RESPONSE MODE: CONVERSATIONAL (Natural Friend Voice)\n"
                 "**Goal: Be a confident, grounded friend - not a service agent, hype-man, or therapist**\n\n"
                 "**LENGTH: 2-5 sentences typically - brief but substantive. Don't mirror the user's brevity; give complete thoughts.**\n\n"
@@ -495,6 +516,7 @@ class DaemonOrchestrator:
                 "Think: You're the friend who knows the relationship is solid, so you don't need "
                 "to constantly prove your value or seek approval. Be supportive, honest, and chill."
             )
+            return style_modifier + base_instructions if style_modifier else base_instructions
 
     def _get_response_instructions(self, ctx: EmotionalContext) -> str:
         """
@@ -579,10 +601,9 @@ The user is processing/analyzing, open to engagement.
             "**All sections below contain timestamps - use them for temporal reasoning:**\n"
             "- **[RECENT CONVERSATION]**: Last exchanges with timestamps, newest first\n"
             "- **[RELEVANT MEMORIES]**: Semantically relevant past conversations with timestamps\n"
-            "- **[USER PROFILE]**: User facts with timestamps in [ISO format] brackets after each fact\n"
-            "- **[FACTS]** / **[SEMANTIC FACTS]** / **[RECENT FACTS]**: Extracted facts with timestamps\n"
-            "- **[SUMMARIES]** / **[RECENT SUMMARIES]** / **[SEMANTIC SUMMARIES]**: Conversation summaries with timestamps\n"
-            "- **[REFLECTIONS]** / **[RECENT REFLECTIONS]** / **[SEMANTIC REFLECTIONS]**: Meta-reflections with timestamps\n"
+            "- **[USER PROFILE]**: User facts (hybrid: semantic + recent) with timestamps in [ISO format] brackets after each fact\n"
+            "- **[SUMMARIES]**: Conversation summaries with timestamps\n"
+            "- **[RECENT REFLECTIONS]**: Meta-reflections with timestamps\n"
             "\n"
             "**Calculate recency from timestamps, not relative terms:**\n"
             "- Memory from 2025-09-15, Current time 2025-11-17 = \"2 months ago\" (not \"recently\")\n"
@@ -856,6 +877,43 @@ The user is processing/analyzing, open to engagement.
                     f"[orchestrator] Using system prompt len={len(system_prompt)}; "
                     f"head={repr(system_prompt[:80])}"
                 )
+
+        # ---------------------------------------------------------------------
+        # 3.5) Runtime placeholder substitution for identity (name, pronouns)
+        # ---------------------------------------------------------------------
+        if isinstance(system_prompt, str) and system_prompt.strip():
+            try:
+                profile = getattr(self, 'user_profile', None)
+                if profile:
+                    identity = profile.identity
+
+                    # Get name and pronouns, with defaults
+                    name = identity.name if identity.name else "the user"
+                    pronouns = identity.pronouns if identity.pronouns else "they/them"
+
+                    # Map pronouns to variants (subject, object, possessive)
+                    PRONOUN_MAP = {
+                        "he/him": ("he", "him", "his"),
+                        "she/her": ("she", "her", "her"),
+                        "they/them": ("they", "them", "their"),
+                    }
+                    subj, obj, poss = PRONOUN_MAP.get(pronouns.lower(), ("they", "them", "their"))
+
+                    # Replace placeholders
+                    system_prompt = system_prompt.replace("{USER_NAME}", name)
+                    system_prompt = system_prompt.replace("{USER_PRONOUNS}", pronouns)
+                    system_prompt = system_prompt.replace("{PRONOUN_SUBJ}", subj)
+                    system_prompt = system_prompt.replace("{PRONOUN_OBJ}", obj)
+                    system_prompt = system_prompt.replace("{PRONOUN_POSS}", poss)
+
+                    if getattr(self, "logger", None):
+                        self.logger.debug(
+                            f"[Orchestrator] Injected identity placeholders: "
+                            f"name={name}, pronouns={pronouns}"
+                        )
+            except Exception as e:
+                if getattr(self, "logger", None):
+                    self.logger.debug(f"[Orchestrator] Profile placeholder injection failed: {e}")
 
         # ---------------------------------------------------------------------
         # 4) Append resolved topic hint to the end of the system prompt
