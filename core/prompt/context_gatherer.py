@@ -87,7 +87,7 @@ PROMPT_MAX_FACTS = _cfg_int("prompt_max_facts", 15)    # 15 facts
 PROMPT_MAX_RECENT_FACTS = _cfg_int("prompt_max_recent_facts", 15)  # 15 recent facts
 PROMPT_MAX_SUMMARIES = _cfg_int("prompt_max_summaries", 10)  # Total summaries (recent + semantic)
 PROMPT_MAX_REFLECTIONS = _cfg_int("prompt_max_reflections", 10)  # Total reflections (recent + semantic)
-USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)  # Facts per category in user profile
+USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 10)  # Facts per category in user profile (default 10)
 
 # Separate limits for recent vs semantic
 PROMPT_MAX_RECENT_SUMMARIES = _cfg_int("prompt_max_recent_summaries", 5)  # Recent summaries only
