@@ -2,29 +2,54 @@
 # main.py
 
 Module Contract
-- Purpose: Application entry point. Builds the orchestrator stack, launches GUI or runs small CLI tests, and coordinates graceful shutdown work (reflections + summaries/facts). ENHANCED: Added user profile export commands.
+- Purpose: Application entry point. Builds the orchestrator stack, launches GUI or runs small CLI tests,
+  and coordinates graceful shutdown work (reflections + summaries/facts).
 - Inputs:
-  - CLI arg `mode`: "gui" (default), "cli", "test-summaries", "inspect-summaries", "test-prompt-summaries", "export-profile", "show-profile"
+  - CLI arg `mode`: "gui" (default), "cli", "test-summaries", "inspect-summaries", "test-prompt-summaries",
+    "export-profile", "show-profile", "wizard"
   - Environment: GRADIO_* networking flags; config/app_config.py settings (paths, memory, models)
 - Outputs:
   - Starts a Gradio app (GUI) or runs test routines; at shutdown triggers memory_system tasks.
-  - UPDATED: "export-profile" writes data/user_profile_export.md; "show-profile" prints to console
+  - "export-profile" writes data/user_profile_export.md; "show-profile" prints to console
 - Key functions/classes:
-  - build_orchestrator() → DaemonOrchestrator fully wired with model_manager, prompt_builder, memory_system, etc.
-  - test_orchestrator(), test_prompt_with_summaries(), inspect_summaries(): small helpers for ad‑hoc testing.
+  - build_orchestrator() → DaemonOrchestrator fully wired with model_manager, prompt_builder, memory_system
+  - test_orchestrator(), test_prompt_with_summaries(), inspect_summaries(): small helpers for ad‑hoc testing
   - __main__ block: selects mode, launches, and on shutdown runs:
       • memory_system.run_shutdown_reflection(...)
-      • memory_system.process_shutdown_memory() (summary blocks + facts → UPDATED: now populates UserProfile)
-- Important dependencies: core.orchestrator.DaemonOrchestrator, gui.launch.launch_gui, config.app_config constants, memory components, processing.gate_system, memory.user_profile (NEW).
+      • memory_system.process_shutdown_memory() (summary blocks + facts)
+- Important dependencies: core.orchestrator.DaemonOrchestrator, gui.launch.launch_gui, config.app_config,
+  memory components, processing.gate_system, memory.user_profile, utils.bootstrap (frozen mode)
 - Side effects:
-  - Launches local web server; writes to conversation logs and corpus/chroma via orchestrator.
-  - UPDATED: Writes to data/user_profile.json at shutdown with categorized facts
+  - Launches local web server; writes to conversation logs and corpus/chroma via orchestrator
+  - Writes to data/user_profile.json at shutdown with categorized facts
+  - [FROZEN MODE] Bootstrap runs at module level BEFORE other imports to set env vars
 - Threading/Async:
-  - Uses asyncio to stream model output and to run shutdown tasks deterministically.
+  - Uses asyncio to stream model output and to run shutdown tasks deterministically
+
+CRITICAL (Frozen Executable):
+  Bootstrap MUST run before config.app_config import. In frozen mode, this sets CORPUS_FILE,
+  CHROMA_PATH, etc. to platform-specific user directories (~/.daemon/ on Linux).
 """
-import asyncio
 import sys
 import os
+
+# =============================================================================
+# CRITICAL: BOOTSTRAP MUST RUN BEFORE ANY OTHER IMPORTS
+# =============================================================================
+# In frozen mode, we need to set up environment variables BEFORE config loads.
+# This sets CORPUS_FILE, CHROMA_PATH, etc. to point to ~/.daemon/ instead of ./data/
+if getattr(sys, 'frozen', False):
+    import multiprocessing
+    multiprocessing.freeze_support()  # Prevent Windows fork-bomb
+    sys.setrecursionlimit(sys.getrecursionlimit() * 2)
+    # Set up paths before any config imports
+    from utils.bootstrap import setup_environment, IS_FROZEN
+    _user_data_dir = setup_environment()
+    print(f"[Bootstrap] Frozen mode: user data at {_user_data_dir}")
+else:
+    IS_FROZEN = False
+
+import asyncio
 import signal
 import threading
 import time
@@ -444,6 +469,16 @@ def update_activity_timestamp():
 
 
 if __name__ == "__main__":
+    # ==========================================================================
+    # NOTE: Bootstrap already ran at module level (for frozen mode)
+    # ==========================================================================
+    # In frozen mode, bootstrap ran before any imports to set up env vars.
+    # Here we just import close_splash for use when showing GUI.
+    try:
+        from utils.bootstrap import close_splash
+    except ImportError:
+        close_splash = lambda: None
+
     try:
         mode = sys.argv[1] if len(sys.argv) > 1 else "gui"
         force_wizard = (mode == "wizard" or "--wizard" in sys.argv)
@@ -500,6 +535,9 @@ if __name__ == "__main__":
             idle_thread = threading.Thread(target=_idle_monitor_thread, daemon=True, name="IdleMonitor")
             idle_thread.start()
             logger.info(f"[Startup] Started idle monitor (check every {_idle_check_interval}m, timeout {_idle_timeout_minutes}m)")
+
+            # Close splash screen before showing GUI
+            close_splash()
 
             print(f"[DEBUG] About to call launch_gui(orchestrator, force_wizard={force_wizard})")
             launch_gui(orchestrator, force_wizard=force_wizard)

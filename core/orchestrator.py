@@ -916,6 +916,45 @@ The user is processing/analyzing, open to engagement.
                     self.logger.debug(f"[Orchestrator] Profile placeholder injection failed: {e}")
 
         # ---------------------------------------------------------------------
+        # 3.8) Citation instructions (if enabled) - INJECTED EARLY FOR PROMINENCE
+        # ---------------------------------------------------------------------
+        if self.enable_citations:
+            citation_instruction = (
+                "\n\n"
+                "═══════════════════════════════════════════════════════════════\n"
+                "MANDATORY MEMORY CITATION PROTOCOL (REQUIRED)\n"
+                "═══════════════════════════════════════════════════════════════\n"
+                "\n"
+                "CRITICAL REQUIREMENT: You MUST cite every memory you reference in your response.\n"
+                "\n"
+                "Citation Format (use the exact index numbers shown in each section):\n"
+                "• [MEM_RECENT_{n}] - For item n) in [RECENT CONVERSATION] section\n"
+                "• [MEM_SEMANTIC_{n}] - For item n) in [RELEVANT MEMORIES] section\n"
+                "• [SUM_RECENT_{n}] - For item n) in [RECENT SUMMARIES] section\n"
+                "• [SUM_SEMANTIC_{n}] - For item n) in [SEMANTIC SUMMARIES] section\n"
+                "• [REFL_RECENT_{n}] - For item n) in [RECENT REFLECTIONS] section\n"
+                "• [REFL_SEMANTIC_{n}] - For item n) in [SEMANTIC REFLECTIONS] section\n"
+                "• [PROFILE_CONTEXT] - For user profile information\n"
+                "\n"
+                "Examples:\n"
+                "✓ \"You mentioned [MEM_RECENT_2] wanting to share this with OMSA professors.\"\n"
+                "✓ \"Based on [MEM_RECENT_1] and [MEM_SEMANTIC_3], the dark theme is working well.\"\n"
+                "✓ \"Your profile shows [PROFILE_CONTEXT] you're working on this project.\"\n"
+                "\n"
+                "Rules:\n"
+                "1. ALWAYS cite when referencing specific facts, events, or statements from context\n"
+                "2. Use the EXACT number shown in the prompt (e.g., if you see \"1) ...\", cite [MEM_RECENT_1])\n"
+                "3. Include citations inline, immediately after the relevant statement\n"
+                "4. Multiple citations are encouraged when combining information from multiple memories\n"
+                "\n"
+                "This is NOT optional - citations provide transparency and traceability for memory-augmented responses.\n"
+                "═══════════════════════════════════════════════════════════════\n"
+            )
+            system_prompt = system_prompt.rstrip() + citation_instruction
+            if self.logger:
+                self.logger.debug("[PREPARE_PROMPT] Injected citation protocol (early position)")
+
+        # ---------------------------------------------------------------------
         # 4) Append resolved topic hint to the end of the system prompt
         #     (kept simple; if no topic was inferred, default to 'general').
         # ---------------------------------------------------------------------
@@ -1025,26 +1064,10 @@ The user is processing/analyzing, open to engagement.
             system_prompt = system_prompt.rstrip() + thinking_instruction
 
         # ---------------------------------------------------------------------
-        # 4.8) Citation instructions (if enabled)
+        # 4.8) Citation instructions - MOVED TO SECTION 3.8 FOR GREATER PROMINENCE
         # ---------------------------------------------------------------------
-        if self.enable_citations:
-            citation_instruction = (
-                "\n\n"
-                "MEMORY CITATION PROTOCOL:\n"
-                "When referencing specific memories from the provided context, include inline citations using this format:\n"
-                "- [MEM_RECENT_{index}] for recent conversation memories (numbered from the [RECENT CONVERSATION] section)\n"
-                "- [MEM_SEMANTIC_{index}] for semantic memories (numbered from the [RELEVANT MEMORIES] section)\n"
-                "- [SUM_RECENT_{index}] for recent summaries (numbered from the [RECENT SUMMARIES] section)\n"
-                "- [SUM_SEMANTIC_{index}] for semantic summaries (numbered from the [SEMANTIC SUMMARIES] section)\n"
-                "- [REFL_RECENT_{index}] for recent reflections (numbered from the [RECENT REFLECTIONS] section)\n"
-                "- [REFL_SEMANTIC_{index}] for semantic reflections (numbered from the [SEMANTIC REFLECTIONS] section)\n"
-                "- [PROFILE_CONTEXT] for user profile facts\n"
-                "\n"
-                "Example: \"You mentioned [MEM_RECENT_2] that you're starting OMSA in January. Based on the health summary [SUM_SEMANTIC_1], you've been managing long COVID.\"\n"
-                "\n"
-                "The citations help track which memories inform each part of your response. Use the index numbers that correspond to the numbering in each section."
-            )
-            system_prompt = system_prompt.rstrip() + citation_instruction
+        # Citations are now injected early (section 3.8) so LLM sees them before
+        # other instructions. This increases compliance with citation protocol.
 
         # ---------------------------------------------------------------------
         # 5) Raw mode: return plain text, no system prompt
