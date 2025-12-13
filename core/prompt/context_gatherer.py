@@ -272,8 +272,14 @@ class ContextGatherer:
 
             # Track memory IDs for citations
             result_memories = memories or []
-            for idx, mem in enumerate(result_memories):
+            logger.warning(f"[DEBUG RECENT] _get_recent_conversations: Returning {len(result_memories)} memories")
+            for idx, mem in enumerate(result_memories, start=1):
                 mem_id = f"MEM_RECENT_{idx}"
+                ts = mem.get('timestamp', 'NO_TS')
+                query = mem.get('query', '')[:80]
+                # Log first 3 and last 3
+                if idx < 3 or idx >= len(result_memories) - 3:
+                    logger.warning(f"[DEBUG RECENT] Memory {idx}: ts={ts}, query={query}...")
                 self.memory_id_map[mem_id] = {
                     'type': 'episodic_recent',
                     'timestamp': mem.get('timestamp', ''),
@@ -411,7 +417,7 @@ class ContextGatherer:
                     result["semantic"] = []
 
             # Track summary IDs for citations
-            for idx, summ in enumerate(result.get("recent", [])):
+            for idx, summ in enumerate(result.get("recent", []), start=1):
                 sum_id = f"SUM_RECENT_{idx}"
                 self.memory_id_map[sum_id] = {
                     'type': 'summary_recent',
@@ -421,7 +427,7 @@ class ContextGatherer:
                     'db_id': summ.get('id', None)  # Track database ID
                 }
 
-            for idx, summ in enumerate(result.get("semantic", [])):
+            for idx, summ in enumerate(result.get("semantic", []), start=1):
                 sum_id = f"SUM_SEMANTIC_{idx}"
                 self.memory_id_map[sum_id] = {
                     'type': 'summary_semantic',
@@ -522,7 +528,7 @@ class ContextGatherer:
             result = result[:limit]  # Final limit in case deduplication removed items
 
             # Track memory IDs for citations
-            for idx, mem in enumerate(result):
+            for idx, mem in enumerate(result, start=1):
                 mem_id = f"MEM_SEMANTIC_{idx}"
                 self.memory_id_map[mem_id] = {
                     'type': 'episodic_semantic',
@@ -778,7 +784,7 @@ class ContextGatherer:
                     result["semantic"] = []
 
             # Track reflection IDs for citations
-            for idx, refl in enumerate(result.get("recent", [])):
+            for idx, refl in enumerate(result.get("recent", []), start=1):
                 refl_id = f"REFL_RECENT_{idx}"
                 self.memory_id_map[refl_id] = {
                     'type': 'reflection_recent',
@@ -788,7 +794,7 @@ class ContextGatherer:
                     'db_id': refl.get('id', None)  # Track database ID
                 }
 
-            for idx, refl in enumerate(result.get("semantic", [])):
+            for idx, refl in enumerate(result.get("semantic", []), start=1):
                 refl_id = f"REFL_SEMANTIC_{idx}"
                 self.memory_id_map[refl_id] = {
                     'type': 'reflection_semantic',

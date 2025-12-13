@@ -45,3 +45,6 @@ embed_checkpoint.json
 !data/scripts/
 !data/corpus_v4.json
 data/corpus_v4.json
+dist/
+build/daemon/
+CLAUDE.md
