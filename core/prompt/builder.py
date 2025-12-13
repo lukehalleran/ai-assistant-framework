@@ -381,10 +381,20 @@ class UnifiedPromptBuilder:
 
             # DEBUG: Check what's in recent conversations
             recent_convos = gathered.get("recent", [])
-            logger.warning(f"[DEBUG] recent_conversations has {len(recent_convos)} items")
+            logger.warning(f"[DEBUG RECENT] build_prompt: Got {len(recent_convos)} recent_conversations from gatherer")
             if recent_convos:
-                logger.warning(f"[DEBUG] First recent: {recent_convos[0].get('query', '')[:50]}...")
-                logger.warning(f"[DEBUG] Last recent: {recent_convos[-1].get('query', '')[:50]}...")
+                # Log first 3 and last 3 with timestamps
+                for i in range(min(3, len(recent_convos))):
+                    mem = recent_convos[i]
+                    ts = mem.get('timestamp', 'NO_TS')
+                    query = mem.get('query', '')[:80]
+                    logger.warning(f"[DEBUG RECENT] Item {i+1} (first): ts={ts}, query={query}...")
+                if len(recent_convos) > 3:
+                    for i in range(max(0, len(recent_convos) - 3), len(recent_convos)):
+                        mem = recent_convos[i]
+                        ts = mem.get('timestamp', 'NO_TS')
+                        query = mem.get('query', '')[:80]
+                        logger.warning(f"[DEBUG RECENT] Item {i+1} (last): ts={ts}, query={query}...")
 
             context = {
                 "recent_conversations": recent_convos,
@@ -439,21 +449,30 @@ class UnifiedPromptBuilder:
                 if len(mems) < PROMPT_MAX_MEMS:
                     # Pull extra recent conversations beyond the ones already shown
                     extra_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MAX_RECENT + PROMPT_MAX_MEMS)
-                    # Build keys for already used recent items
+                    # Build keys for already used items
                     def _key(x):
                         return (str(x.get("query", "")) + str(x.get("response", ""))).strip().lower()
+
+                    # CRITICAL: Check against BOTH recent_conversations AND existing memories to avoid duplicates
                     used = {_key(r) for r in recents}
-                    # Keep only items not already in the recent section
+                    used.update({_key(m) for m in mems})  # Also check against existing memories!
+
+                    # Keep only items not already in either section
                     filler = []
+                    skipped_count = 0
                     for item in extra_recent:
                         if _key(item) not in used:
                             filler.append(item)
+                        else:
+                            skipped_count += 1
+
                     needed = max(0, PROMPT_MAX_MEMS - len(mems))
                     if needed:
                         mems.extend(filler[:needed])
                         context["memories"] = mems
-            except Exception:
-                pass
+                        logger.warning(f"MEMORY TOP-UP: Added {min(needed, len(filler))} new memories (had {len(mems) - min(needed, len(filler))}, target {PROMPT_MAX_MEMS}), skipped {skipped_count} duplicates")
+            except Exception as e:
+                logger.warning(f"Memory top-up failed: {e}")
 
             logger.warning(f"AFTER MEMORY TOP-UP: memories count = {len(context.get('memories', []))}")
 
@@ -1176,11 +1195,16 @@ class UnifiedPromptBuilder:
 
         # Recent conversations
         recent = context.get("recent_conversations", []) or []
+        logger.warning(f"[DEBUG RECENT] _assemble_prompt: Got {len(recent)} items in recent_conversations")
         recent_lines: list[str] = []
         for i, mem in enumerate(recent, start=1):
             content, ts = mem_parts(mem)
+            # Debug: Log first 3 and last 3 items
+            if i <= 3 or i > len(recent) - 3:
+                logger.warning(f"[DEBUG RECENT] Item {i}: ts={ts}, content_preview={content[:100] if content else 'EMPTY'}...")
             recent_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
         if recent_lines:
+            logger.warning(f"[DEBUG RECENT] Adding [RECENT CONVERSATION] section with {len(recent_lines)} formatted entries")
             sections.append(f"[RECENT CONVERSATION] n={len(recent_lines)}\n" + "\n\n".join(recent_lines))
 
         # Relevant memories
@@ -1361,7 +1385,36 @@ class UnifiedPromptBuilder:
             query_section += f"[CURRENT QUERY]\n{user_input}"
             sections.append(query_section)
 
-        return "\n\n".join(sections)
+        # DEBUG: Check for duplicate section headers before returning
+        section_headers = [s.split('\n')[0] for s in sections if s]
+        header_counts = {}
+        for header in section_headers:
+            if header.startswith('['):
+                header_counts[header] = header_counts.get(header, 0) + 1
+
+        duplicates = {h: c for h, c in header_counts.items() if c > 1}
+        if duplicates:
+            logger.error(f"[DEBUG RECENT] DUPLICATE SECTIONS DETECTED: {duplicates}")
+            logger.error(f"[DEBUG RECENT] Total sections: {len(sections)}, section headers: {section_headers}")
+        else:
+            logger.warning(f"[DEBUG RECENT] No duplicate sections. Total sections: {len(sections)}")
+
+        final_prompt = "\n\n".join(sections)
+
+        # Count how many times "[RECENT CONVERSATION]" appears in final assembled prompt
+        recent_conv_count = final_prompt.count("[RECENT CONVERSATION]")
+        if recent_conv_count > 1:
+            logger.error(f"[DEBUG RECENT] FINAL PROMPT HAS {recent_conv_count} [RECENT CONVERSATION] HEADERS!")
+            # Find positions
+            import re
+            matches = [(m.start(), m.end()) for m in re.finditer(r'\[RECENT CONVERSATION\]', final_prompt)]
+            logger.error(f"[DEBUG RECENT] Found at positions: {matches}")
+            for i, (start, end) in enumerate(matches):
+                context_start = max(0, start - 50)
+                context_end = min(len(final_prompt), end + 200)
+                logger.error(f"[DEBUG RECENT] Match {i+1} context: ...{final_prompt[context_start:context_end]}...")
+
+        return final_prompt
 
 
 # Legacy compatibility class

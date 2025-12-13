@@ -2,13 +2,18 @@
 # gui/launch.py
 
 Module Contract
-- Purpose: Define and launch the Gradio UI. Provides Chat, Debug Trace, Status, and Settings tabs; wires UI events to handlers and state. Registers health check endpoint.
+- Purpose: Define and launch the Gradio UI. Provides Chat, Debug Trace, Status, and Settings tabs;
+  wires UI events to handlers and state. Registers health check endpoint. Routes to wizard for first-run.
 - Inputs:
   - Orchestrator instance (built in main). Environment flags for networking.
+  - force_wizard: Boolean to force wizard mode for testing
 - Outputs:
   - Running web app (local or shared); exposes live chat and debug views.
   - Health check endpoint at /health (HTTP 200 for healthy, 503 for degraded)
 - Key pieces:
+  - IS_FROZEN: Detects PyInstaller frozen executable mode
+  - launch_gui(): Main entry point, routes to wizard or normal UI
+  - _launch_wizard_ui(): First-run setup wizard interface
   - submit_chat(): async driver that streams tokens + timer updates
   - Tabs:
     • Chat: chat UI, file upload, raw toggle, personality selector
@@ -18,14 +23,18 @@ Module Contract
   - Health endpoint: Lightweight checks (corpus, ChromaDB, API key) for Docker/K8s
 - Dependencies:
   - gui.handlers (handle_submit)
+  - gui.wizard (WizardState, process_wizard_message)
   - utils.health_check (add_health_endpoint)
   - utils.conversation_logger
 - Side effects:
   - Registers /health endpoint on FastAPI app after launch
   - Logs URLs and health endpoint to console
+  - [FROZEN MODE] Auto-opens browser via platform-specific command (xdg-open/open/startfile)
   - Runs indefinite event loop (until KeyboardInterrupt)
+- Threading/Async: Main thread blocked by event loop; Gradio handles async internally
 """
 import os
+import sys
 import logging
 import socket
 import gradio as gr
@@ -33,6 +42,9 @@ import copy
 from gui.handlers import handle_submit
 from utils.conversation_logger import get_conversation_logger
 from gui.wizard import WizardState, process_wizard_message, get_welcome_message
+
+# Detect frozen executable mode
+IS_FROZEN = getattr(sys, 'frozen', False)
 
 def _env_flag(name: str, default: bool) -> bool:
     val = os.getenv(name)
@@ -1260,7 +1272,7 @@ def launch_gui(orchestrator, force_wizard=False):
             max_threads=40,
             quiet=False,
             share=SHARE,
-            inbrowser=_env_flag("GRADIO_OPEN_BROWSER", False),
+            inbrowser=_env_flag("GRADIO_OPEN_BROWSER", IS_FROZEN),  # Auto-open for desktop app
             prevent_thread_lock=True,
         )
         # Add health check endpoint
@@ -1276,6 +1288,26 @@ def launch_gui(orchestrator, force_wizard=False):
         elif SHARE and not share_url:
             print("[GUI] Requested share=True but no share URL returned.")
 
+        # Robust browser opening for frozen executable (handles icon launch)
+        # Uses platform-specific commands which are more reliable than webbrowser module
+        if IS_FROZEN and _env_flag("GRADIO_OPEN_BROWSER", True):
+            import subprocess
+            import time
+            time.sleep(0.5)  # Brief delay to ensure server is ready
+            try:
+                if sys.platform.startswith('linux'):
+                    subprocess.Popen(['xdg-open', local_url],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(['open', local_url])
+                elif sys.platform == 'win32':
+                    os.startfile(local_url)
+                print(f"[GUI] Browser opened: {local_url}")
+            except Exception as e:
+                print(f"[GUI] Could not auto-open browser: {e}")
+                print(f"[GUI] Please open manually: {local_url}")
+
     except Exception as e:
         # If public tunnel requested but failed (common with SSL/proxy), fall back to local
         print(f"[GUI] Launch error: {e}")
@@ -1289,7 +1321,7 @@ def launch_gui(orchestrator, force_wizard=False):
                 max_threads=40,
                 quiet=False,
                 share=False,
-                inbrowser=_env_flag("GRADIO_OPEN_BROWSER", False),
+                inbrowser=_env_flag("GRADIO_OPEN_BROWSER", IS_FROZEN),  # Auto-open for desktop app
                 prevent_thread_lock=True,
             )
             # Add health check endpoint (fallback path)
@@ -1298,6 +1330,25 @@ def launch_gui(orchestrator, force_wizard=False):
 
             print(f"[GUI] Local: {local_url}")
             print(f"[GUI] Health: {local_url}/health")
+
+            # Robust browser opening for frozen executable (fallback path)
+            if IS_FROZEN and _env_flag("GRADIO_OPEN_BROWSER", True):
+                import subprocess
+                import time
+                time.sleep(0.5)
+                try:
+                    if sys.platform.startswith('linux'):
+                        subprocess.Popen(['xdg-open', local_url],
+                                         stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+                    elif sys.platform == 'darwin':
+                        subprocess.Popen(['open', local_url])
+                    elif sys.platform == 'win32':
+                        os.startfile(local_url)
+                    print(f"[GUI] Browser opened: {local_url}")
+                except Exception as browser_err:
+                    print(f"[GUI] Could not auto-open browser: {browser_err}")
+                    print(f"[GUI] Please open manually: {local_url}")
         else:
             raise
 

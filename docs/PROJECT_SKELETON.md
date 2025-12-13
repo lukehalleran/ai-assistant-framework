@@ -2442,13 +2442,123 @@ spec:
 
 ---
 
+## 16. Desktop Executable Build System [NEW 2025-12-12]
+
+**Purpose**: Build standalone desktop executables using PyInstaller for distribution without requiring Python installation.
+
+### 16.1 Architecture
+
+```
+SOURCE CODE
+    ↓
+[PyInstaller] ← daemon.spec configuration
+    ↓
+[Analysis] → Dependency detection, hidden imports
+    ↓
+[Custom Hooks] → hooks/hook-*.py for complex packages
+    ↓
+[Bundle] → One-dir mode (instant startup vs 30s one-file)
+    ↓
+dist/Daemon/
+├── Daemon           # Main executable
+├── _internal/       # Python runtime + packages
+└── assets/          # Icons, splash screen
+```
+
+### 16.2 Key Files
+
+| File | Purpose |
+|------|---------|
+| `daemon.spec` | PyInstaller configuration (one-dir mode, excludes, hooks) |
+| `utils/bootstrap.py` | Frozen executable path resolution and data migration |
+| `hooks/hook-*.py` | Custom hooks for chromadb, gradio, spacy, tiktoken, sentence_transformers |
+| `hooks/runtime_hook.py` | Pre-import environment setup |
+| `assets/` | Icons (ico, png) and splash screen |
+| `docs/BUILD_GUIDE.md` | Comprehensive build documentation |
+
+### 16.3 Bootstrap Flow (Frozen Mode)
+
+```python
+# main.py - CRITICAL: Bootstrap runs BEFORE any imports
+if getattr(sys, 'frozen', False):
+    multiprocessing.freeze_support()  # Windows fork-bomb prevention
+    from utils.bootstrap import setup_environment
+    setup_environment()  # Sets CORPUS_FILE, CHROMA_PATH to ~/.daemon/
+
+# Then regular imports (config reads env vars correctly)
+from config.app_config import config, CORPUS_FILE  # Now points to ~/.daemon/
+```
+
+### 16.4 Data Directory Strategy
+
+| Mode | Location | Purpose |
+|------|----------|---------|
+| Development | `./data/` | Project-local data |
+| Frozen (Linux) | `~/.daemon/` | User data directory |
+| Frozen (Windows) | `%APPDATA%/Daemon/` | User data directory |
+| Frozen (macOS) | `~/Library/Application Support/Daemon/` | User data directory |
+
+**Migration**: On first frozen run, bootstrap attempts to migrate data from `dist/data/` or `dist/Daemon/data/` to user data directory.
+
+### 16.5 Build Commands
+
+```bash
+# Prerequisites
+pip install pyinstaller
+python -m spacy download en_core_web_sm
+
+# Build (10-20 minutes)
+pyinstaller daemon.spec --clean --noconfirm
+
+# Output
+dist/Daemon/Daemon  # Linux/macOS executable
+dist/Daemon/Daemon.exe  # Windows executable
+```
+
+### 16.6 Bundle Size
+
+- **Estimated**: ~650MB (with torch CPU)
+- **Excludes**: pytest, matplotlib, tensorflow, CUDA (optional)
+- **Includes**: torch, transformers, sentence_transformers, chromadb, gradio, spacy
+
+### 16.7 Browser Auto-Open
+
+```python
+# gui/launch.py - Robust browser opening for desktop mode
+IS_FROZEN = getattr(sys, 'frozen', False)
+
+if IS_FROZEN:
+    # Use platform-specific commands (more reliable than webbrowser module)
+    if sys.platform.startswith('linux'):
+        subprocess.Popen(['xdg-open', local_url])
+    elif sys.platform == 'darwin':
+        subprocess.Popen(['open', local_url])
+    elif sys.platform == 'win32':
+        os.startfile(local_url)
+```
+
+**File References**:
+- `daemon.spec` - PyInstaller configuration
+- `utils/bootstrap.py` - Path resolution, migration, environment setup
+- `hooks/` - Custom PyInstaller hooks
+- `assets/` - Application icons and splash screen
+- `docs/BUILD_GUIDE.md` - Build documentation
+
+---
+
 **End of Skeleton**
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2025-12-04
+**Last Updated**: 2025-12-12
 
-**Recent Changes** (2025-11-30):
+**Recent Changes** (2025-12-12):
+- **Added Desktop Executable Build System (Section 16)** - PyInstaller-based build for standalone distribution
+- **Created bootstrap module** - Handles frozen executable path resolution, data migration, and environment setup
+- **Custom PyInstaller hooks** - For chromadb, gradio, spacy, tiktoken, sentence_transformers
+- **Browser auto-open** - Platform-specific (xdg-open/open/startfile) for reliable desktop behavior
+
+**Previous Changes** (2025-11-30):
 - **Verified and updated all Protocol contracts** - Added MemoryScorerProtocol and MemoryConsolidatorProtocol with complete method signatures
 - **Added Section 2.3.0 (MemoryScorer)** - Documented scoring and ranking operations with algorithm details
 - **Updated all refactored module sections** - Corrected method signatures for MemoryRetriever, MemoryStorage, ThreadManager to match actual implementations
