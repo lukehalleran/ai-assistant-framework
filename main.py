@@ -49,6 +49,14 @@ if getattr(sys, 'frozen', False):
 else:
     IS_FROZEN = False
 
+from dotenv import load_dotenv
+if getattr(sys, 'frozen', False):
+    # In frozen mode, load .env from user data directory
+    env_path = os.path.join(os.environ.get('APPDATA', ''), 'Daemon', '.env')
+    load_dotenv(env_path)
+else:
+    load_dotenv()
+
 import asyncio
 import signal
 import threading
@@ -88,6 +96,7 @@ _ = _get_embedder("all-MiniLM-L6-v2")
 from processing.gate_system import set_topic_resolver
 from models.tokenizer_manager import TokenizerManager
 from config.app_config import config, CHROMA_PATH, CORPUS_FILE
+
 orchestrator = None  # module-scope
 # Import model manager
 try:
@@ -128,6 +137,9 @@ except ImportError:
 # main.py
 # RE-ENABLE UNIFIED PROMPT BUILDER NOW THAT MEMORY ISSUES ARE RESOLVED
 HAS_UNIFIED_PROMPT = True
+
+
+
 logger.info("✅ Unified prompt builder re-enabled - memory system working correctly")
 
 try:

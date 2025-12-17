@@ -62,17 +62,17 @@ First, I'll need an OpenRouter API key to connect to language models. You can ge
 def write_api_key_to_env(key: str) -> bool:
     """
     Write API key to .env file as plaintext.
-
     Standard practice - security via filesystem permissions and .gitignore.
-
     Args:
         key: API key to write
-
     Returns:
         bool: True if successful, False otherwise
     """
     try:
-        env_path = Path('.env')
+        if getattr(sys, 'frozen', False):
+            env_path = Path(os.environ.get('APPDATA', '')) / 'Daemon' / '.env'
+        else:
+            env_path = Path('.env')
         lines = []
 
         # Read existing .env if it exists
