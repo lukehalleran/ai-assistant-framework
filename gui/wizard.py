@@ -22,6 +22,7 @@ Module Contract
 
 import os
 import re
+import sys
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Tuple, Dict, Any, Optional
@@ -254,6 +255,8 @@ async def _handle_api_key(
     # Test the API key with a simple call
     try:
         logger.info("[Wizard] Testing API key with model call")
+        # Temporarily set the key for testing
+        os.environ['OPENAI_API_KEY'] = key
         test_response = await orchestrator.model_manager.generate_once(
             prompt="Say 'OK' if you can read this.",
             model_name="gpt-4o-mini",
