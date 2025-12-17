@@ -56,6 +56,8 @@ if getattr(sys, 'frozen', False):
     load_dotenv(env_path)
 else:
     load_dotenv()
+print(f"[DEBUG] OPENAI_API_KEY loaded: {os.environ.get('OPENAI_API_KEY', 'NOT SET')[:20]}...")
+
 
 import asyncio
 import signal
