@@ -17,7 +17,6 @@ a = Analysis(
         ('venv/Lib/site-packages/thinc', 'thinc'),
         ('core/system_prompt.txt', 'core'),
         ('config/config.yaml', 'config'),
-        ('data', 'data'),
     ],
     hiddenimports=[
         'posthog',

@@ -202,7 +202,7 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
             server_name=server_name,
             server_port=port,
             share=share,
-            inbrowser=False  # Don't auto-open browser during first setup
+            inbrowser=True  #  auto-open browser during first setup
         )
         print("[DEBUG] demo.launch() returned")
     except Exception as e:

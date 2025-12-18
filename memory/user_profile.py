@@ -25,9 +25,10 @@ Module Contract
   - Writes to data/user_profile.json on save()
   - Thread-safe with lock for concurrent access
 """
+import sys
+import os
 
 import json
-import os
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
@@ -68,9 +69,18 @@ class UserProfile:
     }
     """
 
-    DEFAULT_PATH = "data/user_profile.json"
+    if getattr(sys, 'frozen', False):
+    
+        DEFAULT_PATH = os.path.join(os.environ.get('APPDATA', ''), 'Daemon', 'user_profile.json')
+
+    else:
+        DEFAULT_PATH = "data/user_profile.json"
 
     def __init__(self, profile_path: str = None):
+
+        print(f"[DEBUG UserProfile] DEFAULT_PATH={self.DEFAULT_PATH}")
+        print(f"[DEBUG UserProfile] profile_path arg={profile_path}")
+        print(f"[DEBUG UserProfile] frozen={getattr(sys, 'frozen', False)}")
         self.profile_path = profile_path or self.DEFAULT_PATH
         self._lock = threading.Lock()
         self.profile = self._load_or_init()
