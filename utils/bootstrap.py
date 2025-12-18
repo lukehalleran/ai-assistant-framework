@@ -211,10 +211,8 @@ def migrate_user_data() -> None:
     # Old development locations to check for migration
     # Priority order: most likely locations first
     old_locations = [
-        # Adjacent data/ folder (portable installation)
-        os.path.join(os.path.dirname(get_app_dir()), 'data'),
-        # Inside app folder (shouldn't exist but check anyway)
-        os.path.join(get_app_dir(), 'data'),
+    # Inside app folder (bundled data only)
+    os.path.join(get_app_dir(), 'data'),
     ]
 
     # Files and directories to migrate

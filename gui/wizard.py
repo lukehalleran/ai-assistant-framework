@@ -323,6 +323,10 @@ def _handle_style(user_input: str, state: WizardState) -> Tuple[str, WizardState
 
 def _handle_name(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
     """Handle name collection."""
+
+    print(f"[DEBUG WIZARD] _handle_name called with: '{user_input}'")
+    print(f"[DEBUG WIZARD] is_skip: {is_skip(user_input)}")
+
     if is_skip(user_input):
         state.collected_data['name'] = ''
         state.step = WizardStep.PRONOUNS
