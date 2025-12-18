@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2025-12-05
+**Last Updated**: 2025-12-17
 
 ---
 
@@ -921,6 +921,103 @@ WELCOME → API_KEY → STYLE → NAME → PRONOUNS → BACKGROUND → COMPLETE
 
 ---
 
+### 2.9.2 Desktop Executable System **[NEW 2025-12-12]**
+**Purpose**: PyInstaller-based desktop executable with splash screen, platform-specific paths, and staged imports
+
+**Architecture**:
+```
+[PyInstaller Bootloader] → runtime_hook.py (set DAEMON_FROZEN=1)
+         ↓
+[main.py bootstrap block] → utils/bootstrap.py (paths, .env, migration)
+         ↓
+[Splash Screen] ← utils/startup.py (staged imports with progress)
+         ↓
+[Gradio GUI or Wizard] → normal operation
+```
+
+**Key Components**:
+
+**daemon.spec** (PyInstaller spec file):
+- **Mode**: One-dir (prevents 30s startup delay of one-file)
+- **Splash**: Native PyInstaller splash (assets/splash.png)
+- **Icon**: Platform-specific (assets/daemon_icon.ico)
+- **Excludes**: pytest, matplotlib, tkinter, tensorflow
+- **Hidden imports**: chromadb, gradio, sentence_transformers, spacy, tiktoken
+- **Data files**: Bundled configs, spaCy model, tiktoken encodings, gradio templates
+- **Runtime hook**: Sets DAEMON_FROZEN env var before main.py
+
+**utils/bootstrap.py**:
+- `IS_FROZEN`: Boolean detecting PyInstaller frozen mode
+- `get_app_dir()`: Executable directory (frozen) or project root (dev)
+- `get_user_data_dir()`: Platform-specific user data directory
+  - Windows: `%APPDATA%/Daemon/`
+  - macOS: `~/Library/Application Support/Daemon/`
+  - Linux: `~/.daemon/`
+- `get_resource_path(relative_path)`: Bundled resource lookup
+- `setup_environment()`: Sets env vars, loads .env, migrates data
+- `migrate_user_data()`: One-way migration from ./data/ to user dir
+- `update_splash(text)`, `close_splash()`: PyInstaller splash control
+
+**utils/startup.py**:
+- `StartupProgress`: Progress tracker with splash/console updates
+- `staged_import(progress)`: Ordered imports with timing
+  - Stage 1-2: Core Python + config (~0.1s)
+  - Stage 3: PyTorch (~1.8s)
+  - Stage 4: Sentence transformers (~4.1s)
+  - Stage 5: spaCy (~0.5s)
+  - Stage 6: ChromaDB (~0.6s)
+  - Stage 7: Gradio (~1.4s)
+  - Stage 8-10: Application modules
+- `run_startup(preload=False)`: Complete startup sequence
+- `check_requirements()`: Validate required packages
+
+**hooks/** (PyInstaller custom hooks):
+- `hook-chromadb.py`: Data files + hnswlib + posthog
+- `hook-gradio.py`: Static files + fastapi/starlette/uvicorn
+- `hook-sentence_transformers.py`: Data files + transformers + cross-encoder
+- `hook-spacy.py`: Language data + en_core_web_sm model
+- `hook-tiktoken.py`: Encoding files + registry
+- `runtime_hook.py`: DAEMON_FROZEN env var + multiprocessing spawn (Windows)
+
+**Startup Timing** (from audit 2025-12-12):
+- Total: ~12-17s (splash essential)
+- Heaviest: sentence_transformers (4.1s), torch (1.8s)
+- First token latency: <1s after startup
+
+**Build Commands**:
+```bash
+# Clean and build
+rm -rf build/ dist/
+pyinstaller daemon.spec --clean --noconfirm
+
+# Output: dist/Daemon/Daemon (or Daemon.exe on Windows)
+# Size: ~650MB (with CPU-only PyTorch)
+```
+
+**Frozen Mode Path Resolution**:
+```python
+# main.py bootstrap (runs before config import)
+if getattr(sys, 'frozen', False):
+    from utils.bootstrap import setup_environment
+    setup_environment()  # Sets CORPUS_FILE, CHROMA_PATH, etc.
+
+# Then config imports read correct paths
+from config.app_config import config
+```
+
+**Data Migration**:
+- On first run: migrates ./data/ contents to user data directory
+- Migrated: corpus_v4.json, user_profile.json, chroma_db_v4/, time files
+- NOT migrated: .env (created fresh by wizard)
+
+**Browser Auto-Launch**:
+- Frozen mode only: Opens browser after Gradio starts
+- Platform-specific: xdg-open (Linux), open (macOS), os.startfile (Windows)
+
+**Dependencies**: PyInstaller 6.x, pyi_splash module
+
+---
+
 ### 2.10 models/model_manager.py (Multi-Provider LLM)
 **Purpose**: Unified interface for multiple LLM providers
 
@@ -1834,6 +1931,8 @@ daemon/
 │   └── tokenizer_manager.py   # Token counting
 │
 ├── utils/
+│   ├── bootstrap.py           # Frozen executable environment setup [NEW 2025-12-12]
+│   ├── startup.py             # Staged imports with splash progress [NEW 2025-12-12]
 │   ├── topic_manager.py       # Topic extraction
 │   ├── time_manager.py        # Temporal utilities
 │   ├── tone_detector.py       # Crisis detection (harm scoring + semantic + LLM)
@@ -1844,6 +1943,7 @@ daemon/
 │   ├── keyword_matcher.py     # Keyword overlap scoring
 │   ├── logging_utils.py       # Centralized logging
 │   ├── file_processor.py      # PDF/DOCX ingestion
+│   ├── health_check.py        # Docker/K8s health endpoint
 │   └── conversation_logger.py # Conversation persistence
 │
 ├── knowledge/
@@ -1853,7 +1953,8 @@ daemon/
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)
-│   └── handlers.py            # UI event handlers (streaming response relay, thinking block support)
+│   ├── handlers.py            # UI event handlers (streaming response relay, thinking block support)
+│   └── wizard.py              # First-run onboarding wizard [NEW 2025-12-11]
 │
 ├── integrations/
 │   └── wikipedia_api.py       # Wikipedia API client
@@ -1890,11 +1991,27 @@ daemon/
 │   ├── *.sh                  # Shell scripts
 │   └── ...
 │
+├── hooks/                     # PyInstaller custom hooks [NEW 2025-12-12]
+│   ├── runtime_hook.py       # Pre-main environment setup (DAEMON_FROZEN, multiprocessing)
+│   ├── hook-chromadb.py      # ChromaDB data files + hidden imports
+│   ├── hook-gradio.py        # Gradio static files + fastapi/uvicorn
+│   ├── hook-sentence_transformers.py  # Transformers + cross-encoder
+│   ├── hook-spacy.py         # spaCy model + language data
+│   └── hook-tiktoken.py      # Tiktoken encoding files
+│
+├── assets/                    # Application assets [NEW 2025-12-12]
+│   ├── daemon_icon.ico       # Windows icon
+│   ├── daemon_icon.png       # PNG icon
+│   └── splash.png            # PyInstaller splash screen
+│
 ├── docs/                      # Documentation
 │   ├── PROJECT_SKELETON.md   # This file
 │   ├── QUICK_REFERENCE.md    # Quick reference guide
+│   ├── BUILD_GUIDE.md        # Desktop executable build guide [NEW 2025-12-12]
 │   ├── DOCKER_README.md      # Docker setup
 │   └── ...
+│
+├── daemon.spec                # PyInstaller spec file [NEW 2025-12-12]
 │
 └── build/                     # Build configuration
     ├── Makefile.fast         # Fast profile
@@ -2158,6 +2275,10 @@ python main.py inspect-summaries
 | prompt/builder.py | Assemble: system + separated context sections + STM within 15K tokens |
 | response_generator.py | Stream: async LLM + Best-of-N + Duel modes (buffer fix + DeepSeek EOS) [FIXED] |
 | gui/handlers.py | Relay: streaming chunks + thinking blocks + tag stripping (reply/response/answer) [FIXED] |
+| gui/wizard.py | Onboard: first-run wizard (API key, style, name, pronouns, background facts) [NEW] |
+| utils/bootstrap.py | Freeze: platform-specific paths, .env loading, data migration [NEW] |
+| utils/startup.py | Progress: staged imports with splash screen updates [NEW] |
+| daemon.spec | Build: PyInstaller one-dir spec (splash, hooks, hidden imports) [NEW] |
 | model_manager.py | Unified: OpenAI/Claude/OpenRouter/Local via single interface |
 | topic_manager.py | Extract: Heuristics + LLM fallback (handles conversational/emotional) |
 | memory_consolidator.py | Summarize: LLM compresses N conversations at shutdown |
