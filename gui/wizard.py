@@ -255,8 +255,14 @@ async def _handle_api_key(
     # Test the API key with a simple call
     try:
         logger.info("[Wizard] Testing API key with model call")
-        # Temporarily set the key for testing
+        # Set the key in environment AND reinitialize the model manager clients
         os.environ['OPENAI_API_KEY'] = key
+
+        # Reinitialize the model manager's clients with the new API key
+        # This is necessary because the ModelManager was created before the API key was available
+        if not orchestrator.model_manager.reinitialize_clients(key):
+            raise Exception("Failed to initialize API clients")
+
         test_response = await orchestrator.model_manager.generate_once(
             prompt="Say 'OK' if you can read this.",
             model_name="gpt-4o-mini",
@@ -266,6 +272,10 @@ async def _handle_api_key(
 
         if not test_response or not test_response.strip():
             raise Exception("Empty response from API")
+
+        # Check for stub response (indicates API client not properly initialized)
+        if test_response.startswith("[OpenAI unavailable]"):
+            raise Exception("API client not available - got stub response")
 
         logger.info(f"[Wizard] API key test successful: {test_response[:50]}")
 
@@ -323,9 +333,6 @@ def _handle_style(user_input: str, state: WizardState) -> Tuple[str, WizardState
 
 def _handle_name(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
     """Handle name collection."""
-
-    print(f"[DEBUG WIZARD] _handle_name called with: '{user_input}'")
-    print(f"[DEBUG WIZARD] is_skip: {is_skip(user_input)}")
 
     if is_skip(user_input):
         state.collected_data['name'] = ''
@@ -410,6 +417,9 @@ async def _finalize_wizard(
 
         # Get or create user profile
         profile = orchestrator.user_profile if hasattr(orchestrator, 'user_profile') else UserProfile()
+
+        if profile is None:
+            profile = UserProfile()
 
         # Update identity
         profile.update_identity(

@@ -140,7 +140,9 @@ JSON:"""
     async def extract_triples(self, user_messages: List[str]) -> List[Dict[str, str]]:
         if not user_messages:
             return []
+
         prompt = self._build_prompt(user_messages)
+
         try:
             text = await self.mm.generate_once(
                 prompt=prompt,
