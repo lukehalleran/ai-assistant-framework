@@ -120,6 +120,70 @@ class ModelManager:
         # Google Gemini models
         self.api_models["gemini-3-pro"] = "google/gemini-3-pro-preview"
 
+    def reinitialize_clients(self, api_key: str = None) -> bool:
+        """
+        Reinitialize the OpenAI clients with a new API key.
+
+        This is used by the wizard after the user enters their API key,
+        since the ModelManager was created before the key was available.
+
+        Args:
+            api_key: The new API key. If None, reads from os.environ['OPENAI_API_KEY']
+
+        Returns:
+            bool: True if clients were successfully initialized, False otherwise
+        """
+        new_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not new_key:
+            logger.warning("[ModelManager] Cannot reinitialize clients: no API key provided")
+            return False
+
+        if OpenAI is None or AsyncOpenAI is None:
+            logger.warning("[ModelManager] Cannot reinitialize clients: OpenAI package not available")
+            return False
+
+        try:
+            # Close existing clients if any
+            if self.client is not None:
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+
+            # Create new clients with the new API key
+            self.api_key = new_key
+
+            sync_http_client = httpx.Client(
+                timeout=httpx.Timeout(30.0),
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=10),
+                headers={"Connection": "keep-alive"},
+            )
+
+            async_http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0),
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=10),
+                headers={"Connection": "keep-alive"},
+            )
+
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                http_client=sync_http_client,
+            )
+
+            self.async_client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                http_client=async_http_client,
+            )
+
+            logger.info("[ModelManager] Clients reinitialized with new API key")
+            return True
+
+        except Exception as e:
+            logger.error(f"[ModelManager] Failed to reinitialize clients: {e}")
+            return False
+
     def _stub_response(self, prompt: str) -> str:
         snippet = (prompt or "").strip().splitlines()[0] if prompt else ""
         if snippet and len(snippet) > 120:
