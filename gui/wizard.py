@@ -378,7 +378,7 @@ async def _handle_background(
         try:
             from memory.llm_fact_extractor import LLMFactExtractor
 
-            logger.info("[Wizard] Extracting facts from background text")
+            logger.info(f"[Wizard] Extracting facts from background text: '{user_input[:100]}...'")
             extractor = LLMFactExtractor(orchestrator.model_manager)
             facts = await extractor.extract_triples([user_input])
 
@@ -388,6 +388,8 @@ async def _handle_background(
                 fact_objects = [f.get('object', '') or f.get('value', '') for f in facts[:3]]
                 facts_summary = f" ({', '.join(fact_objects)}{'...' if len(facts) > 3 else ''})"
                 logger.info(f"[Wizard] Extracted {len(facts)} facts from background")
+            else:
+                logger.warning(f"[Wizard] No facts extracted from background text (check LLM Facts logs above)")
 
         except Exception as e:
             logger.warning(f"[Wizard] Background fact extraction failed: {e}")

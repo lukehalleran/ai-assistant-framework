@@ -90,7 +90,7 @@ class LLMFactExtractor:
 
         joined = "\n".join(f"- {m}" for m in msgs)
 
-        # Enhanced extraction prompt with category awareness
+        # Enhanced extraction prompt with category awareness and few-shot examples
         prompt_template = """You extract factual information about the user from conversation messages.
 
 CATEGORIES to classify facts into:
@@ -112,13 +112,34 @@ OUTPUT FORMAT (strict JSON array):
   {{"subject": "user", "relation": "snake_case_relation", "object": "value", "category": "category_name", "confidence": 0.0-1.0}}
 ]
 
+EXAMPLES:
+Input: "I'm Sarah, a software developer from Seattle"
+Output: [
+  {{"subject": "user", "relation": "name", "object": "Sarah", "category": "identity", "confidence": 0.95}},
+  {{"subject": "user", "relation": "occupation", "object": "software developer", "category": "career", "confidence": 0.95}},
+  {{"subject": "user", "relation": "lives_in", "object": "Seattle", "category": "identity", "confidence": 0.95}}
+]
+
+Input: "I built this app and I'm testing it now"
+Output: [
+  {{"subject": "user", "relation": "role", "object": "app builder", "category": "projects", "confidence": 0.85}},
+  {{"subject": "user", "relation": "current_activity", "object": "testing", "category": "projects", "confidence": 0.8}}
+]
+
+Input: "My name is Luke, I created you"
+Output: [
+  {{"subject": "user", "relation": "name", "object": "Luke", "category": "identity", "confidence": 0.95}},
+  {{"subject": "user", "relation": "role", "object": "creator", "category": "projects", "confidence": 0.9}}
+]
+
 RULES:
 - Subject is always "user" for personal facts
 - Relation must be snake_case (e.g., "squat_max", "lives_in", "favorite_beer")
-- Only extract EXPLICIT facts stated in the text
+- Extract facts the user states about themselves - be generous, not restrictive
 - Confidence: 0.9+ for direct statements, 0.7-0.8 for inferred, <0.7 for uncertain
-- Do NOT extract opinions, speculation, or questions
+- Do NOT extract questions or hypotheticals
 - Do NOT extract facts about other people unless relation to user is clear
+- IMPORTANT: If user introduces themselves or describes their role/activity, extract those as facts
 
 MESSAGES (user only, newest last):
 {messages}
@@ -126,15 +147,10 @@ MESSAGES (user only, newest last):
 JSON:"""
         prompt = prompt_template.format(messages=joined)
 
-        # Optional debug of input size/content (off by default)
-        try:
-            dbg = os.getenv("LLM_FACTS_LOG_INPUT", "0").strip().lower() not in ("0","false","no","off")
-        except Exception:
-            dbg = False
-        if dbg:
-            logger.debug(
-                f"[LLM Facts][Input] msgs={len(msgs)} budget={self.max_input_chars} prompt_chars={len(prompt)}"
-            )
+        # Always log the messages being processed (helps debug empty extractions)
+        logger.info(f"[LLM Facts] Building prompt with {len(msgs)} messages, total chars={len(prompt)}")
+        logger.info(f"[LLM Facts] Input messages: {joined[:300]}{'...' if len(joined) > 300 else ''}")
+
         return prompt
 
     async def extract_triples(self, user_messages: List[str]) -> List[Dict[str, str]]:
@@ -153,24 +169,38 @@ JSON:"""
                 top_p=1.0,
             )
         except Exception as e:
-            logger.debug(f"[LLM Facts] generate_once failed: {e}")
+            logger.warning(f"[LLM Facts] generate_once failed: {e}")
             return []
 
         if not isinstance(text, str) or not text.strip():
+            logger.warning("[LLM Facts] generate_once returned empty or non-string response")
             return []
+
+        # Log the raw response for debugging
+        logger.info(f"[LLM Facts] Raw LLM response: {text[:500]}")
 
         # Attempt to parse a JSON array (robust to leading/trailing junk)
         raw = text.strip()
+
+        # Check for stub response indicating API client issue
+        if raw.startswith("[OpenAI unavailable]"):
+            logger.warning(f"[LLM Facts] API client not available - got stub response: {raw[:100]}")
+            return []
+
         try:
             start = raw.find("[")
             end = raw.rfind("]")
             if start >= 0 and end > start:
                 raw = raw[start:end + 1]
+            else:
+                logger.warning(f"[LLM Facts] No JSON array found in response: {text[:200]}")
+                return []
             data = json.loads(raw)
             if not isinstance(data, list):
+                logger.warning(f"[LLM Facts] JSON parsed but not a list: {type(data)}")
                 return []
-        except Exception:
-            logger.debug("[LLM Facts] JSON parse failed")
+        except Exception as e:
+            logger.warning(f"[LLM Facts] JSON parse failed: {e} - Response was: {text[:200]}")
             return []
 
         triples: List[Dict[str, str]] = []
@@ -189,5 +219,11 @@ JSON:"""
             if len(triples) >= self.max_triples:
                 break
 
-        logger.info(f"[LLM Facts] extracted={len(triples)} model={self.model_alias}")
+        if triples:
+            logger.info(f"[LLM Facts] SUCCESS: extracted={len(triples)} facts using model={self.model_alias}")
+            for t in triples:
+                logger.info(f"[LLM Facts]   -> {t['relation']}: {t['object']} (conf={t['confidence']})")
+        else:
+            logger.warning(f"[LLM Facts] WARNING: extracted=0 facts from LLM response. Model returned empty array.")
+
         return triples
