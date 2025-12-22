@@ -7,11 +7,13 @@ Module Contract
   - render_prompt_sections(context: Dict[str, Any]) -> str
   - format_memories(memories: List[Dict]) -> str
   - format_conversations(conversations: List[Dict]) -> str
+  - format_web_search_results(result: WebSearchResult) -> str [NEW]
   - deduplicate_content(content: List[str]) -> List[str]
 - Outputs:
   - Formatted prompt sections ready for model consumption
   - Structured text with proper headers and spacing
   - Deduplicated and truncated content within limits
+  - [WEB SEARCH RESULTS] section with real-time web content [NEW]
   - UPDATED: [USER PROFILE] section with categorized facts (identity, fitness, preferences, etc.)
 - Behavior:
   - Assembles context sections into readable prompt format
@@ -19,10 +21,12 @@ Module Contract
   - Handles time context and metadata display
   - Deduplicates similar content and applies truncation
   - Maintains prompt structure and readability
+  - Formats web search results with source URLs and content [NEW]
   - UPDATED: Renders UserProfile string directly (no parsing needed - already formatted)
 - Dependencies:
   - utils.logging_utils (logging)
   - datetime (time formatting)
+  - knowledge.web_search_manager (WebSearchResult type) [NEW]
 - Side effects:
   - Logging of formatting actions and content statistics
 """
@@ -252,6 +256,90 @@ class PromptFormatter:
             except:
                 return "Memory (formatting error)"
 
+    def _format_web_search_results(self, web_search_result: Any, max_chars: int = 10000) -> str:
+        """
+        Format web search results for prompt injection.
+
+        Args:
+            web_search_result: WebSearchResult object or None
+            max_chars: Maximum characters for the section
+
+        Returns:
+            Formatted string with [WEB SEARCH RESULTS] header, or empty string
+        """
+        if web_search_result is None:
+            return ""
+
+        try:
+            # Handle both WebSearchResult object and dict format
+            if hasattr(web_search_result, 'has_results'):
+                # It's a WebSearchResult object
+                if not web_search_result.has_results:
+                    return ""
+
+                pages = web_search_result.pages
+                from_cache = web_search_result.from_cache
+                query = web_search_result.query
+            elif isinstance(web_search_result, dict):
+                # It's a dict (fallback)
+                pages = web_search_result.get('pages', [])
+                from_cache = web_search_result.get('from_cache', False)
+                query = web_search_result.get('query', '')
+                if not pages:
+                    return ""
+            else:
+                return ""
+
+            # Build formatted content
+            content_parts = []
+            total_chars = 0
+
+            for page in pages:
+                if total_chars >= max_chars:
+                    break
+
+                # Extract page info (handle both object and dict)
+                if hasattr(page, 'title'):
+                    title = page.title
+                    url = page.url
+                    page_content = page.content or page.snippet
+                else:
+                    title = page.get('title', '')
+                    url = page.get('url', '')
+                    page_content = page.get('content', '') or page.get('snippet', '')
+
+                if not page_content:
+                    continue
+
+                # Format single result
+                entry = f"**{title}** ({url})\n{page_content}"
+
+                # Check if we can fit it
+                if total_chars + len(entry) > max_chars:
+                    remaining = max_chars - total_chars
+                    if remaining > 100:
+                        entry = entry[:remaining] + "..."
+                        content_parts.append(entry)
+                    break
+
+                content_parts.append(entry)
+                total_chars += len(entry) + 2  # +2 for newlines
+
+            if not content_parts:
+                return ""
+
+            # Build the section
+            cache_note = " (cached)" if from_cache else ""
+            section = f"[WEB SEARCH RESULTS] n={len(content_parts)}{cache_note}\n"
+            section += "\n\n".join(content_parts)
+
+            logger.debug(f"[FORMATTING] Web search results: {len(content_parts)} pages, {len(section)} chars")
+            return section
+
+        except Exception as e:
+            logger.warning(f"[FORMATTING] Error formatting web search results: {e}")
+            return ""
+
     def _assemble_prompt(self, context: Dict[str, Any], user_input: str, directives: str = "") -> str:
         """
         Assemble final prompt from context and user input.
@@ -371,6 +459,13 @@ class PromptFormatter:
                 "\n" + "\n\n".join(wiki_text) if wiki_text else ""
             )
         )
+
+        # Web search results (real-time web content)
+        web_search = context.get("web_search_results")
+        if web_search is not None:
+            web_text = self._format_web_search_results(web_search)
+            if web_text:
+                sections.append(web_text)
 
         # Semantic chunks
         semantic_chunks = context.get("semantic_chunks", [])

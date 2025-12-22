@@ -1036,6 +1036,68 @@ def launch_gui(orchestrator, force_wizard=False):
 
                 apply_fast_btn.click(_apply_fast, inputs=[disable_bestof, disable_rewrite, disable_summaries, bestof_budget], outputs=[fast_status])
 
+                # --- Web Search Settings ---
+                gr.Markdown("### 🔍 Web Search (Tavily API)")
+                try:
+                    _ws_settings = _load_settings()
+                    _ws_cfg = (_ws_settings.get('web_search', {}) or {})
+                    _ws_enabled_default = bool(_ws_cfg.get('enabled', True))
+                    _ws_daily_limit_default = int(_ws_cfg.get('daily_credit_limit', 100))
+                except Exception:
+                    _ws_enabled_default = True
+                    _ws_daily_limit_default = 100
+
+                with gr.Row():
+                    web_search_enabled = gr.Checkbox(
+                        label="Enable Web Search",
+                        value=_ws_enabled_default,
+                        info="Search the web for queries requiring current information"
+                    )
+                    web_search_daily_limit = gr.Slider(
+                        label="Daily Credit Limit",
+                        minimum=10,
+                        maximum=500,
+                        step=10,
+                        value=_ws_daily_limit_default,
+                        info="Maximum credits to use per day (Tavily free tier: ~33/day)"
+                    )
+
+                apply_ws_btn = gr.Button("Apply Web Search Settings")
+                ws_status = gr.Markdown(visible=True)
+
+                def _apply_web_search(enabled: bool, daily_limit: int):
+                    try:
+                        # Update runtime config
+                        cfg = getattr(orchestrator, 'config', {}) or {}
+                        ws_cfg = cfg.setdefault('web_search', {}) if isinstance(cfg, dict) else {}
+                        ws_cfg['enabled'] = bool(enabled)
+                        ws_cfg['daily_credit_limit'] = int(daily_limit)
+
+                        # Update global config if available
+                        try:
+                            import config.app_config as app_cfg
+                            app_cfg.WEB_SEARCH_ENABLED = bool(enabled)
+                            app_cfg.WEB_SEARCH_DAILY_CREDIT_LIMIT = int(daily_limit)
+                        except Exception:
+                            pass
+
+                        # Persist to YAML
+                        ok, err = _save_settings(lambda d: d.setdefault('web_search', {}).update({
+                            'enabled': bool(enabled),
+                            'daily_credit_limit': int(daily_limit),
+                        }))
+                        if not ok:
+                            return f"Applied runtime settings. Persist failed: {err}"
+                        return f"Web search settings updated: enabled={enabled}, daily_limit={daily_limit}"
+                    except Exception as e:
+                        return f"Failed to apply: {e}"
+
+                apply_ws_btn.click(
+                    _apply_web_search,
+                    inputs=[web_search_enabled, web_search_daily_limit],
+                    outputs=[ws_status]
+                )
+
                 # --- Best-of / Duel Mode (runtime + persisted) ---
                 gr.Markdown("### 🥊 Best‑of / Duel Mode")
                 try:

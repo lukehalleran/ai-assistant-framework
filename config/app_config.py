@@ -266,6 +266,36 @@ WIKI_MAX_CHARS_DEFAULT: int = int(WIKI_CFG.get("max_chars", 15000))
 # 0 (or <=0) disables sentence clipping; intro/full selection is handled elsewhere
 WIKI_MAX_SENTENCES_DEFAULT: int = int(WIKI_CFG.get("max_sentences", 0))
 WIKI_TIMEOUT_DEFAULT: float = float(WIKI_CFG.get("timeout_s", 1.2))
+
+# --------------------------------------------------------------------
+# Web Search Configuration (Tavily API)
+# --------------------------------------------------------------------
+# Enable real-time web search for queries requiring current information
+# Uses Tavily API for search and content extraction
+WEB_SEARCH_CFG = config.get("web_search", {})
+WEB_SEARCH_ENABLED: bool = bool(WEB_SEARCH_CFG.get("enabled", True))
+# Tavily API key (can also be set via TAVILY_API_KEY env var)
+WEB_SEARCH_API_KEY: str = WEB_SEARCH_CFG.get("api_key", "") or os.getenv("TAVILY_API_KEY", "")
+# Search timeout in seconds
+WEB_SEARCH_TIMEOUT: float = float(WEB_SEARCH_CFG.get("timeout_s", 30.0))
+# Maximum content characters per extracted page
+WEB_SEARCH_MAX_CONTENT_CHARS: int = int(WEB_SEARCH_CFG.get("max_content_chars", 10000))
+# Daily credit limit (Tavily free tier: 1000 credits/month ~ 33/day)
+WEB_SEARCH_DAILY_CREDIT_LIMIT: int = int(WEB_SEARCH_CFG.get("daily_credit_limit", 100))
+# Per-query credit limit
+WEB_SEARCH_PER_QUERY_LIMIT: int = int(WEB_SEARCH_CFG.get("per_query_limit", 5))
+# Cache TTL in hours
+WEB_SEARCH_CACHE_TTL_HOURS: int = int(WEB_SEARCH_CFG.get("cache_ttl_hours", 72))
+# Confidence threshold for triggering search (0.0-1.0)
+WEB_SEARCH_CONFIDENCE_THRESHOLD: float = float(WEB_SEARCH_CFG.get("confidence_threshold", 0.5))
+# Model for DEEP search link selection
+WEB_SEARCH_LINK_SELECTOR_MODEL: str = WEB_SEARCH_CFG.get("link_selector_model", "gpt-4o-mini")
+
+# Environment variable overrides for web search
+WEB_SEARCH_ENABLED = bool(int(os.getenv("WEB_SEARCH_ENABLED", "1" if WEB_SEARCH_ENABLED else "0")))
+WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", str(WEB_SEARCH_TIMEOUT)))
+WEB_SEARCH_DAILY_CREDIT_LIMIT = int(os.getenv("WEB_SEARCH_DAILY_CREDIT_LIMIT", str(WEB_SEARCH_DAILY_CREDIT_LIMIT)))
+
 DEICTIC_THRESHOLD = config.get("gating", {}).get("deictic_threshold", 0.60)
 NORMAL_THRESHOLD = config.get("gating", {}).get("normal_threshold", 0.35)
 DEICTIC_ANCHOR_PENALTY = config.get("gating", {}).get("deictic_anchor_penalty", 0.1)

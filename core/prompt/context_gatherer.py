@@ -8,30 +8,37 @@ Module Contract
   - get_recent_conversations(limit: int) -> List[Dict]
   - retrieve_semantic_memories(query: str, limit: int) -> List[Dict]
   - get_wiki_content(query: str, limit: int) -> List[Dict]
+  - get_web_search_results(query: str, crisis_level: str) -> WebSearchResult [NEW: real-time web search]
   - UPDATED: get_user_profile_context(query: str) -> str [NEW: replaces semantic_facts + fresh_facts]
 - Outputs:
   - Comprehensive context dictionary with all gathered data
   - Recent conversation history within specified limits
   - Semantically relevant memories and facts
   - Wikipedia content and semantic chunks
+  - Web search results when triggered [NEW]
   - UPDATED: 'user_profile' key with categorized facts (replaces 'semantic_facts' and 'fresh_facts')
 - Behavior:
   - Retrieves data from multiple memory collections (episodic, semantic, procedural)
   - Applies filtering and relevance scoring to retrieved content
-  - Implements caching for expensive operations (wiki lookups, semantic search)
+  - Implements caching for expensive operations (wiki lookups, semantic search, web search)
   - Coordinates parallel data fetching with timeout management
   - Handles graceful fallbacks when data sources are unavailable
+  - Triggers web search based on query analysis (recency keywords, fast-changing topics)
+  - Suppresses web search during HIGH/MEDIUM crisis levels
   - UPDATED: Uses UserProfile hybrid retrieval (2/3 semantic + 1/3 recent per category) instead of flat facts
 - Dependencies:
   - memory.memory_coordinator (memory retrieval)
   - memory.user_profile (NEW: categorized fact storage)
   - core.wiki_util (Wikipedia content)
+  - knowledge.web_search_manager (NEW: Tavily web search)
+  - utils.web_search_trigger (NEW: search trigger detection)
   - utils.time_manager (temporal context)
   - processing.gate_system (relevance filtering)
 - Side effects:
   - Memory system queries and retrievals
   - Cache writes for performance optimization
   - Network requests for Wikipedia content
+  - Network requests to Tavily API for web search [NEW]
   - Logging of data collection activities
 """
 
@@ -116,6 +123,22 @@ SEM_STITCH_MAX_CHARS = int(os.getenv("SEM_STITCH_MAX_CHARS", "4000"))
 GATE_COSINE_THRESHOLD = float(os.getenv("GATE_COSINE_THRESHOLD", "0.45"))
 GATE_XENC_THRESHOLD = float(os.getenv("GATE_XENC_THRESHOLD", "0.55"))
 
+# Web search configuration (import from app_config if available)
+try:
+    from config.app_config import (
+        WEB_SEARCH_ENABLED,
+        WEB_SEARCH_TIMEOUT,
+        WEB_SEARCH_MAX_CONTENT_CHARS,
+        WEB_SEARCH_API_KEY,
+        WEB_SEARCH_DAILY_CREDIT_LIMIT,
+    )
+except ImportError:
+    WEB_SEARCH_ENABLED = _cfg_bool("web_search_enabled", True)
+    WEB_SEARCH_TIMEOUT = _cfg_float("web_search_timeout", 30.0)
+    WEB_SEARCH_MAX_CONTENT_CHARS = _cfg_int("web_search_max_content_chars", 10000)
+    WEB_SEARCH_API_KEY = os.getenv("TAVILY_API_KEY", "")
+    WEB_SEARCH_DAILY_CREDIT_LIMIT = 100
+
 # Caching
 _wiki_cache = {}  # Simple in-memory cache for wiki snippets
 
@@ -145,6 +168,10 @@ class ContextGatherer:
             self.user_profile = UserProfile()
             logger.debug("[ContextGatherer] Created new UserProfile instance")
 
+        # Initialize web search manager (lazy - only created when first used)
+        self._web_search_manager = None
+        self._web_search_trigger = None
+
     @property
     def gate_system(self):
         """Get cached gate system, creating it only once."""
@@ -152,6 +179,52 @@ class ContextGatherer:
             from processing.gate_system import CosineSimilarityGateSystem
             self._gate_system = CosineSimilarityGateSystem()
         return self._gate_system
+
+    @property
+    def web_search_manager(self):
+        """Get cached web search manager, creating it only once."""
+        if self._web_search_manager is None:
+            try:
+                from knowledge.web_search_manager import WebSearchManager, WebSearchRateLimiter
+
+                # Create rate limiter with config values
+                rate_limiter = WebSearchRateLimiter(
+                    daily_limit=WEB_SEARCH_DAILY_CREDIT_LIMIT
+                )
+
+                self._web_search_manager = WebSearchManager(
+                    api_key=WEB_SEARCH_API_KEY,  # Pass API key from config
+                    rate_limiter=rate_limiter,
+                    default_timeout=WEB_SEARCH_TIMEOUT,
+                    max_content_chars=WEB_SEARCH_MAX_CONTENT_CHARS
+                )
+
+                # Log initialization status
+                if self._web_search_manager.is_available():
+                    logger.info("[ContextGatherer] WebSearchManager initialized with Tavily API")
+                else:
+                    logger.warning("[ContextGatherer] WebSearchManager initialized but Tavily API not available (check TAVILY_API_KEY)")
+
+            except ImportError as e:
+                logger.warning(f"[ContextGatherer] WebSearchManager not available: {e}")
+                return None
+            except Exception as e:
+                logger.warning(f"[ContextGatherer] Failed to initialize WebSearchManager: {e}")
+                return None
+        return self._web_search_manager
+
+    @property
+    def web_search_trigger(self):
+        """Get cached web search trigger, creating it only once."""
+        if self._web_search_trigger is None:
+            try:
+                from utils.web_search_trigger import analyze_for_web_search
+                self._web_search_trigger = analyze_for_web_search
+                logger.debug("[ContextGatherer] Initialized web search trigger")
+            except ImportError as e:
+                logger.warning(f"[ContextGatherer] WebSearchTrigger not available: {e}")
+                return None
+        return self._web_search_trigger
 
     def _wiki_cache_key(self, query: str) -> str:
         """Generate cache key for wiki queries."""
@@ -1019,3 +1092,141 @@ class ContextGatherer:
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get profile context: {e}")
             return ""
+
+    async def _get_web_search_results(
+        self,
+        query: str,
+        crisis_level: Optional[str] = None
+    ) -> Optional[Any]:
+        """
+        Get web search results if the query triggers a search.
+
+        Args:
+            query: User query to analyze and potentially search
+            crisis_level: Current tone/crisis level (HIGH/MEDIUM suppresses search)
+
+        Returns:
+            WebSearchResult if search was triggered and successful, None otherwise
+        """
+        logger.warning(f"[WebSearch] _get_web_search_results CALLED with query={query[:50]!r}, crisis_level={crisis_level}")
+
+        # Check if web search is enabled
+        logger.warning(f"[WebSearch] WEB_SEARCH_ENABLED={WEB_SEARCH_ENABLED}")
+        if not WEB_SEARCH_ENABLED:
+            logger.info("[ContextGatherer] Web search disabled in config")
+            return None
+
+        # Check crisis suppression
+        if crisis_level and crisis_level.upper() in ("HIGH", "MEDIUM"):
+            logger.info(f"[ContextGatherer] Web search suppressed during {crisis_level} crisis")
+            return None
+
+        # Check if web search manager is available
+        logger.warning("[WebSearch] Getting web_search_manager...")
+        manager = self.web_search_manager
+        logger.warning(f"[WebSearch] manager={manager}, type={type(manager)}")
+        if not manager:
+            logger.warning("[ContextGatherer] Web search manager failed to initialize")
+            return None
+        logger.warning(f"[WebSearch] manager.is_available()={manager.is_available()}, api_key={manager.api_key[:10] if manager.api_key else 'NONE'}...")
+        if not manager.is_available():
+            logger.warning(f"[ContextGatherer] Web search manager not available - API key configured: {bool(manager.api_key)}")
+            return None
+
+        # Check if query should trigger web search
+        logger.warning("[WebSearch] Getting web_search_trigger...")
+        trigger = self.web_search_trigger
+        logger.warning(f"[WebSearch] trigger={trigger}")
+        if not trigger:
+            logger.warning("[ContextGatherer] Web search trigger not available")
+            return None
+
+        try:
+            # Analyze query to determine if web search is needed
+            decision = trigger(query)
+
+            if not decision.should_search:
+                logger.debug(
+                    f"[ContextGatherer] Web search not triggered: {decision.reason} "
+                    f"(confidence={decision.confidence:.2f})"
+                )
+                return None
+
+            logger.info(
+                f"[ContextGatherer] Web search triggered: {decision.reason} "
+                f"(confidence={decision.confidence:.2f}, depth={decision.depth.value})"
+            )
+
+            # Import the depth enum from the manager
+            from knowledge.web_search_manager import WebSearchDepth as ManagerDepth
+
+            # Map trigger depth to manager depth
+            depth_map = {
+                "quick": ManagerDepth.QUICK,
+                "standard": ManagerDepth.STANDARD,
+                "deep": ManagerDepth.DEEP,
+            }
+            search_depth = depth_map.get(decision.depth.value, ManagerDepth.STANDARD)
+
+            # Execute the search
+            result = await manager.search(
+                query=query,
+                depth=search_depth,
+                crisis_level=crisis_level,
+                timeout=WEB_SEARCH_TIMEOUT,
+                use_cache=True
+            )
+
+            if result.has_results:
+                logger.info(
+                    f"[ContextGatherer] Web search returned {len(result.pages)} results "
+                    f"(credits={result.total_credits_used}, cached={result.from_cache})"
+                )
+
+                # Track web search results for citations
+                self.memory_id_map["WEB_SEARCH"] = {
+                    'type': 'web_search',
+                    'timestamp': datetime.now().isoformat(),
+                    'content': f"Web search for: {query[:100]}",
+                    'relevance_score': decision.confidence,
+                    'db_id': None,
+                    'sources': [p.url for p in result.pages[:5]]
+                }
+
+                return result
+            else:
+                logger.debug(f"[ContextGatherer] Web search returned no results: {result.error}")
+                return None
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Web search failed: {e}")
+            return None
+
+    def should_trigger_web_search(self, query: str, crisis_level: Optional[str] = None) -> bool:
+        """
+        Quick check to determine if a query should trigger web search.
+
+        Useful for pre-checking before gathering context.
+
+        Args:
+            query: User query
+            crisis_level: Current crisis level
+
+        Returns:
+            True if web search should be triggered
+        """
+        if not WEB_SEARCH_ENABLED:
+            return False
+
+        if crisis_level and crisis_level.upper() in ("HIGH", "MEDIUM"):
+            return False
+
+        trigger = self.web_search_trigger
+        if not trigger:
+            return False
+
+        try:
+            decision = trigger(query)
+            return decision.should_search
+        except Exception:
+            return False
