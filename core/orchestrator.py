@@ -1132,6 +1132,7 @@ The user is processing/analyzing, open to engagement.
             current_topic=getattr(self, "current_topic", "general"),
             fresh_facts=fresh_facts,  # Pass inline-extracted facts
             stm_summary=stm_summary,  # Pass STM context summary
+            crisis_level=emotional_context.crisis_level.value if emotional_context else None,  # Pass for web search suppression
         )
 
         # Capture memory_id_map for citation extraction before prompt is converted to string

@@ -191,6 +191,7 @@ class UnifiedPromptBuilder:
                           system_prompt: Optional[str] = None, current_topic: Optional[str] = None,
                           fresh_facts: Optional[List[Any]] = None, memories: Optional[List[Any]] = None,
                           stm_summary: Optional[Dict[str, Any]] = None,
+                          crisis_level: Optional[str] = None,
                           **kwargs) -> Dict[str, Any]:
         """
         Build a complete prompt context for the given user input.
@@ -202,6 +203,7 @@ class UnifiedPromptBuilder:
         Args:
             user_input: The user's query/input
             config: Optional configuration overrides
+            crisis_level: Current crisis level (HIGH/MEDIUM suppresses web search)
 
         Returns:
             Dict containing the built prompt context with sections like:
@@ -214,6 +216,7 @@ class UnifiedPromptBuilder:
             - wiki
             - semantic_chunks
             - dreams
+            - web_search_results (if triggered)
         """
         start_time = time.time()
         config = config or {}
@@ -280,6 +283,11 @@ class UnifiedPromptBuilder:
             # Wiki content
             tasks["wiki"] = asyncio.create_task(
                 self.context_gatherer._get_wiki_content(user_input, PROMPT_MAX_WIKI)
+            )
+
+            # Web search (triggered based on query analysis, suppressed during crisis)
+            tasks["web_search"] = asyncio.create_task(
+                self.context_gatherer._get_web_search_results(user_input, crisis_level)
             )
 
             # Gather all results with timeout
@@ -408,8 +416,14 @@ class UnifiedPromptBuilder:
                 "semantic_reflections": semantic_reflections,
                 "dreams": gathered.get("dreams", []),
                 "semantic_chunks": gathered.get("semantic", []),
-                "wiki": gathered.get("wiki", [])
+                "wiki": gathered.get("wiki", []),
+                "web_search_results": gathered.get("web_search"),  # Real-time web search results
             }
+            # DEBUG: Log web search results
+            ws_debug = gathered.get("web_search")
+            logger.warning(f"[WEB_SEARCH_DEBUG] gathered['web_search'] = {type(ws_debug)}, has_results={getattr(ws_debug, 'has_results', 'N/A') if ws_debug else 'None'}")
+            if ws_debug and hasattr(ws_debug, 'pages'):
+                logger.warning(f"[WEB_SEARCH_DEBUG] pages count = {len(ws_debug.pages)}")
             logger.warning(f"CONTEXT BUILT: recent_summaries={len(recent_summaries)}, semantic_summaries={len(semantic_summaries)}, recent_reflections={len(recent_reflections)}, semantic_reflections={len(semantic_reflections)}")
             logger.debug(f"CONTEXT BUILD: context memories count = {len(context['memories'])}")
 
@@ -437,8 +451,10 @@ class UnifiedPromptBuilder:
 
             # Step 6: Apply hygiene and caps
             logger.warning(f"BEFORE HYGIENE_AND_CAPS: memories count = {len(context.get('memories', []))}")
+            logger.warning(f"BEFORE HYGIENE_AND_CAPS: web_search_results = {context.get('web_search_results')}")
             context = await self._hygiene_and_caps(context, stm_summary=stm_summary)
             logger.warning(f"AFTER HYGIENE_AND_CAPS: context has {len(context)} keys: {list(context.keys())}")
+            logger.warning(f"AFTER HYGIENE_AND_CAPS: web_search_results = {context.get('web_search_results')}")
             logger.warning(f"AFTER HYGIENE_AND_CAPS: memories count = {len(context.get('memories', []))}")
             logger.warning(f"AFTER HYGIENE_AND_CAPS: recent_summaries={len(context.get('recent_summaries', []))}, semantic_summaries={len(context.get('semantic_summaries', []))}")
 
@@ -661,6 +677,7 @@ class UnifiedPromptBuilder:
                 "dreams": context.get("dreams", []),
                 "semantic_chunks": context.get("semantic_chunks", []),
                 "wiki": context.get("wiki", []),
+                "web_search_results": context.get("web_search_results"),  # Real-time web search results
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
             }
@@ -685,6 +702,7 @@ class UnifiedPromptBuilder:
                 "dreams": [],
                 "semantic_chunks": [],
                 "wiki": [],
+                "web_search_results": None,
                 "memory_id_map": {}
             }
             # Include stm_summary if it was provided
@@ -710,7 +728,8 @@ class UnifiedPromptBuilder:
                 "semantic_reflections": [],
                 "dreams": [],
                 "semantic_chunks": [],
-                "wiki": []
+                "wiki": [],
+                "web_search_results": None  # No web search for small-talk
             }
 
             # Add STM summary if provided
@@ -736,7 +755,8 @@ class UnifiedPromptBuilder:
                 "semantic_reflections": [],
                 "dreams": [],
                 "semantic_chunks": [],
-                "wiki": []
+                "wiki": [],
+                "web_search_results": None
             }
 
     async def _hygiene_and_caps(self, context: Dict[str, Any], stm_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1297,6 +1317,33 @@ class UnifiedPromptBuilder:
             wiki_lines.append(f"{i}) {block}")
         if wiki_lines:
             sections.append(f"[BACKGROUND KNOWLEDGE] n={len(wiki_lines)}\n" + "\n\n".join(wiki_lines))
+
+        # Web search results (real-time web content)
+        web_search = context.get("web_search_results")
+        logger.warning(f"[ASSEMBLE_PROMPT] web_search_results = {type(web_search)}, value = {web_search}")
+        if web_search is not None:
+            try:
+                # Handle WebSearchResult object
+                if hasattr(web_search, 'has_results') and web_search.has_results:
+                    pages = web_search.pages
+                    from_cache = web_search.from_cache
+                    ws_lines: list[str] = []
+                    for i, page in enumerate(pages[:5], start=1):  # Limit to 5 results
+                        title = page.title if hasattr(page, 'title') else page.get('title', '')
+                        url = page.url if hasattr(page, 'url') else page.get('url', '')
+                        content = (page.content if hasattr(page, 'content') else page.get('content', '')) or \
+                                  (page.snippet if hasattr(page, 'snippet') else page.get('snippet', ''))
+                        if content:
+                            # Truncate long content
+                            if len(content) > 2000:
+                                content = content[:2000] + "..."
+                            ws_lines.append(f"{i}) **{title}** ({url})\n{content}")
+                    if ws_lines:
+                        cache_note = " (cached)" if from_cache else ""
+                        sections.append(f"[WEB SEARCH RESULTS] n={len(ws_lines)}{cache_note}\n" + "\n\n".join(ws_lines))
+                        logger.info(f"[PROMPT ASSEMBLY] Added web search section with {len(ws_lines)} results")
+            except Exception as e:
+                logger.warning(f"[PROMPT ASSEMBLY] Failed to format web search results: {e}")
 
         # Semantic chunks
         chunks = context.get("semantic_chunks", []) or []

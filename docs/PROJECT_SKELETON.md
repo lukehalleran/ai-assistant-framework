@@ -1101,6 +1101,89 @@ from config.app_config import config
 
 ---
 
+### 2.12.1 knowledge/web_search_manager.py (Real-Time Web Search) **[NEW 2025-12-22]**
+**Purpose**: Tavily API integration for real-time web search with caching and rate limiting
+
+**Data Classes**:
+- `WebSearchDepth` (Enum): `BASIC` (1 credit), `STANDARD` (2 credits)
+- `WebPage`: Individual search result with title, url, content, snippet, score
+- `WebSearchResult`: Container for pages + metadata (credits, cache status, timestamp)
+- `WebSearchSession`: Maintains search state across prompt building
+
+**Key Components**:
+
+1. **WebSearchRateLimiter**:
+   - Daily credit tracking (default 100 credits/day)
+   - Persists to `data/web_search_credits.json`
+   - Auto-resets at midnight
+   - Methods: `can_search(credits)`, `record_usage(credits)`, `get_remaining_credits()`
+
+2. **WebSearchCache**:
+   - ChromaDB-backed with 72-hour TTL
+   - Query normalization for cache hits
+   - Methods: `get(query)`, `store(query, result)`
+
+3. **WebSearchManager**:
+   - Tavily Search API (basic results) + Extract API (page content)
+   - Automatic depth selection based on query complexity
+   - Methods:
+     - `search(query, depth)` → `WebSearchResult`
+     - `search_with_extract(query, urls)` → Enhanced results
+     - `is_available()` → Check API key + rate limits
+
+**Configuration** (`config/app_config.py`):
+```python
+WEB_SEARCH_ENABLED = True
+WEB_SEARCH_API_KEY = os.getenv("TAVILY_API_KEY", "")
+WEB_SEARCH_TIMEOUT = 30.0
+WEB_SEARCH_MAX_CONTENT_CHARS = 10000
+WEB_SEARCH_DAILY_CREDIT_LIMIT = 100
+WEB_SEARCH_CACHE_TTL_HOURS = 72
+```
+
+**Integration**: Called by ContextGatherer during parallel context retrieval
+
+---
+
+### 2.12.2 utils/web_search_trigger.py (Web Search Detection) **[NEW 2025-12-22]**
+**Purpose**: Heuristic + optional LLM detection for when to trigger web search
+
+**Output**:
+```python
+WebSearchDecision(
+    should_search=True,
+    confidence=0.80,
+    reason="1 strong recency keyword(s); 1 news keyword(s)",
+    depth=WebSearchDepth.STANDARD
+)
+```
+
+**Detection Strategy** (Multi-Signal Scoring):
+1. **Strong recency keywords** (+0.4): "latest", "current", "today", "right now", "breaking"
+2. **Moderate recency keywords** (+0.2): "recent", "new", "update", "now"
+3. **Explicit search requests** (+0.5): "search for", "look up", "find out about"
+4. **News/events keywords** (+0.3): "news", "happening", "announced", "released"
+5. **Fast-changing topics** (+0.25): sports scores, stock prices, weather, elections
+6. **Year patterns** (+0.15): "2024", "2025", "this year"
+
+**Suppression Rules**:
+- Static/timeless queries: definitions, how-to, history → No search
+- Suppression keywords: "always", "generally", "in theory"
+- Crisis levels HIGH/MEDIUM → Search suppressed
+
+**Key Functions**:
+- `should_search_heuristic(query)` → `WebSearchDecision` (fast, ~1ms)
+- `should_search_with_llm(query, model_manager)` → `WebSearchDecision` (accurate, ~500ms)
+- `analyze_for_web_search(query, crisis_level)` → Primary entry point
+
+**Depth Selection**:
+- `BASIC` (1 credit): Simple factual queries
+- `STANDARD` (2 credits): News, analysis, multiple sources needed
+
+**Integration**: Called by ContextGatherer, respects ToneDetector crisis level
+
+---
+
 ### 2.13 utils/time_manager.py (Temporal Context & Session Tracking)
 **Purpose**: Time-aware operations, decay calculation, and conversation pacing metrics **[ENHANCED 2025-12-05]**
 
@@ -1674,6 +1757,15 @@ ENABLE_MEMORY_CITATIONS = False      # Feature flag for citation mode
 MAX_CITATIONS_DISPLAY = 10           # Max citations to show in UI
 CITATION_CONTENT_LENGTH = 200        # Content snippet length in citations
 
+# Web Search (Tavily API) [NEW 2025-12-22]
+WEB_SEARCH_ENABLED = True            # Feature flag for web search
+WEB_SEARCH_API_KEY = ""              # Set via TAVILY_API_KEY env or config.yaml
+WEB_SEARCH_TIMEOUT = 30.0            # API timeout in seconds
+WEB_SEARCH_MAX_CONTENT_CHARS = 10000 # Max content per page
+WEB_SEARCH_DAILY_CREDIT_LIMIT = 100  # Daily API credit limit
+WEB_SEARCH_CACHE_TTL_HOURS = 72      # Cache expiry (3 days)
+WEB_SEARCH_CONFIDENCE_THRESHOLD = 0.5 # Min confidence to trigger search
+
 # Models
 DEFAULT_MAX_TOKENS = 2048
 HEAVY_TOPIC_MAX_TOKENS = 8192
@@ -1944,12 +2036,14 @@ daemon/
 │   ├── logging_utils.py       # Centralized logging
 │   ├── file_processor.py      # PDF/DOCX ingestion
 │   ├── health_check.py        # Docker/K8s health endpoint
-│   └── conversation_logger.py # Conversation persistence
+│   ├── conversation_logger.py # Conversation persistence
+│   └── web_search_trigger.py  # Web search detection heuristics [NEW 2025-12-22]
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
 │   ├── semantic_search.py     # General semantic utilities
-│   └── topic_manager.py       # Topic-specific utilities
+│   ├── topic_manager.py       # Topic-specific utilities
+│   └── web_search_manager.py  # Tavily API + caching [NEW 2025-12-22]
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)
@@ -1972,6 +2066,8 @@ daemon/
 │   │   ├── test_need_detection.py  # [NEW]
 │   │   ├── test_query_checker.py
 │   │   ├── test_corpus_manager.py
+│   │   ├── test_web_search_manager.py   # [NEW 2025-12-22]
+│   │   ├── test_web_search_trigger.py   # [NEW 2025-12-22]
 │   │   └── ...
 │   ├── integration.bak/       # Backup integration tests
 │   ├── test_*.py             # Integration tests (50+ files)
