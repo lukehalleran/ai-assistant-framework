@@ -192,9 +192,9 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
 
     # Launch wizard UI
     print("[DEBUG] Gradio interface built successfully")
-    print(f"\n🚀 Launching Daemon Setup Wizard on http://{server_name}:{port}")
+    print(f"\n[*] Launching Daemon Setup Wizard on http://{server_name}:{port}")
     if share:
-        print("📡 Creating public gradio.live link...")
+        print("[*] Creating public gradio.live link...")
 
     print("[DEBUG] Calling demo.launch()...")
     try:

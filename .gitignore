@@ -48,3 +48,8 @@ data/corpus_v4.json
 dist/
 build/daemon/
 CLAUDE.md
+build/ 
+venv/ 
+installer/output/ 
+*.spec 
+dist/ 
