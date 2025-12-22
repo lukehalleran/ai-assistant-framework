@@ -434,17 +434,36 @@ async def _finalize_wizard(
             style=state.collected_data.get('style', 'balanced')
         )
 
-        # Add initial facts if provided
+        # Add initial facts if provided (but filter out identity facts that conflict with wizard-collected data)
         if 'initial_facts' in state.collected_data:
+            wizard_name = state.collected_data.get('name', '').strip()
+            wizard_pronouns = state.collected_data.get('pronouns', '').strip()
+
+            added_count = 0
+            skipped_count = 0
             for fact in state.collected_data['initial_facts']:
+                relation = fact.get('relation', '')
+
+                # Skip extracted name/pronouns if wizard already collected them
+                # This prevents LLM misinterpretations from overwriting correct data
+                if relation == 'name' and wizard_name:
+                    logger.info(f"[Wizard] Skipping extracted name='{fact.get('object')}' - wizard collected name='{wizard_name}'")
+                    skipped_count += 1
+                    continue
+                if relation == 'pronouns' and wizard_pronouns:
+                    logger.info(f"[Wizard] Skipping extracted pronouns - wizard collected pronouns='{wizard_pronouns}'")
+                    skipped_count += 1
+                    continue
+
                 profile.add_fact(
-                    relation=fact.get('relation', ''),
+                    relation=relation,
                     value=fact.get('value') or fact.get('object', ''),
                     confidence=fact.get('confidence', 0.7),
                     source_excerpt="Initial wizard background",
                     category=None  # Will be auto-categorized
                 )
-            logger.info(f"[Wizard] Added {len(state.collected_data['initial_facts'])} initial facts to profile")
+                added_count += 1
+            logger.info(f"[Wizard] Added {added_count} initial facts to profile (skipped {skipped_count} conflicting identity facts)")
 
         # Ensure profile is saved (defensive - update methods should have saved already)
         profile.save()
