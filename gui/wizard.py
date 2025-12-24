@@ -36,7 +36,9 @@ logger = get_logger("wizard")
 class WizardStep(Enum):
     """Wizard flow steps."""
     WELCOME = "welcome"
+    INTRO = "intro"
     API_KEY = "api_key"
+    TAVILY_KEY = "tavily_key"
     STYLE = "style"
     NAME = "name"
     PRONOUNS = "pronouns"
@@ -55,9 +57,32 @@ class WizardState:
 
 def get_welcome_message() -> str:
     """Get the initial wizard welcome message."""
-    return """Hey! Looks like this is your first time here. I'm Daemon — I'll be your conversational partner. Before we dive in, I need to get a few things set up.
+    return """Hey! Looks like this is your first time here. I'm Daemon.
 
-First, I'll need an OpenRouter API key to connect to language models. You can get one at openrouter.ai/keys. Paste it here when you're ready."""
+Before we get started, let me tell you a bit about what I am and how I work. Type anything to continue."""
+
+
+def get_intro_message() -> str:
+    """Get the introduction explaining what Daemon is and how it works."""
+    return """**What is Daemon?**
+
+I'm a conversational AI with persistent memory. Unlike typical chatbots that forget everything between sessions, I'm designed to remember our conversations, learn about you over time, and build a deeper understanding of who you are and what matters to you.
+
+**How Memory Works**
+
+Every conversation we have gets stored in a multi-tier memory system. I extract facts, track conversation threads, and periodically reflect on what I've learned. This means my responses improve over time — the more we talk, the better I understand your context, preferences, and history.
+
+**Privacy & Data**
+
+Right now, your conversations pass through whichever LLM provider you choose (OpenRouter gives you access to Claude, GPT-4, and many others). However, Daemon is architected for full local operation — with a 4090 or better GPU, you can swap in local models and keep 100% of your data on your own machine. The memory system itself already runs entirely locally.
+
+**What makes Daemon different**
+
+- **I don't forget.** Facts about you, your preferences, and our history persist across sessions.
+- **I reflect.** Periodically I consolidate what I've learned into summaries and insights.
+- **I improve.** A denser memory space and ongoing reflection mean I get better at helping you over time.
+
+Type anything to continue to setup."""
 
 
 def write_api_key_to_env(key: str) -> bool:
@@ -124,6 +149,71 @@ def validate_api_key_format(key: str) -> bool:
     return key.startswith('sk-or-') and len(key) > 20
 
 
+def write_tavily_key_to_env(key: str) -> bool:
+    """
+    Write Tavily API key to .env file as plaintext.
+
+    Args:
+        key: Tavily API key to write
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        if getattr(sys, 'frozen', False):
+            env_path = Path(os.environ.get('APPDATA', '')) / 'Daemon' / '.env'
+        else:
+            env_path = Path('.env')
+        lines = []
+
+        # Read existing .env if it exists
+        if env_path.exists():
+            with open(env_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+        # Update or append TAVILY_API_KEY line
+        key_found = False
+        for i, line in enumerate(lines):
+            if line.startswith('TAVILY_API_KEY='):
+                lines[i] = f'TAVILY_API_KEY={key}\n'
+                key_found = True
+                break
+
+        if not key_found:
+            # Ensure newline before appending
+            if lines and not lines[-1].endswith('\n'):
+                lines.append('\n')
+            lines.append(f'TAVILY_API_KEY={key}\n')
+
+        # Write atomically
+        with open(env_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+
+        # Also set in current environment for immediate effect
+        os.environ['TAVILY_API_KEY'] = key
+
+        logger.info("[Wizard] Tavily API key written to .env and set in environment")
+        return True
+
+    except Exception as e:
+        logger.error(f"[Wizard] Failed to write Tavily API key to .env: {e}")
+        return False
+
+
+def validate_tavily_key_format(key: str) -> bool:
+    """
+    Check if key matches Tavily API key format.
+
+    Args:
+        key: API key to validate
+
+    Returns:
+        bool: True if format is valid
+    """
+    key = key.strip()
+    # Tavily keys start with 'tvly-' and are reasonably long
+    return key.startswith('tvly-') and len(key) > 20
+
+
 def parse_style_preference(user_input: str) -> str:
     """
     Parse user input into style preference.
@@ -188,8 +278,14 @@ async def process_wizard_message(
         if state.step == WizardStep.WELCOME:
             return _handle_welcome(user_input, state)
 
+        elif state.step == WizardStep.INTRO:
+            return _handle_intro(user_input, state)
+
         elif state.step == WizardStep.API_KEY:
             return await _handle_api_key(user_input, state, orchestrator)
+
+        elif state.step == WizardStep.TAVILY_KEY:
+            return _handle_tavily_key(user_input, state)
 
         elif state.step == WizardStep.STYLE:
             return _handle_style(user_input, state)
@@ -225,10 +321,20 @@ async def process_wizard_message(
 
 
 def _handle_welcome(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
-    """Handle welcome step - advance to API key collection."""
+    """Handle welcome step - advance to intro screen."""
+    state.step = WizardStep.INTRO
+    return get_intro_message(), state, False
+
+
+def _handle_intro(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
+    """Handle intro step - advance to API key collection."""
     state.step = WizardStep.API_KEY
-    # Don't repeat the welcome message - just acknowledge and ask for API key
-    return "Great! Please paste your OpenRouter API key below (starts with 'sk-or-').", state, False
+    response = """Now let's get you set up. I'll need an **OpenRouter API key** to connect to language models.
+
+OpenRouter gives you access to Claude, GPT-4, Gemini, and many other models through a single API. You can get a key at **openrouter.ai/keys** (free tier available).
+
+Paste your OpenRouter key below (starts with 'sk-or-')."""
+    return response, state, False
 
 
 async def _handle_api_key(
@@ -295,14 +401,71 @@ async def _handle_api_key(
         return (
             "The key works, but I couldn't save it to .env. "
             "You may need to add it manually. Let's continue anyway.",
-            WizardState(step=WizardStep.STYLE, collected_data=state.collected_data),
+            WizardState(step=WizardStep.TAVILY_KEY, collected_data=state.collected_data),
             False
         )
 
     state.collected_data['api_key_saved'] = True
-    state.step = WizardStep.STYLE
+    state.step = WizardStep.TAVILY_KEY
 
-    response = """Perfect, that's working. Now, how would you like me to talk with you?
+    response = """Perfect, that's working.
+
+**Optional: Web Search**
+
+I can search the web in real-time when you ask about current events, recent news, or anything that needs up-to-date information. This requires a **Tavily API key**.
+
+You can get one free at **tavily.com** (1000 searches/month on free tier).
+
+Paste your Tavily key below (starts with 'tvly-'), or type **skip** to set this up later."""
+
+    return response, state, False
+
+
+def _handle_tavily_key(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
+    """Handle Tavily API key collection (optional)."""
+    text = user_input.strip()
+
+    # Allow skipping
+    if is_skip(text):
+        logger.info("[Wizard] User skipped Tavily API key setup")
+        state.step = WizardStep.STYLE
+        response = """No problem — you can add a Tavily key later in your .env file if you want web search.
+
+Now, how would you like me to talk with you?
+
+1. Warm & supportive - More empathetic, longer responses when needed
+2. Balanced - Adapts to context (this is the default)
+3. Direct & concise - Shorter, to-the-point responses
+
+Just say 1, 2, or 3, or describe what you prefer."""
+        return response, state, False
+
+    # Validate format
+    if not validate_tavily_key_format(text):
+        return (
+            "That doesn't look like a valid Tavily key (should start with 'tvly-'). "
+            "Double-check and try again, or type **skip** to continue without web search.",
+            state,
+            False
+        )
+
+    # Write key to .env (no API verification - Tavily doesn't have a simple test endpoint)
+    if not write_tavily_key_to_env(text):
+        logger.warning("[Wizard] Tavily key couldn't be saved to .env")
+        return (
+            "I couldn't save the key to .env, but let's continue. "
+            "You may need to add TAVILY_API_KEY manually.",
+            WizardState(step=WizardStep.STYLE, collected_data=state.collected_data),
+            False
+        )
+
+    state.collected_data['tavily_key_saved'] = True
+    state.step = WizardStep.STYLE
+    logger.info("[Wizard] Tavily API key saved successfully")
+
+    response = """Got it — web search is now enabled.
+
+How would you like me to talk with you?
 
 1. Warm & supportive - More empathetic, longer responses when needed
 2. Balanced - Adapts to context (this is the default)

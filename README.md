@@ -1,6 +1,6 @@
 # Daemon RAG Agent
 
-A near production-grade conversational AI system with hierarchical memory, semantic search, and Wikipedia-scale knowledge retrieval — **built from first principles over 8 months (part-time)**.
+A production-grade conversational AI system with hierarchical memory, semantic search, and Wikipedia-scale knowledge retrieval.
 
 <div align="center">
 
@@ -8,7 +8,7 @@ A near production-grade conversational AI system with hierarchical memory, seman
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
-*Built from first principles over 8 months (part-time) • 54,000+ lines of code • 195 files*
+*70k+ lines of code • 248 files • 1,670+ tests*
 
 [Features](#features) • [Quick Start](#quick-start) • [Architecture](#architecture) • [Usage](#usage) • [Deployment](#deployment)
 
@@ -18,7 +18,7 @@ A near production-grade conversational AI system with hierarchical memory, seman
 
 ## Overview
 
-Daemon is a **full-stack RAG (Retrieval-Augmented Generation) system** implementing a complete conversational AI pipeline with a cognitive-inspired memory architecture. It was built entirely from first principles—before discovering LangChain or LlamaIndex—as a way to understand every component in a modern AI assistant.
+Daemon is a **full-stack RAG (Retrieval-Augmented Generation) system** implementing a complete conversational AI pipeline with a cognitive-inspired memory architecture.
 
 **What makes Daemon different:**
 
@@ -37,6 +37,32 @@ Daemon is a **full-stack RAG (Retrieval-Augmented Generation) system** implement
 <img width="1919" height="1071" alt="2025-07-28_20-48" src="https://github.com/user-attachments/assets/eac216c2-b9be-4e5b-a799-cc0a41d80266" />
 
 This is assistant responding to me on a fresh start up, demonstrating tone and memory persistence.
+
+### Example Conversation
+
+See [`conversation_logs/gold_star_example.txt`](./conversation_logs/gold_star_example.txt) for a full session transcript showcasing Daemon's capabilities:
+
+**Context tracking across turns:**
+> *User:* "Just got to the gym, going out after with Dad and sister... low battery"
+> *(70 minutes later)*
+> *User:* "What time is it?"
+> *Daemon:* "5:21 PM, December 23rd. Battery holding up okay for the last few sets?"
+
+**Real-time web search with cited sources:**
+> *User:* "Search for news about eastern European economies and cite a source"
+> *Daemon:* "**Poland** is having a strong moment. According to Bloomberg (Dec 23, 2025), Poland's economy topped $1 trillion this year... Sources: Bloomberg, IMF, Euronews - all from today."
+
+**Intellectual honesty about limitations:**
+> *User:* "Can you cite a source about the current state of the economies of eastern Europe?"
+> *Daemon:* "Honestly, I can't pull up the specific source right now - the web search results that informed that response aren't in my current context window."
+
+**Deep personal memory retrieval:**
+> *User:* "Tell me everything you know about me"
+> *Daemon:* Returns comprehensive profile including identity, health history, pets (Flapjack, Mr. Pickle's AirTag), fitness PRs, personal relationships, and ongoing projects.
+
+**Emotional context understanding:**
+> *User:* "What does Paczki mean to me?"
+> *Daemon:* "Paczki was your lifeline... You've told me she saved your life during a period when you were in a really dark place. She gave you a reason to keep going when you couldn't find one yourself."
 
 ---
 
@@ -57,11 +83,11 @@ This is assistant responding to me on a fresh start up, demonstrating tone and m
 ### Technical Highlights
 
 ```
-54,349  lines of code
-  195   files
-   65   test files
-  861+  extracted facts in ChromaDB
-6.5M+  Wikipedia articles indexed
+70,330  lines of code (~55k Python)
+   248  files
+   111  test files (1,670+ tests)
+   861+ extracted facts in ChromaDB
+  6.5M+ Wikipedia articles indexed
 ```
 
 ---
@@ -115,6 +141,25 @@ python main.py cli
 docker-compose up -d
 
 # Access at http://localhost:7860
+```
+
+### Desktop Executable (Windows/Linux)
+
+Daemon can be built as a standalone desktop application with PyInstaller:
+
+```bash
+# Build executable
+rm -rf build/ dist/
+pyinstaller daemon.spec --clean --noconfirm
+
+# Output: dist/Daemon/Daemon (Linux) or dist/Daemon/Daemon.exe (Windows)
+```
+
+**Windows Installer:** An Inno Setup script is included for creating a Windows installer with a first-run configuration wizard:
+
+```bash
+# After PyInstaller build, run Inno Setup on daemon_installer.iss
+# Creates: Daemon_Setup.exe with guided API key configuration
 ```
 
 ---
@@ -741,7 +786,7 @@ tail -f conversation_logs/daemon_v4_*.json
 
 ## Development Context
 
-This project was built from first principles as a learning exercise, developed **before discovering LangChain or LlamaIndex**. Key learnings include:
+Key architectural decisions and iterations:
 
 - **Semantic Chunking:** Initial fixed-size chunking broke context across sections; rebuilt with section-aware chunking
 - **Memory Evolution:** Progressed from flat storage (V1) → episodic/semantic split (V2) → 5-tier hierarchy with decay (V3)
@@ -753,7 +798,7 @@ This project was built from first principles as a learning exercise, developed *
 ## Roadmap
 
 **Near-term:**
-- [ ] Real-time web search integration
+- [x] Real-time web search integration (Tavily API)
 - [ ] Multi-user support with authentication
 - [ ] Enhanced monitoring (Prometheus/Grafana)
 
@@ -815,6 +860,6 @@ This project represents 8 months of learning, experimentation, and iteration. Sp
 
 **Built with curiosity and persistence**
 
-*From zero Python knowledge to 54,000 lines of production code*
+*70,000 lines of production code*
 
 </div>
