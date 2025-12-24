@@ -24,13 +24,6 @@ This is assistant respoding to me on a fresh start up, demonstrating tone and me
 - **Hierarchical Memory System**: Episodic, semantic, procedural, and meta-memory layers with automatic consolidation
 - **Production Infrastructure**: Async streaming, atomic persistence, comprehensive logging, error recovery
 
-### Learning Curve Conquered
-
-Month 1: Python basics, API integration, file I/O
-Month 2: Vector embeddings, ChromaDB, async programming  
-Month 3: FAISS indexing, memory architecture, prompt engineering
-Month 4: Production hardening, testing suite, performance optimization, conversational flow
-``
 ### Major Iterations
 
 #### Semantic Chunking Discovery
@@ -42,7 +35,7 @@ Month 4: Production hardening, testing suite, performance optimization, conversa
 #### Memory Architecture Evolution
 - **V1:** Flat storage in JSON (worked for <100 conversations)  
 - **V2:** ChromaDB for persistence (better but no relationships)  
-- **V3:** Hierarchical system with parent-child relationships (current)  
+- **V3:** Hierarchical system, made descison to forgo parent-child relationships (current)  
 - Added temporal decay after realizing not all memories are equally important  
 
 #### Performance Optimization Journey
@@ -152,7 +145,7 @@ Stage 4: LLM evalaues both query and final 10 to determine relenvt data to pass 
 
 ## Code Quality & Engineering
 
-### Testing Coverage (In progress, testing has been ad-hoc so far)
+### Testing Coverage (Comphensive)
 - Unit tests for all core components 
 - Integration tests for full pipeline
 - Memory leak detection and monitoring
@@ -230,10 +223,6 @@ python unified_pipeline.py --download --semantic
 python main.py
 # Access at http://localhost:7860
 ```
-
-## Acknowledgments
-
-This project was built through extensive experimentation and learning primarily via LLM
 
 
 ## Contact
