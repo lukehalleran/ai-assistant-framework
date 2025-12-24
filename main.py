@@ -53,9 +53,10 @@ from dotenv import load_dotenv
 if getattr(sys, 'frozen', False):
     # In frozen mode, load .env from user data directory
     env_path = os.path.join(os.environ.get('APPDATA', ''), 'Daemon', '.env')
-    load_dotenv(env_path)
+    load_dotenv(env_path, override=True)
 else:
-    load_dotenv()
+    # override=True ensures .env takes precedence over shell environment variables
+    load_dotenv(override=True)
 print(f"[DEBUG] OPENAI_API_KEY loaded: {os.environ.get('OPENAI_API_KEY', 'NOT SET')[:20]}...")
 
 
