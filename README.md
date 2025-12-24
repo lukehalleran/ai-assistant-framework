@@ -1,6 +1,6 @@
 # Daemon: Memory-Augmented AI Assistant
 
-A near production-grade conversational AI system with hierarchical memory, semantic search, and Wikipedia-scale knowledge retrieval - **built from first principles in 4 months**.
+A near production-grade conversational AI system with hierarchical memory, semantic search, and Wikipedia-scale knowledge retrieval - **built from first principles in 8 months**.
 
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![GPU](https://img.shields.io/badge/gpu-RTX_3060-green.svg)]()
