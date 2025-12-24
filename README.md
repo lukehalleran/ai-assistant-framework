@@ -174,7 +174,6 @@ This system has been actively developed and tested:
 - **System Design**: Clean separation of concerns, modular architecture
 - **ML Engineering**: Practical implementation of embeddings, vector search, RAG
 - **Problem Solving**: Novel solutions like hierarchical memory and dream generation
-- **Learning Velocity**: 0 to near production system in 4 months
 
 ### For Recruiters
 - **Self-Directed Learning**: No formal CS background, learned through building
