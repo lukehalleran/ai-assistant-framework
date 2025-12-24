@@ -8,7 +8,7 @@ A production-grade conversational AI system with hierarchical memory, semantic s
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
-*70k+ lines of code • 248 files • 1,670+ tests*
+*60k lines of code • 207 files • 1,700+ tests (95% pass rate)*
 
 [Features](#features) • [Quick Start](#quick-start) • [Architecture](#architecture) • [Usage](#usage) • [Deployment](#deployment)
 
@@ -74,7 +74,7 @@ See [`conversation_logs/gold_star_example.txt`](./conversation_logs/gold_star_ex
 |---------|-------------|
 | **Hierarchical Memory** | 5-tier cognitive architecture with temporal decay and access reinforcement |
 | **Hybrid Retrieval** | Combines recent context + semantic search for balanced recall |
-| **Multi-Stage Gating** | FAISS → cosine → cross-encoder pipeline (~200ms total) |
+| **Multi-Stage Gating** | FAISS → cosine → cross-encoder pipeline (~150ms total) |
 | **STM Analyzer** | Short-term memory compression reduces redundant context |
 | **Thinking Blocks** | Chain-of-thought reasoning with transparent decision logs |
 | **Tone Detection** | Crisis-aware response adaptation (HIGH/MEDIUM/CONCERN/CONVERSATIONAL) |
@@ -83,11 +83,12 @@ See [`conversation_logs/gold_star_example.txt`](./conversation_logs/gold_star_ex
 ### Technical Highlights
 
 ```
-70,330  lines of code (~55k Python)
-   248  files
-   111  test files (1,670+ tests)
+59,778  lines of Python code
+   207  files
+   113  test files (1,728 tests, 95% pass rate)
    861+ extracted facts in ChromaDB
   6.5M+ Wikipedia articles indexed
+  ~150ms gating pipeline latency
 ```
 
 ---
@@ -318,8 +319,8 @@ final_score = (
 |-------|-----------|---------|--------|
 | 1 | FAISS Search | ~50ms | Top 50 candidates |
 | 2 | Cosine Filter | ~50ms | ~20-30 results |
-| 3 | Cross-Encoder | ~100ms | Final top K |
-| **Total** | | **~200ms** | |
+| 3 | Cross-Encoder | ~50ms | Final top K |
+| **Total** | | **~150ms** | |
 
 ---
 
@@ -848,18 +849,10 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ---
 
-## Acknowledgments
-
-This project represents 8 months of learning, experimentation, and iteration. Special thanks to:
-
-- The open-source ML community for tools like sentence-transformers, FAISS, and ChromaDB
-- Anthropic and OpenAI for accessible LLM APIs
----
-
 <div align="center">
 
 **Built with curiosity and persistence**
 
-*70,000 lines of production code*
+*60,000 lines of production code*
 
 </div>
