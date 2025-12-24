@@ -72,9 +72,10 @@ class TestWizardSubmitHandler:
         state = WizardState(step=WizardStep.WELCOME)
         response, new_state, complete = await process_wizard_message("", state, orchestrator)
 
-        assert new_state.step == WizardStep.API_KEY
+        # Welcome now advances to INTRO, which explains what Daemon is
+        assert new_state.step == WizardStep.INTRO
         assert complete is False
-        assert "api key" in response.lower() or "openrouter" in response.lower()
+        assert "memory" in response.lower() or "daemon" in response.lower()
 
     @pytest.mark.asyncio
     async def test_wizard_submit_completion_flow(self):
@@ -158,7 +159,7 @@ class TestWizardUIElements:
 
         welcome = get_welcome_message()
         assert "first time" in welcome.lower()
-        assert "openrouter" in welcome.lower()
+        assert "daemon" in welcome.lower()  # Welcome now introduces Daemon before API key step
 
 
 class TestWizardCompletion:

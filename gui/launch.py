@@ -175,10 +175,10 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
         completion_md = gr.Markdown(value="", visible=True)
 
         # Wizard state stored as dict (Gradio State can't handle custom classes directly)
-        # Start at API_KEY since welcome message is already displayed in initial chatbot value
+        # Start at WELCOME - first user input advances to INTRO, then to API_KEY
         from gui.wizard import WizardStep
         wizard_state = gr.State({
-            'step': WizardStep.API_KEY.value,  # Start at API_KEY, not WELCOME
+            'step': WizardStep.WELCOME.value,  # Start at WELCOME for new intro flow
             'collected_data': {},
             'error_count': 0,
             'max_retries': 3
@@ -226,16 +226,8 @@ def launch_gui(orchestrator, force_wizard=False):
 
     # ------- First-run wizard check -------
     try:
-        # If wizard was completed (identity.name exists), ignore force_wizard flag
-        # This prevents wizard from re-running on refresh after completion
-        if force_wizard:
-            has_profile = orchestrator.user_profile is not None
-            if has_profile and orchestrator.user_profile.identity.name:
-                print("[DEBUG] Force wizard mode enabled BUT wizard already completed (identity exists)")
-                print(f"[DEBUG]   - Identity name: '{orchestrator.user_profile.identity.name}'")
-                print("[DEBUG]   - Ignoring force_wizard flag, will launch normal chat")
-                force_wizard = False  # Override - wizard already completed
-
+        # force_wizard=True (from `python main.py wizard`) always forces wizard mode
+        # This is useful for testing/re-running setup
         if force_wizard:
             print("[DEBUG] Force wizard mode enabled")
             is_first_run = True
