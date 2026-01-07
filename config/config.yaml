@@ -61,7 +61,7 @@ models:
   load_local_model: true
   local_model_context_limit: 4096
   api_model_context_limit: 128000
-  default_max_tokens: 1850
+  default_max_tokens: 4096
   heavy_topic_max_tokens: 4096
   default_top_p: 0.9
   default_top_k: 5
@@ -70,7 +70,7 @@ models:
   active: claude-opus-4.5
 gating:
   confidence_threshold: 2.0
-  gate_rel_threshold: 0.25
+  gate_rel_threshold: 0.18
   cosine_threshold: 0.15
   cosine_similarity_threshold: 0.15
   deictic_threshold: 0.25
@@ -125,10 +125,22 @@ features:
   best_of_duel_mode: false
 web_search:
   enabled: true
-  api_key: ''
+  api_key: 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
   timeout_s: 30.0
   max_content_chars: 10000
   daily_credit_limit: 100
+  llm_first_enabled: true
+  trigger_model: gpt-4o-mini
+  trigger_timeout_s: 5.0
+  trigger_max_tokens: 150
+  llm_heuristic_weight: 0.7
+  confidence_threshold: 0.5
+agentic_search:
+  enabled: true
+  max_rounds: 5
+  context_budget_tokens: 8000
+  compression_model: gpt-4o-mini
+  prefer_native_tools: true
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

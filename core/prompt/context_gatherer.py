@@ -8,14 +8,14 @@ Module Contract
   - get_recent_conversations(limit: int) -> List[Dict]
   - retrieve_semantic_memories(query: str, limit: int) -> List[Dict]
   - get_wiki_content(query: str, limit: int) -> List[Dict]
-  - get_web_search_results(query: str, crisis_level: str) -> WebSearchResult [NEW: real-time web search]
+  - get_web_search_results(query: str, crisis_level: str) -> WebSearchResult/MultiSearchResult [ENHANCED: multi-search with query decomposition]
   - UPDATED: get_user_profile_context(query: str) -> str [NEW: replaces semantic_facts + fresh_facts]
 - Outputs:
   - Comprehensive context dictionary with all gathered data
   - Recent conversation history within specified limits
   - Semantically relevant memories and facts
   - Wikipedia content and semantic chunks
-  - Web search results when triggered [NEW]
+  - Web search results when triggered [ENHANCED: supports parallel sub-queries]
   - UPDATED: 'user_profile' key with categorized facts (replaces 'semantic_facts' and 'fresh_facts')
 - Behavior:
   - Retrieves data from multiple memory collections (episodic, semantic, procedural)
@@ -23,22 +23,24 @@ Module Contract
   - Implements caching for expensive operations (wiki lookups, semantic search, web search)
   - Coordinates parallel data fetching with timeout management
   - Handles graceful fallbacks when data sources are unavailable
-  - Triggers web search based on query analysis (recency keywords, fast-changing topics)
+  - Triggers web search using LLM-first analysis with heuristic fallback
+  - ENHANCED: LLM generates optimized search_terms for better results
+  - ENHANCED: Complex queries are auto-decomposed into parallel sub-queries (e.g., "Compare Tesla and Rivian" → 2 searches)
   - Suppresses web search during HIGH/MEDIUM crisis levels
   - UPDATED: Uses UserProfile hybrid retrieval (2/3 semantic + 1/3 recent per category) instead of flat facts
 - Dependencies:
   - memory.memory_coordinator (memory retrieval)
   - memory.user_profile (NEW: categorized fact storage)
   - core.wiki_util (Wikipedia content)
-  - knowledge.web_search_manager (NEW: Tavily web search)
-  - utils.web_search_trigger (NEW: search trigger detection)
+  - knowledge.web_search_manager (ENHANCED: Tavily web search with multi_search + query decomposition)
+  - utils.web_search_trigger (search trigger detection)
   - utils.time_manager (temporal context)
   - processing.gate_system (relevance filtering)
 - Side effects:
   - Memory system queries and retrievals
   - Cache writes for performance optimization
   - Network requests for Wikipedia content
-  - Network requests to Tavily API for web search [NEW]
+  - Network requests to Tavily API for web search (may be multiple for decomposed queries)
   - Logging of data collection activities
 """
 
@@ -215,16 +217,31 @@ class ContextGatherer:
 
     @property
     def web_search_trigger(self):
-        """Get cached web search trigger, creating it only once."""
+        """Get cached web search trigger (sync heuristic version), creating it only once."""
         if self._web_search_trigger is None:
             try:
                 from utils.web_search_trigger import analyze_for_web_search
                 self._web_search_trigger = analyze_for_web_search
-                logger.debug("[ContextGatherer] Initialized web search trigger")
+                logger.debug("[ContextGatherer] Initialized web search trigger (sync)")
             except ImportError as e:
                 logger.warning(f"[ContextGatherer] WebSearchTrigger not available: {e}")
                 return None
         return self._web_search_trigger
+
+    @property
+    def web_search_trigger_llm(self):
+        """
+        Get the async LLM-first web search trigger function.
+
+        This is the preferred trigger method that uses LLM classification
+        first with heuristic fallback. Returns optimized search_terms.
+        """
+        try:
+            from utils.web_search_trigger import analyze_for_web_search_llm
+            return analyze_for_web_search_llm
+        except ImportError as e:
+            logger.warning(f"[ContextGatherer] LLM WebSearchTrigger not available: {e}")
+            return None
 
     def _wiki_cache_key(self, query: str) -> str:
         """Generate cache key for wiki queries."""
@@ -570,14 +587,16 @@ class ContextGatherer:
                             logger.debug(f"Memory scores: top={top_score:.3f}, cutoff={cutoff_score:.3f}, have={len(gated_memories)}/{limit}")
 
                         # Use gated memories first, then supplement with highest-scoring ungated memories
-                        gated_set = set(gated_memories)
+                        # Use object ids for lookup (dicts are unhashable)
+                        gated_ids = set(id(m) for m in gated_memories)
                         additional_needed = limit - len(gated_memories)
 
                         for score, mem in scored_memories[len(gated_memories):]:
                             if additional_needed <= 0:
                                 break
-                            if mem not in gated_set:
+                            if id(mem) not in gated_ids:
                                 gated_memories.append(mem)
+                                gated_ids.add(id(mem))
                                 additional_needed -= 1
                                 logger.debug(f"Added memory with score {score:.3f}")
 
@@ -1101,6 +1120,9 @@ class ContextGatherer:
         """
         Get web search results if the query triggers a search.
 
+        Uses LLM-first trigger analysis to determine if search is needed,
+        and uses LLM-optimized search_terms for better results.
+
         Args:
             query: User query to analyze and potentially search
             crisis_level: Current tone/crisis level (HIGH/MEDIUM suppresses search)
@@ -1116,7 +1138,7 @@ class ContextGatherer:
             logger.info("[ContextGatherer] Web search disabled in config")
             return None
 
-        # Check crisis suppression
+        # Check crisis suppression (also done in trigger, but early exit saves time)
         if crisis_level and crisis_level.upper() in ("HIGH", "MEDIUM"):
             logger.info(f"[ContextGatherer] Web search suppressed during {crisis_level} crisis")
             return None
@@ -1133,28 +1155,43 @@ class ContextGatherer:
             logger.warning(f"[ContextGatherer] Web search manager not available - API key configured: {bool(manager.api_key)}")
             return None
 
-        # Check if query should trigger web search
-        logger.warning("[WebSearch] Getting web_search_trigger...")
-        trigger = self.web_search_trigger
-        logger.warning(f"[WebSearch] trigger={trigger}")
-        if not trigger:
-            logger.warning("[ContextGatherer] Web search trigger not available")
-            return None
-
         try:
-            # Analyze query to determine if web search is needed
-            decision = trigger(query)
+            # Use LLM-first trigger if available, otherwise fall back to heuristics
+            trigger_llm = self.web_search_trigger_llm
+            if trigger_llm and self.model_manager:
+                # Get remaining credits for credit-aware search planning
+                remaining_credits = 100.0  # Default
+                if hasattr(manager, 'rate_limiter') and manager.rate_limiter:
+                    remaining_credits = manager.rate_limiter.get_remaining_credits()
+
+                logger.debug("[WebSearch] Using LLM-first trigger analysis...")
+                decision = await trigger_llm(
+                    query=query,
+                    model_manager=self.model_manager,
+                    crisis_level=crisis_level,
+                    web_search_enabled=WEB_SEARCH_ENABLED,
+                    remaining_credits=remaining_credits
+                )
+            else:
+                # Fallback to sync heuristic trigger
+                logger.warning("[WebSearch] LLM trigger not available, using heuristics...")
+                trigger = self.web_search_trigger
+                if not trigger:
+                    logger.warning("[ContextGatherer] Web search trigger not available")
+                    return None
+                decision = trigger(query)
 
             if not decision.should_search:
                 logger.debug(
                     f"[ContextGatherer] Web search not triggered: {decision.reason} "
-                    f"(confidence={decision.confidence:.2f})"
+                    f"(confidence={decision.confidence:.2f}, source={getattr(decision, 'source', 'unknown')})"
                 )
                 return None
 
             logger.info(
                 f"[ContextGatherer] Web search triggered: {decision.reason} "
-                f"(confidence={decision.confidence:.2f}, depth={decision.depth.value})"
+                f"(confidence={decision.confidence:.2f}, depth={decision.depth.value}, "
+                f"source={getattr(decision, 'source', 'unknown')})"
             )
 
             # Import the depth enum from the manager
@@ -1168,19 +1205,39 @@ class ContextGatherer:
             }
             search_depth = depth_map.get(decision.depth.value, ManagerDepth.STANDARD)
 
-            # Execute the search
-            result = await manager.search(
-                query=query,
-                depth=search_depth,
-                crisis_level=crisis_level,
-                timeout=WEB_SEARCH_TIMEOUT,
-                use_cache=True
-            )
+            # Use LLM-optimized search_terms if available, otherwise use original query
+            search_terms = getattr(decision, 'search_terms', [])
+            if search_terms:
+                logger.info(f"[ContextGatherer] Using LLM-optimized search terms: {search_terms}")
+                # Execute search with optimized terms (bypass auto_decompose since LLM already did this)
+                result = await manager.multi_search(
+                    query=search_terms[0] if len(search_terms) == 1 else query,
+                    depth=search_depth,
+                    crisis_level=crisis_level,
+                    timeout=WEB_SEARCH_TIMEOUT,
+                    use_cache=True,
+                    auto_decompose=len(search_terms) <= 1  # Only decompose if LLM didn't provide multiple terms
+                )
+                # If LLM provided multiple search terms, we could do parallel searches here
+                # For now, use the first term; full multi-term support can be added later
+            else:
+                # No LLM search terms, use original query with auto-decompose
+                result = await manager.multi_search(
+                    query=query,
+                    depth=search_depth,
+                    crisis_level=crisis_level,
+                    timeout=WEB_SEARCH_TIMEOUT,
+                    use_cache=True,
+                    auto_decompose=True  # Enable automatic query decomposition
+                )
 
             if result.has_results:
+                decomp_info = ""
+                if hasattr(result, 'decomposition_used') and result.decomposition_used:
+                    decomp_info = f", decomposed into {len(result.sub_queries)} sub-queries"
                 logger.info(
                     f"[ContextGatherer] Web search returned {len(result.pages)} results "
-                    f"(credits={result.total_credits_used}, cached={result.from_cache})"
+                    f"(credits={result.total_credits_used}, cached={result.from_cache}{decomp_info})"
                 )
 
                 # Track web search results for citations

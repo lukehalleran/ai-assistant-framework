@@ -2,13 +2,14 @@
 # gui/handlers.py
 
 Module Contract
-- Purpose: Orchestrates a single chat submission in the GUI: preprocesses files, routes to raw/enhanced flows, streams the response to the UI, and persists interaction + debug trace.
+- Purpose: Orchestrates a single chat submission in the GUI: preprocesses files, routes to raw/enhanced/agentic flows, streams the response to the UI, and persists interaction + debug trace.
 - Inputs:
   - handle_submit(user_text, files, history, use_raw_gpt, orchestrator, system_prompt=?, force_summarize=?, include_summaries=?, personality=?)
 - Outputs:
-  - Yields streaming dicts {role, content, debug?} as Gradio updates.
+  - Yields streaming dicts {role, content, debug?, is_progress?} as Gradio updates.
 - Behavior:
   - RAW mode: send directly through orchestrator.process_user_query(use_raw_mode=True)
+  - AGENTIC: If agentic_search.enabled and query triggers search, route through AgenticSearchController
   - ENHANCED: orchestrator.prepare_prompt → response_generator.generate_streaming_response → store interaction
 - Side effects:
   - Writes to conversation logger; stores to memory_system; updates debug_state for Debug Trace tab.
@@ -52,6 +53,7 @@ async def handle_submit(
     include_summaries=True,
     personality=None
 ):
+    logger.debug(f"[Handle Submit] ENTRY - raw_mode={use_raw_gpt}")
     logger.debug(f"[Handle Submit] Received user_text: {user_text}")
 
     # Update activity timestamp for idle monitor
@@ -122,13 +124,163 @@ async def handle_submit(
         return
 
     # ENHANCED MODE: build prompt first via orchestrator.prepare_prompt (do NOT pass personality here)
+    logger.debug("[Handle Submit] About to call prepare_prompt")
     full_prompt, system_prompt = await orchestrator.prepare_prompt(
         user_input=user_text,
         files=files,
         use_raw_mode=False  # enhanced mode
     )
+    logger.debug(f"[Handle Submit] prepare_prompt done, prompt length={len(full_prompt)}")
 
     logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
+
+    # Check if agentic search should be used
+    _cfg = getattr(orchestrator, 'config', {}) or {}
+    agentic_cfg = _cfg.get('agentic_search', {}) if isinstance(_cfg, dict) else {}
+    agentic_enabled = bool(agentic_cfg.get('enabled', False))
+    logger.debug(f"[Handle Submit] Agentic pre-check: enabled={agentic_enabled}")
+
+    if agentic_enabled:
+        # Quick filter: skip agentic for obvious non-search queries
+        _lower = user_text.lower().strip()
+        _words = _lower.split()
+        _skip_patterns = [
+            len(_words) < 5 and not any(w in _lower for w in ['search', 'news', 'latest', 'current', 'today', 'recent', '2026', '2025']),
+            _lower.startswith(('nice', 'thanks', 'thank you', 'cool', 'great', 'awesome', 'got it', 'ok', 'okay', 'yeah', 'yes', 'no', 'nope')),
+            'working' in _lower and 'search' in _lower,  # meta-comments about search
+            all(w in ['yes', 'no', 'ok', 'okay', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank', 'you'] for w in _words),
+        ]
+        if any(_skip_patterns):
+            logger.debug("[Handle Submit] Agentic skipped - casual/short message")
+            should_use_agentic = False
+            search_terms = []
+        else:
+            # Check if web search should be triggered for this query using LLM-first trigger
+            try:
+                from utils.web_search_trigger import analyze_for_web_search_llm
+                trigger_decision = await analyze_for_web_search_llm(
+                    query=user_text,
+                    model_manager=orchestrator.model_manager
+                )
+                # trigger_decision is a WebSearchDecision object with attributes
+                should_use_agentic = getattr(trigger_decision, 'should_search', False)
+                search_terms = getattr(trigger_decision, 'search_terms', []) or []
+                logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, terms={search_terms}")
+            except Exception as e:
+                logger.warning(f"[Handle Submit] Agentic trigger check failed: {e}")
+                import traceback
+                traceback.print_exc()
+                should_use_agentic = False
+                search_terms = []
+
+        if should_use_agentic:
+            logger.warning("[Handle Submit] AGENTIC SEARCH MODE - routing through agentic controller")
+            try:
+                from core.agentic import AgenticSearchController, ProgressEvent
+
+                # Get the agentic controller from orchestrator
+                agentic_controller = orchestrator.agentic_controller
+                model_name = orchestrator.model_manager.get_active_model_name()
+
+                # Get initial search terms from the trigger decision we already have
+                initial_terms = search_terms if search_terms else []
+                logger.debug(f"[Handle Submit] Agentic initial terms: {initial_terms}")
+
+                # Run agentic search loop
+                agentic_response = ""
+                logger.debug("[Handle Submit] Starting agentic loop")
+                async for item in agentic_controller.run_agentic_search(
+                    query=user_text,
+                    system_prompt=system_prompt,
+                    model_name=model_name,
+                    initial_search_terms=initial_terms,
+                ):
+                    if isinstance(item, ProgressEvent):
+                        # Yield progress events as status messages
+                        status_icon = {
+                            "searching": "🔍",
+                            "found_results": "📄",
+                            "synthesizing": "✨",
+                            "done": "✅",
+                            "error": "❌",
+                        }.get(item.event_type, "•")
+                        status_msg = f"{status_icon} {item.message}"
+                        logger.debug(f"[Handle Submit] Agentic progress: {item.event_type}")
+                        yield {"role": "assistant", "content": status_msg, "is_progress": True}
+                    else:
+                        # Response chunk - accumulate and stream
+                        agentic_response += item
+                        yield {"role": "assistant", "content": agentic_response}
+
+                # Final output from agentic search - strip thinking blocks
+                final_output = agentic_response
+                thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
+                display_output = final_answer if final_answer else final_output
+                logger.debug(f"[Handle Submit] Agentic loop done, response_len={len(final_output)}, display_len={len(display_output)}")
+
+                # Token counts for debug
+                try:
+                    tm = getattr(orchestrator, 'tokenizer_manager', None)
+                    prompt_tokens = int(tm.count_tokens(full_prompt, model_name)) if tm else None
+                    system_tokens = int(tm.count_tokens(system_prompt or '', model_name)) if tm else 0
+                    total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
+                except Exception:
+                    prompt_tokens = None
+                    system_tokens = None
+                    total_tokens = None
+
+                debug_record = {
+                    'mode': 'agentic-search',
+                    'query': user_text,
+                    'prompt': full_prompt,
+                    'system_prompt': system_prompt,
+                    'response': final_output,
+                    'model': model_name,
+                    'prompt_tokens': prompt_tokens,
+                    'system_tokens': system_tokens,
+                    'total_tokens': total_tokens,
+                    'citations': [],
+                    'citations_enabled': getattr(orchestrator, 'enable_citations', False),
+                }
+                # Yield the clean response first (without debug, to ensure it displays)
+                logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
+                yield {"role": "assistant", "content": display_output}
+
+                # Then yield with debug record for the debug trace
+                yield {"role": "assistant", "content": display_output, "debug": debug_record}
+                logger.debug("[Handle Submit] Agentic final response yielded")
+
+                # Store interaction in memory
+                try:
+                    tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
+                    memory_id = await orchestrator.memory_system.store_interaction(
+                        query=merged_input,
+                        response=final_output,
+                        tags=tags
+                    )
+                    logger.info(f"[Handle Submit] Agentic interaction stored with ID: {memory_id}")
+
+                    # Log conversation
+                    conversation_logger.log_interaction(
+                        user_input=user_text,
+                        assistant_response=final_output,
+                        metadata={
+                            'mode': 'agentic-search',
+                            'files': file_names if file_names else None,
+                            'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
+                            'topic': getattr(orchestrator, 'current_topic', None),
+                            'db_id': memory_id
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"[Handle Submit] Failed to store agentic interaction: {e}")
+
+                return  # Exit after agentic search completes
+
+            except Exception as e:
+                logger.error(f"[Handle Submit] Agentic search failed, falling back to standard: {e}")
+                import traceback
+                logger.debug(f"[Agentic] Exception traceback:\n{traceback.format_exc()}")
 
     final_output = ""
     display_output = ""

@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2025-12-17
+**Last Updated**: 2026-01-06
 
 ---
 
@@ -31,6 +31,10 @@ USER QUERY
     ↓
 [Prompt Building] → Token-budgeted context with separated sections + STM summary
     ↓
+[Agentic Search Check] → LLM-first trigger decides if web search needed **[NEW 2026-01]**
+    ↓ (if triggered)
+    ├─> [AgenticSearchController] → ReAct loop: Think → Search → Observe → Repeat
+    ↓ (else normal flow)
 [Thinking Block] → LLM generates <thinking>...</thinking> + final answer
     ↓
 [LLM Generation] → Multi-provider streaming with Best-of-N/Duel modes
@@ -792,17 +796,78 @@ User input here
 
 ---
 
-### 2.9 gui/ (Gradio Web Interface) **[MAJOR FIXES 2025-11-24]**
-**Purpose**: Async streaming GUI with thinking block support and response tag handling
+### 2.8a core/agentic/ (Agentic Search System) **[NEW 2026-01]**
+**Purpose**: Multi-round ReAct-style web search with LLM-driven iteration
 
 **Key Components**:
 
-**gui/handlers.py** - Event handlers and streaming relay
+**core/agentic/types.py** - Data structures
+- `AgentState` (Enum): `THINKING`, `SEARCHING`, `OBSERVING`, `SYNTHESIZING`, `DONE`, `ERROR`
+- `SearchProtocol` (Enum): `NATIVE_TOOLS` (API models), `XML_MARKERS` (local models)
+- `SearchRequest`: Query + depth + max results
+- `SearchRound`: Results from a single search iteration
+- `AgenticSearchSession`: Full session state (rounds, tokens used, etc.)
+- `ProgressEvent`: Status updates for UI (event_type, message)
+- `SEARCH_TOOL_DEFINITION`, `DONE_TOOL_DEFINITION`: OpenAI-style tool schemas
+- `AGENTIC_SYSTEM_PROMPT_INJECTION`: Instructions for local models to use XML markers
+
+**core/agentic/protocols.py** - Protocol detection and parsing
+- `detect_protocol(model_name)` → `SearchProtocol` (native for gpt/claude, XML for local)
+- `NativeToolsHandler`: Parses OpenAI/Anthropic tool_calls from response
+- `XMLMarkerHandler`: Parses `<search>query</search>` and `<done/>` from local model output
+- `BaseProtocolHandler`: Common interface for both
+
+**core/agentic/controller.py** - Main controller
+- `AgenticSearchController`: Orchestrates the ReAct loop
+  - `run_agentic_search(query, system_prompt, model_name, initial_terms)` → AsyncGenerator
+  - Yields `ProgressEvent` for status updates, `str` for response chunks
+  - Max 5 rounds of search before forcing synthesis
+  - Compresses accumulated context to fit token budget
+  - Falls back gracefully on errors
+
+**ReAct Loop Flow**:
+```
+1. Initial search with LLM-provided terms
+2. LOOP (max 5 rounds):
+   a. LLM sees: query + search results so far
+   b. LLM decides: search_more(query) OR done()
+   c. If search_more: execute search, add to context
+   d. If done: generate final response
+3. Stream final response to UI
+```
+
+**Config** (config.yaml):
+```yaml
+agentic_search:
+  enabled: true
+  max_rounds: 5
+  context_budget_tokens: 8000
+  compression_model: gpt-4o-mini
+  prefer_native_tools: true
+```
+
+**Dependencies**: WebSearchManager, ModelManager, TokenizerManager
+
+---
+
+### 2.9 gui/ (Gradio Web Interface) **[MAJOR FIXES 2025-11-24, AGENTIC 2026-01]**
+**Purpose**: Async streaming GUI with thinking block support, response tag handling, and agentic search routing
+
+**Key Components**:
+
+**gui/handlers.py** - Event handlers, streaming relay, and agentic routing
 - `handle_submit()` → Main async generator yielding response chunks to GUI
-  - Receives streaming chunks from response_generator
-  - Parses thinking blocks in real-time
-  - Applies response tag stripping
-  - Yields dict chunks: `{"role": "assistant", "content": text}`
+  - **Agentic Search Path** (NEW 2026-01):
+    - Quick filter skips casual acknowledgments (< 5 words, "nice", "thanks", etc.)
+    - Calls `analyze_for_web_search_llm()` to decide if search needed
+    - If triggered, routes through `AgenticSearchController.run_agentic_search()`
+    - Yields progress events (🔍 searching, 📄 found results, ✨ synthesizing)
+    - Strips thinking blocks from final response
+  - **Standard Path**:
+    - Receives streaming chunks from response_generator
+    - Parses thinking blocks in real-time
+    - Applies response tag stripping
+  - Yields dict chunks: `{"role": "assistant", "content": text, "is_progress"?: bool}`
 
 **Tag Stripping Logic** (FIXED):
 - Strips outer wrapper tags: `<reply>`, `<response>`, `<answer>`, `<result>`
@@ -1101,14 +1166,16 @@ from config.app_config import config
 
 ---
 
-### 2.12.1 knowledge/web_search_manager.py (Real-Time Web Search) **[NEW 2025-12-22]**
-**Purpose**: Tavily API integration for real-time web search with caching and rate limiting
+### 2.12.1 knowledge/web_search_manager.py (Real-Time Web Search) **[ENHANCED 2026-01]**
+**Purpose**: Tavily API integration for real-time web search with caching, rate limiting, and query decomposition
 
 **Data Classes**:
-- `WebSearchDepth` (Enum): `BASIC` (1 credit), `STANDARD` (2 credits)
+- `WebSearchDepth` (Enum): `QUICK` (1 credit), `STANDARD` (2 credits), `DEEP` (3-5 credits)
 - `WebPage`: Individual search result with title, url, content, snippet, score
 - `WebSearchResult`: Container for pages + metadata (credits, cache status, timestamp)
 - `WebSearchSession`: Maintains search state across prompt building
+- `QueryDecomposition` **[NEW 2026-01]**: Result of query analysis (should_decompose, sub_queries, confidence)
+- `MultiSearchResult` **[NEW 2026-01]**: Extended result with decomposition metadata
 
 **Key Components**:
 
@@ -1126,10 +1193,25 @@ from config.app_config import config
 3. **WebSearchManager**:
    - Tavily Search API (basic results) + Extract API (page content)
    - Automatic depth selection based on query complexity
+   - **[NEW 2026-01]** Query decomposition for complex/multi-entity queries
    - Methods:
      - `search(query, depth)` → `WebSearchResult`
-     - `search_with_extract(query, urls)` → Enhanced results
+     - `multi_search(query, depth, auto_decompose=True)` → `MultiSearchResult` **[NEW]**
+     - `decompose_query(query)` → `QueryDecomposition` **[NEW]**
      - `is_available()` → Check API key + rate limits
+
+**Query Decomposition** **[NEW 2026-01]**:
+```
+"Compare Tesla and Rivian stock prices"
+    ↓ decompose_query() [LLM analysis]
+["Tesla stock 2026", "Rivian stock 2026"]
+    ↓ parallel Tavily searches
+Merged + deduplicated results
+```
+- LLM-based detection of multi-entity/comparison queries
+- Max 4 sub-queries (credit budget aware)
+- 0.6 confidence threshold to trigger decomposition
+- Results merged by URL, keeping highest-scoring version
 
 **Configuration** (`config/app_config.py`):
 ```python
@@ -1145,26 +1227,41 @@ WEB_SEARCH_CACHE_TTL_HOURS = 72
 
 ---
 
-### 2.12.2 utils/web_search_trigger.py (Web Search Detection) **[NEW 2025-12-22]**
-**Purpose**: Heuristic + optional LLM detection for when to trigger web search
+### 2.12.2 utils/web_search_trigger.py (Web Search Detection) **[ENHANCED 2026-01]**
+**Purpose**: LLM-first detection with heuristic fallback for when to trigger web search
 
 **Output**:
 ```python
 WebSearchDecision(
     should_search=True,
     confidence=0.80,
-    reason="1 strong recency keyword(s); 1 news keyword(s)",
-    depth=WebSearchDepth.STANDARD
+    reason="LLM classified as current events query",
+    depth=WebSearchDepth.STANDARD,
+    search_terms=["optimized query 1", "optimized query 2"],  # LLM-generated
+    num_searches=2,
+    source="llm"  # or "heuristic"
 )
 ```
 
-**Detection Strategy** (Multi-Signal Scoring):
+**LLM-First Detection** (Primary - used by agentic search):
+- `analyze_for_web_search_llm(query, model_manager)` → Primary entry point
+- LLM prompt asks: "Does this query need real-time web search?"
+- Returns optimized search terms (not just yes/no)
+- 70/30 confidence blend with heuristics
+- Falls back to pure heuristics on LLM timeout/error
+
+**LLM Decision Criteria** (in prompt):
+- SEARCH if: current events, recent news, live data, time-sensitive info
+- DON'T SEARCH if: historical facts, how-to guides, general knowledge
+- NEVER SEARCH for: casual acknowledgments (nice, thanks), meta-comments, greetings, short responses
+
+**Heuristic Detection** (Fallback - Multi-Signal Scoring):
 1. **Strong recency keywords** (+0.4): "latest", "current", "today", "right now", "breaking"
 2. **Moderate recency keywords** (+0.2): "recent", "new", "update", "now"
 3. **Explicit search requests** (+0.5): "search for", "look up", "find out about"
 4. **News/events keywords** (+0.3): "news", "happening", "announced", "released"
 5. **Fast-changing topics** (+0.25): sports scores, stock prices, weather, elections
-6. **Year patterns** (+0.15): "2024", "2025", "this year"
+6. **Year patterns** (+0.15): "2024", "2025", "2026", "this year"
 
 **Suppression Rules**:
 - Static/timeless queries: definitions, how-to, history → No search
@@ -1172,15 +1269,18 @@ WebSearchDecision(
 - Crisis levels HIGH/MEDIUM → Search suppressed
 
 **Key Functions**:
-- `should_search_heuristic(query)` → `WebSearchDecision` (fast, ~1ms)
-- `should_search_with_llm(query, model_manager)` → `WebSearchDecision` (accurate, ~500ms)
-- `analyze_for_web_search(query, crisis_level)` → Primary entry point
+- `analyze_for_web_search_llm(query, model_manager)` → LLM-first with heuristic fallback **[PRIMARY]**
+- `analyze_for_web_search(query, crisis_level)` → Heuristic-only entry point
+- `should_search_heuristic(query)` → Pure heuristic (fast, ~1ms)
 
 **Depth Selection**:
-- `BASIC` (1 credit): Simple factual queries
+- `QUICK` (1 credit): Simple factual queries
 - `STANDARD` (2 credits): News, analysis, multiple sources needed
+- `DEEP` (3-5 credits): Research, comprehensive coverage
 
-**Integration**: Called by ContextGatherer, respects ToneDetector crisis level
+**Integration**:
+- Called by gui/handlers.py for agentic search routing
+- Called by ContextGatherer for standard web search embedding
 
 ---
 
@@ -2015,6 +2115,12 @@ daemon/
 │   └── storage/
 │       └── multi_collection_chroma_store.py  # Vector DB
 │
+├── core/agentic/              # Agentic search system [NEW 2026-01]
+│   ├── __init__.py            # Package exports
+│   ├── types.py               # Data structures (AgentState, SearchProtocol, etc.)
+│   ├── protocols.py           # Protocol detection and parsing
+│   └── controller.py          # AgenticSearchController (ReAct loop)
+│
 ├── processing/
 │   └── gate_system.py         # Multi-stage filtering
 │
@@ -2037,7 +2143,7 @@ daemon/
 │   ├── file_processor.py      # PDF/DOCX ingestion
 │   ├── health_check.py        # Docker/K8s health endpoint
 │   ├── conversation_logger.py # Conversation persistence
-│   └── web_search_trigger.py  # Web search detection heuristics [NEW 2025-12-22]
+│   └── web_search_trigger.py  # Web search detection (LLM-first + heuristics) [ENHANCED 2026-01]
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
@@ -2047,7 +2153,7 @@ daemon/
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)
-│   ├── handlers.py            # UI event handlers (streaming response relay, thinking block support)
+│   ├── handlers.py            # UI event handlers (streaming, agentic routing) [ENHANCED 2026-01]
 │   └── wizard.py              # First-run onboarding wizard [NEW 2025-12-11]
 │
 ├── integrations/
@@ -2068,6 +2174,7 @@ daemon/
 │   │   ├── test_corpus_manager.py
 │   │   ├── test_web_search_manager.py   # [NEW 2025-12-22]
 │   │   ├── test_web_search_trigger.py   # [NEW 2025-12-22]
+│   │   ├── test_agentic_search.py       # [NEW 2026-01] 42 tests for agentic system
 │   │   └── ...
 │   ├── integration.bak/       # Backup integration tests
 │   ├── test_*.py             # Integration tests (50+ files)
