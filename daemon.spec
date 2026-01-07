@@ -210,6 +210,9 @@ hiddenimports = [
     'anyio._backends',
     'anyio._backends._asyncio',
 
+    # Tavily web search
+    'tavily',
+
     # NumPy internals
     'numpy.core._multiarray_umath',
     'numpy.core._dtype_ctypes',
@@ -401,7 +404,7 @@ exe_kwargs = {
     'bootloader_ignore_signals': False,
     'strip': False,
     'upx': False,  # CRITICAL: Disabled - breaks torch/numpy DLLs
-    'console': False,  # GUI app, no console window
+    'console': True,  # GUI app, no console window
     'disable_windowed_traceback': False,
     'argv_emulation': False,
     'target_arch': None,
