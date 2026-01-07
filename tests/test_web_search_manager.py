@@ -29,6 +29,8 @@ from knowledge.web_search_manager import (
     WebSearchRateLimiter,
     WebSearchCache,
     WebSearchManager,
+    QueryDecomposition,
+    MultiSearchResult,
     quick_web_search,
 )
 
@@ -390,6 +392,180 @@ class TestEdgeCases:
         )
         limiter.record_usage(15.0)  # Over the limit
         assert limiter.get_remaining_credits() == 0.0
+
+
+# ===== QueryDecomposition Tests =====
+
+class TestQueryDecomposition:
+    def test_decomposition_creation(self):
+        """Test QueryDecomposition creation."""
+        decomp = QueryDecomposition(
+            original_query="Compare Tesla and Rivian stock",
+            should_decompose=True,
+            sub_queries=["Tesla stock 2025", "Rivian stock 2025"],
+            confidence=0.85,
+            reason="Multiple entities detected"
+        )
+        assert decomp.should_decompose is True
+        assert decomp.query_count == 2
+        assert len(decomp.sub_queries) == 2
+
+    def test_decomposition_no_split(self):
+        """Test QueryDecomposition when not splitting."""
+        decomp = QueryDecomposition(
+            original_query="Latest AI news",
+            should_decompose=False,
+            reason="Single topic query"
+        )
+        assert decomp.should_decompose is False
+        assert decomp.query_count == 1
+
+    def test_query_count_property(self):
+        """Test query_count returns correct value."""
+        decomp_split = QueryDecomposition(
+            original_query="test",
+            should_decompose=True,
+            sub_queries=["a", "b", "c"]
+        )
+        assert decomp_split.query_count == 3
+
+        decomp_no_split = QueryDecomposition(
+            original_query="test",
+            should_decompose=False
+        )
+        assert decomp_no_split.query_count == 1
+
+
+# ===== MultiSearchResult Tests =====
+
+class TestMultiSearchResult:
+    def test_multi_search_result_creation(self):
+        """Test MultiSearchResult creation with multiple sub-queries."""
+        result = MultiSearchResult(
+            original_query="Compare Tesla and Rivian",
+            sub_queries=["Tesla stock", "Rivian stock"],
+            pages=[
+                WebPage(url="https://a.com", title="Tesla", content="Tesla content"),
+                WebPage(url="https://b.com", title="Rivian", content="Rivian content"),
+            ],
+            total_credits_used=4.0,
+            decomposition_used=True
+        )
+        assert result.has_results is True
+        assert len(result.pages) == 2
+        assert result.decomposition_used is True
+
+    def test_multi_search_result_has_results(self):
+        """Test has_results property."""
+        result_with_pages = MultiSearchResult(
+            original_query="test",
+            pages=[WebPage(url="https://test.com", title="Test", content="Content")]
+        )
+        assert result_with_pages.has_results is True
+
+        result_empty = MultiSearchResult(original_query="test", pages=[])
+        assert result_empty.has_results is False
+
+        result_error = MultiSearchResult(
+            original_query="test",
+            pages=[WebPage(url="https://test.com", title="Test", content="Content")],
+            error="Failed"
+        )
+        assert result_error.has_results is False
+
+    def test_to_web_search_result(self):
+        """Test conversion to standard WebSearchResult."""
+        multi = MultiSearchResult(
+            original_query="test query",
+            pages=[WebPage(url="https://test.com", title="Test", content="Content")],
+            total_credits_used=2.0,
+            search_depth=WebSearchDepth.STANDARD
+        )
+        standard = multi.to_web_search_result()
+
+        assert isinstance(standard, WebSearchResult)
+        assert standard.query == "test query"
+        assert len(standard.pages) == 1
+        assert standard.total_credits_used == 2.0
+
+    def test_get_formatted_content(self):
+        """Test content formatting for multi-search results."""
+        result = MultiSearchResult(
+            original_query="test",
+            pages=[
+                WebPage(url="https://a.com", title="Page A", content="Content A"),
+                WebPage(url="https://b.com", title="Page B", content="Content B"),
+            ]
+        )
+        formatted = result.get_formatted_content(max_chars=1000)
+        assert "**Page A**" in formatted
+        assert "Content A" in formatted
+
+
+# ===== WebSearchManager Decomposition Tests =====
+
+class TestWebSearchManagerDecomposition:
+    @pytest.mark.asyncio
+    async def test_decompose_query_short_query(self, temp_state_file):
+        """Test decomposition skips short queries."""
+        rate_limiter = WebSearchRateLimiter(
+            daily_limit=100,
+            state_file=temp_state_file
+        )
+        manager = WebSearchManager(api_key="test", rate_limiter=rate_limiter)
+
+        decomp = await manager.decompose_query("short")
+        assert decomp.should_decompose is False
+        assert "too short" in decomp.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_decompose_query_insufficient_credits(self, temp_state_file):
+        """Test decomposition fails gracefully with low credits."""
+        rate_limiter = WebSearchRateLimiter(
+            daily_limit=1,  # Only 1 credit
+            state_file=temp_state_file
+        )
+        manager = WebSearchManager(api_key="test", rate_limiter=rate_limiter)
+
+        decomp = await manager.decompose_query("Compare Tesla and Rivian stock prices in 2025")
+        assert decomp.should_decompose is False
+        assert "insufficient credits" in decomp.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_multi_search_crisis_suppression(self, mock_tavily_client, temp_state_file):
+        """Test multi_search is suppressed during crisis."""
+        rate_limiter = WebSearchRateLimiter(
+            daily_limit=100,
+            state_file=temp_state_file
+        )
+        with patch('tavily.TavilyClient', return_value=mock_tavily_client):
+            manager = WebSearchManager(api_key="test", rate_limiter=rate_limiter)
+            result = await manager.multi_search(
+                "Compare Tesla and Rivian",
+                crisis_level="HIGH"
+            )
+            assert result.has_results is False
+            assert "suppressed" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_multi_search_no_decomposition(self, mock_tavily_client, temp_state_file):
+        """Test multi_search falls back to single search when decomposition disabled."""
+        rate_limiter = WebSearchRateLimiter(
+            daily_limit=100,
+            state_file=temp_state_file
+        )
+        with patch('tavily.TavilyClient', return_value=mock_tavily_client):
+            manager = WebSearchManager(api_key="test", rate_limiter=rate_limiter)
+            manager._tavily_client = mock_tavily_client
+            manager._initialized = True
+
+            result = await manager.multi_search(
+                "simple query",
+                auto_decompose=False  # Disable decomposition
+            )
+            assert result.decomposition_used is False
+            assert len(result.sub_queries) == 1
+            assert result.sub_queries[0] == "simple query"
 
 
 if __name__ == "__main__":
