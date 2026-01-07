@@ -18,7 +18,7 @@ anthropic==0.52.1
 tiktoken==0.9.0
 
 # Web search (Tavily API)
-tavily-python==0.5.0
+tavily-python>=0.5.0
 
 # NLP and text processing
 spacy==3.8.7
