@@ -335,5 +335,232 @@ class TestRealWorldQueries:
             f"conf={decision.confidence}, reason={decision.reason}"
 
 
+# ===== LLM-First Trigger Tests =====
+
+# Import LLM-related components
+from utils.web_search_trigger import (
+    LLMSearchTriggerResponse,
+    quick_prefilter_should_skip,
+    analyze_for_web_search_llm,
+)
+
+
+class TestLLMSearchTriggerResponse:
+    """Tests for LLM response parsing."""
+
+    def test_parse_valid_json(self):
+        """Test parsing valid JSON response."""
+        json_str = '''{"should_search": true, "confidence": 0.85, "reason": "Current news query", "search_terms": ["flu variant 2026"], "search_depth": "standard", "num_searches": 1}'''
+        result = LLMSearchTriggerResponse.parse(json_str)
+        assert result is not None
+        assert result.should_search is True
+        assert result.confidence == 0.85
+        assert result.reason == "Current news query"
+        assert result.search_terms == ["flu variant 2026"]
+        assert result.search_depth == "standard"
+        assert result.num_searches == 1
+
+    def test_parse_json_with_markdown(self):
+        """Test parsing JSON wrapped in markdown code blocks."""
+        json_str = '''```json
+{"should_search": true, "confidence": 0.9, "reason": "Test", "search_terms": [], "search_depth": "quick", "num_searches": 1}
+```'''
+        result = LLMSearchTriggerResponse.parse(json_str)
+        assert result is not None
+        assert result.should_search is True
+        assert result.confidence == 0.9
+
+    def test_parse_json_missing_fields(self):
+        """Test parsing JSON with missing fields uses defaults."""
+        json_str = '{"should_search": false}'
+        result = LLMSearchTriggerResponse.parse(json_str)
+        assert result is not None
+        assert result.should_search is False
+        assert result.confidence == 0.0
+        assert result.search_terms == []
+        assert result.search_depth == "quick"
+        assert result.num_searches == 1
+
+    def test_parse_invalid_json(self):
+        """Test parsing invalid JSON returns None."""
+        result = LLMSearchTriggerResponse.parse("not valid json")
+        assert result is None
+
+    def test_parse_empty_string(self):
+        """Test parsing empty string returns None."""
+        result = LLMSearchTriggerResponse.parse("")
+        assert result is None
+
+    def test_parse_clamps_confidence(self):
+        """Test confidence is clamped to 0.0-1.0."""
+        # High confidence clamped
+        json_str = '{"should_search": true, "confidence": 1.5}'
+        result = LLMSearchTriggerResponse.parse(json_str)
+        assert result.confidence == 1.0
+
+        # Negative confidence clamped
+        json_str = '{"should_search": false, "confidence": -0.5}'
+        result = LLMSearchTriggerResponse.parse(json_str)
+        assert result.confidence == 0.0
+
+    def test_parse_clamps_num_searches(self):
+        """Test num_searches is clamped to 1-4."""
+        # High num_searches clamped
+        json_str = '{"should_search": true, "num_searches": 10}'
+        result = LLMSearchTriggerResponse.parse(json_str)
+        assert result.num_searches == 4
+
+        # Zero num_searches clamped
+        json_str = '{"should_search": true, "num_searches": 0}'
+        result = LLMSearchTriggerResponse.parse(json_str)
+        assert result.num_searches == 1
+
+    def test_parse_normalizes_depth(self):
+        """Test invalid depth normalized to quick."""
+        json_str = '{"should_search": true, "search_depth": "INVALID"}'
+        result = LLMSearchTriggerResponse.parse(json_str)
+        assert result.search_depth == "quick"
+
+
+class TestQuickPrefilter:
+    """Tests for quick pre-filter function."""
+
+    def test_empty_query_skips(self):
+        """Test empty query is skipped."""
+        assert quick_prefilter_should_skip("") is True
+        assert quick_prefilter_should_skip("   ") is True
+
+    def test_short_query_skips(self):
+        """Test very short query is skipped."""
+        assert quick_prefilter_should_skip("hi") is True
+        assert quick_prefilter_should_skip("ok") is True
+
+    def test_greeting_skips(self):
+        """Test short greetings are skipped."""
+        assert quick_prefilter_should_skip("hello") is True
+        assert quick_prefilter_should_skip("hey") is True
+        assert quick_prefilter_should_skip("thanks") is True
+
+    def test_suppression_pattern_skips(self):
+        """Test suppression patterns are skipped."""
+        assert quick_prefilter_should_skip("how are you doing today?") is True
+        assert quick_prefilter_should_skip("I'm feeling stressed") is True
+
+    def test_normal_query_not_skipped(self):
+        """Test normal search-worthy queries are not skipped."""
+        assert quick_prefilter_should_skip("What is the weather in New York?") is False
+        assert quick_prefilter_should_skip("Tell me about Python programming") is False
+        assert quick_prefilter_should_skip("What's the latest news on AI?") is False
+
+
+class TestWebSearchDecisionNewFields:
+    """Tests for new fields in WebSearchDecision."""
+
+    def test_new_fields_defaults(self):
+        """Test new fields have correct defaults."""
+        decision = WebSearchDecision(
+            should_search=True,
+            depth=WebSearchDepth.QUICK,
+            confidence=0.5,
+            reason="Test",
+            matched_keywords=[],
+            matched_patterns=[]
+        )
+        # New fields should have defaults
+        assert decision.search_terms == []
+        assert decision.num_searches == 1
+        assert decision.source == "heuristic"
+
+    def test_new_fields_can_be_set(self):
+        """Test new fields can be explicitly set."""
+        decision = WebSearchDecision(
+            should_search=True,
+            depth=WebSearchDepth.STANDARD,
+            confidence=0.8,
+            reason="LLM decision",
+            matched_keywords=["latest"],
+            matched_patterns=[],
+            search_terms=["optimized query 1", "optimized query 2"],
+            num_searches=2,
+            source="llm"
+        )
+        assert decision.search_terms == ["optimized query 1", "optimized query 2"]
+        assert decision.num_searches == 2
+        assert decision.source == "llm"
+
+
+class TestAnalyzeForWebSearchLLM:
+    """Tests for async LLM-first trigger function."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_config_returns_no_search(self):
+        """Test web search disabled returns no search."""
+        decision = await analyze_for_web_search_llm(
+            query="What's the latest news?",
+            web_search_enabled=False
+        )
+        assert decision.should_search is False
+        assert "disabled" in decision.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_crisis_suppression(self):
+        """Test crisis levels suppress search."""
+        for level in ["HIGH", "MEDIUM"]:
+            decision = await analyze_for_web_search_llm(
+                query="What's the latest news?",
+                crisis_level=level
+            )
+            assert decision.should_search is False
+            assert "crisis" in decision.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_prefilter_skips_llm(self):
+        """Test pre-filter skips LLM for obvious non-search queries."""
+        decision = await analyze_for_web_search_llm(
+            query="hello",  # Too short
+            model_manager=None
+        )
+        assert decision.should_search is False
+        assert "pre-filter" in decision.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_model_manager_uses_heuristics(self):
+        """Test without model manager falls back to heuristics."""
+        decision = await analyze_for_web_search_llm(
+            query="What's the latest Bitcoin price?",
+            model_manager=None
+        )
+        # Should use heuristics (bitcoin + latest should trigger)
+        assert decision.source == "heuristic"
+
+    @pytest.mark.asyncio
+    async def test_with_mock_model_manager(self):
+        """Test with mocked model manager returns LLM decision."""
+        from unittest.mock import AsyncMock
+
+        mock_manager = MagicMock()
+        mock_response = '''{"should_search": true, "confidence": 0.9, "reason": "Time-sensitive", "search_terms": ["test query"], "search_depth": "standard", "num_searches": 1}'''
+
+        # Use AsyncMock for the coroutine
+        mock_manager.generate_once = AsyncMock(return_value=mock_response)
+
+        # Patch LLM_FIRST_ENABLED to True (must be at module level)
+        import utils.web_search_trigger as trigger_module
+        original_value = trigger_module.LLM_FIRST_ENABLED
+        try:
+            trigger_module.LLM_FIRST_ENABLED = True
+
+            decision = await analyze_for_web_search_llm(
+                query="What's the current flu variant spreading in 2026?",
+                model_manager=mock_manager
+            )
+
+            # Should have LLM-influenced decision
+            assert decision.source == "llm"
+            assert decision.search_terms == ["test query"]
+        finally:
+            trigger_module.LLM_FIRST_ENABLED = original_value
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

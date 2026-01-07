@@ -791,6 +791,49 @@ class MemoryRetriever:
         # Get recent episodic memories
         very_recent = self._get_recent_conversations(k=recent_limit)
 
+        # ENTITY-AWARE RETRIEVAL: If query mentions specific entities (names like "Graham"),
+        # also do semantic search to find older memories about those entities
+        from processing.gate_system import _extract_query_entities, _entity_match_boost
+        query_entities = _extract_query_entities(query)
+
+        entity_matches = []
+        if query_entities:
+            logger.info(f"[MemoryRetriever] Meta-conversational query mentions entities: {query_entities}")
+            # Do semantic search to find entity-related memories
+            semantic_results = await self._get_semantic_memories(query, n_results=100)
+
+            # Filter and boost memories that contain the mentioned entities
+            for mem in semantic_results:
+                content = mem.get('content', '') or mem.get('query', '') + ' ' + mem.get('response', '')
+                boost = _entity_match_boost(query_entities, content)
+                if boost > 0:
+                    mem['entity_boost'] = boost
+                    mem['relevance_score'] = mem.get('relevance_score', 0.5) + boost
+                    entity_matches.append(mem)
+                    logger.debug(f"[MemoryRetriever] Entity match found: boost={boost:.2f}, preview={content[:60]}...")
+
+            logger.info(f"[MemoryRetriever] Found {len(entity_matches)} entity-matching memories from semantic search")
+
+        # Merge recent + entity matches, deduplicating by id
+        seen_ids = set()
+        combined = []
+
+        # Entity matches first (they're specifically about the entity mentioned)
+        for mem in entity_matches:
+            mem_id = mem.get('id') or id(mem)
+            if mem_id not in seen_ids:
+                seen_ids.add(mem_id)
+                combined.append(mem)
+
+        # Then recent memories
+        for mem in very_recent:
+            mem_id = mem.get('id') or id(mem)
+            if mem_id not in seen_ids:
+                seen_ids.add(mem_id)
+                combined.append(mem)
+
+        logger.debug(f"[MemoryRetriever] Combined {len(entity_matches)} entity + {len(very_recent)} recent = {len(combined)} unique")
+
         # Sort chronologically
         def _ts(m):
             ts = m.get('timestamp')
@@ -801,12 +844,10 @@ class MemoryRetriever:
                     return datetime.min
             return ts if isinstance(ts, datetime) else datetime.min
 
-        very_recent.sort(key=_ts, reverse=True)
-
         # Use scorer with meta-conversational bonus if available
         if self.scorer:
             ranked = self.scorer.rank_memories(
-                very_recent,
+                combined,
                 query,
                 current_topic=topic_filter,
                 is_meta_conversational=True  # Enable meta-conversational bonus
@@ -814,13 +855,16 @@ class MemoryRetriever:
             return ranked[:limit]
         else:
             # Fallback: Apply gentle recency weighting
+            combined.sort(key=_ts, reverse=True)
             now = datetime.now()
-            for m in very_recent:
+            for m in combined:
                 ts = _ts(m)
                 if ts:
                     age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
                     recency_score = 1.0 / (1.0 + 0.01 * age_hours)
-                    m['final_score'] = recency_score
-                    m['relevance_score'] = recency_score
+                    # Preserve entity boost if present
+                    entity_boost = m.get('entity_boost', 0.0)
+                    m['final_score'] = recency_score + entity_boost
+                    m['relevance_score'] = recency_score + entity_boost
 
-            return very_recent[:limit]
+            return combined[:limit]

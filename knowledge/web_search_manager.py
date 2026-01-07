@@ -13,6 +13,13 @@ Module Contract:
   - Network requests to Tavily API
   - ChromaDB cache writes (72-hour TTL)
   - Credit tracking for rate limiting
+
+Enhanced Features (2026-01):
+- Query Decomposition: Complex queries are split into sub-queries for parallel search
+  - LLM-based detection of multi-entity/multi-facet queries
+  - Parallel Tavily searches with result merging and deduplication
+  - Credit-aware: respects daily limits, caps sub-queries at 4
+- Entry point: multi_search() for decomposed queries, search() for single queries
 """
 
 import asyncio
@@ -111,6 +118,85 @@ class WebSearchSession:
                 seen.add(p.url)
                 pages.append(p)
         return pages
+
+
+@dataclass
+class QueryDecomposition:
+    """
+    Result of query decomposition analysis.
+
+    Used to determine if a complex query should be split into multiple
+    sub-queries for parallel search.
+    """
+    original_query: str
+    should_decompose: bool
+    sub_queries: List[str] = field(default_factory=list)
+    confidence: float = 0.0
+    reason: str = ""
+
+    @property
+    def query_count(self) -> int:
+        """Number of queries to execute (1 if no decomposition)."""
+        return len(self.sub_queries) if self.should_decompose else 1
+
+
+@dataclass
+class MultiSearchResult:
+    """
+    Result from a multi-query search operation.
+
+    Extends WebSearchResult with decomposition metadata.
+    """
+    original_query: str
+    sub_queries: List[str] = field(default_factory=list)
+    pages: List[WebPage] = field(default_factory=list)
+    total_credits_used: float = 0.0
+    search_depth: WebSearchDepth = WebSearchDepth.QUICK
+    from_cache: bool = False
+    timestamp: float = field(default_factory=time.time)
+    error: Optional[str] = None
+    decomposition_used: bool = False
+
+    @property
+    def has_results(self) -> bool:
+        return len(self.pages) > 0 and not self.error
+
+    def get_formatted_content(self, max_chars: int = 10000) -> str:
+        """Get formatted content for prompt injection."""
+        if not self.pages:
+            return ""
+
+        parts = []
+        total_chars = 0
+        for page in self.pages:
+            if total_chars >= max_chars:
+                break
+            content = page.content or page.snippet
+            if not content:
+                continue
+            entry = f"**{page.title}** ({page.url})\n{content}"
+            if total_chars + len(entry) > max_chars:
+                remaining = max_chars - total_chars
+                if remaining > 100:
+                    entry = entry[:remaining] + "..."
+                    parts.append(entry)
+                break
+            parts.append(entry)
+            total_chars += len(entry) + 2
+
+        return "\n\n".join(parts)
+
+    def to_web_search_result(self) -> 'WebSearchResult':
+        """Convert to standard WebSearchResult for backward compatibility."""
+        return WebSearchResult(
+            query=self.original_query,
+            pages=self.pages,
+            total_credits_used=self.total_credits_used,
+            search_depth=self.search_depth,
+            from_cache=self.from_cache,
+            timestamp=self.timestamp,
+            error=self.error
+        )
 
 
 class WebSearchRateLimiter:
@@ -695,6 +781,306 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
         except Exception as e:
             log.debug(f"[WebSearch] Link selection failed: {e}")
             return []
+
+    # =========================================================================
+    # Query Decomposition and Multi-Search
+    # =========================================================================
+
+    async def decompose_query(
+        self,
+        query: str,
+        max_sub_queries: int = 4,
+        min_confidence: float = 0.6
+    ) -> QueryDecomposition:
+        """
+        Analyze a query and decompose into sub-queries if beneficial.
+
+        Uses LLM to detect multi-entity or multi-facet queries that would
+        benefit from parallel searches.
+
+        Args:
+            query: Original user query
+            max_sub_queries: Maximum number of sub-queries to generate
+            min_confidence: Minimum confidence to trigger decomposition
+
+        Returns:
+            QueryDecomposition with sub-queries if applicable
+        """
+        if not query or len(query) < 20:
+            return QueryDecomposition(
+                original_query=query,
+                should_decompose=False,
+                reason="Query too short for decomposition"
+            )
+
+        # Check credit budget - don't decompose if we can't afford it
+        remaining_credits = self.rate_limiter.get_remaining_credits()
+        if remaining_credits < 2:
+            return QueryDecomposition(
+                original_query=query,
+                should_decompose=False,
+                reason="Insufficient credits for multi-search"
+            )
+
+        try:
+            from models.model_manager import ModelManager
+            model_manager = ModelManager()
+
+            prompt = f"""Analyze this search query and determine if it should be split into multiple focused sub-queries for better search results.
+
+Query: "{query}"
+
+Criteria for splitting:
+1. Multiple distinct entities (e.g., "Tesla vs Rivian" → search each separately)
+2. Multiple facets/aspects (e.g., "iPhone 16 price and reviews" → search price, search reviews)
+3. Comparison queries (e.g., "Python vs JavaScript for web dev" → search each language)
+4. Time-spanning queries (e.g., "AI progress 2024 to 2025" → search each year)
+
+DO NOT split if:
+- Query is already focused on one topic
+- Splitting would lose important context
+- Query is a simple factual question
+
+Respond in this exact format:
+SHOULD_SPLIT: yes/no
+CONFIDENCE: 0.0-1.0
+REASON: brief explanation
+SUB_QUERIES:
+- first sub-query (if splitting)
+- second sub-query (if splitting)
+- etc (max {max_sub_queries})
+
+If not splitting, leave SUB_QUERIES empty."""
+
+            response = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: model_manager.generate(
+                    prompt=prompt,
+                    system_prompt="You are a search query analyst. Be concise and precise.",
+                    model_name=self.link_selector_model,
+                    max_tokens=300,
+                    temperature=0.0
+                )
+            )
+
+            if not response:
+                return QueryDecomposition(
+                    original_query=query,
+                    should_decompose=False,
+                    reason="LLM response empty"
+                )
+
+            # Parse response
+            lines = response.strip().split("\n")
+            should_split = False
+            confidence = 0.0
+            reason = ""
+            sub_queries = []
+
+            in_sub_queries = False
+            for line in lines:
+                line = line.strip()
+                if line.startswith("SHOULD_SPLIT:"):
+                    should_split = "yes" in line.lower()
+                elif line.startswith("CONFIDENCE:"):
+                    try:
+                        confidence = float(line.split(":")[1].strip())
+                    except (ValueError, IndexError):
+                        confidence = 0.5
+                elif line.startswith("REASON:"):
+                    reason = line.split(":", 1)[1].strip() if ":" in line else ""
+                elif line.startswith("SUB_QUERIES:"):
+                    in_sub_queries = True
+                elif in_sub_queries and line.startswith("-"):
+                    sub_query = line[1:].strip()
+                    if sub_query and len(sub_queries) < max_sub_queries:
+                        sub_queries.append(sub_query)
+
+            # Apply confidence threshold
+            if confidence < min_confidence:
+                should_split = False
+                reason = f"Confidence {confidence:.2f} below threshold {min_confidence}"
+
+            # Validate we have enough sub-queries
+            if should_split and len(sub_queries) < 2:
+                should_split = False
+                reason = "Not enough sub-queries generated"
+
+            log.info(
+                f"[WebSearch] Query decomposition: split={should_split}, "
+                f"confidence={confidence:.2f}, sub_queries={len(sub_queries)}"
+            )
+
+            return QueryDecomposition(
+                original_query=query,
+                should_decompose=should_split,
+                sub_queries=sub_queries,
+                confidence=confidence,
+                reason=reason
+            )
+
+        except Exception as e:
+            log.warning(f"[WebSearch] Query decomposition failed: {e}")
+            return QueryDecomposition(
+                original_query=query,
+                should_decompose=False,
+                reason=f"Decomposition error: {str(e)}"
+            )
+
+    async def multi_search(
+        self,
+        query: str,
+        depth: WebSearchDepth = WebSearchDepth.STANDARD,
+        crisis_level: Optional[str] = None,
+        timeout: Optional[float] = None,
+        use_cache: bool = True,
+        max_results_per_query: int = 3,
+        auto_decompose: bool = True
+    ) -> MultiSearchResult:
+        """
+        Perform a multi-query search with automatic decomposition.
+
+        This is the enhanced entry point that:
+        1. Analyzes the query for decomposition potential
+        2. If beneficial, splits into sub-queries
+        3. Executes parallel searches
+        4. Merges and deduplicates results
+
+        Args:
+            query: User search query
+            depth: Search depth level
+            crisis_level: Current tone/crisis level
+            timeout: Per-search timeout in seconds
+            use_cache: Whether to use cache
+            max_results_per_query: Max results per sub-query
+            auto_decompose: Whether to auto-analyze for decomposition
+
+        Returns:
+            MultiSearchResult with merged pages from all sub-queries
+        """
+        # Crisis suppression
+        if crisis_level and crisis_level.upper() in ("HIGH", "MEDIUM"):
+            log.debug(f"[WebSearch] Multi-search suppressed during {crisis_level}")
+            return MultiSearchResult(
+                original_query=query,
+                search_depth=depth,
+                error=f"Search suppressed during {crisis_level} crisis level"
+            )
+
+        # Attempt query decomposition if enabled
+        decomposition = None
+        if auto_decompose:
+            decomposition = await self.decompose_query(query)
+
+        # If decomposition not beneficial, fall back to single search
+        if not decomposition or not decomposition.should_decompose:
+            log.debug("[WebSearch] No decomposition, using single search")
+            single_result = await self.search(
+                query=query,
+                depth=depth,
+                crisis_level=crisis_level,
+                timeout=timeout,
+                use_cache=use_cache,
+                max_results=max_results_per_query * 2  # More results for single query
+            )
+            return MultiSearchResult(
+                original_query=query,
+                sub_queries=[query],
+                pages=single_result.pages,
+                total_credits_used=single_result.total_credits_used,
+                search_depth=depth,
+                from_cache=single_result.from_cache,
+                timestamp=single_result.timestamp,
+                error=single_result.error,
+                decomposition_used=False
+            )
+
+        # Execute parallel searches for sub-queries
+        log.info(
+            f"[WebSearch] Executing multi-search with {len(decomposition.sub_queries)} sub-queries"
+        )
+
+        sub_queries = decomposition.sub_queries
+        timeout = timeout or self.default_timeout
+
+        # Create search tasks
+        search_tasks = [
+            self.search(
+                query=sub_q,
+                depth=depth,
+                crisis_level=crisis_level,
+                timeout=timeout,
+                use_cache=use_cache,
+                max_results=max_results_per_query
+            )
+            for sub_q in sub_queries
+        ]
+
+        # Execute in parallel
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*search_tasks, return_exceptions=True),
+                timeout=timeout * 2  # Allow extra time for parallel execution
+            )
+        except asyncio.TimeoutError:
+            log.warning("[WebSearch] Multi-search timed out")
+            return MultiSearchResult(
+                original_query=query,
+                sub_queries=sub_queries,
+                search_depth=depth,
+                error="Multi-search timed out",
+                decomposition_used=True
+            )
+
+        # Merge and deduplicate results
+        all_pages: List[WebPage] = []
+        seen_urls: Dict[str, WebPage] = {}
+        total_credits = 0.0
+        any_from_cache = False
+        errors = []
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                errors.append(f"Sub-query {i+1} error: {str(result)}")
+                continue
+
+            if result.error:
+                errors.append(f"Sub-query '{sub_queries[i][:30]}...': {result.error}")
+                continue
+
+            total_credits += result.total_credits_used
+            if result.from_cache:
+                any_from_cache = True
+
+            # Deduplicate by URL, keeping highest-scoring version
+            for page in result.pages:
+                if page.url in seen_urls:
+                    # Keep the one with higher score
+                    if page.score > seen_urls[page.url].score:
+                        seen_urls[page.url] = page
+                else:
+                    seen_urls[page.url] = page
+
+        # Sort by score (descending)
+        all_pages = sorted(seen_urls.values(), key=lambda p: p.score, reverse=True)
+
+        # Log summary
+        log.info(
+            f"[WebSearch] Multi-search complete: {len(all_pages)} unique pages, "
+            f"{total_credits:.1f} credits, {len(errors)} errors"
+        )
+
+        return MultiSearchResult(
+            original_query=query,
+            sub_queries=sub_queries,
+            pages=all_pages,
+            total_credits_used=total_credits,
+            search_depth=depth,
+            from_cache=any_from_cache,
+            timestamp=time.time(),
+            error="; ".join(errors) if errors and not all_pages else None,
+            decomposition_used=True
+        )
 
     def get_status(self) -> Dict[str, Any]:
         """Get current status of the web search system."""

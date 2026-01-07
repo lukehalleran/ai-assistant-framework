@@ -493,7 +493,7 @@ def _overlap_score(query: str, text: str) -> float:
 
 def _source_weight(src: str) -> float:
     """
-    Slightly prefer “docs/paper” over “unknown”. Numbers are gentle nudges, not gates.
+    Slightly prefer "docs/paper" over "unknown". Numbers are gentle nudges, not gates.
     """
     s = (src or "").lower()
     if s in {"docs", "paper", "arxiv", "manual", "notebook"}:
@@ -503,6 +503,107 @@ def _source_weight(src: str) -> float:
     if s in {"unknown", ""}:
         return 0.85
     return 1.00
+
+
+# Common words to exclude from entity matching (not names/entities)
+_COMMON_WORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "must", "shall", "can", "need", "dare",
+    "about", "above", "across", "after", "against", "along", "among",
+    "around", "at", "before", "behind", "below", "beneath", "beside",
+    "between", "beyond", "but", "by", "down", "during", "except", "for",
+    "from", "in", "inside", "into", "like", "near", "of", "off", "on",
+    "onto", "out", "outside", "over", "past", "since", "through", "to",
+    "toward", "under", "underneath", "until", "up", "upon", "with",
+    "within", "without", "and", "or", "nor", "so", "yet", "both",
+    "either", "neither", "not", "only", "own", "same", "than", "too",
+    "very", "just", "also", "now", "here", "there", "when", "where",
+    "why", "how", "all", "each", "every", "both", "few", "more", "most",
+    "other", "some", "such", "no", "any", "many", "much", "what", "which",
+    "who", "whom", "this", "that", "these", "those", "i", "you", "he",
+    "she", "it", "we", "they", "me", "him", "her", "us", "them", "my",
+    "your", "his", "its", "our", "their", "mine", "yours", "hers", "ours",
+    "theirs", "myself", "yourself", "himself", "herself", "itself",
+    "ourselves", "yourselves", "themselves", "tell", "know", "think",
+    "remember", "recall", "said", "say", "told", "asked", "talked",
+    "mentioned", "anything", "something", "everything", "nothing",
+}
+
+
+def _extract_query_entities(query: str) -> set:
+    """
+    Extract potential entity names from a query for boosting memory matches.
+
+    Looks for:
+    - Capitalized words (proper nouns like "Graham", "Diane")
+    - Words after "about", "remember", "know about", etc.
+    - Multi-word proper nouns
+
+    Returns lowercase set for case-insensitive matching.
+    """
+    if not query:
+        return set()
+
+    entities = set()
+
+    # 1) Find capitalized words (potential proper nouns)
+    # Skip first word of sentence as it's always capitalized
+    words = query.split()
+    for i, word in enumerate(words):
+        # Clean punctuation
+        clean = re.sub(r'[^\w]', '', word)
+        if not clean:
+            continue
+        # Check if capitalized (and not first word or after punctuation)
+        if i > 0 and clean[0].isupper() and len(clean) >= 2:
+            lower = clean.lower()
+            if lower not in _COMMON_WORDS:
+                entities.add(lower)
+
+    # 2) Extract words after entity-seeking phrases
+    patterns = [
+        r"(?:about|remember|recall|know about|told me about|mentioned)\s+(\w+)",
+        r"(?:who is|what about|how is|where is)\s+(\w+)",
+        r"(?:with|and)\s+([A-Z][a-z]+)",  # "with Graham", "and Diane"
+    ]
+    for pat in patterns:
+        matches = re.findall(pat, query, re.IGNORECASE)
+        for m in matches:
+            lower = m.lower()
+            if lower not in _COMMON_WORDS and len(lower) >= 2:
+                entities.add(lower)
+
+    return entities
+
+
+def _entity_match_boost(query_entities: set, content: str) -> float:
+    """
+    Calculate boost for memories that contain entities mentioned in the query.
+
+    Returns:
+        0.0 if no match
+        0.15-0.25 based on match quality
+    """
+    if not query_entities or not content:
+        return 0.0
+
+    content_lower = content.lower()
+    matches = 0
+
+    for entity in query_entities:
+        # Look for word boundary matches to avoid partial matches
+        # e.g., "graham" should match "Graham" but not "histogram"
+        pattern = r'\b' + re.escape(entity) + r'\b'
+        if re.search(pattern, content_lower):
+            matches += 1
+
+    if matches == 0:
+        return 0.0
+    elif matches == 1:
+        return 0.18  # Single entity match
+    else:
+        return 0.25  # Multiple entity matches
 
 
 # Threshold & batching tunables (env-overridable)
@@ -869,9 +970,24 @@ class MultiStageGateSystem:
             cosine_weight = float(os.getenv("GATE_COSINE_WEIGHT", "0.85"))  # Up from 0.7
             truth_weight = 1.0 - cosine_weight  # Down from 0.3 to 0.15
 
-            for mem, sim in zip(to_gate, similarities):
+            # Extract entities from query for boosting (e.g., "Graham", "Diane")
+            query_entities = _extract_query_entities(query)
+            if query_entities:
+                logger.debug(f"[Batch Gate] Extracted entities from query: {query_entities}")
+
+            for mem, sim, content in zip(to_gate, similarities, contents):
                 truth = float(mem.get("metadata", {}).get("truth_score", 0.5))
-                score = cosine_weight * float(sim) + truth_weight * truth
+                base_score = cosine_weight * float(sim) + truth_weight * truth
+
+                # Apply entity match boost when query mentions names that appear in memory
+                entity_boost = _entity_match_boost(query_entities, content)
+                score = min(1.0, base_score + entity_boost)  # Cap at 1.0
+
+                if entity_boost > 0:
+                    logger.debug(
+                        f"[Batch Gate] Entity boost applied: +{entity_boost:.2f} "
+                        f"(base={base_score:.3f} -> boosted={score:.3f})"
+                    )
 
                 threshold = self.gate_system.cosine_threshold
                 if is_deictic:
@@ -886,6 +1002,7 @@ class MultiStageGateSystem:
                     mem["relevance_score"] = float(score)
                     mem["filtered_content"] = _extract_gate_content(mem)[:300]
                     mem["cosine_sim"] = float(sim)  # Store raw cosine for debugging
+                    mem["entity_boost"] = float(entity_boost)  # Store for debugging
                     gated.append(mem)
                 else:
                     # Enhanced debug logging
@@ -893,7 +1010,7 @@ class MultiStageGateSystem:
                     logger.debug(
                         f"[Batch Gate] Memory filtered out: "
                         f"timestamp={ts}, cosine={float(sim):.3f}, truth={truth:.3f}, "
-                        f"blended={score:.3f}, threshold={threshold:.3f}, "
+                        f"blended={score:.3f}, entity_boost={entity_boost:.2f}, threshold={threshold:.3f}, "
                         f"preview={_extract_gate_content(mem)[:60]}"
                     )
 
@@ -904,29 +1021,32 @@ class MultiStageGateSystem:
             if len(gated) < MIN_GATED_MEMORIES and len(to_gate) > 0:
                 logger.info(f"[Batch Gate] Only {len(gated)} memories passed, forcing minimum of {MIN_GATED_MEMORIES}")
 
-                # Create list of all memories with their scores
+                # Create list of all memories with their scores (including entity boost)
                 all_scored = []
                 for i, mem in enumerate(to_gate):
                     truth = float(mem.get("metadata", {}).get("truth_score", 0.5))
-                    blended_score = cosine_weight * similarities[i] + truth_weight * truth
-                    all_scored.append((mem, blended_score, similarities[i]))
+                    base_score = cosine_weight * similarities[i] + truth_weight * truth
+                    entity_boost = _entity_match_boost(query_entities, contents[i])
+                    blended_score = min(1.0, base_score + entity_boost)
+                    all_scored.append((mem, blended_score, similarities[i], entity_boost))
 
                 # Sort by blended score (descending)
                 all_scored.sort(key=lambda x: x[1], reverse=True)
 
                 # Add top-scoring memories until we hit minimum
                 gated_ids = {id(m) for m in gated}  # Use id() for identity check
-                for mem, blended_score, cosine_sim in all_scored:
+                for mem, blended_score, cosine_sim, ent_boost in all_scored:
                     if len(gated) >= MIN_GATED_MEMORIES:
                         break
                     if id(mem) not in gated_ids:
                         mem["relevance_score"] = float(blended_score)
                         mem["filtered_content"] = _extract_gate_content(mem)[:300]
                         mem["cosine_sim"] = float(cosine_sim)
+                        mem["entity_boost"] = float(ent_boost)
                         mem["forced_minimum"] = True  # Mark for debugging
                         gated.append(mem)
                         gated_ids.add(id(mem))
-                        logger.debug(f"[Batch Gate] Forced add: blended={blended_score:.3f}, cosine={cosine_sim:.3f}")
+                        logger.debug(f"[Batch Gate] Forced add: blended={blended_score:.3f}, cosine={cosine_sim:.3f}, entity_boost={ent_boost:.2f}")
 
                 logger.info(f"[Batch Gate] Forced minimum added {len(gated) - original_gated_count} memories")
 

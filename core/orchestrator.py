@@ -19,6 +19,13 @@ Module Contract
   - Writes conversation+metadata to corpus DB/Chroma via memory_system; logs events.
 - Async behavior:
   - Uses async streaming from response_generator; overall methods are async.
+
+Additional Contract (Agentic Search):
+  - process_user_query() accepts use_agentic_search parameter
+  - When agentic=True, routes through AgenticSearchController for multi-round search
+  - Emits ProgressEvent for UI status updates during agentic flow
+  - Falls back to standard flow on agentic failures
+  - Agentic mode uses LLM-first trigger's search_terms for initial search
 """
 import os
 import re
@@ -318,6 +325,10 @@ class DaemonOrchestrator:
         self.current_tone_level: Optional[CrisisLevel] = None  # Keep for compatibility
         self.current_emotional_context: Optional[EmotionalContext] = None
 
+        # Agentic search controller (lazy initialization)
+        self._agentic_controller = None
+        self._agentic_config = self.config.get("agentic_search", {}) if self.config else {}
+
         # STM (Short-Term Memory) analyzer for multi-pass context summarization
         self.stm_analyzer = None
         self.last_stm_topic = None  # Track last topic for change detection
@@ -614,7 +625,98 @@ The user is processing/analyzing, open to engagement.
             "**[CURRENT USER QUERY]**: The only query to respond to. All other sections are context only."
         )
 
-    # ---------- 2) Commands & Topic ----------
+    # ---------- 2) Agentic Search Controller ----------
+    @property
+    def agentic_controller(self):
+        """
+        Lazy-initialize the agentic search controller.
+
+        Returns:
+            AgenticSearchController instance or None if not available
+        """
+        if self._agentic_controller is not None:
+            return self._agentic_controller
+
+        # Check if agentic search is enabled
+        if not self._agentic_config.get("enabled", False):
+            return None
+
+        try:
+            from core.agentic import AgenticSearchController
+
+            # Get web search manager from prompt builder
+            web_search_manager = None
+            if hasattr(self.prompt_builder, 'context_gatherer'):
+                web_search_manager = getattr(
+                    self.prompt_builder.context_gatherer,
+                    'web_search_manager',
+                    None
+                )
+
+            if not web_search_manager:
+                if self.logger:
+                    self.logger.warning("[Orchestrator] Agentic search disabled: no web_search_manager")
+                return None
+
+            # Get token manager if available
+            token_manager = None
+            if hasattr(self.prompt_builder, 'token_manager'):
+                token_manager = self.prompt_builder.token_manager
+
+            self._agentic_controller = AgenticSearchController(
+                model_manager=self.model_manager,
+                web_search_manager=web_search_manager,
+                token_manager=token_manager,
+                max_rounds=self._agentic_config.get("max_rounds", 5),
+                context_budget_tokens=self._agentic_config.get("context_budget_tokens", 8000),
+                compression_model=self._agentic_config.get("compression_model", "gpt-4o-mini"),
+            )
+
+            if self.logger:
+                self.logger.info("[Orchestrator] Agentic search controller initialized")
+
+            return self._agentic_controller
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"[Orchestrator] Failed to initialize agentic controller: {e}")
+            return None
+
+    def _should_use_agentic_search(
+        self,
+        user_input: str,
+        web_search_decision: Any = None,
+        use_agentic_search: bool = False
+    ) -> bool:
+        """
+        Determine if agentic search should be used for this query.
+
+        Args:
+            user_input: The user's query
+            web_search_decision: WebSearchDecision from LLM-first trigger
+            use_agentic_search: Explicit flag from caller
+
+        Returns:
+            True if agentic search should be used
+        """
+        # Must be explicitly enabled
+        if not use_agentic_search:
+            return False
+
+        # Must have agentic controller available
+        if self.agentic_controller is None:
+            return False
+
+        # Must have a web search decision that says to search
+        if web_search_decision is None:
+            return False
+
+        if hasattr(web_search_decision, 'should_search') and not web_search_decision.should_search:
+            return False
+
+        return True
+
+    # ---------- 3) Commands & Topic ----------
     def handle_commands(self, user_input: str) -> Optional[Tuple[str, Dict[str, Any]]]:
         if user_input.startswith("/topic "):
             new_topic = user_input.replace("/topic ", "").strip()
@@ -1230,7 +1332,8 @@ The user is processing/analyzing, open to engagement.
         user_input: str,
         files: Optional[List[Any]] = None,
         use_raw_mode: bool = False,
-        personality: Optional[str] = None
+        personality: Optional[str] = None,
+        use_agentic_search: bool = False,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Orchestrates the full request:
@@ -1238,8 +1341,20 @@ The user is processing/analyzing, open to engagement.
           - commands (early exit)
           - deictic pre-check (optional early clarification)
           - prepare_prompt
-          - generate + store
+          - generate + store (or agentic search loop if enabled)
         Returns: (assistant_text, debug_info)
+
+        Args:
+            user_input: The user's query
+            files: Optional list of files to process
+            use_raw_mode: If True, skip memory/context gathering
+            personality: Optional personality to switch to
+            use_agentic_search: If True, use multi-round agentic search
+
+        Note: Agentic search requires:
+            - agentic_search.enabled = true in config
+            - Web search trigger to indicate search is needed
+            - Will fall back to standard flow if conditions not met
         """
         debug_info: Dict[str, Any] = {
             "start_time": datetime.now(),
@@ -1300,6 +1415,78 @@ The user is processing/analyzing, open to engagement.
             active_name_getter = getattr(self.model_manager, "get_active_model_name", None)
             model_name = active_name_getter() if callable(active_name_getter) else None
             model_name = model_name or "gpt-4-turbo"
+
+            # --- Agentic Search Check ---
+            # If agentic search is requested and available, check if we should use it
+            if use_agentic_search and not use_raw_mode and self.agentic_controller:
+                try:
+                    # Get web search decision from LLM-first trigger
+                    from utils.web_search_trigger import analyze_for_web_search_llm
+
+                    web_decision = await analyze_for_web_search_llm(
+                        query=user_input,
+                        model_manager=self.model_manager,
+                        crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
+                        web_search_enabled=True,
+                    )
+
+                    if web_decision and web_decision.should_search and web_decision.search_terms:
+                        if self.logger:
+                            self.logger.info(
+                                f"[Orchestrator] Using agentic search: terms={web_decision.search_terms}"
+                            )
+
+                        # Run agentic search loop
+                        from core.agentic import ProgressEvent
+
+                        full_response = ""
+                        async for event_or_chunk in self.agentic_controller.run_agentic_search(
+                            query=user_input,
+                            system_prompt=system_prompt or "",
+                            model_name=model_name,
+                            initial_search_terms=web_decision.search_terms,
+                            crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
+                        ):
+                            if isinstance(event_or_chunk, ProgressEvent):
+                                # Log progress events
+                                if self.logger:
+                                    self.logger.debug(
+                                        f"[AgenticSearch] {event_or_chunk.event_type}: {event_or_chunk.message}"
+                                    )
+                                debug_info.setdefault("agentic_events", []).append({
+                                    "type": event_or_chunk.event_type,
+                                    "message": event_or_chunk.message,
+                                    "round": event_or_chunk.round_number,
+                                })
+                            else:
+                                # Accumulate response chunks
+                                full_response += event_or_chunk
+
+                        # Store interaction
+                        if self.memory_system:
+                            try:
+                                await self.memory_system.store_interaction(
+                                    query=user_input,
+                                    response=full_response.strip(),
+                                    tags=["agentic_search"]
+                                )
+                            except Exception:
+                                pass
+
+                        debug_info.update({
+                            "response_length": len(full_response),
+                            "end_time": datetime.now(),
+                            "prompt_length": len(prompt),
+                            "agentic_search_used": True,
+                        })
+                        debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
+
+                        return full_response.strip(), debug_info
+
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"[Orchestrator] Agentic search failed, falling back: {e}")
+                    debug_info["agentic_error"] = str(e)
 
             # Decide if we should use best-of (non-streaming) for quality; prefer runtime config
             try:

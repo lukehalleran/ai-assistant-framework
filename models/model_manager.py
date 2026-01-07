@@ -7,15 +7,24 @@ Module Contract
   - generate(prompt, model_name=?, system_prompt=?, …)
   - generate_async(prompt, raw=?, system_prompt=?)
   - generate_once(prompt, model_name=?, system_prompt=?, max_tokens=?)
+  - generate_once_with_tools(prompt, model_name=?, tools=?, tool_choice=?)
 - Outputs:
   - Text responses (sync) or async stream of ChatCompletion chunks; stub output when API unavailable.
+  - For generate_once_with_tools: raw response object with tool_calls for parsing
 - Key methods:
   - load_model(), load_openai_model(), switch_model(), get_active_model_name(), get_embedder()
   - truncate_prompt(): ensures local prompts fit context window
+  - supports_tools(): checks if a model supports function/tool calling
 - Dependencies:
   - transformers, sentence-transformers, httpx, environment OPENAI_API_KEY
 - Side effects:
   - Maintains HTTP clients; exposes aclose/close to release resources.
+
+Additional Contract (Tool Calling):
+  - generate_once_with_tools() supports function/tool calling for agentic workflows
+  - Returns raw response with tool_calls attribute for parsing
+  - Gracefully handles models without tool support (falls back to standard generation)
+  - supports_tools(model_name) returns bool indicating capability
 """
 # Import dependencies and config defaults
 from utils.logging_utils import log_and_time, get_logger
@@ -687,6 +696,124 @@ class ModelManager:
         else:
             logger.error(f"[generate_once] Model '{target_model}' is not recognized.")
             raise ValueError(f"[ModelManager] Model '{target_model}' is not recognized as a local or registered API model.")
+
+    def supports_tools(self, model_name: str = None) -> bool:
+        """
+        Check if a model supports function/tool calling.
+
+        Args:
+            model_name: Model name to check. Uses active model if None.
+
+        Returns:
+            bool: True if model supports tool calling
+        """
+        target_model = model_name or self.active_model_name
+        if not target_model:
+            return False
+
+        # Local models don't support tool calling
+        if target_model in self.models:
+            return False
+
+        # Check API models for tool support
+        if target_model in self.api_models:
+            full_model = self.api_models[target_model].lower()
+
+            # Models known to support tool calling
+            tool_capable_patterns = [
+                "gpt-4", "gpt-5",
+                "claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
+                "deepseek-chat", "deepseek-coder",
+                "gemini",
+            ]
+
+            return any(pattern in full_model for pattern in tool_capable_patterns)
+
+        return False
+
+    async def generate_once_with_tools(
+        self,
+        prompt: str,
+        model_name: str = None,
+        system_prompt: str = "You are a helpful assistant.",
+        tools: list = None,
+        tool_choice: str = "auto",
+        max_tokens: int = 500,
+        temperature: float = 0.3,
+    ):
+        """
+        Generate a response with function/tool calling support.
+
+        Used for agentic workflows where the model can request actions
+        (like web searches) via tool calls.
+
+        Args:
+            prompt: The user prompt
+            model_name: Model to use (default: active model)
+            system_prompt: System prompt
+            tools: List of tool definitions (OpenAI format)
+            tool_choice: "auto", "none", or specific tool name
+            max_tokens: Maximum tokens for response
+            temperature: Temperature for generation
+
+        Returns:
+            Raw response message object with potential tool_calls attribute.
+            Returns a dict with 'content' key if tools not supported.
+        """
+        target_model = model_name or self.active_model_name
+        if not target_model:
+            logger.error("[generate_once_with_tools] No model specified or active.")
+            raise ValueError("No model specified. Pass model_name or use switch_model() first.")
+
+        # Check if model supports tools
+        if not self.supports_tools(target_model):
+            logger.warning(f"[generate_once_with_tools] Model {target_model} doesn't support tools, using standard generation")
+            response_text = await self.generate_once(
+                prompt=prompt,
+                model_name=target_model,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            return {"content": response_text, "tool_calls": None}
+
+        # Handle API models with tool support
+        if target_model in self.api_models:
+            if self.async_client is None:
+                return {"content": self._stub_response(prompt), "tool_calls": None}
+
+            try:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ]
+
+                # Build request parameters
+                request_params = {
+                    "model": self.api_models[target_model],
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "stream": False,
+                }
+
+                # Add tools if provided
+                if tools:
+                    request_params["tools"] = tools
+                    request_params["tool_choice"] = tool_choice
+
+                response = await self.async_client.chat.completions.create(**request_params)
+
+                # Return the message object (has content and tool_calls)
+                return response.choices[0].message
+
+            except Exception as e:
+                logger.error(f"[generate_once_with_tools] Error: {e}")
+                return {"content": self._stub_response(prompt), "tool_calls": None}
+
+        # Unrecognized model
+        logger.error(f"[generate_once_with_tools] Model '{target_model}' not recognized")
+        raise ValueError(f"Model '{target_model}' is not recognized")
 
     @log_and_time("ModelManager Generate Async")
     async def generate_async(self, prompt, raw=False, **kwargs):
