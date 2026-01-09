@@ -124,6 +124,66 @@ def _strip_prompt_artifacts(text: str) -> str:
         return text
 
 
+def _sanitize_embedded_headers(text: str) -> str:
+    """
+    Sanitize embedded section headers in memory content to prevent prompt pollution.
+
+    When conversations discuss prompt structure, they may contain literal text like
+    "[RECENT CONVERSATION]" which can confuse the LLM into thinking there are
+    multiple sections. This function escapes such headers by replacing brackets.
+
+    Example: "[RECENT CONVERSATION]" -> "(RECENT CONVERSATION)"
+    """
+    if not text:
+        return text
+
+    try:
+        # List of section headers that should be escaped when found mid-text
+        section_headers = [
+            r'\[RECENT CONVERSATION[^\]]*\]',
+            r'\[RELEVANT MEMORIES[^\]]*\]',
+            r'\[RELEVANT INFORMATION[^\]]*\]',
+            r'\[BACKGROUND KNOWLEDGE[^\]]*\]',
+            r'\[USER PROFILE[^\]]*\]',
+            r'\[TIME CONTEXT[^\]]*\]',
+            r'\[CURRENT USER QUERY[^\]]*\]',
+            r'\[CURRENT QUERY[^\]]*\]',
+            r'\[LAST EXCHANGE[^\]]*\]',
+            r'\[WEB SEARCH RESULTS[^\]]*\]',
+            r'\[SUMMARIES[^\]]*\]',
+            r'\[RECENT SUMMARIES[^\]]*\]',
+            r'\[SEMANTIC SUMMARIES[^\]]*\]',
+            r'\[RECENT REFLECTIONS[^\]]*\]',
+            r'\[SEMANTIC REFLECTIONS[^\]]*\]',
+            r'\[DREAMS[^\]]*\]',
+            r'\[SHORT-TERM CONTEXT[^\]]*\]',
+            r'\[STM[^\]]*\]',
+            r'\[SEMANTIC FACTS[^\]]*\]',
+            r'\[RECENT FACTS[^\]]*\]',
+            r'\[FACTS[^\]]*\]',
+            r'\[DIRECTIVES[^\]]*\]',
+        ]
+
+        # Combine into one pattern
+        combined_pattern = '(' + '|'.join(section_headers) + ')'
+
+        def replace_brackets(match):
+            """Replace [] with () to neutralize the header."""
+            matched_text = match.group(0)
+            # Replace opening [ with ( and closing ] with )
+            return '(' + matched_text[1:-1] + ')'
+
+        sanitized = re.sub(combined_pattern, replace_brackets, text, flags=re.IGNORECASE)
+
+        if sanitized != text:
+            logger.debug(f"[SANITIZE] Escaped embedded section headers in content")
+
+        return sanitized
+    except Exception as e:
+        logger.warning(f"[SANITIZE] Failed to sanitize embedded headers: {e}")
+        return text
+
+
 class PromptFormatter:
     """Handles text formatting and prompt assembly for prompt building."""
 
@@ -187,8 +247,10 @@ class PromptFormatter:
             # Strip any bracketed prompt artifacts accidentally stored in memory
             if query:
                 query = _strip_prompt_artifacts(query)
+                query = _sanitize_embedded_headers(query)
             if response:
                 response = _strip_prompt_artifacts(response)
+                response = _sanitize_embedded_headers(response)
 
             # Get timestamp - check multiple possible locations and format as datetime
             timestamp = mem.get("timestamp", "")
@@ -231,6 +293,7 @@ class PromptFormatter:
                 # Fallback to content field if available
                 content = mem.get("content", "")
                 if content:
+                    content = _sanitize_embedded_headers(content)
                     formatted_content = f"{datetime_str}: {content.strip()}"
                 else:
                     # Last resort - show memory id and basic info

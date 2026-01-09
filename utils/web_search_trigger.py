@@ -658,6 +658,19 @@ def quick_prefilter_should_skip(query: str) -> bool:
     ):
         return True
 
+    # Deictic follow-up references - these refer to conversation context, not web content
+    # Patterns like "i just watched it", "saw that", "read it", etc.
+    deictic_followup_patterns = (
+        "watched it", "saw it", "read it", "heard it", "checked it",
+        "finished it", "started it", "looked at it",
+        "watched that", "saw that", "read that", "heard that",
+        "just watched", "just saw", "just read", "just heard",
+        "i watched", "i saw", "i read",
+    )
+    if any(pattern in query_lower for pattern in deictic_followup_patterns):
+        logger.debug(f"[WebSearchTrigger] Prefilter: skipping deictic follow-up: {query[:50]}")
+        return True
+
     return False
 
 
@@ -682,7 +695,12 @@ Available search budget: {remaining_credits:.0f} credits
 DECISION CRITERIA:
 - SEARCH if: current events, recent news, live data (stocks, weather, sports), time-sensitive health info, or references dates/years needing verification
 - DON'T SEARCH if: historical facts, scientific concepts, how-to guides, personal/emotional topics, or can be answered with general knowledge
-- NEVER SEARCH for: casual acknowledgments (nice, thanks, cool, got it, okay), meta-comments about the conversation or system, greetings, or short responses under 5 words that aren't explicit search requests
+- NEVER SEARCH for:
+  * Casual acknowledgments (nice, thanks, cool, got it, okay)
+  * Meta-comments about the conversation or system
+  * Greetings or short responses under 5 words that aren't explicit search requests
+  * Follow-up references to prior conversation ("watched it", "saw that", "just read it", "i just watched", etc.) - these refer to something already discussed, not web content
+  * Comments about media the user consumed ("i just watched", "i finished reading", "just saw") - these are conversation follow-ups, not search requests
 
 OUTPUT (JSON only, no markdown):
 {{
@@ -857,6 +875,26 @@ async def analyze_for_web_search_llm(
         logger.debug("[WebSearchTrigger] LLM failed, falling back to heuristics")
         return heuristic_result
 
+    # Heuristic veto: if heuristic is very confident there's NO search need,
+    # don't let the LLM override. This prevents false positives on deictic/follow-up queries.
+    HEURISTIC_VETO_THRESHOLD = 0.1
+    if heuristic_result.confidence <= HEURISTIC_VETO_THRESHOLD and not heuristic_result.should_search:
+        logger.debug(
+            f"[WebSearchTrigger] Heuristic veto: conf={heuristic_result.confidence:.2f} <= {HEURISTIC_VETO_THRESHOLD}, "
+            f"LLM wanted search={llm_response.should_search} but heuristic says no"
+        )
+        return WebSearchDecision(
+            should_search=False,
+            depth=WebSearchDepth.QUICK,
+            confidence=heuristic_result.confidence,
+            reason=f"Heuristic veto (conf={heuristic_result.confidence:.2f}); LLM overridden",
+            matched_keywords=heuristic_result.matched_keywords,
+            matched_patterns=heuristic_result.matched_patterns,
+            search_terms=[],
+            num_searches=0,
+            source="heuristic"
+        )
+
     # Blend LLM and heuristic confidence (70% LLM, 30% heuristic)
     llm_weight = LLM_HEURISTIC_BLEND_WEIGHT
     heuristic_weight = 1.0 - llm_weight
@@ -869,7 +907,8 @@ async def analyze_for_web_search_llm(
     should_search = blended_confidence >= SEARCH_CONFIDENCE_THRESHOLD
 
     # Use LLM's should_search if it's definitive (high confidence)
-    if llm_response.confidence >= 0.8:
+    # BUT only if heuristic doesn't strongly disagree (veto above handles extreme cases)
+    if llm_response.confidence >= 0.8 and heuristic_result.confidence >= 0.2:
         should_search = llm_response.should_search
     elif llm_response.confidence <= 0.2:
         should_search = llm_response.should_search

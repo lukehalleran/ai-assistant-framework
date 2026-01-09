@@ -67,6 +67,8 @@ class TopicManager:
             "today", "now", "stuff", "things", "misc", "none",
             # common connectors / interjections that are never a real topic
             "and", "but", "so", "ok", "okay", "yeah", "yep", "no", "yes",
+            # articles and common words that shouldn't be topics
+            "the", "a", "an", "i", "just", "only", "first", "second",
         }
 
     # --- Public API expected by the rest of your app ---
@@ -280,10 +282,14 @@ class TopicManager:
 
     def _spacy_ner_extraction(self, text: str) -> Optional[str]:
         """
-        Extract named entities using spaCy NER (stage 2).
-        Returns the most relevant entity or None if no entities found.
+        Extract topic using spaCy noun chunks + NER (stage 2).
 
-        Priority order: PERSON > ORG > GPE > PRODUCT > EVENT > other entities
+        Strategy:
+        1. First try noun_chunks for meaningful compound phrases (e.g., "first degree murder")
+        2. Fall back to NER entities if no good noun chunks
+        3. Filter out low-quality NER types (ORDINAL, CARDINAL, DATE, TIME) when alone
+
+        Priority order for NER: PERSON > ORG > GPE > PRODUCT > EVENT > other entities
         """
         nlp = _load_spacy()
         if nlp is None:
@@ -292,8 +298,16 @@ class TopicManager:
         try:
             doc = nlp(text)
 
-            # Filter entities by priority
+            # Stage 2a: Try noun chunks first (captures compound terms like "first degree murder")
+            noun_chunk_candidate = self._extract_best_noun_chunk(doc)
+            if noun_chunk_candidate:
+                self.logger.debug(f"[TopicManager] spaCy noun_chunk found: {noun_chunk_candidate}")
+                return noun_chunk_candidate
+
+            # Stage 2b: Fall back to NER entities
+            # Filter entities by priority (exclude low-quality types for single-word entities)
             priority_order = ["PERSON", "ORG", "GPE", "PRODUCT", "EVENT", "WORK_OF_ART", "LAW", "NORP"]
+            low_quality_types = {"ORDINAL", "CARDINAL", "DATE", "TIME", "PERCENT", "MONEY", "QUANTITY"}
 
             # Group entities by type
             entities_by_type = {}
@@ -303,6 +317,10 @@ class TopicManager:
                     continue
                 # Skip stopwords/vague terms
                 if ent.text.lower().strip() in self._stop_topics:
+                    continue
+                # Skip single-word low-quality types (ORDINAL "first", CARDINAL "two", etc.)
+                if ent.label_ in low_quality_types and len(ent.text.split()) == 1:
+                    self.logger.debug(f"[TopicManager] Skipping low-quality single-word {ent.label_}: {ent.text}")
                     continue
 
                 if ent.label_ not in entities_by_type:
@@ -317,18 +335,72 @@ class TopicManager:
                     self.logger.debug(f"[TopicManager] spaCy NER found {entity_type}: {candidate}")
                     return candidate
 
-            # If no priority entities, return any entity found
-            if entities_by_type:
-                first_type = list(entities_by_type.keys())[0]
-                candidate = entities_by_type[first_type][0]
-                self.logger.debug(f"[TopicManager] spaCy NER found {first_type}: {candidate}")
-                return candidate
+            # If no priority entities, return any entity found (excluding low-quality)
+            for etype, ents in entities_by_type.items():
+                if etype not in low_quality_types:
+                    candidate = ents[0]
+                    self.logger.debug(f"[TopicManager] spaCy NER found {etype}: {candidate}")
+                    return candidate
 
             return None
 
         except Exception as e:
             self.logger.debug(f"[TopicManager] spaCy NER failed: {e}")
             return None
+
+    def _extract_best_noun_chunk(self, doc) -> Optional[str]:
+        """
+        Extract the most meaningful noun chunk from spaCy doc.
+
+        Prefers multi-word chunks that contain substantive content.
+        Filters out chunks that are just pronouns, determiners, or stop words.
+        """
+        # Minimum words for a "good" noun chunk (captures "first degree murder" but not "it")
+        MIN_CHUNK_WORDS = 2
+
+        # Words that make a chunk low-quality when they're the only content
+        chunk_stopwords = {
+            "it", "this", "that", "these", "those", "the", "a", "an",
+            "i", "you", "he", "she", "they", "we", "me", "him", "her",
+            "something", "anything", "nothing", "everything", "stuff", "things"
+        }
+
+        best_chunk = None
+        best_score = 0
+
+        for chunk in doc.noun_chunks:
+            chunk_text = chunk.text.strip()
+            chunk_lower = chunk_text.lower()
+            words = chunk_lower.split()
+
+            # Skip single-word chunks
+            if len(words) < MIN_CHUNK_WORDS:
+                continue
+
+            # Skip if all words are stopwords
+            content_words = [w for w in words if w not in chunk_stopwords and len(w) > 2]
+            if not content_words:
+                continue
+
+            # Score: prefer longer chunks with more content words
+            score = len(content_words) + (len(words) * 0.5)
+
+            # Bonus for chunks containing specific domain terms
+            domain_terms = {"murder", "case", "trial", "shooting", "incident", "crisis", "policy"}
+            if any(term in chunk_lower for term in domain_terms):
+                score += 2
+
+            if score > best_score:
+                best_score = score
+                best_chunk = chunk_text
+
+        # Clean up: remove leading determiners
+        if best_chunk:
+            best_chunk = re.sub(r"^(the|a|an)\s+", "", best_chunk, flags=re.IGNORECASE).strip()
+            # Title case
+            best_chunk = " ".join(w.capitalize() if w.isalpha() else w for w in best_chunk.split())
+
+        return best_chunk if best_chunk and len(best_chunk) > 2 else None
 
     def _llm_fallback(self, text: str) -> Optional[str]:
         """

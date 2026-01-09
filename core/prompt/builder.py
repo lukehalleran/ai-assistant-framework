@@ -49,7 +49,7 @@ from .context_gatherer import (
     PROMPT_MAX_RECENT_REFLECTIONS,
     PROMPT_MAX_SEMANTIC_REFLECTIONS
 )
-from .formatter import PromptFormatter, _parse_bool, _dedupe_keep_order, _truncate_list
+from .formatter import PromptFormatter, _parse_bool, _dedupe_keep_order, _truncate_list, _sanitize_embedded_headers
 from .summarizer import LLMSummarizer
 from .token_manager import TokenManager
 from .base import _FallbackMemoryCoordinator
@@ -1207,6 +1207,9 @@ class UnifiedPromptBuilder:
                 if tags_str and content:
                     content += f"\nTags: {{{tags_str}}}"
 
+                # Sanitize any embedded section headers to prevent prompt pollution
+                content = _sanitize_embedded_headers(content)
+
                 return content, ts_str
             except Exception:
                 return str(mem), ""
@@ -1252,6 +1255,7 @@ class UnifiedPromptBuilder:
                 content = str(s)
                 ts = ""
             if content:
+                content = _sanitize_embedded_headers(content)
                 recent_sum_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
         if recent_sum_lines:
             sections.append(f"[RECENT SUMMARIES] n={len(recent_sum_lines)}\n" + "\n\n".join(recent_sum_lines))
@@ -1270,6 +1274,7 @@ class UnifiedPromptBuilder:
                 content = str(s)
                 ts = ""
             if content:
+                content = _sanitize_embedded_headers(content)
                 semantic_sum_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
         if semantic_sum_lines:
             sections.append(f"[SEMANTIC SUMMARIES] n={len(semantic_sum_lines)}\n" + "\n\n".join(semantic_sum_lines))
@@ -1285,6 +1290,7 @@ class UnifiedPromptBuilder:
                 content = str(r)
                 ts = ""
             if content:
+                content = _sanitize_embedded_headers(content)
                 recent_refl_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
         if recent_refl_lines:
             sections.append(f"[RECENT REFLECTIONS] n={len(recent_refl_lines)}\n" + "\n\n".join(recent_refl_lines))
@@ -1300,6 +1306,7 @@ class UnifiedPromptBuilder:
                 content = str(r)
                 ts = ""
             if content:
+                content = _sanitize_embedded_headers(content)
                 semantic_refl_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
         if semantic_refl_lines:
             sections.append(f"[SEMANTIC REFLECTIONS] n={len(semantic_refl_lines)}\n" + "\n\n".join(semantic_refl_lines))

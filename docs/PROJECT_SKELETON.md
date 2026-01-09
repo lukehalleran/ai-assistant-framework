@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-06
+**Last Updated**: 2026-01-08
 
 ---
 
@@ -710,6 +710,10 @@ Priority order (with weights):
 - `token_manager.py::_manage_token_budget(context)` → Budget enforcement
 - `context_gatherer.py::_get_summaries_separate()` → Hybrid recent+semantic retrieval
 - `summarizer.py::_reflect_on_demand()` → Generate reflections if below threshold
+- `formatter.py::_sanitize_embedded_headers(text)` → Escape section headers in memory content **[NEW 2026-01-08]**
+  - Prevents prompt pollution when conversations discuss prompt structure
+  - Converts `[RECENT CONVERSATION]` → `(RECENT CONVERSATION)` in stored memories
+  - Applied to: memories, summaries, reflections, facts in builder.py
 
 **Deduplication Features**:
 - Cross-section semantic deduplication using embedder
@@ -876,7 +880,12 @@ agentic_search:
 - ONLY strips tags at start/end of string (not tags mentioned in content)
 - Prevents truncation when LLM discusses tags in response
 
-**gui/launch.py** - Gradio app setup and async iteration
+**gui/launch.py** - Gradio app setup, theme config, and async iteration
+- `get_dark_theme()` → Creates dark mode theme with JetBrains Mono font
+  - Uses `gradio.themes.Soft` base with slate hues
+  - Dark backgrounds: `rgb(17, 24, 39)` body, `rgb(31, 41, 55)` blocks
+  - Light text colors for readability on dark backgrounds
+  - Font stack: JetBrains Mono (Google Font) → ui-monospace → Consolas → monospace
 - `submit_chat()` → Async iteration over handler chunks
   - Creates placeholder assistant message
   - Updates chat_history with streamed content
@@ -1115,12 +1124,17 @@ from config.app_config import config
    - Title-case for wiki compatibility
    - Guardrails: detect whole-utterance topics (>70% word overlap or >6 words) → return "general"
 
-2. **spaCy NER extraction** (when ambiguous ~10-20ms):
+2. **spaCy noun chunks + NER extraction** (when ambiguous ~10-20ms) **[ENHANCED 2026-01-08]**:
    - Triggered when: heuristic is ambiguous (returns "general", >6 words, or vague terms)
    - Lazy-loaded spaCy model (en_core_web_sm)
-   - Entity priority: PERSON > ORG > GPE > PRODUCT > EVENT > WORK_OF_ART > LAW > NORP
-   - Filters: skip single-letter entities, skip stopwords/vague terms
-   - Returns highest priority entity or None
+   - **Stage 2a: Noun chunks first** (captures compound terms like "first degree murder")
+     - Prefers multi-word chunks with substantive content (MIN_CHUNK_WORDS=2)
+     - Filters: pronouns, determiners, single-word stopwords
+     - Domain term bonus: murder, case, trial, shooting, crisis, policy
+   - **Stage 2b: NER fallback** if no good noun chunks
+     - Entity priority: PERSON > ORG > GPE > PRODUCT > EVENT > WORK_OF_ART > LAW > NORP
+     - Filters: skip low-quality types when alone (ORDINAL, CARDINAL, DATE, TIME, PERCENT)
+   - Returns highest quality match or None
 
 3. **LLM fallback** (when no entities found ~50ms):
    - Triggered when: spaCy returns None (no entities)
@@ -1138,7 +1152,8 @@ from config.app_config import config
 - `get_primary_topic(text=None)` → str | None
 - `_extract_primary_from_text(text)` → str (heuristic)
 - `_is_ambiguous(candidate, source)` → bool
-- `_spacy_ner_extraction(text)` → str | None (spaCy NER)
+- `_spacy_ner_extraction(text)` → str | None (noun chunks + NER)
+- `_extract_best_noun_chunk(doc)` → str | None (spaCy noun chunk extraction) **[NEW 2026-01-08]**
 - `_llm_fallback(text)` → str | None (LLM extraction)
 
 **Configuration**:
@@ -1250,10 +1265,11 @@ WebSearchDecision(
 - 70/30 confidence blend with heuristics
 - Falls back to pure heuristics on LLM timeout/error
 
-**LLM Decision Criteria** (in prompt):
+**LLM Decision Criteria** (in prompt) **[UPDATED 2026-01-08]**:
 - SEARCH if: current events, recent news, live data, time-sensitive info
 - DON'T SEARCH if: historical facts, how-to guides, general knowledge
 - NEVER SEARCH for: casual acknowledgments (nice, thanks), meta-comments, greetings, short responses
+- NEVER SEARCH for: follow-up references ("watched it", "saw that", "just read it") - these refer to conversation context **[NEW]**
 
 **Heuristic Detection** (Fallback - Multi-Signal Scoring):
 1. **Strong recency keywords** (+0.4): "latest", "current", "today", "right now", "breaking"
@@ -1270,8 +1286,12 @@ WebSearchDecision(
 
 **Key Functions**:
 - `analyze_for_web_search_llm(query, model_manager)` → LLM-first with heuristic fallback **[PRIMARY]**
+  - Heuristic veto: if heuristic conf ≤ 0.1, don't let LLM override **[NEW 2026-01-08]**
+  - LLM override only if heuristic conf ≥ 0.2 (prevents false positives on follow-ups)
 - `analyze_for_web_search(query, crisis_level)` → Heuristic-only entry point
 - `should_search_heuristic(query)` → Pure heuristic (fast, ~1ms)
+- `quick_prefilter_should_skip(query)` → Deictic follow-up detection **[ENHANCED 2026-01-08]**
+  - Patterns: "watched it", "saw it", "read it", "just watched", etc.
 
 **Depth Selection**:
 - `QUICK` (1 credit): Simple factual queries
@@ -1545,7 +1565,9 @@ class EmotionalContext:
 
 **Key Functions**:
 - `analyze_query(q)` → QueryAnalysis dataclass
-- `is_deictic(query)` → True if refers to earlier context
+- `is_deictic(query)` → True if refers to earlier context **[ENHANCED 2026-01-08]**
+  - Threshold raised from 6 to 10 words for short follow-up detection
+  - Added verb+pronoun patterns: "watched it", "saw it", "read it", "heard it", etc.
 - `is_meta_conversational(query)` → True if asking about conversation history
 - `extract_temporal_window(query)` → Days to look back (e.g., "yesterday" → 1)
 - `_is_heavy_topic_heuristic(q)` → Fast keyword check for crisis/sensitive content
@@ -1561,7 +1583,8 @@ class EmotionalContext:
 **Thread Detection**:
 - `belongs_to_thread(current_query, last_conversation, current_topic)` → bool
 - `calculate_thread_continuity_score()` → 0.0-1.0 score
-- Factors: keyword overlap, time proximity, both heavy, same topic
+- Factors: keyword overlap, time proximity, both heavy, same topic, deictic reference **[UPDATED 2026-01-08]**
+- `THREAD_WEIGHT_DEICTIC = 0.25` → Bonus for deictic follow-ups **[NEW]**
 - `THREAD_CONTINUITY_THRESHOLD = 0.5`
 
 **QueryAnalysis Result**:
