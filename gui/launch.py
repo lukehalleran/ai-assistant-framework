@@ -38,6 +38,7 @@ import sys
 import logging
 import socket
 import gradio as gr
+from gradio import themes
 import copy
 from gui.handlers import handle_submit
 from utils.conversation_logger import get_conversation_logger
@@ -45,6 +46,53 @@ from gui.wizard import WizardState, process_wizard_message, get_welcome_message
 
 # Detect frozen executable mode
 IS_FROZEN = getattr(sys, 'frozen', False)
+
+# Dark theme configuration
+def get_dark_theme():
+    """Create a dark theme for the Gradio interface."""
+    # Use GoogleFont for JetBrains Mono with system fallbacks
+    main_font = [
+        themes.GoogleFont("JetBrains Mono"),
+        "ui-monospace",
+        "Consolas",
+        "monospace",
+    ]
+    return themes.Soft(
+        primary_hue="blue",
+        secondary_hue="slate",
+        neutral_hue="slate",
+        font=main_font,
+        font_mono=main_font,
+        text_size="md",
+    ).set(
+        # Background colors
+        body_background_fill="rgb(17, 24, 39)",
+        body_background_fill_dark="rgb(17, 24, 39)",
+        block_background_fill="rgb(31, 41, 55)",
+        block_background_fill_dark="rgb(31, 41, 55)",
+        block_border_color="rgb(55, 65, 81)",
+        block_border_color_dark="rgb(55, 65, 81)",
+        block_label_background_fill="rgb(31, 41, 55)",
+        block_label_background_fill_dark="rgb(31, 41, 55)",
+        input_background_fill="rgb(55, 65, 81)",
+        input_background_fill_dark="rgb(55, 65, 81)",
+        # Button colors
+        button_primary_background_fill="rgb(59, 130, 246)",
+        button_primary_background_fill_dark="rgb(59, 130, 246)",
+        button_secondary_background_fill="rgb(75, 85, 99)",
+        button_secondary_background_fill_dark="rgb(75, 85, 99)",
+        # Text colors - white/light for dark background
+        body_text_color="rgb(243, 244, 246)",
+        body_text_color_dark="rgb(243, 244, 246)",
+        block_title_text_color="rgb(243, 244, 246)",
+        block_title_text_color_dark="rgb(243, 244, 246)",
+        block_label_text_color="rgb(209, 213, 219)",
+        block_label_text_color_dark="rgb(209, 213, 219)",
+        button_primary_text_color="white",
+        button_primary_text_color_dark="white",
+        button_secondary_text_color="rgb(243, 244, 246)",
+        button_secondary_text_color_dark="rgb(243, 244, 246)",
+    )
 
 def _env_flag(name: str, default: bool) -> bool:
     val = os.getenv(name)
@@ -148,7 +196,7 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
     else:
         initial_message = get_welcome_message()
 
-    with gr.Blocks(theme="soft") as demo:
+    with gr.Blocks(theme=get_dark_theme()) as demo:
         gr.Markdown("## 🤖 Daemon - First Time Setup")
         if not wizard_already_complete:
             gr.Markdown("Welcome! Let's get you set up. This should only take a minute.")
@@ -693,7 +741,7 @@ def launch_gui(orchestrator, force_wizard=False):
     except Exception:
         pass
 
-    with gr.Blocks(theme="soft") as demo:
+    with gr.Blocks(theme=get_dark_theme()) as demo:
         gr.Markdown("## 🤖 Daemon Chat Interface")
 
         with gr.Tabs():

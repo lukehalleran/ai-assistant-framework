@@ -96,12 +96,17 @@ def is_deictic(query: str) -> bool:
         return False
     ql = _normalize(query)
 
-    # Short follow-ups with hints are often deictic
-    if len(ql.split()) <= 6 and any(h in ql for h in DEICTIC_HINTS):
+    # Short follow-ups with hints are often deictic (raised threshold from 6 to 10)
+    if len(ql.split()) <= 10 and any(h in ql for h in DEICTIC_HINTS):
         return True
 
     # Pronouns/markers at beginning suggest reference
     if ql.startswith(("that", "this", "it", "they", "those", "these", "so", "and", "then")):
+        return True
+
+    # "watched it", "saw it", "read it" etc. are deictic follow-ups
+    import re
+    if re.search(r'\b(watched|saw|read|heard|looked at|checked|finished|started)\s+(it|that|this)\b', ql):
         return True
 
     return False
@@ -519,6 +524,7 @@ THREAD_WEIGHT_KEYWORDS = float(os.getenv("THREAD_WEIGHT_KEYWORDS", "0.5"))
 THREAD_WEIGHT_TIME = float(os.getenv("THREAD_WEIGHT_TIME", "0.25"))
 THREAD_WEIGHT_HEAVY = float(os.getenv("THREAD_WEIGHT_HEAVY", "0.15"))
 THREAD_WEIGHT_TOPIC = float(os.getenv("THREAD_WEIGHT_TOPIC", "0.1"))
+THREAD_WEIGHT_DEICTIC = float(os.getenv("THREAD_WEIGHT_DEICTIC", "0.25"))  # Deictic follow-ups
 
 # Thread-breaking phrases
 THREAD_BREAK_MARKERS = {
@@ -650,6 +656,12 @@ def calculate_thread_continuity_score(
         # Double the topic weight for non-general topics (0.2 instead of 0.1)
         # This helps when discussing the same specific topic with different vocabulary
         score += THREAD_WEIGHT_TOPIC * 2.0
+
+    # Factor 5: Deictic reference bonus
+    # Short follow-ups with "it", "that", "watched it" etc. strongly suggest continuation
+    if is_deictic(current_query):
+        score += THREAD_WEIGHT_DEICTIC
+        logger.debug(f"[Thread] Deictic bonus: +{THREAD_WEIGHT_DEICTIC:.3f}")
 
     return score
 
