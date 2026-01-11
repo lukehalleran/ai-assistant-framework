@@ -252,10 +252,18 @@ async def handle_submit(
 
                 # Store interaction in memory
                 try:
+                    # Sanitize response before storage
+                    try:
+                        from core.prompt import _truncate_at_spurious_turns
+                        final_output_sanitized = _truncate_at_spurious_turns(final_output)
+                    except Exception as e:
+                        logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
+                        final_output_sanitized = final_output
+
                     tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
                     memory_id = await orchestrator.memory_system.store_interaction(
                         query=merged_input,
-                        response=final_output,
+                        response=final_output_sanitized,
                         tags=tags
                     )
                     logger.info(f"[Handle Submit] Agentic interaction stored with ID: {memory_id}")
@@ -645,6 +653,13 @@ async def handle_submit(
                 # Ensure we have content to log even if no chunk set display_output yet
                 _resp_for_debug = display_output or final_output
 
+                # Truncate at spurious turn markers (training data leakage) in fallback
+                try:
+                    from core.prompt import _truncate_at_spurious_turns
+                    _resp_for_debug = _truncate_at_spurious_turns(_resp_for_debug)
+                except Exception as e:
+                    logger.warning(f"[HANDLE_SUBMIT] Failed to truncate spurious turns in fallback: {e}")
+
                 # Extract citations if enabled
                 citations = []
                 if getattr(orchestrator, 'enable_citations', False):
@@ -739,6 +754,13 @@ async def handle_submit(
             # Ensure we have content to log even if no chunk set display_output yet
             _resp_for_debug = display_output or final_output
 
+            # Truncate at spurious turn markers (training data leakage) for display
+            try:
+                from core.prompt import _truncate_at_spurious_turns
+                _resp_for_debug = _truncate_at_spurious_turns(_resp_for_debug)
+            except Exception as e:
+                logger.warning(f"[HANDLE_SUBMIT] Failed to truncate spurious turns in display: {e}")
+
             # Extract citations if enabled
             citations = []
             if getattr(orchestrator, 'enable_citations', False):
@@ -808,6 +830,14 @@ async def handle_submit(
                 if thinking_part:
                     logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK]\n{thinking_part}")
                 response_to_store = final_answer if final_answer else final_output
+
+                # Truncate at spurious turn markers (training data leakage)
+                try:
+                    from core.prompt import _truncate_at_spurious_turns
+                    response_to_store = _truncate_at_spurious_turns(response_to_store)
+                except Exception as e:
+                    logger.warning(f"[HANDLE_SUBMIT] Failed to truncate spurious turns: {e}")
+
                 # Sanitize any echoed prompt headers before storing
                 try:
                     import re

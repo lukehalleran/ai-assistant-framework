@@ -124,6 +124,59 @@ def _strip_prompt_artifacts(text: str) -> str:
         return text
 
 
+def _truncate_at_spurious_turns(text: str) -> str:
+    """
+    Truncate response at spurious chat turn markers that indicate training data leakage.
+
+    LLMs can sometimes output leaked training data containing markers like:
+    - "Human:" or "User:" mid-response (not at the start)
+    - Control characters like \\x05 (ENQ) or \\x06 (ACK)
+    - File path patterns after turn markers
+
+    This function truncates the response at the first spurious turn marker,
+    preserving only the legitimate response content.
+    """
+    if not text:
+        return text
+
+    try:
+        import re
+
+        # First, strip any control characters (ASCII 0x00-0x1F except newline/tab)
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+
+        # Patterns that indicate training data leakage mid-response
+        # These should NOT appear in a normal assistant response after content
+        # Note: Control chars are stripped first, so these patterns match post-strip
+        spurious_patterns = [
+            r'\n\s*Human:\s*End\s*File',          # Human: End File (after control char strip)
+            r'\n\s*User:\s*End\s*File',           # User: End File (after control char strip)
+            r'\n\s*Human:\s*#\s*[/\w]',           # Human: followed directly by file comment
+            r'\n\s*User:\s*#\s*[/\w]',            # User: followed directly by file comment
+            r'\n\s*Human:\s*\n\s*#\s*[/\w]',      # Human: + newline + file comment
+            r'\n\s*User:\s*\n\s*#\s*[/\w]',       # User: + newline + file comment
+            r'End\s*File\s*#\s*\w+/',             # End File # path/... pattern
+            r'\n\s*```\s*\n\s*#\s*[A-Za-z/]',     # Code block followed by file path
+            r'\n\s*Human:\s*"""',                 # Human: followed by docstring
+            r'\n\s*User:\s*"""',                  # User: followed by docstring
+        ]
+
+        combined = '(' + '|'.join(spurious_patterns) + ')'
+        match = re.search(combined, text)
+
+        if match:
+            # Truncate at the spurious marker
+            truncated = text[:match.start()].rstrip()
+            logger.warning(f"[SANITIZE] Truncated response at spurious turn marker (pos {match.start()})")
+            return truncated
+
+        return text
+
+    except Exception as e:
+        logger.warning(f"[SANITIZE] Failed to check for spurious turns: {e}")
+        return text
+
+
 def _sanitize_embedded_headers(text: str) -> str:
     """
     Sanitize embedded section headers in memory content to prevent prompt pollution.
