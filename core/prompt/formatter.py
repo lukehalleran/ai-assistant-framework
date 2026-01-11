@@ -265,7 +265,8 @@ class PromptFormatter:
 
     def _get_time_context(self) -> str:
         """Get current time context for the prompt."""
-        lines = [f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
+        now = datetime.now()
+        lines = [f"Current time: {now.strftime('%A, %Y-%m-%d %H:%M:%S')}"]
 
         # Add time deltas if time_manager is available
         if self.time_manager:

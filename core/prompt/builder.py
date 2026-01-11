@@ -1393,7 +1393,7 @@ class UnifiedPromptBuilder:
         try:
             time_ctx = self.formatter._get_time_context()  # prefer formatter's version if present
         except Exception:
-            time_ctx = f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            time_ctx = f"Current time: {datetime.now().strftime('%A, %Y-%m-%d %H:%M:%S')}"
         if time_ctx:
             sections.append(f"[TIME CONTEXT]\n{time_ctx}")
 
