@@ -48,7 +48,8 @@ from .formatter import (
     _as_summary_dict,
     _dedupe_keep_order,
     _truncate_list,
-    _strip_prompt_artifacts
+    _strip_prompt_artifacts,
+    _truncate_at_spurious_turns
 )
 
 __all__ = [
@@ -64,6 +65,7 @@ __all__ = [
     '_dedupe_keep_order',
     '_truncate_list',
     '_strip_prompt_artifacts',
+    '_truncate_at_spurious_turns',
     '_FallbackCorpusManager',
     '_FallbackMemoryCoordinator'
 ]
