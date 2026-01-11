@@ -48,6 +48,37 @@ from gui.wizard import WizardState, process_wizard_message, get_welcome_message
 IS_FROZEN = getattr(sys, 'frozen', False)
 
 # Dark theme configuration
+DARK_CHATBOT_CSS = """
+/* Chatbot message bubbles - dark background with light text */
+.message-wrap .message {
+    color: #f3f4f6 !important;
+}
+.message-wrap .bot {
+    background-color: #374151 !important;
+    color: #f3f4f6 !important;
+}
+.message-wrap .user {
+    background-color: #1e40af !important;
+    color: #f3f4f6 !important;
+}
+/* Chatbot container */
+.chatbot {
+    background-color: #1f2937 !important;
+}
+/* Message text */
+.message-wrap .message p,
+.message-wrap .message span,
+.message-wrap .message li {
+    color: #f3f4f6 !important;
+}
+/* Code blocks in chat */
+.message-wrap .message pre,
+.message-wrap .message code {
+    background-color: #111827 !important;
+    color: #e5e7eb !important;
+}
+"""
+
 def get_dark_theme():
     """Create a dark theme for the Gradio interface."""
     # Use GoogleFont for JetBrains Mono with system fallbacks
@@ -196,7 +227,7 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
     else:
         initial_message = get_welcome_message()
 
-    with gr.Blocks(theme=get_dark_theme()) as demo:
+    with gr.Blocks(theme=get_dark_theme(), css=DARK_CHATBOT_CSS) as demo:
         gr.Markdown("## 🤖 Daemon - First Time Setup")
         if not wizard_already_complete:
             gr.Markdown("Welcome! Let's get you set up. This should only take a minute.")
@@ -741,7 +772,7 @@ def launch_gui(orchestrator, force_wizard=False):
     except Exception:
         pass
 
-    with gr.Blocks(theme=get_dark_theme()) as demo:
+    with gr.Blocks(theme=get_dark_theme(), css=DARK_CHATBOT_CSS) as demo:
         gr.Markdown("## 🤖 Daemon Chat Interface")
 
         with gr.Tabs():
