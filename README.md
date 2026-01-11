@@ -36,12 +36,6 @@ Daemon is a **full-stack RAG (Retrieval-Augmented Generation) system** implement
 
 ---
 
-## Screenshots
-
-<img width="1919" height="1071" alt="2025-07-28_20-48" src="https://github.com/user-attachments/assets/eac216c2-b9be-4e5b-a799-cc0a41d80266" />
-
-This is assistant responding to me on a fresh start up, demonstrating tone and memory persistence.
-
 ### Example Conversation
 
 See [`conversation_logs/gold_star_example.txt`](./conversation_logs/gold_star_example.txt) for a full session transcript showcasing Daemon's capabilities:
