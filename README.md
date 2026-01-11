@@ -2,6 +2,8 @@
 
 A production-grade conversational AI system with hierarchical memory, semantic search, and Wikipedia-scale knowledge retrieval.
 
+## Demos
+
 https://github.com/user-attachments/assets/38e4c2ff-d992-4152-a98e-df58faa54533
 
 <div align="center">
@@ -10,7 +12,7 @@ https://github.com/user-attachments/assets/38e4c2ff-d992-4152-a98e-df58faa54533
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
-*60k lines of code • 207 files • 1,700+ tests (95% pass rate)*
+*63k lines of code • 207 files • 1,850+ tests (95% pass rate)*
 
 [Features](#features) • [Quick Start](#quick-start) • [Architecture](#architecture) • [Usage](#usage) • [Deployment](#deployment)
 
@@ -28,13 +30,13 @@ Daemon is a **full-stack RAG (Retrieval-Augmented Generation) system** implement
 - **Multi-stage relevance filtering** using FAISS → cosine similarity → cross-encoder reranking
 - **Wikipedia-scale knowledge** with 6.5M+ articles semantically indexed
 - **Crisis-aware tone detection** that adapts response depth to emotional context
-- **Chain-of-thought reasoning** via “thinking blocks” for transparent decision-making
+- **Chain-of-thought reasoning** via "thinking blocks" for transparent decision-making
 
 > For a compressed, architecture-focused overview, see [PROJECT_SKELETON.md](./PROJECT_SKELETON.md).
 
 ---
 
-## Screenshots 
+## Screenshots
 
 <img width="1919" height="1071" alt="2025-07-28_20-48" src="https://github.com/user-attachments/assets/eac216c2-b9be-4e5b-a799-cc0a41d80266" />
 
@@ -85,10 +87,10 @@ See [`conversation_logs/gold_star_example.txt`](./conversation_logs/gold_star_ex
 ### Technical Highlights
 
 ```
-59,778  lines of Python code
-   207  files
-   113  test files (1,728 tests, 95% pass rate)
-   861+ extracted facts in ChromaDB
+63,155  lines of Python code
+   207  Python files
+   120  test files (1,856 tests, 95% pass rate)
+ 1,200+ extracted facts in ChromaDB
   6.5M+ Wikipedia articles indexed
   ~150ms gating pipeline latency
 ```
@@ -719,7 +721,7 @@ daemon-rag-agent/
 │   ├── chroma_db_v4/                # Vector embeddings
 │   └── wiki/                        # Wikipedia index (102GB)
 │
-└── tests/                           # 65 test files
+└── tests/                           # 120 test files
     ├── test_basic_pipeline.py
     ├── test_memory_coordinator.py
     └── ...
@@ -855,6 +857,6 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 **Built with curiosity and persistence**
 
-*60,000 lines of production code*
+*63,000 lines of production code*
 
 </div>
