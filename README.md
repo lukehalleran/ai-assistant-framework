@@ -2,6 +2,8 @@
 
 A production-grade conversational AI system with hierarchical memory, semantic search, and Wikipedia-scale knowledge retrieval.
 
+https://github.com/user-attachments/assets/38e4c2ff-d992-4152-a98e-df58faa54533
+
 <div align="center">
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
