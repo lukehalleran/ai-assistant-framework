@@ -123,21 +123,31 @@ async def handle_submit(
         yield {"role": "assistant", "content": response_text, "debug": debug_record}
         return
 
-    # ENHANCED MODE: build prompt first via orchestrator.prepare_prompt (do NOT pass personality here)
-    logger.debug("[Handle Submit] About to call prepare_prompt")
-    full_prompt, system_prompt = await orchestrator.prepare_prompt(
-        user_input=user_text,
-        files=files,
-        use_raw_mode=False  # enhanced mode
-    )
-    logger.debug(f"[Handle Submit] prepare_prompt done, prompt length={len(full_prompt)}")
-
-    logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
-
-    # Check if agentic search should be used
+    # Check if agentic search might be used (need to know before calling prepare_prompt)
     _cfg = getattr(orchestrator, 'config', {}) or {}
     agentic_cfg = _cfg.get('agentic_search', {}) if isinstance(_cfg, dict) else {}
     agentic_enabled = bool(agentic_cfg.get('enabled', False))
+
+    # ENHANCED MODE: build prompt first via orchestrator.prepare_prompt (do NOT pass personality here)
+    # Request raw context if agentic search is enabled (for passing RAG context to agentic controller)
+    logger.debug("[Handle Submit] About to call prepare_prompt")
+    prep_result = await orchestrator.prepare_prompt(
+        user_input=user_text,
+        files=files,
+        use_raw_mode=False,  # enhanced mode
+        return_context=agentic_enabled  # Get raw context for agentic search
+    )
+
+    # Unpack result based on whether context was requested
+    if agentic_enabled:
+        full_prompt, system_prompt, raw_context = prep_result
+    else:
+        full_prompt, system_prompt = prep_result
+        raw_context = {}
+
+    logger.debug(f"[Handle Submit] prepare_prompt done, prompt length={len(full_prompt)}")
+
+    logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
     logger.debug(f"[Handle Submit] Agentic pre-check: enabled={agentic_enabled}")
 
     if agentic_enabled:
@@ -186,14 +196,15 @@ async def handle_submit(
                 initial_terms = search_terms if search_terms else []
                 logger.debug(f"[Handle Submit] Agentic initial terms: {initial_terms}")
 
-                # Run agentic search loop
+                # Run agentic search loop with RAG context
                 agentic_response = ""
-                logger.debug("[Handle Submit] Starting agentic loop")
+                logger.debug(f"[Handle Submit] Starting agentic loop with RAG context keys: {list(raw_context.keys())}")
                 async for item in agentic_controller.run_agentic_search(
                     query=user_text,
                     system_prompt=system_prompt,
                     model_name=model_name,
                     initial_search_terms=initial_terms,
+                    initial_context=raw_context,  # Pass RAG context to agentic controller
                 ):
                     if isinstance(item, ProgressEvent):
                         # Yield progress events as status messages

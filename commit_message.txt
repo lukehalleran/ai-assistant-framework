@@ -1,43 +1,49 @@
-feat: Integrate Obsidian vault into RAG pipeline with hybrid retrieval
+feat: Integrate Obsidian vault, news-aware search, and fact correction detection
+
+## Obsidian Vault Integration
 
 Adds personal notes from user's Obsidian vault (~Documents/Luke Notes) to the
 context retrieval system. Notes are embedded in a dedicated ChromaDB collection
 and retrieved using hybrid search (1/3 keyword + 2/3 semantic).
 
-## New Files
+**New file:** `knowledge/obsidian_manager.py`
+- Smart chunking: whole notes <1500 chars, else split by ## headers
+- Extracts #tags and [[wiki links]] as metadata
+- Hybrid retrieval: keyword match on title/tags + semantic similarity
 
-- `knowledge/obsidian_manager.py` - Vault parsing, embedding, and retrieval
-  - Smart chunking: whole notes <1500 chars, else split by ## headers
-  - Extracts #tags and [[wiki links]] as metadata
-  - Strips YAML frontmatter
-  - Hybrid retrieval: keyword match on title/tags + semantic similarity
+**CLI commands:**
+- `python main.py embed-vault` - Index vault
+- `python main.py embed-vault --force` - Force re-index
+- `python main.py vault-stats` / `clear-vault`
 
-## Modified Files
+## News-Aware Web Search
 
-- `config/app_config.py` - Added OBSIDIAN_* configuration constants
-- `memory/storage/multi_collection_chroma_store.py` - Registered obsidian_notes collection
-- `main.py` - Added CLI commands: embed-vault, vault-stats, clear-vault
-- `core/prompt/context_gatherer.py` - Added get_personal_notes() method with citation tracking
-- `core/prompt/builder.py` - Added parallel retrieval task, gating, [USER'S PERSONAL NOTES] section
-- `core/prompt/token_manager.py` - Added personal_notes to PRIORITY_ORDER (priority 6)
-- `gui/launch.py` - Fixed Debug Trace tab CSS (white text on white background)
-- `docs/PROJECT_SKELETON.md` - Documented obsidian_manager.py module
+Tavily searches now auto-detect news queries and use the optimized news agent.
 
-## Usage
+**Changes:** `knowledge/web_search_manager.py`
+- Added `_is_news_query()` detection (keywords: today, happened, news, latest)
+- Passes `topic="news", days=1` to Tavily for current events queries
+- Logs: "[WebSearch] News query detected, using topic='news', days=1"
 
-```bash
-# Index vault (one-time)
-python main.py embed-vault
+## Fact Correction Detection
 
-# Force full re-index
-python main.py embed-vault --force
+User corrections now extract with HIGH confidence (0.92) to supersede stale facts.
 
-# Check status
-python main.py vault-stats
+**Changes:** `memory/fact_extractor.py`
+- Added `_detect_corrections()` method
+- Patterns: "I'm X, not Y", "actually I'm X", "not Y, I'm X"
+- 0.92 confidence triggers UserProfile's supersedes logic
+- Corrections run first in extraction pipeline
 
-# Clear collection
-python main.py clear-vault
-```
+## Other Modified Files
 
-Notes automatically appear in prompts when relevant to user queries, filtered
-through the existing 3-stage gate system (Cosine → Blended → CrossEncoder).
+- `config/app_config.py` - Added OBSIDIAN_* constants (disabled by default)
+- `memory/storage/multi_collection_chroma_store.py` - Registered obsidian_notes
+- `main.py` - Added embed-vault, vault-stats, clear-vault commands
+- `core/prompt/context_gatherer.py` - Added get_personal_notes() method
+- `core/prompt/builder.py` - Added [USER'S PERSONAL NOTES] section
+- `core/prompt/token_manager.py` - Added personal_notes to PRIORITY_ORDER
+- `gui/launch.py` - Fixed Debug Trace tab CSS (white on white)
+- `docs/PROJECT_SKELETON.md` - Documented obsidian_manager.py
+
+Notes gated through 3-stage system (Cosine → Blended → CrossEncoder).

@@ -31,7 +31,7 @@ import os
 import re
 import processing.gate_system as gate_system
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, Union
 from utils.logging_utils import get_logger
 from integrations.wikipedia_api import WikipediaAPI
 from utils.tone_detector import (
@@ -806,13 +806,21 @@ The user is processing/analyzing, open to engagement.
         user_input: str,
         files: Optional[List[Any]] = None,
         use_raw_mode: bool = False,
-    ) -> Tuple[str, Optional[str]]:
+        return_context: bool = False,
+    ) -> Union[Tuple[str, Optional[str]], Tuple[str, Optional[str], Dict[str, Any]]]:
         """
         Performs pre-generation steps: topic update, file processing, optional query
         rewrite, and prompt building.
 
+        Args:
+            user_input: The user's input text
+            files: Optional list of uploaded files
+            use_raw_mode: If True, skip RAG context gathering
+            return_context: If True, also return the raw context dict for agentic search
+
         Returns:
-            (prompt, system_prompt)
+            If return_context=False: (prompt, system_prompt)
+            If return_context=True: (prompt, system_prompt, context_dict)
         """
         # ---------------------------------------------------------------------
         # 0) Topic inference (non-fatal; use single canonical topic string)
@@ -1305,10 +1313,12 @@ The user is processing/analyzing, open to engagement.
             crisis_level=emotional_context.crisis_level.value if emotional_context else None,  # Pass for web search suppression
         )
 
-        # Capture memory_id_map for citation extraction before prompt is converted to string
+        # Capture memory_id_map and raw context for citation extraction/agentic search
         memory_id_map = {}
+        raw_context = {}
         if isinstance(prompt, dict):
             memory_id_map = prompt.get('memory_id_map', {})
+            raw_context = prompt.copy()  # Keep raw context for agentic search
             prompt = self.prompt_builder._assemble_prompt(
                 context=prompt,
                 user_input=combined_text,
@@ -1318,6 +1328,8 @@ The user is processing/analyzing, open to engagement.
         # Store memory_id_map for citation extraction
         self._current_memory_id_map = memory_id_map
 
+        if return_context:
+            return prompt, system_prompt, raw_context
         return prompt, system_prompt
 
     # ---------- Memory Citation Methods ----------

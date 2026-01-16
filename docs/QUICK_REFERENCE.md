@@ -245,6 +245,8 @@ class CorpusManager:
 
 # memory/storage/multi_collection_chroma_store.py
 class MultiCollectionChromaStore:
+    # Collections: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs
+
     async def add_memory(text: str, metadata: Dict, collection: str):
         """Embed text and store in ChromaDB collection"""
         embedding = await self._embed(text)
@@ -475,6 +477,92 @@ score = (
     anchor_bonus +
     penalties
 )
+```
+
+---
+
+## Knowledge Sources (Prompt Sections)
+
+```python
+# Prompt section hierarchy (in builder.py _assemble_prompt):
+[RECENT CONVERSATION]          # Historical context
+[RELEVANT MEMORIES]            # Scored episodic memories
+[USER PROFILE]                 # Categorized user facts
+[SUMMARIES]                    # Consolidated conversation blocks
+[REFLECTIONS]                  # Session reflections
+[DREAMS]                       # Dream memories (if enabled)
+[USER'S PERSONAL NOTES]        # Obsidian vault notes (hybrid retrieval)
+[DAEMON DOCUMENTATION]         # Self-knowledge: architecture docs, PROJECT_SKELETON
+[WEB SEARCH RESULTS]           # Real-time Tavily results
+[RELEVANT INFORMATION]         # Wikipedia chunks
+[TIME CONTEXT]                 # Current datetime
+[STM SUMMARY]                  # Short-term memory analysis
+[CURRENT USER QUERY]           # The actual query to respond to
+```
+
+---
+
+## CLI Commands (main.py)
+
+```bash
+# Daily Notes - auto-generated conversation summaries
+python main.py daily-note                    # Generate for today
+python main.py daily-note yesterday          # Generate for yesterday
+python main.py daily-note 2026-01-15         # Specific date (YYYY-MM-DD)
+python main.py daily-note --force            # Overwrite existing
+python main.py daily-note-catchup            # Startup hook (yesterday if missing)
+
+# Daemon Documentation (self-knowledge)
+python main.py upload-doc <file> [title]     # Upload doc to [DAEMON DOCUMENTATION]
+python main.py list-docs                     # List uploaded docs
+python main.py delete-doc <title>            # Delete specific doc
+python main.py clear-docs                    # Clear all docs
+
+# Obsidian Vault (personal notes)
+python main.py embed-vault                   # Index vault to ChromaDB
+python main.py embed-vault --force           # Force full re-index
+python main.py vault-stats                   # Show indexed chunk count
+python main.py clear-vault                   # Clear obsidian_notes collection
+
+# User Profile
+python main.py export-profile                # Export to data/user_profile_export.md
+python main.py show-profile                  # Print profile to console
+```
+
+---
+
+## Daily Notes Generator
+
+```python
+# utils/daily_notes_generator.py
+class DailyNotesGenerator:
+    async def generate_for_date(date: date, force: bool = False) -> GenerationResult:
+        """
+        1. Get conversations for date from corpus
+        2. Skip if no conversations or note exists (unless force)
+        3. Format conversations for LLM
+        4. Calculate intensity (1-10 based on count/duration/complexity)
+        5. Call LLM with structured prompt
+        6. Build YAML frontmatter + markdown content
+        7. Atomic write to Obsidian vault
+        """
+
+    async def generate_yesterday_if_missing() -> Optional[GenerationResult]:
+        """Startup catch-up hook"""
+
+    def _format_filename(date: date) -> str:
+        """Format: 'M D YY Daily Note.md' (e.g., '1 16 26 Daily Note.md')"""
+
+# Note structure:
+# - Summary (2-3 sentences from Daemon's perspective)
+# - Main Quest: [Primary Focus] (RPG-style framing)
+# - Side Quests (other topics)
+# - Emotional State (mood tracking)
+# - Key Decisions, Knowledge Gained, Open Threads
+# - Intensity: X/10
+
+# Cron setup (2am daily):
+# 0 2 * * * cd /path/to/daemon && python main.py daily-note yesterday
 ```
 
 ---

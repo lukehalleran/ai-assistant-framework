@@ -16,7 +16,7 @@ Module Contract
   - _launch_wizard_ui(): First-run setup wizard interface
   - submit_chat(): async driver that streams tokens + timer updates
   - Tabs:
-    • Chat: chat UI, file upload, raw toggle, personality selector
+    • Chat: chat UI, file upload, raw toggle, personality selector, Sync Notes button
     • Debug Trace: renders debug_state entries
     • Status: shows counters (summaries, corpus counts, logs)
     • Settings: slider to control summary cadence (every N exchanges)
@@ -828,6 +828,8 @@ def launch_gui(orchestrator, force_wizard=False):
                 with gr.Row():
                     submit_button = gr.Button("Submit", variant="primary")
                     clear_button = gr.Button("🧹 Clear Chat")
+                    sync_notes_button = gr.Button("📝 Sync Notes")
+                sync_status_md = gr.Markdown(value="", elem_id="sync_status")
 
                 with gr.Row():
                     files = gr.File(file_types=[".txt", ".docx", ".csv", ".py"], file_count="multiple", label="Files")
@@ -873,6 +875,28 @@ def launch_gui(orchestrator, force_wizard=False):
                     fn=_clear_chat,
                     inputs=[],
                     outputs=[chatbot, chat_state, user_input, typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md],
+                )
+
+                # Sync Obsidian notes handler
+                def _sync_obsidian_notes():
+                    try:
+                        from knowledge.obsidian_manager import ObsidianManager
+                        manager = ObsidianManager()
+                        result = manager.embed_vault(force_reindex=False)
+
+                        if result.errors:
+                            return f"⚠️ Sync completed with errors: {', '.join(result.errors)}"
+                        elif result.embedded_files == 0 and result.skipped_files > 0:
+                            return f"✓ All {result.skipped_files} notes already synced"
+                        else:
+                            return f"✅ Synced {result.embedded_files} new notes ({result.total_chunks} chunks) in {result.duration_seconds:.1f}s. Skipped {result.skipped_files} existing."
+                    except Exception as e:
+                        return f"❌ Sync failed: {str(e)}"
+
+                sync_notes_button.click(
+                    fn=_sync_obsidian_notes,
+                    inputs=[],
+                    outputs=[sync_status_md],
                 )
 
             with gr.TabItem("Logs"):

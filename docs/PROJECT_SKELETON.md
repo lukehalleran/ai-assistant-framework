@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-15
+**Last Updated**: 2026-01-17
 
 ---
 
@@ -601,9 +601,9 @@ career: current_role=Senior Engineer [2025-08-01T09:00:00]; programming_language
 ---
 
 ### 2.5 memory/storage/multi_collection_chroma_store.py (Vector Store)
-**Purpose**: Semantic search across 5 ChromaDB collections
+**Purpose**: Semantic search across 7 ChromaDB collections
 
-**Collections**: episodic, semantic, procedural, summary, meta
+**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs
 
 **Key Methods**:
 - `add_memory(text, metadata, collection)` → Embed and store
@@ -674,6 +674,8 @@ Priority order (with weights):
 - stm_summary: 10               # HIGHEST - metadata only, no token cost [NEW]
 - recent_conversations: 7
 - semantic_chunks: 6
+- personal_notes: 6             # Obsidian notes [NEW 2026-01]
+- reference_docs: 5             # User uploaded docs [NEW 2026-01]
 - memories: 5
 - semantic_facts/fresh_facts: 4
 - summaries: 3
@@ -891,6 +893,10 @@ agentic_search:
   - Updates chat_history with streamed content
   - Handles thinking blocks with HTML collapsible sections
   - Yields to Gradio for real-time display
+- **Sync Notes Button** → Embeds new Obsidian notes to ChromaDB
+  - Calls `ObsidianManager.embed_vault(force_reindex=False)`
+  - Shows status: success count, skipped count, or error message
+  - Non-blocking incremental sync (skips already-indexed notes)
 
 **Streaming Flow**:
 ```
@@ -1349,11 +1355,139 @@ OBSIDIAN_MAX_NOTES_PROMPT = 5
 - `python main.py vault-stats` - Show indexed chunk count
 - `python main.py clear-vault` - Clear collection
 
+**GUI Integration** (`gui/launch.py`):
+- "📝 Sync Notes" button in main Chat tab
+- Calls `embed_vault(force_reindex=False)` for incremental sync
+- Shows status message: new notes synced, skipped count, or error
+
 **Integration**:
 - ContextGatherer retrieves via `get_personal_notes()` method
 - Builder adds `[USER'S PERSONAL NOTES]` section after dreams, before time context
 - TokenManager includes `personal_notes` at priority 6 (high)
 - Notes filtered through 3-stage gate system (Cosine → Blended → CrossEncoder)
+
+---
+
+### 2.12.4 knowledge/reference_docs_manager.py (Daemon Documentation / Self-Knowledge) **[NEW 2026-01]**
+**Purpose**: Upload and retrieve reference documents that provide Daemon with self-knowledge (architecture docs, PROJECT_SKELETON, etc.)
+
+**Data Classes**:
+- `UploadResult`: Statistics from document upload (success, title, total_chunks, file_type, errors, duration)
+
+**Key Methods**:
+- `upload_document(file_path, title)` → `UploadResult`: Index file to ChromaDB
+- `upload_text(content, title)` → `UploadResult`: Upload text directly (GUI paste)
+- `get_documents(query, limit)` → `List[Dict]`: Hybrid retrieval (1/3 keyword + 2/3 semantic)
+- `list_documents()` → `List[Dict]`: List all uploaded documents
+- `delete_document(title)` → `bool`: Remove document from index
+- `get_stats()` → `Dict`: Collection statistics
+- `clear_all()` → `bool`: Clear entire collection
+
+**Smart Chunking**:
+```
+Document < 2000 chars → Embed whole document
+Document >= 2000 chars → Split by ## headers
+```
+
+**Supported File Types**:
+- `.md` (markdown) - YAML frontmatter stripped
+- `.txt` (text)
+- `.py`, `.js`, `.json`, `.yaml`, `.rst` (code/config files)
+
+**Hybrid Retrieval**:
+```
+Query → _keyword_search() → 1/3 results (title/section match priority)
+      → ChromaDB semantic → 2/3 results (vector similarity)
+      → Deduplicate by title|section → Combined results
+```
+
+**Configuration** (`config/app_config.py`):
+```python
+REFERENCE_DOCS_ENABLED = True
+REFERENCE_DOCS_CHUNK_THRESHOLD = 2000
+REFERENCE_DOCS_MAX_PROMPT = 5
+```
+
+**CLI Commands** (`main.py`):
+- `python main.py upload-doc <file_path> [title]` - Upload document
+- `python main.py list-docs` - List all uploaded documents
+- `python main.py delete-doc <title>` - Delete specific document
+- `python main.py clear-docs` - Clear all documents
+
+**Integration**:
+- ContextGatherer retrieves via `get_reference_docs()` method
+- Builder adds `[DAEMON DOCUMENTATION]` section in prompt (self-knowledge about architecture)
+- TokenManager includes `reference_docs` at priority 5
+- Documents filtered through 3-stage gate system (Cosine → Blended → CrossEncoder)
+
+---
+
+### 2.12.5 utils/daily_notes_generator.py (Auto-Generated Daily Summaries) **[NEW 2026-01]**
+**Purpose**: Automatically generate daily summary notes from Daemon conversations, written from Daemon's perspective
+
+**Data Classes**:
+- `GenerationResult`: Statistics from note generation (success, date, output_path, conversation_count, intensity, skipped_reason)
+
+**Key Methods**:
+- `generate_for_date(date, force)` → `GenerationResult`: Generate note for specific date
+- `generate_yesterday_if_missing()` → `Optional[GenerationResult]`: Startup catch-up hook
+- `note_exists(date)` → `bool`: Check if note already exists
+- `_get_conversations_for_date(date)` → `List[Dict]`: Filter corpus by timestamp
+- `_format_conversations(convos)` → `str`: Format for LLM prompt
+- `_calculate_intensity(convos, duration)` → `int`: 1-10 score based on count/duration/complexity
+
+**Note Structure** (Obsidian-compatible markdown):
+```markdown
+---
+date: 2026-01-16
+intensity: 7
+conversations: 18
+duration_hours: 3.2
+main_quest: "Daily Notes Feature"
+tags: [daily, daemon-generated]
+---
+# Daily Note - January 16, 2026
+## Summary (2-3 sentences from Daemon's perspective)
+## Main Quest: [Primary Focus] (3-5 bullets)
+## Side Quests (other topics discussed)
+## Emotional State (mood tracking)
+## Key Decisions (explicit choices made)
+## Knowledge Gained (new concepts)
+## Open Threads (unresolved items)
+## Intensity: X/10
+```
+
+**LLM Prompt Design**:
+- Written from Daemon's perspective ("Today we...", "Luke seemed...")
+- Extracts Main Quest vs Side Quests (RPG-style framing)
+- Tracks emotional state throughout the day
+- Uses `gpt-4o-mini` with 800 max tokens
+
+**Configuration** (`config/app_config.py`):
+```python
+DAILY_NOTES_ENABLED = True
+DAILY_NOTES_FOLDER = "Vault/Daily Notes and To Do's"
+DAILY_NOTES_MODEL = "gpt-4o-mini"
+DAILY_NOTES_MAX_TOKENS = 800
+```
+
+**CLI Commands** (`main.py`):
+- `python main.py daily-note` - Generate for today
+- `python main.py daily-note yesterday` - Generate for yesterday
+- `python main.py daily-note 2026-01-15` - Generate for specific date
+- `python main.py daily-note --force` - Overwrite existing
+- `python main.py daily-note-catchup` - Startup hook (yesterday if missing)
+
+**Filename Convention**: Matches user's existing format: `M D YY Daily Note.md` (e.g., `1 16 26 Daily Note.md`)
+
+**Scheduling**:
+- Cron (recommended): `0 2 * * * cd /path/to/daemon && python main.py daily-note yesterday`
+- Startup catch-up: `generate_yesterday_if_missing()` on GUI launch
+
+**Integration**:
+- Writes to Obsidian vault at `OBSIDIAN_VAULT_PATH / DAILY_NOTES_FOLDER`
+- Notes can be retrieved via ObsidianManager once embedded
+- Atomic file writes (temp → replace pattern)
 
 ---
 
@@ -2219,14 +2353,16 @@ daemon/
 │   ├── file_processor.py      # PDF/DOCX ingestion
 │   ├── health_check.py        # Docker/K8s health endpoint
 │   ├── conversation_logger.py # Conversation persistence
-│   └── web_search_trigger.py  # Web search detection (LLM-first + heuristics) [ENHANCED 2026-01]
+│   ├── web_search_trigger.py  # Web search detection (LLM-first + heuristics) [ENHANCED 2026-01]
+│   └── daily_notes_generator.py # Auto-generated daily summaries [NEW 2026-01]
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
 │   ├── semantic_search.py     # General semantic utilities
 │   ├── topic_manager.py       # Topic-specific utilities
 │   ├── web_search_manager.py  # Tavily API + caching [NEW 2025-12-22]
-│   └── obsidian_manager.py    # Obsidian vault integration [NEW 2026-01]
+│   ├── obsidian_manager.py    # Obsidian vault integration [NEW 2026-01]
+│   └── reference_docs_manager.py  # Daemon self-knowledge docs [NEW 2026-01]
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)

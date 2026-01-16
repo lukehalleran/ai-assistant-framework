@@ -599,31 +599,162 @@ What would you like to do?"""
         session: AgenticSearchSession,
         initial_context: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Build the final prompt with all accumulated context."""
+        """Build the final prompt with all accumulated context including RAG data."""
         parts = []
 
-        # Add initial context if available
+        # Add RAG context if available (from prompt builder)
         if initial_context:
-            if 'memories' in initial_context:
-                parts.append(f"[RELEVANT MEMORIES]\n{initial_context['memories']}")
-            if 'summaries' in initial_context:
-                parts.append(f"[CONVERSATION SUMMARIES]\n{initial_context['summaries']}")
+            # Recent conversations (historical context)
+            recent = initial_context.get('recent_conversations', [])
+            if recent:
+                recent_text = self._format_recent_conversations(recent)
+                if recent_text:
+                    parts.append(f"[RECENT CONVERSATION — HISTORICAL CONTEXT ONLY, DO NOT RESPOND TO THESE]\n{recent_text}")
+
+            # Relevant memories (semantic search results)
+            memories = initial_context.get('memories', [])
+            if memories:
+                mem_text = self._format_memories(memories)
+                if mem_text:
+                    parts.append(f"[RELEVANT MEMORIES]\n{mem_text}")
+
+            # User profile (categorized facts)
+            user_profile = initial_context.get('user_profile', '')
+            if user_profile and isinstance(user_profile, str) and user_profile.strip():
+                parts.append(f"[USER PROFILE]\n{user_profile}")
+
+            # Summaries (recent + semantic)
+            summaries = initial_context.get('summaries', {})
+            if summaries:
+                recent_summaries = summaries.get('recent', [])
+                semantic_summaries = summaries.get('semantic', [])
+                if recent_summaries:
+                    sum_text = self._format_summaries(recent_summaries)
+                    if sum_text:
+                        parts.append(f"[RECENT SUMMARIES]\n{sum_text}")
+                if semantic_summaries:
+                    sum_text = self._format_summaries(semantic_summaries)
+                    if sum_text:
+                        parts.append(f"[SEMANTIC SUMMARIES]\n{sum_text}")
+
+            # Personal notes from Obsidian
+            personal_notes = initial_context.get('personal_notes', [])
+            if personal_notes:
+                notes_text = self._format_personal_notes(personal_notes)
+                if notes_text:
+                    parts.append(f"[USER'S PERSONAL NOTES]\n{notes_text}")
+
+            # Dreams
+            dreams = initial_context.get('dreams', [])
+            if dreams:
+                dreams_text = self._format_dreams(dreams)
+                if dreams_text:
+                    parts.append(f"[RECENT DREAMS]\n{dreams_text}")
+
+            # Reflections
+            reflections = initial_context.get('reflections', {})
+            if reflections:
+                recent_refs = reflections.get('recent', [])
+                if recent_refs:
+                    ref_text = self._format_reflections(recent_refs)
+                    if ref_text:
+                        parts.append(f"[RECENT REFLECTIONS]\n{ref_text}")
 
         # Add search results
         if session.accumulated_context:
             parts.append(f"[WEB SEARCH RESULTS - {len(session.rounds)} rounds]\n{session.accumulated_context}")
 
         # Add the query
-        parts.append(f"User Question: {query}")
+        parts.append(f"[CURRENT USER QUERY — RESPOND TO THIS]\n{query}")
 
         # Instructions
-        parts.append("""
-Please provide a comprehensive answer based on the search results above.
-- Cite specific sources when stating facts
+        parts.append("""Please provide a comprehensive answer based on ALL context above:
+- Use your memories, facts, and personal notes to personalize the response
+- Cite web sources when stating facts from search results
 - Note any uncertainties or conflicting information
 - Focus on answering the user's specific question""")
 
         return "\n\n".join(parts)
+
+    def _format_recent_conversations(self, conversations: List[Dict]) -> str:
+        """Format recent conversations for the prompt."""
+        if not conversations:
+            return ""
+        lines = []
+        for i, conv in enumerate(conversations, 1):
+            ts = conv.get('timestamp', '')
+            user_msg = conv.get('query', conv.get('user', ''))
+            assistant_msg = conv.get('response', conv.get('assistant', ''))
+            if user_msg:
+                lines.append(f"{i}) {ts}: User: {user_msg[:500]}")
+                if assistant_msg:
+                    lines.append(f"   Daemon: {assistant_msg[:500]}")
+        return "\n".join(lines)
+
+    def _format_memories(self, memories: List[Dict]) -> str:
+        """Format memories for the prompt."""
+        if not memories:
+            return ""
+        lines = []
+        for i, mem in enumerate(memories, 1):
+            ts = mem.get('timestamp', '')
+            content = mem.get('content', mem.get('query', ''))
+            response = mem.get('response', '')
+            if content:
+                lines.append(f"{i}) {ts}: {content[:400]}")
+                if response:
+                    lines.append(f"   Response: {response[:400]}")
+        return "\n".join(lines)
+
+    def _format_summaries(self, summaries: List[Dict]) -> str:
+        """Format summaries for the prompt."""
+        if not summaries:
+            return ""
+        lines = []
+        for i, s in enumerate(summaries, 1):
+            content = s.get('content', s.get('summary', ''))
+            ts = s.get('timestamp', '')
+            if content:
+                lines.append(f"{i}) [{ts}] {content[:600]}")
+        return "\n".join(lines)
+
+    def _format_personal_notes(self, notes: List[Dict]) -> str:
+        """Format personal notes from Obsidian for the prompt."""
+        if not notes:
+            return ""
+        lines = []
+        for i, note in enumerate(notes, 1):
+            title = note.get('metadata', {}).get('title', 'Untitled')
+            content = note.get('content', '')[:500]
+            tags = note.get('metadata', {}).get('tags', '')
+            if content:
+                tag_str = f" [tags: {tags}]" if tags else ""
+                lines.append(f"{i}) {title}{tag_str}: {content}")
+        return "\n".join(lines)
+
+    def _format_dreams(self, dreams: List[Dict]) -> str:
+        """Format dreams for the prompt."""
+        if not dreams:
+            return ""
+        lines = []
+        for i, d in enumerate(dreams, 1):
+            content = d.get('content', d.get('dream', ''))
+            ts = d.get('timestamp', '')
+            if content:
+                lines.append(f"{i}) [{ts}] {content[:400]}")
+        return "\n".join(lines)
+
+    def _format_reflections(self, reflections: List[Dict]) -> str:
+        """Format reflections for the prompt."""
+        if not reflections:
+            return ""
+        lines = []
+        for i, r in enumerate(reflections, 1):
+            content = r.get('content', r.get('reflection', ''))
+            ts = r.get('timestamp', '')
+            if content:
+                lines.append(f"{i}) [{ts}] {content[:400]}")
+        return "\n".join(lines)
 
     def _format_search_context(
         self,
