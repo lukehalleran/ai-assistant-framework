@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-08
+**Last Updated**: 2026-01-15
 
 ---
 
@@ -1304,6 +1304,59 @@ WebSearchDecision(
 
 ---
 
+### 2.12.3 knowledge/obsidian_manager.py (Personal Notes Integration) **[NEW 2026-01]**
+**Purpose**: Parse, embed, and retrieve user's personal notes from Obsidian vault
+
+**Data Classes**:
+- `EmbedResult`: Statistics from vault embedding (total_files, embedded_files, chunks, errors, duration)
+
+**Key Methods**:
+- `embed_vault(force_reindex)` → `EmbedResult`: Index vault to ChromaDB
+- `get_notes(query, limit)` → `List[Dict]`: Hybrid retrieval (1/3 keyword + 2/3 semantic)
+- `_keyword_search(query, limit)` → `List[Dict]`: Title/tag/content keyword matching
+- `get_vault_stats()` → `Dict`: Index statistics
+- `clear_index()` → `bool`: Clear ChromaDB collection
+
+**Smart Chunking**:
+```
+Note < 1500 chars → Embed whole note
+Note >= 1500 chars → Split by ## headers
+```
+
+**Metadata Extraction**:
+- `#tags` - Preserved as comma-separated metadata
+- `[[wiki links]]` - Extracted as related_notes references
+- YAML frontmatter - Stripped from content
+
+**Hybrid Retrieval**:
+```
+Query → _keyword_search() → 1/3 results (title/tag match priority)
+      → ChromaDB semantic → 2/3 results (vector similarity)
+      → Deduplicate by title → Combined results
+```
+
+**Configuration** (`config/app_config.py`):
+```python
+OBSIDIAN_ENABLED = True
+OBSIDIAN_VAULT_PATH = "~/Documents/Luke Notes"
+OBSIDIAN_CHUNK_THRESHOLD = 1500
+OBSIDIAN_MAX_NOTES_PROMPT = 5
+```
+
+**CLI Commands** (`main.py`):
+- `python main.py embed-vault` - Index vault to ChromaDB
+- `python main.py embed-vault --force` - Force full re-index
+- `python main.py vault-stats` - Show indexed chunk count
+- `python main.py clear-vault` - Clear collection
+
+**Integration**:
+- ContextGatherer retrieves via `get_personal_notes()` method
+- Builder adds `[USER'S PERSONAL NOTES]` section after dreams, before time context
+- TokenManager includes `personal_notes` at priority 6 (high)
+- Notes filtered through 3-stage gate system (Cosine → Blended → CrossEncoder)
+
+---
+
 ### 2.13 utils/time_manager.py (Temporal Context & Session Tracking)
 **Purpose**: Time-aware operations, decay calculation, and conversation pacing metrics **[ENHANCED 2025-12-05]**
 
@@ -2172,7 +2225,8 @@ daemon/
 │   ├── WikiManager.py         # Wikipedia FAISS search
 │   ├── semantic_search.py     # General semantic utilities
 │   ├── topic_manager.py       # Topic-specific utilities
-│   └── web_search_manager.py  # Tavily API + caching [NEW 2025-12-22]
+│   ├── web_search_manager.py  # Tavily API + caching [NEW 2025-12-22]
+│   └── obsidian_manager.py    # Obsidian vault integration [NEW 2026-01]
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)

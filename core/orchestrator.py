@@ -361,6 +361,55 @@ class DaemonOrchestrator:
         )
 
     # ---------- STM Helper Methods ----------
+    def _compute_topic_similarity(self, topic1: str, topic2: str) -> float:
+        """
+        Compute semantic similarity between two topic strings using embeddings.
+
+        Returns a float between 0.0 (unrelated) and 1.0 (identical).
+        Falls back to simple string matching if embeddings unavailable.
+        """
+        if not topic1 or not topic2:
+            return 0.0
+
+        # Normalize
+        t1 = topic1.lower().strip()
+        t2 = topic2.lower().strip()
+
+        # Exact match shortcut
+        if t1 == t2:
+            return 1.0
+
+        # Try to get embed_model from prompt_builder's gate_system
+        try:
+            embed_model = None
+            if hasattr(self, 'prompt_builder') and self.prompt_builder:
+                gate_sys = getattr(self.prompt_builder, 'gate_system', None)
+                if gate_sys:
+                    embed_model = getattr(gate_sys, 'embed_model', None)
+
+            if embed_model is not None:
+                import numpy as np
+                from sklearn.metrics.pairwise import cosine_similarity
+
+                # Encode both topics
+                emb1 = embed_model.encode([t1], convert_to_numpy=True, normalize_embeddings=True)
+                emb2 = embed_model.encode([t2], convert_to_numpy=True, normalize_embeddings=True)
+
+                # Compute cosine similarity
+                sim = cosine_similarity(emb1, emb2)[0][0]
+                return float(sim)
+        except Exception as e:
+            self.logger.debug(f"[STM] Embedding similarity failed, using fallback: {e}")
+
+        # Fallback: simple word overlap (Jaccard-like)
+        words1 = set(t1.split())
+        words2 = set(t2.split())
+        if not words1 or not words2:
+            return 0.0
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+        return intersection / union if union > 0 else 0.0
+
     def _should_use_stm(self, conversation_history: Optional[List[Dict]], user_input: str) -> bool:
         """
         Determine if STM pass should be used for this query.
@@ -399,26 +448,34 @@ class DaemonOrchestrator:
         except Exception as e:
             self.logger.warning(f"[STM] Failed to check meta-conversational status: {e}")
 
-        # Detect topic changes - reset STM context on topic shift
+        # Detect topic changes using semantic similarity (not string matching)
+        # This prevents garbage topic extraction from causing constant "topic changes"
         try:
+            from config.app_config import STM_TOPIC_SIMILARITY_THRESHOLD
+
             if self.topic_manager:
                 # Get current topic from topic manager
                 self.topic_manager.update_from_user_input(user_input)
                 current_topic = self.topic_manager.get_primary_topic()
 
-                # If we have a significant topic change, skip STM (clear contamination)
-                if current_topic and self.last_stm_topic:
-                    # Normalize for comparison
-                    current_norm = current_topic.lower().strip()
-                    last_norm = self.last_stm_topic.lower().strip()
+                # If we have both topics, check semantic similarity
+                if current_topic and self.last_stm_topic and current_topic.lower() != "general":
+                    similarity = self._compute_topic_similarity(current_topic, self.last_stm_topic)
 
-                    if current_norm != last_norm and current_norm != "general":
+                    # Only skip STM if topics are truly unrelated (below threshold)
+                    if similarity < STM_TOPIC_SIMILARITY_THRESHOLD:
                         self.logger.info(
-                            f"[STM] Topic change detected: '{self.last_stm_topic}' -> '{current_topic}'. "
-                            "Resetting STM context to prevent contamination."
+                            f"[STM] Major topic shift detected: '{self.last_stm_topic}' -> '{current_topic}' "
+                            f"(similarity={similarity:.2f} < {STM_TOPIC_SIMILARITY_THRESHOLD}). "
+                            "Skipping STM to prevent contamination."
                         )
                         self.last_stm_topic = current_topic
-                        return False  # Skip STM on topic transitions
+                        return False  # Skip STM on major topic transitions
+                    else:
+                        self.logger.debug(
+                            f"[STM] Topics similar enough: '{self.last_stm_topic}' -> '{current_topic}' "
+                            f"(similarity={similarity:.2f}). STM will run."
+                        )
 
                 # Update topic tracking
                 if current_topic:
@@ -1218,6 +1275,17 @@ The user is processing/analyzing, open to engagement.
                         f"[STM] Analysis complete: topic={stm_summary.get('topic')}, "
                         f"tone={stm_summary.get('tone')}, threads={len(stm_summary.get('open_threads', []))}"
                     )
+
+                # Feed STM's LLM-derived topic back to TopicManager
+                # This ensures consistent topic tracking using the higher-quality LLM extraction
+                stm_topic = stm_summary.get('topic')
+                if stm_topic and stm_topic.lower() not in ('unknown', 'general', ''):
+                    if self.topic_manager:
+                        self.topic_manager.last_topic = stm_topic
+                        self.logger.debug(f"[STM] Updated TopicManager with STM topic: {stm_topic}")
+                    # Also update our local tracking
+                    self.last_stm_topic = stm_topic
+
             except Exception as e:
                 if self.logger:
                     self.logger.warning(f"[STM] Analysis failed, continuing without STM: {e}")

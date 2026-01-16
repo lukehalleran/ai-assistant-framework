@@ -75,6 +75,7 @@ class MultiCollectionChromaStore:
             'wiki_knowledge': None,
             'facts': None,
             'reflections': None,
+            'obsidian_notes': None,  # User's personal notes from Obsidian vault
         }
 
         self._initialize_collections()

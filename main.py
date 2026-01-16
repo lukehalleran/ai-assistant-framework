@@ -6,7 +6,7 @@ Module Contract
   and coordinates graceful shutdown work (reflections + summaries/facts).
 - Inputs:
   - CLI arg `mode`: "gui" (default), "cli", "test-summaries", "inspect-summaries", "test-prompt-summaries",
-    "export-profile", "show-profile", "wizard"
+    "export-profile", "show-profile", "wizard", "embed-vault", "vault-stats", "clear-vault"
   - Environment: GRADIO_* networking flags; config/app_config.py settings (paths, memory, models)
 - Outputs:
   - Starts a Gradio app (GUI) or runs test routines; at shutdown triggers memory_system tasks.
@@ -532,6 +532,67 @@ if __name__ == "__main__":
             print(f"{'='*60}\n")
             print(profile.get_context_injection(max_tokens=1000))
             print(f"\n{'='*60}")
+            sys.exit(0)
+        elif mode == "embed-vault":
+            # Index Obsidian vault to ChromaDB
+            from knowledge.obsidian_manager import ObsidianManager
+            from config.app_config import OBSIDIAN_VAULT_PATH
+
+            print(f"\n{'='*60}")
+            print("OBSIDIAN VAULT INDEXING")
+            print(f"{'='*60}")
+            print(f"Vault path: {OBSIDIAN_VAULT_PATH}")
+
+            force = "--force" in sys.argv
+            if force:
+                print("Force reindex enabled - will re-embed all files")
+
+            manager = ObsidianManager()
+            result = manager.embed_vault(force_reindex=force)
+
+            print(f"\nResults:")
+            print(f"  Total files found: {result.total_files}")
+            print(f"  Files embedded:    {result.embedded_files}")
+            print(f"  Total chunks:      {result.total_chunks}")
+            print(f"  Files skipped:     {result.skipped_files}")
+            print(f"  Errors:            {len(result.errors)}")
+            print(f"  Duration:          {result.duration_seconds:.1f}s")
+
+            if result.errors:
+                print(f"\nErrors (showing first 5):")
+                for err in result.errors[:5]:
+                    print(f"  - {err}")
+                if len(result.errors) > 5:
+                    print(f"  ... and {len(result.errors) - 5} more")
+
+            sys.exit(0)
+        elif mode == "vault-stats":
+            # Show Obsidian vault indexing statistics
+            from knowledge.obsidian_manager import ObsidianManager
+
+            manager = ObsidianManager()
+            stats = manager.get_vault_stats()
+
+            print(f"\n{'='*60}")
+            print("OBSIDIAN VAULT STATS")
+            print(f"{'='*60}")
+            print(f"Vault path:      {stats['vault_path']}")
+            print(f"Vault exists:    {stats['vault_exists']}")
+            print(f"Indexed chunks:  {stats['indexed_chunks']}")
+            sys.exit(0)
+        elif mode == "clear-vault":
+            # Clear all indexed Obsidian notes
+            from knowledge.obsidian_manager import ObsidianManager
+
+            manager = ObsidianManager()
+            print(f"\n{'='*60}")
+            print("CLEARING OBSIDIAN VAULT INDEX")
+            print(f"{'='*60}")
+
+            if manager.clear_index():
+                print("Index cleared successfully")
+            else:
+                print("Failed to clear index")
             sys.exit(0)
         else:
             print(f"[DEBUG] Building orchestrator (mode={mode}, force_wizard={force_wizard})...")

@@ -10,6 +10,7 @@ Module Contract
   - get_wiki_content(query: str, limit: int) -> List[Dict]
   - get_web_search_results(query: str, crisis_level: str) -> WebSearchResult/MultiSearchResult [ENHANCED: multi-search with query decomposition]
   - UPDATED: get_user_profile_context(query: str) -> str [NEW: replaces semantic_facts + fresh_facts]
+  - get_personal_notes(query: str, limit: int) -> List[Dict] [NEW: Obsidian vault retrieval via ObsidianManager]
 - Outputs:
   - Comprehensive context dictionary with all gathered data
   - Recent conversation history within specified limits
@@ -17,6 +18,7 @@ Module Contract
   - Wikipedia content and semantic chunks
   - Web search results when triggered [ENHANCED: supports parallel sub-queries]
   - UPDATED: 'user_profile' key with categorized facts (replaces 'semantic_facts' and 'fresh_facts')
+  - Personal notes from Obsidian vault (hybrid 1/3 keyword + 2/3 semantic retrieval) [NEW]
 - Behavior:
   - Retrieves data from multiple memory collections (episodic, semantic, procedural)
   - Applies filtering and relevance scoring to retrieved content
@@ -243,6 +245,34 @@ class ContextGatherer:
             logger.warning(f"[ContextGatherer] LLM WebSearchTrigger not available: {e}")
             return None
 
+    @property
+    def obsidian_manager(self):
+        """
+        Get cached Obsidian manager, creating it only once.
+
+        Returns None if Obsidian integration is disabled or unavailable.
+        """
+        if not hasattr(self, '_obsidian_manager'):
+            self._obsidian_manager = None
+
+        if self._obsidian_manager is None:
+            try:
+                from config.app_config import OBSIDIAN_ENABLED
+                if not OBSIDIAN_ENABLED:
+                    logger.debug("[ContextGatherer] Obsidian integration disabled")
+                    return None
+
+                from knowledge.obsidian_manager import ObsidianManager
+                self._obsidian_manager = ObsidianManager()
+                logger.info("[ContextGatherer] ObsidianManager initialized")
+            except ImportError as e:
+                logger.debug(f"[ContextGatherer] ObsidianManager not available: {e}")
+                return None
+            except Exception as e:
+                logger.warning(f"[ContextGatherer] Failed to initialize ObsidianManager: {e}")
+                return None
+        return self._obsidian_manager
+
     def _wiki_cache_key(self, query: str) -> str:
         """Generate cache key for wiki queries."""
         return clean_query(query).lower().strip()
@@ -331,6 +361,48 @@ class ContextGatherer:
                 return []
         except Exception as e:
             logger.warning(f"Error getting facts: {e}")
+            return []
+
+    async def get_personal_notes(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get relevant personal notes from Obsidian vault.
+
+        Args:
+            query: Search query for semantic retrieval
+            limit: Maximum notes to return
+
+        Returns:
+            List of note dicts with content, metadata, and relevance_score
+        """
+        manager = self.obsidian_manager
+        if not manager:
+            return []
+
+        try:
+            # Retrieve notes via semantic search
+            notes = await manager.get_notes(query, limit=limit)
+
+            # Track note IDs for citations
+            if notes:
+                for idx, note in enumerate(notes[:limit], start=1):
+                    note_id = f"NOTE_{idx}"
+                    meta = note.get('metadata', {})
+                    self.memory_id_map[note_id] = {
+                        'type': 'personal_note',
+                        'timestamp': meta.get('timestamp', ''),
+                        'content': note.get('content', '')[:500],
+                        'relevance_score': note.get('relevance_score', 0.0),
+                        'title': meta.get('title', ''),
+                        'file_path': meta.get('file_path', ''),
+                        'db_id': note.get('id', None),
+                    }
+
+                logger.debug(f"[ContextGatherer] Retrieved {len(notes)} personal notes for query")
+
+            return notes or []
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get personal notes: {e}")
             return []
 
     async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT) -> List[Dict[str, Any]]:

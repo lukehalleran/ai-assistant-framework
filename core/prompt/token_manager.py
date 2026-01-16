@@ -34,6 +34,7 @@ PRIORITY_ORDER = [
     ("stm_summary",          10),  # Highest priority - STM context should never be trimmed
     ("recent_conversations", 7),
     ("semantic_chunks",      6),
+    ("personal_notes",       6),   # User's Obsidian notes - high priority
     ("memories",             5),
     ("facts",                4),
     ("summaries",            3),

@@ -13,10 +13,11 @@ Module Contract
   - Performance metrics and debug information
 - Behavior:
   - Coordinates all prompt building components (gatherer, formatter, summarizer, token manager)
-  - Manages async context collection with parallel data fetching
+  - Manages async context collection with parallel data fetching (including personal notes from Obsidian)
   - Applies gating system for relevance filtering and content selection
   - Enforces token budgets and applies priority-based trimming
   - Handles different prompt modes (enhanced, raw, specialized)
+  - Assembles [USER'S PERSONAL NOTES] section from Obsidian vault content [NEW]
   - Provides comprehensive error handling and graceful fallbacks
 - Dependencies:
   - .context_gatherer.ContextGatherer (data collection)
@@ -92,6 +93,7 @@ PROMPT_MAX_DREAMS = _cfg_int("prompt_max_dreams", 3)
 PROMPT_MAX_SEMANTIC = _cfg_int("prompt_max_semantic", 8)
 PROMPT_MAX_WIKI = _cfg_int("prompt_max_wiki", 3)
 USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)
+PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
@@ -103,6 +105,7 @@ REFLECTIONS_TOPUP = _parse_bool(os.getenv("REFLECTIONS_TOPUP", "1"))
 PRIORITY_ORDER = [
     ("recent_conversations", 7),
     ("semantic_chunks", 6),
+    ("personal_notes", 6),  # User's Obsidian notes - high priority
     ("memories", 5),
     ("semantic_facts", 4),
     ("fresh_facts", 4),
@@ -285,6 +288,11 @@ class UnifiedPromptBuilder:
                 self.context_gatherer._get_wiki_content(user_input, PROMPT_MAX_WIKI)
             )
 
+            # Personal notes from Obsidian vault
+            tasks["personal_notes"] = asyncio.create_task(
+                self.context_gatherer.get_personal_notes(user_input, PROMPT_MAX_PERSONAL_NOTES)
+            )
+
             # Web search (triggered based on query analysis, suppressed during crisis)
             tasks["web_search"] = asyncio.create_task(
                 self.context_gatherer._get_web_search_results(user_input, crisis_level)
@@ -417,6 +425,7 @@ class UnifiedPromptBuilder:
                 "dreams": gathered.get("dreams", []),
                 "semantic_chunks": gathered.get("semantic", []),
                 "wiki": gathered.get("wiki", []),
+                "personal_notes": gathered.get("personal_notes", []),  # User's Obsidian notes
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
             }
             # DEBUG: Log web search results
@@ -445,7 +454,18 @@ class UnifiedPromptBuilder:
                 # Allow semantic chunks to flow as-is; downstream token budgeting
                 # and stitching will cap size. If we need gating later, prefer
                 # the specialized filter_semantic_chunks in gate_system.
-                pass
+
+                # Gate personal notes through the multi-stage gate system
+                personal_notes = context.get("personal_notes", [])
+                if personal_notes and hasattr(self.context_gatherer, 'gate_system'):
+                    try:
+                        gated_notes = await self.context_gatherer.gate_system.filter_memories(
+                            user_input, personal_notes
+                        )
+                        context["personal_notes"] = gated_notes[:PROMPT_MAX_PERSONAL_NOTES]
+                        logger.debug(f"Gated personal notes: {len(personal_notes)} -> {len(context['personal_notes'])}")
+                    except Exception as gate_err:
+                        logger.warning(f"Personal notes gating failed, keeping original: {gate_err}")
             except Exception as e:
                 logger.warning(f"Gating failed: {e}")
 
@@ -677,6 +697,7 @@ class UnifiedPromptBuilder:
                 "dreams": context.get("dreams", []),
                 "semantic_chunks": context.get("semantic_chunks", []),
                 "wiki": context.get("wiki", []),
+                "personal_notes": context.get("personal_notes", []),  # User's Obsidian notes
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
@@ -702,6 +723,7 @@ class UnifiedPromptBuilder:
                 "dreams": [],
                 "semantic_chunks": [],
                 "wiki": [],
+                "personal_notes": [],
                 "web_search_results": None,
                 "memory_id_map": {}
             }
@@ -729,6 +751,7 @@ class UnifiedPromptBuilder:
                 "dreams": [],
                 "semantic_chunks": [],
                 "wiki": [],
+                "personal_notes": [],  # No personal notes for small-talk
                 "web_search_results": None  # No web search for small-talk
             }
 
@@ -756,6 +779,7 @@ class UnifiedPromptBuilder:
                 "dreams": [],
                 "semantic_chunks": [],
                 "wiki": [],
+                "personal_notes": [],
                 "web_search_results": None
             }
 
@@ -826,13 +850,14 @@ class UnifiedPromptBuilder:
             logger.warning("[DEDUP] No embedder available, falling back to string-based dedup")
 
         cross_dedup_sections = [
-            "recent_conversations", "memories"
+            "recent_conversations", "memories", "personal_notes"
         ]
 
         # Track target counts for backfilling
         target_counts = {
             "recent_conversations": 10,  # Target number of unique recent conversations
-            "memories": 30  # Target number of unique memories
+            "memories": 30,  # Target number of unique memories
+            "personal_notes": PROMPT_MAX_PERSONAL_NOTES  # Target number of personal notes
         }
 
         for section in cross_dedup_sections:
@@ -1379,6 +1404,38 @@ class UnifiedPromptBuilder:
             dr_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
         if dr_lines:
             sections.append(f"[DREAMS] n={len(dr_lines)}\n" + "\n\n".join(dr_lines))
+
+        # Personal Notes from Obsidian vault
+        personal_notes = context.get("personal_notes", []) or []
+        pn_lines: list[str] = []
+        for i, note in enumerate(personal_notes, start=1):
+            if isinstance(note, dict):
+                title = note.get("metadata", {}).get("title", "")
+                section = note.get("metadata", {}).get("section", "")
+                tags = note.get("metadata", {}).get("tags", "")
+                content = note.get("content", "")
+                # Sanitize content to prevent embedded headers
+                content = _sanitize_embedded_headers(content) if content else ""
+            else:
+                title, section, tags, content = "", "", "", str(note)
+
+            if content:
+                # Build header: **Title** (Section) #tag1 #tag2
+                header_parts = []
+                if title:
+                    header_parts.append(f"**{title}**")
+                if section:
+                    header_parts.append(f"({section})")
+                if tags:
+                    # Convert comma-separated tags to hashtag format
+                    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+                    if tag_list:
+                        header_parts.append(" ".join(f"#{t}" for t in tag_list))
+                header = " ".join(header_parts) if header_parts else ""
+                pn_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
+
+        if pn_lines:
+            sections.append(f"[USER'S PERSONAL NOTES] n={len(pn_lines)}\n" + "\n\n".join(pn_lines))
 
         # User Profile (replaces semantic_facts + fresh_facts)
         # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
