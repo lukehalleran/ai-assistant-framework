@@ -6,7 +6,8 @@ Module Contract
   and coordinates graceful shutdown work (reflections + summaries/facts).
 - Inputs:
   - CLI arg `mode`: "gui" (default), "cli", "test-summaries", "inspect-summaries", "test-prompt-summaries",
-    "export-profile", "show-profile", "wizard", "embed-vault", "vault-stats", "clear-vault"
+    "export-profile", "show-profile", "wizard", "embed-vault", "vault-stats", "clear-vault",
+    "upload-doc", "list-docs", "delete-doc", "clear-docs" [NEW: reference docs commands]
   - Environment: GRADIO_* networking flags; config/app_config.py settings (paths, memory, models)
 - Outputs:
   - Starts a Gradio app (GUI) or runs test routines; at shutdown triggers memory_system tasks.
@@ -594,6 +595,176 @@ if __name__ == "__main__":
             else:
                 print("Failed to clear index")
             sys.exit(0)
+
+        # === Reference Documents CLI Commands ===
+        elif mode == "upload-doc":
+            # Upload a reference document to ChromaDB
+            from knowledge.reference_docs_manager import ReferenceDocsManager
+
+            if len(sys.argv) < 3:
+                print("Usage: python main.py upload-doc <file_path> [title]")
+                print("  file_path: Path to document file (.md, .txt, etc.)")
+                print("  title: Optional title (defaults to filename)")
+                sys.exit(1)
+
+            file_path = sys.argv[2]
+            title = sys.argv[3] if len(sys.argv) > 3 else None
+
+            manager = ReferenceDocsManager()
+            print(f"\n{'='*60}")
+            print(f"UPLOADING REFERENCE DOCUMENT")
+            print(f"{'='*60}")
+            print(f"File: {file_path}")
+            if title:
+                print(f"Title: {title}")
+
+            result = manager.upload_document(file_path, title)
+
+            print(f"\n{'='*60}")
+            if result.success:
+                print(f"SUCCESS: '{result.title}'")
+                print(f"  Chunks: {result.total_chunks}")
+                print(f"  Type: {result.file_type}")
+                print(f"  Duration: {result.duration_seconds:.1f}s")
+            else:
+                print(f"FAILED: {result.errors}")
+            print(f"{'='*60}")
+            sys.exit(0 if result.success else 1)
+
+        elif mode == "list-docs":
+            # List all uploaded reference documents
+            from knowledge.reference_docs_manager import ReferenceDocsManager
+
+            manager = ReferenceDocsManager()
+            stats = manager.get_stats()
+
+            print(f"\n{'='*60}")
+            print("REFERENCE DOCUMENTS")
+            print(f"{'='*60}")
+            print(f"Total documents: {stats['document_count']}")
+            print(f"Total chunks: {stats['total_chunks']}")
+
+            if stats['documents']:
+                print(f"\nDocuments:")
+                for doc in stats['documents']:
+                    print(f"  - {doc['title']} ({doc['file_type']}, {doc['chunk_count']} chunks)")
+            else:
+                print("\nNo documents uploaded yet.")
+                print("Use: python main.py upload-doc <file_path>")
+            print(f"{'='*60}")
+            sys.exit(0)
+
+        elif mode == "delete-doc":
+            # Delete a reference document
+            from knowledge.reference_docs_manager import ReferenceDocsManager
+
+            if len(sys.argv) < 3:
+                print("Usage: python main.py delete-doc <title>")
+                print("  title: Title of document to delete (use list-docs to see titles)")
+                sys.exit(1)
+
+            title = sys.argv[2]
+            manager = ReferenceDocsManager()
+
+            print(f"\n{'='*60}")
+            print(f"DELETING REFERENCE DOCUMENT: {title}")
+            print(f"{'='*60}")
+
+            if manager.delete_document(title):
+                print("Document deleted successfully")
+            else:
+                print("Failed to delete document (may not exist)")
+            sys.exit(0)
+
+        elif mode == "clear-docs":
+            # Clear all reference documents
+            from knowledge.reference_docs_manager import ReferenceDocsManager
+
+            manager = ReferenceDocsManager()
+            print(f"\n{'='*60}")
+            print("CLEARING ALL REFERENCE DOCUMENTS")
+            print(f"{'='*60}")
+
+            if manager.clear_all():
+                print("All documents cleared successfully")
+            else:
+                print("Failed to clear documents")
+            sys.exit(0)
+
+        elif mode == "daily-note":
+            # Generate daily note for today or specified date
+            # Usage: python main.py daily-note [date] [--force]
+            import asyncio
+            from utils.daily_notes_generator import DailyNotesGenerator
+            from datetime import date as date_type, datetime, timedelta
+
+            # Parse arguments
+            target_date = date_type.today()
+            force = "--force" in sys.argv
+
+            # Check for date argument (YYYY-MM-DD format)
+            for arg in sys.argv[2:]:
+                if arg.startswith("--"):
+                    continue
+                if arg == "yesterday":
+                    target_date = date_type.today() - timedelta(days=1)
+                else:
+                    try:
+                        target_date = datetime.strptime(arg, "%Y-%m-%d").date()
+                    except ValueError:
+                        print(f"Invalid date format: {arg} (use YYYY-MM-DD or 'yesterday')")
+                        sys.exit(1)
+
+            print(f"\n{'='*60}")
+            print("GENERATING DAILY NOTE")
+            print(f"{'='*60}")
+            print(f"Date: {target_date}")
+            print(f"Force: {force}")
+            print()
+
+            generator = DailyNotesGenerator()
+            result = asyncio.run(generator.generate_for_date(target_date, force=force))
+
+            if result.success:
+                print(f"{'='*60}")
+                print("SUCCESS")
+                print(f"{'='*60}")
+                print(f"  Output: {result.output_path}")
+                print(f"  Conversations: {result.conversation_count}")
+                print(f"  Duration: {result.duration_hours:.1f} hours")
+                print(f"  Intensity: {result.intensity}/10")
+            elif result.skipped_reason:
+                print(f"SKIPPED: {result.skipped_reason}")
+                if result.output_path:
+                    print(f"  Existing note: {result.output_path}")
+            else:
+                print(f"FAILED: {result.error}")
+            sys.exit(0)
+
+        elif mode == "daily-note-catchup":
+            # Generate yesterday's note if missing (for startup hooks)
+            import asyncio
+            from utils.daily_notes_generator import DailyNotesGenerator
+
+            print(f"\n{'='*60}")
+            print("DAILY NOTE CATCH-UP")
+            print(f"{'='*60}")
+
+            generator = DailyNotesGenerator()
+            result = asyncio.run(generator.generate_yesterday_if_missing())
+
+            if result is None:
+                print("Yesterday's note already exists, nothing to do.")
+            elif result.success:
+                print(f"Generated yesterday's note:")
+                print(f"  Output: {result.output_path}")
+                print(f"  Conversations: {result.conversation_count}")
+            elif result.skipped_reason:
+                print(f"Skipped: {result.skipped_reason}")
+            else:
+                print(f"Failed: {result.error}")
+            sys.exit(0)
+
         else:
             print(f"[DEBUG] Building orchestrator (mode={mode}, force_wizard={force_wizard})...")
             orchestrator = build_orchestrator()

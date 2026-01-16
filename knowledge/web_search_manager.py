@@ -19,6 +19,10 @@ Enhanced Features (2026-01):
   - LLM-based detection of multi-entity/multi-facet queries
   - Parallel Tavily searches with result merging and deduplication
   - Credit-aware: respects daily limits, caps sub-queries at 4
+- News Detection: Automatically detects news/current events queries
+  - Uses Tavily's news-optimized agent (topic="news") for better results
+  - Limits to recent results (days=1) for "today" queries
+  - Keyword/phrase detection for news intent
 - Entry point: multi_search() for decomposed queries, search() for single queries
 """
 
@@ -34,6 +38,51 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
+
+# News detection patterns
+NEWS_KEYWORDS = {
+    'news', 'today', 'yesterday', 'latest', 'recent', 'breaking',
+    'happened', 'happening', 'current events', 'headlines', 'update',
+    'this week', 'this month', 'announced', 'reports', 'reported'
+}
+NEWS_PHRASES = [
+    'what happened', 'what\'s happening', 'whats happening',
+    'news in', 'news from', 'news about', 'news today',
+    'current events', 'latest news', 'breaking news',
+    'today in', 'yesterday in', 'this week in'
+]
+
+
+def _is_news_query(query: str) -> bool:
+    """
+    Detect if a query is asking for news/current events.
+
+    Returns True if query contains news-related keywords or phrases.
+    """
+    query_lower = query.lower()
+
+    # Check for news phrases first (more specific)
+    for phrase in NEWS_PHRASES:
+        if phrase in query_lower:
+            return True
+
+    # Check for keyword combinations (need at least one strong indicator)
+    words = set(query_lower.split())
+    news_word_matches = words & NEWS_KEYWORDS
+
+    # "today" or "yesterday" with a location/topic is likely news
+    if ('today' in query_lower or 'yesterday' in query_lower) and len(query_lower) > 20:
+        return True
+
+    # Multiple news keywords suggest news intent
+    if len(news_word_matches) >= 2:
+        return True
+
+    # Single strong indicators
+    if news_word_matches & {'news', 'headlines', 'breaking', 'current events'}:
+        return True
+
+    return False
 
 
 class WebSearchDepth(Enum):
@@ -610,8 +659,16 @@ class WebSearchManager:
         """Execute the actual search based on depth."""
         session = WebSearchSession(initial_query=query, depth=depth)
 
+        # Detect if this is a news query - use news topic for better results
+        is_news = _is_news_query(query)
+        topic = "news" if is_news else "general"
+        days = 1 if is_news else None  # Limit to today for news queries
+
+        if is_news:
+            log.info(f"[WebSearch] News query detected, using topic='news', days=1")
+
         # Step 1: Basic search (all depths)
-        search_pages = await self._tavily_search(query, max_results)
+        search_pages = await self._tavily_search(query, max_results, topic=topic, days=days)
         session.search_results = search_pages
         session.credits_used += 1.0  # Base search cost
 
@@ -646,22 +703,46 @@ class WebSearchManager:
             timestamp=time.time()
         )
 
-    async def _tavily_search(self, query: str, max_results: int) -> List[WebPage]:
-        """Execute Tavily search API call."""
+    async def _tavily_search(
+        self,
+        query: str,
+        max_results: int,
+        topic: str = "general",
+        days: Optional[int] = None
+    ) -> List[WebPage]:
+        """
+        Execute Tavily search API call.
+
+        Args:
+            query: Search query
+            max_results: Maximum results to return
+            topic: "general" or "news" - news uses Tavily's news-optimized agent
+            days: For news topic, limit to N days back (default None = 3 days)
+        """
         if not self._tavily_client:
             return []
 
         try:
+            # Build search kwargs
+            search_kwargs = {
+                "query": query,
+                "max_results": max_results,
+                "include_answer": False,
+                "include_raw_content": False,
+                "topic": topic,
+            }
+
+            # days parameter only works with news topic
+            if topic == "news" and days is not None:
+                search_kwargs["days"] = days
+
+            log.debug(f"[WebSearch] Tavily search: topic={topic}, days={days}, query={query[:50]}...")
+
             # Run in executor since tavily-python is synchronous
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: self._tavily_client.search(
-                    query=query,
-                    max_results=max_results,
-                    include_answer=False,
-                    include_raw_content=False
-                )
+                lambda: self._tavily_client.search(**search_kwargs)
             )
 
             pages = []

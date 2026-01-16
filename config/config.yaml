@@ -141,6 +141,11 @@ agentic_search:
   context_budget_tokens: 8000
   compression_model: gpt-4o-mini
   prefer_native_tools: true
+daily_notes:
+  enabled: true
+  folder: "Vault/Daily Notes and To Do's"
+  model: "gpt-4o-mini"
+  max_tokens: 800
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

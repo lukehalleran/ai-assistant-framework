@@ -2,7 +2,7 @@
 # memory/storage/multi_collection_chroma_store.py
 
 Module Contract
-- Purpose: Wrapper over ChromaDB with separate collections (conversations, summaries, wiki_knowledge, facts, reflections). Provides add/query helpers with robust metadata flattening.
+- Purpose: Wrapper over ChromaDB with separate collections (conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs). Provides add/query helpers with robust metadata flattening.
 - Inputs:
   - add_conversation_memory(query, response, metadata)
   - add_summary(summary, period, metadata) [back‑compat]
@@ -76,6 +76,7 @@ class MultiCollectionChromaStore:
             'facts': None,
             'reflections': None,
             'obsidian_notes': None,  # User's personal notes from Obsidian vault
+            'reference_docs': None,  # User uploaded reference documents
         }
 
         self._initialize_collections()

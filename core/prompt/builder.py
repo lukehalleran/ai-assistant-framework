@@ -13,11 +13,12 @@ Module Contract
   - Performance metrics and debug information
 - Behavior:
   - Coordinates all prompt building components (gatherer, formatter, summarizer, token manager)
-  - Manages async context collection with parallel data fetching (including personal notes from Obsidian)
+  - Manages async context collection with parallel data fetching (including personal notes and reference docs)
   - Applies gating system for relevance filtering and content selection
   - Enforces token budgets and applies priority-based trimming
   - Handles different prompt modes (enhanced, raw, specialized)
   - Assembles [USER'S PERSONAL NOTES] section from Obsidian vault content [NEW]
+  - Assembles [DAEMON DOCUMENTATION] section from reference docs (system self-knowledge) [NEW]
   - Provides comprehensive error handling and graceful fallbacks
 - Dependencies:
   - .context_gatherer.ContextGatherer (data collection)
@@ -94,6 +95,7 @@ PROMPT_MAX_SEMANTIC = _cfg_int("prompt_max_semantic", 8)
 PROMPT_MAX_WIKI = _cfg_int("prompt_max_wiki", 3)
 USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)
 PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
+PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 5)
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
@@ -106,6 +108,7 @@ PRIORITY_ORDER = [
     ("recent_conversations", 7),
     ("semantic_chunks", 6),
     ("personal_notes", 6),  # User's Obsidian notes - high priority
+    ("reference_docs", 5),  # User uploaded reference documents
     ("memories", 5),
     ("semantic_facts", 4),
     ("fresh_facts", 4),
@@ -293,6 +296,11 @@ class UnifiedPromptBuilder:
                 self.context_gatherer.get_personal_notes(user_input, PROMPT_MAX_PERSONAL_NOTES)
             )
 
+            # Reference documents (user uploaded)
+            tasks["reference_docs"] = asyncio.create_task(
+                self.context_gatherer.get_reference_docs(user_input, PROMPT_MAX_REFERENCE_DOCS)
+            )
+
             # Web search (triggered based on query analysis, suppressed during crisis)
             tasks["web_search"] = asyncio.create_task(
                 self.context_gatherer._get_web_search_results(user_input, crisis_level)
@@ -426,6 +434,7 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": gathered.get("semantic", []),
                 "wiki": gathered.get("wiki", []),
                 "personal_notes": gathered.get("personal_notes", []),  # User's Obsidian notes
+                "reference_docs": gathered.get("reference_docs", []),  # User uploaded documents
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
             }
             # DEBUG: Log web search results
@@ -466,6 +475,18 @@ class UnifiedPromptBuilder:
                         logger.debug(f"Gated personal notes: {len(personal_notes)} -> {len(context['personal_notes'])}")
                     except Exception as gate_err:
                         logger.warning(f"Personal notes gating failed, keeping original: {gate_err}")
+
+                # Gate reference docs through the multi-stage gate system
+                reference_docs = context.get("reference_docs", [])
+                if reference_docs and hasattr(self.context_gatherer, 'gate_system'):
+                    try:
+                        gated_docs = await self.context_gatherer.gate_system.filter_memories(
+                            user_input, reference_docs
+                        )
+                        context["reference_docs"] = gated_docs[:PROMPT_MAX_REFERENCE_DOCS]
+                        logger.debug(f"Gated reference docs: {len(reference_docs)} -> {len(context['reference_docs'])}")
+                    except Exception as gate_err:
+                        logger.warning(f"Reference docs gating failed, keeping original: {gate_err}")
             except Exception as e:
                 logger.warning(f"Gating failed: {e}")
 
@@ -1436,6 +1457,35 @@ class UnifiedPromptBuilder:
 
         if pn_lines:
             sections.append(f"[USER'S PERSONAL NOTES] n={len(pn_lines)}\n" + "\n\n".join(pn_lines))
+
+        # Reference Documents (user uploaded technical docs, project outlines, etc.)
+        reference_docs = context.get("reference_docs", []) or []
+        rd_lines: list[str] = []
+        for i, doc in enumerate(reference_docs, start=1):
+            if isinstance(doc, dict):
+                title = doc.get("metadata", {}).get("title", "")
+                section = doc.get("metadata", {}).get("section", "")
+                file_type = doc.get("metadata", {}).get("file_type", "")
+                content = doc.get("content", "")
+                # Sanitize content to prevent embedded headers
+                content = _sanitize_embedded_headers(content) if content else ""
+            else:
+                title, section, file_type, content = "", "", "", str(doc)
+
+            if content:
+                # Build header: **Title** (Section) [type]
+                header_parts = []
+                if title:
+                    header_parts.append(f"**{title}**")
+                if section:
+                    header_parts.append(f"({section})")
+                if file_type:
+                    header_parts.append(f"[{file_type}]")
+                header = " ".join(header_parts) if header_parts else ""
+                rd_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
+
+        if rd_lines:
+            sections.append(f"[DAEMON DOCUMENTATION] n={len(rd_lines)}\n" + "\n\n".join(rd_lines))
 
         # User Profile (replaces semantic_facts + fresh_facts)
         # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
