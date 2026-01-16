@@ -14,6 +14,7 @@ Module Contract
   - load_system_prompt(cfg) → str: resolves from core/system_prompt[.txt] (stripping header comments) or falls back to inline
 - Important constants:
   - CORPUS_FILE, CHROMA_PATH, SYSTEM_PROMPT, DEFAULT_* model knobs, gating thresholds, CORPUS_MAX_ENTRIES
+  - OBSIDIAN_ENABLED, OBSIDIAN_VAULT_PATH, OBSIDIAN_CHUNK_THRESHOLD, OBSIDIAN_MAX_NOTES_PROMPT [NEW]
 - Side effects:
   - Creates data directories on import to ensure persistence paths exist.
 - Error handling:
@@ -296,6 +297,24 @@ WEB_SEARCH_ENABLED = bool(int(os.getenv("WEB_SEARCH_ENABLED", "1" if WEB_SEARCH_
 WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", str(WEB_SEARCH_TIMEOUT)))
 WEB_SEARCH_DAILY_CREDIT_LIMIT = int(os.getenv("WEB_SEARCH_DAILY_CREDIT_LIMIT", str(WEB_SEARCH_DAILY_CREDIT_LIMIT)))
 
+# --------------------------------------------------------------------
+# Obsidian Vault Configuration
+# --------------------------------------------------------------------
+# Enable personal notes integration from Obsidian vault
+# Notes are embedded into ChromaDB and retrieved semantically
+OBSIDIAN_CFG = config.get("obsidian", {})
+OBSIDIAN_ENABLED: bool = bool(OBSIDIAN_CFG.get("enabled", False))
+# Path to Obsidian vault directory
+OBSIDIAN_VAULT_PATH: str = OBSIDIAN_CFG.get("vault_path", "") or os.path.expanduser("~/Documents/Luke Notes")
+# Character threshold for chunking (notes < threshold = whole, >= threshold = chunk by headers)
+OBSIDIAN_CHUNK_THRESHOLD: int = int(OBSIDIAN_CFG.get("chunk_threshold", 1500))
+# Maximum notes to include in prompt
+OBSIDIAN_MAX_NOTES_PROMPT: int = int(OBSIDIAN_CFG.get("max_notes_prompt", 5))
+
+# Environment variable overrides for Obsidian
+OBSIDIAN_ENABLED = bool(int(os.getenv("OBSIDIAN_ENABLED", "1" if OBSIDIAN_ENABLED else "0")))
+OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH", OBSIDIAN_VAULT_PATH)
+
 DEICTIC_THRESHOLD = config.get("gating", {}).get("deictic_threshold", 0.60)
 NORMAL_THRESHOLD = config.get("gating", {}).get("normal_threshold", 0.35)
 DEICTIC_ANCHOR_PENALTY = config.get("gating", {}).get("deictic_anchor_penalty", 0.1)
@@ -327,6 +346,10 @@ STM_MODEL_NAME = config.get("features", {}).get("stm_model_name", "gpt-4o-mini")
 STM_MAX_RECENT_MESSAGES = int(config.get("features", {}).get("stm_max_recent_messages", 8))
 # Minimum conversation depth before STM kicks in (avoid overhead for trivial exchanges)
 STM_MIN_CONVERSATION_DEPTH = int(config.get("features", {}).get("stm_min_conversation_depth", 3))
+# Topic similarity threshold for STM topic-change detection (0.0-1.0)
+# Below this threshold = true topic change, STM skipped to avoid contamination
+# Uses semantic similarity (embeddings) instead of string matching
+STM_TOPIC_SIMILARITY_THRESHOLD = float(config.get("features", {}).get("stm_topic_similarity_threshold", 0.4))
 
 # Optional multi-model generators/selectors (defaults keep current behavior)
 BEST_OF_GENERATOR_MODELS = list(
