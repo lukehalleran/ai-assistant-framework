@@ -77,6 +77,38 @@ DARK_CHATBOT_CSS = """
     background-color: #111827 !important;
     color: #e5e7eb !important;
 }
+
+/* Debug Trace tab - Markdown content styling */
+.prose pre,
+.prose code,
+.markdown-body pre,
+.markdown-body code,
+[class*="markdown"] pre,
+[class*="markdown"] code {
+    background-color: #1f2937 !important;
+    color: #e5e7eb !important;
+    border: 1px solid #374151 !important;
+}
+.prose,
+.markdown-body,
+[class*="markdown"] {
+    color: #f3f4f6 !important;
+}
+.prose h1, .prose h2, .prose h3, .prose h4,
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4,
+[class*="markdown"] h1, [class*="markdown"] h2, [class*="markdown"] h3, [class*="markdown"] h4 {
+    color: #f3f4f6 !important;
+}
+.prose strong, .prose b,
+.markdown-body strong, .markdown-body b,
+[class*="markdown"] strong, [class*="markdown"] b {
+    color: #f3f4f6 !important;
+}
+.prose hr,
+.markdown-body hr,
+[class*="markdown"] hr {
+    border-color: #4b5563 !important;
+}
 """
 
 def get_dark_theme():

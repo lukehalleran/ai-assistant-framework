@@ -60,15 +60,46 @@ class TopicManager:
         # Optional dependency injection: resolve ModelManager if not provided
         self.model_manager = model_manager or self._resolve_model_manager()
 
-        # Small stoplist to block deictic pronouns, vague fillers, and connectors
+        # Expanded stoplist to block garbage topics
+        # Based on actual garbage observed in logs: "Idk", "How", "Well", "Thi", "Hub", etc.
         self._stop_topics: Set[str] = {
             # deictic / vague
-            "that", "this", "it", "there", "here",
-            "today", "now", "stuff", "things", "misc", "none",
+            "that", "this", "it", "there", "here", "what", "which", "who",
+            "today", "now", "stuff", "things", "misc", "none", "something",
             # common connectors / interjections that are never a real topic
-            "and", "but", "so", "ok", "okay", "yeah", "yep", "no", "yes",
+            "and", "but", "so", "ok", "okay", "yeah", "yep", "no", "yes", "nope",
+            "oh", "ah", "um", "uh", "hmm", "hm", "well", "like", "anyway",
             # articles and common words that shouldn't be topics
-            "the", "a", "an", "i", "just", "only", "first", "second",
+            "the", "a", "an", "i", "just", "only", "first", "second", "maybe",
+            # garbage from actual logs - short meaningless words
+            "idk", "how", "thi", "hub", "hit", "not", "got", "get", "let",
+            "assuming", "other", "those", "loop", "card", "omg", "wow", "man",
+            # more vague/short words
+            "one", "two", "some", "any", "all", "most", "few", "many",
+            "good", "bad", "new", "old", "big", "small", "last", "next",
+            "really", "very", "much", "more", "less", "also", "even", "still",
+            # web/UI action words
+            "click", "tap", "press", "select", "choose", "enter", "submit",
+            "our", "your", "my", "their", "his", "her", "its",
+            # common newsletter/subscription words
+            "newsletter", "update", "updates", "news",
+        }
+
+        # Web UI patterns - common text from pasted web content that shouldn't be topics
+        self._web_ui_patterns: Set[str] = {
+            # Navigation/UI elements
+            "homepage", "home page", "sign in", "sign up", "log in", "log out",
+            "subscribe", "unsubscribe", "read more", "learn more", "click here",
+            "see more", "view more", "show more", "load more", "next page",
+            "previous", "back", "forward", "menu", "search", "settings",
+            # Common web boilerplate
+            "cookie", "cookies", "privacy policy", "terms of service", "terms and conditions",
+            "contact us", "about us", "help center", "faq", "support",
+            "share", "tweet", "post", "comment", "reply", "like", "follow",
+            # News site patterns
+            "breaking news", "latest news", "trending", "popular", "featured",
+            "advertisement", "sponsored", "promoted", "ad", "ads",
+            "suggested topics", "related articles", "you may also like",
         }
 
     # --- Public API expected by the rest of your app ---
@@ -78,61 +109,70 @@ class TopicManager:
         Update internal state based on a new user utterance.
         Never commit clearly ambiguous candidates (e.g., "it", "this").
 
-        3-stage pipeline:
-        1. Heuristics (fast)
-        2. spaCy NER (if ambiguous, extract entities)
-        3. LLM fallback (if no entities, extract from conversational text)
-        """
-        # Stage 1: Heuristics
-        candidate = self._extract_primary_from_text(text)
+        LLM-first pipeline (2026-01-12 refactor):
+        1. LLM extraction (most reliable for conversational/pasted content)
+        2. spaCy NER fallback (if LLM unavailable/fails)
+        3. Heuristics fallback (last resort)
 
-        # If ambiguous, try stages 2 & 3
-        if self._is_ambiguous(candidate, text):
-            # Stage 2: spaCy NER (extract named entities)
-            spacy_topic = self._spacy_ner_extraction(text)
-            if spacy_topic:
-                self.last_topic = spacy_topic
+        This ordering ensures quality topics even for emotional messages,
+        pasted web content, and casual conversation.
+        """
+        # Stage 1: Try LLM first (most reliable)
+        if self.enable_llm_fallback and self.model_manager:
+            llm_topic = self._llm_fallback(text)
+            if llm_topic and not self._is_ambiguous(llm_topic, text):
+                self.last_topic = llm_topic
+                self.logger.debug(f"[TopicManager] LLM extracted topic: {llm_topic}")
                 return
 
-            # Stage 3: LLM fallback (for conversational/emotional messages)
-            resolved = self._llm_fallback(text)
-            if resolved:
-                self.last_topic = resolved
-            # else: keep prior last_topic (no update)
+        # Stage 2: spaCy NER fallback
+        spacy_topic = self._spacy_ner_extraction(text)
+        if spacy_topic and not self._is_ambiguous(spacy_topic, text):
+            self.last_topic = spacy_topic
+            self.logger.debug(f"[TopicManager] spaCy extracted topic: {spacy_topic}")
             return
 
-        if candidate:
+        # Stage 3: Heuristics fallback (last resort)
+        candidate = self._extract_primary_from_text(text)
+        if candidate and not self._is_ambiguous(candidate, text):
             self.last_topic = candidate
+            self.logger.debug(f"[TopicManager] Heuristic extracted topic: {candidate}")
+            return
+
+        # All methods failed or produced garbage - keep prior topic
+        self.logger.debug(f"[TopicManager] No quality topic extracted, keeping: {self.last_topic}")
 
     def get_primary_topic(self, text: Optional[str] = None) -> Optional[str]:
         """
         Return a single best topic string. If `text` is provided, derive from it;
         else return the last seen topic (may be None).
 
-        3-stage pipeline:
-        1. Heuristics (fast)
-        2. spaCy NER (if ambiguous, extract entities)
-        3. LLM fallback (if no entities, extract from conversational text)
+        LLM-first pipeline (2026-01-12 refactor):
+        1. LLM extraction (most reliable for conversational/pasted content)
+        2. spaCy NER fallback (if LLM unavailable/fails)
+        3. Heuristics fallback (last resort)
         """
         if text:
-            # Stage 1: Heuristics
-            candidate = self._extract_primary_from_text(text)
-
-            if self._is_ambiguous(candidate, text):
-                # Stage 2: spaCy NER (extract named entities)
-                spacy_topic = self._spacy_ner_extraction(text)
-                if spacy_topic:
-                    self.last_topic = spacy_topic
+            # Stage 1: Try LLM first (most reliable)
+            if self.enable_llm_fallback and self.model_manager:
+                llm_topic = self._llm_fallback(text)
+                if llm_topic and not self._is_ambiguous(llm_topic, text):
+                    self.last_topic = llm_topic
                     return self.last_topic
 
-                # Stage 3: LLM fallback (for conversational/emotional messages)
-                resolved = self._llm_fallback(text)
-                if resolved:
-                    self.last_topic = resolved
-                # If unresolved, do not change last_topic
-            else:
-                if candidate:
-                    self.last_topic = candidate
+            # Stage 2: spaCy NER fallback
+            spacy_topic = self._spacy_ner_extraction(text)
+            if spacy_topic and not self._is_ambiguous(spacy_topic, text):
+                self.last_topic = spacy_topic
+                return self.last_topic
+
+            # Stage 3: Heuristics fallback (last resort)
+            candidate = self._extract_primary_from_text(text)
+            if candidate and not self._is_ambiguous(candidate, text):
+                self.last_topic = candidate
+                return self.last_topic
+
+            # All methods failed - don't update last_topic
         return self.last_topic
 
     # Some call sites used `resolve_topic`; keep it as an alias returning str|None.
@@ -251,23 +291,43 @@ class TopicManager:
         if not c:
             return True
 
-        # Deictic or vague words
-        if c.lower() in self._stop_topics:
+        c_lower = c.lower()
+        tokens = [t.lower() for t in re.split(r"\s+", c) if t]
+
+        # Single-word stopwords - reject completely
+        if len(tokens) == 1 and c_lower in self._stop_topics:
             return True
 
-        # Very short or mostly stopwords
-        tokens = [t for t in re.split(r"\s+", c) if t]
-        if len(tokens) <= 2 and all(t.lower() in self._stop_topics or len(t) <= 2 for t in tokens):
+        # Multi-word: reject if ALL words are stopwords
+        if len(tokens) > 1 and all(t in self._stop_topics for t in tokens):
+            self.logger.debug(f"[TopicManager] Rejecting all-stopword phrase: {c}")
+            return True
+
+        # Web UI patterns - reject pasted web content (exact match)
+        if c_lower in self._web_ui_patterns:
+            self.logger.debug(f"[TopicManager] Rejecting web UI pattern: {c}")
+            return True
+
+        # Very short candidates (< 3 chars) are almost always garbage
+        if len(c) < 3:
+            return True
+
+        # Very short or mostly stopwords (tokens already defined above)
+        if len(tokens) <= 2 and all(t in self._stop_topics or len(t) <= 2 for t in tokens):
             return True
 
         # If heuristics returned 'general', ALWAYS use LLM to extract something better
         # This handles conversational/emotional messages that don't have clear entities
-        if c.lower() == "general":
+        if c_lower == "general":
             return True
 
         # Also check if candidate is too long (>6 words) - likely the whole message
-        tokens = [t for t in re.split(r"\s+", c) if t]
         if len(tokens) > 6:
+            return True
+
+        # Check for partial/truncated words (like "Thi" from "This")
+        # Single token under 4 chars that's not a known acronym/word
+        if len(tokens) == 1 and len(tokens[0]) < 4 and tokens[0].lower() not in {"ice", "fbi", "cia", "fed", "gop", "dem", "nyc", "usa"}:
             return True
 
         return False
