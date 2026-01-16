@@ -303,7 +303,7 @@ WEB_SEARCH_DAILY_CREDIT_LIMIT = int(os.getenv("WEB_SEARCH_DAILY_CREDIT_LIMIT", s
 # Enable personal notes integration from Obsidian vault
 # Notes are embedded into ChromaDB and retrieved semantically
 OBSIDIAN_CFG = config.get("obsidian", {})
-OBSIDIAN_ENABLED: bool = bool(OBSIDIAN_CFG.get("enabled", False))
+OBSIDIAN_ENABLED: bool = bool(OBSIDIAN_CFG.get("enabled", True))
 # Path to Obsidian vault directory
 OBSIDIAN_VAULT_PATH: str = OBSIDIAN_CFG.get("vault_path", "") or os.path.expanduser("~/Documents/Luke Notes")
 # Character threshold for chunking (notes < threshold = whole, >= threshold = chunk by headers)
@@ -314,6 +314,35 @@ OBSIDIAN_MAX_NOTES_PROMPT: int = int(OBSIDIAN_CFG.get("max_notes_prompt", 5))
 # Environment variable overrides for Obsidian
 OBSIDIAN_ENABLED = bool(int(os.getenv("OBSIDIAN_ENABLED", "1" if OBSIDIAN_ENABLED else "0")))
 OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH", OBSIDIAN_VAULT_PATH)
+
+# --------------------------------------------------------------------
+# Reference Documents Configuration
+# --------------------------------------------------------------------
+# User-uploaded reference documents (technical docs, project outlines, etc.)
+REFERENCE_DOCS_CFG = config.get("reference_docs", {})
+REFERENCE_DOCS_ENABLED: bool = bool(REFERENCE_DOCS_CFG.get("enabled", True))
+# Character threshold for chunking (docs < threshold = whole, >= threshold = chunk by headers)
+REFERENCE_DOCS_CHUNK_THRESHOLD: int = int(REFERENCE_DOCS_CFG.get("chunk_threshold", 2000))
+# Maximum document chunks to include in prompt
+REFERENCE_DOCS_MAX_PROMPT: int = int(REFERENCE_DOCS_CFG.get("max_prompt", 5))
+
+# Environment variable overrides for Reference Docs
+REFERENCE_DOCS_ENABLED = bool(int(os.getenv("REFERENCE_DOCS_ENABLED", "1" if REFERENCE_DOCS_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Daily Notes Configuration (auto-generated conversation summaries)
+# --------------------------------------------------------------------
+DAILY_NOTES_CFG = config.get("daily_notes", {})
+DAILY_NOTES_ENABLED: bool = bool(DAILY_NOTES_CFG.get("enabled", True))
+# Subfolder within Obsidian vault for daily notes
+DAILY_NOTES_FOLDER: str = DAILY_NOTES_CFG.get("folder", "Daily")
+# Model for generating daily summaries
+DAILY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("model", "gpt-4o-mini")
+# Max tokens for LLM response
+DAILY_NOTES_MAX_TOKENS: int = int(DAILY_NOTES_CFG.get("max_tokens", 800))
+
+# Environment variable overrides for Daily Notes
+DAILY_NOTES_ENABLED = bool(int(os.getenv("DAILY_NOTES_ENABLED", "1" if DAILY_NOTES_ENABLED else "0")))
 
 DEICTIC_THRESHOLD = config.get("gating", {}).get("deictic_threshold", 0.60)
 NORMAL_THRESHOLD = config.get("gating", {}).get("normal_threshold", 0.35)

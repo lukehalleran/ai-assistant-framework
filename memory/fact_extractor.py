@@ -1,4 +1,29 @@
 # memory/fact_extractor.py
+"""
+Fact Extractor - Multi-stage fact extraction from user input.
+
+Module Contract:
+- Purpose: Extract structured facts (subject-relation-object triples) from user messages
+- Inputs:
+  - extract_facts(query, response, conversation_context) -> List[MemoryNode]
+- Outputs:
+  - List of MemoryNode objects with extracted facts and confidence scores
+- Behavior:
+  - CORRECTION DETECTION (0.9+ confidence): Detects "I'm X, not Y", "actually I'm X" patterns
+    These high-confidence facts supersede older facts via UserProfile's conflict resolution
+  - spaCy dependency parsing for grammar-based extraction
+  - REBEL neural extraction (if enabled)
+  - Regex fallback patterns for common fact types
+  - Confidence scoring based on pattern quality and specificity
+- Dependencies:
+  - spaCy (optional, for NLP)
+  - REBEL pipeline (optional, for neural extraction)
+  - memory.memory_interface (MemoryNode)
+
+Enhanced (2026-01):
+- Correction detection patterns for "not X", "actually X" with 0.92 confidence
+- Corrections supersede old facts in UserProfile (newer + higher confidence wins)
+"""
 import re
 import uuid
 from datetime import datetime
@@ -333,11 +358,177 @@ class FactExtractor:
             ("goal", r"\b(?:i|we)\s+(?:plan\s+to|(?:am\s+)?going\s+to|want\s+to|intend\s+to|aim\s+to)\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)"),
         ]
 
+        # CORRECTION DETECTION PATTERNS (high confidence 0.9+)
+        # These detect when user is correcting prior information
+        self.correction_patterns = [
+            # === LOCATION CORRECTIONS ===
+            # "I'm in X, not Y" / "I am in X, not Y"
+            (r"\b(?:i(?:'m|\s+am))\s+in\s+([^,]+),\s*not\s+", "lives_in"),
+            # "I live in X, not Y"
+            (r"\b(?:i|we)\s+live\s+in\s+([^,]+),\s*not\s+", "lives_in"),
+            # "I'm from X, not Y"
+            (r"\b(?:i(?:'m|\s+am))\s+from\s+([^,]+),\s*not\s+", "lives_in"),
+            # "actually I live in X" / "actually I'm in X"
+            (r"\bactually,?\s+(?:i(?:'m|\s+am))\s+(?:in|from)\s+([A-Z][a-zA-Z\s,]+?)(?:[\.;,!?:]|$)", "lives_in"),
+            (r"\bactually,?\s+(?:i|we)\s+live\s+in\s+([A-Z][a-zA-Z\s,]+?)(?:[\.;,!?:]|$)", "lives_in"),
+            # "not X, I live in Y"
+            (r"\bnot\s+[A-Z][a-zA-Z\s]+,\s*(?:i|we)\s+live\s+in\s+([A-Z][a-zA-Z\s,]+?)(?:[\.;,!?:]|$)", "lives_in"),
+            # "I moved to X" (implies current location)
+            (r"\bactually,?\s+(?:i|we)\s+moved\s+to\s+([A-Z][a-zA-Z\s,]+?)(?:[\.;,!?:]|$)", "lives_in"),
+
+            # === AGE CORRECTIONS ===
+            # "I'm X, not Y" (age)
+            (r"\b(?:i(?:'m|\s+am))\s+(\d{1,3}),?\s*not\s+\d", "age"),
+            # "actually I'm X" / "actually I am X years old"
+            (r"\bactually,?\s+(?:i(?:'m|\s+am))\s+(\d{1,3})(?:\s+years?\s+old)?", "age"),
+            # "turning X, not Y"
+            (r"\b(?:i(?:'m|\s+am))?\s*turning\s+(\d{1,3}),?\s*not\s+\d", "age"),
+            (r"\bactually,?\s+(?:i(?:'m|\s+am))?\s*turning\s+(\d{1,3})", "age"),
+            # "not X, I'm Y" (age)
+            (r"\bnot\s+\d+,\s*(?:i(?:'m|\s+am)|but)\s+(\d{1,3})", "age"),
+            # "I'll be X" / "I will be X"
+            (r"\bactually,?\s+(?:i(?:'ll|\s+will)\s+be)\s+(\d{1,3})", "age"),
+            # "I turn X on [date]"
+            (r"\bi\s+turn\s+(\d{1,3})\s+(?:on|in|this)", "age"),
+
+            # === NAME CORRECTIONS ===
+            # "my name is X, not Y"
+            (r"\bmy\s+name\s+is\s+([^,]+),\s*not\s+", "name"),
+            # "actually my name is X" / "actually it's X"
+            (r"\bactually,?\s+my\s+name\s+is\s+([A-Z][a-zA-Z]+)", "name"),
+            (r"\bactually,?\s+(?:it(?:'s|\s+is)|i(?:'m|\s+am))\s+([A-Z][a-zA-Z]+),?\s*not\s+", "name"),
+            # "call me X, not Y"
+            (r"\bcall\s+me\s+([A-Z][a-zA-Z]+),?\s*not\s+", "name"),
+            # "I go by X"
+            (r"\bactually,?\s+i\s+go\s+by\s+([A-Z][a-zA-Z]+)", "name"),
+
+            # === JOB/OCCUPATION CORRECTIONS ===
+            # "I work at X, not Y"
+            (r"\b(?:i|we)\s+work\s+(?:at|for)\s+([^,]+),\s*not\s+", "works_at"),
+            # "actually I work at X"
+            (r"\bactually,?\s+(?:i|we)\s+work\s+(?:at|for)\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)", "works_at"),
+            # "I'm a X, not Y" (occupation)
+            (r"\b(?:i(?:'m|\s+am))\s+(?:a|an)\s+([^,]+),\s*not\s+", "occupation"),
+            # "actually I'm a X"
+            (r"\bactually,?\s+(?:i(?:'m|\s+am))\s+(?:a|an)\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)", "occupation"),
+
+            # === RELATIONSHIP CORRECTIONS ===
+            # "my cat's name is X, not Y"
+            (r"\bmy\s+(cat|dog|pet|kitten|puppy)(?:'s)?\s+name\s+is\s+([^,]+),\s*not\s+", "pet_name"),
+            # "actually my cat is named X"
+            (r"\bactually,?\s+my\s+(cat|dog|pet|kitten|puppy)(?:'s\s+name)?\s+is\s+([A-Z][a-zA-Z]+)", "pet_name"),
+            # "his/her name is X, not Y" (for pets/people just mentioned)
+            (r"\b(?:his|her|its)\s+name\s+is\s+([^,]+),\s*not\s+", None),
+
+            # === GENERAL CORRECTIONS ===
+            # "it's X, not Y" / "that's X, not Y"
+            (r"\b(?:it(?:'s|\s+is)|that(?:'s|\s+is))\s+([^,]+),\s*not\s+", None),
+            # "no, X" / "nope, X" (short corrections)
+            (r"\b(?:no|nope),?\s+(?:it(?:'s|\s+is)|i(?:'m|\s+am))\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)", None),
+            # "wrong, it's X" / "incorrect, X"
+            (r"\b(?:wrong|incorrect|nah),?\s+(?:it(?:'s|\s+is))?\s*([^\.;,!?]+?)(?:[\.;,!?:]|$)", None),
+            # "X, actually" (correction at end)
+            (r"^([^,]+),\s*actually\b", None),
+
+            # === BIRTHDAY CORRECTIONS ===
+            # "my birthday is X, not Y"
+            (r"\bmy\s+birthday\s+is\s+([^,]+),\s*not\s+", "birthday"),
+            # "actually my birthday is X"
+            (r"\bactually,?\s+my\s+birthday\s+is\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)", "birthday"),
+            # "I was born on X, not Y"
+            (r"\bi\s+was\s+born\s+(?:on|in)\s+([^,]+),\s*not\s+", "birthday"),
+
+            # === PREFERENCE CORRECTIONS ===
+            # "I like X, not Y" / "I prefer X, not Y"
+            (r"\bi\s+(?:like|prefer|love)\s+([^,]+),\s*not\s+", "preference"),
+            # "actually I like X"
+            (r"\bactually,?\s+i\s+(?:like|prefer|love)\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)", "preference"),
+            # "I don't like X" (negative preference)
+            (r"\bactually,?\s+i\s+(?:don't|do\s+not|hate|dislike)\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)", "dislikes"),
+
+            # === SCHOOL/EDUCATION CORRECTIONS ===
+            # "I go to X, not Y" / "I attend X"
+            (r"\bi\s+(?:go\s+to|attend)\s+([^,]+),\s*not\s+", "school"),
+            (r"\bactually,?\s+i\s+(?:go\s+to|attend)\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)", "school"),
+            # "I'm studying X, not Y"
+            (r"\b(?:i(?:'m|\s+am))\s+studying\s+([^,]+),\s*not\s+", "major"),
+            (r"\bactually,?\s+(?:i(?:'m|\s+am))\s+studying\s+([^\.;,!?]+?)(?:[\.;,!?:]|$)", "major"),
+        ]
+
         logger.debug(
             f"[FactExtractor.__init__] use_rebel={self.use_rebel} "
             f"(pipeline={'yes' if _REBEL else 'no'}), use_regex={self.use_regex}, "
             f"spaCy={'yes' if _NLP else 'no'}"
         )
+
+    def _detect_corrections(self, text: str) -> List[Tuple[str, str, str, float, str]]:
+        """
+        Detect corrections in user input and extract with HIGH confidence (0.9).
+
+        Patterns like "I'm X, not Y", "actually I'm X", "not Y, I'm X" indicate
+        the user is correcting prior information - these should supersede old facts.
+
+        Returns list of (subject, relation, object, confidence, method) tuples.
+        """
+        corrections = []
+        text_lower = text.lower()
+
+        # Quick check: does this look like a correction?
+        correction_signals = ['not ', 'actually', "isn't", "aren't", "wasn't", "weren't",
+                              'wrong', 'incorrect', 'nope', 'nah']
+        if not any(sig in text_lower for sig in correction_signals):
+            return corrections
+
+        logger.debug(f"[FactExtractor] Correction signal detected in: {text[:100]}...")
+
+        seen_corrections = set()  # Avoid duplicates
+
+        for pattern, relation in self.correction_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                # Handle patterns with multiple groups (e.g., pet_name captures pet type + name)
+                if relation == "pet_name" and match.lastindex >= 2:
+                    pet_type = match.group(1).strip().lower()
+                    value = match.group(2).strip()
+                    relation = f"{pet_type}_name"  # e.g., "cat_name", "dog_name"
+                else:
+                    value = match.group(1).strip()
+
+                # Clean up the value
+                value = value.rstrip('.,;:!?')
+                value = re.sub(r'\s+', ' ', value).strip()
+
+                if not value or len(value) < 2:
+                    continue
+
+                # Determine relation if not specified
+                final_relation = relation
+                if final_relation is None:
+                    # Try to infer from context
+                    if re.search(r'^\d{1,3}$', value):
+                        final_relation = "age"
+                    elif value[0].isupper() and ' ' not in value and len(value) < 20:
+                        final_relation = "name"
+                    else:
+                        final_relation = "corrected_fact"
+
+                # Dedupe
+                key = f"{final_relation}|{value.lower()}"
+                if key in seen_corrections:
+                    continue
+                seen_corrections.add(key)
+
+                # HIGH confidence for corrections - they should supersede old facts
+                confidence = 0.92
+
+                logger.info(
+                    f"[FactExtractor] CORRECTION detected: user | {final_relation} | {value} "
+                    f"(conf={confidence}, pattern matched)"
+                )
+
+                corrections.append(("user", final_relation, value, confidence, "correction_detection"))
+
+        return corrections
 
     @log_and_time("Extract Facts")
     async def extract_facts(
@@ -358,6 +549,13 @@ class FactExtractor:
         logger.debug(f"[FactExtractor] Prepared text len={len(text)} preview='{t_preview}'")
 
         triples: List[Tuple[str, str, str, float, str]] = []
+
+        # -1) CORRECTION DETECTION (highest priority - runs first with high confidence)
+        # Corrections like "I'm X, not Y" or "actually I'm X" supersede old facts
+        correction_triples = self._detect_corrections(text)
+        if correction_triples:
+            logger.info(f"[FactExtractor] Correction detection found {len(correction_triples)} corrections")
+            triples.extend(correction_triples)
 
         # 0) Generalized spaCy dependency patterns (grammar-first)
         spacy_triples = self._extract_with_spacy_rules(text)

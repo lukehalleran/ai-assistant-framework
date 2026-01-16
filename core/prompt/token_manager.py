@@ -12,7 +12,7 @@ Module Contract
   - Budget-compliant context with trimmed content
   - Token counts for text validation
 - Behavior:
-  - Extracts text from various context sections (conversations, memories, facts, etc.)
+  - Extracts text from various context sections (conversations, memories, facts, reference_docs, etc.)
   - Applies priority-based trimming when content exceeds token budget
   - Uses middle-out compression for large text blocks
   - Preserves most important content while respecting limits
@@ -35,6 +35,7 @@ PRIORITY_ORDER = [
     ("recent_conversations", 7),
     ("semantic_chunks",      6),
     ("personal_notes",       6),   # User's Obsidian notes - high priority
+    ("reference_docs",       5),   # User uploaded reference documents
     ("memories",             5),
     ("facts",                4),
     ("summaries",            3),

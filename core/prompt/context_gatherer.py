@@ -11,6 +11,7 @@ Module Contract
   - get_web_search_results(query: str, crisis_level: str) -> WebSearchResult/MultiSearchResult [ENHANCED: multi-search with query decomposition]
   - UPDATED: get_user_profile_context(query: str) -> str [NEW: replaces semantic_facts + fresh_facts]
   - get_personal_notes(query: str, limit: int) -> List[Dict] [NEW: Obsidian vault retrieval via ObsidianManager]
+  - get_reference_docs(query: str, limit: int) -> List[Dict] [NEW: User uploaded docs retrieval via ReferenceDocsManager]
 - Outputs:
   - Comprehensive context dictionary with all gathered data
   - Recent conversation history within specified limits
@@ -19,6 +20,7 @@ Module Contract
   - Web search results when triggered [ENHANCED: supports parallel sub-queries]
   - UPDATED: 'user_profile' key with categorized facts (replaces 'semantic_facts' and 'fresh_facts')
   - Personal notes from Obsidian vault (hybrid 1/3 keyword + 2/3 semantic retrieval) [NEW]
+  - Reference documents from uploaded docs (hybrid 1/3 keyword + 2/3 semantic retrieval) [NEW]
 - Behavior:
   - Retrieves data from multiple memory collections (episodic, semantic, procedural)
   - Applies filtering and relevance scoring to retrieved content
@@ -273,6 +275,34 @@ class ContextGatherer:
                 return None
         return self._obsidian_manager
 
+    @property
+    def reference_docs_manager(self):
+        """
+        Get cached Reference Docs manager, creating it only once.
+
+        Returns None if Reference Docs integration is disabled or unavailable.
+        """
+        if not hasattr(self, '_reference_docs_manager'):
+            self._reference_docs_manager = None
+
+        if self._reference_docs_manager is None:
+            try:
+                from config.app_config import REFERENCE_DOCS_ENABLED
+                if not REFERENCE_DOCS_ENABLED:
+                    logger.debug("[ContextGatherer] Reference docs integration disabled")
+                    return None
+
+                from knowledge.reference_docs_manager import ReferenceDocsManager
+                self._reference_docs_manager = ReferenceDocsManager()
+                logger.info("[ContextGatherer] ReferenceDocsManager initialized")
+            except ImportError as e:
+                logger.debug(f"[ContextGatherer] ReferenceDocsManager not available: {e}")
+                return None
+            except Exception as e:
+                logger.warning(f"[ContextGatherer] Failed to initialize ReferenceDocsManager: {e}")
+                return None
+        return self._reference_docs_manager
+
     def _wiki_cache_key(self, query: str) -> str:
         """Generate cache key for wiki queries."""
         return clean_query(query).lower().strip()
@@ -403,6 +433,49 @@ class ContextGatherer:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get personal notes: {e}")
+            return []
+
+    async def get_reference_docs(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get relevant reference documents from uploaded docs collection.
+
+        Args:
+            query: Search query for semantic retrieval
+            limit: Maximum document chunks to return
+
+        Returns:
+            List of doc dicts with content, metadata, and relevance_score
+        """
+        manager = self.reference_docs_manager
+        if not manager:
+            return []
+
+        try:
+            # Retrieve documents via hybrid search
+            docs = await manager.get_documents(query, limit=limit)
+
+            # Track doc IDs for citations
+            if docs:
+                for idx, doc in enumerate(docs[:limit], start=1):
+                    doc_id = f"REFDOC_{idx}"
+                    meta = doc.get('metadata', {})
+                    self.memory_id_map[doc_id] = {
+                        'type': 'reference_doc',
+                        'timestamp': meta.get('timestamp', ''),
+                        'content': doc.get('content', '')[:500],
+                        'relevance_score': doc.get('relevance_score', 0.0),
+                        'title': meta.get('title', ''),
+                        'section': meta.get('section', ''),
+                        'file_path': meta.get('file_path', ''),
+                        'db_id': doc.get('id', None),
+                    }
+
+                logger.debug(f"[ContextGatherer] Retrieved {len(docs)} reference docs for query")
+
+            return docs or []
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get reference docs: {e}")
             return []
 
     async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT) -> List[Dict[str, Any]]:
