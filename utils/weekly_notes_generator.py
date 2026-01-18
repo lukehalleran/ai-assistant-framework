@@ -17,8 +17,14 @@ Module Contract:
   - Finds daily notes for the week (Mon-Sun)
   - Moves daily notes into weekly folder
   - Reads and parses daily notes (frontmatter + content)
-  - Calls LLM to generate weekly summary
-  - Writes atomic markdown with YAML frontmatter
+    - Backward compatible: reads both old (intensity, duration_hours) and new
+      (usage_intensity, span_hours, active_hours) field names [UPDATED 2026-01-18]
+  - Calls LLM to generate weekly summary:
+    - Main Quests, Recurring Themes, Emotional Arc, etc.
+    - Life Events Summary: aggregates Work/Study/Sleep/Exercise across week [NEW 2026-01-18]
+  - Writes atomic markdown with YAML frontmatter:
+    - avg_usage_intensity (was: avg_intensity) [RENAMED 2026-01-18]
+    - total_active_hours (was: total_duration_hours) [RENAMED 2026-01-18]
   - Idempotent: skips if summary already exists (unless force=True)
 - Dependencies:
   - models.model_manager (LLM generation)
@@ -81,6 +87,17 @@ Write a weekly summary in this EXACT structure:
 List main quests from each day, noting which completed vs carried over:
 - **Quest Name** (days active): Status - brief outcome
 
+## Life Events Summary
+Aggregate life activity patterns from the daily notes. For each category, summarize what was discussed across the week:
+
+- **Work**: Days mentioned, total hours if noted, overall pattern/how it went. If not discussed any day: "Not discussed this week."
+- **Study**: Subjects covered, total time if noted, progress made. If not discussed: "Not discussed this week."
+- **Sleep**: Overall patterns, any issues noted. If not discussed: "Not discussed this week."
+- **Exercise/Health**: Activities done, frequency. If not discussed: "Not discussed this week."
+- **Other Events**: Notable life events aggregated across the week.
+
+Note: "Not discussed" means Luke didn't mention it - NOT that it didn't happen.
+
 ## Recurring Themes
 Topics/patterns that appeared across multiple days.
 
@@ -107,6 +124,7 @@ IMPORTANT:
 - Synthesize patterns across days, don't just list each day sequentially
 - Note evolution and progress, not just static facts
 - If a quest resolved, celebrate it; if it carried over, note why
+- For Life Events: Only report what was explicitly discussed. "Not discussed" ≠ "didn't happen"
 - Keep it concise but insightful
 - Do NOT include any preamble or meta-commentary, just the note content
 '''
@@ -242,10 +260,10 @@ class WeeklyNotesGenerator:
                 'frontmatter': frontmatter,
                 'content': body,
                 'date': frontmatter.get('date'),
-                'intensity': frontmatter.get('intensity', 0),
+                'intensity': frontmatter.get('usage_intensity', frontmatter.get('intensity', 0)),  # Support both old and new field names
                 'conversations': frontmatter.get('conversations', 0),
                 'main_quest': frontmatter.get('main_quest', 'Unknown'),
-                'duration_hours': frontmatter.get('duration_hours', 0),
+                'duration_hours': frontmatter.get('active_hours', frontmatter.get('duration_hours', 0)),  # Support both old and new
             }
         except Exception as e:
             logger.error(f"[WeeklyNotes] Failed to read {path}: {e}")
@@ -360,9 +378,9 @@ year: {year}
 start_date: {start.isoformat()}
 end_date: {end.isoformat()}
 total_conversations: {stats['total_conversations']}
-avg_intensity: {stats['avg_intensity']}
+avg_usage_intensity: {stats['avg_intensity']}
 days_with_activity: {stats['active_days']}
-total_duration_hours: {stats['total_duration']}
+total_active_hours: {stats['total_duration']}
 tags: [weekly, daemon-generated]
 generated: {datetime.now().isoformat()}
 ---

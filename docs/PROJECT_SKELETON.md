@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-17
+**Last Updated**: 2026-01-18
 
 ---
 
@@ -1439,7 +1439,7 @@ REFERENCE_DOCS_MAX_PROMPT = 5
 
 ---
 
-### 2.12.5 utils/daily_notes_generator.py (Auto-Generated Daily Summaries) **[NEW 2026-01]**
+### 2.12.5 utils/daily_notes_generator.py (Auto-Generated Daily Summaries) **[ENHANCED 2026-01-18]**
 **Purpose**: Automatically generate daily summary notes from Daemon conversations, written from Daemon's perspective
 
 **Data Classes**:
@@ -1451,15 +1451,29 @@ REFERENCE_DOCS_MAX_PROMPT = 5
 - `note_exists(date)` → `bool`: Check if note already exists
 - `_get_conversations_for_date(date)` → `List[Dict]`: Filter corpus by timestamp
 - `_format_conversations(convos)` → `str`: Format for LLM prompt
-- `_calculate_intensity(convos, duration)` → `int`: 1-10 score based on count/duration/complexity
+- `_calculate_active_duration(convos)` → `float`: Estimate actual usage time in hours **[NEW 2026-01-18]**
+- `_calculate_intensity(convos, active_hours)` → `int`: 1-10 score based on count/active duration/complexity
+
+**Active Duration Calculation** [NEW 2026-01-18]:
+Estimates actual user engagement time (vs wall-clock span):
+```python
+# For each conversation:
+# - Reading time: ~200 words/min for response (~1000 chars/min)
+# - Typing time: ~40 words/min for query (~200 chars/min)
+# - Gap time: Capped at 30 seconds between exchanges (idle time excluded)
+# - Minimum: 10 seconds per exchange
+
+# Example: 8-hour span (10am-6pm) might = 1.5 hours active
+```
 
 **Note Structure** (Obsidian-compatible markdown):
 ```markdown
 ---
 date: 2026-01-16
-intensity: 7
+usage_intensity: 7
 conversations: 18
-duration_hours: 3.2
+span_hours: 8.5
+active_hours: 1.8
 main_quest: "Daily Notes Feature"
 tags: [daily, daemon-generated]
 ---
@@ -1467,12 +1481,22 @@ tags: [daily, daemon-generated]
 ## Summary (2-3 sentences from Daemon's perspective)
 ## Main Quest: [Primary Focus] (3-5 bullets)
 ## Side Quests (other topics discussed)
+## Life Events [NEW 2026-01-18]
+- **Work**: Duration, what was done, how it went. "Not discussed today" if not mentioned.
+- **Study**: Subject/material, duration, progress. "Not discussed today" if not mentioned.
+- **Sleep**: Quality, duration, issues. "Not discussed today" if not mentioned.
+- **Exercise/Health**: Activities, outcomes. "Not discussed today" if not mentioned.
+- **Other Events**: Social activities, appointments, errands.
 ## Emotional State (mood tracking)
 ## Key Decisions (explicit choices made)
 ## Knowledge Gained (new concepts)
 ## Open Threads (unresolved items)
 ## Intensity: X/10
 ```
+
+**Frontmatter Schema Update** [2026-01-18]:
+- `intensity` → `usage_intensity` (clarifies what it measures)
+- `duration_hours` → split into `span_hours` + `active_hours`
 
 **LLM Prompt Design**:
 - Written from Daemon's perspective ("Today we...", "Luke seemed...")
@@ -1499,7 +1523,11 @@ DAILY_NOTES_MAX_TOKENS = 800
 
 **Scheduling**:
 - Cron (recommended): `0 2 * * * cd /path/to/daemon && python main.py daily-note yesterday`
-- Startup catch-up: `generate_yesterday_if_missing()` on GUI launch
+- GUI startup catch-up [NEW 2026-01-18]: `_run_daily_notes_catchup()` in gui/launch.py
+  - Runs in background thread on GUI launch (non-blocking)
+  - Calls `generate_yesterday_if_missing()`
+  - Respects `DAILY_NOTES_ENABLED` config flag
+  - Errors logged but don't affect GUI startup
 
 **Integration**:
 - Writes to Obsidian vault at `OBSIDIAN_VAULT_PATH / DAILY_NOTES_FOLDER`

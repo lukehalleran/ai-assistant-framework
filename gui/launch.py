@@ -14,6 +14,10 @@ Module Contract
   - IS_FROZEN: Detects PyInstaller frozen executable mode
   - launch_gui(): Main entry point, routes to wizard or normal UI
   - _launch_wizard_ui(): First-run setup wizard interface
+  - _run_daily_notes_catchup(): Background thread for daily notes catch-up on startup [NEW 2026-01-18]
+    - Generates yesterday's daily note if missing
+    - Non-blocking (runs in daemon thread)
+    - Respects DAILY_NOTES_ENABLED config flag
   - submit_chat(): async driver that streams tokens + timer updates
   - Tabs:
     • Chat: chat UI, file upload, raw toggle, personality selector, Sync Notes button
@@ -26,12 +30,15 @@ Module Contract
   - gui.wizard (WizardState, process_wizard_message)
   - utils.health_check (add_health_endpoint)
   - utils.conversation_logger
+  - utils.daily_notes_generator (DailyNotesGenerator) [NEW 2026-01-18]
 - Side effects:
   - Registers /health endpoint on FastAPI app after launch
   - Logs URLs and health endpoint to console
   - [FROZEN MODE] Auto-opens browser via platform-specific command (xdg-open/open/startfile)
   - Runs indefinite event loop (until KeyboardInterrupt)
-- Threading/Async: Main thread blocked by event loop; Gradio handles async internally
+  - [STARTUP] Spawns background thread for daily notes catch-up [NEW 2026-01-18]
+- Threading/Async: Main thread blocked by event loop; Gradio handles async internally.
+  Daily notes catch-up runs in separate daemon thread.
 """
 import os
 import sys
@@ -174,6 +181,49 @@ def _find_free_port(preferred: int = 7860) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return s.getsockname()[1]
+
+def _run_daily_notes_catchup():
+    """
+    Run daily notes catch-up in background thread.
+    Generates yesterday's note if missing, plus today's if there are conversations.
+    Non-blocking - errors are logged but don't affect GUI startup.
+    """
+    import threading
+    import asyncio
+
+    def _catchup_task():
+        try:
+            from config.app_config import DAILY_NOTES_ENABLED
+            if not DAILY_NOTES_ENABLED:
+                return
+
+            from utils.daily_notes_generator import DailyNotesGenerator
+            from datetime import date, timedelta
+
+            generator = DailyNotesGenerator()
+
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                # Generate yesterday's note if missing
+                result = loop.run_until_complete(generator.generate_yesterday_if_missing())
+                if result and result.success:
+                    print(f"[DailyNotes] Catch-up: Generated yesterday's note ({result.conversation_count} conversations)")
+                elif result and result.skipped_reason:
+                    print(f"[DailyNotes] Catch-up: Skipped yesterday ({result.skipped_reason})")
+            finally:
+                loop.close()
+
+        except Exception as e:
+            # Non-critical: log and continue
+            print(f"[DailyNotes] Catch-up failed (non-critical): {e}")
+
+    # Run in background thread so it doesn't block GUI startup
+    thread = threading.Thread(target=_catchup_task, daemon=True)
+    thread.start()
+    print("[DailyNotes] Started background catch-up check...")
 
 def _launch_wizard_ui(orchestrator, share, server_name, port):
     """
@@ -375,6 +425,9 @@ def launch_gui(orchestrator, force_wizard=False):
             raise
     else:
         print("[DEBUG] Launching normal chat UI...")
+
+    # ------- Daily notes catch-up (run in background) -------
+    _run_daily_notes_catchup()
 
     # ------- Normal chat UI (non-first-run) -------
     def get_summary_status():
