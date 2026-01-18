@@ -7,17 +7,28 @@ Module Contract:
            written from Daemon's perspective in YAML + bullet format.
 - Inputs:
   - generate_for_date(date: date) -> GenerationResult: Generate note for specific date
-  - generate_yesterday_if_missing() -> Optional[GenerationResult]: Startup catch-up
+  - generate_yesterday_if_missing() -> Optional[GenerationResult]: Startup catch-up (called by GUI on launch)
   - note_exists(date: date) -> bool: Check if note already exists
 - Outputs:
-  - Markdown files in Obsidian vault: ~/Documents/Luke Notes/Daily/YYYY-MM-DD.md
+  - Markdown files in Obsidian vault: ~/Documents/Luke Notes/Daily/M D YY Daily Note.md
   - GenerationResult with success status, path, stats
 - Behavior:
   - Filters corpus by timestamp to get day's conversations
-  - Calls LLM to generate structured summary (Main Quest, Side Quests, etc.)
-  - Writes atomic markdown with YAML frontmatter
+  - Calculates active duration (estimated actual usage time, not wall-clock span) [NEW 2026-01-18]
+  - Calls LLM to generate structured summary:
+    - Main Quest, Side Quests, Emotional State, Key Decisions, etc.
+    - Life Events section: Work, Study, Sleep, Exercise, Other [NEW 2026-01-18]
+  - Writes atomic markdown with YAML frontmatter:
+    - usage_intensity (was: intensity) [RENAMED 2026-01-18]
+    - span_hours (wall-clock), active_hours (estimated usage) [NEW 2026-01-18]
   - Idempotent: skips if note already exists (unless force=True)
   - Triggers narrative context refresh after daily note creation [NEW 2026-01-17]
+- Key Methods:
+  - _calculate_active_duration(convos): Estimate actual usage time [NEW 2026-01-18]
+    - Reading time: ~200 words/min for responses
+    - Typing time: ~40 words/min for queries
+    - Gap time: Capped at 30 seconds (idle time excluded)
+  - _calculate_intensity(convos, active_hours): 1-10 score based on count/active duration/complexity
 - Dependencies:
   - memory.corpus_manager (conversation retrieval, narrative context persistence)
   - models.model_manager (LLM generation)
@@ -61,7 +72,8 @@ CONVERSATIONS FROM {date}:
 
 STATISTICS:
 - Conversations: {count}
-- Time span: {first_time} to {last_time} ({duration_hours:.1f} hours)
+- Time span: {first_time} to {last_time} ({span_hours:.1f} hours wall-clock)
+- Active time: {active_hours:.1f} hours (estimated actual usage)
 
 Write a daily note in this EXACT structure:
 
@@ -73,6 +85,15 @@ The main thing we worked on today. 3-5 bullets about progress, challenges, outco
 
 ## Side Quests
 Other topics discussed. Format: **Topic**: one-line description. If only one main topic, write "None today - fully focused on the Main Quest."
+
+## Life Events
+Track these specific life activities ONLY if mentioned in conversations. Do NOT assume they didn't happen if not mentioned - just note what was or wasn't discussed:
+
+- **Work**: If mentioned: duration, what was done, how it went. If not mentioned: "Not discussed today."
+- **Study**: If mentioned: what subject/material, duration, how it went, any progress. If not mentioned: "Not discussed today."
+- **Sleep**: If mentioned: quality, duration, any issues. If not mentioned: "Not discussed today."
+- **Exercise/Health**: If mentioned: what activity, how it went. If not mentioned: "Not discussed today."
+- **Other Events**: Any other notable life events mentioned (social activities, appointments, errands, etc.). If none mentioned: "None mentioned."
 
 ## Emotional State
 Luke's mood throughout the day. Note any shifts. Be specific and observant.
@@ -92,6 +113,7 @@ One line: count, duration, and complexity assessment.
 IMPORTANT:
 - Write from YOUR perspective as Daemon ("Today we...", "Luke seemed...")
 - Be factual - only include what actually happened in the conversations
+- For Life Events: ONLY report what was explicitly mentioned. Never assume activities happened or didn't happen. If Luke didn't mention work/study/sleep, say "Not discussed today" - do NOT say "Luke didn't work today."
 - If a section has nothing relevant, acknowledge it briefly
 - Keep it concise but informative
 - Do NOT include any preamble or meta-commentary, just the note content
@@ -259,11 +281,62 @@ class DailyNotesGenerator:
 
         return "\n\n".join(formatted)
 
-    def _calculate_intensity(self, convos: List[Dict[str, Any]], duration_hours: float) -> int:
+    def _calculate_active_duration(self, convos: List[Dict[str, Any]]) -> float:
+        """
+        Calculate active usage duration in hours.
+
+        For each conversation:
+        - Estimate reading time: ~200 words/min for response
+        - Estimate typing time: ~40 words/min for query
+        - Cap gap between conversations at 30 seconds (idle time doesn't count)
+
+        Returns:
+            Active duration in hours
+        """
+        if not convos:
+            return 0.0
+
+        total_seconds = 0.0
+        MAX_GAP_SECONDS = 30  # Cap idle time between exchanges
+
+        for i, conv in enumerate(convos):
+            query = conv.get("query", "")
+            response = conv.get("response", "")
+
+            # Estimate time for this exchange
+            # Reading response: ~200 words/min = ~1000 chars/min
+            read_time = len(response) / 1000 * 60  # seconds
+            # Typing query: ~40 words/min = ~200 chars/min
+            type_time = len(query) / 200 * 60  # seconds
+            # Minimum 10 seconds per exchange
+            exchange_time = max(10, read_time + type_time)
+
+            total_seconds += exchange_time
+
+            # Add capped gap time to next conversation
+            if i < len(convos) - 1:
+                curr_ts = conv.get("timestamp")
+                next_ts = convos[i + 1].get("timestamp")
+
+                if curr_ts and next_ts:
+                    # Parse timestamps
+                    if isinstance(curr_ts, str):
+                        curr_ts = datetime.fromisoformat(curr_ts.replace("Z", "+00:00"))
+                    if isinstance(next_ts, str):
+                        next_ts = datetime.fromisoformat(next_ts.replace("Z", "+00:00"))
+
+                    if isinstance(curr_ts, datetime) and isinstance(next_ts, datetime):
+                        gap = (next_ts - curr_ts).total_seconds()
+                        # Only count up to MAX_GAP_SECONDS of idle time
+                        total_seconds += min(gap, MAX_GAP_SECONDS)
+
+        return total_seconds / 3600  # Convert to hours
+
+    def _calculate_intensity(self, convos: List[Dict[str, Any]], active_hours: float) -> int:
         """
         Calculate intensity score 1-10 based on:
         - Conversation count
-        - Duration
+        - Active duration (not wall-clock time)
         - Average message length (complexity proxy)
         """
         if not convos:
@@ -280,7 +353,7 @@ class DailyNotesGenerator:
 
         # Scoring components
         count_score = min(count / 20, 1.0) * 4  # Max 4 points for 20+ conversations
-        duration_score = min(duration_hours / 4, 1.0) * 3  # Max 3 points for 4+ hours
+        duration_score = min(active_hours / 2, 1.0) * 3  # Max 3 points for 2+ active hours
         complexity_score = min(avg_chars / 1000, 1.0) * 3  # Max 3 points for avg 1000+ chars
 
         intensity = int(round(count_score + duration_score + complexity_score))
@@ -295,14 +368,15 @@ class DailyNotesGenerator:
             return match.group(1).strip()
         return "General Conversation"
 
-    def _build_frontmatter(self, target_date: date, count: int, duration: float,
-                           intensity: int, main_quest: str) -> str:
+    def _build_frontmatter(self, target_date: date, count: int, span_hours: float,
+                           active_hours: float, intensity: int, main_quest: str) -> str:
         """Generate YAML frontmatter."""
         return f"""---
 date: {target_date.isoformat()}
-intensity: {intensity}
+usage_intensity: {intensity}
 conversations: {count}
-duration_hours: {duration:.1f}
+span_hours: {span_hours:.1f}
+active_hours: {active_hours:.1f}
 main_quest: "{main_quest}"
 tags: [daily, daemon-generated]
 generated: {datetime.now().isoformat()}
@@ -375,9 +449,12 @@ generated: {datetime.now().isoformat()}
         if isinstance(last_ts, str):
             last_ts = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
 
-        duration_hours = (last_ts - first_ts).total_seconds() / 3600 if first_ts and last_ts else 0
-        result.duration_hours = duration_hours
-        result.intensity = self._calculate_intensity(convos, duration_hours)
+        # Wall-clock span (for display: "10:00 to 20:00")
+        span_hours = (last_ts - first_ts).total_seconds() / 3600 if first_ts and last_ts else 0
+        # Active duration (estimated actual usage time)
+        active_hours = self._calculate_active_duration(convos)
+        result.duration_hours = active_hours  # Use active duration for stats
+        result.intensity = self._calculate_intensity(convos, active_hours)
 
         # Format for LLM
         formatted = self._format_conversations(convos)
@@ -391,7 +468,8 @@ generated: {datetime.now().isoformat()}
             count=len(convos),
             first_time=first_time,
             last_time=last_time,
-            duration_hours=duration_hours,
+            span_hours=span_hours,
+            active_hours=active_hours,
         )
 
         # Call LLM
@@ -412,7 +490,7 @@ generated: {datetime.now().isoformat()}
 
         # Build full note
         frontmatter = self._build_frontmatter(
-            target_date, len(convos), duration_hours, result.intensity, main_quest
+            target_date, len(convos), span_hours, active_hours, result.intensity, main_quest
         )
         header = f"\n# Daily Note - {target_date.strftime('%B %d, %Y')}\n\n"
         full_content = frontmatter + header + llm_response.strip() + "\n"
