@@ -535,7 +535,7 @@ python main.py show-profile                  # Print profile to console
 
 ---
 
-## Daily Notes Generator
+## Daily Notes Generator [ENHANCED 2026-01-18]
 
 ```python
 # utils/daily_notes_generator.py
@@ -545,14 +545,24 @@ class DailyNotesGenerator:
         1. Get conversations for date from corpus
         2. Skip if no conversations or note exists (unless force)
         3. Format conversations for LLM
-        4. Calculate intensity (1-10 based on count/duration/complexity)
-        5. Call LLM with structured prompt
-        6. Build YAML frontmatter + markdown content
-        7. Atomic write to Obsidian vault
+        4. Calculate active duration (estimated actual usage time) [NEW]
+        5. Calculate intensity (1-10 based on count/active_hours/complexity)
+        6. Call LLM with structured prompt (includes Life Events section)
+        7. Build YAML frontmatter + markdown content
+        8. Atomic write to Obsidian vault
         """
 
     async def generate_yesterday_if_missing() -> Optional[GenerationResult]:
-        """Startup catch-up hook"""
+        """Startup catch-up hook (called by GUI on launch)"""
+
+    def _calculate_active_duration(convos: List[Dict]) -> float:
+        """
+        Estimate actual usage time (not wall-clock span):
+        - Reading time: ~200 words/min for responses
+        - Typing time: ~40 words/min for queries
+        - Gap time: Capped at 30 seconds (idle time excluded)
+        Example: 8-hour span might = 1.5 hours active
+        """
 
     def _format_filename(date: date) -> str:
         """Format: 'M D YY Daily Note.md' (e.g., '1 16 26 Daily Note.md')"""
@@ -561,12 +571,19 @@ class DailyNotesGenerator:
 # - Summary (2-3 sentences from Daemon's perspective)
 # - Main Quest: [Primary Focus] (RPG-style framing)
 # - Side Quests (other topics)
+# - Life Events [NEW]: Work, Study, Sleep, Exercise, Other
+#   - "Not discussed today" ≠ "didn't happen"
 # - Emotional State (mood tracking)
 # - Key Decisions, Knowledge Gained, Open Threads
 # - Intensity: X/10
 
-# Cron setup (2am daily):
-# 0 2 * * * cd /path/to/daemon && python main.py daily-note yesterday
+# Frontmatter fields (updated):
+# - usage_intensity (was: intensity)
+# - span_hours (wall-clock), active_hours (estimated usage)
+
+# Scheduling:
+# - Cron: 0 2 * * * cd /path/to/daemon && python main.py daily-note yesterday
+# - GUI startup: _run_daily_notes_catchup() in launch.py (background thread)
 ```
 
 ---
