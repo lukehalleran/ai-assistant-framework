@@ -17,8 +17,9 @@ Module Contract
   - Applies gating system for relevance filtering and content selection
   - Enforces token budgets and applies priority-based trimming
   - Handles different prompt modes (enhanced, raw, specialized)
-  - Assembles [USER'S PERSONAL NOTES] section from Obsidian vault content [NEW]
-  - Assembles [DAEMON DOCUMENTATION] section from reference docs (system self-knowledge) [NEW]
+  - Assembles [USER'S PERSONAL NOTES] section from Obsidian vault content
+  - Assembles [DAEMON DOCUMENTATION] section from reference docs (system self-knowledge)
+  - Assembles [TEMPORAL GROUNDING] section from cached narrative context [NEW 2026-01-17]
   - Provides comprehensive error handling and graceful fallbacks
 - Dependencies:
   - .context_gatherer.ContextGatherer (data collection)
@@ -31,6 +32,12 @@ Module Contract
   - LLM API calls for summarization
   - Cache operations for performance
   - Comprehensive logging and metrics collection
+
+Prompt Section Order:
+  [RECENT CONVERSATION] → [RELEVANT MEMORIES] → [USER PROFILE] → [SUMMARIES] →
+  [REFLECTIONS] → [DREAMS] → [USER'S PERSONAL NOTES] → [DAEMON DOCUMENTATION] →
+  [WEB SEARCH RESULTS] → [RELEVANT INFORMATION] → [TIME CONTEXT] →
+  [TEMPORAL GROUNDING] → [STM SUMMARY] → [CURRENT USER QUERY]
 """
 
 import os
@@ -245,7 +252,16 @@ class UnifiedPromptBuilder:
                 logger.warning("USING LIGHTWEIGHT CONTEXT - this will drop separated keys!")
                 return await self._build_lightweight_context(user_input, stm_summary=stm_summary)
 
-            # Step 2: Launch parallel data gathering tasks
+            # Step 2: Gather narrative context (synchronous, cheap file read)
+            narrative_state = ""
+            try:
+                narrative_state = self.context_gatherer.get_narrative_context()
+                if narrative_state:
+                    logger.debug(f"[PromptBuilder] Got narrative context ({len(narrative_state)} chars)")
+            except Exception as e:
+                logger.debug(f"[PromptBuilder] Failed to get narrative context: {e}")
+
+            # Step 3: Launch parallel data gathering tasks
             tasks = {}
 
             # Recent conversations
@@ -424,6 +440,7 @@ class UnifiedPromptBuilder:
                 "recent_conversations": recent_convos,
                 "memories": gathered_memories,
                 "user_profile": gathered.get("user_profile", ""),  # Replaces semantic_facts + fresh_facts
+                "narrative_state": narrative_state,  # Temporal grounding (synthesized life context)
                 "summaries": all_summaries,
                 "recent_summaries": recent_summaries,
                 "semantic_summaries": semantic_summaries,
@@ -709,6 +726,7 @@ class UnifiedPromptBuilder:
                 "recent_conversations": context.get("recent_conversations", []),
                 "memories": context.get("memories", []),
                 "user_profile": context.get("user_profile", ""),  # Replaces semantic_facts + fresh_facts
+                "narrative_state": context.get("narrative_state", ""),  # Temporal grounding (synthesized life context)
                 "summaries": context.get("summaries", []),
                 "recent_summaries": context.get("recent_summaries", []),
                 "semantic_summaries": context.get("semantic_summaries", []),
@@ -739,6 +757,7 @@ class UnifiedPromptBuilder:
                 "recent_conversations": [],
                 "memories": [],
                 "user_profile": "",
+                "narrative_state": "",
                 "summaries": [],
                 "reflections": [],
                 "dreams": [],
@@ -763,6 +782,7 @@ class UnifiedPromptBuilder:
                 "recent_conversations": recent,
                 "memories": [],
                 "user_profile": "",
+                "narrative_state": "",  # No narrative context for small-talk
                 "summaries": [],
                 "recent_summaries": [],
                 "semantic_summaries": [],
@@ -790,6 +810,7 @@ class UnifiedPromptBuilder:
                 "recent_conversations": [],
                 "memories": [],
                 "user_profile": "",
+                "narrative_state": "",
                 "summaries": [],
                 "recent_summaries": [],
                 "memory_id_map": {},
@@ -1503,6 +1524,12 @@ class UnifiedPromptBuilder:
             time_ctx = f"Current time: {datetime.now().strftime('%A, %Y-%m-%d %H:%M:%S')}"
         if time_ctx:
             sections.append(f"[TIME CONTEXT]\n{time_ctx}")
+
+        # Temporal Grounding (Narrative Context) - synthesized life state for trajectory awareness
+        narrative_state = context.get("narrative_state", "")
+        if narrative_state and isinstance(narrative_state, str) and narrative_state.strip():
+            sections.append(f"[TEMPORAL GROUNDING]\n{narrative_state}")
+            logger.debug(f"[PROMPT ASSEMBLY] Added temporal grounding section ({len(narrative_state)} chars)")
 
         # STM (Short-Term Memory) Summary - placed right before query for maximum attention
         stm_summary = context.get("stm_summary")
