@@ -13,10 +13,12 @@ Module Contract
   - handle_commands(): simple topic switching commands
   - prepare_prompt(): topic update, file processing, optional query rewrite, resolve system prompt, build prompt via prompt_builder
   - process_user_query(): personality hook, deictic check, generate streamed response, store memory, schedule consolidation (now at shutdown)
+  - _check_narrative_freshness(): Startup check for stale narrative context (>24h) [NEW 2026-01-17]
 - System prompt flow:
   - Resolved via config/app_config.load_system_prompt and/or path override; forwarded to response generation as system role message.
 - Side effects:
   - Writes conversation+metadata to corpus DB/Chroma via memory_system; logs events.
+  - Logs warning if narrative context is stale on startup [NEW 2026-01-17]
 - Async behavior:
   - Uses async streaming from response_generator; overall methods are async.
 
@@ -359,6 +361,48 @@ class DaemonOrchestrator:
             r'PROFILE_\w+'                # PROFILE_CONTEXT
             r')\]'
         )
+
+        # Check narrative context freshness on startup (non-blocking)
+        self._check_narrative_freshness()
+
+    def _check_narrative_freshness(self) -> None:
+        """
+        Check if narrative context exists and is reasonably fresh.
+
+        If stale (>24 hours) or missing, logs info about it.
+        Actual refresh happens when daily notes are generated.
+        """
+        try:
+            from config.app_config import NARRATIVE_CONTEXT_ENABLED, NARRATIVE_CONTEXT_PATH
+            from pathlib import Path
+            from datetime import datetime, timedelta
+
+            if not NARRATIVE_CONTEXT_ENABLED:
+                return
+
+            narrative_path = Path(NARRATIVE_CONTEXT_PATH)
+
+            if not narrative_path.exists():
+                self.logger.debug("[Orchestrator] No narrative context file found (will be created when daily notes exist)")
+                return
+
+            # Check freshness (stale if older than 24 hours)
+            mtime = datetime.fromtimestamp(narrative_path.stat().st_mtime)
+            age = datetime.now() - mtime
+            stale_threshold = timedelta(hours=24)
+
+            if age > stale_threshold:
+                age_str = f"{age.days}d {age.seconds // 3600}h" if age.days > 0 else f"{age.seconds // 3600}h"
+                self.logger.info(
+                    f"[Orchestrator] Narrative context is {age_str} old. "
+                    f"Will refresh when next daily note is generated, or run 'python main.py refresh-narrative'."
+                )
+            else:
+                age_str = f"{age.seconds // 3600}h {(age.seconds % 3600) // 60}m"
+                self.logger.debug(f"[Orchestrator] Narrative context is fresh ({age_str} old)")
+
+        except Exception as e:
+            self.logger.debug(f"[Orchestrator] Narrative freshness check skipped: {e}")
 
     # ---------- STM Helper Methods ----------
     def _compute_topic_similarity(self, topic1: str, topic2: str) -> float:

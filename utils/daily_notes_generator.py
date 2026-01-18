@@ -17,14 +17,17 @@ Module Contract:
   - Calls LLM to generate structured summary (Main Quest, Side Quests, etc.)
   - Writes atomic markdown with YAML frontmatter
   - Idempotent: skips if note already exists (unless force=True)
+  - Triggers narrative context refresh after daily note creation [NEW 2026-01-17]
 - Dependencies:
-  - memory.corpus_manager (conversation retrieval)
+  - memory.corpus_manager (conversation retrieval, narrative context persistence)
   - models.model_manager (LLM generation)
+  - memory.memory_consolidator (narrative synthesis) [NEW 2026-01-17]
   - config.app_config (paths and settings)
 - Side effects:
   - Writes files to Obsidian vault
   - LLM API calls
   - Logging
+  - _trigger_narrative_refresh(): Regenerates narrative context after daily note creation [NEW 2026-01-17]
 """
 
 import os
@@ -165,10 +168,39 @@ class DailyNotesGenerator:
         """Format filename to match existing convention: 'M D YY Daily Note.md'."""
         return f"{target_date.month} {target_date.day} {target_date.strftime('%y')} Daily Note.md"
 
+    def _get_week_folder_name(self, target_date: date) -> str:
+        """Format weekly folder name: 'Week 3 Jan 2026'."""
+        monday = target_date - timedelta(days=target_date.weekday())
+        week_num = monday.isocalendar()[1]
+        return f"Week {week_num} {monday.strftime('%b %Y')}"
+
+    def _get_note_path(self, target_date: date) -> Path:
+        """Get note path - checks weekly folder first, then flat directory."""
+        filename = self._format_filename(target_date)
+
+        # Check if weekly folder exists and note should go there
+        week_folder = self.output_dir / self._get_week_folder_name(target_date)
+        if week_folder.exists():
+            return week_folder / filename
+
+        # Check flat directory
+        flat_path = self.output_dir / filename
+        return flat_path
+
     def note_exists(self, target_date: date) -> bool:
-        """Check if note already exists for date."""
-        note_path = self.output_dir / self._format_filename(target_date)
-        return note_path.exists()
+        """Check if note already exists for date (in flat dir or weekly folder)."""
+        filename = self._format_filename(target_date)
+
+        # Check flat directory
+        if (self.output_dir / filename).exists():
+            return True
+
+        # Check weekly folder
+        week_folder = self.output_dir / self._get_week_folder_name(target_date)
+        if (week_folder / filename).exists():
+            return True
+
+        return False
 
     def _get_conversations_for_date(self, target_date: date) -> List[Dict[str, Any]]:
         """Filter corpus entries by date."""
@@ -278,11 +310,13 @@ generated: {datetime.now().isoformat()}
 """
 
     def _write_note(self, target_date: date, content: str) -> Path:
-        """Atomic write to Daily/M D YY Daily Note.md."""
-        # Ensure directory exists
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        """Atomic write to Daily/M D YY Daily Note.md (or weekly folder if exists)."""
+        # Get the appropriate path (weekly folder or flat)
+        note_path = self._get_note_path(target_date)
 
-        note_path = self.output_dir / self._format_filename(target_date)
+        # Ensure parent directory exists
+        note_path.parent.mkdir(parents=True, exist_ok=True)
+
         temp_path = note_path.with_suffix(".md.tmp")
 
         try:
@@ -388,11 +422,41 @@ generated: {datetime.now().isoformat()}
             result.output_path = self._write_note(target_date, full_content)
             result.success = True
             logger.info(f"[DailyNotes] Success: {result.output_path}")
+
+            # Trigger narrative context refresh after new daily note
+            await self._trigger_narrative_refresh()
+
         except Exception as e:
             result.error = str(e)
             logger.error(f"[DailyNotes] Failed to write note: {e}")
 
         return result
+
+    async def _trigger_narrative_refresh(self) -> None:
+        """
+        Trigger narrative context refresh after daily note creation.
+
+        This is a non-blocking operation - failures are logged but don't
+        affect the daily note generation result.
+        """
+        try:
+            from config.app_config import NARRATIVE_CONTEXT_ENABLED
+            if not NARRATIVE_CONTEXT_ENABLED:
+                return
+
+            from memory.memory_consolidator import MemoryConsolidator
+            consolidator = MemoryConsolidator(self.model_manager)
+
+            # Generate narrative from Obsidian notes (no corpus fallback needed for fresh trigger)
+            narrative = await consolidator.generate_narrative_context()
+
+            if narrative:
+                self.corpus_manager.save_narrative_context(narrative)
+                logger.info("[DailyNotes] Narrative context refreshed after daily note creation")
+
+        except Exception as e:
+            # Non-critical: log and continue
+            logger.warning(f"[DailyNotes] Failed to refresh narrative context: {e}")
 
     async def generate_yesterday_if_missing(self) -> Optional[GenerationResult]:
         """

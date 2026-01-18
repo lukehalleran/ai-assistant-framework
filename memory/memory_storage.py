@@ -2,7 +2,29 @@
 """
 Memory storage module.
 
-Implements the MemoryStorageProtocol contract for persisting memories.
+Module Contract
+- Purpose: Implements the MemoryStorageProtocol contract for persisting memories. Handles storage of conversations, facts, and summaries to both corpus and ChromaDB.
+- Inputs:
+  - store_interaction(query, response, metadata) -> bool
+  - store_fact(fact_dict) -> bool
+  - consolidate_if_needed() -> bool
+- Outputs:
+  - Stored memories in corpus JSON and ChromaDB collections
+  - Consolidation results (summary nodes when threshold reached)
+- Key behaviors:
+  - Coordinates between corpus_manager and chroma_store
+  - Triggers fact extraction per turn (if FACTS_EXTRACT_EACH_TURN enabled)
+  - Triggers summary consolidation (if not SUMMARIZE_AT_SHUTDOWN_ONLY)
+  - _maybe_regenerate_narrative(): Triggers narrative context refresh after consolidation [NEW 2026-01-17]
+- Dependencies:
+  - memory.corpus_manager (JSON persistence)
+  - memory.storage.multi_collection_chroma_store (vector storage)
+  - memory.fact_extractor (fact extraction)
+  - memory.memory_consolidator (summary generation, narrative synthesis)
+- Side effects:
+  - Writes to corpus JSON file
+  - Writes to ChromaDB collections
+  - Triggers narrative context regeneration after summary consolidation [NEW 2026-01-17]
 """
 
 import os
@@ -409,5 +431,100 @@ class MemoryStorage:
                 self.last_consolidation_time = datetime.now()
                 logger.info(f"[MemoryStorage] Consolidated {len(recent_memories)} memories into summary")
 
+                # Trigger narrative context regeneration (non-critical)
+                await self._maybe_regenerate_narrative()
+
         except Exception as e:
             logger.error(f"Error during memory consolidation: {e}")
+
+    async def _maybe_regenerate_narrative(self) -> None:
+        """
+        Regenerate the narrative context after summary creation.
+
+        This is a non-critical operation - failures are logged and swallowed.
+        """
+        try:
+            from config.app_config import NARRATIVE_CONTEXT_ENABLED
+            if not NARRATIVE_CONTEXT_ENABLED:
+                return
+
+            # Retrieve recent summaries for synthesis
+            recent_weeklies = self._get_recent_summaries_by_timespan("weekly", limit=4)
+            recent_monthlies = self._get_recent_summaries_by_timespan("monthly", limit=2)
+
+            if not recent_weeklies and not recent_monthlies:
+                logger.debug("[MemoryStorage] No summaries available for narrative synthesis")
+                return
+
+            if not self.consolidator:
+                logger.debug("[MemoryStorage] No consolidator available for narrative synthesis")
+                return
+
+            # Generate narrative via consolidator
+            narrative = await self.consolidator.generate_narrative_context(
+                recent_weeklies=recent_weeklies,
+                recent_monthlies=recent_monthlies
+            )
+
+            if narrative:
+                self.corpus_manager.save_narrative_context(narrative)
+                logger.info("[MemoryStorage] Narrative context updated after summary generation")
+
+        except Exception as e:
+            # Non-critical: log and continue
+            logger.warning(f"[MemoryStorage] Failed to update narrative context: {e}")
+
+    def _get_recent_summaries_by_timespan(self, span_type: str, limit: int = 4) -> List[Dict]:
+        """
+        Get recent summaries categorized by time span.
+
+        Args:
+            span_type: "weekly" (summaries from last 4 weeks) or "monthly" (last 2 months)
+            limit: Maximum number of summaries to return
+
+        Returns:
+            List of summary dicts sorted by timestamp (most recent first)
+        """
+        from datetime import timedelta
+
+        try:
+            # Get all recent summaries
+            all_summaries = self.corpus_manager.get_summaries(limit=50)
+
+            if not all_summaries:
+                return []
+
+            now = self._now()
+
+            # Filter by timespan
+            if span_type == "weekly":
+                # Summaries from the last 4 weeks
+                cutoff = now - timedelta(weeks=4)
+            elif span_type == "monthly":
+                # Summaries from the last 2 months (use 60 days as proxy)
+                cutoff = now - timedelta(days=60)
+            else:
+                return []
+
+            filtered = []
+            for s in all_summaries:
+                ts = s.get("timestamp")
+                if isinstance(ts, str):
+                    try:
+                        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    except:
+                        continue
+                if isinstance(ts, datetime):
+                    # Handle timezone-aware datetimes
+                    if ts.tzinfo is not None:
+                        ts = ts.replace(tzinfo=None)
+                    if ts >= cutoff:
+                        filtered.append(s)
+
+            # Sort by timestamp (most recent first) and limit
+            filtered.sort(key=lambda x: x.get("timestamp", datetime.min), reverse=True)
+            return filtered[:limit]
+
+        except Exception as e:
+            logger.debug(f"[MemoryStorage] Error getting {span_type} summaries: {e}")
+            return []

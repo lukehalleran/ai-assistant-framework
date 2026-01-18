@@ -12,15 +12,29 @@ Module Contract
   - Budget-compliant context with trimmed content
   - Token counts for text validation
 - Behavior:
-  - Extracts text from various context sections (conversations, memories, facts, reference_docs, etc.)
+  - Extracts text from various context sections (conversations, memories, facts, reference_docs, narrative_state, etc.)
   - Applies priority-based trimming when content exceeds token budget
   - Uses middle-out compression for large text blocks
   - Preserves most important content while respecting limits
+  - narrative_state: Priority 8 (high), capped at NARRATIVE_STATE_MAX_TOKENS (500) [NEW 2026-01-17]
 - Dependencies:
   - models.tokenizer_manager.TokenizerManager (token counting)
   - utils.logging_utils (logging)
 - Side effects:
   - Logging of token usage and trimming actions
+
+Priority Order (highest to lowest):
+  - stm_summary: 10 (metadata only, never trimmed)
+  - narrative_state: 8 (temporal grounding, 500 token cap) [NEW 2026-01-17]
+  - recent_conversations: 7
+  - semantic_chunks: 6
+  - personal_notes: 6
+  - reference_docs: 5
+  - memories: 5
+  - facts: 4
+  - summaries: 3
+  - reflections/dreams: 2
+  - wiki: 1
 """
 
 import os
@@ -32,6 +46,7 @@ logger = get_logger("prompt_token_manager")
 # Constants for token management
 PRIORITY_ORDER = [
     ("stm_summary",          10),  # Highest priority - STM context should never be trimmed
+    ("narrative_state",       8),  # Temporal grounding - high priority, capped at 500 tokens
     ("recent_conversations", 7),
     ("semantic_chunks",      6),
     ("personal_notes",       6),   # User's Obsidian notes - high priority
@@ -43,6 +58,9 @@ PRIORITY_ORDER = [
     ("wiki",                 1),
     ("dreams",               2),   # still included; trimmed early if needed
 ]
+
+# Max tokens for narrative_state section (temporal grounding)
+NARRATIVE_STATE_MAX_TOKENS = int(os.getenv("NARRATIVE_STATE_MAX_TOKENS", "500"))
 
 # Configuration loading helpers
 try:
@@ -159,6 +177,18 @@ class TokenManager:
             # Special handling: stm_summary is metadata, not content - preserve without token counting
             if name == "stm_summary":
                 logger.warning(f"[TOKEN BUDGET] Preserving stm_summary (metadata, no token cost)")
+                continue
+
+            # Special handling: narrative_state has a hard cap of 500 tokens
+            if name == "narrative_state" and val:
+                item_text = str(val)
+                t = self.get_token_count(item_text, model_name)
+                if t > NARRATIVE_STATE_MAX_TOKENS:
+                    item_text = self._middle_out(item_text, NARRATIVE_STATE_MAX_TOKENS, force=True)
+                    t = self.get_token_count(item_text, model_name)
+                    trimmed[name] = item_text
+                    logger.debug(f"[TOKEN BUDGET] Capped narrative_state to {NARRATIVE_STATE_MAX_TOKENS} tokens")
+                current_tokens += t
                 continue
 
             logger.warning(f"[TOKEN BUDGET] Processing section '{name}' with {len(val) if isinstance(val, list) else 1} items, current_tokens={current_tokens}")

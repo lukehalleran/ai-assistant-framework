@@ -7,13 +7,18 @@ Module Contract
   - add_entry(query, response, tags?, timestamp?)
   - add_summary(content|node)
   - get_recent_memories(count), get_summaries(count)
+  - save_narrative_context(text: str) -> bool [NEW 2026-01-17]
+  - get_narrative_context() -> str [NEW 2026-01-17]
 - Outputs:
   - Lists of dict entries sorted by recency; persisted file on disk.
+  - Narrative context text (cached temporal grounding) [NEW 2026-01-17]
 - Key behaviors:
   - Atomic save with .tmp swap; timestamps normalized to datetime/ISO
   - Size bounded by CORPUS_MAX_ENTRIES (config/env)
+  - Narrative context cached to separate file (NARRATIVE_CONTEXT_PATH) [NEW 2026-01-17]
 - Side effects:
   - Writes to CORPUS_FILE JSON on each add.
+  - Writes to NARRATIVE_CONTEXT_PATH for temporal grounding cache [NEW 2026-01-17]
 """
 import json
 import os
@@ -333,3 +338,61 @@ class CorpusManager:
 
         items.sort(key=_get_sortable_ts, reverse=True)
         return items[:limit]
+
+    # --- Narrative Context (Temporal Grounding) ---
+    def save_narrative_context(self, text: str) -> bool:
+        """
+        Save the synthesized narrative context to data/narrative_context.txt
+        Uses atomic write pattern (temp file → rename) for safety.
+
+        Returns:
+            True on success, False on failure.
+        """
+        from config.app_config import NARRATIVE_CONTEXT_PATH
+
+        try:
+            narrative_path = NARRATIVE_CONTEXT_PATH
+            tmp_path = narrative_path + ".tmp"
+
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(narrative_path), exist_ok=True)
+
+            # Write to temp file first
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                f.write(text)
+
+            # Atomic swap
+            os.replace(tmp_path, narrative_path)
+
+            logger.debug(f"[CorpusManager] Saved narrative context ({len(text)} chars) to {narrative_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"[CorpusManager] Failed to save narrative context: {e}")
+            return False
+
+    def get_narrative_context(self) -> str:
+        """
+        Read the cached narrative context from data/narrative_context.txt
+
+        Returns:
+            The narrative context string, or empty string if not available.
+        """
+        from config.app_config import NARRATIVE_CONTEXT_PATH
+
+        try:
+            narrative_path = NARRATIVE_CONTEXT_PATH
+
+            if not os.path.exists(narrative_path):
+                logger.debug(f"[CorpusManager] Narrative context file not found: {narrative_path}")
+                return ""
+
+            with open(narrative_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            logger.debug(f"[CorpusManager] Loaded narrative context ({len(content)} chars)")
+            return content
+
+        except Exception as e:
+            logger.warning(f"[CorpusManager] Failed to read narrative context: {e}")
+            return ""

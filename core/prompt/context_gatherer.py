@@ -12,6 +12,7 @@ Module Contract
   - UPDATED: get_user_profile_context(query: str) -> str [NEW: replaces semantic_facts + fresh_facts]
   - get_personal_notes(query: str, limit: int) -> List[Dict] [NEW: Obsidian vault retrieval via ObsidianManager]
   - get_reference_docs(query: str, limit: int) -> List[Dict] [NEW: User uploaded docs retrieval via ReferenceDocsManager]
+  - get_narrative_context() -> str [NEW 2026-01-17: Cached temporal grounding from corpus_manager]
 - Outputs:
   - Comprehensive context dictionary with all gathered data
   - Recent conversation history within specified limits
@@ -21,6 +22,7 @@ Module Contract
   - UPDATED: 'user_profile' key with categorized facts (replaces 'semantic_facts' and 'fresh_facts')
   - Personal notes from Obsidian vault (hybrid 1/3 keyword + 2/3 semantic retrieval) [NEW]
   - Reference documents from uploaded docs (hybrid 1/3 keyword + 2/3 semantic retrieval) [NEW]
+  - Narrative context string (synthesized life state) [NEW 2026-01-17]
 - Behavior:
   - Retrieves data from multiple memory collections (episodic, semantic, procedural)
   - Applies filtering and relevance scoring to retrieved content
@@ -32,9 +34,11 @@ Module Contract
   - ENHANCED: Complex queries are auto-decomposed into parallel sub-queries (e.g., "Compare Tesla and Rivian" → 2 searches)
   - Suppresses web search during HIGH/MEDIUM crisis levels
   - UPDATED: Uses UserProfile hybrid retrieval (2/3 semantic + 1/3 recent per category) instead of flat facts
+  - Retrieves cached narrative context (0ms latency) for temporal grounding [NEW 2026-01-17]
 - Dependencies:
   - memory.memory_coordinator (memory retrieval)
   - memory.user_profile (NEW: categorized fact storage)
+  - memory.corpus_manager (narrative context retrieval) [NEW 2026-01-17]
   - core.wiki_util (Wikipedia content)
   - knowledge.web_search_manager (ENHANCED: Tavily web search with multi_search + query decomposition)
   - utils.web_search_trigger (search trigger detection)
@@ -1432,3 +1436,35 @@ class ContextGatherer:
             return decision.should_search
         except Exception:
             return False
+
+    def get_narrative_context(self) -> str:
+        """
+        Retrieve the cached narrative context (temporal grounding).
+
+        This reads the pre-synthesized narrative from the filesystem.
+        The narrative is generated asynchronously during summary creation
+        and cached to avoid per-query latency costs.
+
+        Returns:
+            The narrative context string, or empty string if not available.
+        """
+        try:
+            from config.app_config import NARRATIVE_CONTEXT_ENABLED
+            if not NARRATIVE_CONTEXT_ENABLED:
+                return ""
+
+            # Access corpus manager through memory coordinator
+            if hasattr(self.memory_coordinator, 'corpus_manager'):
+                corpus = self.memory_coordinator.corpus_manager
+                if hasattr(corpus, 'get_narrative_context'):
+                    narrative = corpus.get_narrative_context()
+                    if narrative:
+                        logger.debug(f"[ContextGatherer] Retrieved narrative context ({len(narrative)} chars)")
+                    return narrative
+
+            logger.debug("[ContextGatherer] Narrative context not available (no corpus manager)")
+            return ""
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to retrieve narrative context: {e}")
+            return ""

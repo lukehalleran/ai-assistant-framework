@@ -344,6 +344,34 @@ DAILY_NOTES_MAX_TOKENS: int = int(DAILY_NOTES_CFG.get("max_tokens", 800))
 # Environment variable overrides for Daily Notes
 DAILY_NOTES_ENABLED = bool(int(os.getenv("DAILY_NOTES_ENABLED", "1" if DAILY_NOTES_ENABLED else "0")))
 
+# Weekly Notes Configuration (extends daily notes)
+WEEKLY_NOTES_ENABLED: bool = bool(DAILY_NOTES_CFG.get("weekly_enabled", True))
+WEEKLY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("weekly_model", "gpt-4o-mini")
+WEEKLY_NOTES_MAX_TOKENS: int = int(DAILY_NOTES_CFG.get("weekly_max_tokens", 1200))
+
+# --------------------------------------------------------------------
+# Narrative Context (Temporal Grounding) Configuration
+# Synthesizes weekly/monthly summaries into a rolling "Life State" narrative
+# that provides trajectory-aware context without per-query latency costs.
+# --------------------------------------------------------------------
+NARRATIVE_CONTEXT_CFG = config.get("narrative_context", {})
+NARRATIVE_CONTEXT_ENABLED: bool = bool(NARRATIVE_CONTEXT_CFG.get("enabled", True))
+NARRATIVE_CONTEXT_PATH: str = os.getenv(
+    "NARRATIVE_CONTEXT_PATH",
+    NARRATIVE_CONTEXT_CFG.get("path", "./data/narrative_context.txt")
+)
+NARRATIVE_MAX_TOKENS: int = int(NARRATIVE_CONTEXT_CFG.get("max_tokens", 500))
+NARRATIVE_WEEKLIES_COUNT: int = int(NARRATIVE_CONTEXT_CFG.get("weeklies_count", 4))
+NARRATIVE_MONTHLIES_COUNT: int = int(NARRATIVE_CONTEXT_CFG.get("monthlies_count", 2))
+NARRATIVE_SYNTHESIS_MODEL: str = NARRATIVE_CONTEXT_CFG.get("synthesis_model", "gpt-4o-mini")
+
+# Environment variable overrides for Narrative Context
+NARRATIVE_CONTEXT_ENABLED = bool(int(os.getenv("NARRATIVE_CONTEXT_ENABLED", "1" if NARRATIVE_CONTEXT_ENABLED else "0")))
+NARRATIVE_MAX_TOKENS = int(os.getenv("NARRATIVE_MAX_TOKENS", str(NARRATIVE_MAX_TOKENS)))
+NARRATIVE_WEEKLIES_COUNT = int(os.getenv("NARRATIVE_WEEKLIES_COUNT", str(NARRATIVE_WEEKLIES_COUNT)))
+NARRATIVE_MONTHLIES_COUNT = int(os.getenv("NARRATIVE_MONTHLIES_COUNT", str(NARRATIVE_MONTHLIES_COUNT)))
+NARRATIVE_SYNTHESIS_MODEL = os.getenv("NARRATIVE_SYNTHESIS_MODEL", NARRATIVE_SYNTHESIS_MODEL)
+
 DEICTIC_THRESHOLD = config.get("gating", {}).get("deictic_threshold", 0.60)
 NORMAL_THRESHOLD = config.get("gating", {}).get("normal_threshold", 0.35)
 DEICTIC_ANCHOR_PENALTY = config.get("gating", {}).get("deictic_anchor_penalty", 0.1)

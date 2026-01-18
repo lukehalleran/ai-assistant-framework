@@ -765,6 +765,204 @@ if __name__ == "__main__":
                 print(f"Failed: {result.error}")
             sys.exit(0)
 
+        elif mode == "weekly-note":
+            # Generate weekly summary for current or specified week
+            # Usage: python main.py weekly-note [date] [--force]
+            import asyncio
+            from utils.weekly_notes_generator import WeeklyNotesGenerator
+            from datetime import date as date_type, datetime, timedelta
+
+            # Parse arguments
+            target_date = date_type.today()
+            force = "--force" in sys.argv
+
+            # Check for date argument (YYYY-MM-DD format or 'last-week')
+            for arg in sys.argv[2:]:
+                if arg.startswith("--"):
+                    continue
+                if arg == "last-week":
+                    target_date = date_type.today() - timedelta(days=7)
+                else:
+                    try:
+                        target_date = datetime.strptime(arg, "%Y-%m-%d").date()
+                    except ValueError:
+                        print(f"Invalid date format: {arg} (use YYYY-MM-DD or 'last-week')")
+                        sys.exit(1)
+
+            print(f"\n{'='*60}")
+            print("GENERATING WEEKLY NOTE")
+            print(f"{'='*60}")
+            print(f"Week containing: {target_date}")
+            print(f"Force: {force}")
+            print()
+
+            generator = WeeklyNotesGenerator()
+            result = asyncio.run(generator.generate_for_week(target_date, force=force))
+
+            if result.success:
+                print(f"{'='*60}")
+                print("SUCCESS")
+                print(f"{'='*60}")
+                print(f"  Week: {result.week_num}, {result.year}")
+                print(f"  Folder: {result.week_folder}")
+                print(f"  Output: {result.output_path}")
+                print(f"  Daily notes found: {result.daily_notes_found}")
+                print(f"  Daily notes moved: {result.daily_notes_moved}")
+                print(f"  Total conversations: {result.total_conversations}")
+                print(f"  Average intensity: {result.avg_intensity}/10")
+            elif result.skipped_reason:
+                print(f"SKIPPED: {result.skipped_reason}")
+                if result.output_path:
+                    print(f"  Existing summary: {result.output_path}")
+            else:
+                print(f"FAILED: {result.error}")
+            sys.exit(0)
+
+        elif mode == "weekly-note-catchup":
+            # Generate last week's summary if complete and missing
+            import asyncio
+            from utils.weekly_notes_generator import WeeklyNotesGenerator
+
+            print(f"\n{'='*60}")
+            print("WEEKLY NOTE CATCH-UP")
+            print(f"{'='*60}")
+
+            generator = WeeklyNotesGenerator()
+            result = asyncio.run(generator.generate_last_week_if_complete())
+
+            if result is None:
+                print("Last week's summary already exists, nothing to do.")
+            elif result.success:
+                print(f"Generated last week's summary:")
+                print(f"  Week: {result.week_num}, {result.year}")
+                print(f"  Output: {result.output_path}")
+                print(f"  Daily notes: {result.daily_notes_found}")
+            elif result.skipped_reason:
+                print(f"Skipped: {result.skipped_reason}")
+            else:
+                print(f"Failed: {result.error}")
+            sys.exit(0)
+
+        elif mode == "organize-weekly":
+            # Organize daily notes into weekly folders without generating summary
+            import asyncio
+            from utils.weekly_notes_generator import WeeklyNotesGenerator
+            from datetime import date as date_type, datetime, timedelta
+
+            # Parse arguments
+            target_date = date_type.today()
+
+            for arg in sys.argv[2:]:
+                if arg == "last-week":
+                    target_date = date_type.today() - timedelta(days=7)
+                else:
+                    try:
+                        target_date = datetime.strptime(arg, "%Y-%m-%d").date()
+                    except ValueError:
+                        print(f"Invalid date format: {arg} (use YYYY-MM-DD or 'last-week')")
+                        sys.exit(1)
+
+            print(f"\n{'='*60}")
+            print("ORGANIZING WEEKLY FOLDER")
+            print(f"{'='*60}")
+            print(f"Week containing: {target_date}")
+            print()
+
+            generator = WeeklyNotesGenerator()
+            folder, moved = asyncio.run(generator.organize_week(target_date))
+
+            print(f"Folder: {folder}")
+            print(f"Notes moved: {moved}")
+            sys.exit(0)
+
+        elif mode == "refresh-narrative":
+            # Manually regenerate the narrative context from Obsidian notes + corpus summaries
+            # Usage: python main.py refresh-narrative
+            import asyncio
+            from memory.corpus_manager import CorpusManager
+            from memory.memory_consolidator import MemoryConsolidator
+            from models.model_manager import ModelManager
+
+            async def refresh_narrative_context():
+                """Manually regenerate the narrative context from Obsidian notes + corpus."""
+                print(f"\n{'='*60}")
+                print("NARRATIVE CONTEXT REFRESH (Hybrid)")
+                print(f"{'='*60}\n")
+
+                # Initialize components
+                corpus = CorpusManager()
+                model_manager = ModelManager()
+                consolidator = MemoryConsolidator(model_manager)
+
+                # Check Obsidian sources
+                print("Checking Obsidian vault...")
+                obsidian_weeklies = consolidator._read_obsidian_weekly_summaries(limit=2)
+                obsidian_dailies = consolidator._read_obsidian_daily_notes(limit=7)
+                print(f"  - Obsidian weekly summaries: {len(obsidian_weeklies)}")
+                print(f"  - Obsidian daily notes: {len(obsidian_dailies)}")
+
+                # Get corpus summaries as fallback
+                print("\nChecking corpus summaries (fallback)...")
+                from datetime import datetime, timedelta
+                all_summaries = corpus.get_summaries(count=50)
+
+                now = datetime.now()
+                weekly_cutoff = now - timedelta(weeks=4)
+                monthly_cutoff = now - timedelta(days=60)
+
+                corpus_weeklies = []
+                corpus_monthlies = []
+
+                for s in (all_summaries or []):
+                    ts = s.get("timestamp")
+                    if isinstance(ts, str):
+                        try:
+                            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        except:
+                            continue
+                    if isinstance(ts, datetime):
+                        if ts.tzinfo is not None:
+                            ts = ts.replace(tzinfo=None)
+                        if ts >= weekly_cutoff:
+                            corpus_weeklies.append(s)
+                        elif ts >= monthly_cutoff:
+                            corpus_monthlies.append(s)
+
+                # Limit counts
+                corpus_weeklies = sorted(corpus_weeklies, key=lambda x: x.get("timestamp", datetime.min), reverse=True)[:4]
+                corpus_monthlies = sorted(corpus_monthlies, key=lambda x: x.get("timestamp", datetime.min), reverse=True)[:2]
+                print(f"  - Corpus weekly-range summaries: {len(corpus_weeklies)}")
+                print(f"  - Corpus monthly-range summaries: {len(corpus_monthlies)}")
+
+                # Check if we have any content
+                if not obsidian_weeklies and not obsidian_dailies and not corpus_weeklies and not corpus_monthlies:
+                    print("\n✗ No content available for synthesis.")
+                    print("  Generate daily notes first: python main.py daily-note")
+                    return False
+
+                print("\nSynthesizing narrative context...")
+
+                # The method reads Obsidian notes automatically, pass corpus as fallback
+                narrative = await consolidator.generate_narrative_context(
+                    recent_weeklies=corpus_weeklies,
+                    recent_monthlies=corpus_monthlies
+                )
+
+                if narrative:
+                    corpus.save_narrative_context(narrative)
+                    print(f"\n✓ Narrative context updated successfully ({len(narrative)} chars)")
+                    print(f"\n{'-'*50}")
+                    print("Generated narrative:")
+                    print(f"{'-'*50}")
+                    print(narrative)
+                    return True
+                else:
+                    print("\n✗ Failed to generate narrative context")
+                    return False
+
+            success = asyncio.run(refresh_narrative_context())
+            sys.exit(0 if success else 1)
+
         else:
             print(f"[DEBUG] Building orchestrator (mode={mode}, force_wizard={force_wizard})...")
             orchestrator = build_orchestrator()

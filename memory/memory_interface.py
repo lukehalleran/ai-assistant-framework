@@ -259,3 +259,12 @@ class MemoryConsolidatorProtocol(Protocol):
     async def consolidate_and_store_summary(self) -> None:
         """Consolidate recent conversations into summary"""
         ...
+
+    async def generate_narrative_context(
+        self,
+        recent_weeklies: List[Dict],
+        recent_monthlies: List[Dict],
+        max_tokens: int = 400
+    ) -> str:
+        """Generate synthesized narrative from summaries for temporal grounding"""
+        ...
