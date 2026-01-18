@@ -671,11 +671,12 @@ Allocation with separated sections:
 9. Dreams (3 max)
 
 Priority order (with weights):
-- stm_summary: 10               # HIGHEST - metadata only, no token cost [NEW]
+- stm_summary: 10               # HIGHEST - metadata only, no token cost
+- narrative_state: 8            # Temporal grounding - synthesized life context [NEW 2026-01-17]
 - recent_conversations: 7
 - semantic_chunks: 6
-- personal_notes: 6             # Obsidian notes [NEW 2026-01]
-- reference_docs: 5             # User uploaded docs [NEW 2026-01]
+- personal_notes: 6             # Obsidian notes
+- reference_docs: 5             # User uploaded docs
 - memories: 5
 - semantic_facts/fresh_facts: 4
 - summaries: 3
@@ -686,7 +687,8 @@ Priority order (with weights):
 **Context Dict Structure**:
 ```python
 {
-  "stm_summary": {...},           # STM context summary dict (topic, intent, tone, etc.) [NEW]
+  "stm_summary": {...},           # STM context summary dict (topic, intent, tone, etc.)
+  "narrative_state": "...",       # Temporal grounding - synthesized life context [NEW 2026-01-17]
   "recent_conversations": [...],
   "memories": [...],
   "semantic_facts": [...],
@@ -752,7 +754,22 @@ Time since last session: 2 d 3 h
 [RECENT REFLECTIONS] n=5
 ...
 
-[SHORT-TERM CONTEXT SUMMARY] [NEW - placed immediately before query]
+[TEMPORAL GROUNDING] [NEW 2026-01-17 - synthesized life context]
+**Current Life State**
+The user is navigating a phase of academic and personal growth...
+
+**Active Threads**
+- Memory system improvements
+- Academic preparation
+- Emotional processing
+
+**Emotional Trajectory**
+Mood trending positive after resolving recent stressors...
+
+**Recurring Themes**
+Integration of technology into studies, self-care practices...
+
+[SHORT-TERM CONTEXT SUMMARY]
 Topic: Python debugging
 User Question: How to fix the timeout error
 Intent: Get practical solution to immediate technical problem
@@ -1523,8 +1540,8 @@ DAILY_NOTES_MAX_TOKENS = 800
 
 ---
 
-### 2.14 memory/memory_consolidator.py (Summarization)
-**Purpose**: LLM-based conversation summarization
+### 2.14 memory/memory_consolidator.py (Summarization + Narrative Synthesis)
+**Purpose**: LLM-based conversation summarization and narrative context synthesis
 
 **Trigger**: Every N conversations (default 20) at shutdown
 
@@ -1539,6 +1556,80 @@ DAILY_NOTES_MAX_TOKENS = 800
 
 **Key Methods**:
 - `consolidate_memories(conversations, max_tokens)` → async summary
+- `generate_narrative_context(weeklies, monthlies)` → async narrative synthesis **[NEW 2026-01-17]**
+- `_read_obsidian_weekly_summaries(limit)` → List[Dict] from Obsidian vault
+- `_read_obsidian_daily_notes(limit)` → List[Dict] from Week * folders only
+
+**Narrative Context Synthesis** [NEW 2026-01-17]:
+Generates a "Current Life State" narrative from daily/weekly notes for temporal grounding.
+- Primary source: Obsidian daily notes + weekly summaries
+- Fallback: Corpus summaries
+- Output: ~300 word synthesis covering life chapter, active threads, emotional trajectory, recurring themes
+- Cached to `./data/narrative_context.txt` (0ms retrieval latency)
+- CLI: `python main.py refresh-narrative`
+
+---
+
+### 2.14.1 Narrative Context System (Temporal Grounding) **[NEW 2026-01-17]**
+
+**Purpose**: Provide trajectory-aware context by synthesizing daily/weekly notes into a cached "Life State" narrative.
+
+**Architecture Decision**: Background cached updates (not per-query synthesis)
+```
+Per-Query Synthesis: +3-5s latency, ~5k tokens/query  ❌
+Background Cached:   0ms latency, ~500 tokens/query   ✅
+```
+
+**Data Sources (Hybrid)**:
+| Source | Priority | Count | Location |
+|--------|----------|-------|----------|
+| Obsidian Weekly Summaries | Primary | 2 | `Week */Week * Summary.md` |
+| Obsidian Daily Notes | Primary | 7 | `Week */*Daily Note.md` |
+| Corpus Summaries | Fallback | 3-5 | `corpus_v4.json` summaries |
+
+**Note**: Only reads daily notes from `Week *` folders (new system created 2026-01-15). Older notes in root folder excluded - they're searchable via `[PERSONAL NOTES]`.
+
+**Output Structure**:
+```markdown
+**Current Life State**
+The user is navigating [life phase description]...
+
+**Active Threads**
+- Project/goal 1
+- Project/goal 2
+- Concern/focus 3
+
+**Emotional Trajectory**
+Mood trending [direction] because [reasons]...
+
+**Recurring Themes**
+Patterns across multiple time periods...
+```
+
+**Update Triggers**:
+1. **Primary**: Daily note creation → `_trigger_narrative_refresh()` in DailyNotesGenerator
+2. **Secondary**: After summary consolidation (memory_storage.py)
+3. **Fallback**: Startup check logs warning if >24 hours stale
+4. **Manual**: `python main.py refresh-narrative`
+
+**Files Modified**:
+- `memory/corpus_manager.py` - `save_narrative_context()`, `get_narrative_context()`
+- `memory/memory_consolidator.py` - `generate_narrative_context()`, Obsidian readers
+- `utils/daily_notes_generator.py` - `_trigger_narrative_refresh()` primary trigger
+- `memory/memory_storage.py` - `_maybe_regenerate_narrative()` secondary trigger
+- `core/prompt/context_gatherer.py` - `get_narrative_context()` retrieval
+- `core/prompt/builder.py` - Context gathering and assembly
+- `core/prompt/token_manager.py` - Priority 8, 500 token cap
+- `core/orchestrator.py` - `_check_narrative_freshness()` startup check
+- `config/app_config.py` - `NARRATIVE_CONTEXT_*` settings
+
+**Configuration**:
+```python
+NARRATIVE_CONTEXT_ENABLED = True      # Feature toggle
+NARRATIVE_CONTEXT_PATH = "./data/narrative_context.txt"
+NARRATIVE_MAX_TOKENS = 500            # Hard cap in prompt
+NARRATIVE_SYNTHESIS_MODEL = "gpt-4o-mini"
+```
 
 ---
 

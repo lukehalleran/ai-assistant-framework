@@ -496,6 +496,7 @@ score = (
 [WEB SEARCH RESULTS]           # Real-time Tavily results
 [RELEVANT INFORMATION]         # Wikipedia chunks
 [TIME CONTEXT]                 # Current datetime
+[TEMPORAL GROUNDING]           # Synthesized life context (daily/weekly notes) [NEW 2026-01-17]
 [STM SUMMARY]                  # Short-term memory analysis
 [CURRENT USER QUERY]           # The actual query to respond to
 ```
@@ -511,6 +512,9 @@ python main.py daily-note yesterday          # Generate for yesterday
 python main.py daily-note 2026-01-15         # Specific date (YYYY-MM-DD)
 python main.py daily-note --force            # Overwrite existing
 python main.py daily-note-catchup            # Startup hook (yesterday if missing)
+
+# Narrative Context (Temporal Grounding) [NEW 2026-01-17]
+python main.py refresh-narrative             # Regenerate life state from daily/weekly notes
 
 # Daemon Documentation (self-knowledge)
 python main.py upload-doc <file> [title]     # Upload doc to [DAEMON DOCUMENTATION]
@@ -563,6 +567,42 @@ class DailyNotesGenerator:
 
 # Cron setup (2am daily):
 # 0 2 * * * cd /path/to/daemon && python main.py daily-note yesterday
+```
+
+---
+
+## Narrative Context (Temporal Grounding) [NEW 2026-01-17]
+
+```python
+# memory/memory_consolidator.py
+class MemoryConsolidator:
+    async def generate_narrative_context(weeklies=None, monthlies=None) -> str:
+        """
+        Synthesize daily/weekly notes into 'Current Life State' narrative.
+
+        Sources (hybrid):
+        1. Obsidian weekly summaries (Week */Week * Summary.md) - 2 max
+        2. Obsidian daily notes (Week */*Daily Note.md) - 7 max
+        3. Corpus summaries (fallback)
+
+        Output sections:
+        - Current Life State (life phase description)
+        - Active Threads (ongoing projects/concerns)
+        - Emotional Trajectory (mood trend)
+        - Recurring Themes (patterns)
+
+        Cached to: ./data/narrative_context.txt (0ms retrieval)
+        Token budget: Priority 8, 500 token cap
+        """
+
+# Update Triggers:
+# 1. PRIMARY: Daily note creation → DailyNotesGenerator._trigger_narrative_refresh()
+# 2. SECONDARY: After summary consolidation (memory_storage.py)
+# 3. FALLBACK: Startup check warns if >24 hours stale
+# 4. MANUAL: python main.py refresh-narrative
+
+# Prompt placement:
+# [TIME CONTEXT] → [TEMPORAL GROUNDING] → [STM SUMMARY] → [CURRENT USER QUERY]
 ```
 
 ---
