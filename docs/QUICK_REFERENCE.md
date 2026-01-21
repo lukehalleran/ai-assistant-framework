@@ -153,8 +153,8 @@ class MultiStageGateSystem:
 ## Prompt Building
 
 ```python
-# core/prompt_builder.py
-class PromptBuilder:
+# core/prompt/builder.py
+class UnifiedPromptBuilder:
     def build_prompt(query: str, memories: List[Dict], topics: List[str] = None, budget: int = 2048) -> str:
         """
         Token allocation:
@@ -245,7 +245,7 @@ class CorpusManager:
 
 # memory/storage/multi_collection_chroma_store.py
 class MultiCollectionChromaStore:
-    # Collections: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs
+    # Collections (7 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs
 
     async def add_memory(text: str, metadata: Dict, collection: str):
         """Embed text and store in ChromaDB collection"""
@@ -513,6 +513,12 @@ python main.py daily-note 2026-01-15         # Specific date (YYYY-MM-DD)
 python main.py daily-note --force            # Overwrite existing
 python main.py daily-note-catchup            # Startup hook (yesterday if missing)
 
+# Weekly Notes - auto-generated weekly summaries [NEW 2026-01-19]
+python main.py weekly-note                   # Generate for current week
+python main.py weekly-note 2026-01-12        # Generate for week containing date
+python main.py weekly-note --force           # Overwrite existing
+python main.py weekly-note-catchup           # Generate last week if missing
+
 # Narrative Context (Temporal Grounding) [NEW 2026-01-17]
 python main.py refresh-narrative             # Regenerate life state from daily/weekly notes
 
@@ -643,11 +649,11 @@ tail -n 100 data/corpus.json | jq '.conversations[-5:]'
 python -c "import chromadb; client = chromadb.PersistentClient('./chroma_db'); print([c.name for c in client.list_collections()])"
 
 # Test prompt builder
-python -c "from core.prompt_builder import PromptBuilder; pb = PromptBuilder(...); print(pb.build_prompt('test query', []))"
+python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPromptBuilder(...); print(pb.build_prompt('test query', []))"
 ```
 
 ---
 
 **End of Quick Reference**
 
-This document is ~500 lines → ~3K tokens, providing instant lookup for critical functions and patterns.
+This document is ~660 lines → ~4K tokens, providing instant lookup for critical functions and patterns.

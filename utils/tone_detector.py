@@ -145,7 +145,7 @@ MEDIUM_CRISIS_KEYWORDS = {
     "abusive", "the abusive", "abuser", "gaslighting", "gaslighted",
     "manipulative", "manipulated me", "toxic relationship",
     "medical abuse", "forced me off", "denied my illness",
-    "denied I was", "made me feel", "blamed me for",
+    "denied i was", "made me feel", "blamed me for",
     "emotionally abusive", "verbally abusive", "physically abusive",
     "narcissist", "narcissistic abuse", "controlling",
 

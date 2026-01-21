@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-18
+**Last Updated**: 2026-01-20
 
 ---
 
@@ -1536,6 +1536,80 @@ DAILY_NOTES_MAX_TOKENS = 800
 
 ---
 
+### 2.12.6 utils/weekly_notes_generator.py (Auto-Generated Weekly Summaries) **[NEW 2026-01-19]**
+**Purpose**: Organize daily notes into weekly folders and generate weekly summaries by aggregating daily notes
+
+**Data Classes**:
+- `WeeklyGenerationResult`: Statistics from note generation (success, week_num, year, week_folder, output_path, daily_notes_found, daily_notes_moved, total_conversations, avg_intensity, skipped_reason)
+
+**Key Methods**:
+- `generate_for_week(date, force)` → `WeeklyGenerationResult`: Generate summary for week containing date
+- `generate_last_week_if_complete()` → `Optional[WeeklyGenerationResult]`: Startup catch-up hook
+- `week_summary_exists(date)` → `bool`: Check if summary already exists
+- `_get_daily_notes_for_week(date)` → `List[Dict]`: Find daily notes in week range
+- `_move_daily_notes_to_week_folder(notes, week_folder)`: Organize notes into folders
+- `_parse_daily_note(path)` → `Dict`: Read and parse daily note (frontmatter + content)
+
+**Week Folder Structure**:
+```
+Obsidian vault/
+└── Daily Notes and To Do's/
+    └── Week 3 Jan 2026/
+        ├── 1 13 26 Daily Note.md
+        ├── 1 14 26 Daily Note.md
+        └── Week 3 Jan 2026 Summary.md
+```
+
+**Note Structure** (Obsidian-compatible markdown):
+```markdown
+---
+week_num: 3
+year: 2026
+avg_usage_intensity: 6.5
+total_conversations: 42
+total_active_hours: 8.5
+daily_notes: 5
+date_range: "2026-01-13 to 2026-01-19"
+tags: [weekly, daemon-generated]
+---
+# Weekly Summary - Week 3, January 2026
+## Week at a Glance (3-4 sentences)
+## Main Quests This Week (aggregated from daily notes)
+## Life Events Summary [NEW 2026-01-18]
+- **Work**: Aggregated across week
+- **Study**: Aggregated across week
+- **Sleep**: Patterns noted
+- **Exercise/Health**: Activities summarized
+## Recurring Themes
+## Emotional Arc
+## Lessons Learned
+## Open Threads → Next Week
+```
+
+**Backward Compatibility** [UPDATED 2026-01-18]:
+- Reads both old field names (intensity, duration_hours) and new (usage_intensity, span_hours, active_hours)
+- Writes new field names (avg_usage_intensity, total_active_hours)
+
+**CLI Commands** (`main.py`):
+- `python main.py weekly-note` - Generate for current week
+- `python main.py weekly-note 2026-01-12` - Generate for week containing date
+- `python main.py weekly-note --force` - Overwrite existing
+- `python main.py weekly-note-catchup` - Generate last week if missing
+
+**Configuration** (`config/app_config.py`):
+```python
+WEEKLY_NOTES_ENABLED = True
+WEEKLY_NOTES_MODEL = "gpt-4o-mini"
+WEEKLY_NOTES_MAX_TOKENS = 1200
+```
+
+**Integration**:
+- Writes to Obsidian vault at `OBSIDIAN_VAULT_PATH / DAILY_NOTES_FOLDER / Week N Month Year/`
+- Week summaries can be read by narrative context generator
+- Atomic file writes (temp → replace pattern)
+
+---
+
 ### 2.13 utils/time_manager.py (Temporal Context & Session Tracking)
 **Purpose**: Time-aware operations, decay calculation, and conversation pacing metrics **[ENHANCED 2025-12-05]**
 
@@ -2473,7 +2547,8 @@ daemon/
 │   ├── health_check.py        # Docker/K8s health endpoint
 │   ├── conversation_logger.py # Conversation persistence
 │   ├── web_search_trigger.py  # Web search detection (LLM-first + heuristics) [ENHANCED 2026-01]
-│   └── daily_notes_generator.py # Auto-generated daily summaries [NEW 2026-01]
+│   ├── daily_notes_generator.py # Auto-generated daily summaries [NEW 2026-01]
+│   └── weekly_notes_generator.py # Auto-generated weekly summaries [NEW 2026-01-19]
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
@@ -2498,7 +2573,7 @@ daemon/
 │   ├── wiki/                  # Wikipedia source data (102GB)
 │   └── pipeline/              # Wikipedia processing scripts (43GB)
 │
-├── tests/                     # All test files (70+ files)
+├── tests/                     # All test files (114 files)
 │   ├── unit/                  # Unit tests (20+ files)
 │   │   ├── test_tone_detector.py
 │   │   ├── test_need_detection.py  # [NEW]
@@ -2686,7 +2761,7 @@ except Exception as e:
 **Test Files**:
 - **Unit tests**: ~20 files in `tests/unit/`
 - **Integration tests**: ~45 files in `tests/`
-- **Total test files**: ~65
+- **Total test files**: 114
 
 **Known Failure Categories** (not caused by recent changes):
 - UnifiedPromptBuilder API changes (missing `get_facts`, `get_recent_facts`)
@@ -2825,6 +2900,8 @@ python main.py inspect-summaries
 | query_checker.py | Analyze: heavy topics, thread detection, temporal windows |
 | hybrid_retriever.py | Retrieve: query rewrite + semantic + keyword scoring |
 | time_manager.py | Utils: timestamps and temporal decay calculations |
+| daily_notes_generator.py | Generate: daily summaries with Life Events from corpus [ENHANCED 2026-01-18] |
+| weekly_notes_generator.py | Organize: weekly folders + summaries from daily notes [NEW 2026-01-19] |
 
 ---
 

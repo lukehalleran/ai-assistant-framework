@@ -77,13 +77,13 @@ class ModelManager:
         # Initialize OpenAI clients only when the package is available AND an API key is provided.
         if OpenAI is not None and AsyncOpenAI is not None and self.api_key:
             sync_http_client = httpx.Client(
-                timeout=httpx.Timeout(30.0),
+                timeout=httpx.Timeout(120.0),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=10),
                 headers={"Connection": "keep-alive"},
             )
 
             async_http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(30.0),
+                timeout=httpx.Timeout(120.0),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=10),
                 headers={"Connection": "keep-alive"},
             )
@@ -163,13 +163,13 @@ class ModelManager:
             self.api_key = new_key
 
             sync_http_client = httpx.Client(
-                timeout=httpx.Timeout(30.0),
+                timeout=httpx.Timeout(120.0),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=10),
                 headers={"Connection": "keep-alive"},
             )
 
             async_http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(30.0),
+                timeout=httpx.Timeout(120.0),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=10),
                 headers={"Connection": "keep-alive"},
             )

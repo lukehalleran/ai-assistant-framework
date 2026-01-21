@@ -397,9 +397,9 @@ def test_get_tone_instructions_conversational():
     instructions = orch._get_tone_instructions(CrisisLevel.CONVERSATIONAL)
 
     assert "CONVERSATIONAL" in instructions
-    assert "casual conversation" in instructions
-    assert "1-3 sentences" in instructions
-    assert "No therapeutic language" in instructions
+    assert "Natural Friend Voice" in instructions
+    assert "2-5 sentences" in instructions
+    assert "Core Principles" in instructions
 
 
 def test_get_tone_instructions_all_levels_formatted():

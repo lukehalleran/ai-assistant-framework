@@ -53,8 +53,8 @@ async def handle_submit(
     include_summaries=True,
     personality=None
 ):
-    logger.debug(f"[Handle Submit] ENTRY - raw_mode={use_raw_gpt}")
-    logger.debug(f"[Handle Submit] Received user_text: {user_text}")
+    logger.info(f"[Handle Submit] ENTRY - raw_mode={use_raw_gpt}")
+    logger.info(f"[Handle Submit] Query: {user_text[:100]}...")
 
     # Update activity timestamp for idle monitor
     try:
@@ -130,7 +130,7 @@ async def handle_submit(
 
     # ENHANCED MODE: build prompt first via orchestrator.prepare_prompt (do NOT pass personality here)
     # Request raw context if agentic search is enabled (for passing RAG context to agentic controller)
-    logger.debug("[Handle Submit] About to call prepare_prompt")
+    logger.info("[Handle Submit] >>> Starting prepare_prompt...")
     prep_result = await orchestrator.prepare_prompt(
         user_input=user_text,
         files=files,
@@ -145,7 +145,7 @@ async def handle_submit(
         full_prompt, system_prompt = prep_result
         raw_context = {}
 
-    logger.debug(f"[Handle Submit] prepare_prompt done, prompt length={len(full_prompt)}")
+    logger.info(f"[Handle Submit] <<< prepare_prompt done, prompt_len={len(full_prompt)}")
 
     logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
     logger.debug(f"[Handle Submit] Agentic pre-check: enabled={agentic_enabled}")
@@ -698,14 +698,18 @@ async def handle_submit(
                 debug_emitted = True
         else:
             # Default streaming path with thinking block visibility
+            logger.info(f"[Handle Submit] >>> Starting streaming with model={model_name}")
             thinking_started = False
             thinking_complete = False
+            chunk_count = 0
             async for chunk in orchestrator.response_generator.generate_streaming_response(
                 prompt=full_prompt,
                 model_name=model_name,
                 system_prompt=system_prompt
             ):
-                logger.warning(f"[GUI HANDLER DEBUG] Received chunk: {chunk!r}")
+                chunk_count += 1
+                if chunk_count <= 3 or chunk_count % 20 == 0:
+                    logger.info(f"[Handle Submit] Chunk #{chunk_count}: {str(chunk)[:50]}...")
                 final_output = smart_join(final_output, chunk)
                 # Parse in real-time to separate thinking from answer
                 thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
@@ -744,6 +748,7 @@ async def handle_submit(
                     yield {"role": "assistant", "content": display_output}
 
             # After streaming completes, parse thinking block for logging and storage
+            logger.info(f"[Handle Submit] <<< Streaming done, {chunk_count} chunks, output_len={len(final_output)}")
             thinking_part_stream, final_answer_stream = orchestrator._parse_thinking_block(final_output)
             if thinking_part_stream:
                 logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK FROM STREAM]\n{thinking_part_stream}")
