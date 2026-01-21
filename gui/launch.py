@@ -116,6 +116,38 @@ DARK_CHATBOT_CSS = """
 [class*="markdown"] hr {
     border-color: #4b5563 !important;
 }
+
+/* Dropdown/Select styling - fix white-on-white text */
+select,
+.dropdown,
+[data-testid="dropdown"],
+.svelte-select,
+input[type="text"],
+.wrap input {
+    color: #f3f4f6 !important;
+    background-color: #374151 !important;
+}
+/* Dropdown options/menu */
+.dropdown-menu,
+.svelte-select-list,
+[role="listbox"],
+[role="option"],
+.options {
+    color: #f3f4f6 !important;
+    background-color: #374151 !important;
+}
+/* Dropdown option hover */
+[role="option"]:hover,
+.dropdown-menu li:hover {
+    background-color: #4b5563 !important;
+    color: #ffffff !important;
+}
+/* Selected dropdown value display */
+.selected-item,
+.single-value,
+.wrap-inner span {
+    color: #f3f4f6 !important;
+}
 """
 
 def get_dark_theme():
@@ -671,10 +703,14 @@ def launch_gui(orchestrator, force_wizard=False):
 
         # Prime the first fetch task
         next_task = _a.create_task(agen.__anext__())
+        loop_iter = 0
         while True:
+            loop_iter += 1
             # Wait either for next chunk or a tick interval
             tick = _a.create_task(_a.sleep(0.25))
             done, pending = await _a.wait({next_task, tick}, return_when=_a.FIRST_COMPLETED)
+            if loop_iter <= 5 or loop_iter % 20 == 0:
+                logging.info(f"[GUI Loop] iter={loop_iter}, done={len(done)}, pending={len(pending)}")
 
             # Always handle next_task first if it's done
             if next_task in done:
@@ -729,7 +765,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=False), "", "", ""
                 elif isinstance(chunk, dict) and "content" in chunk:
                     assistant_reply = chunk["content"]
-                    logging.warning(f"[GUI LAUNCH DEBUG] Processing chunk content: '{assistant_reply[:100] if assistant_reply else 'EMPTY'}'")
+                    logging.debug(f"[GUI LAUNCH] Processing chunk: '{assistant_reply[:100] if assistant_reply else 'EMPTY'}'")
                     # Update the last assistant message's content
                     if assistant_reply:  # Only update if there's actual content
                         if chat_history and isinstance(chat_history[-1], dict):

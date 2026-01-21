@@ -84,16 +84,18 @@ class ResponseGenerator:
                 gen_kwargs["max_tokens"] = max_tokens
 
             # Always include the system message; "raw" only controls upstream prompt building
+            self.logger.info(f"[STREAMING] >>> Calling generate_async...")
             response_generator = await self.model_manager.generate_async(
                 prompt,
                 **gen_kwargs
             )
+            self.logger.info(f"[STREAMING] <<< generate_async returned, type={type(response_generator).__name__}")
 
             # Streaming path
             if hasattr(response_generator, "__aiter__"):
                 buffer = ""
                 STOP_MARKERS = {"<|user|>", "<|assistant|>", "<|system|>", "<|end|>", "<|eot_id|>", "<｜end▁of▁sentence｜>"}
-                STREAM_TIMEOUT = 60.0  # 1 minute timeout for streaming
+                STREAM_TIMEOUT = 120.0  # 2 minute timeout for streaming (GLM/slower models)
 
                 def _contains_stop(s: str) -> bool:
                     if not s:
@@ -111,6 +113,8 @@ class ResponseGenerator:
 
                 # Wrap streaming with timeout protection
                 stream_start = time.time()
+                empty_chunk_count = 0
+                MAX_EMPTY_CHUNKS = 50  # After this many empty chunks, check if stream is stalled
 
                 try:
                     # Convert async iterator to support timeout on each chunk
@@ -128,6 +132,11 @@ class ResponseGenerator:
                             return
 
                         try:
+                            # Check for finish_reason in OpenAI-style chunks (stream end signal)
+                            finish_reason = None
+                            if hasattr(chunk, "choices") and len(getattr(chunk, "choices", [])) > 0:
+                                finish_reason = getattr(chunk.choices[0], "finish_reason", None)
+
                             # Extract content from different possible streaming chunk shapes
                             delta_content = ""
                             # OpenAI-style ChatCompletionChunk
@@ -140,9 +149,11 @@ class ResponseGenerator:
                             # Dict-like chunk with direct content
                             elif isinstance(chunk, dict):
                                 delta_content = (chunk.get("content") or chunk.get("text") or "")
+                                finish_reason = chunk.get("finish_reason")
 
                             if delta_content:
-                                self.logger.warning(f"[STREAMING DEBUG] Yielding chunk: '{delta_content[:50]}...' (len={len(delta_content)})")
+                                self.logger.debug(f"[STREAMING] Chunk: '{delta_content[:50]}...' (len={len(delta_content)})")
+                                empty_chunk_count = 0  # Reset empty counter
                                 now = time.time()
                                 if first_token_time is None:
                                     first_token_time = now
@@ -151,10 +162,22 @@ class ResponseGenerator:
                                         now - start_time
                                     )
                             else:
-                                self.logger.warning(f"[STREAMING DEBUG] Skipping empty chunk")
+                                empty_chunk_count += 1
+                                if empty_chunk_count % 10 == 0:
+                                    self.logger.debug(f"[STREAMING] {empty_chunk_count} consecutive empty chunks")
 
                             # Add content to buffer (this should happen for ALL non-empty delta_content)
                             buffer += delta_content
+
+                            # Check if stream signaled completion
+                            if finish_reason in ("stop", "end_turn", "length", "content_filter"):
+                                self.logger.debug(f"[STREAMING] Stream ended with finish_reason={finish_reason}")
+                                # Flush remaining buffer
+                                if buffer.strip():
+                                    clean = _strip_special_tokens(buffer)
+                                    if clean.strip():
+                                        yield clean.strip()
+                                return
 
                             # If we hit a stop marker, flush clean content and end streaming
                             if _contains_stop(buffer):
@@ -174,6 +197,16 @@ class ResponseGenerator:
                                         if w:
                                             yield w
                                 buffer = words[-1] if words[-1] else ""
+
+                            # Safety: if we've had many empty chunks in a row, yield buffer content
+                            # to prevent UI from appearing frozen
+                            if empty_chunk_count >= MAX_EMPTY_CHUNKS and buffer.strip():
+                                self.logger.warning(f"[STREAMING] {empty_chunk_count} empty chunks, flushing buffer")
+                                clean = _strip_special_tokens(buffer)
+                                if clean.strip():
+                                    yield clean.strip()
+                                buffer = ""
+                                empty_chunk_count = 0
 
                         except Exception as e:
                             self.logger.error(f"[STREAMING] Error processing chunk: {e}")
