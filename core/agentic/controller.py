@@ -157,6 +157,10 @@ class AgenticSearchController:
             # === ROUND 1: Automatic search with trigger terms ===
             session.state = AgentState.SEARCHING
 
+            # Fallback to query if no search terms provided
+            if not initial_search_terms:
+                initial_search_terms = [query]
+
             yield ProgressEvent(
                 event_type="searching",
                 message=f"Searching for: {initial_search_terms[0]}",

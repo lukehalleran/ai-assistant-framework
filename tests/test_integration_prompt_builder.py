@@ -8,6 +8,7 @@ from datetime import datetime
 from core.prompt import UnifiedPromptBuilder
 from memory.memory_coordinator import MemoryCoordinator
 from models.model_manager import ModelManager
+from models.tokenizer_manager import TokenizerManager
 
 
 @pytest.fixture
@@ -29,6 +30,12 @@ def model_manager():
 
 
 @pytest.fixture
+def tokenizer_manager(model_manager):
+    """Fixture to provide TokenizerManager."""
+    return TokenizerManager(model_manager=model_manager)
+
+
+@pytest.fixture
 def memory_coordinator(temp_dirs):
     """Fixture to provide MemoryCoordinator with temp storage."""
     from memory.corpus_manager import CorpusManager
@@ -44,11 +51,12 @@ def memory_coordinator(temp_dirs):
 
 
 @pytest.fixture
-def prompt_builder(model_manager, memory_coordinator):
+def prompt_builder(model_manager, memory_coordinator, tokenizer_manager):
     """Fixture to provide UnifiedPromptBuilder."""
     return UnifiedPromptBuilder(
         model_manager=model_manager,
-        memory_coordinator=memory_coordinator
+        memory_coordinator=memory_coordinator,
+        tokenizer_manager=tokenizer_manager
     )
 
 
@@ -61,8 +69,8 @@ async def test_build_prompt_basic(prompt_builder):
 
     # Should return a context dict with expected keys
     assert isinstance(result, dict)
-    # Check for standard keys that should be present
-    assert "current_topic" in result or "facts" in result or "recent" in result
+    # Check for standard keys in the new context structure
+    assert "memories" in result or "recent_conversations" in result or "web_search_results" in result
 
 
 @pytest.mark.asyncio
@@ -82,7 +90,7 @@ async def test_build_prompt_with_memories(prompt_builder, memory_coordinator):
 
     assert isinstance(result, dict)
     # Should have structure even if empty
-    assert "current_topic" in result or "facts" in result or "recent" in result
+    assert "memories" in result or "recent_conversations" in result or "web_search_results" in result
 
 
 @pytest.mark.asyncio
@@ -94,7 +102,7 @@ async def test_build_prompt_with_search_query(prompt_builder):
     )
 
     assert isinstance(result, dict)
-    assert "current_topic" in result or "facts" in result or "recent" in result
+    assert "memories" in result or "recent_conversations" in result or "web_search_results" in result
 
 
 @pytest.mark.asyncio
@@ -159,7 +167,7 @@ async def test_prompt_builder_memory_integration(prompt_builder, memory_coordina
     # Verify structure
     assert isinstance(result, dict)
     # Should have standard keys
-    assert "current_topic" in result or "facts" in result or "recent" in result
+    assert "memories" in result or "recent_conversations" in result or "web_search_results" in result
 
 
 @pytest.mark.asyncio

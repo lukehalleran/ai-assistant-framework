@@ -197,17 +197,11 @@ class DailyNotesGenerator:
         return f"Week {week_num} {monday.strftime('%b %Y')}"
 
     def _get_note_path(self, target_date: date) -> Path:
-        """Get note path - checks weekly folder first, then flat directory."""
+        """Get note path - always uses weekly folder for organization."""
         filename = self._format_filename(target_date)
-
-        # Check if weekly folder exists and note should go there
         week_folder = self.output_dir / self._get_week_folder_name(target_date)
-        if week_folder.exists():
-            return week_folder / filename
-
-        # Check flat directory
-        flat_path = self.output_dir / filename
-        return flat_path
+        # Always use weekly folder - it gets created in _write_note if needed
+        return week_folder / filename
 
     def note_exists(self, target_date: date) -> bool:
         """Check if note already exists for date (in flat dir or weekly folder)."""
