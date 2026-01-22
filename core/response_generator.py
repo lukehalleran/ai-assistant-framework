@@ -177,6 +177,11 @@ class ResponseGenerator:
                                     clean = _strip_special_tokens(buffer)
                                     if clean.strip():
                                         yield clean.strip()
+                                        return
+                                # If buffer is empty/whitespace-only, the API returned no content
+                                if first_token_time is None or not buffer.strip():
+                                    self.logger.warning(f"[STREAMING] API returned empty response (finish_reason={finish_reason}, empty_chunks={empty_chunk_count})")
+                                    yield "[Error: Model returned empty response. Try a different model or retry the request.]"
                                 return
 
                             # If we hit a stop marker, flush clean content and end streaming

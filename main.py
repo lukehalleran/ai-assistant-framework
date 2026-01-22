@@ -745,12 +745,15 @@ if __name__ == "__main__":
             # Generate yesterday's note if missing (for startup hooks)
             import asyncio
             from utils.daily_notes_generator import DailyNotesGenerator
+            from models.model_manager import ModelManager
 
             print(f"\n{'='*60}")
             print("DAILY NOTE CATCH-UP")
             print(f"{'='*60}")
 
-            generator = DailyNotesGenerator()
+            # Create ModelManager with API key to ensure LLM is available
+            model_manager = ModelManager()
+            generator = DailyNotesGenerator(model_manager=model_manager)
             result = asyncio.run(generator.generate_yesterday_if_missing())
 
             if result is None:

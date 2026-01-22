@@ -114,13 +114,15 @@ class NativeToolsHandler(BaseProtocolHandler):
     """
     Handler for native tool/function calling (OpenAI, Anthropic).
 
-    Parses tool_calls from LLM response to detect search requests.
+    Parses tool_calls from LLM response to detect search and Wolfram requests.
     """
 
-    def __init__(self):
-        from core.agentic.types import SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION
+    def __init__(self, wolfram_available: bool = False):
+        from core.agentic.types import SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
+        self.wolfram_tool = WOLFRAM_TOOL_DEFINITION
+        self.wolfram_available = wolfram_available
 
     def parse_response(self, response: Any) -> SearchDecision:
         """
@@ -196,6 +198,20 @@ class NativeToolsHandler(BaseProtocolHandler):
                 done_reason=reason
             )
 
+        elif func_name == "wolfram_alpha":
+            query = args.get("query", "")
+            reason = args.get("reason")
+            if query:
+                logger.debug(f"[AgenticProtocol] Native tool Wolfram request: {query}")
+                return SearchDecision(
+                    wants_wolfram=True,
+                    wolfram_query=query,
+                    wolfram_reason=reason
+                )
+            else:
+                logger.warning("[AgenticProtocol] wolfram_alpha called without query")
+                return SearchDecision(wants_answer=True)
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return SearchDecision(wants_answer=True)
@@ -212,7 +228,10 @@ class NativeToolsHandler(BaseProtocolHandler):
 
     def get_tools(self) -> List[Dict]:
         """Return tool definitions for API calls."""
-        return [self.search_tool, self.done_tool]
+        tools = [self.search_tool, self.done_tool]
+        if self.wolfram_available:
+            tools.append(self.wolfram_tool)
+        return tools
 
     def augment_system_prompt(self, system_prompt: str, max_rounds: int) -> str:
         """
@@ -220,12 +239,21 @@ class NativeToolsHandler(BaseProtocolHandler):
 
         The tools themselves describe their purpose.
         """
-        addition = (
-            "\n\n[AGENTIC SEARCH MODE]\n"
-            "You have access to web_search and done_searching tools. "
-            f"Use web_search to find current information (up to {max_rounds} times). "
-            "Use done_searching when you have enough information to answer."
-        )
+        if self.wolfram_available:
+            addition = (
+                "\n\n[AGENTIC TOOLS MODE]\n"
+                "You have access to web_search, wolfram_alpha, and done_searching tools. "
+                f"Use web_search for current info, wolfram_alpha for math/science computations "
+                f"(up to {max_rounds} tool uses total). "
+                "Use done_searching when you have enough information to answer."
+            )
+        else:
+            addition = (
+                "\n\n[AGENTIC SEARCH MODE]\n"
+                "You have access to web_search and done_searching tools. "
+                f"Use web_search to find current information (up to {max_rounds} times). "
+                "Use done_searching when you have enough information to answer."
+            )
         return system_prompt + addition
 
 
@@ -233,11 +261,12 @@ class XMLMarkerHandler(BaseProtocolHandler):
     """
     Handler for XML marker-based search requests (local models).
 
-    Parses <search>query</search> and <done/> markers from text.
+    Parses <search>query</search>, <wolfram>query</wolfram>, and <done/> markers from text.
     """
 
     # Regex patterns for marker detection
     SEARCH_PATTERN = re.compile(r'<search>(.*?)</search>', re.DOTALL | re.IGNORECASE)
+    WOLFRAM_PATTERN = re.compile(r'<wolfram>(.*?)</wolfram>', re.DOTALL | re.IGNORECASE)
     DONE_PATTERN = re.compile(r'<done\s*/?>', re.IGNORECASE)
 
     def parse_response(self, response: Any) -> SearchDecision:
@@ -254,6 +283,17 @@ class XMLMarkerHandler(BaseProtocolHandler):
         text = self._to_text(response)
         if not text:
             return SearchDecision(wants_answer=True)
+
+        # Check for Wolfram marker first (more specific tool)
+        wolfram_match = self.WOLFRAM_PATTERN.search(text)
+        if wolfram_match:
+            query = wolfram_match.group(1).strip()
+            if query:
+                logger.debug(f"[AgenticProtocol] XML wolfram marker found: {query}")
+                return SearchDecision(
+                    wants_wolfram=True,
+                    wolfram_query=query
+                )
 
         # Check for search marker
         search_match = self.SEARCH_PATTERN.search(text)
@@ -301,17 +341,21 @@ class XMLMarkerHandler(BaseProtocolHandler):
         return system_prompt + "\n\n" + injection
 
 
-def get_protocol_handler(protocol: SearchProtocol) -> BaseProtocolHandler:
+def get_protocol_handler(
+    protocol: SearchProtocol,
+    wolfram_available: bool = False
+) -> BaseProtocolHandler:
     """
     Factory function to get appropriate protocol handler.
 
     Args:
         protocol: The protocol to use
+        wolfram_available: Whether Wolfram Alpha is configured
 
     Returns:
         Protocol handler instance
     """
     if protocol == SearchProtocol.NATIVE_TOOLS:
-        return NativeToolsHandler()
+        return NativeToolsHandler(wolfram_available=wolfram_available)
     else:
         return XMLMarkerHandler()

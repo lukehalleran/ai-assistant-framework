@@ -869,7 +869,15 @@ agentic_search:
   prefer_native_tools: true
 ```
 
-**Dependencies**: WebSearchManager, ModelManager, TokenizerManager
+**Wolfram Alpha Integration** [NEW 2026-01-22]:
+- `wolfram_manager` parameter added to `AgenticSearchController.__init__()`
+- `WOLFRAM_TOOL_DEFINITION` in types.py - tool schema for native protocol
+- `<wolfram>query</wolfram>` XML marker for local models
+- `SearchDecision` extended with `wants_wolfram`, `wolfram_query`, `wolfram_reason`
+- `_execute_wolfram()` method with fallback to web search on failure
+- Progress events: `computing` → `computed` (parallel to `searching` → `found_results`)
+
+**Dependencies**: WebSearchManager, WolframManager (optional), ModelManager, TokenizerManager
 
 ---
 
@@ -1262,6 +1270,67 @@ WEB_SEARCH_CACHE_TTL_HOURS = 72
 ```
 
 **Integration**: Called by ContextGatherer during parallel context retrieval
+
+---
+
+### 2.12.1a knowledge/wolfram_manager.py (Wolfram Alpha Computation) **[NEW 2026-01-22]**
+**Purpose**: Wolfram Alpha LLM API integration for computational queries - math, science, unit conversions
+
+**Module Contract**:
+```
+Purpose: Handle mathematical computations, scientific data, unit conversions via Wolfram Alpha LLM API
+Inputs:
+  - query(input_text: str) -> WolframResult: Execute computational query
+  - is_available() -> bool: Check if Wolfram Alpha is configured
+  - format_for_prompt(result: WolframResult) -> str: Format result for LLM context
+Outputs:
+  - WolframResult with success status, result text, assumptions, execution time
+Side effects:
+  - HTTP requests to Wolfram Alpha API
+  - In-memory caching of results
+  - Rate limiting tracking
+Dependencies: config.app_config (WOLFRAM_* constants), httpx
+```
+
+**Data Classes**:
+- `WolframResult`: Query result container (query, success, result, assumptions, error, execution_time, cached)
+- `WolframRateLimiter`: Token bucket rate limiter for API calls
+
+**Key Methods**:
+- `query(input_text)` → `WolframResult`: Execute Wolfram Alpha query
+- `is_available()` → `bool`: Check if API key configured
+- `format_for_prompt(result)` → `str`: Format for LLM context injection
+- `get_rate_limit_status()` → `Dict`: Current rate limit state
+- `clear_cache()` → `int`: Clear cache, return count
+
+**Caching**:
+- In-memory cache with configurable TTL (default 1 hour)
+- Cache key: MD5 hash of normalized query (lowercase, stripped)
+- Automatic expiry and cleanup
+
+**Rate Limiting**:
+- Token bucket algorithm, configurable per-minute limit (default 60)
+- Async-safe with lock
+- Returns `False` from `acquire()` when exhausted
+
+**Configuration** (`config/app_config.py`):
+```python
+WOLFRAM_ENABLED = True
+WOLFRAM_APP_ID = os.getenv("WOLFRAM_APP_ID", "")
+WOLFRAM_API_URL = "https://www.wolframalpha.com/api/v1/llm-api"
+WOLFRAM_TIMEOUT = 30.0
+WOLFRAM_MAX_OUTPUT_CHARS = 10000
+WOLFRAM_CACHE_TTL_SECONDS = 3600
+WOLFRAM_RATE_LIMIT_PER_MINUTE = 60
+```
+
+**Error Handling**:
+- 403 → "Invalid Wolfram Alpha API key"
+- 501 → "Wolfram Alpha could not process this query"
+- Timeout → "Request timed out after Xs"
+- Connection error → Graceful degradation with error in result
+
+**Integration**: Called by AgenticSearchController._execute_wolfram() during ReAct loop
 
 ---
 
@@ -2894,6 +2963,7 @@ python main.py inspect-summaries
 | memory_consolidator.py | Summarize: LLM compresses N conversations at shutdown |
 | fact_extractor.py | Parse: regex + optional LLM for entity/fact extraction |
 | WikiManager.py | Search: FAISS over Wikipedia dump for context injection |
+| wolfram_manager.py | Compute: Wolfram Alpha LLM API for math/science queries [NEW 2026-01-22] |
 | tone_detector.py | Detect: 4-level crisis (harm scoring + semantic + LLM fallback) |
 | need_detector.py | Detect: need-type (PRESENCE vs PERSPECTIVE, keyword + semantic hybrid) |
 | emotional_context.py | Combine: tone + need type for unified emotional analysis |

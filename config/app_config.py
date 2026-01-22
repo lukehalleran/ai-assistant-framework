@@ -298,6 +298,30 @@ WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", str(WEB_SEARCH_TIMEOU
 WEB_SEARCH_DAILY_CREDIT_LIMIT = int(os.getenv("WEB_SEARCH_DAILY_CREDIT_LIMIT", str(WEB_SEARCH_DAILY_CREDIT_LIMIT)))
 
 # --------------------------------------------------------------------
+# Wolfram Alpha Configuration
+# --------------------------------------------------------------------
+# Enable Wolfram Alpha for computational queries (math, science, data)
+# Uses Wolfram Alpha LLM API for natural language computation
+WOLFRAM_CFG = config.get("wolfram", {})
+WOLFRAM_ENABLED: bool = bool(WOLFRAM_CFG.get("enabled", True))
+# Wolfram Alpha App ID (can also be set via WOLFRAM_APP_ID env var)
+WOLFRAM_APP_ID: str = WOLFRAM_CFG.get("app_id", "") or os.getenv("WOLFRAM_APP_ID", "")
+# API endpoint
+WOLFRAM_API_URL: str = WOLFRAM_CFG.get("api_url", "https://www.wolframalpha.com/api/v1/llm-api")
+# Request timeout in seconds
+WOLFRAM_TIMEOUT: float = float(WOLFRAM_CFG.get("timeout_s", 30.0))
+# Maximum output characters from API
+WOLFRAM_MAX_OUTPUT_CHARS: int = int(WOLFRAM_CFG.get("max_output_chars", 10000))
+# Cache TTL in seconds (1 hour default - computational results don't change)
+WOLFRAM_CACHE_TTL_SECONDS: int = int(WOLFRAM_CFG.get("cache_ttl_seconds", 3600))
+# Rate limit per minute
+WOLFRAM_RATE_LIMIT_PER_MINUTE: int = int(WOLFRAM_CFG.get("rate_limit_per_minute", 60))
+
+# Environment variable overrides for Wolfram Alpha
+WOLFRAM_ENABLED = bool(int(os.getenv("WOLFRAM_ENABLED", "1" if WOLFRAM_ENABLED else "0")))
+WOLFRAM_TIMEOUT = float(os.getenv("WOLFRAM_TIMEOUT", str(WOLFRAM_TIMEOUT)))
+
+# --------------------------------------------------------------------
 # Obsidian Vault Configuration
 # --------------------------------------------------------------------
 # Enable personal notes integration from Obsidian vault

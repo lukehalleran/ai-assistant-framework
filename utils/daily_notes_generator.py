@@ -466,17 +466,69 @@ generated: {datetime.now().isoformat()}
             active_hours=active_hours,
         )
 
-        # Call LLM
-        try:
-            logger.info(f"[DailyNotes] Generating note for {target_date} ({len(convos)} conversations)")
-            llm_response = await self.model_manager.generate_once(
-                prompt,
-                max_tokens=self.max_tokens,
-                model_name=self.model_name,
-            )
-        except Exception as e:
-            result.error = str(e)
-            logger.error(f"[DailyNotes] LLM call failed: {e}")
+        # Call LLM with fallback models
+        # Try primary model first, then fallback to alternatives if it fails
+        # Expanded list includes Claude, Gemini, and newer GPT models for better reliability
+        fallback_models = [
+            "gpt-4o-mini",       # Fast, cheap OpenAI
+            "deepseek-v3.1",    # DeepSeek
+            "gpt-4o",           # Standard OpenAI
+            "sonnet-4.5",       # Anthropic Claude (fast)
+            "claude-opus-4.5",  # Anthropic Claude (best)
+            "gemini-3-pro",     # Google Gemini
+            "gpt-5",            # Newer OpenAI
+            "deepseek-r1",      # DeepSeek reasoning
+            "glm-4.6",          # GLM
+        ]
+        models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
+
+        llm_response = None
+        last_error = None
+
+        for model in models_to_try:
+            try:
+                logger.info(f"[DailyNotes] Generating note for {target_date} ({len(convos)} conversations) using {model}")
+                llm_response = await self.model_manager.generate_once(
+                    prompt,
+                    max_tokens=self.max_tokens,
+                    model_name=model,
+                )
+
+                # Check for API error responses (model_manager returns these as content, not exceptions)
+                if llm_response and llm_response.startswith("[OpenAI unavailable]"):
+                    logger.warning(f"[DailyNotes] Model {model} unavailable, trying next...")
+                    last_error = f"Model {model} unavailable"
+                    llm_response = None
+                    continue
+
+                # Check for empty response (like glm-4.6 returning nothing)
+                if llm_response and llm_response.startswith("[Error:"):
+                    logger.warning(f"[DailyNotes] Model {model} returned error, trying next...")
+                    last_error = f"Model {model} returned error"
+                    llm_response = None
+                    continue
+
+                # Validate we got a reasonable response (not empty or just the prompt echoed back)
+                if not llm_response or len(llm_response.strip()) < 100:
+                    logger.warning(f"[DailyNotes] Model {model} returned too-short response ({len(llm_response) if llm_response else 0} chars), trying next...")
+                    last_error = f"Model {model} returned too-short response"
+                    llm_response = None
+                    continue
+
+                # Success! Break out of the loop
+                logger.info(f"[DailyNotes] Successfully generated note using {model}")
+                break
+
+            except Exception as e:
+                logger.warning(f"[DailyNotes] Model {model} failed: {e}, trying next...")
+                last_error = str(e)
+                llm_response = None
+                continue
+
+        # If all models failed, return error
+        if not llm_response:
+            result.error = f"All LLM models failed. Last error: {last_error}"
+            logger.error(f"[DailyNotes] All models failed for {target_date}: {last_error}")
             return result
 
         # Extract main quest for frontmatter

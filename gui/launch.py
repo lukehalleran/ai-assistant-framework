@@ -214,11 +214,14 @@ def _find_free_port(preferred: int = 7860) -> int:
         s.bind(("", 0))
         return s.getsockname()[1]
 
-def _run_daily_notes_catchup():
+def _run_daily_notes_catchup(model_manager=None):
     """
     Run daily notes catch-up in background thread.
     Generates yesterday's note if missing, plus today's if there are conversations.
     Non-blocking - errors are logged but don't affect GUI startup.
+
+    Args:
+        model_manager: Optional ModelManager instance to use (avoids API key issues)
     """
     import threading
     import asyncio
@@ -232,7 +235,8 @@ def _run_daily_notes_catchup():
             from utils.daily_notes_generator import DailyNotesGenerator
             from datetime import date, timedelta
 
-            generator = DailyNotesGenerator()
+            # Use provided model_manager to ensure API key is available
+            generator = DailyNotesGenerator(model_manager=model_manager)
 
             # Create new event loop for this thread
             loop = asyncio.new_event_loop()
@@ -245,6 +249,8 @@ def _run_daily_notes_catchup():
                     print(f"[DailyNotes] Catch-up: Generated yesterday's note ({result.conversation_count} conversations)")
                 elif result and result.skipped_reason:
                     print(f"[DailyNotes] Catch-up: Skipped yesterday ({result.skipped_reason})")
+                elif result and result.error:
+                    print(f"[DailyNotes] Catch-up FAILED: {result.error}")
             finally:
                 loop.close()
 
@@ -256,6 +262,54 @@ def _run_daily_notes_catchup():
     thread = threading.Thread(target=_catchup_task, daemon=True)
     thread.start()
     print("[DailyNotes] Started background catch-up check...")
+
+
+def _run_weekly_notes_catchup(model_manager=None):
+    """
+    Run weekly notes catch-up in background thread.
+    Generates last week's summary if the week is complete (today is Monday+).
+    Non-blocking - errors are logged but don't affect GUI startup.
+
+    Args:
+        model_manager: Optional ModelManager instance to use (avoids API key issues)
+    """
+    import threading
+    import asyncio
+
+    def _catchup_task():
+        try:
+            from config.app_config import WEEKLY_NOTES_ENABLED
+            if not WEEKLY_NOTES_ENABLED:
+                return
+
+            from utils.weekly_notes_generator import WeeklyNotesGenerator
+
+            # Use provided model_manager to ensure API key is available
+            generator = WeeklyNotesGenerator(model_manager=model_manager)
+
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                # Generate last week's summary if complete
+                result = loop.run_until_complete(generator.generate_last_week_if_complete())
+                if result and result.success:
+                    print(f"[WeeklyNotes] Catch-up: Generated Week {result.week_num} summary ({result.daily_notes_found} daily notes)")
+                elif result and result.skipped_reason:
+                    print(f"[WeeklyNotes] Catch-up: Skipped ({result.skipped_reason})")
+            finally:
+                loop.close()
+
+        except Exception as e:
+            # Non-critical: log and continue
+            print(f"[WeeklyNotes] Catch-up failed (non-critical): {e}")
+
+    # Run in background thread so it doesn't block GUI startup
+    thread = threading.Thread(target=_catchup_task, daemon=True)
+    thread.start()
+    print("[WeeklyNotes] Started background catch-up check...")
+
 
 def _launch_wizard_ui(orchestrator, share, server_name, port):
     """
@@ -459,7 +513,12 @@ def launch_gui(orchestrator, force_wizard=False):
         print("[DEBUG] Launching normal chat UI...")
 
     # ------- Daily notes catch-up (run in background) -------
-    _run_daily_notes_catchup()
+    # Pass model_manager to ensure API key is available in background thread
+    _run_daily_notes_catchup(model_manager=orchestrator.model_manager)
+
+    # ------- Weekly notes catch-up (run in background) -------
+    # Generates last week's summary if week is complete (today is Monday+)
+    _run_weekly_notes_catchup(model_manager=orchestrator.model_manager)
 
     # ------- Normal chat UI (non-first-run) -------
     def get_summary_status():

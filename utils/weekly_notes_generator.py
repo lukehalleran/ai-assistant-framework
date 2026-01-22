@@ -491,17 +491,67 @@ generated: {datetime.now().isoformat()}
             end_date=sunday.strftime('%B %d, %Y'),
         )
 
-        # Call LLM
-        try:
-            logger.info(f"[WeeklyNotes] Generating summary for Week {week_num} ({stats['active_days']} days)")
-            llm_response = await self.model_manager.generate_once(
-                prompt,
-                max_tokens=self.max_tokens,
-                model_name=self.model_name,
-            )
-        except Exception as e:
-            result.error = str(e)
-            logger.error(f"[WeeklyNotes] LLM call failed: {e}")
+        # Call LLM with fallback models
+        # Expanded list includes Claude, Gemini, and newer GPT models for better reliability
+        fallback_models = [
+            "gpt-4o-mini",       # Fast, cheap OpenAI
+            "deepseek-v3.1",    # DeepSeek
+            "gpt-4o",           # Standard OpenAI
+            "sonnet-4.5",       # Anthropic Claude (fast)
+            "claude-opus-4.5",  # Anthropic Claude (best)
+            "gemini-3-pro",     # Google Gemini
+            "gpt-5",            # Newer OpenAI
+            "deepseek-r1",      # DeepSeek reasoning
+            "glm-4.6",          # GLM
+        ]
+        models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
+
+        llm_response = None
+        last_error = None
+
+        for model in models_to_try:
+            try:
+                logger.info(f"[WeeklyNotes] Generating summary for Week {week_num} ({stats['active_days']} days) using {model}")
+                llm_response = await self.model_manager.generate_once(
+                    prompt,
+                    max_tokens=self.max_tokens,
+                    model_name=model,
+                )
+
+                # Check for API error responses
+                if llm_response and llm_response.startswith("[OpenAI unavailable]"):
+                    logger.warning(f"[WeeklyNotes] Model {model} unavailable, trying next...")
+                    last_error = f"Model {model} unavailable"
+                    llm_response = None
+                    continue
+
+                # Check for empty response
+                if llm_response and llm_response.startswith("[Error:"):
+                    logger.warning(f"[WeeklyNotes] Model {model} returned error, trying next...")
+                    last_error = f"Model {model} returned error"
+                    llm_response = None
+                    continue
+
+                # Validate response length
+                if not llm_response or len(llm_response.strip()) < 200:
+                    logger.warning(f"[WeeklyNotes] Model {model} returned too-short response, trying next...")
+                    last_error = f"Model {model} returned too-short response"
+                    llm_response = None
+                    continue
+
+                # Success
+                logger.info(f"[WeeklyNotes] Successfully generated summary using {model}")
+                break
+
+            except Exception as e:
+                logger.warning(f"[WeeklyNotes] Model {model} failed: {e}, trying next...")
+                last_error = str(e)
+                llm_response = None
+                continue
+
+        if not llm_response:
+            result.error = f"All LLM models failed. Last error: {last_error}"
+            logger.error(f"[WeeklyNotes] All models failed for Week {week_num}: {last_error}")
             return result
 
         # Build full note

@@ -764,9 +764,23 @@ The user is processing/analyzing, open to engagement.
             if hasattr(self.prompt_builder, 'token_manager'):
                 token_manager = self.prompt_builder.token_manager
 
+            # Initialize Wolfram Alpha manager if configured
+            wolfram_manager = None
+            try:
+                from config.app_config import WOLFRAM_ENABLED, WOLFRAM_APP_ID
+                if WOLFRAM_ENABLED and WOLFRAM_APP_ID:
+                    from knowledge.wolfram_manager import WolframManager
+                    wolfram_manager = WolframManager()
+                    if self.logger:
+                        self.logger.info("[Orchestrator] Wolfram Alpha manager initialized")
+            except ImportError as e:
+                if self.logger:
+                    self.logger.debug(f"[Orchestrator] Wolfram Alpha not available: {e}")
+
             self._agentic_controller = AgenticSearchController(
                 model_manager=self.model_manager,
                 web_search_manager=web_search_manager,
+                wolfram_manager=wolfram_manager,
                 token_manager=token_manager,
                 max_rounds=self._agentic_config.get("max_rounds", 5),
                 context_budget_tokens=self._agentic_config.get("context_budget_tokens", 8000),
