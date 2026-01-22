@@ -43,6 +43,7 @@ from core.agentic.protocols import (
 if TYPE_CHECKING:
     from models.model_manager import ModelManager
     from knowledge.web_search_manager import WebSearchManager, WebSearchResult
+    from knowledge.wolfram_manager import WolframManager
     from core.prompt.token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ class AgenticSearchController:
         self,
         model_manager: "ModelManager",
         web_search_manager: "WebSearchManager",
+        wolfram_manager: Optional["WolframManager"] = None,
         token_manager: Optional["TokenManager"] = None,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         context_budget_tokens: int = DEFAULT_CONTEXT_BUDGET_TOKENS,
@@ -81,6 +83,7 @@ class AgenticSearchController:
         Args:
             model_manager: LLM manager for generation
             web_search_manager: Web search manager for queries
+            wolfram_manager: Optional Wolfram Alpha manager for computations
             token_manager: Optional token counter for budget enforcement
             max_rounds: Maximum search rounds allowed (default 5)
             context_budget_tokens: Token budget for accumulated context
@@ -88,6 +91,7 @@ class AgenticSearchController:
         """
         self.model_manager = model_manager
         self.web_search_manager = web_search_manager
+        self.wolfram_manager = wolfram_manager
         self.token_manager = token_manager
         self.max_rounds = max_rounds
         self.context_budget_tokens = context_budget_tokens
@@ -145,8 +149,9 @@ class AgenticSearchController:
             f"protocol={protocol.value}, max_rounds={self.max_rounds}"
         )
 
-        # Get protocol handler
-        handler = get_protocol_handler(protocol)
+        # Get protocol handler (pass wolfram availability for tool definitions)
+        wolfram_available = self.wolfram_manager is not None and self.wolfram_manager.is_available()
+        handler = get_protocol_handler(protocol, wolfram_available=wolfram_available)
 
         # Augment system prompt for agentic mode
         augmented_system_prompt = handler.augment_system_prompt(
@@ -273,6 +278,51 @@ class AgenticSearchController:
                         session.current_round - 1,  # Already incremented by rounds.append
                         decision.search_query,
                         compressed
+                    )
+
+                elif decision.wants_wolfram and decision.wolfram_query:
+                    # Model wants a Wolfram Alpha computation
+                    yield ProgressEvent(
+                        event_type="computing",
+                        message=f"Computing: {decision.wolfram_query}",
+                        round_number=session.current_round,
+                        metadata={"query": decision.wolfram_query, "reason": decision.wolfram_reason}
+                    )
+
+                    session.state = AgentState.SEARCHING  # Reuse SEARCHING state
+                    start_time = time.time()
+                    wolfram_result = await self._execute_wolfram(decision.wolfram_query)
+                    compute_duration = (time.time() - start_time) * 1000
+
+                    # Record round
+                    round_data = SearchRound(
+                        round_number=session.current_round,
+                        request=SearchRequest(
+                            query=decision.wolfram_query,
+                            reason=decision.wolfram_reason,
+                            round_number=session.current_round
+                        ),
+                        results=None,  # Wolfram results stored as summary
+                        duration_ms=compute_duration
+                    )
+
+                    yield ProgressEvent(
+                        event_type="computed",
+                        message="Computation complete",
+                        round_number=session.current_round,
+                        metadata={"duration_ms": compute_duration}
+                    )
+
+                    # Store result and accumulate
+                    session.state = AgentState.OBSERVING
+                    round_data.summary = wolfram_result
+                    session.rounds.append(round_data)
+
+                    # Add to accumulated context
+                    session.accumulated_context += "\n\n" + self._format_wolfram_context(
+                        session.current_round - 1,
+                        decision.wolfram_query,
+                        wolfram_result
                     )
 
                 elif decision.is_done:
@@ -628,18 +678,22 @@ What would you like to do?"""
                 parts.append(f"[USER PROFILE]\n{user_profile}")
 
             # Summaries (recent + semantic)
-            summaries = initial_context.get('summaries', {})
-            if summaries:
-                recent_summaries = summaries.get('recent', [])
-                semantic_summaries = summaries.get('semantic', [])
-                if recent_summaries:
-                    sum_text = self._format_summaries(recent_summaries)
-                    if sum_text:
-                        parts.append(f"[RECENT SUMMARIES]\n{sum_text}")
-                if semantic_summaries:
-                    sum_text = self._format_summaries(semantic_summaries)
-                    if sum_text:
-                        parts.append(f"[SEMANTIC SUMMARIES]\n{sum_text}")
+            # Builder provides: summaries (flat list), recent_summaries, semantic_summaries
+            recent_summaries = initial_context.get('recent_summaries', [])
+            semantic_summaries = initial_context.get('semantic_summaries', [])
+            # Fallback: if using old dict format
+            summaries = initial_context.get('summaries', [])
+            if isinstance(summaries, dict):
+                recent_summaries = recent_summaries or summaries.get('recent', [])
+                semantic_summaries = semantic_summaries or summaries.get('semantic', [])
+            if recent_summaries:
+                sum_text = self._format_summaries(recent_summaries)
+                if sum_text:
+                    parts.append(f"[RECENT SUMMARIES]\n{sum_text}")
+            if semantic_summaries:
+                sum_text = self._format_summaries(semantic_summaries)
+                if sum_text:
+                    parts.append(f"[SEMANTIC SUMMARIES]\n{sum_text}")
 
             # Personal notes from Obsidian
             personal_notes = initial_context.get('personal_notes', [])
@@ -656,13 +710,18 @@ What would you like to do?"""
                     parts.append(f"[RECENT DREAMS]\n{dreams_text}")
 
             # Reflections
-            reflections = initial_context.get('reflections', {})
-            if reflections:
-                recent_refs = reflections.get('recent', [])
-                if recent_refs:
-                    ref_text = self._format_reflections(recent_refs)
-                    if ref_text:
-                        parts.append(f"[RECENT REFLECTIONS]\n{ref_text}")
+            # Builder provides: reflections (flat list), recent_reflections, semantic_reflections
+            recent_reflections = initial_context.get('recent_reflections', [])
+            reflections = initial_context.get('reflections', [])
+            # Fallback: if using old dict format
+            if isinstance(reflections, dict):
+                recent_reflections = recent_reflections or reflections.get('recent', [])
+            elif isinstance(reflections, list) and not recent_reflections:
+                recent_reflections = reflections
+            if recent_reflections:
+                ref_text = self._format_reflections(recent_reflections)
+                if ref_text:
+                    parts.append(f"[RECENT REFLECTIONS]\n{ref_text}")
 
         # Add search results
         if session.accumulated_context:
@@ -768,3 +827,42 @@ What would you like to do?"""
     ) -> str:
         """Format a single search round for context."""
         return f"[Search Round {round_number}] Query: {query}\n{content}"
+
+    def _format_wolfram_context(
+        self,
+        round_number: int,
+        query: str,
+        content: str
+    ) -> str:
+        """Format a single Wolfram Alpha computation for context."""
+        return f"[Computation Round {round_number}] Query: {query}\n{content}"
+
+    async def _execute_wolfram(self, query: str) -> str:
+        """
+        Execute Wolfram Alpha query with fallback to web search.
+
+        Args:
+            query: The computation query
+
+        Returns:
+            Formatted result string for context
+        """
+        if not self.wolfram_manager:
+            logger.warning("[AgenticSearch] Wolfram Alpha not configured, falling back to web search")
+            # Fallback to web search for computation explanation
+            result = await self._execute_search([f"{query} calculation explanation"])
+            return await self._compress_results(result)
+
+        result = await self.wolfram_manager.query(query)
+
+        if result.success:
+            formatted = self.wolfram_manager.format_for_prompt(result)
+            logger.info(
+                f"[AgenticSearch] Wolfram query '{query[:40]}...' succeeded in {result.execution_time:.2f}s"
+            )
+            return formatted
+
+        # Fallback to web search on failure
+        logger.warning(f"[AgenticSearch] Wolfram failed ({result.error}), falling back to web search")
+        fallback_result = await self._execute_search([f"{query} explanation solution"])
+        return await self._compress_results(fallback_result)

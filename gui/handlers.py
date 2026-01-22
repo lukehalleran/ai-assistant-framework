@@ -749,6 +749,15 @@ async def handle_submit(
 
             # After streaming completes, parse thinking block for logging and storage
             logger.info(f"[Handle Submit] <<< Streaming done, {chunk_count} chunks, output_len={len(final_output)}")
+
+            # Handle empty response from API (model returned no content)
+            if chunk_count == 0 or not final_output.strip():
+                model_name_for_error = model_name or "unknown"
+                error_msg = f"⚠️ Model `{model_name_for_error}` returned an empty response. This can happen when:\n• The model is temporarily unavailable\n• Rate limiting or quota issues\n• The model failed to process the request\n\nTry switching to a different model or retry your message."
+                logger.warning(f"[Handle Submit] Empty response detected from {model_name_for_error}")
+                yield {"role": "assistant", "content": error_msg}
+                return
+
             thinking_part_stream, final_answer_stream = orchestrator._parse_thinking_block(final_output)
             if thinking_part_stream:
                 logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK FROM STREAM]\n{thinking_part_stream}")
@@ -824,7 +833,9 @@ async def handle_submit(
     finally:
         # Persist interaction and debug after streaming, but do not emit additional
         # assistant content here (avoid overwriting the last streamed UI state).
-        if final_output and len(user_text.strip()) > 0:
+        # Skip storage if response is an error message (starts with error indicators)
+        is_error_response = final_output.strip().startswith(('[Error:', '⚠️')) if final_output else True
+        if final_output and len(user_text.strip()) > 0 and not is_error_response:
             # Store in memory system FIRST to get the db_id
             memory_id = None
             try:

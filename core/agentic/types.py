@@ -70,13 +70,17 @@ class SearchDecision:
     Result of parsing LLM output for search decisions.
 
     One of these should be True:
-    - wants_search: Model wants to perform a search
+    - wants_search: Model wants to perform a web search
+    - wants_wolfram: Model wants to perform a Wolfram Alpha computation
     - is_done: Model signals it has enough information
     - wants_answer: Model wants to provide final answer (no explicit done signal)
     """
     wants_search: bool = False
     search_query: Optional[str] = None
     search_reason: Optional[str] = None
+    wants_wolfram: bool = False
+    wolfram_query: Optional[str] = None
+    wolfram_reason: Optional[str] = None
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False
@@ -203,13 +207,54 @@ DONE_TOOL_DEFINITION = {
     }
 }
 
+WOLFRAM_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "wolfram_alpha",
+        "description": (
+            "Compute mathematical expressions, solve equations, perform calculus, "
+            "get scientific data, handle unit conversions, statistical analysis, "
+            "and any query requiring numerical computation or data lookup. "
+            "Examples: 'solve x^2 + 5x - 6 = 0', 'integrate sin(x) from 0 to pi', "
+            "'convert 100 miles to kilometers', 'population of France', "
+            "'plot sin(x) * exp(-x/10) from 0 to 20'"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Mathematical, scientific, or data query to compute"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this computation is needed."
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+
 # System prompt injection for local models
 AGENTIC_SYSTEM_PROMPT_INJECTION = """
-[AGENTIC SEARCH ENABLED]
-You have access to web search. After seeing search results, you may:
-- Request more info: <search>your refined query</search>
-- Signal you're done: <done/>
-- Or just provide your answer directly.
+[AGENTIC TOOLS ENABLED]
+You have access to web search and Wolfram Alpha. Use these tools to gather information:
 
-You can search up to {max_rounds} times total. Be specific with queries.
+**Available Tools:**
+1. **Web Search**: <search>your query</search>
+   Use for: current events, explanations, general knowledge, how-to guides, opinions.
+
+2. **Wolfram Alpha**: <wolfram>your query</wolfram>
+   Use for: math calculations, equations, unit conversions, scientific data, statistics.
+   Examples: "solve x^2 - 4 = 0", "integrate x^2 dx", "convert 50 mph to km/h", "GDP of Germany"
+
+3. **Done**: <done/> - Signal you have enough information to answer.
+
+**Tool Selection:**
+- Math/calculations/conversions/scientific data → use <wolfram>
+- Current events/explanations/general knowledge → use <search>
+- Complex queries may need both tools in sequence
+
+You can use tools up to {max_rounds} times total. Be specific with queries.
 """.strip()
