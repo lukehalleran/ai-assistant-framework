@@ -630,6 +630,133 @@ class MemoryConsolidator:
 
 ---
 
+## Agentic Search & Tools [NEW 2026-01-22]
+
+```python
+# core/agentic/controller.py
+class AgenticSearchController:
+    """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done"""
+
+    async def execute_search(query: str, max_turns: int = 8) -> AsyncIterator[AgenticEvent]:
+        """
+        Main loop:
+        1. Build prompt with gathered context + tool instructions
+        2. Call LLM for decision (search/wolfram/done)
+        3. Execute tool if requested, add result to context
+        4. Repeat until done or max_turns reached
+        5. Yield AgenticEvent for each stage (thinking/searching/computed/done)
+        """
+        context = []
+        for turn in range(max_turns):
+            # Get LLM decision via protocol handler
+            decision = await self.protocol_handler.parse_response(llm_response)
+
+            if decision.wants_search:
+                results = await self.web_search_manager.search(decision.search_query)
+                context.append(self._format_search_context(results))
+                yield AgenticEvent(type="searched", data=results)
+
+            elif decision.wants_wolfram:
+                result = await self._execute_wolfram(decision.wolfram_query)
+                context.append(self._format_wolfram_context(result))
+                yield AgenticEvent(type="computed", data=result)
+
+            elif decision.is_done:
+                yield AgenticEvent(type="done", response=final_response)
+                break
+
+
+# core/agentic/types.py
+@dataclass
+class SearchDecision:
+    """LLM's decision at each turn"""
+    wants_search: bool = False
+    search_query: Optional[str] = None
+    search_reason: Optional[str] = None
+    wants_wolfram: bool = False         # Computation request
+    wolfram_query: Optional[str] = None
+    wolfram_reason: Optional[str] = None
+    is_done: bool = False
+    done_reason: Optional[str] = None
+    wants_answer: bool = False
+    partial_response: Optional[str] = None
+
+
+# knowledge/wolfram_manager.py [NEW]
+class WolframManager:
+    """Wolfram Alpha LLM API for computations"""
+
+    async def query(input_text: str) -> WolframResult:
+        """
+        1. Check cache (MD5 hash key, 1hr TTL)
+        2. Check rate limit (token bucket)
+        3. Call Wolfram Alpha LLM API
+        4. Parse response, cache success
+        5. Return WolframResult
+        """
+
+    def format_for_prompt(result: WolframResult) -> str:
+        """Format result for LLM context injection"""
+
+    def is_available() -> bool:
+        """True if WOLFRAM_APP_ID is configured"""
+
+
+@dataclass
+class WolframResult:
+    query: str
+    success: bool
+    result: str = ""
+    input_interpreted: str = ""
+    assumptions: List[str] = field(default_factory=list)
+    error: Optional[str] = None
+    execution_time: float = 0.0
+    cached: bool = False
+
+
+# Protocol handlers (core/agentic/protocols.py)
+# XMLMarkerHandler - for local models: <search>query</search>, <wolfram>query</wolfram>
+# NativeToolsHandler - for API models: OpenAI/Anthropic function calling
+```
+
+### Agentic Config Constants
+
+```python
+# config/app_config.py
+
+# Web Search (Tavily)
+WEB_SEARCH_ENABLED = True
+WEB_SEARCH_API_KEY = os.getenv("TAVILY_API_KEY", "")
+WEB_SEARCH_DAILY_CREDIT_LIMIT = 100
+WEB_SEARCH_CACHE_TTL_HOURS = 72
+
+# Wolfram Alpha [NEW]
+WOLFRAM_ENABLED = True
+WOLFRAM_APP_ID = os.getenv("WOLFRAM_APP_ID", "")
+WOLFRAM_API_URL = "https://www.wolframalpha.com/api/v1/llm-api"
+WOLFRAM_TIMEOUT = 30.0
+WOLFRAM_CACHE_TTL_SECONDS = 3600
+WOLFRAM_RATE_LIMIT_PER_MINUTE = 60
+WOLFRAM_MAX_OUTPUT_CHARS = 10000
+```
+
+### Tool Invocation (Prompt Injection)
+
+```python
+# Added to system prompt for agentic mode (types.py AGENTIC_SYSTEM_PROMPT_INJECTION):
+"""
+Available Tools:
+1. <search>query</search> - Web search for current events, facts, data
+2. <wolfram>query</wolfram> - Computation, math, science, conversions
+3. <done>reason</done> - Signal task complete
+
+Use Wolfram for: calculations, unit conversions, scientific data, equations
+Use search for: current events, recent news, real-time data, general facts
+"""
+```
+
+---
+
 ## Quick Debug Commands
 
 ```bash
