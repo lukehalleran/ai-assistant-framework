@@ -149,6 +149,11 @@ daily_notes:
   weekly_enabled: true
   weekly_model: gpt-4o-mini
   weekly_max_tokens: 1200
+tag_generation:
+  enabled: true
+  model: gpt-4o-mini
+  max_tags: 10
+  min_tags: 3
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor
