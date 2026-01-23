@@ -541,7 +541,7 @@ python main.py show-profile                  # Print profile to console
 
 ---
 
-## Daily Notes Generator [ENHANCED 2026-01-18]
+## Daily Notes Generator [ENHANCED 2026-01-22]
 
 ```python
 # utils/daily_notes_generator.py
@@ -551,11 +551,12 @@ class DailyNotesGenerator:
         1. Get conversations for date from corpus
         2. Skip if no conversations or note exists (unless force)
         3. Format conversations for LLM
-        4. Calculate active duration (estimated actual usage time) [NEW]
+        4. Calculate active duration (estimated actual usage time)
         5. Calculate intensity (1-10 based on count/active_hours/complexity)
         6. Call LLM with structured prompt (includes Life Events section)
-        7. Build YAML frontmatter + markdown content
-        8. Atomic write to Obsidian vault
+        7. Generate contextual tags using TagGenerator [NEW 2026-01-22]
+        8. Build YAML frontmatter + markdown content (with tags)
+        9. Atomic write to Obsidian vault
         """
 
     async def generate_yesterday_if_missing() -> Optional[GenerationResult]:
@@ -586,10 +587,51 @@ class DailyNotesGenerator:
 # Frontmatter fields (updated):
 # - usage_intensity (was: intensity)
 # - span_hours (wall-clock), active_hours (estimated usage)
+# - tags: [daily, daemon-generated, coding, productive, ...] [NEW 2026-01-22]
 
 # Scheduling:
 # - Cron: 0 2 * * * cd /path/to/daemon && python main.py daily-note yesterday
 # - GUI startup: _run_daily_notes_catchup() in launch.py (background thread)
+```
+
+---
+
+## Tag Generator [NEW 2026-01-22]
+
+```python
+# utils/tag_generator.py
+class TagGenerator:
+    async def generate_tags(content: str, note_type: str, metadata: dict) -> TagGenerationResult:
+        """
+        LLM-based tag extraction for Obsidian notes.
+
+        1. Truncate content (max 2000 chars: first 1500 + last 500)
+        2. Build prompt with: content, metadata, tag vocabulary
+        3. Call LLM (gpt-4o-mini, temp=0.3) for tag extraction
+        4. Parse response (handles comma/newline/numbered formats)
+        5. Normalize tags (lowercase, hyphenate, remove special chars)
+        6. Validate tags (min 2 chars, filter stopwords)
+        7. Categorize as known vs custom
+        8. Enforce min/max limits (3-10 tags)
+        9. Fallback to heuristics if LLM fails
+        """
+
+# Tag Vocabulary (100+ tags across 6 categories):
+# 1. Life domains (17): work, study, health, exercise, sleep, social, family, ...
+# 2. Activities (18): coding, programming, learning, reading, writing, debugging, ...
+# 3. Emotions (23): stress, anxiety, happy, motivated, tired, focused, overwhelmed, ...
+# 4. Productivity (15): productive, deep-work, flow-state, breakthrough, blocked, ...
+# 5. Topics (23): ai, programming, python, math, philosophy, psychology, ...
+# 6. Meta (16): crisis, decision, reflection, planning, insight, follow-up, ...
+
+# Tag format (Obsidian-compatible):
+# - Lowercase with hyphens (e.g., deep-work, mental-health)
+# - Quoted in YAML: tags: ["daily", "daemon-generated", "coding", "productive"]
+
+# Integration:
+# - DailyNotesGenerator: Analyzes daily note content + metadata
+# - WeeklyNotesGenerator: Analyzes weekly summary content
+# - Future: .md-based memories with tags as 4th filtering stage
 ```
 
 ---

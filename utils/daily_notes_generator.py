@@ -4,7 +4,7 @@ DailyNotesGenerator - Generate daily summary notes from Daemon conversations.
 
 Module Contract:
 - Purpose: Automatically generate structured daily notes from conversation history,
-           written from Daemon's perspective in YAML + bullet format.
+           written from Daemon's perspective in YAML + bullet format with LLM-based tag generation.
 - Inputs:
   - generate_for_date(date: date) -> GenerationResult: Generate note for specific date
   - generate_yesterday_if_missing() -> Optional[GenerationResult]: Startup catch-up (called by GUI on launch)
@@ -18,9 +18,11 @@ Module Contract:
   - Calls LLM to generate structured summary:
     - Main Quest, Side Quests, Emotional State, Key Decisions, etc.
     - Life Events section: Work, Study, Sleep, Exercise, Other [NEW 2026-01-18]
+  - Generates contextual tags using TagGenerator (3-10 tags) [NEW 2026-01-22]
   - Writes atomic markdown with YAML frontmatter:
     - usage_intensity (was: intensity) [RENAMED 2026-01-18]
     - span_hours (wall-clock), active_hours (estimated usage) [NEW 2026-01-18]
+    - tags: system tags + content tags [NEW 2026-01-22]
   - Idempotent: skips if note already exists (unless force=True)
   - Triggers narrative context refresh after daily note creation [NEW 2026-01-17]
 - Key Methods:
@@ -32,11 +34,12 @@ Module Contract:
 - Dependencies:
   - memory.corpus_manager (conversation retrieval, narrative context persistence)
   - models.model_manager (LLM generation)
+  - utils.tag_generator (tag generation for notes) [NEW 2026-01-22]
   - memory.memory_consolidator (narrative synthesis) [NEW 2026-01-17]
   - config.app_config (paths and settings)
 - Side effects:
   - Writes files to Obsidian vault
-  - LLM API calls
+  - LLM API calls (note generation + tag generation)
   - Logging
   - _trigger_narrative_refresh(): Regenerates narrative context after daily note creation [NEW 2026-01-17]
 """
@@ -123,7 +126,7 @@ IMPORTANT:
 class DailyNotesGenerator:
     """Generate daily summary notes from Daemon conversations."""
 
-    def __init__(self, corpus_manager=None, model_manager=None, vault_path: str = None):
+    def __init__(self, corpus_manager=None, model_manager=None, vault_path: str = None, tag_generator=None):
         """
         Initialize DailyNotesGenerator.
 
@@ -131,9 +134,11 @@ class DailyNotesGenerator:
             corpus_manager: CorpusManager instance (lazy-loaded if None)
             model_manager: ModelManager instance (lazy-loaded if None)
             vault_path: Path to Obsidian vault (defaults to config)
+            tag_generator: TagGenerator instance (lazy-loaded if None)
         """
         self._corpus_manager = corpus_manager
         self._model_manager = model_manager
+        self._tag_generator = tag_generator
 
         # Load config
         try:
@@ -143,18 +148,21 @@ class DailyNotesGenerator:
                 DAILY_NOTES_FOLDER,
                 DAILY_NOTES_MODEL,
                 DAILY_NOTES_MAX_TOKENS,
+                TAG_GENERATION_ENABLED,
             )
             self.vault_path = Path(vault_path or OBSIDIAN_VAULT_PATH).expanduser()
             self.enabled = DAILY_NOTES_ENABLED
             self.daily_folder = DAILY_NOTES_FOLDER
             self.model_name = DAILY_NOTES_MODEL
             self.max_tokens = DAILY_NOTES_MAX_TOKENS
+            self.tag_generation_enabled = TAG_GENERATION_ENABLED
         except ImportError:
             self.vault_path = Path(vault_path or "~/Documents/Luke Notes").expanduser()
             self.enabled = True
             self.daily_folder = "Daily"
             self.model_name = "gpt-4o-mini"
             self.max_tokens = 800
+            self.tag_generation_enabled = True
 
         self.output_dir = self.vault_path / self.daily_folder
         logger.debug(f"[DailyNotes] Initialized: vault={self.vault_path}, folder={self.daily_folder}")
@@ -185,6 +193,20 @@ class DailyNotesGenerator:
                 logger.error(f"[DailyNotes] Failed to load ModelManager: {e}")
                 raise
         return self._model_manager
+
+    @property
+    def tag_generator(self):
+        """Lazy-load TagGenerator."""
+        if self._tag_generator is None:
+            try:
+                from utils.tag_generator import TagGenerator
+                self._tag_generator = TagGenerator(model_manager=self.model_manager)
+                logger.debug("[DailyNotes] TagGenerator lazy-loaded")
+            except Exception as e:
+                logger.warning(f"[DailyNotes] Failed to load TagGenerator: {e}")
+                # Non-critical, can continue without tag generation
+                self._tag_generator = None
+        return self._tag_generator
 
     def _format_filename(self, target_date: date) -> str:
         """Format filename to match existing convention: 'M D YY Daily Note.md'."""
@@ -363,8 +385,21 @@ class DailyNotesGenerator:
         return "General Conversation"
 
     def _build_frontmatter(self, target_date: date, count: int, span_hours: float,
-                           active_hours: float, intensity: int, main_quest: str) -> str:
+                           active_hours: float, intensity: int, main_quest: str,
+                           content_tags: List[str] = None) -> str:
         """Generate YAML frontmatter."""
+        # System tags are always included
+        system_tags = ['daily', 'daemon-generated']
+
+        # Add content tags if provided
+        if content_tags:
+            all_tags = system_tags + content_tags
+        else:
+            all_tags = system_tags
+
+        # Format tags for YAML (quoted strings to handle hyphens)
+        tags_str = ', '.join(f'"{tag}"' for tag in all_tags)
+
         return f"""---
 date: {target_date.isoformat()}
 usage_intensity: {intensity}
@@ -372,7 +407,7 @@ conversations: {count}
 span_hours: {span_hours:.1f}
 active_hours: {active_hours:.1f}
 main_quest: "{main_quest}"
-tags: [daily, daemon-generated]
+tags: [{tags_str}]
 generated: {datetime.now().isoformat()}
 ---
 """
@@ -534,9 +569,30 @@ generated: {datetime.now().isoformat()}
         # Extract main quest for frontmatter
         main_quest = self._extract_main_quest(llm_response)
 
+        # Generate contextual tags
+        content_tags = []
+        if self.tag_generation_enabled and self.tag_generator:
+            try:
+                tag_metadata = {
+                    'main_quest': main_quest,
+                    'intensity': result.intensity,
+                    'conversations': len(convos),
+                    'active_hours': active_hours,
+                }
+                tag_result = await self.tag_generator.generate_tags(
+                    llm_response,
+                    note_type="daily",
+                    metadata=tag_metadata
+                )
+                content_tags = tag_result.tags
+                logger.info(f"[DailyNotes] Generated {len(content_tags)} tags: {', '.join(content_tags)}")
+            except Exception as e:
+                logger.warning(f"[DailyNotes] Tag generation failed: {e}, continuing without tags")
+
         # Build full note
         frontmatter = self._build_frontmatter(
-            target_date, len(convos), span_hours, active_hours, result.intensity, main_quest
+            target_date, len(convos), span_hours, active_hours, result.intensity, main_quest,
+            content_tags=content_tags
         )
         header = f"\n# Daily Note - {target_date.strftime('%B %d, %Y')}\n\n"
         full_content = frontmatter + header + llm_response.strip() + "\n"

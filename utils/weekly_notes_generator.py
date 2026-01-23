@@ -4,7 +4,7 @@ WeeklyNotesGenerator - Generate weekly summary notes from daily notes.
 
 Module Contract:
 - Purpose: Organize daily notes into weekly folders and generate weekly summaries
-           by aggregating the daily notes using LLM.
+           by aggregating the daily notes using LLM with contextual tag generation.
 - Inputs:
   - generate_for_week(date: date) -> WeeklyGenerationResult: Generate for week containing date
   - generate_last_week_if_complete() -> Optional[WeeklyGenerationResult]: Startup catch-up
@@ -22,18 +22,21 @@ Module Contract:
   - Calls LLM to generate weekly summary:
     - Main Quests, Recurring Themes, Emotional Arc, etc.
     - Life Events Summary: aggregates Work/Study/Sleep/Exercise across week [NEW 2026-01-18]
+  - Generates contextual tags using TagGenerator (5-10 tags) [NEW 2026-01-22]
   - Writes atomic markdown with YAML frontmatter:
     - avg_usage_intensity (was: avg_intensity) [RENAMED 2026-01-18]
     - total_active_hours (was: total_duration_hours) [RENAMED 2026-01-18]
+    - tags: system tags + content tags [NEW 2026-01-22]
   - Idempotent: skips if summary already exists (unless force=True)
 - Dependencies:
   - models.model_manager (LLM generation)
+  - utils.tag_generator (tag generation for summaries) [NEW 2026-01-22]
   - config.app_config (paths and settings)
 - Side effects:
   - Creates weekly folders
   - Moves daily note files
   - Writes summary files
-  - LLM API calls
+  - LLM API calls (summary generation + tag generation)
   - Logging
 """
 
@@ -133,15 +136,17 @@ IMPORTANT:
 class WeeklyNotesGenerator:
     """Generate weekly summary notes and organize daily notes into folders."""
 
-    def __init__(self, model_manager=None, vault_path: str = None):
+    def __init__(self, model_manager=None, vault_path: str = None, tag_generator=None):
         """
         Initialize WeeklyNotesGenerator.
 
         Args:
             model_manager: ModelManager instance (lazy-loaded if None)
             vault_path: Path to Obsidian vault (defaults to config)
+            tag_generator: TagGenerator instance (lazy-loaded if None)
         """
         self._model_manager = model_manager
+        self._tag_generator = tag_generator
 
         # Load config
         try:
@@ -152,6 +157,7 @@ class WeeklyNotesGenerator:
                 WEEKLY_NOTES_ENABLED,
                 WEEKLY_NOTES_MODEL,
                 WEEKLY_NOTES_MAX_TOKENS,
+                TAG_GENERATION_ENABLED,
             )
             self.vault_path = Path(vault_path or OBSIDIAN_VAULT_PATH).expanduser()
             self.daily_enabled = DAILY_NOTES_ENABLED
@@ -159,6 +165,7 @@ class WeeklyNotesGenerator:
             self.daily_folder = DAILY_NOTES_FOLDER
             self.model_name = WEEKLY_NOTES_MODEL
             self.max_tokens = WEEKLY_NOTES_MAX_TOKENS
+            self.tag_generation_enabled = TAG_GENERATION_ENABLED
         except ImportError:
             self.vault_path = Path(vault_path or "~/Documents/Luke Notes").expanduser()
             self.daily_enabled = True
@@ -166,6 +173,7 @@ class WeeklyNotesGenerator:
             self.daily_folder = "Daily"
             self.model_name = "gpt-4o-mini"
             self.max_tokens = 1200
+            self.tag_generation_enabled = True
 
         self.output_dir = self.vault_path / self.daily_folder
         logger.debug(f"[WeeklyNotes] Initialized: vault={self.vault_path}, folder={self.daily_folder}")
@@ -182,6 +190,20 @@ class WeeklyNotesGenerator:
                 logger.error(f"[WeeklyNotes] Failed to load ModelManager: {e}")
                 raise
         return self._model_manager
+
+    @property
+    def tag_generator(self):
+        """Lazy-load TagGenerator."""
+        if self._tag_generator is None:
+            try:
+                from utils.tag_generator import TagGenerator
+                self._tag_generator = TagGenerator(model_manager=self.model_manager)
+                logger.debug("[WeeklyNotes] TagGenerator lazy-loaded")
+            except Exception as e:
+                logger.warning(f"[WeeklyNotes] Failed to load TagGenerator: {e}")
+                # Non-critical, can continue without tag generation
+                self._tag_generator = None
+        return self._tag_generator
 
     def _get_week_folder_name(self, target_date: date) -> str:
         """Format folder name: 'Week 3 Jan 2026'."""
@@ -370,8 +392,20 @@ class WeeklyNotesGenerator:
         }
 
     def _build_weekly_frontmatter(self, week_num: int, year: int, start: date, end: date,
-                                   stats: Dict[str, Any]) -> str:
+                                   stats: Dict[str, Any], content_tags: List[str] = None) -> str:
         """Generate YAML frontmatter for weekly note."""
+        # System tags are always included
+        system_tags = ['weekly', 'daemon-generated']
+
+        # Add content tags if provided
+        if content_tags:
+            all_tags = system_tags + content_tags
+        else:
+            all_tags = system_tags
+
+        # Format tags for YAML (quoted strings to handle hyphens)
+        tags_str = ', '.join(f'"{tag}"' for tag in all_tags)
+
         return f"""---
 week: {week_num}
 year: {year}
@@ -381,7 +415,7 @@ total_conversations: {stats['total_conversations']}
 avg_usage_intensity: {stats['avg_intensity']}
 days_with_activity: {stats['active_days']}
 total_active_hours: {stats['total_duration']}
-tags: [weekly, daemon-generated]
+tags: [{tags_str}]
 generated: {datetime.now().isoformat()}
 ---
 """
@@ -554,8 +588,31 @@ generated: {datetime.now().isoformat()}
             logger.error(f"[WeeklyNotes] All models failed for Week {week_num}: {last_error}")
             return result
 
+        # Generate contextual tags
+        content_tags = []
+        if self.tag_generation_enabled and self.tag_generator:
+            try:
+                # Aggregate main quests from notes_data for context
+                main_quests = [n.get('main_quest', '') for n in notes_data if n.get('main_quest')]
+                tag_metadata = {
+                    'main_topic': f"Week {week_num} summary",
+                    'intensity': stats['avg_intensity'],
+                    'conversations': stats['total_conversations'],
+                    'duration_hours': stats['total_duration'],
+                    'main_quests': ', '.join(main_quests[:3]),  # First 3 quests for context
+                }
+                tag_result = await self.tag_generator.generate_tags(
+                    llm_response,
+                    note_type="weekly",
+                    metadata=tag_metadata
+                )
+                content_tags = tag_result.tags
+                logger.info(f"[WeeklyNotes] Generated {len(content_tags)} tags: {', '.join(content_tags)}")
+            except Exception as e:
+                logger.warning(f"[WeeklyNotes] Tag generation failed: {e}, continuing without tags")
+
         # Build full note
-        frontmatter = self._build_weekly_frontmatter(week_num, year, monday, sunday, stats)
+        frontmatter = self._build_weekly_frontmatter(week_num, year, monday, sunday, stats, content_tags=content_tags)
         header = f"\n# Weekly Summary - Week {week_num}, {monday.strftime('%B %Y')}\n\n"
         full_content = frontmatter + header + llm_response.strip() + "\n"
 

@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-20
+**Last Updated**: 2026-01-22
 
 ---
 
@@ -1508,8 +1508,8 @@ REFERENCE_DOCS_MAX_PROMPT = 5
 
 ---
 
-### 2.12.5 utils/daily_notes_generator.py (Auto-Generated Daily Summaries) **[ENHANCED 2026-01-18]**
-**Purpose**: Automatically generate daily summary notes from Daemon conversations, written from Daemon's perspective
+### 2.12.5 utils/daily_notes_generator.py (Auto-Generated Daily Summaries) **[ENHANCED 2026-01-22]**
+**Purpose**: Automatically generate daily summary notes from Daemon conversations with LLM-based tag generation, written from Daemon's perspective
 
 **Data Classes**:
 - `GenerationResult`: Statistics from note generation (success, date, output_path, conversation_count, intensity, skipped_reason)
@@ -1544,7 +1544,7 @@ conversations: 18
 span_hours: 8.5
 active_hours: 1.8
 main_quest: "Daily Notes Feature"
-tags: [daily, daemon-generated]
+tags: [daily, daemon-generated, coding, productivity, learning, focused] **[ENHANCED 2026-01-22]**
 ---
 # Daily Note - January 16, 2026
 ## Summary (2-3 sentences from Daemon's perspective)
@@ -1579,6 +1579,10 @@ DAILY_NOTES_ENABLED = True
 DAILY_NOTES_FOLDER = "Vault/Daily Notes and To Do's"
 DAILY_NOTES_MODEL = "gpt-4o-mini"
 DAILY_NOTES_MAX_TOKENS = 800
+TAG_GENERATION_ENABLED = True  **[NEW 2026-01-22]**
+TAG_GENERATION_MODEL = "gpt-4o-mini"  **[NEW 2026-01-22]**
+TAG_GENERATION_MAX_TAGS = 10  **[NEW 2026-01-22]**
+TAG_GENERATION_MIN_TAGS = 3  **[NEW 2026-01-22]**
 ```
 
 **CLI Commands** (`main.py`):
@@ -1602,11 +1606,12 @@ DAILY_NOTES_MAX_TOKENS = 800
 - Writes to Obsidian vault at `OBSIDIAN_VAULT_PATH / DAILY_NOTES_FOLDER`
 - Notes can be retrieved via ObsidianManager once embedded
 - Atomic file writes (temp → replace pattern)
+- **Tag generation** [NEW 2026-01-22]: Analyzes note content using TagGenerator to extract 3-10 contextual tags (life domains, activities, emotions, topics, productivity states, meta)
 
 ---
 
-### 2.12.6 utils/weekly_notes_generator.py (Auto-Generated Weekly Summaries) **[NEW 2026-01-19]**
-**Purpose**: Organize daily notes into weekly folders and generate weekly summaries by aggregating daily notes
+### 2.12.6 utils/weekly_notes_generator.py (Auto-Generated Weekly Summaries) **[ENHANCED 2026-01-22]**
+**Purpose**: Organize daily notes into weekly folders and generate weekly summaries with LLM-based tag generation by aggregating daily notes
 
 **Data Classes**:
 - `WeeklyGenerationResult`: Statistics from note generation (success, week_num, year, week_folder, output_path, daily_notes_found, daily_notes_moved, total_conversations, avg_intensity, skipped_reason)
@@ -1639,7 +1644,7 @@ total_conversations: 42
 total_active_hours: 8.5
 daily_notes: 5
 date_range: "2026-01-13 to 2026-01-19"
-tags: [weekly, daemon-generated]
+tags: [weekly, daemon-generated, work, study, productivity, learning, health, exercise] **[ENHANCED 2026-01-22]**
 ---
 # Weekly Summary - Week 3, January 2026
 ## Week at a Glance (3-4 sentences)
@@ -1676,6 +1681,79 @@ WEEKLY_NOTES_MAX_TOKENS = 1200
 - Writes to Obsidian vault at `OBSIDIAN_VAULT_PATH / DAILY_NOTES_FOLDER / Week N Month Year/`
 - Week summaries can be read by narrative context generator
 - Atomic file writes (temp → replace pattern)
+- **Tag generation** [NEW 2026-01-22]: Analyzes aggregated weekly content using TagGenerator to extract 5-10 contextual tags capturing recurring themes, patterns, and activities
+
+---
+
+### 2.12.7 utils/tag_generator.py (LLM-Based Tag Generation) **[NEW 2026-01-22]**
+**Purpose**: Generate contextual Obsidian tags for notes using LLM analysis with consistent vocabulary. Future-ready for .md-based memory migration with tags as 4th filtering stage.
+
+**Data Classes**:
+- `TagGenerationResult`: Result of tag generation (tags, tag_count, known_tags, custom_tags, skipped_tags, error)
+
+**Key Methods**:
+- `generate_tags(content, note_type, metadata)` → `TagGenerationResult`: Analyze content and generate 3-10 tags
+- `get_tag_categories()` → `Dict[str, Set[str]]`: Return tag vocabulary by category
+- `get_all_known_tags()` → `Set[str]`: Return all known tags
+- `_normalize_tag(tag)` → `str`: Convert to Obsidian format (lowercase, hyphenated)
+- `_validate_tag(tag)` → `bool`: Check tag quality (length, stopwords)
+- `_parse_llm_tags(response)` → `List[str]`: Parse LLM output (comma/newline/numbered)
+- `_generate_fallback_tags(note_type, metadata)` → `List[str]`: Heuristic fallback if LLM fails
+
+**Tag Vocabulary** (100+ tags across 6 categories):
+1. **Life domains** (17 tags): work, study, health, exercise, sleep, social, family, relationships, dating, friends, hobbies, finances, career, education, wellness, mental-health, physical-health
+2. **Activities** (18 tags): coding, programming, learning, reading, writing, research, debugging, building, designing, planning, gaming, travel, cooking, art, music, sports, meditation, journaling
+3. **Emotions** (23 tags): stress, anxiety, happy, sad, frustrated, excited, calm, motivated, tired, energized, confused, confident, worried, optimistic, pessimistic, grateful, angry, peaceful, lonely, content, overwhelmed, focused, distracted
+4. **Productivity** (15 tags): productive, unproductive, deep-work, flow-state, procrastinating, efficient, struggling, breakthrough, blocked, progress, achievement, setback, milestone, deadline, time-management
+5. **Topics** (23 tags): ai, machine-learning, programming, python, javascript, web-dev, data-science, algorithms, math, science, physics, biology, history, philosophy, psychology, economics, politics, technology, linguistics, literature, art-history, music-theory, engineering
+6. **Meta** (16 tags): crisis, decision, reflection, planning, goal-setting, review, brainstorming, problem-solving, question, insight, realization, important, follow-up, unresolved, completed, archived
+
+**LLM Prompt Strategy**:
+- Analyzes note content + metadata (main quest, intensity, conversations, duration)
+- Shows known vocabulary to encourage consistency
+- Allows custom tags for new concepts not in vocabulary
+- Requests 5-10 relevant tags in comma-separated format
+- Uses `gpt-4o-mini` with temperature=0.3 for consistent but slightly creative extraction
+
+**Tag Format** (Obsidian-compatible):
+- Lowercase with hyphens instead of spaces (e.g., `deep-work`, `mental-health`)
+- No special characters
+- Quoted in YAML frontmatter to handle hyphens
+- Example: `tags: ["daily", "daemon-generated", "coding", "productive", "focused"]`
+
+**Validation Pipeline**:
+1. Parse LLM response (handles comma/newline/numbered formats)
+2. Normalize tags (lowercase, hyphenate, remove special chars)
+3. Validate quality (min 2 chars, filter stopwords)
+4. Categorize as known vs custom
+5. Enforce min/max limits (3-10 tags)
+
+**Fallback Behavior** (if LLM fails):
+- Heuristic tags based on note type (daily → reflection, weekly → review)
+- Intensity-based tags (high → productive, low → quiet)
+- Keyword extraction from main quest/topic
+- Ensures minimum tag count with default tags (conversation, general, reflection)
+
+**Configuration** (`config/app_config.py`):
+```python
+TAG_GENERATION_ENABLED = True
+TAG_GENERATION_MODEL = "gpt-4o-mini"
+TAG_GENERATION_MAX_TAGS = 10
+TAG_GENERATION_MIN_TAGS = 3
+```
+
+**Integration**:
+- Used by `DailyNotesGenerator` to tag daily summaries
+- Used by `WeeklyNotesGenerator` to tag weekly summaries
+- Future: .md-based memory files with tags as 4th filtering stage (semantic/keyword/temporal/tag)
+- Graceful degradation: failures don't block note generation, falls back to system tags only
+
+**Use Cases**:
+- Obsidian tag search: Find all notes tagged `#stress` or `#coding`
+- Pattern tracking: "How often do I discuss `#mental-health`?"
+- Multi-tag filtering: `#productivity AND #deep-work`
+- Tag trend analysis: Identify behavioral patterns over time
+- Future memory filtering: Fast tag-based prefiltering before expensive semantic search
 
 ---
 
@@ -2616,8 +2694,9 @@ daemon/
 │   ├── health_check.py        # Docker/K8s health endpoint
 │   ├── conversation_logger.py # Conversation persistence
 │   ├── web_search_trigger.py  # Web search detection (LLM-first + heuristics) [ENHANCED 2026-01]
-│   ├── daily_notes_generator.py # Auto-generated daily summaries [NEW 2026-01]
-│   └── weekly_notes_generator.py # Auto-generated weekly summaries [NEW 2026-01-19]
+│   ├── daily_notes_generator.py # Auto-generated daily summaries [ENHANCED 2026-01-22]
+│   ├── weekly_notes_generator.py # Auto-generated weekly summaries [ENHANCED 2026-01-22]
+│   └── tag_generator.py       # LLM-based tag generation for notes [NEW 2026-01-22]
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
@@ -2970,8 +3049,9 @@ python main.py inspect-summaries
 | query_checker.py | Analyze: heavy topics, thread detection, temporal windows |
 | hybrid_retriever.py | Retrieve: query rewrite + semantic + keyword scoring |
 | time_manager.py | Utils: timestamps and temporal decay calculations |
-| daily_notes_generator.py | Generate: daily summaries with Life Events from corpus [ENHANCED 2026-01-18] |
-| weekly_notes_generator.py | Organize: weekly folders + summaries from daily notes [NEW 2026-01-19] |
+| daily_notes_generator.py | Generate: daily summaries with Life Events + tags [ENHANCED 2026-01-22] |
+| weekly_notes_generator.py | Organize: weekly folders + summaries + tags [ENHANCED 2026-01-22] |
+| tag_generator.py | Tags: LLM-based tag extraction for Obsidian notes (100+ vocabulary, 6 categories) [NEW 2026-01-22] |
 
 ---
 
