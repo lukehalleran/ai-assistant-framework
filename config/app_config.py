@@ -373,6 +373,16 @@ WEEKLY_NOTES_ENABLED: bool = bool(DAILY_NOTES_CFG.get("weekly_enabled", True))
 WEEKLY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("weekly_model", "gpt-4o-mini")
 WEEKLY_NOTES_MAX_TOKENS: int = int(DAILY_NOTES_CFG.get("weekly_max_tokens", 1200))
 
+# Tag Generation Configuration (for daily/weekly notes and future .md memories)
+TAG_GENERATION_CFG = config.get("tag_generation", {})
+TAG_GENERATION_ENABLED: bool = bool(TAG_GENERATION_CFG.get("enabled", True))
+TAG_GENERATION_MODEL: str = TAG_GENERATION_CFG.get("model", "gpt-4o-mini")
+TAG_GENERATION_MAX_TAGS: int = int(TAG_GENERATION_CFG.get("max_tags", 10))
+TAG_GENERATION_MIN_TAGS: int = int(TAG_GENERATION_CFG.get("min_tags", 3))
+
+# Environment variable override for Tag Generation
+TAG_GENERATION_ENABLED = bool(int(os.getenv("TAG_GENERATION_ENABLED", "1" if TAG_GENERATION_ENABLED else "0")))
+
 # --------------------------------------------------------------------
 # Narrative Context (Temporal Grounding) Configuration
 # Synthesizes weekly/monthly summaries into a rolling "Life State" narrative
