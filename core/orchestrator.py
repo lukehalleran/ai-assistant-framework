@@ -52,6 +52,7 @@ from utils.emotional_context import (
     format_emotional_context_log,
 )
 from utils.need_detector import NeedType
+from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
@@ -220,6 +221,29 @@ class DaemonOrchestrator:
                 self.logger.debug("[Orchestrator] STM analyzer disabled via config")
         except Exception as e:
             self.logger.warning(f"[Orchestrator] Failed to initialize STM analyzer: {e}")
+
+        # Context Pipeline - Builder pattern for query analysis (pre-retrieval)
+        # Handles: tone detection, topic extraction, file processing, heavy topic check,
+        # query rewriting, STM analysis, identity injection, thread context
+        self.context_pipeline = None
+        try:
+            self.context_pipeline = ContextPipeline(
+                model_manager=model_manager,
+                topic_manager=topic_manager,
+                file_processor=file_processor,
+                stm_analyzer=self.stm_analyzer,
+                user_profile=self.user_profile,
+                memory_system=memory_system,
+                config={
+                    "USE_STM_PASS": self.config.get("features", {}).get("use_stm_pass", True) if self.config else True,
+                    "STM_MIN_CONVERSATION_DEPTH": getattr(self, 'stm_min_depth', 3),
+                    "enable_query_rewrite": self.config.get("features", {}).get("enable_query_rewrite", True) if self.config else True,
+                    "REWRITE_TIMEOUT_S": self.config.get("REWRITE_TIMEOUT_S", 2.0) if self.config else 2.0,
+                }
+            )
+            self.logger.info("[Orchestrator] ContextPipeline initialized")
+        except Exception as e:
+            self.logger.warning(f"[Orchestrator] Failed to initialize ContextPipeline: {e}")
 
         # Memory citation system
         self.enable_citations = False  # Will be set from GUI checkbox
@@ -746,7 +770,245 @@ The user is processing/analyzing, open to engagement.
             return True
         return (topics[0] or "").lower() != (self.current_topic or "").lower()
 
-    # ---------- 2) Prepare (files, rewrite, prompt) ----------
+    # ---------- 2) Context Building (via Pipeline) ----------
+
+    async def build_context(
+        self,
+        user_input: str,
+        files: Optional[List[Any]] = None,
+        use_raw_mode: bool = False,
+        personality: Optional[str] = None,
+    ) -> ContextResult:
+        """
+        Build context using the ContextPipeline.
+
+        This is the new preferred method for context preparation. It uses the
+        ContextPipeline to transform raw user input into processed context
+        ready for memory retrieval and prompt building.
+
+        Pipeline stages:
+        1. Topic Extraction - Extract topics (TopicManager)
+        2. Tone Detection - Detect emotional state (analyze_emotional_context)
+        3. File Processing - Extract text from uploaded files (FileProcessor)
+        4. Heavy Topic Check - Check for sensitive content (QueryChecker)
+        5. Query Rewriting - Rewrite for better retrieval
+        6. STM Analysis - Analyze recent conversation (STMAnalyzer)
+        7. Identity Injection - Add user identity context (UserProfile)
+        8. Thread Context - Get active thread (memory_system)
+
+        Args:
+            user_input: Raw user query
+            files: Optional list of uploaded files
+            use_raw_mode: Skip enrichment (direct passthrough)
+            personality: Optional personality override
+
+        Returns:
+            ContextResult with all processed context components
+
+        Example usage:
+            context = await self.build_context(user_input, files)
+            # Use context.processed_query for memory retrieval
+            # Use context.tone_instructions for system prompt
+            # Use context.topics for relevance filtering
+        """
+        if not self.context_pipeline:
+            self.logger.warning("[Orchestrator] ContextPipeline not available, using defaults")
+            return ContextResult(
+                processed_query=user_input,
+                original_query=user_input,
+                tone_level=ToneLevel.CONVERSATIONAL,
+                tone_instructions="",
+            )
+
+        # Get recent conversation history for context
+        conversation_history = None
+        if self.memory_system and hasattr(self.memory_system, 'corpus_manager'):
+            try:
+                conversation_history = self.memory_system.corpus_manager.get_recent_memories(5)
+            except Exception:
+                pass
+
+        context = await self.context_pipeline.build(
+            user_input=user_input,
+            files=files,
+            use_raw_mode=use_raw_mode,
+            personality=personality,
+            conversation_history=conversation_history,
+        )
+
+        # Sync state with orchestrator
+        if context.primary_topic:
+            self.current_topic = context.primary_topic
+            if hasattr(self.memory_system, 'current_topic'):
+                self.memory_system.current_topic = context.primary_topic
+
+        if context.emotional_context:
+            self.current_emotional_context = context.emotional_context
+            if hasattr(context.emotional_context, 'crisis_level'):
+                self.current_tone_level = context.emotional_context.crisis_level
+
+        return context
+
+    async def build_full_prompt(
+        self,
+        context: ContextResult,
+        use_raw_mode: bool = False,
+    ) -> Tuple[str, str]:
+        """
+        Build the full prompt and system prompt from a ContextResult.
+
+        This method:
+        1. Builds the system prompt with all injections (identity, tone, thread, etc.)
+        2. Calls prompt_builder.build_prompt_from_context() for context gathering
+        3. Assembles the final prompt
+
+        Args:
+            context: ContextResult from build_context()
+            use_raw_mode: If True, skip enrichment
+
+        Returns:
+            Tuple of (prompt_string, system_prompt_string)
+        """
+        import time
+        _t_start = time.perf_counter()
+
+        # --- 1) Build System Prompt ---
+        SYSTEM_PROMPT_FALLBACK = (
+            "You are Daemon, a helpful assistant with memory and RAG. "
+            "Be direct, truthful, concise."
+        )
+        system_prompt: str = SYSTEM_PROMPT_FALLBACK
+
+        # Load from config
+        try:
+            persona_cfg = self.personality_manager.get_current_config() if self.personality_manager else {}
+        except Exception:
+            persona_cfg = {}
+        base_cfg = getattr(self, "config", {}) or {}
+        merged_cfg = {**base_cfg, **(persona_cfg or {})}
+
+        try:
+            from config.app_config import load_system_prompt
+            loaded = load_system_prompt(merged_cfg)
+            if isinstance(loaded, str) and loaded.strip():
+                system_prompt = loaded
+        except Exception:
+            pass
+
+        # Override path from persona or orchestrator
+        override_path = (persona_cfg or {}).get("system_prompt_file")
+        if isinstance(override_path, dict):
+            override_path = override_path.get("system_prompt_file")
+        if not override_path:
+            override_path = getattr(self, "system_prompt_path", None)
+
+        if override_path and isinstance(override_path, str):
+            try:
+                if os.path.exists(override_path):
+                    with open(override_path, "r", encoding="utf-8") as f:
+                        text = f.read()
+                    if text.strip():
+                        system_prompt = text
+            except Exception:
+                pass
+
+        # --- Identity placeholder substitution ---
+        if isinstance(system_prompt, str) and system_prompt.strip():
+            try:
+                profile = getattr(self, 'user_profile', None)
+                if profile:
+                    identity = profile.identity
+                    name = identity.name if identity.name else "the user"
+                    pronouns = identity.pronouns if identity.pronouns else "they/them"
+
+                    PRONOUN_MAP = {
+                        "he/him": ("he", "him", "his"),
+                        "she/her": ("she", "her", "her"),
+                        "they/them": ("they", "them", "their"),
+                    }
+                    subj, obj, poss = PRONOUN_MAP.get(pronouns.lower(), ("they", "them", "their"))
+
+                    system_prompt = system_prompt.replace("{USER_NAME}", name)
+                    system_prompt = system_prompt.replace("{USER_PRONOUNS}", pronouns)
+                    system_prompt = system_prompt.replace("{PRONOUN_SUBJ}", subj)
+                    system_prompt = system_prompt.replace("{PRONOUN_OBJ}", obj)
+                    system_prompt = system_prompt.replace("{PRONOUN_POSS}", poss)
+            except Exception:
+                pass
+
+        # --- Citation instructions ---
+        if self.enable_citations:
+            citation_instruction = (
+                "\n\n"
+                "═══════════════════════════════════════════════════════════════\n"
+                "MANDATORY MEMORY CITATION PROTOCOL (REQUIRED)\n"
+                "═══════════════════════════════════════════════════════════════\n"
+                "\n"
+                "CRITICAL REQUIREMENT: You MUST cite every memory you reference in your response.\n"
+                "Citation Format: [MEM_RECENT_{n}], [MEM_SEMANTIC_{n}], [SUM_RECENT_{n}], etc.\n"
+                "═══════════════════════════════════════════════════════════════\n"
+            )
+            system_prompt = system_prompt.rstrip() + citation_instruction
+
+        # --- Topic hint ---
+        topic_str = context.primary_topic or "general"
+        system_prompt = system_prompt.rstrip() + f"\n\nQuery topic: {topic_str}"
+
+        # --- Thread context injection ---
+        if not use_raw_mode and context.has_thread:
+            thread_ctx = context.thread_context
+            thread_depth = thread_ctx.get("thread_depth", 1)
+            is_heavy = thread_ctx.get("is_heavy_topic", False)
+            thread_topic = thread_ctx.get("thread_topic", "")
+
+            thread_msg = f"\n\n[THREAD CONTEXT]"
+            thread_msg += f"\nThis is message #{thread_depth} in an ongoing conversation thread"
+            if thread_topic:
+                thread_msg += f" about {thread_topic}"
+            if is_heavy:
+                thread_msg += "\nThis is a sensitive/heavy topic. Be empathetic and specific."
+            elif thread_depth >= 3:
+                thread_msg += "\nMaintain conversational continuity."
+
+            system_prompt = system_prompt.rstrip() + thread_msg
+
+        # --- Response mode instructions (from ContextResult tone) ---
+        if not use_raw_mode:
+            emotional_ctx = context.emotional_context
+            if emotional_ctx:
+                response_instructions = self._get_response_instructions(emotional_ctx)
+                system_prompt = system_prompt.rstrip() + response_instructions
+
+            session_headers = self._get_session_headers_instructions()
+            system_prompt = system_prompt.rstrip() + session_headers
+
+        # --- Thinking block instruction ---
+        if not use_raw_mode:
+            thinking_instruction = (
+                "\n\n[IMPORTANT] Before your final response, include your reasoning "
+                "in <thinking>...</thinking> tags. Walk through the context step-by-step, "
+                "then provide your answer outside the tags."
+            )
+            system_prompt = system_prompt.rstrip() + thinking_instruction
+
+        # --- 2) Build prompt context via PromptBuilder ---
+        prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)
+
+        # --- 3) Assemble final prompt ---
+        user_input = context.file_context if context.has_files else context.original_query
+        prompt = self.prompt_builder._assemble_prompt(
+            context=prompt_ctx,
+            user_input=user_input,
+            system_prompt=system_prompt
+        )
+
+        if self.logger:
+            duration = time.perf_counter() - _t_start
+            self.logger.info(f"[BUILD_FULL_PROMPT] Completed in {duration:.2f}s")
+
+        return prompt, system_prompt
+
+    # ---------- 3) Prepare Prompt (legacy - use build_context instead) ----------
 
     async def prepare_prompt(
         self,
@@ -758,6 +1020,21 @@ The user is processing/analyzing, open to engagement.
         """
         Performs pre-generation steps: topic update, file processing, optional query
         rewrite, and prompt building.
+
+        .. deprecated::
+            Use :meth:`build_context` instead for cleaner separation of concerns.
+            This method will be refactored to use ContextPipeline internally in a future version.
+
+            New preferred flow::
+
+                # Step 1: Build context (query analysis)
+                context = await self.build_context(user_input, files, use_raw_mode)
+
+                # Step 2: Build prompt using context
+                prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)
+
+                # Step 3: Assemble final prompt
+                prompt = self.prompt_builder._assemble_prompt(prompt_ctx, user_input)
 
         Args:
             user_input: The user's input text
@@ -1490,10 +1767,23 @@ The user is processing/analyzing, open to engagement.
                     if self.logger:
                         self.logger.debug(f"[Orchestrator] Deictic pre-retrieval failed or skipped: {e}")
 
-            # --- Build Prompt (unified path) ---
-            prompt, system_prompt = await self.prepare_prompt(
-                user_input=user_input, files=files, use_raw_mode=use_raw_mode
+            # --- Build Prompt (NEW: via ContextPipeline) ---
+            context = await self.build_context(
+                user_input=user_input,
+                files=files,
+                use_raw_mode=use_raw_mode,
+                personality=personality,
             )
+            prompt, system_prompt = await self.build_full_prompt(
+                context=context,
+                use_raw_mode=use_raw_mode,
+            )
+            debug_info["context_pipeline"] = {
+                "tone_level": context.tone_level.value,
+                "topics": context.topics[:3] if context.topics else [],
+                "has_stm": context.has_stm,
+                "has_thread": context.has_thread,
+            }
 
             # --- Generate Response ---
             active_name_getter = getattr(self.model_manager, "get_active_model_name", None)
