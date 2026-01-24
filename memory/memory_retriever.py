@@ -17,6 +17,7 @@ from config.app_config import (
     DEICTIC_THRESHOLD,
     NORMAL_THRESHOLD,
 )
+from memory.utils import format_recent_conversations
 
 logger = get_logger("memory_retriever")
 
@@ -114,36 +115,7 @@ class MemoryRetriever:
     def _get_recent_conversations(self, k: int = 5) -> List[Dict]:
         """Get recent conversations from corpus (JSON)."""
         entries = self.corpus_manager.get_recent_memories(k) or []
-        out: List[Dict] = []
-        for e in entries:
-            ts = e.get('timestamp', datetime.now())
-            if isinstance(ts, str):
-                try:
-                    ts = datetime.fromisoformat(ts)
-                except Exception:
-                    ts = datetime.now()
-
-            out.append({
-                'id': f"recent::{uuid.uuid4().hex[:8]}",
-                'query': e.get('query', ''),
-                'response': e.get('response', ''),
-                'content': f"User: {e.get('query', '')}\nAssistant: {e.get('response', '')}",
-                'timestamp': ts,
-                'source': 'corpus',
-                'collection': 'recent',
-                'relevance_score': 0.9,  # fresh bias
-                'metadata': {
-                    'timestamp': ts.isoformat() if isinstance(ts, datetime) else str(ts),
-                    'truth_score': e.get('truth_score', 0.6),
-                    'importance_score': e.get('importance_score', 0.5),
-                    'tags': e.get('tags', []),
-                    'access_count': 0,
-                },
-                'tags': e.get('tags', []),
-                'truth_score': e.get('truth_score', 0.6),
-                'importance_score': e.get('importance_score', 0.5),
-            })
-        return out
+        return format_recent_conversations(entries)
 
     async def get_recent_facts(self, limit: int = 5) -> List[Dict]:
         """Fetch the most recent facts by timestamp."""

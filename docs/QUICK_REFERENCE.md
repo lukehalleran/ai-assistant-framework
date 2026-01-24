@@ -21,6 +21,54 @@ class DaemonOrchestrator:
 
 ---
 
+## Context Pipeline **[NEW 2026-01-23]**
+
+```python
+# core/context_pipeline.py
+class ContextPipeline:
+    async def build(user_input: str, files: List = None, use_raw_mode: bool = False) -> ContextResult:
+        """
+        Pipeline: topics → tone → files → heavy_check → rewrite → stm → identity → thread
+        Returns ContextResult with all processed components.
+
+        Stages:
+        1. Topic extraction (TopicManager)
+        2. Tone detection (analyze_emotional_context)
+        3. File processing (FileProcessor)
+        4. Heavy topic check (QueryChecker)
+        5. Query rewriting (LLM)
+        6. STM analysis (STMAnalyzer)
+        7. Identity injection (UserProfile)
+        8. Thread context (memory_system)
+        """
+
+@dataclass
+class ContextResult:
+    processed_query: str          # Rewritten query (or original)
+    original_query: str           # Always preserved
+    tone_level: ToneLevel         # CRISIS/ELEVATED/CONCERN/CONVERSATIONAL
+    tone_instructions: str        # Mode-specific guidelines
+    topics: List[str]             # Extracted topics
+    primary_topic: Optional[str]  # Main topic
+    file_context: Optional[str]   # Processed files
+    thread_context: Optional[Dict]# Thread metadata
+    stm_summary: Optional[Dict]   # STM analysis
+    identity_block: str           # User identity
+    is_heavy_topic: bool          # Heavy topic flag
+    extracted_facts: List[Dict]   # Inline facts
+
+# Usage in orchestrator
+context = await self.build_context(user_input, files, use_raw_mode)
+# context.processed_query → for retrieval
+# context.tone_instructions → for system prompt
+# context.topics → for filtering
+
+# Usage with prompt builder
+prompt_ctx = await prompt_builder.build_prompt_from_context(context)
+```
+
+---
+
 ## Memory Operations
 
 ```python

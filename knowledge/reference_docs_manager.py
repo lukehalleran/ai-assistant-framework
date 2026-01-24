@@ -34,6 +34,8 @@ import re
 import logging
 import hashlib
 from pathlib import Path
+
+from utils.text_chunking import chunk_by_headers
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -124,63 +126,13 @@ class ReferenceDocsManager:
         Returns:
             List of chunk dicts with text, section, chunk_index, total_chunks
         """
-        # If under threshold, return as single chunk
-        if len(content) < self.chunk_threshold:
-            return [{
-                'text': content,
-                'section': None,
-                'chunk_index': 0,
-                'total_chunks': 1
-            }]
-
-        # Split by ## headers (keep the header with the content)
-        sections = re.split(r'\n(##+ .+)\n', content)
-        chunks = []
-        current_section = doc_title
-        current_text = []
-
-        for part in sections:
-            if re.match(r'^##+ ', part):
-                # This is a header - save previous section and start new one
-                if current_text:
-                    text = '\n'.join(current_text).strip()
-                    if text and len(text) > 50:  # Skip very small chunks
-                        chunks.append({
-                            'text': text,
-                            'section': current_section,
-                            'chunk_index': len(chunks),
-                            'total_chunks': -1
-                        })
-                current_section = part.lstrip('#').strip()
-                current_text = [part]  # Include the header in the chunk
-            else:
-                current_text.append(part)
-
-        # Don't forget the last section
-        if current_text:
-            text = '\n'.join(current_text).strip()
-            if text and len(text) > 50:
-                chunks.append({
-                    'text': text,
-                    'section': current_section,
-                    'chunk_index': len(chunks),
-                    'total_chunks': -1
-                })
-
-        # Update total_chunks for all
-        for chunk in chunks:
-            chunk['total_chunks'] = len(chunks)
-
-        # Fallback if no chunks were created
-        if not chunks:
-            return [{
-                'text': content,
-                'section': None,
-                'chunk_index': 0,
-                'total_chunks': 1
-            }]
-
-        return chunks
+        return chunk_by_headers(
+            content=content,
+            title=doc_title,
+            chunk_threshold=self.chunk_threshold,
+            include_header_in_text=True,
+            min_chunk_size=50
+        )
 
     def _detect_file_type(self, file_path: str) -> str:
         """Detect file type from extension."""

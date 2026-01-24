@@ -29,6 +29,8 @@ import re
 import logging
 import hashlib
 from pathlib import Path
+
+from utils.text_chunking import chunk_by_headers
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -148,63 +150,13 @@ class ObsidianManager:
         Returns:
             List of chunk dicts with text, section, chunk_index, total_chunks
         """
-        # If under threshold, return as single chunk
-        if len(content) < self.chunk_threshold:
-            return [{
-                'text': content,
-                'section': None,
-                'chunk_index': 0,
-                'total_chunks': 1
-            }]
-
-        # Split by ## headers (keep the header with the content)
-        sections = re.split(r'\n(##+ .+)\n', content)
-        chunks = []
-        current_section = note_title
-        current_text = []
-
-        for part in sections:
-            if re.match(r'^##+ ', part):
-                # This is a header - save previous section and start new one
-                if current_text:
-                    text = '\n'.join(current_text).strip()
-                    if text:
-                        chunks.append({
-                            'text': text,
-                            'section': current_section,
-                            'chunk_index': len(chunks),
-                            'total_chunks': -1  # Will be set after
-                        })
-                current_section = part.lstrip('#').strip()
-                current_text = []
-            else:
-                current_text.append(part)
-
-        # Don't forget the last section
-        if current_text:
-            text = '\n'.join(current_text).strip()
-            if text:
-                chunks.append({
-                    'text': text,
-                    'section': current_section,
-                    'chunk_index': len(chunks),
-                    'total_chunks': -1
-                })
-
-        # Update total_chunks for all
-        for chunk in chunks:
-            chunk['total_chunks'] = len(chunks)
-
-        # Fallback if no chunks were created
-        if not chunks:
-            return [{
-                'text': content,
-                'section': None,
-                'chunk_index': 0,
-                'total_chunks': 1
-            }]
-
-        return chunks
+        return chunk_by_headers(
+            content=content,
+            title=note_title,
+            chunk_threshold=self.chunk_threshold,
+            include_header_in_text=False,
+            min_chunk_size=0
+        )
 
     def _generate_id(self, content: str, prefix: str = "obs") -> str:
         """Generate a unique ID for a document."""
