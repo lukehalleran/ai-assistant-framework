@@ -16,6 +16,7 @@ from core.orchestrator import (
     _SimplePromptBuilder,
     _FallbackMemoryCoordinator,
 )
+from core.response_parser import ResponseParser
 from utils.tone_detector import CrisisLevel
 
 
@@ -26,7 +27,7 @@ from utils.tone_detector import CrisisLevel
 def test_parse_thinking_block_with_thinking():
     """Extracts thinking content and final answer"""
     response = "<thinking>Let me analyze this...</thinking>The answer is 42"
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(response)
+    thinking, answer = ResponseParser.parse_thinking_block(response)
 
     assert thinking == "Let me analyze this..."
     assert answer == "The answer is 42"
@@ -35,7 +36,7 @@ def test_parse_thinking_block_with_thinking():
 def test_parse_thinking_block_no_thinking():
     """Returns empty thinking when no block present"""
     response = "This is just a regular answer"
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(response)
+    thinking, answer = ResponseParser.parse_thinking_block(response)
 
     assert thinking == ""
     assert answer == "This is just a regular answer"
@@ -48,7 +49,7 @@ def test_parse_thinking_block_multiple_lines():
     Second step: conclude
     </thinking>
     Final answer here"""
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(response)
+    thinking, answer = ResponseParser.parse_thinking_block(response)
 
     assert "First step" in thinking
     assert "Second step" in thinking
@@ -58,7 +59,7 @@ def test_parse_thinking_block_multiple_lines():
 def test_parse_thinking_block_empty_thinking():
     """Handles empty thinking block"""
     response = "<thinking></thinking>Just the answer"
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(response)
+    thinking, answer = ResponseParser.parse_thinking_block(response)
 
     assert thinking == ""
     assert answer == "Just the answer"
@@ -67,7 +68,7 @@ def test_parse_thinking_block_empty_thinking():
 def test_parse_thinking_block_whitespace():
     """Strips whitespace from both parts"""
     response = "<thinking>  thought  </thinking>  answer  "
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(response)
+    thinking, answer = ResponseParser.parse_thinking_block(response)
 
     assert thinking == "thought"
     assert answer == "answer"
@@ -75,7 +76,7 @@ def test_parse_thinking_block_whitespace():
 
 def test_parse_thinking_block_none_input():
     """Handles None input gracefully"""
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(None)
+    thinking, answer = ResponseParser.parse_thinking_block(None)
 
     assert thinking == ""
     assert answer == ""
@@ -83,7 +84,7 @@ def test_parse_thinking_block_none_input():
 
 def test_parse_thinking_block_empty_string():
     """Handles empty string input"""
-    thinking, answer = DaemonOrchestrator._parse_thinking_block("")
+    thinking, answer = ResponseParser.parse_thinking_block("")
 
     assert thinking == ""
     assert answer == ""
@@ -92,7 +93,7 @@ def test_parse_thinking_block_empty_string():
 def test_parse_thinking_block_only_opening_tag():
     """Handles malformed block with only opening tag"""
     response = "<thinking>Some thought but no closing tag"
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(response)
+    thinking, answer = ResponseParser.parse_thinking_block(response)
 
     # No </thinking> delimiter found, so returns full response as answer
     assert thinking == ""
@@ -102,7 +103,7 @@ def test_parse_thinking_block_only_opening_tag():
 def test_parse_thinking_block_no_opening_tag():
     """Handles malformed block with only closing tag"""
     response = "No opening tag</thinking>Answer"
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(response)
+    thinking, answer = ResponseParser.parse_thinking_block(response)
 
     # Finds </thinking> delimiter, extracts before it
     assert "</thinking>" not in answer
@@ -112,7 +113,7 @@ def test_parse_thinking_block_no_opening_tag():
 def test_parse_thinking_block_multiple_closing_tags():
     """Only splits on first closing tag"""
     response = "<thinking>thought</thinking>answer</thinking>more"
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(response)
+    thinking, answer = ResponseParser.parse_thinking_block(response)
 
     assert thinking == "thought"
     assert answer == "answer</thinking>more"
@@ -424,7 +425,7 @@ def test_get_tone_instructions_all_levels_formatted():
 def test_thinking_block_with_tone_context():
     """Parse thinking block from response with tone-aware content"""
     response = "<thinking>User seems distressed, using ELEVATED_SUPPORT mode</thinking>I understand this is difficult."
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(response)
+    thinking, answer = ResponseParser.parse_thinking_block(response)
 
     assert "ELEVATED_SUPPORT" in thinking
     assert "difficult" in answer

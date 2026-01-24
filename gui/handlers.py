@@ -9,12 +9,16 @@ Module Contract
   - Yields streaming dicts {role, content, debug?, is_progress?} as Gradio updates.
 - Behavior:
   - RAW mode: send directly through orchestrator.process_user_query(use_raw_mode=True)
-  - AGENTIC: If agentic_search.enabled and query triggers search, route through AgenticSearchController
+  - AGENTIC: If agentic_search.enabled and query triggers search OR computation, route through AgenticSearchController
+    - Computational keyword detection triggers agentic mode with skip_initial_search=True [NEW 2026-01-22]
+    - Keywords: calculate, compute, solve, fibonacci, integral, derivative, numpy, pandas, etc.
   - ENHANCED: orchestrator.prepare_prompt → response_generator.generate_streaming_response → store interaction
 - Side effects:
   - Writes to conversation logger; stores to memory_system; updates debug_state for Debug Trace tab.
 """
+import asyncio
 import logging
+from core.response_parser import ResponseParser
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor
@@ -26,6 +30,73 @@ logger = logging.getLogger("gradio_gui")
 
 # Initialize FileProcessor for secure file handling
 file_processor = FileProcessor()
+
+# Track pending background storage tasks (for graceful shutdown)
+_pending_storage_tasks: set = set()
+
+
+async def _background_store_interaction(
+    orchestrator,
+    merged_input: str,
+    response_to_store: str,
+    tags: list,
+    user_text: str,
+    final_output: str,
+    personality: str,
+    file_names: list,
+    conversation_logger
+):
+    """
+    Store interaction in background to avoid blocking response delivery.
+
+    This runs after the response is fully streamed to the user, so ~1.7s of
+    LLM calls (topic extraction, etc.) don't add to perceived latency.
+    """
+    try:
+        memory_id = await orchestrator.memory_system.store_interaction(
+            query=merged_input,
+            response=response_to_store,
+            tags=tags
+        )
+        logger.info(f"[HANDLE_SUBMIT] Background storage complete, ID: {memory_id}")
+
+        # Log conversation with db_id
+        conversation_logger.log_interaction(
+            user_input=user_text,
+            assistant_response=final_output,
+            metadata={
+                'mode': 'enhanced',
+                'files': file_names if file_names else None,
+                'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
+                'topic': getattr(orchestrator, 'current_topic', None),
+                'db_id': memory_id
+            }
+        )
+    except Exception as e:
+        logger.error(f"[HANDLE_SUBMIT] Background storage failed: {e}")
+
+
+async def wait_for_pending_storage(timeout: float = 10.0):
+    """
+    Wait for all pending background storage tasks to complete.
+
+    Call this at app shutdown to ensure no interactions are lost.
+
+    Args:
+        timeout: Maximum seconds to wait (default 10s)
+    """
+    if not _pending_storage_tasks:
+        return
+
+    logger.info(f"[SHUTDOWN] Waiting for {len(_pending_storage_tasks)} pending storage tasks...")
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*_pending_storage_tasks, return_exceptions=True),
+            timeout=timeout
+        )
+        logger.info("[SHUTDOWN] All storage tasks completed")
+    except asyncio.TimeoutError:
+        logger.warning(f"[SHUTDOWN] Storage tasks timed out after {timeout}s, {len(_pending_storage_tasks)} may be incomplete")
 
 
 def smart_join(prev: str, new: str) -> str:
@@ -165,23 +236,38 @@ async def handle_submit(
             should_use_agentic = False
             search_terms = []
         else:
-            # Check if web search should be triggered for this query using LLM-first trigger
-            try:
-                from utils.web_search_trigger import analyze_for_web_search_llm
-                trigger_decision = await analyze_for_web_search_llm(
-                    query=user_text,
-                    model_manager=orchestrator.model_manager
-                )
-                # trigger_decision is a WebSearchDecision object with attributes
-                should_use_agentic = getattr(trigger_decision, 'should_search', False)
-                search_terms = getattr(trigger_decision, 'search_terms', []) or []
-                logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, terms={search_terms}")
-            except Exception as e:
-                logger.warning(f"[Handle Submit] Agentic trigger check failed: {e}")
-                import traceback
-                traceback.print_exc()
-                should_use_agentic = False
-                search_terms = []
+            # Check if computational tools should be triggered (sandbox/wolfram)
+            _computation_keywords = [
+                'calculate', 'compute', 'solve', 'integral', 'derivative', 'equation',
+                'fibonacci', 'factorial', 'prime', 'mean', 'median', 'standard deviation',
+                'matrix', 'vector', 'plot', 'graph', 'chart', 'numpy', 'pandas', 'sympy',
+                'statistics', 'regression', 'correlation', 'sum of', 'product of',
+                'evaluate', 'simplify', 'expand', 'factor', 'differentiate', 'integrate'
+            ]
+            needs_computation = any(kw in _lower for kw in _computation_keywords)
+
+            if needs_computation:
+                logger.debug("[Handle Submit] Agentic triggered - computational query detected")
+                should_use_agentic = True
+                search_terms = []  # No web search needed, just computation
+            else:
+                # Check if web search should be triggered for this query using LLM-first trigger
+                try:
+                    from utils.web_search_trigger import analyze_for_web_search_llm
+                    trigger_decision = await analyze_for_web_search_llm(
+                        query=user_text,
+                        model_manager=orchestrator.model_manager
+                    )
+                    # trigger_decision is a WebSearchDecision object with attributes
+                    should_use_agentic = getattr(trigger_decision, 'should_search', False)
+                    search_terms = getattr(trigger_decision, 'search_terms', []) or []
+                    logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, terms={search_terms}")
+                except Exception as e:
+                    logger.warning(f"[Handle Submit] Agentic trigger check failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    should_use_agentic = False
+                    search_terms = []
 
         if should_use_agentic:
             logger.warning("[Handle Submit] AGENTIC SEARCH MODE - routing through agentic controller")
@@ -205,12 +291,19 @@ async def handle_submit(
                     model_name=model_name,
                     initial_search_terms=initial_terms,
                     initial_context=raw_context,  # Pass RAG context to agentic controller
+                    skip_initial_search=needs_computation,  # Skip web search for computation-only queries
                 ):
                     if isinstance(item, ProgressEvent):
                         # Yield progress events as status messages
                         status_icon = {
+                            "thinking": "💭",
                             "searching": "🔍",
                             "found_results": "📄",
+                            "computing": "🔢",
+                            "computed": "✓",
+                            "executing_code": "🐍",
+                            "code_executed": "✅",
+                            "code_error": "⚠️",
                             "synthesizing": "✨",
                             "done": "✅",
                             "error": "❌",
@@ -225,7 +318,7 @@ async def handle_submit(
 
                 # Final output from agentic search - strip thinking blocks
                 final_output = agentic_response
-                thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
+                thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
                 display_output = final_answer if final_answer else final_output
                 logger.debug(f"[Handle Submit] Agentic loop done, response_len={len(final_output)}, display_len={len(display_output)}")
 
@@ -462,7 +555,7 @@ async def handle_submit(
                     else:
                         final_output = best
                         # Parse thinking block - only show final answer to user
-                        _, final_answer = orchestrator._parse_thinking_block(final_output)
+                        _, final_answer = ResponseParser.parse_thinking_block(final_output)
                         display_output = final_answer if final_answer else final_output
                     # Create debug record for best-of with latency budget
                     try:
@@ -552,7 +645,7 @@ async def handle_submit(
                     else:
                         final_output = best
                         # Parse thinking block - only show final answer to user
-                        _, final_answer = orchestrator._parse_thinking_block(final_output)
+                        _, final_answer = ResponseParser.parse_thinking_block(final_output)
                         display_output = final_answer if final_answer else final_output
                     # Create debug record for best-of without latency budget
                     try:
@@ -610,7 +703,7 @@ async def handle_submit(
                 ):
                     final_output = smart_join(final_output, chunk)
                     # Parse in real-time to separate thinking from answer
-                    thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
+                    thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
 
                     # If we have thinking content and haven't shown the answer yet
                     if thinking_part and not final_answer:
@@ -648,7 +741,7 @@ async def handle_submit(
                             display_output = final_output
                         yield {"role": "assistant", "content": display_output}
                 # After fallback streaming completes, emit debug record
-                thinking_part_fb, final_answer_fb = orchestrator._parse_thinking_block(final_output)
+                thinking_part_fb, final_answer_fb = ResponseParser.parse_thinking_block(final_output)
                 if thinking_part_fb:
                     final_output = final_answer_fb if final_answer_fb else final_output
                 try:
@@ -712,7 +805,7 @@ async def handle_submit(
                     logger.info(f"[Handle Submit] Chunk #{chunk_count}: {str(chunk)[:50]}...")
                 final_output = smart_join(final_output, chunk)
                 # Parse in real-time to separate thinking from answer
-                thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
+                thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
 
                 # If we have thinking content and haven't shown the answer yet
                 if thinking_part and not final_answer:
@@ -758,7 +851,7 @@ async def handle_submit(
                 yield {"role": "assistant", "content": error_msg}
                 return
 
-            thinking_part_stream, final_answer_stream = orchestrator._parse_thinking_block(final_output)
+            thinking_part_stream, final_answer_stream = ResponseParser.parse_thinking_block(final_output)
             if thinking_part_stream:
                 logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK FROM STREAM]\n{thinking_part_stream}")
                 # Update final_output to only include the final answer for storage
@@ -853,7 +946,7 @@ async def handle_submit(
 
                 # Parse thinking block from final_output before storing
                 # Only store the final answer, not the thinking process
-                thinking_part, final_answer = orchestrator._parse_thinking_block(final_output)
+                thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
                 if thinking_part:
                     logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK]\n{thinking_part}")
                 response_to_store = final_answer if final_answer else final_output
@@ -900,29 +993,27 @@ async def handle_submit(
                 except Exception:
                     pass
 
-                memory_id = await orchestrator.memory_system.store_interaction(
-                    query=merged_input,
-                    response=response_to_store,
-                    tags=tags
-                )
-                logger.info(f"[HANDLE_SUBMIT] Interaction successfully stored with ID: {memory_id}")
+                # Fire-and-forget background storage (saves ~1.7s of LLM calls)
+                # Topic extraction and fact extraction run in background
+                task = asyncio.create_task(_background_store_interaction(
+                    orchestrator=orchestrator,
+                    merged_input=merged_input,
+                    response_to_store=response_to_store,
+                    tags=tags,
+                    user_text=user_text,
+                    final_output=final_output,
+                    personality=personality,
+                    file_names=file_names,
+                    conversation_logger=conversation_logger
+                ))
+                # Track task for graceful shutdown
+                _pending_storage_tasks.add(task)
+                task.add_done_callback(_pending_storage_tasks.discard)
+                logger.info("[HANDLE_SUBMIT] Storage dispatched to background")
 
                 # No mid-session consolidation: summaries are generated at shutdown
             except Exception as e:
-                logger.error(f"[HANDLE_SUBMIT] Failed to store interaction: {e}")
-
-            # Log conversation with db_id (after storing to get the ID)
-            conversation_logger.log_interaction(
-                user_input=user_text,  # Log original input for clarity
-                assistant_response=final_output,
-                metadata={
-                    'mode': 'enhanced',
-                    'files': file_names if file_names else None,
-                    'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
-                    'topic': getattr(orchestrator, 'current_topic', None),
-                    'db_id': memory_id  # Add database ID for traceability
-                }
-            )
+                logger.error(f"[HANDLE_SUBMIT] Failed to dispatch storage: {e}")
 
             # Do not yield another assistant message here; the UI already
             # received the final content during streaming. If needed, a debug

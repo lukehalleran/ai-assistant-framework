@@ -1,26 +1,41 @@
 #!/usr/bin/env python3
-"""Test script to check prompt sections and timestamps."""
+"""Test script to check prompt sections and timestamps.
+
+NOTE: This is a manual integration test that requires full system initialization.
+Run with: python tests/test_prompt_sections.py
+"""
 
 import asyncio
 import sys
 import os
+import pytest
 sys.path.append(os.path.abspath('.'))
 
-from config.app_config import config
-from models.model_manager import ModelManager
-from memory.memory_coordinator import MemoryCoordinator
-from core.prompt.builder import UnifiedPromptBuilder
-from core.prompt.context_gatherer import ContextGatherer
-from core.prompt.formatter import PromptFormatter
-from core.prompt.summarizer import LLMSummarizer
-from core.prompt.token_manager import TokenManager
+# Skip when run via pytest - this is a manual integration script
+pytestmark = pytest.mark.skip(reason="Manual integration test - run directly with python")
 
 async def test_prompt():
     """Test prompt building with sections and timestamps."""
+    # Import here to avoid import errors during pytest collection
+    from config.app_config import config
+    from models.model_manager import ModelManager
+    from memory.memory_coordinator import MemoryCoordinator
+    from memory.corpus_manager import CorpusManager
+    from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+    from core.prompt.builder import UnifiedPromptBuilder
+    from core.prompt.context_gatherer import ContextGatherer
+    from core.prompt.formatter import PromptFormatter
+    from core.prompt.summarizer import LLMSummarizer
+    from core.prompt.token_manager import TokenManager
 
     # Initialize components
     model_manager = ModelManager()
-    memory_coordinator = MemoryCoordinator()
+    corpus_manager = CorpusManager()
+    chroma_store = MultiCollectionChromaStore()
+    memory_coordinator = MemoryCoordinator(
+        corpus_manager=corpus_manager,
+        chroma_store=chroma_store
+    )
     await memory_coordinator.initialize()
 
     token_manager = TokenManager()

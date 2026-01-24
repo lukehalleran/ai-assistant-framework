@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
-from typing import Optional, List, Set
+from typing import Dict, Optional, List, Set, Tuple
 
 from utils.logging_utils import get_logger
 
@@ -56,6 +57,11 @@ class TopicManager:
         self.enable_llm_fallback = enable_llm_fallback
         self.llm_model = llm_model
         self.logger = get_logger("topic_manager")
+
+        # Short-lived cache for topic extraction (prevents duplicate LLM calls within same request)
+        # Structure: {text_hash: (timestamp, topic)}
+        self._topic_cache: Dict[int, Tuple[float, Optional[str]]] = {}
+        self._cache_ttl = 10.0  # 10 seconds
 
         # Optional dependency injection: resolve ModelManager if not provided
         self.model_manager = model_manager or self._resolve_model_manager()
@@ -153,26 +159,48 @@ class TopicManager:
         3. Heuristics fallback (last resort)
         """
         if text:
+            # Check cache first (prevents duplicate LLM calls within same request)
+            cache_key = hash(text)
+            now = time.time()
+            if cache_key in self._topic_cache:
+                cached_time, cached_topic = self._topic_cache[cache_key]
+                if now - cached_time < self._cache_ttl:
+                    self.logger.debug(f"[TopicManager] Cache hit (age={now - cached_time:.2f}s)")
+                    if cached_topic:
+                        self.last_topic = cached_topic
+                    return self.last_topic
+
+            # Clean expired cache entries periodically
+            if len(self._topic_cache) > 20:
+                self._topic_cache = {
+                    k: v for k, v in self._topic_cache.items()
+                    if now - v[0] < self._cache_ttl
+                }
+
             # Stage 1: Try LLM first (most reliable)
             if self.enable_llm_fallback and self.model_manager:
                 llm_topic = self._llm_fallback(text)
                 if llm_topic and not self._is_ambiguous(llm_topic, text):
                     self.last_topic = llm_topic
+                    self._topic_cache[cache_key] = (now, llm_topic)
                     return self.last_topic
 
             # Stage 2: spaCy NER fallback
             spacy_topic = self._spacy_ner_extraction(text)
             if spacy_topic and not self._is_ambiguous(spacy_topic, text):
                 self.last_topic = spacy_topic
+                self._topic_cache[cache_key] = (now, spacy_topic)
                 return self.last_topic
 
             # Stage 3: Heuristics fallback (last resort)
             candidate = self._extract_primary_from_text(text)
             if candidate and not self._is_ambiguous(candidate, text):
                 self.last_topic = candidate
+                self._topic_cache[cache_key] = (now, candidate)
                 return self.last_topic
 
-            # All methods failed - don't update last_topic
+            # All methods failed - cache the failure too
+            self._topic_cache[cache_key] = (now, None)
         return self.last_topic
 
     # Some call sites used `resolve_topic`; keep it as an alias returning str|None.
@@ -470,6 +498,15 @@ class TopicManager:
         if not self.enable_llm_fallback or self.model_manager is None:
             return None
 
+        # Check cache first (prevents duplicate LLM calls within same request)
+        cache_key = hash(text)
+        now = time.time()
+        if cache_key in self._topic_cache:
+            cached_time, cached_topic = self._topic_cache[cache_key]
+            if now - cached_time < self._cache_ttl:
+                self.logger.debug(f"[TopicManager] LLM cache hit (age={now - cached_time:.2f}s)")
+                return cached_topic
+
         system = (
             "You extract one short, concrete topic (2–5 words, noun phrase). "
             "For emotional/conversational messages, identify the main subject or theme. "
@@ -512,4 +549,9 @@ class TopicManager:
 
         # Title-case similar to heuristic for consistency
         topic = " ".join(w.capitalize() if w.isalpha() else w for w in resp.split())
-        return topic or None
+        result = topic or None
+
+        # Cache the result
+        self._topic_cache[cache_key] = (time.time(), result)
+
+        return result

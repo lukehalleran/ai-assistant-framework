@@ -16,7 +16,17 @@ Module Contract
 - Side effects:
   - Persists to CHROMA_PATH directory; can prune or list.
 """
+import os
+import logging
+
+# Disable ChromaDB telemetry BEFORE importing chromadb
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
+# Suppress chromadb telemetry errors (known bug with posthog compatibility)
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
+
 import chromadb
+from chromadb.config import Settings
 from typing import List, Dict, Any, Optional
 import logging
 from datetime import datetime
@@ -26,7 +36,7 @@ import uuid
 import asyncio
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.utils import embedding_functions
-import os
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,13 +63,12 @@ class MultiCollectionChromaStore:
 
     def __init__(self, persist_directory: str = "data/chroma_multi"):
         self.persist_directory = persist_directory
-        self.client = chromadb.PersistentClient(path=persist_directory)
-        model_name = os.getenv("CHROMA_ST_MODEL", "all-MiniLM-L6-v2")
-        device = "cpu"  # or "cuda" if you want
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=model_name, device=device
+
+        # Initialize ChromaDB with telemetry disabled to avoid posthog version conflicts
+        self.client = chromadb.PersistentClient(
+            path=persist_directory,
+            settings=Settings(anonymized_telemetry=False)
         )
-        self.client = chromadb.PersistentClient(path=persist_directory)
 
         # Single, shared embedder for this store instance
         model_name = os.getenv("CHROMA_ST_MODEL", "all-MiniLM-L6-v2")

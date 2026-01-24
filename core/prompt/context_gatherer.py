@@ -1114,8 +1114,11 @@ class ContextGatherer:
         # Skip common conversational patterns
         conversational_patterns = [
             'hello', 'hi', 'hey', 'thanks', 'thank you', 'ok', 'okay',
-            'yes', 'no', 'lol', 'haha', 'good', 'great', 'nice',
-            'how are you', 'what\'s up', 'see you', 'bye', 'goodbye'
+            'yes', 'no', 'lol', 'haha', 'good', 'great', 'nice', 'cool',
+            'how are you', 'what\'s up', 'see you', 'bye', 'goodbye',
+            'yeah', 'yep', 'nope', 'sure', 'alright', 'sounds good',
+            'i think', 'i feel', 'i hope', 'i guess', 'i mean',
+            'that\'s', 'it\'s', 'i\'m', 'i am', 'going to', 'gonna',
         ]
 
         if any(pattern in query_lower for pattern in conversational_patterns):

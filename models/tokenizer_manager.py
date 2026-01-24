@@ -6,12 +6,15 @@ TokenizerManager - Manages tokenizers for local & API models.
     * Try tiktoken (OpenAI-like) for realistic counts
     * Fallback to whitespace tokenizer
 Never returns None; always provides an object with .encode(text) -> List[int]
+
+Performance Note:
+- Module-level _GLOBAL_TOKENIZER_CACHE ensures tokenizers are loaded only once
+  per model, even across multiple TokenizerManager instances
+- Cache hits are silent (no logging) to avoid log spam during prompt assembly
 """
 
 from __future__ import annotations
 import logging
-
-from utils.logging_utils import log_and_time
 
 logger = logging.getLogger(__name__)
 logger.debug("tokenizer_manager.py is alive")
@@ -26,6 +29,10 @@ try:
     import tiktoken  # type: ignore
 except Exception:
     tiktoken = None
+
+# Module-level singleton cache for tokenizers
+# This ensures tokenizers are loaded only once per model, even across instances
+_GLOBAL_TOKENIZER_CACHE = {}
 
 
 def _looks_like_api_model(name: str) -> bool:
@@ -102,19 +109,35 @@ class TokenizerManager:
         # Final fallback: whitespace
         return _WhitespaceTokenizer()
 
-    @log_and_time("get tokenizer")
     def get_tokenizer(self, model_name: str):
+        """
+        Get a tokenizer for the given model name.
+
+        Uses module-level cache for instant hits (no logging).
+        Only logs on cache misses when actually loading a tokenizer.
+        """
         if not model_name:
             raise ValueError("[TokenizerManager] No model_name provided.")
 
         key = model_name.lower().strip()
 
+        # Check module-level global cache first (instant hit, no logging)
+        if key in _GLOBAL_TOKENIZER_CACHE:
+            return _GLOBAL_TOKENIZER_CACHE[key]
+
+        # Also check instance cache (backward compatibility)
         if key in self._cache:
+            # Promote to global cache
+            _GLOBAL_TOKENIZER_CACHE[key] = self._cache[key]
             return self._cache[key]
+
+        # Cache miss - actually load the tokenizer (only log here)
+        logger.debug(f"[TokenizerManager] Loading tokenizer for '{model_name}' (cache miss)")
 
         # Prefer API tokenizer for API models (tiktoken when available)
         if self._is_api_model(model_name):
             tok = self._load_api_tokenizer(model_name)
+            _GLOBAL_TOKENIZER_CACHE[key] = tok
             self._cache[key] = tok
             return tok
 
@@ -122,11 +145,13 @@ class TokenizerManager:
         if key in {"gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.5-turbo", "gpt-5", "claude-opus"}:
             logger.debug(f"[TokenizerManager] Remapping '{model_name}' -> 'gpt2' for HF tokenizer (local fallback).")
             tok = self._load_hf_tokenizer("gpt2")
+            _GLOBAL_TOKENIZER_CACHE[key] = tok
             self._cache[key] = tok
             return tok
 
         # Local/HF model
         tok = self._load_hf_tokenizer(model_name)
+        _GLOBAL_TOKENIZER_CACHE[key] = tok
         self._cache[key] = tok
         return tok
 

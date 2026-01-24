@@ -261,73 +261,85 @@ class UnifiedPromptBuilder:
             except Exception as e:
                 logger.debug(f"[PromptBuilder] Failed to get narrative context: {e}")
 
-            # Step 3: Launch parallel data gathering tasks
+            # Step 3: Launch parallel data gathering tasks with per-task timing
             tasks = {}
+            task_timings = {}
+
+            async def _timed_task(name: str, coro):
+                """Wrapper to time individual tasks"""
+                _start = time.time()
+                try:
+                    result = await coro
+                    task_timings[name] = time.time() - _start
+                    return result
+                except Exception as e:
+                    task_timings[name] = time.time() - _start
+                    raise e
 
             # Recent conversations
             tasks["recent"] = asyncio.create_task(
-                self.context_gatherer._get_recent_conversations(PROMPT_MAX_RECENT)
+                _timed_task("recent", self.context_gatherer._get_recent_conversations(PROMPT_MAX_RECENT))
             )
 
             # Query-relevant memories (semantic search results only)
             tasks["memories"] = asyncio.create_task(
-                self.context_gatherer._get_semantic_memories(user_input, PROMPT_MAX_MEMS)
+                _timed_task("memories", self.context_gatherer._get_semantic_memories(user_input, PROMPT_MAX_MEMS))
             )
 
             # User Profile (replaces semantic_facts + fresh_facts with categorized hybrid retrieval)
             # Increased max_tokens to 3000 to accommodate 12 facts per category (up to 144 facts total)
             tasks["user_profile"] = asyncio.create_task(
-                self.context_gatherer.get_user_profile_context(user_input, max_tokens=3000)
+                _timed_task("user_profile", self.context_gatherer.get_user_profile_context(user_input, max_tokens=3000))
             )
 
             # Summaries (separated into recent + semantic)
             tasks["summaries"] = asyncio.create_task(
-                self.context_gatherer._get_summaries_separate(user_input, PROMPT_MAX_RECENT_SUMMARIES, PROMPT_MAX_SEMANTIC_SUMMARIES)
+                _timed_task("summaries", self.context_gatherer._get_summaries_separate(user_input, PROMPT_MAX_RECENT_SUMMARIES, PROMPT_MAX_SEMANTIC_SUMMARIES))
             )
 
             # Dreams (if enabled)
             tasks["dreams"] = asyncio.create_task(
-                self.context_gatherer._get_dreams(PROMPT_MAX_DREAMS)
+                _timed_task("dreams", self.context_gatherer._get_dreams(PROMPT_MAX_DREAMS))
             )
 
             # Semantic chunks
             tasks["semantic"] = asyncio.create_task(
-                self.context_gatherer._get_semantic_chunks(
-                    user_input, max_results=PROMPT_MAX_SEMANTIC
-                )
+                _timed_task("semantic", self.context_gatherer._get_semantic_chunks(user_input, max_results=PROMPT_MAX_SEMANTIC))
             )
 
             # Reflections (separated into recent + semantic)
             tasks["reflections"] = asyncio.create_task(
-                self.context_gatherer._get_reflections_separate(user_input, PROMPT_MAX_RECENT_REFLECTIONS, PROMPT_MAX_SEMANTIC_REFLECTIONS)
+                _timed_task("reflections", self.context_gatherer._get_reflections_separate(user_input, PROMPT_MAX_RECENT_REFLECTIONS, PROMPT_MAX_SEMANTIC_REFLECTIONS))
             )
 
             # Wiki content
             tasks["wiki"] = asyncio.create_task(
-                self.context_gatherer._get_wiki_content(user_input, PROMPT_MAX_WIKI)
+                _timed_task("wiki", self.context_gatherer._get_wiki_content(user_input, PROMPT_MAX_WIKI))
             )
 
             # Personal notes from Obsidian vault
             tasks["personal_notes"] = asyncio.create_task(
-                self.context_gatherer.get_personal_notes(user_input, PROMPT_MAX_PERSONAL_NOTES)
+                _timed_task("personal_notes", self.context_gatherer.get_personal_notes(user_input, PROMPT_MAX_PERSONAL_NOTES))
             )
 
             # Reference documents (user uploaded)
             tasks["reference_docs"] = asyncio.create_task(
-                self.context_gatherer.get_reference_docs(user_input, PROMPT_MAX_REFERENCE_DOCS)
+                _timed_task("reference_docs", self.context_gatherer.get_reference_docs(user_input, PROMPT_MAX_REFERENCE_DOCS))
             )
 
             # Web search (triggered based on query analysis, suppressed during crisis)
             tasks["web_search"] = asyncio.create_task(
-                self.context_gatherer._get_web_search_results(user_input, crisis_level)
+                _timed_task("web_search", self.context_gatherer._get_web_search_results(user_input, crisis_level))
             )
 
             # Gather all results with timeout
+            _gather_start = time.time()
             try:
                 results = await asyncio.wait_for(
                     asyncio.gather(*tasks.values(), return_exceptions=True),
                     timeout=30.0
                 )
+                _gather_elapsed = time.time() - _gather_start
 
                 # Map results back to names
                 gathered = {}
@@ -340,6 +352,13 @@ class UnifiedPromptBuilder:
                         gathered[name] = result or []
                         if name == "memories":
                             logger.debug(f"MEMORIES TASK: Got {len(result) if result else 0} memories")
+
+                # Sort tasks by time (slowest first) for easy identification of bottlenecks
+                sorted_timings = sorted(task_timings.items(), key=lambda x: x[1], reverse=True)
+                timing_str = " | ".join([f"{k}={v:.2f}s" for k, v in sorted_timings])
+                logger.info(
+                    f"[BUILD_PROMPT TIMING] total={_gather_elapsed:.2f}s | {timing_str}"
+                )
 
             except asyncio.TimeoutError:
                 logger.warning("Data gathering timed out, using partial results")

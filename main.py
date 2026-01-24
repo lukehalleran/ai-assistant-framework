@@ -33,6 +33,12 @@ CRITICAL (Frozen Executable):
 """
 import sys
 import os
+import logging
+
+# Disable ChromaDB telemetry before any chromadb imports
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+# Suppress chromadb telemetry errors (known bug with posthog compatibility)
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 
 # =============================================================================
 # CRITICAL: BOOTSTRAP MUST RUN BEFORE ANY OTHER IMPORTS
@@ -425,6 +431,13 @@ def _run_shutdown_tasks(orchestrator):
 
         # Run shutdown tasks
         async def _do_shutdown():
+            # Wait for any pending background storage tasks first
+            try:
+                from gui.handlers import wait_for_pending_storage
+                await wait_for_pending_storage(timeout=10.0)
+            except Exception as e:
+                logger.warning(f"[Shutdown] wait_for_pending_storage failed: {e}")
+
             try:
                 await orchestrator.memory_system.run_shutdown_reflection(
                     session_conversations=session_convos,

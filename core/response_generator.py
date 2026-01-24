@@ -389,8 +389,8 @@ class ResponseGenerator:
                 raw_candidates.append(text_raw)
 
                 # Parse thinking block from each candidate
-                from core.orchestrator import DaemonOrchestrator
-                thinking, text_final = DaemonOrchestrator._parse_thinking_block(text_raw)
+                from core.response_parser import ResponseParser
+                thinking, text_final = ResponseParser.parse_thinking_block(text_raw)
 
                 # Log thinking block for this candidate
                 if thinking and self.logger:
@@ -579,9 +579,9 @@ class ResponseGenerator:
         b_text_raw = ("" if isinstance(res2, Exception) else (res2 or "")).strip()
 
         # Parse thinking blocks from both responses
-        from core.orchestrator import DaemonOrchestrator
-        thinking_a, a_text = DaemonOrchestrator._parse_thinking_block(a_text_raw)
-        thinking_b, b_text = DaemonOrchestrator._parse_thinking_block(b_text_raw)
+        from core.response_parser import ResponseParser
+        thinking_a, a_text = ResponseParser.parse_thinking_block(a_text_raw)
+        thinking_b, b_text = ResponseParser.parse_thinking_block(b_text_raw)
 
         # Log thinking blocks for debugging
         if thinking_a and self.logger:

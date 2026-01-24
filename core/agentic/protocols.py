@@ -4,18 +4,26 @@ Search Protocol Handlers
 Contract:
     - Abstracts difference between native tool calling and XML markers
     - BaseProtocolHandler defines interface
-    - NativeToolsHandler for OpenAI/Anthropic
-    - XMLMarkerHandler for local models
+    - NativeToolsHandler for OpenAI/Anthropic function calling
+    - XMLMarkerHandler for local models using XML tags
     - detect_protocol() chooses based on model name
+    - get_protocol_handler() factory with tool availability flags
 
 Public Interface:
     - detect_protocol(model_name: str) -> SearchProtocol
+    - get_protocol_handler(protocol, wolfram_available, sandbox_available) -> BaseProtocolHandler
     - BaseProtocolHandler.parse_response() -> SearchDecision
-    - NativeToolsHandler.parse_response() -> SearchDecision
-    - XMLMarkerHandler.parse_response() -> SearchDecision
+    - NativeToolsHandler.parse_response() -> SearchDecision (parses tool_calls)
+    - XMLMarkerHandler.parse_response() -> SearchDecision (parses XML markers)
+
+Supported Tools:
+    - web_search / <search>: Web search queries
+    - execute_wolfram / <wolfram>: Wolfram Alpha computations
+    - execute_python / <python>: E2B sandbox code execution [NEW 2026-01-22]
+    - signal_done / <done>: Signal task completion
 
 Dependencies:
-    - core.agentic.types (SearchProtocol, SearchDecision)
+    - core.agentic.types (SearchProtocol, SearchDecision, tool definitions)
 """
 
 import json
@@ -114,15 +122,22 @@ class NativeToolsHandler(BaseProtocolHandler):
     """
     Handler for native tool/function calling (OpenAI, Anthropic).
 
-    Parses tool_calls from LLM response to detect search and Wolfram requests.
+    Parses tool_calls from LLM response to detect search, Wolfram, and sandbox requests.
     """
 
-    def __init__(self, wolfram_available: bool = False):
-        from core.agentic.types import SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION
+    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False):
+        from core.agentic.types import (
+            SEARCH_TOOL_DEFINITION,
+            DONE_TOOL_DEFINITION,
+            WOLFRAM_TOOL_DEFINITION,
+            SANDBOX_TOOL_DEFINITION,
+        )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
         self.wolfram_tool = WOLFRAM_TOOL_DEFINITION
+        self.sandbox_tool = SANDBOX_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
+        self.sandbox_available = sandbox_available
 
     def parse_response(self, response: Any) -> SearchDecision:
         """
@@ -212,6 +227,20 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] wolfram_alpha called without query")
                 return SearchDecision(wants_answer=True)
 
+        elif func_name == "execute_python":
+            code = args.get("code", "")
+            purpose = args.get("purpose")
+            if code:
+                logger.debug(f"[AgenticProtocol] Native tool sandbox request: {purpose or 'code execution'}")
+                return SearchDecision(
+                    wants_sandbox=True,
+                    sandbox_code=code,
+                    sandbox_purpose=purpose
+                )
+            else:
+                logger.warning("[AgenticProtocol] execute_python called without code")
+                return SearchDecision(wants_answer=True)
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return SearchDecision(wants_answer=True)
@@ -231,6 +260,8 @@ class NativeToolsHandler(BaseProtocolHandler):
         tools = [self.search_tool, self.done_tool]
         if self.wolfram_available:
             tools.append(self.wolfram_tool)
+        if self.sandbox_available:
+            tools.append(self.sandbox_tool)
         return tools
 
     def augment_system_prompt(self, system_prompt: str, max_rounds: int) -> str:
@@ -239,21 +270,22 @@ class NativeToolsHandler(BaseProtocolHandler):
 
         The tools themselves describe their purpose.
         """
+        tool_list = ["web_search"]
         if self.wolfram_available:
-            addition = (
-                "\n\n[AGENTIC TOOLS MODE]\n"
-                "You have access to web_search, wolfram_alpha, and done_searching tools. "
-                f"Use web_search for current info, wolfram_alpha for math/science computations "
-                f"(up to {max_rounds} tool uses total). "
-                "Use done_searching when you have enough information to answer."
-            )
-        else:
-            addition = (
-                "\n\n[AGENTIC SEARCH MODE]\n"
-                "You have access to web_search and done_searching tools. "
-                f"Use web_search to find current information (up to {max_rounds} times). "
-                "Use done_searching when you have enough information to answer."
-            )
+            tool_list.append("wolfram_alpha")
+        if self.sandbox_available:
+            tool_list.append("execute_python")
+        tool_list.append("done_searching")
+
+        tools_str = ", ".join(tool_list)
+        addition = (
+            f"\n\n[AGENTIC TOOLS MODE]\n"
+            f"You have access to {tools_str} tools. "
+            f"Use web_search for current info, wolfram_alpha for quick math/science computations, "
+            f"execute_python for multi-step calculations and data analysis "
+            f"(up to {max_rounds} tool uses total). "
+            "Use done_searching when you have enough information to answer."
+        )
         return system_prompt + addition
 
 
@@ -261,13 +293,20 @@ class XMLMarkerHandler(BaseProtocolHandler):
     """
     Handler for XML marker-based search requests (local models).
 
-    Parses <search>query</search>, <wolfram>query</wolfram>, and <done/> markers from text.
+    Parses <search>query</search>, <wolfram>query</wolfram>, <python>code</python>,
+    and <done/> markers from text.
     """
 
     # Regex patterns for marker detection
     SEARCH_PATTERN = re.compile(r'<search>(.*?)</search>', re.DOTALL | re.IGNORECASE)
     WOLFRAM_PATTERN = re.compile(r'<wolfram>(.*?)</wolfram>', re.DOTALL | re.IGNORECASE)
     DONE_PATTERN = re.compile(r'<done\s*/?>', re.IGNORECASE)
+    # Python sandbox pattern with optional purpose attribute
+    # Matches: <python>code</python> or <python purpose="description">code</python>
+    PYTHON_PATTERN = re.compile(
+        r'<python(?:\s+purpose=["\']([^"\']*)["\'])?\s*>(.*?)</python>',
+        re.DOTALL | re.IGNORECASE
+    )
 
     def parse_response(self, response: Any) -> SearchDecision:
         """
@@ -284,7 +323,20 @@ class XMLMarkerHandler(BaseProtocolHandler):
         if not text:
             return SearchDecision(wants_answer=True)
 
-        # Check for Wolfram marker first (more specific tool)
+        # Check for Python sandbox marker first (most specific for multi-step computation)
+        python_match = self.PYTHON_PATTERN.search(text)
+        if python_match:
+            purpose = python_match.group(1)  # May be None if no purpose attr
+            code = python_match.group(2).strip()
+            if code:
+                logger.debug(f"[AgenticProtocol] XML python marker found: {purpose or 'code execution'}")
+                return SearchDecision(
+                    wants_sandbox=True,
+                    sandbox_code=code,
+                    sandbox_purpose=purpose
+                )
+
+        # Check for Wolfram marker (quick calculations)
         wolfram_match = self.WOLFRAM_PATTERN.search(text)
         if wolfram_match:
             query = wolfram_match.group(1).strip()
@@ -343,7 +395,8 @@ class XMLMarkerHandler(BaseProtocolHandler):
 
 def get_protocol_handler(
     protocol: SearchProtocol,
-    wolfram_available: bool = False
+    wolfram_available: bool = False,
+    sandbox_available: bool = False
 ) -> BaseProtocolHandler:
     """
     Factory function to get appropriate protocol handler.
@@ -351,11 +404,15 @@ def get_protocol_handler(
     Args:
         protocol: The protocol to use
         wolfram_available: Whether Wolfram Alpha is configured
+        sandbox_available: Whether E2B sandbox is configured
 
     Returns:
         Protocol handler instance
     """
     if protocol == SearchProtocol.NATIVE_TOOLS:
-        return NativeToolsHandler(wolfram_available=wolfram_available)
+        return NativeToolsHandler(
+            wolfram_available=wolfram_available,
+            sandbox_available=sandbox_available
+        )
     else:
         return XMLMarkerHandler()

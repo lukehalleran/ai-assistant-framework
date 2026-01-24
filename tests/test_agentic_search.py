@@ -464,7 +464,7 @@ class TestNativeToolsHandler:
         augmented = handler.augment_system_prompt(original, max_rounds=5)
 
         assert original in augmented
-        assert "AGENTIC SEARCH MODE" in augmented
+        assert "AGENTIC TOOLS MODE" in augmented
         assert "5" in augmented
 
 
