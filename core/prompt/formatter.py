@@ -36,6 +36,7 @@ import re
 from typing import Dict, List, Optional, Any, Iterable
 from datetime import datetime
 from utils.logging_utils import get_logger
+from core.response_parser import ResponseParser
 
 logger = get_logger("prompt_formatter")
 
@@ -85,43 +86,8 @@ def _truncate_list(items: List[Any], limit: int) -> List[Any]:
         return []
     return items[-limit:] if len(items) > limit else items
 
-def _strip_prompt_artifacts(text: str) -> str:
-    """Remove known bracketed prompt headers if the model echoes them."""
-    if not text:
-        return text
-    try:
-        header_patterns = [
-            r"^\s*\[TIME CONTEXT\]",
-            r"^\s*\[RECENT CONVERSATION[^\]]*\]",
-            r"^\s*\[RELEVANT INFORMATION\]",
-            r"^\s*\[RELEVANT MEMORIES\]",
-            r"^\s*\[FACTS[ ^\]]*\]",
-            r"^\s*\[SEMANTIC FACTS\]",
-            r"^\s*\[RECENT FACTS\]",
-            r"^\s*\[CURRENT MESSAGE FACTS\]",
-            r"^\s*\[DIRECTIVES\]",
-            r"^\s*\[CURRENT USER QUERY[ ^\]]*\]",
-            r"^\s*\[USER INPUT\]",
-            r"^\s*\[BACKGROUND KNOWLEDGE\]",
-            r"^\s*\[CONVERSATION SUMMARIES[ ^\]]*\]",
-            r"^\s*\[RECENT REFLECTIONS[ ^\]]*\]",
-            r"^\s*\[SESSION REFLECTIONS[ ^\]]*\]",
-        ]
-        header_re = re.compile("(" + ")|(".join(header_patterns) + ")", re.IGNORECASE)
-        lines = []
-        skip_block = False
-        for line in (text.splitlines() or []):
-            if header_re.search(line):
-                skip_block = True
-                continue
-            if skip_block:
-                if not line.strip():
-                    skip_block = False
-                continue
-            lines.append(line)
-        return "\n".join(lines).strip()
-    except Exception:
-        return text
+# Alias for backward compatibility - delegates to ResponseParser
+_strip_prompt_artifacts = ResponseParser.strip_prompt_artifacts
 
 
 def _truncate_at_spurious_turns(text: str) -> str:

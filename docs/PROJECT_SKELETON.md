@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-22
+**Last Updated**: 2026-01-23
 
 ---
 
@@ -86,10 +86,6 @@ Legacy `memory/memory_coordinator.py` still in use but being migrated.
   - System prompt resolution with tone instructions
   - Thread context injection
 
-- `_parse_thinking_block(response)` → Extract thinking from response
-- `_strip_reflection_blocks(response)` → Remove reflections before storage
-- `_strip_xml_wrappers(text)` → Remove `<result>`, `<answer>` wrappers
-- `_strip_prompt_artifacts(text)` → Remove echoed prompt headers
 - `_get_tone_instructions(tone_level)` → Mode-specific response guidelines
 - `_get_session_headers_instructions()` → Temporal reasoning guidance
 - `_extract_citations(response, memory_map)` → Extract memory citations, remove tags **[NEW 2025-12-04]**
@@ -110,7 +106,41 @@ query → detect_crisis_level() → extract_topics()
 - `LIGHT_SUPPORT`: 2-4 sentences, brief acknowledgment
 - `CONVERSATIONAL`: Max 3 sentences, direct, no fluff
 
-**Dependencies**: MemoryCoordinator, PromptBuilder, ResponseGenerator, TopicManager, ToneDetector, QueryChecker, STMAnalyzer
+**Dependencies**: MemoryCoordinator, PromptBuilder, ResponseGenerator, TopicManager, ToneDetector, QueryChecker, STMAnalyzer, ResponseParser
+
+---
+
+### 2.1.1 core/response_parser.py (Response Parsing Utilities) **[NEW 2026-01-23]**
+**Purpose**: Pure utility functions for parsing and cleaning LLM responses
+
+**Module Contract**:
+```
+Purpose: Parse and clean LLM responses (thinking blocks, reflections, XML wrappers, artifacts)
+Inputs: Raw response strings from LLM
+Outputs: Cleaned response strings
+Side effects: None (pure functions)
+```
+
+**Key Methods** (all static):
+- `parse_thinking_block(response)` → Tuple[str, str] - Extract thinking content and final answer
+- `strip_reflection_blocks(response)` → str - Remove `<reflect>`, `[SYSTEM QUALITY REFLECTION]` blocks
+- `strip_xml_wrappers(text)` → str - Remove `<result>`, `<answer>`, `<final>` wrappers
+- `strip_prompt_artifacts(text)` → str - Remove echoed prompt headers like `[TIME CONTEXT]`, `[FACTS]`
+
+**Usage**:
+```python
+from core.response_parser import ResponseParser
+
+# Parse thinking block from LLM response
+thinking, answer = ResponseParser.parse_thinking_block(llm_response)
+
+# Clean response before storage
+cleaned = ResponseParser.strip_reflection_blocks(answer)
+cleaned = ResponseParser.strip_xml_wrappers(cleaned)
+cleaned = ResponseParser.strip_prompt_artifacts(cleaned)
+```
+
+**Consumers**: orchestrator.py, response_generator.py, gui/handlers.py, prompt/formatter.py
 
 ---
 
@@ -877,7 +907,17 @@ agentic_search:
 - `_execute_wolfram()` method with fallback to web search on failure
 - Progress events: `computing` → `computed` (parallel to `searching` → `found_results`)
 
-**Dependencies**: WebSearchManager, WolframManager (optional), ModelManager, TokenizerManager
+**E2B Code Sandbox Integration** [NEW 2026-01-22]:
+- `sandbox_manager` parameter added to `AgenticSearchController.__init__()`
+- `SANDBOX_TOOL_DEFINITION` in types.py - tool schema for native protocol
+- `<python purpose="...">code</python>` XML marker for local models
+- `SearchDecision` extended with `wants_sandbox`, `sandbox_code`, `sandbox_purpose`
+- Persistent session created at loop start (variables survive across turns)
+- Session cleanup in finally block
+- Progress events: `executing_code` → `code_executed` / `code_error`
+- `skip_initial_search` parameter skips Round 1 web search for computation-only queries
+
+**Dependencies**: WebSearchManager, WolframManager (optional), SandboxManager (optional), ModelManager, TokenizerManager
 
 ---
 
@@ -1331,6 +1371,79 @@ WOLFRAM_RATE_LIMIT_PER_MINUTE = 60
 - Connection error → Graceful degradation with error in result
 
 **Integration**: Called by AgenticSearchController._execute_wolfram() during ReAct loop
+
+---
+
+### 2.12.1b knowledge/sandbox_manager.py (E2B Code Sandbox) **[NEW 2026-01-22]**
+**Purpose**: Secure Python code execution in ephemeral Firecracker microVMs via E2B API
+
+**Module Contract**:
+```
+Purpose: Handle multi-step computations, data analysis, visualizations via E2B secure code interpreter
+Inputs:
+  - execute_code(code: str) -> SandboxResult: Execute in ephemeral sandbox
+  - create_session() -> PersistentSession: Create stateful session (variables persist across calls)
+  - is_available() -> bool: Check if E2B API key is configured
+  - format_for_prompt(result: SandboxResult, purpose: str) -> str: Format result for LLM context
+Outputs:
+  - SandboxResult with success status, stdout, stderr, error, results, execution_time
+Side effects:
+  - HTTP requests to E2B API
+  - In-memory caching of results (ephemeral mode only)
+  - Rate limiting tracking
+Dependencies: config.app_config (SANDBOX_* constants), e2b_code_interpreter
+```
+
+**Data Classes**:
+- `SandboxResult`: Execution result container (code, success, stdout, stderr, error, results, execution_time)
+- `SandboxRateLimiter`: Token bucket rate limiter for API calls
+- `ExecutionCache`: TTL cache for identical code execution results
+- `PersistentSession`: Stateful session wrapper with variable persistence
+
+**Key Methods**:
+- `execute_code(code)` → `SandboxResult`: Execute code in ephemeral sandbox
+- `create_session()` → `PersistentSession`: Create persistent session for multi-turn execution
+- `is_available()` → `bool`: Check if E2B API key configured
+- `format_for_prompt(result, purpose)` → `str`: Format for LLM context injection
+- `get_rate_limit_status()` → `Dict`: Current rate limit state
+- `clear_cache()` → `int`: Clear cache, return count
+
+**PersistentSession** (for ReAct loop):
+- Variables persist across multiple `run()` calls (Jupyter-like experience)
+- Auto-cleanup via context manager or explicit `close()`
+- Rate limiting shared with manager
+- Tracks execution count and lifetime
+
+**Caching**:
+- In-memory cache with configurable TTL (default 1 hour)
+- Cache key: MD5 hash of normalized code (whitespace-stripped)
+- Only caches successful executions
+
+**Rate Limiting**:
+- Token bucket algorithm, configurable per-minute limit (default 30)
+- Async-safe with lock
+- Returns rate-limited SandboxResult when exhausted
+
+**Configuration** (`config/app_config.py`):
+```python
+SANDBOX_ENABLED = True
+SANDBOX_API_KEY = os.getenv("E2B_API_KEY", "")
+SANDBOX_TIMEOUT_SECONDS = 60
+SANDBOX_SESSION_TIMEOUT_MINUTES = 30
+SANDBOX_MAX_OUTPUT_CHARS = 4000
+SANDBOX_CACHE_TTL_SECONDS = 3600
+SANDBOX_RATE_LIMIT_PER_MINUTE = 30
+```
+
+**Pre-installed Packages**: NumPy, Pandas, SciPy, SymPy, Matplotlib (via E2B base image)
+
+**Error Handling**:
+- Timeout → "Execution timed out after Xs"
+- Rate limited → "Rate limit exceeded"
+- API errors → Graceful degradation with error in result
+- Closed session → "Session closed" error
+
+**Integration**: Called by AgenticSearchController during ReAct loop via `decision.wants_sandbox`
 
 ---
 
@@ -2632,7 +2745,8 @@ daemon/
 │   └── config.yaml            # YAML config (optional)
 │
 ├── core/
-│   ├── orchestrator.py        # Main controller (tone, STM, thinking blocks)
+│   ├── orchestrator.py        # Main controller (tone, STM, coordinates subsystems)
+│   ├── response_parser.py     # Response parsing utilities (thinking blocks, XML stripping) [NEW 2026-01-23]
 │   ├── stm_analyzer.py        # Short-term memory analyzer [NEW]
 │   ├── response_generator.py  # LLM streaming + Best-of-N/Duel (FIXED)
 │   ├── competitive_scorer.py  # Judge-based response selection
@@ -2703,6 +2817,8 @@ daemon/
 │   ├── semantic_search.py     # General semantic utilities
 │   ├── topic_manager.py       # Topic-specific utilities
 │   ├── web_search_manager.py  # Tavily API + caching [NEW 2025-12-22]
+│   ├── wolfram_manager.py     # Wolfram Alpha LLM API [NEW 2026-01-22]
+│   ├── sandbox_manager.py     # E2B code sandbox execution [NEW 2026-01-22]
 │   ├── obsidian_manager.py    # Obsidian vault integration [NEW 2026-01]
 │   └── reference_docs_manager.py  # Daemon self-knowledge docs [NEW 2026-01]
 │
@@ -2730,6 +2846,7 @@ daemon/
 │   │   ├── test_web_search_manager.py   # [NEW 2025-12-22]
 │   │   ├── test_web_search_trigger.py   # [NEW 2025-12-22]
 │   │   ├── test_agentic_search.py       # [NEW 2026-01] 42 tests for agentic system
+│   │   ├── test_sandbox_manager.py      # [NEW 2026-01-22] 42 tests for E2B sandbox
 │   │   └── ...
 │   ├── integration.bak/       # Backup integration tests
 │   ├── test_*.py             # Integration tests (50+ files)
@@ -3018,7 +3135,8 @@ python main.py inspect-summaries
 
 | Component | One-Liner |
 |-----------|-----------|
-| orchestrator.py | Main loop: tone → topic → heavy check → STM → prompt → thinking → LLM → store |
+| orchestrator.py | Main loop: tone → topic → heavy check → STM → prompt → LLM → store |
+| response_parser.py | Parse: extract thinking blocks, strip reflections/XML/prompt artifacts [NEW 2026-01-23] |
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
 | memory_coordinator.py | Hub (legacy): retrieve from 5 collections, gate, rank, return top K |
 | coordinator.py | Hub V2: thin orchestration delegating to modular components [NEW - REFACTORED] |

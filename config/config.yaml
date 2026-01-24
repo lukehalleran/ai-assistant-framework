@@ -51,7 +51,7 @@ memory:
   hybrid_reflections_enabled: true
   user_profile_facts_per_category: 50
   prompt_max_recent: 10
-  semantic_retrieval_limit: 200
+  semantic_retrieval_limit: 100
   prompt_max_semantic: 15
   force_min_memories: true
 models:
@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: glm-4.6
+  active: glm-4.7
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18

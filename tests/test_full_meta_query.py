@@ -2,20 +2,51 @@
 """
 Full end-to-end test of meta-conversational query handling.
 Tests the complete flow from query → detection → retrieval → response.
+
+NOTE: This is a manual integration test that requires full system initialization.
+Run with: python tests/test_full_meta_query.py
 """
 
 import asyncio
 import sys
-from core.orchestrator import DaemonOrchestrator
+import pytest
+
+# Skip when run via pytest - this is a manual integration script
+pytestmark = pytest.mark.skip(reason="Manual integration test - run directly with python")
 
 async def test_full_flow():
+    # Import here to avoid import errors during pytest collection
+    from core.orchestrator import DaemonOrchestrator
+    from models.model_manager import ModelManager
+    from core.response_generator import ResponseGenerator
+    from utils.file_processor import FileProcessor
+    from core.prompt.builder import UnifiedPromptBuilder
+
     print(f"\n{'='*70}")
     print(f"Full End-to-End Test: Meta-Conversational Query")
     print(f"{'='*70}\n")
 
-    # Initialize orchestrator
+    # Initialize components
     print("Initializing orchestrator...")
-    orchestrator = DaemonOrchestrator()
+    model_manager = ModelManager()
+    response_generator = ResponseGenerator(model_manager=model_manager)
+    file_processor = FileProcessor()
+
+    # Create minimal prompt builder
+    from core.prompt.token_manager import TokenManager
+    token_manager = TokenManager()
+    prompt_builder = UnifiedPromptBuilder(
+        memory_coordinator=None,
+        model_manager=model_manager,
+        token_manager=token_manager
+    )
+
+    orchestrator = DaemonOrchestrator(
+        model_manager=model_manager,
+        response_generator=response_generator,
+        file_processor=file_processor,
+        prompt_builder=prompt_builder
+    )
 
     # Test query
     query = "Do you recall what time I said I woke up yesterday?"

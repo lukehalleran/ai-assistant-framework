@@ -37,14 +37,20 @@ Legacy Heuristic Detection (fallback):
 import asyncio
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from utils.logging_utils import get_logger
 
 logger = get_logger("web_search_trigger")
+
+# Short-lived cache for LLM trigger results (prevents duplicate calls within same request)
+# Structure: {query_hash: (timestamp, WebSearchDecision)}
+_llm_trigger_cache: Dict[int, Tuple[float, "WebSearchDecision"]] = {}
+_LLM_TRIGGER_CACHE_TTL = 10.0  # 10 seconds - long enough for same request, short enough to not stale
 
 
 class WebSearchDepth(Enum):
@@ -819,6 +825,25 @@ async def analyze_for_web_search_llm(
     Returns:
         WebSearchDecision with should_search, search_terms, depth, num_searches
     """
+    global _llm_trigger_cache
+
+    # Check cache first (prevents duplicate LLM calls within same request)
+    # Only hash on query - crisis_level may differ between callers but decision is same
+    cache_key = hash(query)
+    now = time.time()
+    if cache_key in _llm_trigger_cache:
+        cached_time, cached_result = _llm_trigger_cache[cache_key]
+        if now - cached_time < _LLM_TRIGGER_CACHE_TTL:
+            logger.debug(f"[WebSearchTrigger] Cache hit for query (age={now - cached_time:.2f}s)")
+            return cached_result
+
+    # Clean expired cache entries periodically (every ~100 calls)
+    if len(_llm_trigger_cache) > 50:
+        _llm_trigger_cache = {
+            k: v for k, v in _llm_trigger_cache.items()
+            if now - v[0] < _LLM_TRIGGER_CACHE_TTL
+        }
+
     # Quick exits
     if not web_search_enabled:
         return WebSearchDecision(
@@ -883,7 +908,7 @@ async def analyze_for_web_search_llm(
             f"[WebSearchTrigger] Heuristic veto: conf={heuristic_result.confidence:.2f} <= {HEURISTIC_VETO_THRESHOLD}, "
             f"LLM wanted search={llm_response.should_search} but heuristic says no"
         )
-        return WebSearchDecision(
+        veto_result = WebSearchDecision(
             should_search=False,
             depth=WebSearchDepth.QUICK,
             confidence=heuristic_result.confidence,
@@ -894,6 +919,8 @@ async def analyze_for_web_search_llm(
             num_searches=0,
             source="heuristic"
         )
+        _llm_trigger_cache[cache_key] = (time.time(), veto_result)
+        return veto_result
 
     # Blend LLM and heuristic confidence (70% LLM, 30% heuristic)
     llm_weight = LLM_HEURISTIC_BLEND_WEIGHT
@@ -934,7 +961,7 @@ async def analyze_for_web_search_llm(
         f"blended_conf={blended_confidence:.2f}"
     )
 
-    return WebSearchDecision(
+    result = WebSearchDecision(
         should_search=should_search,
         depth=depth,
         confidence=blended_confidence,
@@ -945,6 +972,11 @@ async def analyze_for_web_search_llm(
         num_searches=llm_response.num_searches if should_search else 0,
         source="llm"
     )
+
+    # Cache the result to avoid duplicate LLM calls within same request
+    _llm_trigger_cache[cache_key] = (time.time(), result)
+
+    return result
 
 
 if __name__ == "__main__":
