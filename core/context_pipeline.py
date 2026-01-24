@@ -395,8 +395,8 @@ class ContextPipeline:
             if self.memory_system and hasattr(self.memory_system, 'corpus_manager'):
                 try:
                     recent_memories = self.memory_system.corpus_manager.get_recent_memories(3)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[ContextPipeline] Could not retrieve recent memories for emotional analysis: {e}")
 
             # Also use provided conversation history
             if conversation_history:

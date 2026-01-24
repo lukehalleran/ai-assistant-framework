@@ -132,8 +132,8 @@ async def handle_submit(
         import main
         if hasattr(main, 'update_activity_timestamp'):
             main.update_activity_timestamp()
-    except Exception:
-        pass  # Silently ignore if main module not available
+    except (ImportError, AttributeError) as e:
+        logger.debug(f"[Handlers] Could not update activity timestamp: {e}")
 
     # Get conversation logger
     conversation_logger = get_conversation_logger()
@@ -175,7 +175,8 @@ async def handle_submit(
             model_for_tokens = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
             tm = getattr(orchestrator, 'tokenizer_manager', None)
             prompt_tokens = int(tm.count_tokens(merged_input, model_for_tokens)) if tm else None
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug(f"[Handlers] Token counting failed for raw mode: {e}")
             prompt_tokens = None
 
         debug_record = {
@@ -328,7 +329,8 @@ async def handle_submit(
                     prompt_tokens = int(tm.count_tokens(full_prompt, model_name)) if tm else None
                     system_tokens = int(tm.count_tokens(system_prompt or '', model_name)) if tm else 0
                     total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
-                except Exception:
+                except (AttributeError, TypeError, ValueError) as e:
+                    logger.debug(f"[Handlers] Token counting failed for agentic mode: {e}")
                     prompt_tokens = None
                     system_tokens = None
                     total_tokens = None
@@ -415,7 +417,7 @@ async def handle_submit(
             import os as _os
             if str(_os.getenv('FORCE_STREAMING', '1')).strip().lower() in {'1','true','yes','on'}:
                 _enable_bestof = False
-        except Exception:
+        except (AttributeError, TypeError):
             pass
 
         # Policy: always stream, except DUEL mode. Single-model best-of is disabled for streaming UX.
@@ -439,7 +441,8 @@ async def handle_submit(
             prompt_tokens = int(tm.count_tokens(full_prompt, model_name)) if tm else None
             system_tokens = int(tm.count_tokens(system_prompt or '', model_name)) if tm else 0
             total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug(f"[Handlers] Token counting failed for enhanced mode: {e}")
             prompt_tokens = None
             system_tokens = None
             total_tokens = None
@@ -450,7 +453,8 @@ async def handle_submit(
             # If BEST_OF_TEMPS not explicitly configured, anchor around current runtime temperature
             try:
                 _explicit_temps = tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else None
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logger.debug(f"[Handlers] Could not parse BEST_OF_TEMPS: {e}")
                 _explicit_temps = None
 
             if _explicit_temps and len(_explicit_temps) > 0:
@@ -459,7 +463,8 @@ async def handle_submit(
                 # Derive two temps around current default_temperature to reflect the Settings slider
                 try:
                     _t = float(getattr(orchestrator.model_manager, 'default_temperature', 0.7))
-                except Exception:
+                except (AttributeError, TypeError, ValueError) as e:
+                    logger.debug(f"[Handlers] Could not get default_temperature: {e}")
                     _t = 0.7
                 # Slight spread while staying in [0.0, 1.5]
                 _low = max(0.0, min(1.5, round(0.6 * _t, 2)))
@@ -469,11 +474,12 @@ async def handle_submit(
             # Read latency budget: runtime features override, else app_config default
             try:
                 from config.app_config import BEST_OF_LATENCY_BUDGET_S as _DEF_BUDGET
-            except Exception:
+            except ImportError:
                 _DEF_BUDGET = 0.0
             try:
                 _budget = float(_features.get('best_of_latency_budget_s', _DEF_BUDGET))
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logger.debug(f"[Handlers] Could not parse latency budget: {e}")
                 _budget = float(_DEF_BUDGET) if _DEF_BUDGET else 0.0
 
             # Check for duel mode configuration (two generators + one judge)
@@ -484,7 +490,7 @@ async def handle_submit(
                     BEST_OF_SELECTOR_MAX_TOKENS as DEF_SEL_MAXTOK,
                     BEST_OF_DUEL_MODE as DEF_DUEL_MODE,
                 )
-            except Exception:
+            except ImportError:
                 DEF_GEN_MODELS = []
                 DEF_SEL_MODELS = []
                 DEF_SEL_MAXTOK = 64
@@ -564,7 +570,8 @@ async def handle_submit(
                         prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
                         system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
                         total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
-                    except Exception:
+                    except (AttributeError, TypeError, ValueError) as e:
+                        logger.debug(f"[Handlers] Token counting failed for best-of with budget: {e}")
                         prompt_tokens2 = None
                         system_tokens2 = None
                         total_tokens2 = None
@@ -576,7 +583,7 @@ async def handle_submit(
                             memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
                             if memory_id_map:
                                 debug_output, citations = orchestrator._extract_citations(final_output, memory_id_map)
-                        except Exception as e:
+                        except (AttributeError, KeyError) as e:
                             logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
 
                     debug_record = {
@@ -654,7 +661,8 @@ async def handle_submit(
                         prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
                         system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
                         total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
-                    except Exception:
+                    except (AttributeError, TypeError, ValueError) as e:
+                        logger.debug(f"[Handlers] Token counting failed for best-of (no budget): {e}")
                         prompt_tokens2 = None
                         system_tokens2 = None
                         total_tokens2 = None
@@ -666,7 +674,7 @@ async def handle_submit(
                             memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
                             if memory_id_map:
                                 debug_output, citations = orchestrator._extract_citations(final_output, memory_id_map)
-                        except Exception as e:
+                        except (AttributeError, KeyError) as e:
                             logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
 
                     debug_record = {
@@ -692,8 +700,8 @@ async def handle_submit(
                 try:
                     if 'best_task' in locals():
                         best_task.cancel()
-                except Exception:
-                    pass
+                except (NameError, AttributeError) as e:
+                    logger.debug(f"[Handlers] Could not cancel best_task: {e}")
                 thinking_started = False
                 thinking_complete = False
                 async for chunk in orchestrator.response_generator.generate_streaming_response(
@@ -719,7 +727,7 @@ async def handle_submit(
                             import re
                             m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
                             display_output = (m.group(1).strip() if m else final_answer)
-                        except Exception:
+                        except (IndexError, AttributeError):
                             display_output = final_answer
                         yield {"role": "assistant", "content": display_output, "is_thinking": False}
                     elif final_answer:
@@ -728,7 +736,7 @@ async def handle_submit(
                             import re
                             m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
                             display_output = (m.group(1).strip() if m else final_answer)
-                        except Exception:
+                        except (IndexError, AttributeError):
                             display_output = final_answer
                         yield {"role": "assistant", "content": display_output}
                     else:
@@ -737,7 +745,7 @@ async def handle_submit(
                             import re
                             m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
                             display_output = (m.group(1).strip() if m else final_output)
-                        except Exception:
+                        except (IndexError, AttributeError):
                             display_output = final_output
                         yield {"role": "assistant", "content": display_output}
                 # After fallback streaming completes, emit debug record
@@ -750,7 +758,8 @@ async def handle_submit(
                     prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
                     system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
                     total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
-                except Exception:
+                except (AttributeError, TypeError, ValueError) as e:
+                    logger.debug(f"[Handlers] Token counting failed for fallback streaming: {e}")
                     prompt_tokens2 = None
                     system_tokens2 = None
                     total_tokens2 = None
@@ -826,7 +835,7 @@ async def handle_submit(
                         # Use non-greedy match and ensure we capture everything between outer tags
                         m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
                         display_output = (m.group(2).strip() if m else final_answer)
-                    except Exception:
+                    except (IndexError, AttributeError):
                         display_output = final_answer
                     yield {"role": "assistant", "content": display_output}
                 else:
@@ -836,7 +845,7 @@ async def handle_submit(
                         # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
                         m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
                         display_output = (m.group(2).strip() if m else final_output)
-                    except Exception:
+                    except (IndexError, AttributeError):
                         display_output = final_output
                     yield {"role": "assistant", "content": display_output}
 
@@ -864,7 +873,8 @@ async def handle_submit(
                 prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
                 system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
                 total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
-            except Exception:
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug(f"[Handlers] Token counting failed for streaming debug: {e}")
                 prompt_tokens2 = None
                 system_tokens2 = None
                 total_tokens2 = None
@@ -941,8 +951,8 @@ async def handle_submit(
                         # Default test cap to 5000 if not set via env
                         import os as _os
                         cm.max_entries = int(_os.getenv("CORPUS_MAX_ENTRIES", "5000"))
-                except Exception:
-                    pass
+                except (AttributeError, ValueError) as e:
+                    logger.debug(f"[Handlers] Could not override corpus max_entries: {e}")
 
                 # Parse thinking block from final_output before storing
                 # Only store the final answer, not the thinking process
@@ -990,8 +1000,8 @@ async def handle_submit(
                             continue
                         lines.append(line)
                     response_to_store = "\n".join(lines).strip()
-                except Exception:
-                    pass
+                except (re.error, TypeError, AttributeError) as e:
+                    logger.debug(f"[Handlers] Header sanitization failed: {e}")
 
                 # Fire-and-forget background storage (saves ~1.7s of LLM calls)
                 # Topic extraction and fact extraction run in background

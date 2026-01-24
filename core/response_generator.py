@@ -70,7 +70,8 @@ class ResponseGenerator:
             # Falls back to config default if None/blank is provided.
             try:
                 from config.app_config import SYSTEM_PROMPT as DEFAULT_SP  # local import to avoid hard dep at import time
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[ResponseGenerator] Could not load system prompt from config: {e}, using fallback")
                 DEFAULT_SP = "You are Daemon, a helpful assistant with memory and RAG. Be direct, truthful, concise."
 
             effective_sp = (system_prompt or "").strip() or DEFAULT_SP
@@ -261,7 +262,7 @@ class ResponseGenerator:
             # Fallback system prompt if missing
             try:
                 from config.app_config import SYSTEM_PROMPT as DEFAULT_SP
-            except Exception:
+            except ImportError:
                 DEFAULT_SP = "You are Daemon, a helpful assistant with memory and RAG. Be direct, truthful, concise."
             effective_sp = (system_prompt or "").strip() or DEFAULT_SP
             text = await self.model_manager.generate_once(
@@ -374,7 +375,7 @@ class ResponseGenerator:
         if self.logger:
             try:
                 self.logger.info(f"[BESTOF] single-model path model={model_name} n={n} temps={tuple(temps)} max_tokens={max_tokens}")
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
         results = await asyncio.gather(*tasks, return_exceptions=True)
         candidates: List[str] = []
@@ -396,7 +397,7 @@ class ResponseGenerator:
                 if thinking and self.logger:
                     try:
                         self.logger.debug(f"[BESTOF] candidate {idx}/{n} [THINKING BLOCK]\n{thinking}")
-                    except Exception:
+                    except (AttributeError, TypeError):
                         pass
 
                 candidates.append(text_final)
@@ -456,7 +457,7 @@ class ResponseGenerator:
                 obj = json.loads(raw)
                 if isinstance(obj, dict) and "score" in obj:
                     score = float(obj["score"])  # may raise ValueError
-            except Exception:
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError):
                 pass
             if score is None:
                 m = re.search(r"([0-9]+(?:\.[0-9]+)?)", raw)
@@ -507,7 +508,7 @@ class ResponseGenerator:
             result: Dict[str, Any] = {}
             try:
                 result = json.loads(raw)
-            except Exception:
+            except (json.JSONDecodeError, ValueError):
                 # Fuzzy parse winner token
                 m = re.search(r"\bwinner\b.*?([AB])", raw, re.IGNORECASE | re.DOTALL)
                 if m:
@@ -554,7 +555,7 @@ class ResponseGenerator:
         if self.logger:
             try:
                 self.logger.info(f"[DUEL] model_1={model_a} model_2={model_b} judge={judge_model}")
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
         t1 = asyncio.create_task(
             self.model_manager.generate_once(
@@ -587,18 +588,18 @@ class ResponseGenerator:
         if thinking_a and self.logger:
             try:
                 self.logger.debug(f"[DUEL][{model_a}][THINKING BLOCK]\n{thinking_a}")
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
         if thinking_b and self.logger:
             try:
                 self.logger.debug(f"[DUEL][{model_b}][THINKING BLOCK]\n{thinking_b}")
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
 
         if self.logger:
             try:
                 self.logger.info(f"[DUEL] raw lengths a={len(a_text_raw)} b={len(b_text_raw)}, final lengths a={len(a_text)} b={len(b_text)}")
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
 
         # Judge sees only final answers (without thinking blocks)
@@ -614,7 +615,7 @@ class ResponseGenerator:
         if self.logger:
             try:
                 self.logger.info(f"[DUEL] winner={winner} scores A={result.get('score_A')} B={result.get('score_B')}")
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
 
         # Return the final answer from the winner plus metadata about both thinking processes

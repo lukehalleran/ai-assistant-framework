@@ -64,7 +64,7 @@ if getattr(sys, 'frozen', False):
 else:
     # override=True ensures .env takes precedence over shell environment variables
     load_dotenv(override=True)
-print(f"[DEBUG] OPENAI_API_KEY loaded: {os.environ.get('OPENAI_API_KEY', 'NOT SET')[:20]}...")
+print(f"[DEBUG] OPENAI_API_KEY loaded: {'SET' if os.environ.get('OPENAI_API_KEY') else 'NOT SET'}")
 
 
 import asyncio
@@ -229,7 +229,7 @@ def build_orchestrator():
     # Choose active model: prefer persisted config, else default to GPT‑5
     try:
         active_from_config = (config.get("models", {}) or {}).get("active")
-    except Exception:
+    except (AttributeError, TypeError, KeyError):
         active_from_config = None
     target_model = (active_from_config or "gpt-5")
     model_manager.switch_model(target_model)
@@ -246,7 +246,7 @@ def build_orchestrator():
             )
         elif isinstance(_BO_GENS, list) and _BO_GENS:
             logger.info(f"[BESTOF] configured generators={_BO_GENS} selectors={( _BO_SEL if isinstance(_BO_SEL, list) else [])}")
-    except Exception:
+    except (ImportError, AttributeError):
         pass
 
     # Register shared dependencies so modules (e.g., TopicManager) can resolve them
@@ -419,14 +419,14 @@ def _run_shutdown_tasks(orchestrator):
             logger_obj = getattr(orchestrator, "conversation_logger", None)
             if logger_obj and hasattr(logger_obj, "buffer"):
                 session_convos = list(logger_obj.buffer)
-        except Exception:
+        except (AttributeError, TypeError):
             pass
 
         try:
             pb = getattr(orchestrator, "prompt_builder", None)
             if pb and isinstance(getattr(pb, "_last_summaries", None), list):
                 session_summaries = list(pb._last_summaries)
-        except Exception:
+        except (AttributeError, TypeError):
             pass
 
         # Run shutdown tasks
@@ -1023,7 +1023,7 @@ if __name__ == "__main__":
                     logger_obj = getattr(orchestrator, "conversation_logger", None)
                     if logger_obj and hasattr(logger_obj, "buffer"):
                         session_convos = list(logger_obj.buffer)
-                except Exception:
+                except (AttributeError, TypeError):
                     pass
 
                 # Pull any summaries collected in this run if you keep them
@@ -1031,7 +1031,7 @@ if __name__ == "__main__":
                     pb = getattr(orchestrator, "prompt_builder", None)
                     if pb and isinstance(getattr(pb, "_last_summaries", None), list):
                         session_summaries = list(pb._last_summaries)
-                except Exception:
+                except (AttributeError, TypeError):
                     pass
 
                 # Ensure we can call async at shutdown
@@ -1066,8 +1066,8 @@ if __name__ == "__main__":
                     else:
                         _a.run(_do_shutdown_reflection())
                         _a.run(_do_shutdown_summaries_and_facts())
-                except Exception:
-                    pass
+                except RuntimeError:
+                    pass  # Event loop issues at shutdown
         finally:
             # close model manager cleanly (don’t instantiate a new one)
             try:
@@ -1078,5 +1078,5 @@ if __name__ == "__main__":
                         logger.debug("[main] Skipping immediate model_manager.close(); shutdown tasks still scheduled")
                     else:
                         orchestrator.model_manager.close()
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError):
+                pass  # Model manager cleanup errors at shutdown

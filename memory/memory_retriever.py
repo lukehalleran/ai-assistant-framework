@@ -90,7 +90,8 @@ class MemoryRetriever:
         if isinstance(ts, str):
             try:
                 ts = datetime.fromisoformat(ts)
-            except Exception:
+            except ValueError as e:
+                logger.debug(f"[MemoryRetriever] Bad timestamp format '{ts[:30] if ts else ''}': {e}")
                 ts = datetime.now()
 
         tags = meta.get('tags', [])
@@ -189,8 +190,8 @@ class MemoryRetriever:
                 if ts:
                     age_h = (datetime.now() - ts).total_seconds() / 3600.0
                     rec = 1.0 / (1.0 + 0.05 * max(0.0, age_h))
-            except Exception:
-                pass
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.debug(f"[MemoryRetriever] Recency scoring failed for timestamp '{ts}': {e}")
             return 0.7 * float(x.get("confidence", 0.6)) + 0.3 * rec
 
         results.sort(key=_score, reverse=True)
@@ -228,8 +229,8 @@ class MemoryRetriever:
                         })
                         if len(out) >= limit:
                             return out
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[MemoryRetriever] Corpus reflection retrieval failed: {e}")
 
         # Semantic fallback
         try:
@@ -249,8 +250,8 @@ class MemoryRetriever:
                         })
                         if len(out) >= limit:
                             break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[MemoryRetriever] Semantic reflection retrieval failed: {e}")
 
         return out[:limit]
 

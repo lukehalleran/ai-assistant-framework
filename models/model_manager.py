@@ -262,7 +262,7 @@ class ModelManager:
 
             # Cache the stub embedder too to avoid re-creating it
             _global_embed_model = _StubEmbedder()
-            return _global_embedder
+            return _global_embed_model
 
     @log_and_time("Get Cross-Encoder")
     def get_cross_encoder(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):

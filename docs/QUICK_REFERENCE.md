@@ -283,13 +283,63 @@ class ResponseGenerator:
         async for chunk in self.model_manager.generate_stream(prompt, model):
             yield chunk
 
-    async def generate_best_of_n(prompt: str, n: int = 3) -> str:
-        """Generate N responses, use judge to pick best"""
-        responses = await asyncio.gather(*[
-            self.model_manager.generate(prompt, model) for _ in range(n)
-        ])
-        best = await self.competitive_scorer.judge_responses(prompt, responses)
-        return best
+    async def generate_best_of(prompt: str, n: int = 3) -> str:
+        """Generate N responses with temp variation, score and pick best"""
+
+    async def generate_duel_and_judge(prompt, model_a, model_b, judge_model) -> dict:
+        """Two models compete, judge picks winner. Returns {'answer', 'winner', ...}"""
+
+    async def generate_best_of_ensemble(prompt, generators, selectors) -> str:
+        """Multiple generators + multiple judges with weighted scoring"""
+```
+
+---
+
+## Best-of Handler [NEW]
+
+```python
+# core/best_of_handler.py
+@dataclass
+class BestOfResult:
+    response: str        # Final answer
+    used_best_of: bool   # True if best-of was used
+    mode: str            # "duel", "ensemble", "single", "fallback"
+    metadata: Dict       # Raw duel data, scores, etc.
+
+class BestOfHandler:
+    """Orchestrates best-of-N response generation modes"""
+
+    def should_use_best_of(user_input: str, use_raw_mode: bool = False) -> bool:
+        """Check if query qualifies (is question, meets token threshold)"""
+        cfg = self._get_runtime_config()
+        if not cfg["enable"] or use_raw_mode:
+            return False
+        qinfo = analyze_query(user_input)
+        return qinfo.is_question and qinfo.token_count >= cfg["min_tokens"]
+
+    async def generate(prompt, user_input, system_prompt, model_name) -> BestOfResult:
+        """
+        Mode selection:
+        1. Duel: 2 generators + 1 judge (duel_mode=True, 2 generators)
+        2. Ensemble: N generators + M judges (generators configured)
+        3. Single: 1 model, N temps (fallback)
+
+        Falls back to streaming on timeout (latency_budget_s).
+        """
+        cfg = self._get_runtime_config()
+        if cfg["duel_mode"] and len(cfg["generator_models"]) == 2:
+            return await self._generate_duel(...)
+        elif cfg["generator_models"]:
+            return await self._generate_ensemble(...)
+        else:
+            return await self._generate_single(...)
+
+# Config (app_config.py):
+ENABLE_BEST_OF = True
+BEST_OF_DUEL_MODE = False
+BEST_OF_GENERATOR_MODELS = ["sonnet-4.5", "gpt-5"]  # Duel needs exactly 2
+BEST_OF_SELECTOR_MODELS = ["gpt-4o-mini"]           # Judges
+BEST_OF_LATENCY_BUDGET_S = 2.0                      # Timeout before fallback
 ```
 
 ---

@@ -528,7 +528,8 @@ def launch_gui(orchestrator, force_wizard=False):
         # Determine active cadence N from runtime consolidator (fallback 20)
         try:
             N = int(getattr(getattr(orchestrator.memory_system, 'consolidator', None), 'consolidation_threshold', 20))
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug(f"[Launch] Could not read consolidation threshold: {e}, using default 20")
             N = 20
 
         # Summary/reflection identification aligned with CorpusManager logic
@@ -562,7 +563,8 @@ def launch_gui(orchestrator, force_wizard=False):
                     t = str(t).strip().lower()
                     if t.startswith(key):
                         return int(t.split(':', 2)[2])
-            except Exception:
+            except (ValueError, IndexError) as e:
+                logger.debug(f"[Launch] Could not parse block_n from tags: {e}")
                 return None
             return None
 
@@ -592,12 +594,14 @@ def launch_gui(orchestrator, force_wizard=False):
                 e for e in cm.corpus
                 if (e.get("type", "").lower() == "reflection") or ("type:reflection" in (e.get("tags") or []))
             ]
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"[Launch] Could not count corpus reflections: {e}")
             corpus_refl = []
         try:
             coll = getattr(orchestrator.memory_system, "chroma_store", None).collections.get("reflections")
             sem_refl_count = coll.count() if coll else 0
-        except Exception:
+        except (AttributeError, KeyError) as e:
+            logger.debug(f"[Launch] Could not count semantic reflections: {e}")
             sem_refl_count = 0
         # Last user message time (from recent corpus entries)
         def _fmt_ts(ts):
@@ -609,13 +613,15 @@ def launch_gui(orchestrator, force_wizard=False):
                     if ts.tzinfo is not None and ts.tzinfo.utcoffset(ts) is not None:
                         ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
                     return ts.strftime('%Y-%m-%d %H:%M')
-            except Exception:
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.debug(f"[Launch] Timestamp format failed: {e}")
                 return ""
             return ""
         try:
             last = orchestrator.memory_system.corpus_manager.get_recent_memories(1)
             last_ts = _fmt_ts(last[0].get("timestamp")) if last else ""
-        except Exception:
+        except (AttributeError, IndexError, KeyError) as e:
+            logger.debug(f"[Launch] Could not get last message time: {e}")
             last_ts = ""
 
         return {
@@ -646,7 +652,8 @@ def launch_gui(orchestrator, force_wizard=False):
                 if isinstance(sp, str) and sp.strip():
                     latest_system_prompt = sp.strip()
                     break
-        except Exception:
+        except (TypeError, AttributeError) as e:
+            logger.debug(f"[Launch] Could not extract system prompt from debug entries: {e}")
             latest_system_prompt = None
 
         parts = []
@@ -663,7 +670,7 @@ def launch_gui(orchestrator, force_wizard=False):
             try:
                 if ptoks is not None:
                     tok_line = f"Tokens — prompt: {ptoks}  system: {stoks or 0}  total: {ttoks or (ptoks + (stoks or 0))}"
-            except Exception:
+            except (TypeError, ValueError):
                 tok_line = ""
             # Build the segment for this entry
             segment = f"### #{i} — Mode: {mode}  Model: {model}\n"
@@ -703,7 +710,7 @@ def launch_gui(orchestrator, force_wizard=False):
                 if isinstance(h, logging.FileHandler):
                     # type: ignore[attr-defined]
                     return getattr(h, 'baseFilename', None)
-        except Exception:
+        except (AttributeError, TypeError):
             pass
         # Fallback to the default used in utils.logging_utils.configure_logging
         return os.path.abspath('daemon_debug.log')
@@ -854,7 +861,7 @@ def launch_gui(orchestrator, force_wizard=False):
                 if isinstance(chunk, dict) and "debug" in chunk:
                     try:
                         debug_entries.append(chunk["debug"])  # append single record
-                    except Exception:
+                    except (TypeError, KeyError):
                         pass
                     # Fallback: if no assistant content was streamed, set it from debug.response
                     try:
@@ -863,7 +870,7 @@ def launch_gui(orchestrator, force_wizard=False):
                             if final_from_debug:
                                 if chat_history and isinstance(chat_history[-1], dict) and chat_history[-1].get("role") == "assistant":
                                     chat_history[-1]["content"] = final_from_debug
-                    except Exception:
+                    except (TypeError, KeyError, IndexError):
                         pass
                 # Re-yield current state along with typing + timer
                 now = _t.time(); _updates += 1
@@ -907,7 +914,7 @@ def launch_gui(orchestrator, force_wizard=False):
             if cfg_path.exists():
                 with open(cfg_path, 'r', encoding='utf-8') as f:
                     return yaml.safe_load(f) or {}
-        except Exception:
+        except (IOError, OSError, ImportError):
             pass
         return {}
 
@@ -935,9 +942,9 @@ def launch_gui(orchestrator, force_wizard=False):
         if isinstance(_persisted, str) and _persisted.strip():
             try:
                 orchestrator.model_manager.switch_model(_persisted.strip())
-            except Exception:
+            except (AttributeError, ValueError):
                 pass
-    except Exception:
+    except (AttributeError, TypeError, KeyError):
         pass
 
     # Apply persisted default temperature at startup (if present)
@@ -947,9 +954,9 @@ def launch_gui(orchestrator, force_wizard=False):
         if _t is not None:
             try:
                 orchestrator.model_manager.default_temperature = float(_t)
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 pass
-    except Exception:
+    except (AttributeError, TypeError, KeyError):
         pass
 
     with gr.Blocks(theme=get_dark_theme(), css=DARK_CHATBOT_CSS) as demo:
@@ -1218,7 +1225,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _local_models = list(getattr(_mm, 'models', {}).keys())
                     _model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
                     _current_active = _mm.get_active_model_name() or (_model_choices[0] if _model_choices else 'gpt-4-turbo')
-                except Exception:
+                except (AttributeError, TypeError, KeyError):
                     _model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.5']
                     _current_active = 'gpt-5.1'
 
@@ -1263,7 +1270,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _disable_bestof_default = not bool(_feat.get('enable_best_of', True))
                     _disable_rewrite_default = not bool(_feat.get('enable_query_rewrite', True))
                     _disable_summaries_default = bool(_feat.get('disable_llm_summaries', False))
-                except Exception:
+                except (AttributeError, TypeError, KeyError):
                     _disable_bestof_default = False
                     _disable_rewrite_default = False
                     _disable_summaries_default = False
@@ -1274,7 +1281,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     disable_summaries = gr.Checkbox(label="Disable LLM Summaries (skip pre-call)", value=_disable_summaries_default)
                 try:
                     _bo_budget_default = float((_settings.get('features', {}) or {}).get('best_of_latency_budget_s', 0))
-                except Exception:
+                except (ValueError, TypeError, KeyError):
                     _bo_budget_default = 0.0
                 bestof_budget = gr.Slider(label="Best‑of Latency Budget (s)", minimum=0.0, maximum=120.0, step=0.5, value=_bo_budget_default)
                 apply_fast_btn = gr.Button("Apply Streaming Settings")
@@ -1294,7 +1301,7 @@ def launch_gui(orchestrator, force_wizard=False):
                             pb = getattr(orchestrator, 'prompt_builder', None)
                             if pb is not None:
                                 setattr(pb, 'force_llm_summaries', False if disable_sums else True)
-                        except Exception:
+                        except (AttributeError, TypeError):
                             pass
                         # Persist to YAML
                         ok, err = _save_settings(lambda d: d.setdefault('features', {}).update({
@@ -1318,7 +1325,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _ws_cfg = (_ws_settings.get('web_search', {}) or {})
                     _ws_enabled_default = bool(_ws_cfg.get('enabled', True))
                     _ws_daily_limit_default = int(_ws_cfg.get('daily_credit_limit', 100))
-                except Exception:
+                except (AttributeError, TypeError, KeyError, ValueError):
                     _ws_enabled_default = True
                     _ws_daily_limit_default = 100
 
@@ -1353,7 +1360,7 @@ def launch_gui(orchestrator, force_wizard=False):
                             import config.app_config as app_cfg
                             app_cfg.WEB_SEARCH_ENABLED = bool(enabled)
                             app_cfg.WEB_SEARCH_DAILY_CREDIT_LIMIT = int(daily_limit)
-                        except Exception:
+                        except (ImportError, AttributeError):
                             pass
 
                         # Persist to YAML
@@ -1380,7 +1387,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _feat = (_settings.get('features', {}) or {})
                     _duel_enabled_default = bool(_feat.get('best_of_duel_mode', False))
                     _gens_default = list(_feat.get('best_of_generator_models', []))
-                except Exception:
+                except (AttributeError, TypeError, KeyError):
                     _duel_enabled_default = False
                     _gens_default = []
 
@@ -1390,7 +1397,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _api_aliases = list(getattr(_mm, 'api_models', {}).keys())
                     _local_models = list(getattr(_mm, 'models', {}).keys())
                     _all_model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
-                except Exception:
+                except (AttributeError, TypeError):
                     _all_model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.5', 'gpt-4o', 'gpt-4o-mini']
 
                 _m1_value = _gens_default[0] if len(_gens_default) > 0 else (_all_model_choices[0] if _all_model_choices else None)
@@ -1444,7 +1451,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _gen_maxtok_default = int(_feat.get('best_of_max_tokens', 128))
                     _judge_maxtok_default = int(_feat.get('best_of_selector_max_tokens', 64))
                     _stream_maxtok_default = int(_models_cfg.get('default_max_tokens', getattr(orchestrator.model_manager, 'default_max_tokens', 2048)))
-                except Exception:
+                except (AttributeError, TypeError, KeyError, ValueError):
                     _gen_maxtok_default = 128
                     _judge_maxtok_default = 64
                     _stream_maxtok_default = getattr(orchestrator.model_manager, 'default_max_tokens', 2048)
@@ -1472,7 +1479,7 @@ def launch_gui(orchestrator, force_wizard=False):
                             mm = getattr(orchestrator, 'model_manager', None)
                             if mm is not None:
                                 setattr(mm, 'default_max_tokens', int(stream_max))
-                        except Exception:
+                        except (AttributeError, TypeError, ValueError):
                             pass
                         # Persist to YAML
                         def _updater(d):
@@ -1496,7 +1503,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _settings = _load_settings()
                     _models = (_settings.get('models', {}) or {})
                     _temp_default = float(_models.get('default_temperature', getattr(orchestrator.model_manager, 'default_temperature', 0.7)))
-                except Exception:
+                except (AttributeError, TypeError, KeyError, ValueError):
                     _temp_default = getattr(orchestrator.model_manager, 'default_temperature', 0.7)
 
                 with gr.Row():
@@ -1518,7 +1525,7 @@ def launch_gui(orchestrator, force_wizard=False):
                             mm = getattr(orchestrator, 'model_manager', None)
                             if mm is not None:
                                 setattr(mm, 'default_temperature', t)
-                        except Exception:
+                        except (AttributeError, TypeError):
                             pass
                         # Persist to YAML
                         ok, err = _save_settings(lambda d: d.setdefault('models', {}).update({'default_temperature': float(t)}))
@@ -1533,7 +1540,7 @@ def launch_gui(orchestrator, force_wizard=False):
                 # Summary cadence (every N exchanges)
                 try:
                     current_n = int(getattr(getattr(orchestrator, 'memory_system', None), 'consolidator', None).consolidation_threshold)
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
                     current_n = 10
 
                 with gr.Row():
@@ -1558,7 +1565,7 @@ def launch_gui(orchestrator, force_wizard=False):
                             mc = getattr(orchestrator, 'memory_system', None)
                             if mc and getattr(mc, 'consolidator', None):
                                 mc.consolidator.consolidation_threshold = n
-                        except Exception:
+                        except (AttributeError, TypeError):
                             pass
 
                         # Update prompt builder consolidator for consistency
@@ -1566,13 +1573,13 @@ def launch_gui(orchestrator, force_wizard=False):
                             pb = getattr(orchestrator, 'prompt_builder', None)
                             if pb and getattr(pb, 'consolidator', None):
                                 pb.consolidator.consolidation_threshold = n
-                        except Exception:
+                        except (AttributeError, TypeError):
                             pass
 
                         # Keep an env hint (session-scoped)
                         try:
                             os.environ['SUMMARY_EVERY_N'] = str(n)
-                        except Exception:
+                        except (OSError, TypeError):
                             pass
 
                         # Persist to config/config.yaml under memory.summary_interval
@@ -1689,10 +1696,12 @@ def launch_gui(orchestrator, force_wizard=False):
         else:
             raise
 
-    # Keep main thread alive if needed
+    # Keep main thread alive with responsive shutdown handling
+    # Using short sleep intervals allows KeyboardInterrupt to be caught promptly
+    import threading
+    shutdown_event = threading.Event()
     try:
-        import time
-        while True:
-            time.sleep(3600)
+        while not shutdown_event.is_set():
+            shutdown_event.wait(timeout=1.0)  # Check every second for interrupts
     except KeyboardInterrupt:
         print("[GUI] Shutting down...")

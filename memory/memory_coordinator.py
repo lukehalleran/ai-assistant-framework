@@ -164,12 +164,14 @@ class MemoryCoordinator:
         try:
             from config.app_config import config as _app_cfg
             cfg_n = int(((_app_cfg.get('memory') or {}).get('summary_interval') or 10))
-        except Exception:
+        except (ImportError, AttributeError, ValueError, TypeError) as e:
+            logger.debug(f"[MemoryCoordinator] Could not load summary_interval from config: {e}")
             cfg_n = 10
         try:
             import os as _os
             env_n = int(_os.getenv('SUMMARY_EVERY_N', str(cfg_n)))
-        except Exception:
+        except (ValueError, TypeError) as e:
+            logger.debug(f"[MemoryCoordinator] Could not parse SUMMARY_EVERY_N env var: {e}")
             env_n = cfg_n
         self.consolidator = MemoryConsolidator(
             consolidation_threshold=max(1, int(env_n)),
@@ -187,7 +189,8 @@ class MemoryCoordinator:
         # Mark the start of this application session; used to scope shutdown reflections/facts
         try:
             self.session_start = self._now()
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"[MemoryCoordinator] _now() failed during init: {e}")
             from datetime import datetime as _dt
             self.session_start = _dt.now()
 
@@ -235,16 +238,16 @@ class MemoryCoordinator:
         try:
             if self.time_manager is not None and hasattr(self.time_manager, "current"):
                 return self.time_manager.current()
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"[MemoryCoordinator] TimeManager.current() failed: {e}")
         return datetime.now()
 
     def _now_iso(self):
         try:
             if self.time_manager is not None and hasattr(self.time_manager, "current_iso"):
                 return self.time_manager.current_iso()
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"[MemoryCoordinator] TimeManager.current_iso() failed: {e}")
         return self._now().isoformat()
 
 
@@ -498,7 +501,7 @@ class MemoryCoordinator:
                     if isinstance(ts, str):
                         try:
                             ts = _dt.fromisoformat(ts)
-                        except Exception:
+                        except ValueError:
                             ts = _dt.min
                     if not hasattr(ts, 'isoformat'):
                         ts = _dt.min
@@ -510,7 +513,8 @@ class MemoryCoordinator:
                     conv = non[:REFLECTION_FALLBACK_RECENT]
                 else:
                     conv = non
-            except Exception:
+            except (AttributeError, TypeError) as e:
+                logger.debug(f"[MemoryCoordinator] Reflection context gathering failed: {e}")
                 conv = []
 
         if len([c for c in conv if (c.get("query") or c.get("response"))]) < REFLECTION_MIN_EXCHANGES and not sums:
@@ -573,10 +577,10 @@ class MemoryCoordinator:
                     try:
                         cur = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else prev_model
                         logger.info(f"[Reflections] restored active model after shutdown reflection: {cur}")
-                    except Exception:
+                    except (AttributeError, TypeError):
                         pass
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                logger.debug(f"[MemoryCoordinator] Could not restore model after reflection: {e}")
 
         text = (text or "").strip()
         if not text:
@@ -695,7 +699,7 @@ class MemoryCoordinator:
             if isinstance(ts, str):
                 try:
                     ts = datetime.fromisoformat(ts)
-                except Exception:
+                except ValueError:
                     ts = datetime.now()
 
             # Calculate recency score using active days if available, otherwise hours
@@ -752,7 +756,7 @@ class MemoryCoordinator:
         if isinstance(ts, str):
             try:
                 ts = datetime.fromisoformat(ts)
-            except Exception:
+            except ValueError:
                 ts = datetime.now()
 
         tags = meta.get('tags', [])
@@ -877,7 +881,8 @@ class MemoryCoordinator:
 
         try:
             raw = await self._get_semantic_memories(query, n_results=max(30, limit * 3))
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[MemoryCoordinator] Semantic memory retrieval failed: {e}")
             raw = []
 
         if not raw:
@@ -918,7 +923,8 @@ class MemoryCoordinator:
         # Run gate and pick top-k by gate score
         try:
             filtered = await self.gate_system.filter_memories(query, chunks)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[MemoryCoordinator] Gate system filtering failed: {e}")
             filtered = chunks[:limit]
 
         # Propagate gate score + mark as pre_gated
@@ -940,7 +946,7 @@ class MemoryCoordinator:
             import os as _os
             enable_topup = str(_os.getenv("MEM_TOPUP_ENABLE", "0")).strip().lower() in {"1","true","yes","on"}
             min_score = float(_os.getenv("MEM_TOPUP_MIN_SCORE", "0.35"))
-        except Exception:
+        except (ValueError, TypeError):
             enable_topup = False; min_score = 0.35
 
         if enable_topup and len(out) < limit and raw:
@@ -955,7 +961,7 @@ class MemoryCoordinator:
             def _score(m: Dict) -> float:
                 try:
                     return float(m.get('relevance_score', 0.0))
-                except Exception:
+                except (ValueError, TypeError):
                     return 0.0
             # Simple lexical overlap guard
             def _overlap(a: str, b: str) -> float:
@@ -1141,7 +1147,8 @@ class MemoryCoordinator:
             if isinstance(ts, str):
                 try:
                     ts = datetime.fromisoformat(ts)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"[MemoryCoordinator] Timestamp parse failed, using current time: {e}")
                     ts = now
             elif not isinstance(ts, datetime):
                 ts = now
@@ -1279,7 +1286,7 @@ class MemoryCoordinator:
                 if isinstance(ts, str):
                     try:
                         ts = datetime.fromisoformat(ts)
-                    except Exception:
+                    except ValueError:
                         ts = datetime.min
                 if not isinstance(ts, datetime):
                     ts = datetime.min
@@ -1303,7 +1310,7 @@ class MemoryCoordinator:
                         t = str(t).strip().lower()
                         if t.startswith(key):
                             return int(t.split(':', 2)[2])
-                except Exception:
+                except (ValueError, IndexError):
                     return None
                 return None
             existing_block_indices = []
@@ -1351,7 +1358,8 @@ class MemoryCoordinator:
                             summary_node = await self.consolidator.consolidate_memories(content_list)
                             if summary_node and getattr(summary_node, 'content', None):
                                 summary_text = summary_node.content
-                        except Exception:
+                        except Exception as e:
+                            logger.warning(f"[MemoryCoordinator] LLM consolidation failed: {e}, falling back to micro-summary")
                             summary_text = None
                     if summary_text is None:
                         try:
@@ -1378,7 +1386,8 @@ class MemoryCoordinator:
                                 )
                                 if hasattr(self, 'model_manager') and hasattr(self.model_manager, 'generate_once'):
                                     summary_text = await self.model_manager.generate_once(prompt, max_tokens=220)
-                        except Exception:
+                        except Exception as e:
+                            logger.warning(f"[MemoryCoordinator] Extractive summary generation failed: {e}")
                             summary_text = None
                     summary_text = (summary_text or '').strip()
                     if not summary_text:
@@ -1393,7 +1402,8 @@ class MemoryCoordinator:
                                 txt = (s.get('content') or '').strip()
                                 if txt:
                                     existing_texts.add(txt)
-                        except Exception:
+                        except Exception as e:
+                            logger.warning(f"[MemoryCoordinator] Could not retrieve summaries for dedup check: {e}")
                             pass
                         if summary_text in existing_texts:
                             continue
@@ -1408,8 +1418,8 @@ class MemoryCoordinator:
                                 f'block_span_n:{N}:{start}-{end-1}',
                             ]
                         })
-                    except Exception:
-                        pass
+                    except (AttributeError, TypeError) as e:
+                        logger.debug(f"[Shutdown] Failed to add summary to corpus: {e}")
 
                     # Store into Chroma as well
                     try:
@@ -1422,8 +1432,8 @@ class MemoryCoordinator:
                         }
                         if hasattr(self.chroma_store, 'add_to_collection'):
                             self.chroma_store.add_to_collection('summaries', summary_text, md)
-                    except Exception:
-                        pass
+                    except (AttributeError, TypeError) as e:
+                        logger.debug(f"[Shutdown] Failed to add summary to chroma: {e}")
 
                 # For logging, prefer tagged count when present; else total consolidator summaries
                 prev_blocks = len(existing_block_indices) if existing_block_indices else len(consolidator_summaries)
@@ -1455,7 +1465,7 @@ class MemoryCoordinator:
             else:
                 try:
                     corpus = list(self.corpus_manager.corpus)
-                except Exception:
+                except (AttributeError, TypeError):
                     corpus = []
                 # Session-only, non-summary/non-reflection, newest first
                 def _is_summary(e: Dict) -> bool:
@@ -1470,8 +1480,8 @@ class MemoryCoordinator:
                 # reuse earlier _ts helper in this function
                 try:
                     session_recent = [e for e in session_recent if _ts(e) >= self.session_start]
-                except Exception:
-                    pass
+                except (ValueError, TypeError):
+                    pass  # Keep unfiltered if timestamp comparison fails
                 session_recent.sort(key=_ts, reverse=True)
 
             for conv in session_recent[:10]:
@@ -1481,7 +1491,8 @@ class MemoryCoordinator:
                     if not q:
                         continue
                     facts = await self.fact_extractor.extract_facts(q, "")
-                except Exception:
+                except (AttributeError, RuntimeError, ValueError) as e:
+                    logger.debug(f"[Shutdown] Fact extraction failed: {e}")
                     facts = []
                 for fact in (facts or []):
                     try:
@@ -1492,27 +1503,27 @@ class MemoryCoordinator:
                         )
                         if result is None:
                             logger.debug(f"[MemoryCoordinator] Shutdown fact skipped as duplicate: {getattr(fact, 'content', str(fact))}")
-                    except Exception:
-                        continue
+                    except (AttributeError, TypeError, ValueError):
+                        continue  # Skip malformed fact
             
             # 4) Optional LLM-assisted facts over recent user messages (additive)
             try:
                 _enabled = int(os.getenv("LLM_FACTS_ENABLED", "1")) == 1
-            except Exception:
+            except (ValueError, TypeError):
                 _enabled = False
 
             if _enabled and hasattr(self, 'model_manager') and self.model_manager is not None:
                 try:
                     last_turns = int(os.getenv("LLM_FACTS_LAST_TURNS", "12"))
-                except Exception:
+                except (ValueError, TypeError):
                     last_turns = 12
                 try:
                     max_triples = int(os.getenv("LLM_FACTS_MAX_TRIPLES", "10"))
-                except Exception:
+                except (ValueError, TypeError):
                     max_triples = 10
                 try:
                     max_chars = int(os.getenv("LLM_FACTS_MAX_INPUT_CHARS", "4000"))
-                except Exception:
+                except (ValueError, TypeError):
                     max_chars = 4000
                 model_alias = os.getenv("LLM_FACTS_MODEL", "gpt-4o-mini")
 
@@ -1522,7 +1533,7 @@ class MemoryCoordinator:
                 else:
                     try:
                         corpus = list(self.corpus_manager.corpus)
-                    except Exception:
+                    except (AttributeError, TypeError):
                         corpus = []
                     def _is_summary(e: Dict) -> bool:
                         typ = (e.get('type') or '').lower()
@@ -1534,7 +1545,7 @@ class MemoryCoordinator:
                         return (typ == 'reflection') or ('type:reflection' in tags)
                     try:
                         sess_items = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e)) and _ts(e) >= self.session_start]
-                    except Exception:
+                    except (ValueError, TypeError):
                         sess_items = [e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e))]
                 users = [ (e.get('query') or '').strip() for e in sess_items if (e.get('query') or '').strip() ]
                 user_tail = users[-max(1,last_turns):]
@@ -1563,8 +1574,8 @@ class MemoryCoordinator:
                                 kept += 1
                             else:
                                 logger.debug(f"[MemoryCoordinator] LLM fact skipped as duplicate: {fact_text}")
-                        except Exception:
-                            continue
+                        except (AttributeError, TypeError, ValueError):
+                            continue  # Skip malformed LLM fact
                     logger.info(f"[LLM Facts] kept={kept} (model={model_alias})")
 
                     # NEW: Also update user profile with extracted facts
@@ -1604,7 +1615,7 @@ class MemoryCoordinator:
         try:
             if hasattr(self.topic_manager, 'detect_topic'):
                 return self.topic_manager.detect_topic(text) or 'general'
-        except Exception:
+        except (AttributeError, TypeError):
             pass
         return 'general'
 

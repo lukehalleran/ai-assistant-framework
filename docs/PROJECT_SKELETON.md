@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-23
+**Last Updated**: 2026-01-24
 
 ---
 
@@ -934,7 +934,44 @@ User input here
 
 ---
 
-### 2.8a core/agentic/ (Agentic Search System) **[NEW 2026-01]**
+### 2.8a core/best_of_handler.py (Best-of Orchestration) **[NEW 2026-01]**
+**Purpose**: Extracted handler for best-of-N, duel, and ensemble response generation
+
+**Key Classes**:
+- `BestOfResult` (dataclass): Contains response, mode, metadata
+- `BestOfHandler`: Orchestrates mode selection and execution
+
+**Key Methods**:
+- `should_use_best_of(user_input, use_raw_mode)` → bool
+  - Checks ENABLE_BEST_OF config
+  - Uses analyze_query() to check if question with sufficient tokens
+- `generate(prompt, user_input, system_prompt, model_name)` → BestOfResult
+  - Mode selection: duel → ensemble → single
+  - Timeout handling with fallback to streaming
+  - Returns structured result with metadata
+
+**Mode Selection Logic**:
+```python
+if duel_mode and len(generator_models) == 2:
+    mode = "duel"      # 2 generators + 1 judge
+elif generator_models:
+    mode = "ensemble"  # N generators + M judges
+else:
+    mode = "single"    # 1 model, N temperatures
+```
+
+**Config** (app_config.py):
+- `ENABLE_BEST_OF`: Master toggle
+- `BEST_OF_DUEL_MODE`: Enable duel (requires 2 generators)
+- `BEST_OF_GENERATOR_MODELS`: List of generator model names
+- `BEST_OF_SELECTOR_MODELS`: List of judge model names
+- `BEST_OF_LATENCY_BUDGET_S`: Timeout before fallback to streaming
+
+**Dependencies**: ResponseGenerator, analyze_query
+
+---
+
+### 2.8b core/agentic/ (Agentic Search System) **[NEW 2026-01]**
 **Purpose**: Multi-round ReAct-style web search with LLM-driven iteration
 
 **Key Components**:
@@ -2834,6 +2871,7 @@ daemon/
 │   ├── response_parser.py     # Response parsing utilities (thinking blocks, XML stripping) [NEW 2026-01-23]
 │   ├── stm_analyzer.py        # Short-term memory analyzer [NEW]
 │   ├── response_generator.py  # LLM streaming + Best-of-N/Duel (FIXED)
+│   ├── best_of_handler.py     # Best-of orchestration (duel/ensemble/single) [NEW]
 │   ├── competitive_scorer.py  # Judge-based response selection
 │   ├── dependencies.py        # Dependency injection setup
 │   ├── wiki_util.py          # Wikipedia utility functions
@@ -3235,6 +3273,7 @@ python main.py inspect-summaries
 | gate_system.py | Filter: FAISS → cosine → cross-encoder → top K |
 | prompt/builder.py | Assemble: system + separated context sections + STM within 15K tokens |
 | response_generator.py | Stream: async LLM + Best-of-N + Duel modes (buffer fix + DeepSeek EOS) [FIXED] |
+| best_of_handler.py | Orchestrate: duel/ensemble/single mode selection + timeout fallback [NEW] |
 | gui/handlers.py | Relay: streaming chunks + thinking blocks + tag stripping (reply/response/answer) [FIXED] |
 | gui/wizard.py | Onboard: first-run wizard (API key, style, name, pronouns, background facts) [NEW] |
 | utils/bootstrap.py | Freeze: platform-specific paths, .env loading, data migration [NEW] |

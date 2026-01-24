@@ -54,7 +54,8 @@ def _flatten_for_chroma(md: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             # dicts or custom objects -> JSON string
             try:
                 flat[k] = json.dumps(v, ensure_ascii=False)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[ChromaStore] Could not JSON-serialize metadata key '{k}': {e}, falling back to str()")
                 flat[k] = str(v)
     return flat
 
@@ -149,7 +150,7 @@ class MultiCollectionChromaStore:
                 try:
                     self.client.delete_collection(name=name)
                 except Exception as de:
-                    logger.warning(f"[Chroma] Delete failed for '{name}' (continuing): {de}")
+                    logger.error(f"[Chroma] CRITICAL: Could not delete stale collection '{name}': {de} - data corruption risk")
 
                 _create(name)
             except Exception as e:
@@ -217,9 +218,9 @@ class MultiCollectionChromaStore:
                 from datetime import datetime
                 if isinstance(ts, str):
                     return datetime.fromisoformat(ts)
-            except Exception:
-                pass
-            # fallback ensures items without timestamp don’t crash
+            except Exception as e:
+                logger.debug(f"[ChromaStore] Could not parse timestamp '{ts}': {e}, using minimum date")
+            # fallback ensures items without timestamp don't crash
             from datetime import datetime as _dt
             return _dt.min
 

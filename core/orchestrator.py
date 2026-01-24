@@ -53,6 +53,7 @@ from utils.emotional_context import (
 )
 from utils.need_detector import NeedType
 from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
+from core.best_of_handler import BestOfHandler, BestOfResult
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
@@ -244,6 +245,13 @@ class DaemonOrchestrator:
             self.logger.info("[Orchestrator] ContextPipeline initialized")
         except Exception as e:
             self.logger.warning(f"[Orchestrator] Failed to initialize ContextPipeline: {e}")
+
+        # Best-of Handler - Orchestrates best-of-N, ensemble, and duel mode generation
+        self.best_of_handler = BestOfHandler(
+            response_generator=response_generator,
+            config=self.config
+        )
+        self.logger.debug("[Orchestrator] BestOfHandler initialized")
 
         # Memory citation system
         self.enable_citations = False  # Will be set from GUI checkbox
@@ -444,7 +452,8 @@ class DaemonOrchestrator:
                 profile = getattr(self, 'user_profile', None)
                 if profile:
                     style_modifier = profile.get_style_modifier()
-            except Exception:
+            except (AttributeError, TypeError) as e:
+                logger.debug(f"[Orchestrator] Could not get style modifier: {e}")
                 style_modifier = ""
 
         if tone_level == CrisisLevel.HIGH:
@@ -825,8 +834,8 @@ The user is processing/analyzing, open to engagement.
         if self.memory_system and hasattr(self.memory_system, 'corpus_manager'):
             try:
                 conversation_history = self.memory_system.corpus_manager.get_recent_memories(5)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[Orchestrator] Could not retrieve conversation history: {e}, proceeding without context")
 
         context = await self.context_pipeline.build(
             user_input=user_input,
@@ -885,7 +894,8 @@ The user is processing/analyzing, open to engagement.
         # Load from config
         try:
             persona_cfg = self.personality_manager.get_current_config() if self.personality_manager else {}
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"[Orchestrator] Could not get personality config: {e}")
             persona_cfg = {}
         base_cfg = getattr(self, "config", {}) or {}
         merged_cfg = {**base_cfg, **(persona_cfg or {})}
@@ -895,8 +905,8 @@ The user is processing/analyzing, open to engagement.
             loaded = load_system_prompt(merged_cfg)
             if isinstance(loaded, str) and loaded.strip():
                 system_prompt = loaded
-        except Exception:
-            pass
+        except (ImportError, AttributeError) as e:
+            logger.debug(f"[Orchestrator] Could not load system prompt from config: {e}")
 
         # Override path from persona or orchestrator
         override_path = (persona_cfg or {}).get("system_prompt_file")
@@ -912,8 +922,8 @@ The user is processing/analyzing, open to engagement.
                         text = f.read()
                     if text.strip():
                         system_prompt = text
-            except Exception:
-                pass
+            except (IOError, OSError) as e:
+                logger.warning(f"[Orchestrator] Could not read system prompt override file '{override_path}': {e}")
 
         # --- Identity placeholder substitution ---
         if isinstance(system_prompt, str) and system_prompt.strip():
@@ -936,8 +946,8 @@ The user is processing/analyzing, open to engagement.
                     system_prompt = system_prompt.replace("{PRONOUN_SUBJ}", subj)
                     system_prompt = system_prompt.replace("{PRONOUN_OBJ}", obj)
                     system_prompt = system_prompt.replace("{PRONOUN_POSS}", poss)
-            except Exception:
-                pass
+            except (AttributeError, TypeError) as e:
+                logger.debug(f"[Orchestrator] Identity placeholder substitution failed: {e}")
 
         # --- Citation instructions ---
         if self.enable_citations:
@@ -1200,9 +1210,8 @@ The user is processing/analyzing, open to engagement.
                     self.personality_manager.switch_personality(personality)
                     if self.logger:
                         self.logger.info(f"Personality set to: {personality}")
-                except Exception:
-                    if self.logger:
-                        self.logger.warning(f"Could not set personality: {personality}")
+                except Exception as e:
+                    logger.error(f"[Orchestrator] Personality switch failed for '{personality}': {e}, using default")
 
 
             # --- Commands: early exit ---
@@ -1223,8 +1232,8 @@ The user is processing/analyzing, open to engagement.
                             await self.memory_system.store_interaction(
                                 query=user_input, response=response, tags=["clarification"]
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"[Orchestrator] Failed to store clarification interaction: {e}")
                         debug_info.update({
                             "response_length": len(response),
                             "end_time": datetime.now(),
@@ -1331,34 +1340,6 @@ The user is processing/analyzing, open to engagement.
                         self.logger.warning(f"[Orchestrator] Agentic search failed, falling back: {e}")
                     debug_info["agentic_error"] = str(e)
 
-            # Decide if we should use best-of (non-streaming) for quality; prefer runtime config
-            try:
-                from config.app_config import (
-                    ENABLE_BEST_OF as DEFAULT_ENABLE_BEST_OF,
-                    BEST_OF_N,
-                    BEST_OF_TEMPS,
-                    BEST_OF_MAX_TOKENS,
-                    BEST_OF_MIN_QUESTION,
-                    BEST_OF_MIN_TOKENS as _BEST_OF_MIN_TOKENS,
-                )
-            except Exception:
-                DEFAULT_ENABLE_BEST_OF = True; BEST_OF_N = 2; BEST_OF_TEMPS = (0.2, 0.7); BEST_OF_MAX_TOKENS = 512; BEST_OF_MIN_QUESTION = True; _BEST_OF_MIN_TOKENS = 8
-
-            _features = (self.config or {}).get("features", {}) if isinstance(self.config, dict) else {}
-            _enable_bestof = bool(_features.get("enable_best_of", DEFAULT_ENABLE_BEST_OF))
-
-            use_bestof = False
-            try:
-                qinfo = analyze_query(user_input)
-                use_bestof = bool(
-                    _enable_bestof and (
-                        (qinfo.is_question and qinfo.token_count >= _BEST_OF_MIN_TOKENS)
-                        or (not BEST_OF_MIN_QUESTION)
-                    )
-                )
-            except Exception:
-                use_bestof = bool(_enable_bestof)
-
             # ---------------------------------------------------------------------
             # Determine max_tokens based on tone level AND topic heaviness
             # ---------------------------------------------------------------------
@@ -1393,173 +1374,29 @@ The user is processing/analyzing, open to engagement.
                 if self.logger:
                     self.logger.debug(f"[Orchestrator] Failed to load token config: {e}")
 
-            if use_bestof and not use_raw_mode:
-                try:
-                    from config.app_config import (
-                        BEST_OF_MODEL,
-                        BEST_OF_LATENCY_BUDGET_S,
-                        BEST_OF_GENERATOR_MODELS as DEF_GEN_MODELS,
-                        BEST_OF_SELECTOR_MODELS as DEF_SEL_MODELS,
-                        BEST_OF_SELECTOR_MAX_TOKENS as DEF_SEL_MAXTOK,
-                        BEST_OF_SELECTOR_WEIGHTS as DEF_SEL_WEIGHTS,
-                        BEST_OF_SELECTOR_TOP_K as DEF_SEL_TOPK,
-                        BEST_OF_DUEL_MODE as DEF_DUEL_MODE,
-                        BEST_OF_MAX_TOKENS as DEF_BEST_MAXTOK,
-                    )
-                except Exception:
-                    BEST_OF_MODEL = None; BEST_OF_LATENCY_BUDGET_S = 2.0
-                    DEF_GEN_MODELS = []
-                    DEF_SEL_MODELS = []
-                    DEF_SEL_MAXTOK = 64
-                    DEF_SEL_WEIGHTS = {"heuristic": 1.0, "llm": 0.0}
-                    DEF_SEL_TOPK = 0
-                    DEF_DUEL_MODE = False
-                    DEF_BEST_MAXTOK = 512
-
-                import asyncio as _a
-                # Run best-of with an optional latency budget; if disabled (<=0), do not time out
-                try:
-                    _budget = 0.0
-                    try:
-                        _budget = float(BEST_OF_LATENCY_BUDGET_S)
-                    except Exception:
-                        _budget = 0.0
-
-                    # Feature overrides (runtime-configurable via GUI)
-                    _runtime = (self.config or {}).get("features", {}) if isinstance(self.config, dict) else {}
-                    GEN_MODELS = list(_runtime.get('best_of_generator_models', DEF_GEN_MODELS))
-                    SEL_MODELS = list(_runtime.get('best_of_selector_models', DEF_SEL_MODELS))
-                    SEL_MAXTOK = int(_runtime.get('best_of_selector_max_tokens', DEF_SEL_MAXTOK))
-                    SEL_WEIGHTS = dict(_runtime.get('best_of_selector_weights', DEF_SEL_WEIGHTS)) if isinstance(_runtime.get('best_of_selector_weights', DEF_SEL_WEIGHTS), dict) else DEF_SEL_WEIGHTS
-                    SEL_TOPK = int(_runtime.get('best_of_selector_top_k', DEF_SEL_TOPK))
-                    BEST_MAXTOK = int(_runtime.get('best_of_max_tokens', DEF_BEST_MAXTOK))
-
-                    # If multi-model generators are configured, use ensemble path
-                    use_ensemble = bool(GEN_MODELS)
-                    if self.logger:
-                        try:
-                            self.logger.info(
-                                f"[BESTOF] ensemble={use_ensemble} gens={list(GEN_MODELS)} "
-                                f"selectors={list(SEL_MODELS)} weights={dict(SEL_WEIGHTS)} "
-                                f"top_k={int(SEL_TOPK)} model={(BEST_OF_MODEL or model_name)} max_tokens={int(BEST_MAXTOK)}"
-                            )
-                        except Exception:
-                            pass
-                    temps_used = tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7)
-                    # Optional strict duel mode (two generators + one judge)
-                    _DUEL_MODE = bool(_runtime.get('best_of_duel_mode', DEF_DUEL_MODE))
-                    use_duel = bool(_DUEL_MODE and len(GEN_MODELS) == 2 and len(SEL_MODELS) >= 1)
-                    if _budget > 0:
-                        if use_duel:
-                            m1, m2 = list(GEN_MODELS)[:2]
-                            judge = list(SEL_MODELS)[0]
-                            best_task = _a.create_task(
-                                self.response_generator.generate_duel_and_judge(
-                                    prompt=prompt,
-                                    model_a=m1,
-                                    model_b=m2,
-                                    judge_model=judge,
-                                    system_prompt=system_prompt,
-                                    question_text=user_input,
-                                    context_hint=prompt,
-                                    max_tokens=BEST_MAXTOK,
-                                    temperature_a=(temps_used[0] if len(temps_used) > 0 else None),
-                                    temperature_b=(temps_used[1] if len(temps_used) > 1 else None),
-                                    judge_max_tokens=int(SEL_MAXTOK),
-                                )
-                            )
-                        elif use_ensemble:
-                            best_task = _a.create_task(
-                                self.response_generator.generate_best_of_ensemble(
-                                    prompt=prompt,
-                                    generator_models=list(GEN_MODELS),
-                                    system_prompt=system_prompt,
-                                    question_text=user_input,
-                                    context_hint=prompt,
-                                    n_total=BEST_OF_N,
-                                    temps=temps_used,
-                                    max_tokens=BEST_MAXTOK,
-                                    selector_models=list(SEL_MODELS),
-                                    selector_max_tokens=int(SEL_MAXTOK),
-                                    weight_heuristic=float(SEL_WEIGHTS.get("heuristic", 0.5)),
-                                    weight_llm=float(SEL_WEIGHTS.get("llm", 0.5)),
-                                    judge_top_k=int(SEL_TOPK),
-                                )
-                            )
-                        else:
-                            best_task = _a.create_task(
-                                self.response_generator.generate_best_of(
-                                    prompt=prompt,
-                                    model_name=BEST_OF_MODEL or model_name,
-                                    system_prompt=system_prompt,
-                                    question_text=user_input,
-                                    context_hint=prompt,
-                                    n=BEST_OF_N,
-                                    temps=temps_used,
-                                    max_tokens=BEST_MAXTOK,
-                                )
-                            )
-                        full_response = await _a.wait_for(best_task, timeout=_budget)
-                    else:
-                        if use_duel:
-                            m1, m2 = list(GEN_MODELS)[:2]
-                            judge = list(SEL_MODELS)[0]
-                            full_response = await self.response_generator.generate_duel_and_judge(
-                                prompt=prompt,
-                                model_a=m1,
-                                model_b=m2,
-                                judge_model=judge,
-                                system_prompt=system_prompt,
-                                question_text=user_input,
-                                context_hint=prompt,
-                                max_tokens=BEST_MAXTOK,
-                                temperature_a=(temps_used[0] if len(temps_used) > 0 else None),
-                                temperature_b=(temps_used[1] if len(temps_used) > 1 else None),
-                                judge_max_tokens=int(SEL_MAXTOK),
-                            )
-                        elif use_ensemble:
-                            full_response = await self.response_generator.generate_best_of_ensemble(
-                                prompt=prompt,
-                                generator_models=list(GEN_MODELS),
-                                system_prompt=system_prompt,
-                                question_text=user_input,
-                                context_hint=prompt,
-                                n_total=BEST_OF_N,
-                                temps=temps_used,
-                                max_tokens=BEST_MAXTOK,
-                                selector_models=list(SEL_MODELS),
-                                selector_max_tokens=int(SEL_MAXTOK),
-                                weight_heuristic=float(SEL_WEIGHTS.get("heuristic", 0.5)),
-                                weight_llm=float(SEL_WEIGHTS.get("llm", 0.5)),
-                                judge_top_k=int(SEL_TOPK),
-                            )
-                        else:
-                            full_response = await self.response_generator.generate_best_of(
-                                prompt=prompt,
-                                model_name=BEST_OF_MODEL or model_name,
-                                system_prompt=system_prompt,
-                                question_text=user_input,
-                                context_hint=prompt,
-                                n=BEST_OF_N,
-                                temps=temps_used,
-                                max_tokens=BEST_MAXTOK,
-                            )
-                except Exception:
-                    # Timeout or error: cancel best-of (if applicable) and proceed with streaming
-                    try:
-                        if 'best_task' in locals():
-                            best_task.cancel()
-                    except Exception:
-                        pass
-                    # Accumulate full response (no yielding yet - need to parse thinking block)
-                    full_response = ""
-                    async for chunk in self.response_generator.generate_streaming_response(
-                        prompt, model_name, system_prompt=system_prompt, max_tokens=response_max_tokens
-                    ):
-                        full_response += (chunk + " ")
-                    full_response = full_response.strip()
+            # ---------------------------------------------------------------------
+            # Best-of / Duel / Ensemble generation (delegated to BestOfHandler)
+            # ---------------------------------------------------------------------
+            if self.best_of_handler.should_use_best_of(user_input, use_raw_mode):
+                best_of_result = await self.best_of_handler.generate(
+                    prompt=prompt,
+                    user_input=user_input,
+                    system_prompt=system_prompt,
+                    model_name=model_name,
+                    response_max_tokens=response_max_tokens
+                )
+                full_response = best_of_result.response
+                debug_info["best_of_mode"] = best_of_result.mode
+                debug_info["best_of_used"] = best_of_result.used_best_of
+                # For duel mode, propagate metadata for thinking display
+                if best_of_result.mode == "duel" and isinstance(best_of_result.metadata.get("raw"), dict):
+                    duel_data = best_of_result.metadata["raw"]
+                    debug_info["duel_thinking_a"] = duel_data.get("thinking_a", "")
+                    debug_info["duel_thinking_b"] = duel_data.get("thinking_b", "")
+                    debug_info["duel_winner"] = duel_data.get("winner", "")
+                    debug_info["duel_models"] = duel_data.get("models", {})
             else:
-                # Accumulate full response (no yielding yet - need to parse thinking block first)
+                # Standard streaming path
                 full_response = ""
                 async for chunk in self.response_generator.generate_streaming_response(
                     prompt, model_name, system_prompt=system_prompt, max_tokens=response_max_tokens
@@ -1603,8 +1440,8 @@ The user is processing/analyzing, open to engagement.
                         response=answer_for_storage,
                         tags=["conversation"]
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"[Orchestrator] CRITICAL: Failed to store interaction - data loss: {e}")
             # Use instance logger
             if self.logger:
                 self.logger.debug("[orchestrator] Persisted exchange; considering consolidation")
@@ -1629,7 +1466,7 @@ The user is processing/analyzing, open to engagement.
             if getattr(self, "conversation_logger", None):
                 try:
                     self.conversation_logger.log_system_event("Error", str(e))
-                except Exception:
-                    pass
+                except (IOError, OSError, AttributeError):
+                    pass  # Logging failure shouldn't mask the original error
             debug_info["error"] = str(e)
             raise
