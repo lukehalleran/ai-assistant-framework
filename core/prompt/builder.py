@@ -791,6 +791,50 @@ class UnifiedPromptBuilder:
                 error_context["stm_summary"] = stm_summary
             return error_context
 
+    async def build_prompt_from_context(
+        self,
+        context: "ContextResult",
+        memories: Optional[List[Any]] = None,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Build prompt from a ContextResult object.
+
+        This method provides a clean interface for building prompts from the
+        ContextPipeline's output. It maps ContextResult fields to the existing
+        build_prompt parameters.
+
+        Args:
+            context: ContextResult from ContextPipeline.build()
+            memories: Optional pre-retrieved memories (if not provided, will be gathered)
+            config: Optional configuration overrides
+
+        Returns:
+            Dict containing the built prompt context
+
+        Example:
+            context = await context_pipeline.build(user_input, files)
+            prompt_ctx = await prompt_builder.build_prompt_from_context(context)
+            final_prompt = prompt_builder._assemble_prompt(prompt_ctx, user_input)
+        """
+        # Import here to avoid circular dependency
+        from core.context_pipeline import ContextResult
+
+        if not isinstance(context, ContextResult):
+            raise TypeError(f"Expected ContextResult, got {type(context)}")
+
+        # Map ContextResult to build_prompt parameters
+        return await self.build_prompt(
+            user_input=context.processed_query,
+            config=config,
+            search_query=context.processed_query if context.processed_query != context.original_query else None,
+            current_topic=context.primary_topic,
+            fresh_facts=context.extracted_facts if context.is_heavy_topic else None,
+            memories=memories,
+            stm_summary=context.stm_summary,
+            crisis_level=context.crisis_level_str,
+        )
+
     async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build lightweight context for small-talk queries."""
         try:

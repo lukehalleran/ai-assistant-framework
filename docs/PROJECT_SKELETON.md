@@ -78,13 +78,19 @@ Legacy `memory/memory_coordinator.py` still in use but being migrated.
   - Parses thinking block and strips from final response
   - Stores interaction back to memory
 
-- `prepare_prompt(user_input, files, use_raw_mode)` → Prompt preparation
+- `build_context(user_input, files, use_raw_mode, personality)` → Context building **[NEW 2026-01-23]**
+  - Uses ContextPipeline for clean separation of concerns
+  - Returns ContextResult with all processed context
+  - Preferred method for new code (see section 2.1.2)
+
+- `prepare_prompt(user_input, files, use_raw_mode)` → Prompt preparation (legacy)
   - Tone detection (HIGH/MEDIUM/CONCERN/CONVERSATIONAL)
   - File processing (PDF/DOCX/CSV)
   - Heavy topic inline fact extraction
   - Optional query rewrite for retrieval
   - System prompt resolution with tone instructions
   - Thread context injection
+  - **Deprecated**: Use `build_context()` + `prompt_builder.build_prompt_from_context()` instead
 
 - `_get_tone_instructions(tone_level)` → Mode-specific response guidelines
 - `_get_session_headers_instructions()` → Temporal reasoning guidance
@@ -141,6 +147,85 @@ cleaned = ResponseParser.strip_prompt_artifacts(cleaned)
 ```
 
 **Consumers**: orchestrator.py, response_generator.py, gui/handlers.py, prompt/formatter.py
+
+---
+
+### 2.1.2 core/context_pipeline.py (Context Builder) **[NEW 2026-01-23]**
+**Purpose**: Builder pattern for transforming raw user input into processed context (pre-retrieval query analysis)
+
+**Module Contract**:
+```
+Purpose: Build context from user input through a multi-stage pipeline
+Inputs: User query, optional files, configuration flags
+Outputs: ContextResult with all context components
+Side effects: May call LLM for tone detection, query rewriting, STM analysis
+```
+
+**SCOPE**: Query Analysis ONLY (pre-retrieval). Does NOT handle:
+- Memory retrieval → That's MemoryCoordinator's job
+- Prompt assembly → That's PromptBuilder's job
+- LLM generation → That's ResponseGenerator's job
+
+**Pipeline Stages**:
+1. **Topic Extraction** - Extract topics via TopicManager
+2. **Tone Detection** - Detect emotional state via analyze_emotional_context
+3. **File Processing** - Extract text from PDF/DOCX/CSV via FileProcessor
+4. **Heavy Topic Check** - Check for sensitive content via QueryChecker
+5. **Query Rewriting** - Rewrite for better retrieval (LLM)
+6. **STM Analysis** - Analyze recent conversation via STMAnalyzer
+7. **Identity Injection** - Add user identity context via UserProfile
+8. **Thread Context** - Get active thread via memory_system
+
+**Key Classes**:
+- `ToneLevel` - Enum mapping crisis levels (CRISIS/ELEVATED/CONCERN/CONVERSATIONAL)
+- `ContextResult` - Immutable dataclass with all processed context
+- `ContextPipeline` - Main builder class
+
+**ContextResult Fields**:
+```python
+@dataclass
+class ContextResult:
+    processed_query: str          # Original or rewritten query
+    original_query: str           # Always preserved
+    tone_level: ToneLevel         # Detected tone
+    tone_instructions: str        # Mode-specific guidelines
+    topics: List[str]             # Extracted topics
+    primary_topic: Optional[str]  # Main topic
+    file_context: Optional[str]   # Processed file content
+    thread_context: Optional[Dict]# Active thread metadata
+    stm_summary: Optional[Dict]   # STM analysis result
+    identity_block: str           # User identity context
+    is_heavy_topic: bool          # Heavy topic flag
+    extracted_facts: List[Dict]   # Inline facts if heavy
+    metadata: Dict[str, Any]      # Additional context
+```
+
+**Usage**:
+```python
+# In orchestrator - preferred new flow
+context = await self.build_context(user_input, files, use_raw_mode)
+
+# Use context for downstream processing
+# context.processed_query → for memory retrieval
+# context.tone_instructions → for system prompt
+# context.topics → for relevance filtering
+
+# Or use with PromptBuilder directly
+prompt_ctx = await prompt_builder.build_prompt_from_context(context)
+```
+
+**Clean Data Flow**:
+```
+ContextPipeline.build()     →  ContextResult
+                                    ↓
+MemoryCoordinator.get_memories(context.processed_query, context.topics)  →  memories
+                                    ↓
+PromptBuilder.build_prompt(context, memories)  →  final prompt
+```
+
+**Dependencies**: TopicManager, ToneDetector (analyze_emotional_context), FileProcessor, QueryChecker, STMAnalyzer, UserProfile, memory_system
+
+**Consumers**: orchestrator.py (build_context method), prompt/builder.py (build_prompt_from_context)
 
 ---
 
