@@ -39,14 +39,14 @@ logger = get_logger("prompt_summarizer")
 try:
     from config.app_config import config as _APP_CFG
     _MEM_CFG = (_APP_CFG.get("memory") or {})
-except Exception:
+except (ImportError, AttributeError):
     _MEM_CFG = {}
 
 def _cfg_int(key: str, default_val: int) -> int:
     try:
         v = _MEM_CFG.get(key, default_val)
         return int(v) if v is not None else int(default_val)
-    except Exception:
+    except (ValueError, TypeError):
         return int(default_val)
 
 def _parse_bool(s: Optional[str], default: bool = False) -> bool:
@@ -64,14 +64,14 @@ REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
 try:
     from config.app_config import config as _APP_CFG2
     _MEM_CFG2 = (_APP_CFG2.get("memory") or {})
-except Exception:
+except (ImportError, AttributeError):
     _MEM_CFG2 = {}
 
 def _cfg2_int(key: str, default_val: int) -> int:
     try:
         v = _MEM_CFG2.get(key, default_val)
         return int(v) if v is not None else int(default_val)
-    except Exception:
+    except (ValueError, TypeError):
         return int(default_val)
 
 REFLECTIONS_MAX_TARGET = _cfg2_int("prompt_max_reflections", 10)
@@ -96,7 +96,7 @@ class LLMSummarizer:
                 else:
                     # Fallback
                     self._summaries_model = "gpt-3.5-turbo"
-            except Exception:
+            except (AttributeError, RuntimeError):
                 self._summaries_model = "gpt-3.5-turbo"
         return self._summaries_model
 

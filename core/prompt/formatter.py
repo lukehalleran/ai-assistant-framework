@@ -44,14 +44,14 @@ logger = get_logger("prompt_formatter")
 try:
     from config.app_config import config as _APP_CFG
     _MEM_CFG = (_APP_CFG.get("memory") or {})
-except Exception:
+except (ImportError, AttributeError):
     _MEM_CFG = {}
 
 def _cfg_int(key: str, default_val: int) -> int:
     try:
         v = _MEM_CFG.get(key, default_val)
         return int(v) if v is not None else int(default_val)
-    except Exception:
+    except (ValueError, TypeError):
         return int(default_val)
 
 def _parse_bool(s: Optional[str], default: bool = False) -> bool:
@@ -225,8 +225,8 @@ class PromptFormatter:
                         continue
                     cleaned.append(line)
                 return "\n".join(cleaned).strip()
-        except Exception:
-            pass
+        except (IOError, OSError, FileNotFoundError):
+            pass  # Personality file not found or unreadable
         return ""
 
     def _get_time_context(self) -> str:

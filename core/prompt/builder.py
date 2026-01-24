@@ -69,14 +69,16 @@ logger = get_logger("prompt_builder")
 try:
     from config.app_config import config as _APP_CFG
     _MEM_CFG = (_APP_CFG.get("memory") or {})
-except Exception:
+except (ImportError, AttributeError) as e:
+    logger.warning(f"[PromptBuilder] Could not load memory config: {e}, using defaults")
     _MEM_CFG = {}
 
 def _cfg_int(key: str, default_val: int) -> int:
     try:
         v = _MEM_CFG.get(key, default_val)
         return int(v) if v is not None else int(default_val)
-    except Exception:
+    except (ValueError, TypeError) as e:
+        logger.debug(f"[PromptBuilder] Bad config value for '{key}': {e}, using default {default_val}")
         return int(default_val)
 
 # Token and model configuration
@@ -411,8 +413,8 @@ class UnifiedPromptBuilder:
                     key=lambda x: x.get("timestamp", ""),
                     reverse=True
                 )
-            except Exception:
-                pass
+            except TypeError as e:
+                logger.warning(f"[PromptBuilder] Could not sort reflections by timestamp: {e}")
 
             # Top-up with on-demand reflections if needed
             if (REFLECTIONS_TOPUP and REFLECTIONS_ON_DEMAND and
@@ -587,7 +589,8 @@ class UnifiedPromptBuilder:
                             stored = self.memory_coordinator.corpus_manager.get_summaries(PROMPT_MAX_SUMMARIES * 2)
                         else:
                             stored = []
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"[PromptBuilder] Summary retrieval failed: {e}")
                         stored = []
 
                     # Keep the newest not already in context
@@ -628,7 +631,8 @@ class UnifiedPromptBuilder:
                         elif hasattr(self.memory_coordinator, 'corpus_manager') and hasattr(self.memory_coordinator.corpus_manager, 'get_reflections'):
                             res2 = self.memory_coordinator.corpus_manager.get_reflections(PROMPT_MAX_REFLECTIONS * 3)
                             stored_refl = res2 if isinstance(res2, list) else list(res2)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"[PromptBuilder] Reflection retrieval failed: {e}")
                         stored_refl = []
 
                     have_refl = { (r.get('content') or '').strip() for r in (context.get('reflections') or []) if isinstance(r, dict) }
@@ -643,8 +647,8 @@ class UnifiedPromptBuilder:
                                 break
                     if add_refl:
                         context['reflections'] = (context.get('reflections') or []) + add_refl
-            except Exception:
-                pass
+            except (TypeError, AttributeError, KeyError) as e:
+                logger.debug(f"Reflection pre-budget top-up failed: {e}")
 
             # Step 7: Token budget management
             logger.warning(f"BEFORE TOKEN BUDGET: memories count = {len(context.get('memories', []))}")
@@ -667,7 +671,8 @@ class UnifiedPromptBuilder:
                             stored = self.memory_coordinator.corpus_manager.get_summaries(PROMPT_MAX_SUMMARIES * 3)
                         else:
                             stored = []
-                    except Exception:
+                    except (AttributeError, TypeError) as e:
+                        logger.debug(f"Failed to fetch summaries for floor: {e}")
                         stored = []
 
                     # Normalize stored schema
@@ -710,7 +715,8 @@ class UnifiedPromptBuilder:
                         elif hasattr(self.memory_coordinator, 'corpus_manager') and hasattr(self.memory_coordinator.corpus_manager, 'get_reflections'):
                             res2 = self.memory_coordinator.corpus_manager.get_reflections(PROMPT_MAX_REFLECTIONS * 3)
                             stored_refl = res2 if isinstance(res2, list) else list(res2)
-                    except Exception:
+                    except (AttributeError, TypeError) as e:
+                        logger.debug(f"Failed to fetch reflections for floor: {e}")
                         stored_refl = []
 
                     # Normalize stored reflections schema
@@ -735,8 +741,8 @@ class UnifiedPromptBuilder:
                                 break
                     if add_refl:
                         context['reflections'] = (context.get('reflections') or []) + add_refl
-            except Exception:
-                pass
+            except (TypeError, AttributeError, KeyError) as e:
+                logger.debug(f"Post-budget floor top-up failed: {e}")
 
             logger.warning(f"BEFORE FINAL ASSEMBLY: memories count = {len(context.get('memories', []))}")
 
@@ -951,7 +957,7 @@ class UnifiedPromptBuilder:
             embedder = self.model_manager.get_embedder() if hasattr(self.model_manager, "get_embedder") else None
             if embedder:
                 logger.info("[DEDUP] Using semantic similarity for conversation deduplication")
-        except Exception:
+        except (AttributeError, RuntimeError):
             logger.warning("[DEDUP] No embedder available, falling back to string-based dedup")
 
         cross_dedup_sections = [
@@ -1341,7 +1347,7 @@ class UnifiedPromptBuilder:
                 content = _sanitize_embedded_headers(content)
 
                 return content, ts_str
-            except Exception:
+            except (AttributeError, TypeError, KeyError):
                 return str(mem), ""
 
         sections: list[str] = []
@@ -1583,7 +1589,7 @@ class UnifiedPromptBuilder:
         # MOVED: Placed here (right before STM and query) for temporal grounding with high attention
         try:
             time_ctx = self.formatter._get_time_context()  # prefer formatter's version if present
-        except Exception:
+        except AttributeError:
             time_ctx = f"Current time: {datetime.now().strftime('%A, %Y-%m-%d %H:%M:%S')}"
         if time_ctx:
             sections.append(f"[TIME CONTEXT]\n{time_ctx}")

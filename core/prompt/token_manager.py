@@ -66,14 +66,14 @@ NARRATIVE_STATE_MAX_TOKENS = int(os.getenv("NARRATIVE_STATE_MAX_TOKENS", "500"))
 try:
     from config.app_config import config as _APP_CFG
     _MEM_CFG = (_APP_CFG.get("memory") or {})
-except Exception:
+except (ImportError, AttributeError):
     _MEM_CFG = {}
 
 def _cfg_int(key: str, default_val: int) -> int:
     try:
         v = _MEM_CFG.get(key, default_val)
         return int(v) if v is not None else int(default_val)
-    except Exception:
+    except (ValueError, TypeError):
         return int(default_val)
 
 def _parse_bool(s: str, default: bool = False) -> bool:
@@ -138,7 +138,7 @@ class TokenManager:
         try:
             model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
             toks = self.get_token_count(text or "", model_name)
-        except Exception:
+        except (AttributeError, RuntimeError):
             toks = len((text or "").split())
         if toks <= max_tokens:
             return text

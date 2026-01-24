@@ -69,21 +69,21 @@ logger = get_logger("prompt_context_gatherer")
 try:
     from config.app_config import config as _APP_CFG
     _MEM_CFG = (_APP_CFG.get("memory") or {})
-except Exception:
+except (ImportError, AttributeError):
     _MEM_CFG = {}
 
 def _cfg_int(key: str, default_val: int) -> int:
     try:
         v = _MEM_CFG.get(key, default_val)
         return int(v) if v is not None else int(default_val)
-    except Exception:
+    except (ValueError, TypeError):
         return int(default_val)
 
 def _cfg_float(key: str, default_val: float) -> float:
     try:
         v = _MEM_CFG.get(key, default_val)
         return float(v) if v is not None else float(default_val)
-    except Exception:
+    except (ValueError, TypeError):
         return float(default_val)
 
 def _cfg_bool(key: str, default_val: bool) -> bool:
@@ -94,7 +94,7 @@ def _cfg_bool(key: str, default_val: bool) -> bool:
         if isinstance(v, str):
             return v.lower() in ('1', 'true', 'yes', 'on')
         return bool(v) if v is not None else bool(default_val)
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         return bool(default_val)
 
 # Configuration constants
@@ -556,8 +556,8 @@ class ContextGatherer:
                     ))
                     for s in (summaries or [])
                 ]
-            except Exception:
-                pass
+            except (TypeError, KeyError, AttributeError):
+                pass  # Keep original summaries if normalization fails
 
             logger.debug(f"Retrieved {len(summaries)} summaries from memory coordinator")
 
@@ -633,8 +633,8 @@ class ContextGatherer:
                     ))
                     for s in (summaries or [])
                 ]
-            except Exception:
-                pass
+            except (TypeError, KeyError, AttributeError):
+                pass  # Keep original summaries if normalization fails
 
             logger.debug(f"Retrieved {len(summaries)} summaries from memory coordinator")
             result = {"recent": [], "semantic": []}
@@ -942,8 +942,8 @@ class ContextGatherer:
                     ))
                     for r in (reflections or [])
                 ]
-            except Exception:
-                pass
+            except (TypeError, KeyError, AttributeError):
+                pass  # Keep original reflections if normalization fails
 
             # Apply hybrid filtering if enabled
             if REFLECTIONS_HYBRID_FILTER and query and reflections:
@@ -1437,7 +1437,8 @@ class ContextGatherer:
         try:
             decision = trigger(query)
             return decision.should_search
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug(f"Web search trigger check failed: {e}")
             return False
 
     def get_narrative_context(self) -> str:

@@ -30,7 +30,7 @@ from datetime import datetime
 try:
     from config.app_config import config as _APP_CFG
     _MEM_CFG = (_APP_CFG.get("memory") or {})
-except Exception:
+except (ImportError, AttributeError):
     _MEM_CFG = {}
 
 def _parse_bool(s: Optional[str], default: bool = False) -> bool:
@@ -44,7 +44,7 @@ def _cfg_int(key: str, default_val: int) -> int:
     try:
         v = _MEM_CFG.get(key, default_val)
         return int(v) if v is not None else int(default_val)
-    except Exception:
+    except (ValueError, TypeError):
         return int(default_val)
 
 def _as_summary_dict(text: str, tags: list[str], source: str, timestamp: Optional[str] = None) -> dict:
@@ -107,7 +107,7 @@ def _strip_prompt_artifacts(text: str) -> str:
                 continue
             lines.append(line)
         return "\\n".join(lines).strip()
-    except Exception:
+    except (re.error, TypeError, AttributeError):
         return text
 
 

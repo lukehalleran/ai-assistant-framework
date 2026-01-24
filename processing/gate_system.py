@@ -78,13 +78,13 @@ WIKI_ENABLED_DEFAULT = True
 WIKI_FETCH_FULL = bool(int(os.getenv("WIKI_FETCH_FULL", "1" if WIKI_FETCH_FULL_DEFAULT else "0")))
 try:
     WIKI_MAX_CHARS = int(os.getenv("WIKI_MAX_CHARS", str(WIKI_MAX_CHARS_DEFAULT)))
-except Exception:
+except (ValueError, TypeError):
     WIKI_MAX_CHARS = WIKI_MAX_CHARS_DEFAULT
 
 # Hard timeout to ensure we never stall prompt building.
 try:
     WIKI_TIMEOUT_S = float(os.getenv("WIKI_TIMEOUT", str(WIKI_TIMEOUT_DEFAULT)))
-except Exception:
+except (ValueError, TypeError):
     WIKI_TIMEOUT_S = WIKI_TIMEOUT_DEFAULT
 if WIKI_FETCH_FULL and WIKI_TIMEOUT_S < 2.5:
     WIKI_TIMEOUT_S = 2.5
@@ -164,8 +164,9 @@ async def gated_wiki_fetch(query: str, timeout: float = WIKI_TIMEOUT_S) -> tuple
             _cache_wiki(query, snippet)
             return True, snippet
         return False, ""
-    except Exception:
+    except (asyncio.TimeoutError, OSError, IOError, ValueError) as e:
         # timeout or transient error — just skip
+        logger.debug(f"[WikiSnippet] Fetch failed for query '{query[:30]}': {type(e).__name__}")
         return False, ""
 
 
@@ -676,8 +677,8 @@ class CosineSimilarityGateSystem:
                 from models.model_manager import ModelManager
                 self.embedder = ModelManager._get_cached_embedder()
                 logger.debug("[Cosine Gate] Using cached embedder from ModelManager")
-            except Exception:
-                logger.debug("[Cosine Gate] Using stub embedder (offline mode)")
+            except (ImportError, AttributeError, RuntimeError) as e:
+                logger.debug(f"[Cosine Gate] Using stub embedder (offline mode): {type(e).__name__}")
 
                 class _StubEmbedder:
                     def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False):
@@ -709,10 +710,10 @@ class CosineSimilarityGateSystem:
                     self.cross_encoder = None
                     self.use_reranking = False
                     logger.debug("[Cosine Gate] CrossEncoder not available, using cosine only")
-        except Exception:
+        except (ImportError, OSError, RuntimeError) as e:
             self.cross_encoder = None
             self.use_reranking = False
-            logger.debug("[Cosine Gate] No cross-encoder available, using cosine only")
+            logger.debug(f"[Cosine Gate] No cross-encoder available, using cosine only: {type(e).__name__}")
 
         # Lightweight in-class cache for gate_content_async
         self.cache: dict[str, GateResult] = {}
@@ -994,7 +995,7 @@ class MultiStageGateSystem:
                     # Keep a floor for deictic follow-ups but allow env override; default to 0.25
                     try:
                         deictic_min = float(os.getenv("GATE_DEICTIC_MIN", "0.20"))  # Reduced from 0.25
-                    except Exception:
+                    except (ValueError, TypeError):
                         deictic_min = 0.20
                     threshold = max(threshold, deictic_min)
 
