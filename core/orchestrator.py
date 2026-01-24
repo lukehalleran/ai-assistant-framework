@@ -1263,6 +1263,10 @@ The user is processing/analyzing, open to engagement.
                 "has_thread": context.has_thread,
             }
 
+            # Extract values needed for token limit logic
+            is_heavy_topic = context.is_heavy_topic
+            tone_level = context.tone_level
+
             # --- Generate Response ---
             active_name_getter = getattr(self.model_manager, "get_active_model_name", None)
             model_name = active_name_getter() if callable(active_name_getter) else None
@@ -1345,20 +1349,23 @@ The user is processing/analyzing, open to engagement.
             # ---------------------------------------------------------------------
             try:
                 from config.app_config import DEFAULT_MAX_TOKENS, HEAVY_TOPIC_MAX_TOKENS
-                from utils.tone_detector import CrisisLevel
 
                 # Heavy topics override tone-based limits
                 if is_heavy_topic:
                     response_max_tokens = HEAVY_TOPIC_MAX_TOKENS
                     token_reason = "HEAVY topic"
-                # Adjust max_tokens based on tone/crisis level for speed and brevity
-                elif tone_level == CrisisLevel.CONVERSATIONAL:
+                # Adjust max_tokens based on tone level for speed and brevity
+                # tone_level is ToneLevel from context_pipeline
+                elif tone_level == ToneLevel.CONVERSATIONAL:
                     response_max_tokens = 600  # Force brief responses in conversational mode
                     token_reason = "CONVERSATIONAL mode"
-                elif tone_level == CrisisLevel.SUPPORT:
+                elif tone_level == ToneLevel.CONCERN:
+                    response_max_tokens = 1000  # Light support responses
+                    token_reason = "CONCERN mode"
+                elif tone_level == ToneLevel.ELEVATED:
                     response_max_tokens = 1500  # Allow more room for supportive responses
-                    token_reason = "SUPPORT mode"
-                elif tone_level == CrisisLevel.CRISIS:
+                    token_reason = "ELEVATED mode"
+                elif tone_level == ToneLevel.CRISIS:
                     response_max_tokens = 2000  # Maximum room for crisis responses
                     token_reason = "CRISIS mode"
                 else:
