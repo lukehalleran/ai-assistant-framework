@@ -159,8 +159,8 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
             s_pref = _prefer_named_span(subj_orig, s_doc, s)
             o_pref = _prefer_named_span(obj_orig, o_doc_orig, o)
             s, o = s_pref.lower(), o_pref.lower()  # Lowercase after preference extraction
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError):
+            pass  # NLP span extraction failed, keep original values
 
     # Very generic low-signal filter
     if s in _GENERIC_NOUNS and o in _GENERIC_NOUNS:
@@ -194,8 +194,8 @@ def _score_triple(subj: str, rel: str, obj: str, nlp=None) -> float:
                 bonus += 0.05
             if any(ent.label_ in {"PERSON","ORG","PRODUCT","WORK_OF_ART","GPE"} for ent in doc.ents):
                 bonus += 0.05
-        except Exception:
-            pass
+        except (RuntimeError, AttributeError):
+            pass  # NLP processing failed, skip bonus calculation
     return max(0.4, min(0.9, base + bonus - penalty))
 
 # ---------------- Optional deps (lazy) ----------------
@@ -671,7 +671,7 @@ class FactExtractor:
                 conf = meta.get("confidence")
                 try:
                     conf_str = f"{float(conf):.2f}"
-                except Exception:
+                except (ValueError, TypeError):
                     conf_str = str(conf)
                 method = meta.get("method", "?")
                 logger.info(
@@ -825,8 +825,8 @@ class FactExtractor:
         # Light normalization for common contractions to improve regex hits
         try:
             import re as _re
-            base = _re.sub(r"\bI['’]m\b", "I am", base)
-        except Exception:
+            base = _re.sub(r"\bI['']m\b", "I am", base)
+        except (re.error, TypeError):
             pass
         try:
             doc = _NLP(base)
@@ -854,7 +854,7 @@ class FactExtractor:
             try:
                 import os as _os
                 max_chars = int(_os.getenv("REBEL_MAX_INPUT_CHARS", "1200"))
-            except Exception:
+            except (ValueError, TypeError):
                 max_chars = 1200
             safe_text = (text or "")[:max_chars]
             out = _REBEL(
@@ -910,8 +910,8 @@ class FactExtractor:
 
                     grounded += 1
                     triples.append((subj, rel, obj, 0.75, "rebel"))
-            except Exception:
-                continue
+            except (ValueError, IndexError, KeyError):
+                continue  # Malformed triple, skip
         logger.debug(
             f"[FactExtractor] REBEL parsed {parsed} triples, "
             f"{grounded} passed grounding check ({len(chunks)} chunks)"
@@ -1243,7 +1243,7 @@ class FactExtractor:
         """Return MemoryType.FACT if available; fallback to string 'fact'."""
         try:
             return MemoryType.FACT
-        except Exception:
+        except NameError:
             return "fact"
 
     def _to_node(

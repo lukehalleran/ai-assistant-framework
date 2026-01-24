@@ -205,7 +205,7 @@ def _get_embedder(model_name: str):
             from models.model_manager import ModelManager
             _EMBEDDER = ModelManager._get_cached_embedder()
             log.debug("WikiManager using cached embedder from ModelManager")
-        except Exception:
+        except (ImportError, AttributeError, RuntimeError):
             # Fallback: create our own instance
             _EMBEDDER = SentenceTransformer(model_name)
             log.debug("WikiManager created fallback embedder")
@@ -239,12 +239,12 @@ class WikiManager:
         else:
             try:
                 self.timeout = float(os.getenv("WIKI_TIMEOUT", str(WIKI_TIMEOUT_DEFAULT)))
-            except Exception:
+            except (ValueError, TypeError):
                 self.timeout = float(WIKI_TIMEOUT_DEFAULT)
         # Allow env override; 0 or negative disables clipping
         try:
             env_ms = int(os.getenv("WIKI_MAX_SENTENCES", str(WIKI_MAX_SENTENCES_DEFAULT)))
-        except Exception:
+        except (ValueError, TypeError):
             env_ms = int(WIKI_MAX_SENTENCES_DEFAULT or 0)
         if env_ms > 0:
             self.max_sentences = env_ms
@@ -264,16 +264,16 @@ class WikiManager:
         # If full fetch is requested, expand default timeout/budget unless overridden
         try:
             _full = int(os.getenv("WIKI_FETCH_FULL", "1" if WIKI_FETCH_FULL_DEFAULT else "0")) == 1
-        except Exception:
+        except (ValueError, TypeError):
             _full = bool(WIKI_FETCH_FULL_DEFAULT)
         if _full:
             try:
                 _tt = float(os.getenv("WIKI_TIMEOUT", "2.5"))
-            except Exception:
+            except (ValueError, TypeError):
                 _tt = 2.5
             try:
                 _bud = float(os.getenv("WIKI_BUDGET_S", "4.0"))
-            except Exception:
+            except (ValueError, TypeError):
                 _bud = 4.0
             # Only increase if current values are smaller and not explicitly passed
             if timeout is None:
@@ -306,7 +306,7 @@ class WikiManager:
             # Respect WIKI_FETCH_FULL; default is intro only
             if int(os.getenv("WIKI_FETCH_FULL", "0")) == 0:
                 params["exintro"] = 1
-        except Exception:
+        except (ValueError, TypeError):
             params["exintro"] = 1
 
         try:
@@ -324,7 +324,7 @@ class WikiManager:
             extract = extract.strip()
             try:
                 max_chars = int(os.getenv("WIKI_MAX_CHARS", str(WIKI_MAX_CHARS_DEFAULT)))
-            except Exception:
+            except (ValueError, TypeError):
                 max_chars = WIKI_MAX_CHARS_DEFAULT
             if max_chars and max_chars > 0 and len(extract) > max_chars:
                 import re as _re
@@ -384,8 +384,8 @@ class WikiManager:
                 full = self._fetch_extract_action_api(title)
                 if full:
                     return full
-        except Exception:
-            pass
+        except (ValueError, requests.RequestException) as e:
+            log.debug("[Wiki] Full fetch attempt failed for %s: %s", title, e)
 
         headers = {**WIKI_UA, "Accept": "application/json"}
 
@@ -455,7 +455,7 @@ class WikiManager:
                         extract = extract.strip()
                         try:
                             max_chars = int(os.getenv("WIKI_MAX_CHARS", "5000"))
-                        except Exception:
+                        except (ValueError, TypeError):
                             max_chars = 5000
                         if max_chars and max_chars > 0 and len(extract) > max_chars:
                             # Attempt sentence-boundary clip
@@ -577,8 +577,8 @@ class WikiManager:
                     p = self._fetch_summary_v1(seed)
                     if p and _is_main_namespace(p.title):
                         candidates.append(p)
-                except Exception:
-                    pass
+                except requests.RequestException:
+                    pass  # Network error fetching seed candidate
 
             # De-duplicate by title
             seen = set()
@@ -606,8 +606,8 @@ class WikiManager:
                             if key not in seen:
                                 seen.add(key)
                                 candidates.append(p)
-                    except Exception:
-                        pass
+                    except requests.RequestException:
+                        pass  # Network error during disambiguation expansion
 
             # 4) Score and pick best
             for p in candidates:

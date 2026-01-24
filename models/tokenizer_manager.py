@@ -21,13 +21,13 @@ logger.debug("tokenizer_manager.py is alive")
 
 try:
     from transformers import AutoTokenizer  # type: ignore
-except Exception:
+except ImportError:
     AutoTokenizer = None  # allow environments without HF
 
 # Optional dependency for OpenAI tokenization
 try:
     import tiktoken  # type: ignore
-except Exception:
+except ImportError:
     tiktoken = None
 
 # Module-level singleton cache for tokenizers
@@ -79,7 +79,7 @@ class TokenizerManager:
         if self.model_manager and hasattr(self.model_manager, "is_api_model"):
             try:
                 return bool(self.model_manager.is_api_model(model_name))
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
         return _looks_like_api_model(model_name)
 
@@ -102,7 +102,7 @@ class TokenizerManager:
             enc_name = _choose_tiktoken_encoding(model_name)
             try:
                 enc = tiktoken.get_encoding(enc_name)
-            except Exception:
+            except (KeyError, ValueError):
                 # fallback to widely available base
                 enc = tiktoken.get_encoding("cl100k_base")
             return _TiktokenWrapper(enc)
@@ -176,7 +176,7 @@ class TokenizerManager:
 if __name__ == "__main__":
     try:
         from models.model_manager import ModelManager  # optional
-    except Exception:
+    except ImportError:
         ModelManager = None
 
     sample = "Hello! This is a test message for token counting. How many tokens is it?"
