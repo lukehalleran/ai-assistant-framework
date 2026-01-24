@@ -197,6 +197,34 @@ class UnifiedPromptBuilder:
 
 ---
 
+## Response Parsing
+
+```python
+# core/response_parser.py
+class ResponseParser:
+    """Pure static methods for parsing/cleaning LLM responses"""
+
+    @staticmethod
+    def parse_thinking_block(response: str) -> Tuple[str, str]:
+        """Extract <thinking>...</thinking> and final answer"""
+        # Returns (thinking_content, final_answer)
+        # If no thinking block: ("", full_response)
+
+    @staticmethod
+    def strip_reflection_blocks(response: str) -> str:
+        """Remove <reflect>...</reflect> and [SYSTEM QUALITY REFLECTION]..."""
+
+    @staticmethod
+    def strip_xml_wrappers(text: str) -> str:
+        """Remove <result>...</result>, <answer>...</answer>, <final>...</final>"""
+
+    @staticmethod
+    def strip_prompt_artifacts(text: str) -> str:
+        """Remove echoed prompt headers: [TIME CONTEXT], [FACTS], [RECENT CONVERSATION], etc."""
+```
+
+---
+
 ## LLM Generation
 
 ```python
@@ -718,6 +746,9 @@ class SearchDecision:
     wants_wolfram: bool = False         # Computation request
     wolfram_query: Optional[str] = None
     wolfram_reason: Optional[str] = None
+    wants_sandbox: bool = False         # Code execution [NEW 2026-01-22]
+    sandbox_code: Optional[str] = None
+    sandbox_purpose: Optional[str] = None
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False
@@ -756,8 +787,37 @@ class WolframResult:
     cached: bool = False
 
 
+# knowledge/sandbox_manager.py [NEW 2026-01-22]
+class SandboxManager:
+    """E2B Code Sandbox for secure Python execution"""
+
+    async def execute_code(code: str) -> SandboxResult:
+        """Execute code in ephemeral sandbox"""
+
+    async def create_session() -> PersistentSession:
+        """Create persistent session (variables survive across calls)"""
+
+    def format_for_prompt(result: SandboxResult, purpose: str) -> str:
+        """Format result for LLM context injection"""
+
+    def is_available() -> bool:
+        """True if E2B_API_KEY is configured"""
+
+
+@dataclass
+class SandboxResult:
+    code: str
+    success: bool
+    stdout: str = ""
+    stderr: str = ""
+    error: Optional[str] = None
+    results: List[Dict] = field(default_factory=list)  # Rich outputs (images, etc.)
+    execution_time: float = 0.0
+    cached: bool = False
+
+
 # Protocol handlers (core/agentic/protocols.py)
-# XMLMarkerHandler - for local models: <search>query</search>, <wolfram>query</wolfram>
+# XMLMarkerHandler - for local models: <search>query</search>, <wolfram>query</wolfram>, <python>code</python>
 # NativeToolsHandler - for API models: OpenAI/Anthropic function calling
 ```
 
@@ -780,6 +840,15 @@ WOLFRAM_TIMEOUT = 30.0
 WOLFRAM_CACHE_TTL_SECONDS = 3600
 WOLFRAM_RATE_LIMIT_PER_MINUTE = 60
 WOLFRAM_MAX_OUTPUT_CHARS = 10000
+
+# E2B Code Sandbox [NEW 2026-01-22]
+SANDBOX_ENABLED = True
+SANDBOX_API_KEY = os.getenv("E2B_API_KEY", "")
+SANDBOX_TIMEOUT_SECONDS = 60
+SANDBOX_SESSION_TIMEOUT_MINUTES = 30
+SANDBOX_MAX_OUTPUT_CHARS = 4000
+SANDBOX_CACHE_TTL_SECONDS = 3600
+SANDBOX_RATE_LIMIT_PER_MINUTE = 30
 ```
 
 ### Tool Invocation (Prompt Injection)
@@ -790,9 +859,11 @@ WOLFRAM_MAX_OUTPUT_CHARS = 10000
 Available Tools:
 1. <search>query</search> - Web search for current events, facts, data
 2. <wolfram>query</wolfram> - Computation, math, science, conversions
-3. <done>reason</done> - Signal task complete
+3. <python purpose="...">code</python> - Execute Python code (NumPy, Pandas, SciPy, SymPy available) [NEW]
+4. <done>reason</done> - Signal task complete
 
-Use Wolfram for: calculations, unit conversions, scientific data, equations
+Use Python for: multi-step computation, data analysis, visualization, custom algorithms
+Use Wolfram for: single-expression calculations, unit conversions, scientific data, equations
 Use search for: current events, recent news, real-time data, general facts
 """
 ```

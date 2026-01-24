@@ -12,7 +12,13 @@ Public Types:
     - SearchRequest, SearchRound, SearchDecision (dataclasses)
     - AgenticSearchSession (session state container)
     - ProgressEvent (UI update events)
-    - SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION (tool schemas)
+    - SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION, SANDBOX_TOOL_DEFINITION (tool schemas)
+
+SearchDecision Fields (extended for multi-tool support):
+    - wants_search, search_query, search_reason (web search)
+    - wants_wolfram, wolfram_query, wolfram_reason (Wolfram Alpha computation)
+    - wants_sandbox, sandbox_code, sandbox_purpose (E2B Python sandbox) [NEW 2026-01-22]
+    - is_done, done_reason, wants_answer, partial_response
 
 Dependencies:
     - None (pure data types)
@@ -72,15 +78,23 @@ class SearchDecision:
     One of these should be True:
     - wants_search: Model wants to perform a web search
     - wants_wolfram: Model wants to perform a Wolfram Alpha computation
+    - wants_sandbox: Model wants to execute Python code in sandbox
     - is_done: Model signals it has enough information
     - wants_answer: Model wants to provide final answer (no explicit done signal)
     """
+    # Web search
     wants_search: bool = False
     search_query: Optional[str] = None
     search_reason: Optional[str] = None
+    # Wolfram Alpha (quick calculations)
     wants_wolfram: bool = False
     wolfram_query: Optional[str] = None
     wolfram_reason: Optional[str] = None
+    # Code Sandbox (multi-step computation)
+    wants_sandbox: bool = False
+    sandbox_code: Optional[str] = None
+    sandbox_purpose: Optional[str] = None
+    # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False
@@ -109,6 +123,10 @@ class AgenticSearchSession:
 
     # Final output
     final_response: Optional[str] = None
+
+    # Query relaxation tracking
+    low_quality_search_count: int = 0
+    relaxation_hint: Optional[str] = None
 
     # Metadata
     start_time: datetime = field(default_factory=datetime.now)
@@ -236,25 +254,115 @@ WOLFRAM_TOOL_DEFINITION = {
     }
 }
 
+SANDBOX_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "execute_python",
+        "description": (
+            "Execute Python code in a secure sandbox environment. "
+            "Use for: multi-step calculations, data processing with pandas/numpy, "
+            "creating visualizations with matplotlib, symbolic math with sympy, "
+            "any computation requiring multiple lines of code or intermediate results. "
+            "Pre-installed packages: numpy, pandas, matplotlib, scipy, sympy, scikit-learn, "
+            "requests, beautifulsoup4. "
+            "IMPORTANT: Variables persist within this conversation - you can define a variable "
+            "in one execution and use it in the next."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Python code to execute. Use print() to display results."
+                },
+                "purpose": {
+                    "type": "string",
+                    "description": "Brief explanation of what this code does (for logging/context)"
+                }
+            },
+            "required": ["code"]
+        }
+    }
+}
+
 # System prompt injection for local models
 AGENTIC_SYSTEM_PROMPT_INJECTION = """
 [AGENTIC TOOLS ENABLED]
-You have access to web search and Wolfram Alpha. Use these tools to gather information:
+You have access to web search, Wolfram Alpha, and Python code execution. Use these tools to gather information:
 
 **Available Tools:**
 1. **Web Search**: <search>your query</search>
    Use for: current events, explanations, general knowledge, how-to guides, opinions.
 
 2. **Wolfram Alpha**: <wolfram>your query</wolfram>
-   Use for: math calculations, equations, unit conversions, scientific data, statistics.
+   Use for: quick math calculations, equations, unit conversions, scientific data, statistics.
+   Best for one-shot computations where you just need a numerical answer.
    Examples: "solve x^2 - 4 = 0", "integrate x^2 dx", "convert 50 mph to km/h", "GDP of Germany"
 
-3. **Done**: <done/> - Signal you have enough information to answer.
+3. **Python Code Execution**: <python purpose="brief description">your code</python>
+   Use for: multi-step calculations, data processing with pandas/numpy, creating visualizations,
+   symbolic math with sympy, any logic requiring multiple lines of code.
+   Pre-installed: numpy, pandas, matplotlib, scipy, sympy, scikit-learn, requests, bs4
+   IMPORTANT: Variables persist across executions in this conversation!
+   Example:
+   <python purpose="analyze fibonacci sequence">
+   def fib(n):
+       a, b = 0, 1
+       result = []
+       for _ in range(n):
+           result.append(a)
+           a, b = b, a + b
+       return result
+   sequence = fib(20)
+   print(f"First 20 Fibonacci: {{sequence}}")
+   print(f"Mean: {{sum(sequence)/len(sequence):.2f}}")
+   </python>
 
-**Tool Selection:**
-- Math/calculations/conversions/scientific data → use <wolfram>
-- Current events/explanations/general knowledge → use <search>
-- Complex queries may need both tools in sequence
+4. **Done**: <done/> - Signal you have enough information to answer.
+
+**Tool Selection Guidelines:**
+| Task Type | Best Tool |
+|-----------|-----------|
+| Quick calculation (e.g., "what's 17% of 234?") | Wolfram |
+| Unit conversion (e.g., "convert 5 miles to km") | Wolfram |
+| Physical constants (e.g., "speed of light") | Wolfram |
+| Multi-step math with intermediate values | Python |
+| Data analysis, statistics | Python |
+| Generate charts/visualizations | Python |
+| Current events, factual lookup | Search |
 
 You can use tools up to {max_rounds} times total. Be specific with queries.
+
+## Query Reformulation
+
+When search returns empty, sparse, or irrelevant results:
+
+1. **Identify the problem:**
+   - Too specific? (exact product names, version numbers, niche jargon)
+   - Too narrow? (combining multiple constraints)
+   - Wrong framing? (searching for solution vs. searching for problem)
+
+2. **Relaxation strategies:**
+   - Remove version/date specifics: "Python 3.12 asyncio bug" → "Python asyncio bug"
+   - Use category terms: "ChromaDB embedding error" → "vector database embedding error"
+   - Split compound queries: "fast lightweight local LLM" → "lightweight local LLM"
+   - Try synonyms: "timeout" → "deadline exceeded" or "connection failed"
+   - Search for the error message directly if you have one
+
+3. **Limits:**
+   - Max 2 reformulation attempts per topic
+   - After 2 attempts, answer with whatever information you have
+   - Don't keep searching if results are consistently poor — synthesize and note uncertainty
 """.strip()
+
+# Query relaxation hint templates
+LOW_QUALITY_HINT_TEMPLATE = """⚠️ Previous search for "{query}" returned {issue}. Consider:
+- {suggestion}
+- Relaxation attempts remaining: {remaining}/2"""
+
+MAX_RELAXATION_HINT = """ℹ️ Search relaxation limit reached. Answer using:
+- Information gathered so far
+- Your training knowledge
+- Explicit acknowledgment of gaps
+
+Do not attempt further searches on this topic."""

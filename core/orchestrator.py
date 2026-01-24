@@ -28,12 +28,15 @@ Additional Contract (Agentic Search):
   - Emits ProgressEvent for UI status updates during agentic flow
   - Falls back to standard flow on agentic failures
   - Agentic mode uses LLM-first trigger's search_terms for initial search
+  - Initializes SandboxManager for E2B code execution support [NEW 2026-01-22]
 """
+import asyncio
 import os
 import re
 import processing.gate_system as gate_system
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List, Union
+from core.response_parser import ResponseParser
 from utils.logging_utils import get_logger
 from integrations.wikipedia_api import WikipediaAPI
 from utils.tone_detector import (
@@ -133,137 +136,6 @@ class DaemonOrchestrator:
     - prepare_prompt: topic update, file processing, optional rewrite, prompt build
     - process_user_query: optional personality switch, commands, deictic check, generate, store
     """
-
-    @staticmethod
-    def _parse_thinking_block(response: str) -> Tuple[str, str]:
-        """
-        Parse response to extract thinking block and final answer.
-
-        Args:
-            response: Full LLM response potentially containing <thinking>...</thinking>
-
-        Returns:
-            Tuple of (thinking_part, final_answer_part)
-            - If no thinking block found, thinking_part is empty and final_answer_part is the full response
-        """
-        if not response or not isinstance(response, str):
-            return "", response or ""
-
-        # Look for </thinking> delimiter
-        delimiter = "</thinking>"
-        if delimiter in response:
-            parts = response.split(delimiter, 1)
-            if len(parts) == 2:
-                thinking_raw = parts[0]
-                final_answer = parts[1].strip()
-
-                # Extract thinking content (remove opening tag if present)
-                thinking_content = thinking_raw
-                if "<thinking>" in thinking_raw:
-                    thinking_content = thinking_raw.split("<thinking>", 1)[1]
-
-                return thinking_content.strip(), final_answer
-
-        # No thinking block found - return empty thinking and full response as answer
-        return "", response
-
-    @staticmethod
-    def _strip_reflection_blocks(response: str) -> str:
-        """
-        Strip reflection blocks from response before storing/showing as conversation.
-
-        Reflections are stored separately as reflection memories, so they shouldn't
-        also be saved as part of the conversation response.
-
-        Handles both formats:
-        - <reflect>...</reflect>
-        - [SYSTEM QUALITY REFLECTION]...
-
-        Args:
-            response: Full LLM response potentially containing reflection blocks
-
-        Returns:
-            Response with all reflection blocks removed
-        """
-        if not response or not isinstance(response, str):
-            return response or ""
-
-        import re
-        # Remove <reflect>...</reflect> blocks
-        cleaned = re.sub(r'<reflect>.*?</reflect>', '', response, flags=re.DOTALL)
-
-        # Remove [SYSTEM QUALITY REFLECTION] and everything after it
-        cleaned = re.sub(r'\[SYSTEM QUALITY REFLECTION\].*', '', cleaned, flags=re.DOTALL)
-
-        # Remove standalone <reflection> tags (legacy format)
-        cleaned = re.sub(r'<reflection>.*?</reflection>', '', cleaned, flags=re.DOTALL)
-
-        # Clean up any extra whitespace left behind
-        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)  # Collapse multiple blank lines
-        return cleaned.strip()
-
-    @staticmethod
-    def _strip_xml_wrappers(text: str) -> str:
-        """Remove simple XML-like wrappers such as <result>...</result>, <answer>...</answer>.
-
-        Keeps inner content; tolerant if tags are missing.
-        """
-        if not text:
-            return text
-        try:
-            import re
-            s = text.strip()
-            # Unwrap common tags if they span the whole string
-            for tag in ("result", "answer", "final"):
-                pattern = rf"^\s*<\s*{tag}[^>]*>([\s\S]*?)<\s*/\s*{tag}\s*>\s*$"
-                m = re.match(pattern, s, flags=re.IGNORECASE)
-                if m:
-                    s = m.group(1).strip()
-            return s
-        except Exception:
-            return text
-
-    @staticmethod
-    def _strip_prompt_artifacts(text: str) -> str:
-        """Remove known bracketed prompt headers if the model echoes them.
-
-        Conservative: removes header lines and their immediate block until a blank line.
-        """
-        if not text:
-            return text
-        try:
-            import re
-            header_patterns = [
-                r"^\s*\[TIME CONTEXT\]",
-                r"^\s*\[RECENT CONVERSATION[^\]]*\]",
-                r"^\s*\[RELEVANT INFORMATION\]",
-                r"^\s*\[RELEVANT MEMORIES\]",
-                r"^\s*\[FACTS[ ^\]]*\]",
-                r"^\s*\[RECENT FACTS\]",
-                r"^\s*\[CURRENT MESSAGE FACTS\]",
-                r"^\s*\[DIRECTIVES\]",
-                r"^\s*\[CURRENT USER QUERY[ ^\]]*\]",
-                r"^\s*\[USER INPUT\]",
-                r"^\s*\[BACKGROUND KNOWLEDGE\]",
-                r"^\s*\[CONVERSATION SUMMARIES[ ^\]]*\]",
-                r"^\s*\[RECENT REFLECTIONS[ ^\]]*\]",
-                r"^\s*\[SESSION REFLECTIONS[ ^\]]*\]",
-            ]
-            header_re = re.compile("(" + ")|(".join(header_patterns) + ")", re.IGNORECASE)
-            lines = []
-            skip_block = False
-            for line in (text.splitlines() or []):
-                if header_re.search(line):
-                    skip_block = True
-                    continue
-                if skip_block:
-                    if not line.strip():
-                        skip_block = False
-                    continue
-                lines.append(line)
-            return "\n".join(lines).strip()
-        except Exception:
-            return text
 
     def __init__(
         self,
@@ -777,10 +649,27 @@ The user is processing/analyzing, open to engagement.
                 if self.logger:
                     self.logger.debug(f"[Orchestrator] Wolfram Alpha not available: {e}")
 
+            # Initialize sandbox manager for code execution
+            sandbox_manager = None
+            try:
+                from knowledge.sandbox_manager import get_sandbox_manager
+                sandbox_manager = get_sandbox_manager()
+                if sandbox_manager.is_available():
+                    if self.logger:
+                        self.logger.info("[Orchestrator] Sandbox manager initialized")
+                else:
+                    sandbox_manager = None
+                    if self.logger:
+                        self.logger.debug("[Orchestrator] Sandbox not available (E2B_API_KEY not configured)")
+            except ImportError as e:
+                if self.logger:
+                    self.logger.debug(f"[Orchestrator] Sandbox manager not available: {e}")
+
             self._agentic_controller = AgenticSearchController(
                 model_manager=self.model_manager,
                 web_search_manager=web_search_manager,
                 wolfram_manager=wolfram_manager,
+                sandbox_manager=sandbox_manager,
                 token_manager=token_manager,
                 max_rounds=self._agentic_config.get("max_rounds", 5),
                 context_budget_tokens=self._agentic_config.get("context_budget_tokens", 8000),
@@ -880,9 +769,14 @@ The user is processing/analyzing, open to engagement.
             If return_context=False: (prompt, system_prompt)
             If return_context=True: (prompt, system_prompt, context_dict)
         """
+        import time
+        _timings = {}
+        _t_start = time.perf_counter()
+
         # ---------------------------------------------------------------------
         # 0) Topic inference (non-fatal; use single canonical topic string)
         # ---------------------------------------------------------------------
+        _t0 = time.perf_counter()
         try:
             if getattr(self, "topic_manager", None):
                 # Update TopicManager’s internal state from this turn’s input
@@ -901,10 +795,12 @@ The user is processing/analyzing, open to engagement.
         except Exception:
             # Topic inference must never block the flow
             pass
+        _timings['topic_inference'] = time.perf_counter() - _t0
 
         # ---------------------------------------------------------------------
         # 0.5) Tone Detection (crisis vs. casual) - runs for both RAW and ENHANCED modes
         # ---------------------------------------------------------------------
+        _t0 = time.perf_counter()
         conversation_history = None
         if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
             try:
@@ -940,9 +836,11 @@ The user is processing/analyzing, open to engagement.
         # Update current emotional context (will be used later when injecting response instructions)
         self.current_emotional_context = emotional_context
         self.current_tone_level = emotional_context.crisis_level  # Keep for compatibility
+        _timings['tone_detection'] = time.perf_counter() - _t0
 
         # ---------------------------------------------------------------------
         # 1) File processing (enhanced path only)
+        _t0 = time.perf_counter()
         # ---------------------------------------------------------------------
         combined_text = user_input
         if files and not use_raw_mode and getattr(self, "file_processor", None):
@@ -972,7 +870,6 @@ The user is processing/analyzing, open to engagement.
                         )
 
                     # Extract facts with timeout to avoid blocking
-                    import asyncio
                     try:
                         fact_task = asyncio.create_task(
                             self.memory_system._extract_and_store_facts(
@@ -1007,9 +904,11 @@ The user is processing/analyzing, open to engagement.
                 # Never let fact extraction block the flow
                 if getattr(self, "logger", None):
                     self.logger.debug(f"[Orchestrator] Heavy topic detection failed: {e}")
+        _timings['file_processing'] = time.perf_counter() - _t0
 
         # ---------------------------------------------------------------------
         # 2) Optional query rewrite (for retrieval/search phrasing)
+        _t0 = time.perf_counter()
         # ---------------------------------------------------------------------
         rewritten_query: Optional[str] = None
         qinfo = None
@@ -1030,7 +929,6 @@ The user is processing/analyzing, open to engagement.
                 )
                 # Use a low-latency alias for quick rewrites; allow disabling timeout via config (<= 0)
                 from config.app_config import REWRITE_TIMEOUT_S
-                import asyncio as _a
                 _rw_timeout = 0.0
                 try:
                     _rw_timeout = float(REWRITE_TIMEOUT_S)
@@ -1040,7 +938,7 @@ The user is processing/analyzing, open to engagement.
                     prompt=rewrite_prompt, model_name="gpt-4o-mini"
                 )
                 if _rw_timeout > 0:
-                    rewritten_query = await _a.wait_for(_coro, timeout=_rw_timeout)
+                    rewritten_query = await asyncio.wait_for(_coro, timeout=_rw_timeout)
                 else:
                     rewritten_query = await _coro
                 if isinstance(rewritten_query, str):
@@ -1049,9 +947,11 @@ The user is processing/analyzing, open to engagement.
                     rewritten_query = user_input
             except Exception:
                 rewritten_query = user_input
+        _timings['query_rewrite'] = time.perf_counter() - _t0
 
         # ---------------------------------------------------------------------
         # 3) Resolve system prompt (robust order + config-aware)
+        _t0 = time.perf_counter()
         # ---------------------------------------------------------------------
         SYSTEM_PROMPT_FALLBACK = (
             "You are Daemon, a helpful assistant with memory and RAG. "
@@ -1294,6 +1194,8 @@ The user is processing/analyzing, open to engagement.
         # Citations are now injected early (section 3.8) so LLM sees them before
         # other instructions. This increases compliance with citation protocol.
 
+        _timings['system_prompt_setup'] = time.perf_counter() - _t0
+
         # ---------------------------------------------------------------------
         # 5) Raw mode: return plain text, no system prompt
         # ---------------------------------------------------------------------
@@ -1301,10 +1203,15 @@ The user is processing/analyzing, open to engagement.
             return combined_text, None
 
         # ---------------------------------------------------------------------
-        # 4.7) STM (Short-Term Memory) Pass - Analyze recent context
+        # 4.7 + 5) PARALLEL: STM Analysis + Prompt Building
+        _t0 = time.perf_counter()
         # ---------------------------------------------------------------------
-        stm_summary = None
-        # Fetch MORE conversation history for STM (tone detection only needed 3)
+        # These operations are independent and can run in parallel:
+        # - STM analyzes recent conversation context (~1s)
+        # - build_prompt() gathers memories, web search, etc. (~2s)
+        # Running in parallel saves ~1s total latency.
+
+        # Prepare STM data (fast, sync)
         stm_conversation_history = None
         if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
             try:
@@ -1312,10 +1219,13 @@ The user is processing/analyzing, open to engagement.
             except Exception:
                 pass
 
-        if self.stm_analyzer and self._should_use_stm(stm_conversation_history, user_input):
+        should_run_stm = self.stm_analyzer and self._should_use_stm(stm_conversation_history, user_input)
+        stm_recent = None
+        last_assistant_response = None
+
+        if should_run_stm:
             try:
                 from config.app_config import STM_MAX_RECENT_MESSAGES
-                # Get more recent messages for STM
                 stm_recent = stm_conversation_history or []
                 if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
                     stm_recent = self.memory_system.corpus_manager.get_recent_memories(
@@ -1323,53 +1233,74 @@ The user is processing/analyzing, open to engagement.
                     ) or []
 
                 # Extract last assistant response for coherence
-                last_assistant_response = None
                 for mem in reversed(stm_recent):
                     if mem.get('response'):
                         last_assistant_response = mem.get('response')
                         break
+            except Exception:
+                should_run_stm = False
 
-                # Run STM analysis
-                stm_summary = await self.stm_analyzer.analyze(
+        # Define async task for STM analysis (with timing)
+        async def _run_stm_analysis():
+            if not should_run_stm:
+                return None, 0.0
+            _stm_start = time.perf_counter()
+            try:
+                result = await self.stm_analyzer.analyze(
                     recent_memories=stm_recent,
                     user_query=user_input,
                     last_assistant_response=last_assistant_response
                 )
-
-                if self.logger:
-                    self.logger.info(
-                        f"[STM] Analysis complete: topic={stm_summary.get('topic')}, "
-                        f"tone={stm_summary.get('tone')}, threads={len(stm_summary.get('open_threads', []))}"
-                    )
-
-                # Feed STM's LLM-derived topic back to TopicManager
-                # This ensures consistent topic tracking using the higher-quality LLM extraction
-                stm_topic = stm_summary.get('topic')
-                if stm_topic and stm_topic.lower() not in ('unknown', 'general', ''):
-                    if self.topic_manager:
-                        self.topic_manager.last_topic = stm_topic
-                        self.logger.debug(f"[STM] Updated TopicManager with STM topic: {stm_topic}")
-                    # Also update our local tracking
-                    self.last_stm_topic = stm_topic
-
+                return result, time.perf_counter() - _stm_start
             except Exception as e:
                 if self.logger:
-                    self.logger.warning(f"[STM] Analysis failed, continuing without STM: {e}")
-                stm_summary = None
+                    self.logger.warning(f"[STM] Analysis failed, continuing without: {e}")
+                return None, time.perf_counter() - _stm_start
 
-        # ---------------------------------------------------------------------
-        # 5) Build prompt (unified)
-        # ---------------------------------------------------------------------
-        prompt = await self.prompt_builder.build_prompt(
-            user_input=combined_text,
-            search_query=rewritten_query,
-            personality_config=persona_cfg,
-            system_prompt=system_prompt,
-            current_topic=getattr(self, "current_topic", "general"),
-            fresh_facts=fresh_facts,  # Pass inline-extracted facts
-            stm_summary=stm_summary,  # Pass STM context summary
-            crisis_level=emotional_context.crisis_level.value if emotional_context else None,  # Pass for web search suppression
+        # Define async task for prompt building (with timing)
+        async def _run_build_prompt():
+            _bp_start = time.perf_counter()
+            result = await self.prompt_builder.build_prompt(
+                user_input=combined_text,
+                search_query=rewritten_query,
+                personality_config=persona_cfg,
+                system_prompt=system_prompt,
+                current_topic=getattr(self, "current_topic", "general"),
+                fresh_facts=fresh_facts,
+                stm_summary=None,  # Will merge STM result after parallel execution
+                crisis_level=emotional_context.crisis_level.value if emotional_context else None,
+            )
+            return result, time.perf_counter() - _bp_start
+
+        # Run STM and prompt building in parallel
+        (stm_summary, stm_time), (prompt, build_prompt_time) = await asyncio.gather(
+            _run_stm_analysis(),
+            _run_build_prompt(),
+            return_exceptions=False  # Let exceptions propagate for prompt building
         )
+        _timings['stm_analysis'] = stm_time
+        _timings['build_prompt'] = build_prompt_time
+        _timings['parallel_total'] = time.perf_counter() - _t0
+
+        # Post-process STM result
+        if stm_summary:
+            if self.logger:
+                self.logger.info(
+                    f"[STM] Analysis complete: topic={stm_summary.get('topic')}, "
+                    f"tone={stm_summary.get('tone')}, threads={len(stm_summary.get('open_threads', []))}"
+                )
+
+            # Feed STM's LLM-derived topic back to TopicManager
+            stm_topic = stm_summary.get('topic')
+            if stm_topic and stm_topic.lower() not in ('unknown', 'general', ''):
+                if self.topic_manager:
+                    self.topic_manager.last_topic = stm_topic
+                    self.logger.debug(f"[STM] Updated TopicManager with STM topic: {stm_topic}")
+                self.last_stm_topic = stm_topic
+
+            # Merge STM into prompt context (if prompt is a dict)
+            if isinstance(prompt, dict):
+                prompt["stm_summary"] = stm_summary
 
         # Capture memory_id_map and raw context for citation extraction/agentic search
         memory_id_map = {}
@@ -1385,6 +1316,21 @@ The user is processing/analyzing, open to engagement.
 
         # Store memory_id_map for citation extraction
         self._current_memory_id_map = memory_id_map
+
+        # Log timing summary
+        _timings['total'] = time.perf_counter() - _t_start
+        if self.logger:
+            self.logger.info(
+                f"[PREPARE_PROMPT TIMING] "
+                f"total={_timings['total']:.2f}s | "
+                f"topic={_timings.get('topic_inference', 0):.2f}s | "
+                f"tone={_timings.get('tone_detection', 0):.2f}s | "
+                f"files={_timings.get('file_processing', 0):.2f}s | "
+                f"rewrite={_timings.get('query_rewrite', 0):.2f}s | "
+                f"sys_prompt={_timings.get('system_prompt_setup', 0):.2f}s | "
+                f"parallel={_timings.get('parallel_total', 0):.2f}s "
+                f"(stm={_timings.get('stm_analysis', 0):.2f}s, build={_timings.get('build_prompt', 0):.2f}s)"
+            )
 
         if return_context:
             return prompt, system_prompt, raw_context
@@ -1863,9 +1809,9 @@ The user is processing/analyzing, open to engagement.
                 full_response = full_response.strip()
 
             # --- Parse thinking block and extract final answer ---
-            thinking_part, final_answer = self._parse_thinking_block(full_response)
+            thinking_part, final_answer = ResponseParser.parse_thinking_block(full_response)
             # Strip XML-like wrappers (e.g., <result> … </result>) from final answer
-            final_answer = self._strip_xml_wrappers(final_answer)
+            final_answer = ResponseParser.strip_xml_wrappers(final_answer)
 
             # Log thinking part for debugging if present
             if thinking_part:
@@ -1874,11 +1820,11 @@ The user is processing/analyzing, open to engagement.
                 debug_info["thinking_length"] = len(thinking_part)
 
             # Store final answer (not the thinking part) in memory
-            answer_for_storage = final_answer if final_answer else self._strip_xml_wrappers(full_response)
+            answer_for_storage = final_answer if final_answer else ResponseParser.strip_xml_wrappers(full_response)
             # Strip reflection blocks (they're stored separately as reflection memories)
-            answer_for_storage = self._strip_reflection_blocks(answer_for_storage)
+            answer_for_storage = ResponseParser.strip_reflection_blocks(answer_for_storage)
             # Sanitize prompt header echoes before returning/storing
-            answer_for_storage = self._strip_prompt_artifacts(answer_for_storage)
+            answer_for_storage = ResponseParser.strip_prompt_artifacts(answer_for_storage)
 
             # Extract citations if enabled
             citations = []

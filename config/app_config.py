@@ -322,6 +322,30 @@ WOLFRAM_ENABLED = bool(int(os.getenv("WOLFRAM_ENABLED", "1" if WOLFRAM_ENABLED e
 WOLFRAM_TIMEOUT = float(os.getenv("WOLFRAM_TIMEOUT", str(WOLFRAM_TIMEOUT)))
 
 # --------------------------------------------------------------------
+# E2B Code Sandbox Configuration
+# --------------------------------------------------------------------
+# Secure Python code execution in Firecracker microVMs via E2B
+# Use for multi-step calculations, data analysis, visualizations
+SANDBOX_CFG = config.get("sandbox", {})
+SANDBOX_ENABLED: bool = bool(SANDBOX_CFG.get("enabled", True))
+# E2B API key (can also be set via E2B_API_KEY env var)
+SANDBOX_API_KEY: str = SANDBOX_CFG.get("api_key", "") or os.getenv("E2B_API_KEY", "")
+# Max execution time per code block in seconds
+SANDBOX_TIMEOUT_SECONDS: int = int(SANDBOX_CFG.get("timeout_seconds", 60))
+# Persistent session lifetime in minutes
+SANDBOX_SESSION_TIMEOUT_MINUTES: int = int(SANDBOX_CFG.get("session_timeout_minutes", 30))
+# Truncate large outputs (~1k tokens max)
+SANDBOX_MAX_OUTPUT_CHARS: int = int(SANDBOX_CFG.get("max_output_chars", 4000))
+# Cache TTL for identical code results (ephemeral mode only)
+SANDBOX_CACHE_TTL_SECONDS: int = int(SANDBOX_CFG.get("cache_ttl_seconds", 3600))
+# Rate limit per minute
+SANDBOX_RATE_LIMIT_PER_MINUTE: int = int(SANDBOX_CFG.get("rate_limit_per_minute", 30))
+
+# Environment variable overrides for E2B Sandbox
+SANDBOX_ENABLED = bool(int(os.getenv("SANDBOX_ENABLED", "1" if SANDBOX_ENABLED else "0")))
+SANDBOX_TIMEOUT_SECONDS = int(os.getenv("SANDBOX_TIMEOUT_SECONDS", str(SANDBOX_TIMEOUT_SECONDS)))
+
+# --------------------------------------------------------------------
 # Obsidian Vault Configuration
 # --------------------------------------------------------------------
 # Enable personal notes integration from Obsidian vault

@@ -3,27 +3,40 @@ Agentic Search Controller Module
 
 Contract:
     - Provides AgenticSearchController for multi-round search loops
-    - Manages ReAct cycle: Think → Search → Observe → Repeat
+    - Manages ReAct cycle: Think → Act (search/compute/code) → Observe → Repeat
     - Emits ProgressEvent for UI updates
     - Enforces max_rounds limit (default 5)
     - Compresses search results to fit context budget
     - Falls back gracefully on search/API failures
 
+Tool Support:
+    - Web search via WebSearchManager
+    - Wolfram Alpha computation via WolframManager (optional)
+    - Python code execution via SandboxManager (optional) [NEW 2026-01-22]
+      - Persistent sessions for variable persistence across turns
+      - Automatic cleanup in finally block
+
+Key Parameters:
+    - skip_initial_search: bool - Skip Round 1 web search for computation-only queries [NEW 2026-01-22]
+
 Dependencies:
     - models.model_manager.ModelManager (for LLM generation)
-    - knowledge.web_search_manager.WebSearchManager (for searches)
+    - knowledge.web_search_manager.WebSearchManager (for web searches)
+    - knowledge.wolfram_manager.WolframManager (for computations, optional)
+    - knowledge.sandbox_manager.SandboxManager (for code execution, optional) [NEW 2026-01-22]
     - core.prompt.token_manager.TokenManager (for budget enforcement)
 
 Public Interface:
-    - AgenticSearchController.run_agentic_search() -> AsyncGenerator[ProgressEvent|str]
+    - AgenticSearchController.run_agentic_search(skip_initial_search=False) -> AsyncGenerator[ProgressEvent|str]
     - AgenticSearchController.detect_protocol() -> SearchProtocol
 """
 
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime
-from typing import Any, AsyncGenerator, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 
 from core.agentic.types import (
     AgentState,
@@ -33,6 +46,8 @@ from core.agentic.types import (
     SearchProtocol,
     SearchRequest,
     SearchRound,
+    LOW_QUALITY_HINT_TEMPLATE,
+    MAX_RELAXATION_HINT,
 )
 from core.agentic.protocols import (
     detect_protocol,
@@ -44,6 +59,7 @@ if TYPE_CHECKING:
     from models.model_manager import ModelManager
     from knowledge.web_search_manager import WebSearchManager, WebSearchResult
     from knowledge.wolfram_manager import WolframManager
+    from knowledge.sandbox_manager import SandboxManager, PersistentSession, SandboxResult
     from core.prompt.token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
@@ -53,6 +69,14 @@ DEFAULT_MAX_ROUNDS = 5
 DEFAULT_CONTEXT_BUDGET_TOKENS = 8000
 DEFAULT_COMPRESSION_MAX_TOKENS = 1500
 DEFAULT_COMPRESSION_MODEL = "gpt-4o-mini"
+
+# Pre-compiled patterns for query relaxation (avoid re-compiling per call)
+_VERSION_PATTERN = re.compile(r'v?\d+(\.\d+)+')
+_YEAR_PATTERN = re.compile(r'\b20\d{2}\b')
+_ERROR_PATTERN = re.compile(r'error|exception|traceback|bug|issue', re.IGNORECASE)
+
+# Stop words for relevance check
+_STOP_WORDS = frozenset({'the', 'a', 'an', 'is', 'are', 'was', 'were', 'to', 'of', 'for', 'in', 'on', 'with', 'and', 'or'})
 
 
 class AgenticSearchController:
@@ -72,6 +96,7 @@ class AgenticSearchController:
         model_manager: "ModelManager",
         web_search_manager: "WebSearchManager",
         wolfram_manager: Optional["WolframManager"] = None,
+        sandbox_manager: Optional["SandboxManager"] = None,
         token_manager: Optional["TokenManager"] = None,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         context_budget_tokens: int = DEFAULT_CONTEXT_BUDGET_TOKENS,
@@ -84,6 +109,7 @@ class AgenticSearchController:
             model_manager: LLM manager for generation
             web_search_manager: Web search manager for queries
             wolfram_manager: Optional Wolfram Alpha manager for computations
+            sandbox_manager: Optional E2B sandbox manager for code execution
             token_manager: Optional token counter for budget enforcement
             max_rounds: Maximum search rounds allowed (default 5)
             context_budget_tokens: Token budget for accumulated context
@@ -92,6 +118,7 @@ class AgenticSearchController:
         self.model_manager = model_manager
         self.web_search_manager = web_search_manager
         self.wolfram_manager = wolfram_manager
+        self.sandbox_manager = sandbox_manager
         self.token_manager = token_manager
         self.max_rounds = max_rounds
         self.context_budget_tokens = context_budget_tokens
@@ -117,6 +144,7 @@ class AgenticSearchController:
         initial_search_terms: List[str],
         initial_context: Optional[Dict[str, Any]] = None,
         crisis_level: Optional[str] = None,
+        skip_initial_search: bool = False,
     ) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Execute the agentic search loop.
@@ -131,6 +159,7 @@ class AgenticSearchController:
             initial_search_terms: Search terms from LLM-first trigger
             initial_context: Optional pre-gathered context
             crisis_level: Current crisis/tone level
+            skip_initial_search: If True, skip Round 1 web search (for computation-only queries)
 
         Yields:
             ProgressEvent: Status updates for UI
@@ -149,66 +178,111 @@ class AgenticSearchController:
             f"protocol={protocol.value}, max_rounds={self.max_rounds}"
         )
 
-        # Get protocol handler (pass wolfram availability for tool definitions)
+        # Get protocol handler (pass tool availability for tool definitions)
         wolfram_available = self.wolfram_manager is not None and self.wolfram_manager.is_available()
-        handler = get_protocol_handler(protocol, wolfram_available=wolfram_available)
+        sandbox_available = self.sandbox_manager is not None and self.sandbox_manager.is_available()
+        handler = get_protocol_handler(
+            protocol,
+            wolfram_available=wolfram_available,
+            sandbox_available=sandbox_available
+        )
 
         # Augment system prompt for agentic mode
         augmented_system_prompt = handler.augment_system_prompt(
             system_prompt, self.max_rounds
         )
 
+        # Create persistent sandbox session if available (for variable persistence across turns)
+        sandbox_session = None
+        if sandbox_available:
+            try:
+                sandbox_session = await self.sandbox_manager.create_session()
+                logger.info("[AgenticSearch] Created persistent sandbox session for ReAct loop")
+            except Exception as e:
+                logger.warning(f"[AgenticSearch] Failed to create sandbox session: {e}")
+                # Continue without sandbox - will fall back gracefully
+
         try:
-            # === ROUND 1: Automatic search with trigger terms ===
-            session.state = AgentState.SEARCHING
+            # === ROUND 1: Automatic search with trigger terms (unless skipped) ===
+            if skip_initial_search:
+                # Skip Round 1 web search for computation-only queries
+                logger.info("[AgenticSearch] Skipping initial search (computation-only mode)")
+                session.accumulated_context = ""
+                yield ProgressEvent(
+                    event_type="thinking",
+                    message="Analyzing query for computation...",
+                    round_number=1,
+                    metadata={"skip_search": True}
+                )
+            else:
+                session.state = AgentState.SEARCHING
 
-            # Fallback to query if no search terms provided
-            if not initial_search_terms:
-                initial_search_terms = [query]
+                # Fallback to query if no search terms provided
+                if not initial_search_terms:
+                    initial_search_terms = [query]
 
-            yield ProgressEvent(
-                event_type="searching",
-                message=f"Searching for: {initial_search_terms[0]}",
-                round_number=1,
-                metadata={"terms": initial_search_terms}
-            )
+                yield ProgressEvent(
+                    event_type="searching",
+                    message=f"Searching for: {initial_search_terms[0]}",
+                    round_number=1,
+                    metadata={"terms": initial_search_terms}
+                )
 
-            # Execute first search
-            start_time = time.time()
-            first_result = await self._execute_search(
-                initial_search_terms,
-                crisis_level=crisis_level
-            )
-            search_duration = (time.time() - start_time) * 1000
+                # Execute first search
+                start_time = time.time()
+                first_result = await self._execute_search(
+                    initial_search_terms,
+                    crisis_level=crisis_level
+                )
+                search_duration = (time.time() - start_time) * 1000
 
-            # Record first round
-            first_round = SearchRound(
-                round_number=1,
-                request=SearchRequest(
-                    query=initial_search_terms[0],
-                    round_number=1
-                ),
-                results=first_result,
-                duration_ms=search_duration
-            )
+                # Record first round
+                first_round = SearchRound(
+                    round_number=1,
+                    request=SearchRequest(
+                        query=initial_search_terms[0],
+                        round_number=1
+                    ),
+                    results=first_result,
+                    duration_ms=search_duration
+                )
 
-            # Emit results found
-            result_count = len(first_result.pages) if first_result and hasattr(first_result, 'pages') else 0
-            yield ProgressEvent(
-                event_type="found_results",
-                message=f"Found {result_count} results",
-                round_number=1,
-                metadata={"result_count": result_count, "duration_ms": search_duration}
-            )
+                # Emit results found
+                result_count = len(first_result.pages) if first_result and hasattr(first_result, 'pages') else 0
+                yield ProgressEvent(
+                    event_type="found_results",
+                    message=f"Found {result_count} results",
+                    round_number=1,
+                    metadata={"result_count": result_count, "duration_ms": search_duration}
+                )
 
-            # Compress and accumulate context
-            session.state = AgentState.OBSERVING
-            compressed = await self._compress_results(first_result)
-            first_round.summary = compressed
-            session.rounds.append(first_round)
-            session.accumulated_context = self._format_search_context(
-                1, initial_search_terms[0], compressed
-            )
+                # Compress and accumulate context
+                session.state = AgentState.OBSERVING
+                compressed = await self._compress_results(first_result)
+                first_round.summary = compressed
+                session.rounds.append(first_round)
+                session.accumulated_context = self._format_search_context(
+                    1, initial_search_terms[0], compressed
+                )
+
+                # Check Round 1 result quality and set hint for next iteration
+                is_low_quality, issue = self._is_low_quality_result(
+                    first_result, initial_search_terms[0]
+                )
+                if is_low_quality:
+                    session.low_quality_search_count += 1
+                    suggestion = self._generate_relaxation_suggestion(initial_search_terms[0])
+                    remaining = 2 - session.low_quality_search_count
+                    session.relaxation_hint = LOW_QUALITY_HINT_TEMPLATE.format(
+                        query=initial_search_terms[0],
+                        issue=issue,
+                        suggestion=suggestion,
+                        remaining=remaining
+                    )
+                    logger.info(
+                        f"[AgenticSearch] Round 1 low quality ({issue}), "
+                        f"relaxation count: {session.low_quality_search_count}"
+                    )
 
             # === ROUNDS 2-N: Model-driven iteration ===
             while session.can_continue and session.current_round <= self.max_rounds:
@@ -218,7 +292,8 @@ class AgenticSearchController:
                 iteration_prompt = self._build_iteration_prompt(
                     query=query,
                     search_context=session.accumulated_context,
-                    round_number=session.current_round
+                    round_number=session.current_round,
+                    session=session
                 )
 
                 # Generate with protocol-appropriate method
@@ -280,6 +355,37 @@ class AgenticSearchController:
                         compressed
                     )
 
+                    # Check result quality and update relaxation hint
+                    is_low_quality, issue = self._is_low_quality_result(
+                        result, decision.search_query
+                    )
+                    if is_low_quality:
+                        session.low_quality_search_count += 1
+                        if session.low_quality_search_count > 2:
+                            session.relaxation_hint = MAX_RELAXATION_HINT
+                            logger.info(
+                                "[AgenticSearch] Max relaxation attempts reached, "
+                                "forcing synthesis"
+                            )
+                        else:
+                            suggestion = self._generate_relaxation_suggestion(decision.search_query)
+                            remaining = 2 - session.low_quality_search_count
+                            session.relaxation_hint = LOW_QUALITY_HINT_TEMPLATE.format(
+                                query=decision.search_query,
+                                issue=issue,
+                                suggestion=suggestion,
+                                remaining=remaining
+                            )
+                            logger.info(
+                                f"[AgenticSearch] Low quality result ({issue}), "
+                                f"relaxation count: {session.low_quality_search_count}"
+                            )
+                    else:
+                        # Good results - reset counter and clear hint
+                        session.low_quality_search_count = 0
+                        session.relaxation_hint = None
+                        logger.debug("[AgenticSearch] Good search results, reset relaxation counter")
+
                 elif decision.wants_wolfram and decision.wolfram_query:
                     # Model wants a Wolfram Alpha computation
                     yield ProgressEvent(
@@ -323,6 +429,77 @@ class AgenticSearchController:
                         session.current_round - 1,
                         decision.wolfram_query,
                         wolfram_result
+                    )
+
+                elif decision.wants_sandbox and decision.sandbox_code:
+                    # Model wants to execute Python code in sandbox
+                    purpose = decision.sandbox_purpose or "executing code"
+                    yield ProgressEvent(
+                        event_type="executing_code",
+                        message=f"Running Python: {purpose}",
+                        round_number=session.current_round,
+                        metadata={"purpose": purpose}
+                    )
+
+                    session.state = AgentState.SEARCHING  # Reuse SEARCHING state
+                    start_time = time.time()
+
+                    # Execute in persistent session if available, otherwise ephemeral
+                    if sandbox_session and not sandbox_session.is_closed:
+                        sandbox_result = await sandbox_session.run(decision.sandbox_code)
+                    elif self.sandbox_manager and self.sandbox_manager.is_available():
+                        sandbox_result = await self.sandbox_manager.execute_code(decision.sandbox_code)
+                    else:
+                        # No sandbox available - create error result
+                        from knowledge.sandbox_manager import SandboxResult
+                        sandbox_result = SandboxResult(
+                            code=decision.sandbox_code,
+                            success=False,
+                            error="Code sandbox not available (E2B not configured)"
+                        )
+
+                    execution_duration = (time.time() - start_time) * 1000
+
+                    # Record round
+                    round_data = SearchRound(
+                        round_number=session.current_round,
+                        request=SearchRequest(
+                            query=f"[Python: {purpose}]",
+                            reason=purpose,
+                            round_number=session.current_round
+                        ),
+                        results=None,  # Sandbox results stored as summary
+                        duration_ms=execution_duration
+                    )
+
+                    if sandbox_result.success:
+                        yield ProgressEvent(
+                            event_type="code_executed",
+                            message=f"Code executed ({sandbox_result.execution_time:.1f}s)",
+                            round_number=session.current_round,
+                            metadata={"duration_ms": execution_duration}
+                        )
+                    else:
+                        yield ProgressEvent(
+                            event_type="code_error",
+                            message="Execution error (see details)",
+                            round_number=session.current_round,
+                            metadata={"error": sandbox_result.error}
+                        )
+
+                    # Store result and accumulate
+                    session.state = AgentState.OBSERVING
+                    formatted_result = self.sandbox_manager.format_for_prompt(
+                        sandbox_result, purpose
+                    ) if self.sandbox_manager else str(sandbox_result.error or sandbox_result.stdout)
+                    round_data.summary = formatted_result
+                    session.rounds.append(round_data)
+
+                    # Add to accumulated context
+                    session.accumulated_context += "\n\n" + self._format_sandbox_context(
+                        session.current_round - 1,
+                        purpose,
+                        formatted_result
                     )
 
                 elif decision.is_done:
@@ -397,6 +574,15 @@ class AgenticSearchController:
                     initial_context=initial_context
                 ):
                     yield chunk
+
+        finally:
+            # Always clean up the sandbox session
+            if sandbox_session and not sandbox_session.is_closed:
+                try:
+                    await sandbox_session.close()
+                    logger.info("[AgenticSearch] Closed sandbox session")
+                except Exception as e:
+                    logger.warning(f"[AgenticSearch] Error closing sandbox session: {e}")
 
     async def _execute_search(
         self,
@@ -630,22 +816,29 @@ Provide a focused summary with the most important information."""
         self,
         query: str,
         search_context: str,
-        round_number: int
+        round_number: int,
+        session: Optional[AgenticSearchSession] = None
     ) -> str:
         """Build prompt for iteration decision."""
-        return f"""User Question: {query}
+        parts = [f"""User Question: {query}
 
 Search Results So Far:
 {search_context}
 
-You are in round {round_number} of up to {self.max_rounds} search rounds.
+You are in round {round_number} of up to {self.max_rounds} search rounds."""]
 
-Based on the search results above:
+        # Include relaxation hint if present (guides LLM to broader queries or synthesis)
+        if session and session.relaxation_hint:
+            parts.append(session.relaxation_hint)
+
+        parts.append("""Based on the search results above:
 1. If you have enough information to fully answer the question, signal you're done and answer.
 2. If you need more specific information, request another search with a focused query.
 3. Consider what's missing: different aspects, more recent data, or more specific details.
 
-What would you like to do?"""
+What would you like to do?""")
+
+        return "\n\n".join(parts)
 
     def _build_final_prompt(
         self,
@@ -836,6 +1029,94 @@ What would you like to do?"""
     ) -> str:
         """Format a single Wolfram Alpha computation for context."""
         return f"[Computation Round {round_number}] Query: {query}\n{content}"
+
+    def _format_sandbox_context(
+        self,
+        round_number: int,
+        purpose: str,
+        content: str
+    ) -> str:
+        """Format a single Python code execution for context."""
+        return f"[Code Execution Round {round_number}] Purpose: {purpose}\n{content}"
+
+    def _is_low_quality_result(
+        self,
+        search_result: Any,
+        query: str
+    ) -> Tuple[bool, str]:
+        """
+        Check if search results are too weak to be useful.
+
+        Args:
+            search_result: WebSearchResult from web_search_manager
+            query: The search query that was executed
+
+        Returns:
+            Tuple of (is_low_quality, issue_description)
+        """
+        # Handle WebSearchResult - access the .pages attribute
+        pages = getattr(search_result, 'pages', None) or []
+
+        if not pages:
+            return True, "no results"
+        if len(pages) == 1:
+            return True, "only 1 result"
+
+        # Extract query terms (filter stop words)
+        query_terms = [w for w in query.lower().split() if w not in _STOP_WORDS]
+
+        if not query_terms:
+            return False, "ok"
+
+        # Get top result content (check first 2000 chars for speed)
+        top = pages[0]
+        top_content = (
+            getattr(top, 'content', '') or
+            getattr(top, 'snippet', '') or
+            getattr(top, 'text', '') or
+            ''
+        ).lower()[:2000]
+
+        # Fast substring check instead of set intersection
+        matches = sum(1 for term in query_terms if term in top_content)
+
+        if matches < len(query_terms) * 0.3:
+            return True, "results don't match query terms"
+
+        return False, "ok"
+
+    def _generate_relaxation_suggestion(self, query: str) -> str:
+        """
+        Generate a suggestion for how to relax/broaden the query.
+
+        Args:
+            query: The original search query
+
+        Returns:
+            A suggestion string for query reformulation
+        """
+        # Check for version numbers (e.g., "3.12", "v2.0.1")
+        if _VERSION_PATTERN.search(query):
+            return "Remove version numbers and try a more general query"
+
+        # Check for year/date specifics
+        if _YEAR_PATTERN.search(query):
+            return "Remove year specifics or try a broader time range"
+
+        # Check for very long queries (likely too specific)
+        if query.count(' ') > 5:  # Faster than split + len
+            return "Simplify to core subject + 1-2 keywords"
+
+        # Check for quoted exact phrases
+        if '"' in query:
+            return "Remove exact phrase quotes and search for individual terms"
+
+        # Check for technical jargon patterns
+        if _ERROR_PATTERN.search(query):
+            return "Try searching for the error message or symptom instead of the context"
+
+        # Default suggestion
+        return "Try broader category terms or synonyms"
 
     async def _execute_wolfram(self, query: str) -> str:
         """

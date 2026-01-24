@@ -14,6 +14,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.orchestrator import DaemonOrchestrator
+from core.response_parser import ResponseParser
 
 
 def test_parse_thinking_block():
@@ -25,7 +26,7 @@ def test_parse_thinking_block():
 
     # Test case 1: Normal thinking block
     response1 = "<thinking>Let me analyze this. 2+2 is a simple addition.</thinking>The answer is 4."
-    thinking1, answer1 = DaemonOrchestrator._parse_thinking_block(response1)
+    thinking1, answer1 = ResponseParser.parse_thinking_block(response1)
 
     print("\nTest 1: Normal thinking block")
     print(f"Input: {response1[:80]}...")
@@ -37,7 +38,7 @@ def test_parse_thinking_block():
 
     # Test case 2: No thinking block
     response2 = "The answer is 4."
-    thinking2, answer2 = DaemonOrchestrator._parse_thinking_block(response2)
+    thinking2, answer2 = ResponseParser.parse_thinking_block(response2)
 
     print("\nTest 2: No thinking block")
     print(f"Input: {response2}")
@@ -54,7 +55,7 @@ Step 2: 2 + 2 = 4
 Step 3: Format answer
 </thinking>
 The answer is 4."""
-    thinking3, answer3 = DaemonOrchestrator._parse_thinking_block(response3)
+    thinking3, answer3 = ResponseParser.parse_thinking_block(response3)
 
     print("\nTest 3: Thinking block with newlines")
     print(f"Thinking length: {len(thinking3)} chars")
@@ -66,7 +67,7 @@ The answer is 4."""
 
     # Test case 4: Empty response
     response4 = ""
-    thinking4, answer4 = DaemonOrchestrator._parse_thinking_block(response4)
+    thinking4, answer4 = ResponseParser.parse_thinking_block(response4)
 
     print("\nTest 4: Empty response")
     print(f"Thinking: '{thinking4}'")
@@ -77,7 +78,7 @@ The answer is 4."""
 
     # Test case 5: Only opening tag (malformed)
     response5 = "<thinking>Some thinking but no closing tag. The answer is unclear."
-    thinking5, answer5 = DaemonOrchestrator._parse_thinking_block(response5)
+    thinking5, answer5 = ResponseParser.parse_thinking_block(response5)
 
     print("\nTest 5: Malformed (no closing tag)")
     print(f"Thinking: '{thinking5}'")
@@ -178,7 +179,7 @@ The answer to 2 + 2 is 4."""
     print("-" * 40)
 
     # Parse it
-    thinking, answer = DaemonOrchestrator._parse_thinking_block(simulated_llm_response)
+    thinking, answer = ResponseParser.parse_thinking_block(simulated_llm_response)
 
     print("\nWhat gets logged (thinking):")
     print("-" * 40)
