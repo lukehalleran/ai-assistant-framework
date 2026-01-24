@@ -853,7 +853,8 @@ The user is processing/analyzing, open to engagement.
         self,
         context: ContextResult,
         use_raw_mode: bool = False,
-    ) -> Tuple[str, str]:
+        return_raw_context: bool = False,
+    ) -> Union[Tuple[str, str], Tuple[str, str, Dict[str, Any]]]:
         """
         Build the full prompt and system prompt from a ContextResult.
 
@@ -865,9 +866,11 @@ The user is processing/analyzing, open to engagement.
         Args:
             context: ContextResult from build_context()
             use_raw_mode: If True, skip enrichment
+            return_raw_context: If True, also return the raw context dict (for agentic search)
 
         Returns:
-            Tuple of (prompt_string, system_prompt_string)
+            If return_raw_context=False: (prompt_string, system_prompt_string)
+            If return_raw_context=True: (prompt_string, system_prompt_string, raw_context_dict)
         """
         import time
         _t_start = time.perf_counter()
@@ -994,6 +997,9 @@ The user is processing/analyzing, open to engagement.
         # --- 2) Build prompt context via PromptBuilder ---
         prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)
 
+        # Store memory_id_map for citation extraction
+        self._current_memory_id_map = prompt_ctx.get('memory_id_map', {})
+
         # --- 3) Assemble final prompt ---
         user_input = context.file_context if context.has_files else context.original_query
         prompt = self.prompt_builder._assemble_prompt(
@@ -1006,6 +1012,8 @@ The user is processing/analyzing, open to engagement.
             duration = time.perf_counter() - _t_start
             self.logger.info(f"[BUILD_FULL_PROMPT] Completed in {duration:.2f}s")
 
+        if return_raw_context:
+            return prompt, system_prompt, prompt_ctx
         return prompt, system_prompt
 
     # ---------- 3) Prepare Prompt (legacy - use build_context instead) ----------
@@ -1046,572 +1054,33 @@ The user is processing/analyzing, open to engagement.
             If return_context=False: (prompt, system_prompt)
             If return_context=True: (prompt, system_prompt, context_dict)
         """
+        # Thin wrapper that delegates to the new ContextPipeline-based methods
         import time
-        _timings = {}
         _t_start = time.perf_counter()
 
-        # ---------------------------------------------------------------------
-        # 0) Topic inference (non-fatal; use single canonical topic string)
-        # ---------------------------------------------------------------------
-        _t0 = time.perf_counter()
-        try:
-            if getattr(self, "topic_manager", None):
-                # Update TopicManager’s internal state from this turn’s input
-                self.topic_manager.update_from_user_input(user_input)
-
-                # Ask for a single canonical topic string (or None)
-                primary = self.topic_manager.get_primary_topic()
-
-                # Switch only if different from current
-                if primary and (primary.lower() != (self.current_topic or "general").lower()):
-                    self.current_topic = primary
-                    if getattr(self, "memory_system", None) is not None:
-                        self.memory_system.current_topic = self.current_topic
-                    if getattr(self, "logger", None):
-                        self.logger.info(f"Topic switched to: {self.current_topic}")
-        except Exception:
-            # Topic inference must never block the flow
-            pass
-        _timings['topic_inference'] = time.perf_counter() - _t0
-
-        # ---------------------------------------------------------------------
-        # 0.5) Tone Detection (crisis vs. casual) - runs for both RAW and ENHANCED modes
-        # ---------------------------------------------------------------------
-        _t0 = time.perf_counter()
-        conversation_history = None
-        if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
-            try:
-                # Get recent conversation history for context-aware tone detection
-                recent = self.memory_system.corpus_manager.get_recent_memories(count=3)
-                conversation_history = recent if recent else None
-            except Exception as e:
-                if self.logger:
-                    self.logger.debug(f"[Orchestrator] Failed to get conversation history for tone detection: {e}")
-
-        # Detect emotional context (tone + need type)
-        emotional_context = await analyze_emotional_context(
-            message=user_input,
-            conversation_history=conversation_history,
-            model_manager=self.model_manager
+        # Step 1: Build context via ContextPipeline
+        context = await self.build_context(
+            user_input=user_input,
+            files=files,
+            use_raw_mode=use_raw_mode,
         )
 
-        # Log emotional context (backend only)
-        emotional_log_msg = format_emotional_context_log(emotional_context, user_input)
-        if self.logger:
-            self.logger.info(f"[EMOTIONAL_CONTEXT] {emotional_log_msg}")
-
-        # Log tone shifts
-        if should_log_tone_shift(self.current_tone_level, emotional_context.crisis_level):
-            shift_log = format_tone_shift_log(
-                self.current_tone_level,
-                emotional_context.crisis_level,
-                emotional_context.tone_trigger
-            )
-            if self.logger:
-                self.logger.warning(f"[TONE_SHIFT] {shift_log}")
-
-        # Update current emotional context (will be used later when injecting response instructions)
-        self.current_emotional_context = emotional_context
-        self.current_tone_level = emotional_context.crisis_level  # Keep for compatibility
-        _timings['tone_detection'] = time.perf_counter() - _t0
-
-        # ---------------------------------------------------------------------
-        # 1) File processing (enhanced path only)
-        _t0 = time.perf_counter()
-        # ---------------------------------------------------------------------
-        combined_text = user_input
-        if files and not use_raw_mode and getattr(self, "file_processor", None):
-            try:
-                combined_text = await self.file_processor.process_files(user_input, files)
-            except Exception:
-                # Fail-open: use raw user_input if file processing has issues
-                combined_text = user_input
-
-        # ---------------------------------------------------------------------
-        # 1.5) Inline fact extraction for heavy topics/long messages
-        # ---------------------------------------------------------------------
-        fresh_facts: List[Dict] = []
-        is_heavy_topic = False  # Track for response token allocation
-        if not use_raw_mode and getattr(self, "memory_system", None):
-            try:
-                # Use async query analysis with LLM for best accuracy
-                from utils.query_checker import analyze_query_async
-                qinfo = await analyze_query_async(user_input, model_manager=self.model_manager)
-                is_heavy_topic = qinfo.is_heavy_topic  # Save for later use
-
-                if qinfo.is_heavy_topic:
-                    if getattr(self, "logger", None):
-                        self.logger.info(
-                            f"[Orchestrator] Heavy topic detected (len={len(user_input)}), "
-                            "running inline fact extraction"
-                        )
-
-                    # Extract facts with timeout to avoid blocking
-                    try:
-                        fact_task = asyncio.create_task(
-                            self.memory_system._extract_and_store_facts(
-                                query=user_input,
-                                response="",  # No response yet
-                                truth_score=0.7  # Default for user-provided content
-                            )
-                        )
-
-                        # Wait max 5 seconds
-                        await asyncio.wait_for(fact_task, timeout=5.0)
-
-                        # Retrieve just-extracted facts for prompt injection
-                        fresh_facts = await self.memory_system.get_facts(
-                            query=user_input,
-                            limit=10  # Top 10 most relevant
-                        )
-
-                        if getattr(self, "logger", None) and fresh_facts:
-                            self.logger.info(
-                                f"[Orchestrator] Extracted {len(fresh_facts)} inline facts"
-                            )
-
-                    except asyncio.TimeoutError:
-                        if getattr(self, "logger", None):
-                            self.logger.warning("[Orchestrator] Inline fact extraction timed out")
-                    except Exception as e:
-                        if getattr(self, "logger", None):
-                            self.logger.debug(f"[Orchestrator] Inline fact extraction failed: {e}")
-
-            except Exception as e:
-                # Never let fact extraction block the flow
-                if getattr(self, "logger", None):
-                    self.logger.debug(f"[Orchestrator] Heavy topic detection failed: {e}")
-        _timings['file_processing'] = time.perf_counter() - _t0
-
-        # ---------------------------------------------------------------------
-        # 2) Optional query rewrite (for retrieval/search phrasing)
-        _t0 = time.perf_counter()
-        # ---------------------------------------------------------------------
-        rewritten_query: Optional[str] = None
-        qinfo = None
-        try:
-            qinfo = analyze_query(user_input)
-        except Exception:
-            qinfo = None
-        # Only rewrite longer questions; skip tiny factoids to save latency
-        # Allow config to disable query rewrite for lower latency
-        _features = (self.config or {}).get("features", {}) if isinstance(self.config, dict) else {}
-        _enable_rewrite = bool(_features.get("enable_query_rewrite", True))
-        if _enable_rewrite and not use_raw_mode and qinfo and qinfo.is_question and qinfo.token_count >= 8:
-            try:
-                rewrite_prompt = (
-                    'Rewrite the following user question into a concise, third-person declarative '
-                    'statement suitable for a vector database search.\n\n'
-                    f'User question: "{user_input}"\nRewritten statement:'
-                )
-                # Use a low-latency alias for quick rewrites; allow disabling timeout via config (<= 0)
-                from config.app_config import REWRITE_TIMEOUT_S
-                _rw_timeout = 0.0
-                try:
-                    _rw_timeout = float(REWRITE_TIMEOUT_S)
-                except Exception:
-                    _rw_timeout = 0.0
-                _coro = self.model_manager.generate_once(
-                    prompt=rewrite_prompt, model_name="gpt-4o-mini"
-                )
-                if _rw_timeout > 0:
-                    rewritten_query = await asyncio.wait_for(_coro, timeout=_rw_timeout)
-                else:
-                    rewritten_query = await _coro
-                if isinstance(rewritten_query, str):
-                    rewritten_query = rewritten_query.strip().strip('"')
-                else:
-                    rewritten_query = user_input
-            except Exception:
-                rewritten_query = user_input
-        _timings['query_rewrite'] = time.perf_counter() - _t0
-
-        # ---------------------------------------------------------------------
-        # 3) Resolve system prompt (robust order + config-aware)
-        _t0 = time.perf_counter()
-        # ---------------------------------------------------------------------
-        SYSTEM_PROMPT_FALLBACK = (
-            "You are Daemon, a helpful assistant with memory and RAG. "
-            "Be direct, truthful, concise."
-        )
-        system_prompt: str = SYSTEM_PROMPT_FALLBACK
-
-        # Merge persona config over base orchestrator config
-        try:
-            persona_cfg = self.personality_manager.get_current_config() if self.personality_manager else {}
-        except Exception:
-            persona_cfg = {}
-        base_cfg = getattr(self, "config", {}) or {}
-        merged_cfg = {**base_cfg, **(persona_cfg or {})}
-
-        # Prefer centralized loader so it can read paths.* / prompts.* from cfg
-        try:
-            from config.app_config import load_system_prompt  # local import to avoid hard dep at import time
-            loaded = load_system_prompt(merged_cfg)
-            if isinstance(loaded, str) and loaded.strip():
-                system_prompt = loaded
-        except Exception:
-            pass
-
-        # Optional path override from persona or orchestrator
-        override_path = None
-        spf = (persona_cfg or {}).get("system_prompt_file")
-        if isinstance(spf, str):
-            override_path = spf
-        elif isinstance(spf, dict):
-            override_path = spf.get("system_prompt_file")
-
-        if not override_path:
-            override_path = getattr(self, "system_prompt_path", None)
-
-        if override_path and isinstance(override_path, str):
-            try:
-                if os.path.exists(override_path):
-                    with open(override_path, "r", encoding="utf-8") as f:
-                        text = f.read()
-                    if text.strip():
-                        system_prompt = text
-            except Exception:
-                pass
-
-            if getattr(self, "logger", None):
-                self.logger.info(
-                    f"[orchestrator] Using system prompt len={len(system_prompt)}; "
-                    f"head={repr(system_prompt[:80])}"
-                )
-
-        # ---------------------------------------------------------------------
-        # 3.5) Runtime placeholder substitution for identity (name, pronouns)
-        # ---------------------------------------------------------------------
-        if isinstance(system_prompt, str) and system_prompt.strip():
-            try:
-                profile = getattr(self, 'user_profile', None)
-                if profile:
-                    identity = profile.identity
-
-                    # Get name and pronouns, with defaults
-                    name = identity.name if identity.name else "the user"
-                    pronouns = identity.pronouns if identity.pronouns else "they/them"
-
-                    # Map pronouns to variants (subject, object, possessive)
-                    PRONOUN_MAP = {
-                        "he/him": ("he", "him", "his"),
-                        "she/her": ("she", "her", "her"),
-                        "they/them": ("they", "them", "their"),
-                    }
-                    subj, obj, poss = PRONOUN_MAP.get(pronouns.lower(), ("they", "them", "their"))
-
-                    # Replace placeholders
-                    system_prompt = system_prompt.replace("{USER_NAME}", name)
-                    system_prompt = system_prompt.replace("{USER_PRONOUNS}", pronouns)
-                    system_prompt = system_prompt.replace("{PRONOUN_SUBJ}", subj)
-                    system_prompt = system_prompt.replace("{PRONOUN_OBJ}", obj)
-                    system_prompt = system_prompt.replace("{PRONOUN_POSS}", poss)
-
-                    if getattr(self, "logger", None):
-                        self.logger.debug(
-                            f"[Orchestrator] Injected identity placeholders: "
-                            f"name={name}, pronouns={pronouns}"
-                        )
-            except Exception as e:
-                if getattr(self, "logger", None):
-                    self.logger.debug(f"[Orchestrator] Profile placeholder injection failed: {e}")
-
-        # ---------------------------------------------------------------------
-        # 3.8) Citation instructions (if enabled) - INJECTED EARLY FOR PROMINENCE
-        # ---------------------------------------------------------------------
-        if self.enable_citations:
-            citation_instruction = (
-                "\n\n"
-                "═══════════════════════════════════════════════════════════════\n"
-                "MANDATORY MEMORY CITATION PROTOCOL (REQUIRED)\n"
-                "═══════════════════════════════════════════════════════════════\n"
-                "\n"
-                "CRITICAL REQUIREMENT: You MUST cite every memory you reference in your response.\n"
-                "\n"
-                "Citation Format (use the exact index numbers shown in each section):\n"
-                "• [MEM_RECENT_{n}] - For item n) in [RECENT CONVERSATION] section\n"
-                "• [MEM_SEMANTIC_{n}] - For item n) in [RELEVANT MEMORIES] section\n"
-                "• [SUM_RECENT_{n}] - For item n) in [RECENT SUMMARIES] section\n"
-                "• [SUM_SEMANTIC_{n}] - For item n) in [SEMANTIC SUMMARIES] section\n"
-                "• [REFL_RECENT_{n}] - For item n) in [RECENT REFLECTIONS] section\n"
-                "• [REFL_SEMANTIC_{n}] - For item n) in [SEMANTIC REFLECTIONS] section\n"
-                "• [PROFILE_CONTEXT] - For user profile information\n"
-                "\n"
-                "Examples:\n"
-                "✓ \"You mentioned [MEM_RECENT_2] wanting to share this with OMSA professors.\"\n"
-                "✓ \"Based on [MEM_RECENT_1] and [MEM_SEMANTIC_3], the dark theme is working well.\"\n"
-                "✓ \"Your profile shows [PROFILE_CONTEXT] you're working on this project.\"\n"
-                "\n"
-                "Rules:\n"
-                "1. ALWAYS cite when referencing specific facts, events, or statements from context\n"
-                "2. Use the EXACT number shown in the prompt (e.g., if you see \"1) ...\", cite [MEM_RECENT_1])\n"
-                "3. Include citations inline, immediately after the relevant statement\n"
-                "4. Multiple citations are encouraged when combining information from multiple memories\n"
-                "\n"
-                "This is NOT optional - citations provide transparency and traceability for memory-augmented responses.\n"
-                "═══════════════════════════════════════════════════════════════\n"
-            )
-            system_prompt = system_prompt.rstrip() + citation_instruction
-            if self.logger:
-                self.logger.debug("[PREPARE_PROMPT] Injected citation protocol (early position)")
-
-        # ---------------------------------------------------------------------
-        # 4) Append resolved topic hint to the end of the system prompt
-        #     (kept simple; if no topic was inferred, default to 'general').
-        # ---------------------------------------------------------------------
-        try:
-            topic_str = (getattr(self, "current_topic", None) or "general").strip()
-            if isinstance(system_prompt, str) and system_prompt.strip():
-                system_prompt = system_prompt.rstrip() + f"\n\nQuery topic: {topic_str}"
-        except Exception:
-            # Never let topic hint break the flow
-            pass
-
-        # ---------------------------------------------------------------------
-        # 4.25) Inject conversation thread context for tone/style adjustment
-        # ---------------------------------------------------------------------
-        if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
-            try:
-                if self.memory_system and hasattr(self.memory_system, 'get_thread_context'):
-                    thread_ctx = self.memory_system.get_thread_context()
-
-                    if thread_ctx and thread_ctx.get("thread_id"):
-                        thread_depth = thread_ctx.get("thread_depth", 1)
-                        is_heavy = thread_ctx.get("is_heavy_topic", False)
-                        thread_topic = thread_ctx.get("thread_topic", "")
-
-                        # Build thread context message
-                        thread_msg = f"\n\n[THREAD CONTEXT]"
-                        thread_msg += f"\nThis is message #{thread_depth} in an ongoing conversation thread"
-
-                        if thread_topic:
-                            thread_msg += f" about {thread_topic}"
-
-                        if is_heavy:
-                            thread_msg += "\nThis is a sensitive/heavy topic. "
-
-                            if thread_depth >= 3:
-                                thread_msg += (
-                                    "You've been discussing this for multiple turns. "
-                                    "Focus on specific details and avoid repeating general therapeutic questions. "
-                                    "Reference concrete facts from earlier in the conversation."
-                                )
-                            else:
-                                thread_msg += (
-                                    "Be empathetic and specific. "
-                                    "Engage with concrete details rather than generic therapeutic responses."
-                                )
-                        else:
-                            # Non-heavy thread: subtle continuity hint
-                            if thread_depth >= 3:
-                                thread_msg += "\nMaintain conversational continuity and build on previous exchanges."
-
-                        system_prompt = system_prompt.rstrip() + thread_msg
-
-                        if getattr(self, "logger", None):
-                            self.logger.debug(
-                                f"[Orchestrator] Injected thread context: "
-                                f"depth={thread_depth}, heavy={is_heavy}, topic={thread_topic}"
-                            )
-            except Exception as e:
-                # Never let thread context injection break the flow
-                if getattr(self, "logger", None):
-                    self.logger.debug(f"[Orchestrator] Thread context injection failed: {e}")
-
-        # ---------------------------------------------------------------------
-        # 4.5) Add response mode instructions (emotional context: tone + need type)
-        # ---------------------------------------------------------------------
-        if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
-            # Get emotional context from the orchestrator's state
-            emotional_ctx = getattr(self, "current_emotional_context", None)
-
-            if self.logger:
-                if emotional_ctx:
-                    self.logger.info(
-                        f"[PREPARE_PROMPT] Emotional context: "
-                        f"Crisis={emotional_ctx.crisis_level.value}, Need={emotional_ctx.need_type.value}"
-                    )
-                else:
-                    self.logger.info("[PREPARE_PROMPT] No emotional context set")
-
-            if emotional_ctx:
-                response_instructions = self._get_response_instructions(emotional_ctx)
-                system_prompt = system_prompt.rstrip() + response_instructions
-                if self.logger:
-                    self.logger.info(
-                        f"[PREPARE_PROMPT] Injected response instructions for "
-                        f"{emotional_ctx.crisis_level.value}/{emotional_ctx.need_type.value}"
-                    )
-            else:
-                if self.logger:
-                    self.logger.warning("[PREPARE_PROMPT] No emotional context set - skipping response instructions")
-
-            # Add session headers instructions for temporal reasoning and memory usage
-            session_headers_instructions = self._get_session_headers_instructions()
-            system_prompt = system_prompt.rstrip() + session_headers_instructions
-            if self.logger:
-                self.logger.debug("[PREPARE_PROMPT] Injected session headers instructions")
-
-        # ---------------------------------------------------------------------
-        # 4.6) Add thinking block instruction to system prompt
-        # ---------------------------------------------------------------------
-        if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
-            thinking_instruction = (
-                "\n\n"
-                "IMPORTANT: Before you provide your final answer, you must include a <thinking> block. "
-                "Inside this block, detail your step-by-step reasoning and analysis of the user's request. "
-                "After the </thinking> block, provide your final, concise, and helpful response to the user."
-            )
-            system_prompt = system_prompt.rstrip() + thinking_instruction
-
-        # ---------------------------------------------------------------------
-        # 4.8) Citation instructions - MOVED TO SECTION 3.8 FOR GREATER PROMINENCE
-        # ---------------------------------------------------------------------
-        # Citations are now injected early (section 3.8) so LLM sees them before
-        # other instructions. This increases compliance with citation protocol.
-
-        _timings['system_prompt_setup'] = time.perf_counter() - _t0
-
-        # ---------------------------------------------------------------------
-        # 5) Raw mode: return plain text, no system prompt
-        # ---------------------------------------------------------------------
+        # Step 2: Raw mode returns early
         if use_raw_mode:
-            return combined_text, None
+            return context.file_context or user_input, None
 
-        # ---------------------------------------------------------------------
-        # 4.7 + 5) PARALLEL: STM Analysis + Prompt Building
-        _t0 = time.perf_counter()
-        # ---------------------------------------------------------------------
-        # These operations are independent and can run in parallel:
-        # - STM analyzes recent conversation context (~1s)
-        # - build_prompt() gathers memories, web search, etc. (~2s)
-        # Running in parallel saves ~1s total latency.
-
-        # Prepare STM data (fast, sync)
-        stm_conversation_history = None
-        if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
-            try:
-                stm_conversation_history = self.memory_system.corpus_manager.get_recent_memories(count=10) or []
-            except Exception:
-                pass
-
-        should_run_stm = self.stm_analyzer and self._should_use_stm(stm_conversation_history, user_input)
-        stm_recent = None
-        last_assistant_response = None
-
-        if should_run_stm:
-            try:
-                from config.app_config import STM_MAX_RECENT_MESSAGES
-                stm_recent = stm_conversation_history or []
-                if self.memory_system and hasattr(self.memory_system, "corpus_manager"):
-                    stm_recent = self.memory_system.corpus_manager.get_recent_memories(
-                        count=STM_MAX_RECENT_MESSAGES
-                    ) or []
-
-                # Extract last assistant response for coherence
-                for mem in reversed(stm_recent):
-                    if mem.get('response'):
-                        last_assistant_response = mem.get('response')
-                        break
-            except Exception:
-                should_run_stm = False
-
-        # Define async task for STM analysis (with timing)
-        async def _run_stm_analysis():
-            if not should_run_stm:
-                return None, 0.0
-            _stm_start = time.perf_counter()
-            try:
-                result = await self.stm_analyzer.analyze(
-                    recent_memories=stm_recent,
-                    user_query=user_input,
-                    last_assistant_response=last_assistant_response
-                )
-                return result, time.perf_counter() - _stm_start
-            except Exception as e:
-                if self.logger:
-                    self.logger.warning(f"[STM] Analysis failed, continuing without: {e}")
-                return None, time.perf_counter() - _stm_start
-
-        # Define async task for prompt building (with timing)
-        async def _run_build_prompt():
-            _bp_start = time.perf_counter()
-            result = await self.prompt_builder.build_prompt(
-                user_input=combined_text,
-                search_query=rewritten_query,
-                personality_config=persona_cfg,
-                system_prompt=system_prompt,
-                current_topic=getattr(self, "current_topic", "general"),
-                fresh_facts=fresh_facts,
-                stm_summary=None,  # Will merge STM result after parallel execution
-                crisis_level=emotional_context.crisis_level.value if emotional_context else None,
-            )
-            return result, time.perf_counter() - _bp_start
-
-        # Run STM and prompt building in parallel
-        (stm_summary, stm_time), (prompt, build_prompt_time) = await asyncio.gather(
-            _run_stm_analysis(),
-            _run_build_prompt(),
-            return_exceptions=False  # Let exceptions propagate for prompt building
+        # Step 3: Build full prompt (with optional raw context for agentic search)
+        result = await self.build_full_prompt(
+            context=context,
+            use_raw_mode=use_raw_mode,
+            return_raw_context=return_context,
         )
-        _timings['stm_analysis'] = stm_time
-        _timings['build_prompt'] = build_prompt_time
-        _timings['parallel_total'] = time.perf_counter() - _t0
 
-        # Post-process STM result
-        if stm_summary:
-            if self.logger:
-                self.logger.info(
-                    f"[STM] Analysis complete: topic={stm_summary.get('topic')}, "
-                    f"tone={stm_summary.get('tone')}, threads={len(stm_summary.get('open_threads', []))}"
-                )
-
-            # Feed STM's LLM-derived topic back to TopicManager
-            stm_topic = stm_summary.get('topic')
-            if stm_topic and stm_topic.lower() not in ('unknown', 'general', ''):
-                if self.topic_manager:
-                    self.topic_manager.last_topic = stm_topic
-                    self.logger.debug(f"[STM] Updated TopicManager with STM topic: {stm_topic}")
-                self.last_stm_topic = stm_topic
-
-            # Merge STM into prompt context (if prompt is a dict)
-            if isinstance(prompt, dict):
-                prompt["stm_summary"] = stm_summary
-
-        # Capture memory_id_map and raw context for citation extraction/agentic search
-        memory_id_map = {}
-        raw_context = {}
-        if isinstance(prompt, dict):
-            memory_id_map = prompt.get('memory_id_map', {})
-            raw_context = prompt.copy()  # Keep raw context for agentic search
-            prompt = self.prompt_builder._assemble_prompt(
-                context=prompt,
-                user_input=combined_text,
-                system_prompt=system_prompt
-            )
-
-        # Store memory_id_map for citation extraction
-        self._current_memory_id_map = memory_id_map
-
-        # Log timing summary
-        _timings['total'] = time.perf_counter() - _t_start
         if self.logger:
-            self.logger.info(
-                f"[PREPARE_PROMPT TIMING] "
-                f"total={_timings['total']:.2f}s | "
-                f"topic={_timings.get('topic_inference', 0):.2f}s | "
-                f"tone={_timings.get('tone_detection', 0):.2f}s | "
-                f"files={_timings.get('file_processing', 0):.2f}s | "
-                f"rewrite={_timings.get('query_rewrite', 0):.2f}s | "
-                f"sys_prompt={_timings.get('system_prompt_setup', 0):.2f}s | "
-                f"parallel={_timings.get('parallel_total', 0):.2f}s "
-                f"(stm={_timings.get('stm_analysis', 0):.2f}s, build={_timings.get('build_prompt', 0):.2f}s)"
-            )
+            duration = time.perf_counter() - _t_start
+            self.logger.info(f"[PREPARE_PROMPT] Completed in {duration:.2f}s (via ContextPipeline)")
 
-        if return_context:
-            return prompt, system_prompt, raw_context
-        return prompt, system_prompt
+        return result
 
     # ---------- Memory Citation Methods ----------
     def _expand_citation_range(self, mem_id: str) -> List[str]:
