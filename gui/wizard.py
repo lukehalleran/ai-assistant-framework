@@ -380,7 +380,7 @@ async def _handle_api_key(
             raise Exception("Empty response from API")
 
         # Check for stub response (indicates API client not properly initialized)
-        if test_response.startswith("[OpenAI unavailable]"):
+        if test_response.startswith("[API unavailable]"):
             raise Exception("API client not available - got stub response")
 
         logger.info(f"[Wizard] API key test successful: {test_response[:50]}")

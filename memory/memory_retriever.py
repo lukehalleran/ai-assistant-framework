@@ -739,6 +739,129 @@ class MemoryRetriever:
 
         return top_memories
 
+    async def get_semantic_top_memories(self, query: str, limit: int = 10) -> List[Dict]:
+        """
+        Return top-k semantic memories across conversations, summaries, reflections
+        using the gate system's cosine score. No recent-corpus bypass.
+
+        Special handling: If this is a meta-conversational query (e.g., "do you recall"),
+        route to specialized retrieval that prioritizes recent episodic memories.
+        """
+        import re as _re
+        from utils.query_checker import is_meta_conversational
+
+        if is_meta_conversational(query):
+            logger.debug(f"[MemoryRetriever][Semantic] Detected meta-conversational query, routing to specialized retrieval: {query[:50]}...")
+            return await self._get_meta_conversational_memories(query, limit, topic_filter=None)
+
+        try:
+            raw = await self._get_semantic_memories(query, n_results=max(30, limit * 3))
+        except Exception as e:
+            logger.warning(f"[MemoryRetriever] Semantic memory retrieval failed: {e}")
+            raw = []
+
+        if not raw:
+            return []
+
+        # Build chunks for gating with back-reference to original memory
+        _hdr_re = _re.compile(r"^\s*\[[^\]]+\]", _re.IGNORECASE)
+
+        def _strip_headers(s: str) -> str:
+            if not s:
+                return s
+            out = []
+            for ln in (s.splitlines() or []):
+                if _hdr_re.search(ln):
+                    continue
+                out.append(ln)
+            return "\n".join(out).strip()
+
+        def _gate_text(m: Dict) -> str:
+            txt = _strip_headers((m.get('content') or '').strip())
+            if txt:
+                return txt
+            q = _strip_headers((m.get('query') or '').strip())
+            a = _strip_headers((m.get('response') or '').strip())
+            return f"User: {q}\nAssistant: {a}".strip()
+
+        chunks = [{
+            "content": _gate_text(m)[:500],
+            "metadata": {"original_memory": m},
+        } for m in raw]
+
+        # If no gate_system, return a simple cap by initial relevance score
+        if not self.gate_system:
+            out = sorted(raw, key=lambda x: float(x.get('relevance_score', 0.5)), reverse=True)[:limit]
+            for m in out:
+                m['pre_gated'] = True
+            return out
+
+        # Run gate and pick top-k by gate score
+        try:
+            filtered = await self.gate_system.filter_memories(query, chunks)
+        except Exception as e:
+            logger.warning(f"[MemoryRetriever] Gate system filtering failed: {e}")
+            filtered = chunks[:limit]
+
+        # Propagate gate score + mark as pre_gated
+        out: List[Dict] = []
+        for ch in filtered[:limit]:
+            md = ch.get('metadata', {}) or {}
+            orig = md.get('original_memory')
+            if not isinstance(orig, dict):
+                continue
+            score = float(ch.get('relevance_score', ch.get('__score__', orig.get('relevance_score', 0.5))))
+            orig = dict(orig)
+            orig['relevance_score'] = score
+            orig['pre_gated'] = True
+            out.append(orig)
+
+        # Optional strict top-up: disabled by default to avoid noisy generic memories
+        try:
+            enable_topup = str(os.getenv("MEM_TOPUP_ENABLE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+            min_score = float(os.getenv("MEM_TOPUP_MIN_SCORE", "0.35"))
+        except (ValueError, TypeError):
+            enable_topup = False
+            min_score = 0.35
+
+        if enable_topup and len(out) < limit and raw:
+            def _k(m: Dict) -> str:
+                mid = str(m.get('id') or '').strip()
+                if mid:
+                    return f"id::{mid}"
+                return f"content::{(m.get('content') or '').strip()[:160].lower()}"
+
+            selected = {_k(m) for m in out}
+
+            def _score(m: Dict) -> float:
+                try:
+                    return float(m.get('relevance_score', 0.0))
+                except (ValueError, TypeError):
+                    return 0.0
+
+            def _overlap(a: str, b: str) -> float:
+                at = set(_re.findall(r"[a-zA-Z0-9]+", (a or "").lower()))
+                bt = set(_re.findall(r"[a-zA-Z0-9]+", (b or "").lower()))
+                if not at or not bt:
+                    return 0.0
+                return len(at & bt) / max(1, min(len(at), len(bt)))
+
+            for cand in sorted(raw, key=_score, reverse=True):
+                if len(out) >= limit:
+                    break
+                key = _k(cand)
+                if not key or key in selected:
+                    continue
+                sc = _score(cand)
+                txt = _gate_text(cand)
+                if sc >= min_score and _overlap(query, txt) >= 0.15:
+                    c = dict(cand)
+                    c['pre_gated'] = True
+                    out.append(c)
+                    selected.add(key)
+
+        return out[:limit]
+
     async def _get_meta_conversational_memories(
         self,
         query: str,

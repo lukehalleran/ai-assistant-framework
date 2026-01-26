@@ -236,6 +236,10 @@ class UnifiedPromptBuilder:
         start_time = time.time()
         config = config or {}
 
+        # Clear memory_id_map at start of each query to prevent memory leaks
+        if hasattr(self.context_gatherer, 'clear_memory_id_map'):
+            self.context_gatherer.clear_memory_id_map()
+
         logger.info(f"Building prompt for user input: {len(user_input)} chars")
 
         try:

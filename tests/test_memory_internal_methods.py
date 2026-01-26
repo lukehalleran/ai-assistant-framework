@@ -44,50 +44,6 @@ async def test_get_semantic_memories_internal(memory_coordinator):
     assert isinstance(semantic, list)
 
 
-@pytest.mark.asyncio
-async def test_combine_memories_internal(memory_coordinator):
-    """Test _combine_memories internal method."""
-    # Add memories
-    await memory_coordinator.store_interaction("Q1", "A1")
-    await memory_coordinator.store_interaction("Q2", "A2")
-
-    # Get components
-    recent = memory_coordinator._get_recent_conversations(k=2)
-    semantic = await memory_coordinator._get_semantic_memories("Q1", n_results=5)
-
-    # Combine them
-    combined = await memory_coordinator._combine_memories(
-        very_recent=recent,
-        semantic=semantic,
-        hierarchical=[],
-        query="Q1",
-        config={}
-    )
-
-    assert isinstance(combined, list)
-
-
-@pytest.mark.asyncio
-async def test_gate_memories_internal(memory_coordinator):
-    """Test _gate_memories internal method."""
-    # Add memories
-    await memory_coordinator.store_interaction(
-        query="Tell me about neural networks",
-        response="Neural networks are computational models."
-    )
-
-    # Get memories
-    memories = await memory_coordinator.get_memories("neural", limit=10)
-
-    # Gate them
-    gated = await memory_coordinator._gate_memories(
-        query="neural networks",
-        memories=memories
-    )
-
-    assert isinstance(gated, list)
-
-
 def test_calculate_truth_score(memory_coordinator):
     """Test _calculate_truth_score method."""
     score = memory_coordinator._calculate_truth_score(

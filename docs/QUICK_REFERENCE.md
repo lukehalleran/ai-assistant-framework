@@ -72,93 +72,74 @@ prompt_ctx = await prompt_builder.build_prompt_from_context(context)
 ## Memory Operations
 
 ```python
-# memory/memory_coordinator.py
+# memory/memory_coordinator.py — Thin orchestrator (~498 lines)
+# All methods delegate to modular components. No inline logic.
 class MemoryCoordinator:
-    # Retrieval
-    async def get_memories(query: str, topics: List[str] = None, limit: int = 30) -> List[Dict]:
-        """
-        1. Get recent from corpus (last 10)
-        2. Query 5 ChromaDB collections in parallel
-        3. Gate with MultiStageGateSystem
-        4. Rank by _rank_memories()
-        5. Return top K
-        """
-        recent = self.corpus_manager.get_recent_memories(10)
-        chroma_results = await asyncio.gather(*[
-            self.chroma_store.query(query, col, limit) for col in COLLECTIONS
-        ])
-        combined = recent + flatten(chroma_results)
-        gated = await self.gate_system.filter_memories(query, combined, k=50)
-        ranked = self._rank_memories(gated, query)
-        return ranked[:limit]
+    def __init__(self, ...):
+        self._retriever = MemoryRetriever(...)    # Retrieval operations
+        self._storage = MemoryStorage(...)        # Persistence operations
+        self._shutdown = ShutdownProcessor(...)   # Session-end processing
+        self.scorer = MemoryScorer(...)           # Scoring and ranking
+        self.thread_manager = ThreadManager(...)  # Thread tracking
 
-    # Storage
-    async def store_interaction(query: str, response: str, tags: List[str] = None):
-        """Add to corpus JSON + ChromaDB with embeddings"""
-        memory = {
-            'id': str(uuid.uuid4()),
-            'query': query,
-            'response': response,
-            'timestamp': datetime.now(),
-            'truth_score': self._calculate_truth_score(query, response),
-            'importance_score': self._calculate_importance_score(f"{query} {response}"),
-            'tags': tags or [],
-            'memory_type': 'episodic'
-        }
-        self.corpus_manager.add_memory(memory, MemoryType.EPISODIC)
-        await self.chroma_store.add_memory(f"{query} {response}", memory, 'episodic')
+    # Retrieval — delegates to MemoryRetriever
+    async def get_memories(query, limit=30, topics=None) -> List[Dict]:
+        return await self._retriever.get_memories(query, limit, topics)
 
-    # Ranking algorithm
-    def _rank_memories(memories: List[Dict], query: str) -> List[Dict]:
-        """
-        Score = 0.35*rel + 0.25*recency + 0.20*truth + 0.05*importance + 0.10*continuity + 0.15*structure + bonuses - penalties
+    async def get_semantic_top_memories(query, limit=10) -> List[Dict]:
+        return await self._retriever.get_semantic_top_memories(query, limit)
 
-        Components:
-        - Relevance: base + collection boost
-        - Recency: 1.0 / (1.0 + 0.05 * age_hours)
-        - Truth: base + (0.02 * access_count), capped at 1.0
-        - Importance: from _calculate_importance_score()
-        - Continuity: 0.1 if <10min old, + 0.3*token_overlap
-        - Structure: 0.15 * (1 - abs(query_density - memory_density) * 3)
-        - Anchor bonus: 0.2*overlap if deictic, else 0.1*overlap
-        - Analogy penalty: -0.1 for analogies in math queries
-        - Tone penalty: -0.2 truth for negative words
-        """
-        # See PROJECT_SKELETON.md Section 5.1 for full implementation
-        ...
-        return sorted(memories, key=lambda m: m['final_score'], reverse=True)
+    # Storage — delegates to MemoryStorage
+    async def store_interaction(query, response, tags=None):
+        await self._storage.store_interaction(query, response, tags)
 
-    # Scoring helpers
-    def _calculate_truth_score(query: str, response: str) -> float:
-        """
-        Base: 0.5
-        +0.1 if response >200 chars
-        +0.1 if '?' in response (clarifying)
-        +0.2 if confirmation words (yes/correct/exactly)
-        +0.15 if query tokens appear in last conversation response
-        Capped at 1.0
-        """
-        score = 0.5
-        if len(response) > 200: score += 0.1
-        if '?' in response: score += 0.1
-        if any(w in response.lower() for w in ['yes', 'correct', 'exactly', 'right']): score += 0.2
-        # Continuity check with conversation_context omitted for brevity
-        return min(1.0, score)
+    # Shutdown — delegates to ShutdownProcessor
+    async def process_shutdown_memory(session_conversations=None):
+        await self._shutdown.process_shutdown_memory(session_conversations)
 
-    def _calculate_importance_score(content: str) -> float:
+    async def run_shutdown_reflection(session_conversations=None, session_summaries=None) -> bool:
+        return await self._shutdown.run_shutdown_reflection(session_conversations, session_summaries)
+
+
+# memory/memory_retriever.py — Retrieval pipeline (~966 lines)
+class MemoryRetriever:
+    async def get_memories(query, limit, topic_filter) -> List[Dict]:
         """
-        Base: 0.5
-        +0.1 if >200 chars
-        +0.1 if contains '?'
-        +0.2 if keywords: important, remember, note, key, critical, essential, todo, directive
-        Capped at 1.0
+        1. Get recent from corpus (last N conversations)
+        2. Query ChromaDB collections in parallel
+        3. Combine recent + semantic results
+        4. Apply multi-stage gating
+        5. Rank with MemoryScorer
+        6. Deduplicate by memory key
+        7. Return top K
         """
-        score = 0.5
-        if len(content) > 200: score += 0.1
-        if '?' in content: score += 0.1
-        keywords = ['important', 'remember', 'note', 'key', 'critical', 'essential', 'todo', 'directive']
-        if any(kw in content.lower() for kw in keywords): score += 0.2
-        return min(1.0, score)
+
+    async def get_semantic_top_memories(query, limit=10) -> List[Dict]:
+        """Top memories with meta-conversational routing and gating."""
+
+
+# memory/memory_scorer.py — Scoring and ranking
+class MemoryScorer:
+    def rank_memories(memories, query, current_topic=None) -> List[Dict]:
+        """
+        Score = 0.35*rel + 0.25*recency + 0.20*truth + 0.05*importance
+              + 0.10*continuity + topic_match + structure + bonuses - penalties
+        """
+
+    def calculate_truth_score(query, response) -> float:
+        """Base 0.5 + length/question/confirmation bonuses, capped at 1.0"""
+
+    def calculate_importance_score(content) -> float:
+        """Base 0.5 + length/question/keyword bonuses, capped at 1.0"""
+
+
+# memory/shutdown_processor.py — Session-end processing (~533 lines)
+class ShutdownProcessor:
+    async def process_shutdown_memory(session_conversations=None):
+        """Block summaries + fact extraction + user profile updates"""
+
+    async def run_shutdown_reflection(session_conversations=None, session_summaries=None) -> bool:
+        """LLM reflection generation + ChromaDB storage"""
 ```
 
 ---
@@ -540,10 +521,14 @@ class MemoryType(Enum):
 # 2. multi_collection_chroma_store.py - initialize collection
 COLLECTIONS = ["episodic", "semantic", "procedural", "summary", "meta", "new_type"]
 
-# 3. memory_coordinator.py - handle in get_memories()
+# 3. memory/memory_retriever.py - handle in get_memories() pipeline
 new_type_results = await self.chroma_store.query(query, "new_type", limit)
 
-# 4. prompt_builder.py - add to prompt assembly
+# 4. memory/memory_coordinator.py - add delegation wrapper (if new public method needed)
+async def get_new_type(self, query, limit=10):
+    return await self._retriever.get_new_type(query, limit)
+
+# 5. prompt_builder.py - add to prompt assembly
 new_type_mems = [m for m in memories if m.get('memory_type') == 'new_type']
 sections.append(self._format_memories(new_type_mems, budget * 0.05))
 ```
