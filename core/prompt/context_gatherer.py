@@ -151,6 +151,22 @@ except ImportError:
 
 # Caching
 _wiki_cache = {}  # Simple in-memory cache for wiki snippets
+_WIKI_CACHE_MAX_SIZE = 100  # Maximum cache entries to prevent memory leaks
+
+
+def _cleanup_wiki_cache():
+    """Remove expired entries and enforce max size."""
+    global _wiki_cache
+    now = datetime.now()
+    # Remove expired entries (older than 1 hour)
+    _wiki_cache = {
+        k: v for k, v in _wiki_cache.items()
+        if now - v["timestamp"] < timedelta(hours=1)
+    }
+    # Enforce max size by removing oldest entries
+    if len(_wiki_cache) > _WIKI_CACHE_MAX_SIZE:
+        sorted_entries = sorted(_wiki_cache.items(), key=lambda x: x[1]["timestamp"])
+        _wiki_cache = dict(sorted_entries[-_WIKI_CACHE_MAX_SIZE:])
 
 
 class ContextGatherer:
@@ -311,8 +327,16 @@ class ContextGatherer:
         """Generate cache key for wiki queries."""
         return clean_query(query).lower().strip()
 
+    def clear_memory_id_map(self):
+        """Clear the memory ID map to prevent memory leaks between queries."""
+        self.memory_id_map = {}
+
     async def _get_wiki_snippet_cached(self, query: str) -> Optional[Dict[str, Any]]:
         """Get wiki snippet with caching."""
+        # Periodic cleanup to prevent memory leaks
+        if len(_wiki_cache) > _WIKI_CACHE_MAX_SIZE // 2:
+            _cleanup_wiki_cache()
+
         cache_key = self._wiki_cache_key(query)
 
         # Check cache first

@@ -41,41 +41,43 @@ def test_model_manager_init_no_openai():
 
 
 def test_stub_response(model_manager):
-    """Test _stub_response generates stub text."""
+    """Test _stub_response generates stub text without leaking prompt."""
     prompt = "What is Python?"
 
     result = model_manager._stub_response(prompt)
 
     assert isinstance(result, str)
-    assert "[OpenAI unavailable]" in result
-    assert "What is Python?" in result
+    assert result.startswith("[API unavailable]")
+    # Must NOT leak prompt content to the user
+    assert "What is Python?" not in result
 
 
 def test_stub_response_long_prompt(model_manager):
-    """Test _stub_response truncates long prompts."""
+    """Test _stub_response does not include prompt content."""
     prompt = "A" * 200
 
     result = model_manager._stub_response(prompt)
 
-    assert "..." in result
-    assert len(result) < len(prompt) + 50
+    assert result.startswith("[API unavailable]")
+    assert "AAAA" not in result
 
 
 def test_stub_response_empty_prompt(model_manager):
     """Test _stub_response with empty prompt."""
     result = model_manager._stub_response("")
 
-    assert "stub response" in result
+    assert result.startswith("[API unavailable]")
 
 
 def test_stub_response_multiline_prompt(model_manager):
-    """Test _stub_response with multiline prompt."""
+    """Test _stub_response with multiline prompt does not leak content."""
     prompt = "Line 1\nLine 2\nLine 3"
 
     result = model_manager._stub_response(prompt)
 
-    # Should only include first line
-    assert "Line 1" in result
+    assert result.startswith("[API unavailable]")
+    # Must NOT leak any prompt lines to the user
+    assert "Line 1" not in result
     assert "Line 2" not in result
 
 
@@ -91,7 +93,7 @@ async def test_stub_stream(model_manager):
         chunks.append(chunk)
 
     assert len(chunks) == 1
-    assert "[OpenAI unavailable]" in chunks[0]
+    assert "[API unavailable]" in chunks[0]
 
 
 def test_is_api_model(model_manager):
@@ -319,7 +321,7 @@ async def test_generate_async_stub_when_no_client(model_manager):
 
     # Should return stub response
     assert len(chunks) > 0
-    assert "[OpenAI unavailable]" in "".join(chunks)
+    assert "[API unavailable]" in "".join(chunks)
 
 
 def test_generate_with_unknown_model(model_manager):

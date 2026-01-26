@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-24
+**Last Updated**: 2026-01-25
 
 ---
 
@@ -22,10 +22,11 @@ USER QUERY
 [STM Analysis] → Short-term memory pass (topic, intent, tone, threads) [NEW]
     ↓
 [Hybrid Memory Retrieval] → Query rewriting + Semantic + Keyword matching
-    ↓               ↓ (via MemoryCoordinatorV2) [REFACTORED]
+    ↓               ↓ (via MemoryCoordinator → modular components)
     ↓               ├─> MemoryRetriever (parallel ChromaDB queries)
     ↓               ├─> MemoryScorer (ranking with composite scores)
-    ↓               └─> ThreadManager (conversation continuity)
+    ↓               ├─> ThreadManager (conversation continuity)
+    ↓               └─> ShutdownProcessor (session-end summaries + facts)
     ↓
 [Multi-Stage Gating] → FAISS → Cosine → Cross-Encoder
     ↓
@@ -52,14 +53,15 @@ USER QUERY
 RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 ```
 
-**Note**: Memory system refactored (Nov 2025) into modular components:
-- `memory/coordinator.py` (V2) - Thin orchestration layer
-- `memory/memory_retriever.py` - Retrieval operations
+**Note**: Memory system fully refactored (Jan 2026). `memory/memory_coordinator.py` is now a thin orchestrator (~498 lines, down from 1,694) delegating to:
+- `memory/memory_retriever.py` - Retrieval operations (incl. `get_semantic_top_memories`)
 - `memory/memory_storage.py` - Storage operations
+- `memory/memory_scorer.py` - Scoring and ranking
+- `memory/shutdown_processor.py` - Session-end summaries, facts, reflections
 - `memory/thread_manager.py` - Thread tracking
 - `memory/memory_interface.py` - Protocol contracts
 
-Legacy `memory/memory_coordinator.py` still in use but being migrated.
+The incomplete V2 `memory/coordinator.py` has been deleted.
 
 ---
 
@@ -275,10 +277,23 @@ PromptBuilder.build_prompt(context, memories)  →  final prompt
 
 ---
 
-### 2.3 memory/memory_coordinator.py (Memory Hub - Legacy)
-**Purpose**: Unified interface for all memory operations (original monolithic version)
+### 2.3 memory/memory_coordinator.py (Thin Orchestrator)
+**Purpose**: Unified interface for all memory operations — thin delegation layer (~498 lines)
 
-**Status**: Still in use, but refactored into modular components in `memory/coordinator.py` (MemoryCoordinatorV2)
+**Status**: Fully refactored (Jan 2026). All inline logic extracted to modular components. Acts as state-syncing orchestrator with ~24 delegation methods.
+
+**Architecture**:
+```python
+MemoryCoordinator (memory_coordinator.py, ~498 lines)
+    ↓
+├── MemoryRetriever (memory_retriever.py) - Retrieval + semantic top memories
+├── MemoryScorer (memory_scorer.py) - Scoring and ranking
+├── MemoryStorage (memory_storage.py) - Persistence operations
+├── ShutdownProcessor (shutdown_processor.py) - Session-end processing
+├── ThreadManager (thread_manager.py) - Conversation thread tracking
+├── HybridRetriever (hybrid_retriever.py) - Query rewrite + keyword
+└── UserProfile (user_profile.py) - User fact profile
+```
 
 **5 Memory Types** (MemoryType enum):
 1. `EPISODIC` - Raw conversation turns (query/response pairs)
@@ -287,35 +302,21 @@ PromptBuilder.build_prompt(context, memories)  →  final prompt
 4. `SUMMARY` - Compressed conversation blocks
 5. `META` - Reflections and meta-patterns
 
-**Key Methods**:
-- `get_memories(query, limit, topics)` → async retrieval pipeline
-  ```python
-  1. Get recent from corpus (last N conversations)
-  2. Query 5 ChromaDB collections in parallel
-  3. Gate results (MultiStageGateSystem)
-  4. Rank by composite score (_rank_memories)
-  5. Return top K
-  ```
-
-- `store_interaction(query, response, tags)` → persist to corpus + Chroma
-- `_rank_memories(memories, query)` → Scoring algorithm:
-  ```
-  final_score =
-    0.35 * relevance +
-    0.25 * recency_decay +
-    0.20 * truth_score +
-    0.05 * importance +
-    0.10 * continuity +
-    0.15 * structural_alignment +
-    anchor_bonus - penalties
-  ```
+**Key Methods** (all delegate to components):
+- `get_memories(query, limit, topics)` → delegates to `self._retriever.get_memories()`
+- `get_semantic_top_memories(query, limit)` → delegates to `self._retriever.get_semantic_top_memories()`
+- `store_interaction(query, response, tags)` → delegates to `self._storage.store_interaction()`
+- `process_shutdown_memory(session_conversations)` → delegates to `self._shutdown.process_shutdown_memory()`
+- `run_shutdown_reflection(session_conversations, session_summaries)` → delegates to `self._shutdown.run_shutdown_reflection()`
+- `detect_or_create_thread(query, is_heavy)` → delegates to `self.thread_manager`
+- `get_thread_context()` → delegates to `self.thread_manager`
 
 **Hierarchical Memory**:
 - ⚠️ Parent-child relationships: **DISABLED** (caused retrieval bugs, intentionally deactivated)
 - Temporal decay: `1.0 / (1.0 + decay_rate * age_hours)`
 - Access count boosts truth score
 
-**Dependencies**: CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryConsolidator
+**Dependencies**: MemoryRetriever, MemoryStorage, MemoryScorer, ShutdownProcessor, ThreadManager, HybridRetriever, CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryConsolidator, UserProfile
 
 ---
 
@@ -376,39 +377,47 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 
 ---
 
-### 2.3.1 memory/coordinator.py (Modular Memory Coordinator V2) **[NEW - REFACTORED]**
-**Purpose**: Thin orchestration layer delegating to specialized components
+### 2.3.1 memory/shutdown_processor.py **[NEW - EXTRACTED 2026-01-25]**
+**Purpose**: Session-end processing — block summaries, fact extraction, user profile updates, reflections (~533 lines)
 
-**Architecture**:
-```python
-MemoryCoordinatorV2 (coordinator.py)
-    ↓
-├── MemoryScorer (memory_scorer.py) - Scoring and ranking
-├── MemoryStorage (memory_storage.py) - Persistence operations
-├── MemoryRetriever (memory_retriever.py) - Retrieval operations
-└── ThreadManager (thread_manager.py) - Conversation thread tracking
-```
+**Key Methods**:
+- `async process_shutdown_memory(session_conversations=None)` → Main shutdown pipeline:
+  ```python
+  1. Gather unsummarized conversations (from session or corpus)
+  2. Create block summaries (consolidator) for every N turns
+  3. Store summaries in ChromaDB (summaries collection)
+  4. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor)
+  5. Update UserProfile with extracted facts
+  6. Log statistics
+  ```
 
-**Key Methods** (same public API as legacy coordinator):
-- `get_memories(query, limit, topics)` → Delegates to MemoryRetriever
-- `store_interaction(query, response, tags)` → Delegates to MemoryStorage
-- `process_shutdown_memory()` → Delegates to MemoryStorage
+- `async run_shutdown_reflection(session_conversations=None, session_summaries=None)` → End-of-session LLM reflection:
+  ```python
+  1. Check REFLECTIONS_ENABLED env var
+  2. Gather recent conversations + summaries
+  3. Build reflection prompt (what patterns, what learned, what to remember)
+  4. Call LLM to generate reflection text
+  5. Store reflection in ChromaDB (reflections collection)
+  6. Return success/failure
+  ```
 
-**Refactoring Benefits**:
-- Single Responsibility: Each module handles one concern
-- Easier testing: Components can be tested in isolation
-- Better maintainability: Changes isolated to specific modules
-- Protocol-based: Uses memory_interface.py contracts
+**Configuration** (env vars):
+- `REFLECTIONS_ENABLED` — Enable/disable reflections (default: True)
+- `REFLECTION_MAX_TOKENS` — Max tokens for reflection (default: 500)
+- `REFLECTION_MODEL` — Model alias (default: gpt-4o-mini)
+- `SHUTDOWN_SUMMARY_BLOCK_SIZE` — Conversations per summary block (default: 10)
+- `SHUTDOWN_FACT_EXTRACTION` — Enable fact extraction (default: True)
 
-**Dependencies**: MemoryScorer, MemoryStorage, MemoryRetriever, ThreadManager, CorpusManager, MultiCollectionChromaStore
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager
 
 ---
 
-### 2.3.2 memory/memory_retriever.py **[NEW - REFACTORED]**
-**Purpose**: Memory retrieval operations extracted from coordinator
+### 2.3.2 memory/memory_retriever.py **[REFACTORED]**
+**Purpose**: Memory retrieval operations (~966 lines)
 
 **Key Methods** (implements MemoryRetrieverProtocol):
 - `async get_memories(query, limit, topic_filter)` → Main retrieval pipeline
+- `async get_semantic_top_memories(query, limit)` → **[MIGRATED 2026-01-25]** Top semantic memories with meta-conversational routing and gating
 - `async get_facts(query, limit)` → Retrieve semantic facts
 - `async get_recent_facts(limit)` → Retrieve most recent facts
 - `async get_reflections(limit)` → Retrieve recent reflections
@@ -2887,8 +2896,8 @@ daemon/
 │       └── base.py          # Utilities and fallbacks
 │
 ├── memory/
-│   ├── memory_coordinator.py      # Memory hub (legacy monolithic)
-│   ├── coordinator.py             # Memory hub V2 (modular refactor) [NEW]
+│   ├── memory_coordinator.py      # Thin orchestrator (~498 lines, delegates to components)
+│   ├── shutdown_processor.py      # Session-end summaries, facts, reflections [NEW - EXTRACTED]
 │   ├── memory_scorer.py           # Scoring and ranking operations [NEW - REFACTORED]
 │   ├── memory_retriever.py        # Retrieval operations [NEW - REFACTORED]
 │   ├── memory_storage.py          # Storage/persistence operations [NEW - REFACTORED]
@@ -3261,8 +3270,8 @@ python main.py inspect-summaries
 | orchestrator.py | Main loop: tone → topic → heavy check → STM → prompt → LLM → store |
 | response_parser.py | Parse: extract thinking blocks, strip reflections/XML/prompt artifacts [NEW 2026-01-23] |
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
-| memory_coordinator.py | Hub (legacy): retrieve from 5 collections, gate, rank, return top K |
-| coordinator.py | Hub V2: thin orchestration delegating to modular components [NEW - REFACTORED] |
+| memory_coordinator.py | Hub: thin orchestrator (~498 lines) delegating to modular components [REFACTORED] |
+| shutdown_processor.py | Shutdown: block summaries + fact extraction + reflections + user profile [NEW - EXTRACTED] |
 | memory_scorer.py | Scoring: calculate truth/importance, rank by composite score with temporal decay [NEW - REFACTORED] |
 | memory_retriever.py | Retrieval: get_memories pipeline with gating and ranking [NEW - REFACTORED] |
 | memory_storage.py | Storage: store_interaction and fact extraction [NEW - REFACTORED] |

@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from unittest.mock import Mock, AsyncMock, patch
 
-from memory.memory_coordinator import MemoryCoordinator, _is_deictic_followup, _salient_tokens, _num_op_density, _analogy_markers
+from memory.memory_coordinator import MemoryCoordinator
 from memory.corpus_manager import CorpusManager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 
@@ -39,101 +39,6 @@ def memory_coordinator(corpus_manager, chroma_store):
         corpus_manager=corpus_manager,
         chroma_store=chroma_store
     )
-
-
-# Test utility functions
-def test_is_deictic_followup_true():
-    """Test _is_deictic_followup with deictic query."""
-    assert _is_deictic_followup("explain that") == True
-    assert _is_deictic_followup("Can you explain it again?") == True
-    assert _is_deictic_followup("Show me another way") == True
-
-
-def test_is_deictic_followup_false():
-    """Test _is_deictic_followup with non-deictic query."""
-    assert _is_deictic_followup("What is Python?") == False
-    assert _is_deictic_followup("Tell me about machine learning") == False
-
-
-def test_is_deictic_followup_empty():
-    """Test _is_deictic_followup with empty string."""
-    assert _is_deictic_followup("") == False
-    assert _is_deictic_followup(None) == False
-
-
-def test_salient_tokens_basic():
-    """Test _salient_tokens extracts important tokens."""
-    text = "Python is a programming language for machine learning"
-    tokens = _salient_tokens(text)
-
-    assert isinstance(tokens, set)
-    assert "python" in tokens
-    assert "programming" in tokens
-    # Stopwords should be filtered
-    assert "is" not in tokens
-    assert "a" not in tokens
-
-
-def test_salient_tokens_with_numbers():
-    """Test _salient_tokens includes numbers."""
-    text = "The answer is 42 and the equation is x + 5 = 10"
-    tokens = _salient_tokens(text)
-
-    assert "42" in tokens or "10" in tokens
-
-
-def test_salient_tokens_empty():
-    """Test _salient_tokens with empty input."""
-    tokens = _salient_tokens("")
-
-    assert isinstance(tokens, set)
-    assert len(tokens) == 0
-
-
-def test_num_op_density_high():
-    """Test _num_op_density with math-heavy text."""
-    text = "Calculate 2 + 3 * 4 = 14 and 5 - 2 = 3"
-    density = _num_op_density(text)
-
-    assert density > 0.3  # High density
-
-
-def test_num_op_density_low():
-    """Test _num_op_density with regular text."""
-    text = "Python is a programming language"
-    density = _num_op_density(text)
-
-    assert density < 0.1  # Low density
-
-
-def test_num_op_density_empty():
-    """Test _num_op_density with empty input."""
-    density = _num_op_density("")
-
-    assert density == 0.0
-
-
-def test_analogy_markers_present():
-    """Test _analogy_markers detects analogies."""
-    text = "It's like a car, imagine a vehicle, picture this scenario"
-    count = _analogy_markers(text)
-
-    assert count > 0
-
-
-def test_analogy_markers_absent():
-    """Test _analogy_markers with no analogies."""
-    text = "Python is a programming language"
-    count = _analogy_markers(text)
-
-    assert count == 0
-
-
-def test_analogy_markers_empty():
-    """Test _analogy_markers with empty input."""
-    count = _analogy_markers("")
-
-    assert count == 0
 
 
 # Test MemoryCoordinator methods

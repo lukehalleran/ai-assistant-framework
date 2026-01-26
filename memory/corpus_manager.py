@@ -63,8 +63,22 @@ class CorpusManager:
                                 entry["timestamp"] = datetime.fromisoformat(entry["timestamp"])
                             except:
                                 pass
+
+                    # Enforce max_entries limit on load (trim oldest, keep newest)
+                    trimmed = False
+                    if len(data) > self.max_entries:
+                        logger.info(f"[CorpusManager] Trimming corpus from {len(data)} to {self.max_entries} entries")
+                        data = data[-self.max_entries:]
+                        trimmed = True
+
                     logger.info(f"Loaded {len(data)} corpus entries")
                     self.corpus = data
+
+                    # Save trimmed corpus so next startup doesn't need to trim again
+                    if trimmed:
+                        self.save_corpus()
+                        logger.info("[CorpusManager] Saved trimmed corpus to disk")
+
                     return data
 
             except Exception as e:

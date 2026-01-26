@@ -263,23 +263,6 @@ def test_parse_result_minimal(memory_coordinator):
     assert result["content"] == "Minimal"
 
 
-@pytest.mark.asyncio
-async def test_gate_memories_filters(memory_coordinator):
-    """Test _gate_memories filters memories."""
-    memories = [
-        {"content": "Python is a language", "rank": 1},
-        {"content": "Unrelated content", "rank": 2}
-    ]
-
-    # Mock the gate_system
-    with patch.object(memory_coordinator, 'gate_system') as mock_gate:
-        mock_gate.gate_memories_multi_stage = AsyncMock(return_value=memories[:1])
-
-        gated = await memory_coordinator._gate_memories("Python", memories)
-
-        assert isinstance(gated, list)
-
-
 def test_rank_memories(memory_coordinator):
     """Test _rank_memories scores and sorts."""
     memories = [
@@ -418,24 +401,6 @@ async def test_debug_memory_state(memory_coordinator):
     except Exception as e:
         # Some methods may not be fully implemented
         pytest.skip(f"debug_memory_state not fully implemented: {e}")
-
-
-@pytest.mark.asyncio
-async def test_combine_memories(memory_coordinator):
-    """Test _combine_memories merges memory lists."""
-    very_recent = [{"id": "1", "content": "Recent"}]
-    semantic = [{"id": "2", "content": "Semantic"}]
-    facts = [{"id": "3", "content": "Fact"}]
-    reflections = [{"id": "4", "content": "Reflection"}]
-
-    try:
-        combined = await memory_coordinator._combine_memories(
-            very_recent, semantic, facts, reflections, summaries=[]
-        )
-        assert isinstance(combined, list)
-    except TypeError:
-        # Method signature may vary
-        pytest.skip("_combine_memories has different signature")
 
 
 @pytest.mark.asyncio

@@ -43,6 +43,8 @@ def coordinator(mock_dependencies):
     """Create MemoryCoordinator instance with minimal setup"""
     from memory.memory_scorer import MemoryScorer
     from memory.thread_manager import ThreadManager
+    from memory.memory_retriever import MemoryRetriever
+    from memory.hybrid_retriever import HybridRetriever
 
     coord = object.__new__(MemoryCoordinator)
     coord.corpus_manager = mock_dependencies['corpus_manager']
@@ -51,6 +53,7 @@ def coordinator(mock_dependencies):
     coord.time_manager = None
     coord.topic_manager = None
     coord.conversation_context = []
+    coord.current_topic = 'general'
     coord.current_thread_id = None
     coord.thread_map = {}
 
@@ -64,6 +67,18 @@ def coordinator(mock_dependencies):
         topic_manager=None,
         time_manager=None
     )
+    coord.hybrid_retriever = HybridRetriever(
+        chroma_store=mock_dependencies['chroma_store']
+    )
+    coord._retriever = MemoryRetriever(
+        corpus_manager=mock_dependencies['corpus_manager'],
+        chroma_store=mock_dependencies['chroma_store'],
+        gate_system=mock_dependencies['gate_system'],
+        scorer=coord.scorer,
+        hybrid_retriever=coord.hybrid_retriever,
+        time_manager=None,
+    )
+    coord._retriever.conversation_context = []
 
     return coord
 
@@ -1060,186 +1075,6 @@ def test_format_hierarchical_memory_complete_integration(coordinator):
     assert result['source'] == 'hierarchical'
     assert result['collection'] == 'hierarchical'
     assert result['metadata']['extra'] == 'preserved'
-
-
-# =============================================================================
-# Helper Functions Tests (_is_deictic_followup, _salient_tokens, etc.)
-# =============================================================================
-
-def test_is_deictic_followup_explain():
-    """Detects 'explain' as deictic hint"""
-    from memory.memory_coordinator import _is_deictic_followup
-    assert _is_deictic_followup("explain that to me")
-
-def test_is_deictic_followup_that():
-    """Detects 'that' as deictic hint"""
-    from memory.memory_coordinator import _is_deictic_followup
-    assert _is_deictic_followup("what is that?")
-
-def test_is_deictic_followup_this():
-    """Detects 'this' as deictic hint"""
-    from memory.memory_coordinator import _is_deictic_followup
-    assert _is_deictic_followup("tell me more about this")
-
-def test_is_deictic_followup_again():
-    """Detects 'again' as deictic hint"""
-    from memory.memory_coordinator import _is_deictic_followup
-    assert _is_deictic_followup("say that again")
-
-def test_is_deictic_followup_not_deictic():
-    """Non-deictic queries return False"""
-    from memory.memory_coordinator import _is_deictic_followup
-    assert not _is_deictic_followup("what is Python?")
-
-def test_is_deictic_followup_none():
-    """Handles None gracefully"""
-    from memory.memory_coordinator import _is_deictic_followup
-    assert not _is_deictic_followup(None)
-
-def test_is_deictic_followup_empty():
-    """Handles empty string"""
-    from memory.memory_coordinator import _is_deictic_followup
-    assert not _is_deictic_followup("")
-
-
-def test_salient_tokens_basic():
-    """Extracts salient tokens excluding stopwords"""
-    from memory.memory_coordinator import _salient_tokens
-    tokens = _salient_tokens("the quick brown fox jumps over the lazy dog")
-    # Stopwords like 'the' excluded, keeps unique content words
-    assert 'the' not in tokens
-    assert 'quick' in tokens or 'brown' in tokens or 'fox' in tokens
-
-def test_salient_tokens_frequency_based():
-    """Ranks tokens by frequency"""
-    from memory.memory_coordinator import _salient_tokens
-    tokens = _salient_tokens("python python python java java c++")
-    # python appears 3 times, should be ranked high
-    assert 'python' in tokens
-
-def test_salient_tokens_limit_k():
-    """Respects k limit"""
-    from memory.memory_coordinator import _salient_tokens
-    tokens = _salient_tokens("word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13", k=5)
-    assert len(tokens) <= 5
-
-def test_salient_tokens_math_symbols():
-    """Includes math operators"""
-    from memory.memory_coordinator import _salient_tokens
-    tokens = _salient_tokens("solve x+y=10 and 2*x=20")
-    # Should extract alphanumeric and operators
-    assert any(t in tokens for t in ['solve', '10', '20'])
-
-def test_salient_tokens_empty():
-    """Handles empty text"""
-    from memory.memory_coordinator import _salient_tokens
-    tokens = _salient_tokens("")
-    assert tokens == set()
-
-def test_salient_tokens_none():
-    """Handles None"""
-    from memory.memory_coordinator import _salient_tokens
-    tokens = _salient_tokens(None)
-    assert tokens == set()
-
-
-def test_num_op_density_numbers():
-    """Calculates density with numbers"""
-    from memory.memory_coordinator import _num_op_density
-    density = _num_op_density("solve 5 + 3 = 8")
-    # Numbers: 5, 3, 8 = 3; Ops: +, = = 2; Tokens: ~4 (solve, 5, 3, 8)
-    assert density > 0.5  # (3+2)/4 or similar
-
-def test_num_op_density_text_only():
-    """Text-only has low density"""
-    from memory.memory_coordinator import _num_op_density
-    density = _num_op_density("this is just plain text")
-    assert density < 0.1
-
-def test_num_op_density_empty():
-    """Empty string returns 0"""
-    from memory.memory_coordinator import _num_op_density
-    assert _num_op_density("") == 0.0
-
-def test_num_op_density_none():
-    """None returns 0"""
-    from memory.memory_coordinator import _num_op_density
-    assert _num_op_density(None) == 0.0
-
-def test_num_op_density_operators():
-    """Counts operators"""
-    from memory.memory_coordinator import _num_op_density
-    density = _num_op_density("x + y - z * w / a = b ^ c")
-    # 7 operators, few words
-    assert density > 0.6
-
-
-def test_analogy_markers_basic():
-    """Detects 'it's like' marker"""
-    from memory.memory_coordinator import _analogy_markers
-    count = _analogy_markers("it's like riding a bike")
-    assert count == 1
-
-def test_analogy_markers_multiple():
-    """Detects multiple markers"""
-    from memory.memory_coordinator import _analogy_markers
-    count = _analogy_markers("imagine you're in a forest. Picture this: a bear approaches")
-    assert count == 2
-
-def test_analogy_markers_none():
-    """No markers returns 0"""
-    from memory.memory_coordinator import _analogy_markers
-    count = _analogy_markers("just a regular sentence")
-    assert count == 0
-
-def test_analogy_markers_empty():
-    """Empty string returns 0"""
-    from memory.memory_coordinator import _analogy_markers
-    assert _analogy_markers("") == 0
-
-def test_analogy_markers_none_input():
-    """None returns 0"""
-    from memory.memory_coordinator import _analogy_markers
-    assert _analogy_markers(None) == 0
-
-
-def test_build_anchor_tokens_basic():
-    """Builds anchors from last conversation"""
-    from memory.memory_coordinator import _build_anchor_tokens
-    conv = [{'query': 'what is python?', 'response': 'Python is a programming language'}]
-    anchors = _build_anchor_tokens(conv)
-    # Should include salient tokens from query+response
-    assert len(anchors) > 0
-    assert 'python' in anchors or 'programming' in anchors
-
-def test_build_anchor_tokens_math_patterns():
-    """Extracts math patterns"""
-    from memory.memory_coordinator import _build_anchor_tokens
-    conv = [{'query': 'solve f(x) = 7x^2 + 3x', 'response': 'derivative is 14x + 3'}]
-    anchors = _build_anchor_tokens(conv)
-    # Should capture math patterns
-    assert len(anchors) > 0
-
-def test_build_anchor_tokens_empty_conv():
-    """Empty conversation returns empty set"""
-    from memory.memory_coordinator import _build_anchor_tokens
-    anchors = _build_anchor_tokens([])
-    assert anchors == set()
-
-def test_build_anchor_tokens_maxlen():
-    """Respects maxlen limit"""
-    from memory.memory_coordinator import _build_anchor_tokens
-    conv = [{'query': ' '.join([f'word{i}' for i in range(50)]), 'response': 'response'}]
-    anchors = _build_anchor_tokens(conv, maxlen=10)
-    assert len(anchors) <= 10
-
-def test_build_anchor_tokens_missing_keys():
-    """Handles missing query/response keys"""
-    from memory.memory_coordinator import _build_anchor_tokens
-    conv = [{}]
-    anchors = _build_anchor_tokens(conv)
-    # Should not crash
-    assert isinstance(anchors, set)
 
 
 # =============================================================================

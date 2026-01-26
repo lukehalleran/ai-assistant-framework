@@ -195,10 +195,7 @@ class ModelManager:
             return False
 
     def _stub_response(self, prompt: str) -> str:
-        snippet = (prompt or "").strip().splitlines()[0] if prompt else ""
-        if snippet and len(snippet) > 120:
-            snippet = snippet[:117] + "..."
-        return f"[OpenAI unavailable] {snippet or 'stub response'}"
+        return "[API unavailable] Unable to reach the language model. Please check your API key and network connection."
 
     def _stub_stream(self, prompt: str):
         async def _gen():
@@ -484,7 +481,7 @@ class ModelManager:
             return response.choices[0].message.content.strip()
 
         except Exception as e:
-            return f"[OpenAI API Error] {str(e)}"
+            return f"[API Error] {str(e)}"
 
     def switch_model(self, model_name):
         """Switch active model (local or API)."""

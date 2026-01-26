@@ -553,7 +553,7 @@ generated: {datetime.now().isoformat()}
                 )
 
                 # Check for API error responses
-                if llm_response and llm_response.startswith("[OpenAI unavailable]"):
+                if llm_response and llm_response.startswith("[API unavailable]"):
                     logger.warning(f"[WeeklyNotes] Model {model} unavailable, trying next...")
                     last_error = f"Model {model} unavailable"
                     llm_response = None
