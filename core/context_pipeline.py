@@ -492,7 +492,7 @@ class ContextPipeline:
 
                         # Retrieve extracted facts
                         if hasattr(self.memory_system, 'get_facts'):
-                            extracted_facts = self.memory_system.get_facts(
+                            extracted_facts = await self.memory_system.get_facts(
                                 query=query,
                                 limit=10
                             )

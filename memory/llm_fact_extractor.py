@@ -183,7 +183,7 @@ JSON:"""
         raw = text.strip()
 
         # Check for stub response indicating API client issue
-        if raw.startswith("[OpenAI unavailable]"):
+        if raw.startswith("[API unavailable]"):
             logger.warning(f"[LLM Facts] API client not available - got stub response: {raw[:100]}")
             return []
 

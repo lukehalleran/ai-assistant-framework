@@ -530,7 +530,7 @@ generated: {datetime.now().isoformat()}
                 )
 
                 # Check for API error responses (model_manager returns these as content, not exceptions)
-                if llm_response and llm_response.startswith("[OpenAI unavailable]"):
+                if llm_response and llm_response.startswith("[API unavailable]"):
                     logger.warning(f"[DailyNotes] Model {model} unavailable, trying next...")
                     last_error = f"Model {model} unavailable"
                     llm_response = None
