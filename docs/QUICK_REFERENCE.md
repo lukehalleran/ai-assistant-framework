@@ -352,7 +352,7 @@ class CorpusManager:
 
 # memory/storage/multi_collection_chroma_store.py
 class MultiCollectionChromaStore:
-    # Collections (7 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs
+    # Collections (8 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural
 
     async def add_memory(text: str, metadata: Dict, collection: str):
         """Embed text and store in ChromaDB collection"""
@@ -604,6 +604,7 @@ score = (
 [DREAMS]                       # Dream memories (if enabled)
 [USER'S PERSONAL NOTES]        # Obsidian vault notes (hybrid retrieval)
 [DAEMON DOCUMENTATION]         # Self-knowledge: architecture docs, PROJECT_SKELETON
+[PROJECT COMMIT HISTORY]       # Git commit history (procedural memory)
 [WEB SEARCH RESULTS]           # Real-time Tavily results
 [RELEVANT INFORMATION]         # Wikipedia chunks
 [TIME CONTEXT]                 # Current datetime
@@ -644,6 +645,12 @@ python main.py embed-vault                   # Index vault to ChromaDB
 python main.py embed-vault --force           # Force full re-index
 python main.py vault-stats                   # Show indexed chunk count
 python main.py clear-vault                   # Clear obsidian_notes collection
+
+# Git Memory (procedural knowledge from commit history) [NEW 2026-01-27]
+python main.py git-backfill [LIMIT]          # Initial load (default: 200 commits)
+python main.py git-update                    # Incremental sync since last backfill
+python main.py git-status                    # Show PROCEDURAL collection stats
+python main.py git-clear                     # Wipe collection and reset sync state
 
 # User Profile
 python main.py export-profile                # Export to data/user_profile_export.md

@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-25
+**Last Updated**: 2026-01-27
 
 ---
 
@@ -725,9 +725,9 @@ career: current_role=Senior Engineer [2025-08-01T09:00:00]; programming_language
 ---
 
 ### 2.5 memory/storage/multi_collection_chroma_store.py (Vector Store)
-**Purpose**: Semantic search across 7 ChromaDB collections
+**Purpose**: Semantic search across 8 ChromaDB collections
 
-**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs
+**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural
 
 **Key Methods**:
 - `add_memory(text, metadata, collection)` → Embed and store
@@ -801,6 +801,7 @@ Priority order (with weights):
 - semantic_chunks: 6
 - personal_notes: 6             # Obsidian notes
 - reference_docs: 5             # User uploaded docs
+- git_commits: 5               # Git commit history (procedural)
 - memories: 5
 - semantic_facts/fresh_facts: 4
 - summaries: 3
@@ -1752,7 +1753,63 @@ REFERENCE_DOCS_MAX_PROMPT = 5
 
 ---
 
-### 2.12.5 utils/daily_notes_generator.py (Auto-Generated Daily Summaries) **[ENHANCED 2026-01-22]**
+### 2.12.5 knowledge/git_memory.py + git_memory_loader.py (Git Commit History) **[NEW 2026-01-27]**
+**Purpose**: Populate PROCEDURAL ChromaDB collection with git commit history, giving Daemon visibility into project evolution and decision rationale.
+
+**Key Classes**:
+- `GitMemoryExtractor` (`git_memory.py`): Extracts commits via `git log` with metadata
+- `GitMemoryLoader` (`git_memory_loader.py`): Loads extracted commits into ChromaDB
+
+**GitMemoryExtractor Methods**:
+- `extract_commits(limit, since, include_diffs, diff_max_lines)` → `List[Dict]`: Extract commit history
+- `get_recent_since_hash(last_hash)` → `List[Dict]`: Incremental updates since last sync
+- `_get_diff_summary(commit_hash, max_lines)` → `str`: Abbreviated `--stat` diff
+- `_extract_tags(subject)` → `List[str]`: Conventional commit tag extraction (feat→feature, fix→bugfix, etc.)
+
+**GitMemoryLoader Methods**:
+- `backfill(limit, include_diffs)` → `int`: Initial population of PROCEDURAL collection
+- `incremental_update(include_diffs)` → `int`: Add new commits since last sync
+- `clear()` → `int`: Wipe PROCEDURAL collection and reset sync state
+
+**Commit Memory Format**:
+```python
+{
+    "id": "git-abc12345",
+    "content": "Commit: feat: add new feature\n\nDetailed body...\n\nChanges:\n...",
+    "metadata": {
+        "commit_hash": "abc12345",
+        "author": "Luke",
+        "age_relative": "3 days ago",
+        "timestamp": "2026-01-24T10:30:00+00:00",
+        "source": "git",
+        "memory_type": "procedural",
+        "tags": "git-commit,feature"
+    }
+}
+```
+
+**Configuration** (`config/app_config.py`):
+```python
+GIT_MEMORY_ENABLED = True
+GIT_MEMORY_INCLUDE_DIFFS = False
+GIT_MEMORY_DEFAULT_LIMIT = 200
+```
+
+**CLI Commands** (`main.py`):
+- `python main.py git-backfill [LIMIT]` - Initial load (default: 200 commits)
+- `python main.py git-update` - Incremental sync since last backfill
+- `python main.py git-status` - Show PROCEDURAL collection stats
+- `python main.py git-clear` - Wipe collection and reset sync state
+
+**Integration**:
+- ContextGatherer retrieves via `get_git_commits()` method (hybrid: 1/3 recent + 2/3 semantic)
+- Builder adds `[PROJECT COMMIT HISTORY]` section in prompt
+- TokenManager includes `git_commits` at priority 5
+- HybridRetriever and MemoryRetriever include `procedural` collection in queries
+
+---
+
+### 2.12.6 utils/daily_notes_generator.py (Auto-Generated Daily Summaries) **[ENHANCED 2026-01-22]**
 **Purpose**: Automatically generate daily summary notes from Daemon conversations with LLM-based tag generation, written from Daemon's perspective
 
 **Data Classes**:
@@ -2952,7 +3009,9 @@ daemon/
 │   ├── wolfram_manager.py     # Wolfram Alpha LLM API [NEW 2026-01-22]
 │   ├── sandbox_manager.py     # E2B code sandbox execution [NEW 2026-01-22]
 │   ├── obsidian_manager.py    # Obsidian vault integration [NEW 2026-01]
-│   └── reference_docs_manager.py  # Daemon self-knowledge docs [NEW 2026-01]
+│   ├── reference_docs_manager.py  # Daemon self-knowledge docs [NEW 2026-01]
+│   ├── git_memory.py          # Git commit extractor [NEW 2026-01-27]
+│   └── git_memory_loader.py   # Git → PROCEDURAL ChromaDB loader [NEW 2026-01-27]
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)
@@ -3303,6 +3362,8 @@ python main.py inspect-summaries
 | daily_notes_generator.py | Generate: daily summaries with Life Events + tags [ENHANCED 2026-01-22] |
 | weekly_notes_generator.py | Organize: weekly folders + summaries + tags [ENHANCED 2026-01-22] |
 | tag_generator.py | Tags: LLM-based tag extraction for Obsidian notes (100+ vocabulary, 6 categories) [NEW 2026-01-22] |
+| git_memory.py | Extract: Git commit history with metadata + conventional commit tagging [NEW 2026-01-27] |
+| git_memory_loader.py | Load: Backfill/incremental sync of git commits to PROCEDURAL ChromaDB [NEW 2026-01-27] |
 
 ---
 
