@@ -493,7 +493,7 @@ class MemoryRetriever:
     async def _fallback_semantic_search(self, query: str, n_results: int = 30) -> List[Dict]:
         """Fallback semantic search using ChromaDB."""
         memories: List[Dict] = []
-        collections_to_query = ['conversations', 'summaries', 'reflections']
+        collections_to_query = ['conversations', 'summaries', 'reflections', 'procedural']
 
         try:
             batch_results = await self.chroma_store.query_multiple_collections(

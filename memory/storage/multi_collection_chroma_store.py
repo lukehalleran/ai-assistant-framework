@@ -87,6 +87,7 @@ class MultiCollectionChromaStore:
             'reflections': None,
             'obsidian_notes': None,  # User's personal notes from Obsidian vault
             'reference_docs': None,  # User uploaded reference documents
+            'procedural': None,      # Git commits and how-to knowledge
         }
 
         self._initialize_collections()

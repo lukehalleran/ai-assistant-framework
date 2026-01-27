@@ -346,6 +346,20 @@ SANDBOX_ENABLED = bool(int(os.getenv("SANDBOX_ENABLED", "1" if SANDBOX_ENABLED e
 SANDBOX_TIMEOUT_SECONDS = int(os.getenv("SANDBOX_TIMEOUT_SECONDS", str(SANDBOX_TIMEOUT_SECONDS)))
 
 # --------------------------------------------------------------------
+# Git Memory Configuration
+# --------------------------------------------------------------------
+# Populate PROCEDURAL memory with git commit history
+GIT_MEMORY_CFG = config.get("git_memory", {})
+GIT_MEMORY_ENABLED: bool = bool(GIT_MEMORY_CFG.get("enabled", True))
+GIT_MEMORY_INCLUDE_DIFFS: bool = bool(GIT_MEMORY_CFG.get("include_diffs", False))
+GIT_MEMORY_DEFAULT_LIMIT: int = int(GIT_MEMORY_CFG.get("default_limit", 200))
+
+# Environment variable overrides for Git Memory
+GIT_MEMORY_ENABLED = bool(int(os.getenv("GIT_MEMORY_ENABLED", "1" if GIT_MEMORY_ENABLED else "0")))
+GIT_MEMORY_INCLUDE_DIFFS = bool(int(os.getenv("GIT_MEMORY_INCLUDE_DIFFS", "1" if GIT_MEMORY_INCLUDE_DIFFS else "0")))
+GIT_MEMORY_DEFAULT_LIMIT = int(os.getenv("GIT_MEMORY_DEFAULT_LIMIT", str(GIT_MEMORY_DEFAULT_LIMIT)))
+
+# --------------------------------------------------------------------
 # Obsidian Vault Configuration
 # --------------------------------------------------------------------
 # Enable personal notes integration from Obsidian vault

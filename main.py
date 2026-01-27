@@ -979,6 +979,90 @@ if __name__ == "__main__":
             success = asyncio.run(refresh_narrative_context())
             sys.exit(0 if success else 1)
 
+        # === Git Memory CLI Commands ===
+        elif mode == "git-backfill":
+            # Backfill PROCEDURAL memory with git commit history
+            # Usage: python main.py git-backfill [LIMIT]
+            from knowledge.git_memory_loader import GitMemoryLoader
+
+            limit = 200
+            if len(sys.argv) > 2:
+                try:
+                    limit = int(sys.argv[2])
+                except ValueError:
+                    print(f"Invalid limit: {sys.argv[2]} (must be integer)")
+                    sys.exit(1)
+
+            print(f"\n{'='*60}")
+            print("GIT MEMORY BACKFILL")
+            print(f"{'='*60}")
+            print(f"Limit: {limit}")
+            print()
+
+            loader = GitMemoryLoader()
+            count = loader.backfill(limit=limit)
+
+            print(f"\nBackfilled {count} commits to PROCEDURAL memory")
+            sys.exit(0)
+
+        elif mode == "git-update":
+            # Incremental update: add new commits since last sync
+            # Usage: python main.py git-update
+            from knowledge.git_memory_loader import GitMemoryLoader
+
+            print(f"\n{'='*60}")
+            print("GIT MEMORY UPDATE")
+            print(f"{'='*60}")
+
+            loader = GitMemoryLoader()
+            count = loader.incremental_update()
+
+            if count:
+                print(f"Added {count} new commits")
+            else:
+                print("No new commits since last sync")
+            sys.exit(0)
+
+        elif mode == "git-status":
+            # Show PROCEDURAL collection stats
+            # Usage: python main.py git-status
+            from config.app_config import CHROMA_PATH
+            from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+
+            print(f"\n{'='*60}")
+            print("GIT MEMORY STATUS")
+            print(f"{'='*60}")
+
+            store = MultiCollectionChromaStore(CHROMA_PATH)
+            coll = store.collections.get("procedural")
+            count = coll.count() if coll else 0
+            print(f"PROCEDURAL collection: {count} memories")
+
+            try:
+                with open("data/git_memory_last_hash.txt") as f:
+                    print(f"Last synced commit: {f.read().strip()[:8]}")
+            except FileNotFoundError:
+                print("No sync history (run git-backfill first)")
+            sys.exit(0)
+
+        elif mode == "git-clear":
+            # Wipe PROCEDURAL collection and reset sync state
+            # Usage: python main.py git-clear
+            from knowledge.git_memory_loader import GitMemoryLoader
+
+            print(f"\n{'='*60}")
+            print("GIT MEMORY CLEAR")
+            print(f"{'='*60}")
+
+            loader = GitMemoryLoader()
+            removed = loader.clear()
+
+            if removed:
+                print(f"Cleared {removed} entries from PROCEDURAL collection")
+            else:
+                print("Collection was already empty")
+            sys.exit(0)
+
         else:
             print(f"[DEBUG] Building orchestrator (mode={mode}, force_wizard={force_wizard})...")
             orchestrator = build_orchestrator()
