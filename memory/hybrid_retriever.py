@@ -85,7 +85,7 @@ class HybridRetriever:
             List of semantic search results
         """
         memories = []
-        collections_to_query = ['conversations', 'summaries', 'reflections']
+        collections_to_query = ['conversations', 'summaries', 'reflections', 'procedural']
 
         try:
             # Batch query all collections

@@ -105,6 +105,7 @@ PROMPT_MAX_WIKI = _cfg_int("prompt_max_wiki", 3)
 USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)
 PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
 PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 5)
+PROMPT_MAX_GIT_COMMITS = _cfg_int("prompt_max_git_commits", 10)
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
@@ -118,6 +119,7 @@ PRIORITY_ORDER = [
     ("semantic_chunks", 6),
     ("personal_notes", 6),  # User's Obsidian notes - high priority
     ("reference_docs", 5),  # User uploaded reference documents
+    ("git_commits", 5),     # Git commit history (procedural memory)
     ("memories", 5),
     ("semantic_facts", 4),
     ("fresh_facts", 4),
@@ -333,6 +335,11 @@ class UnifiedPromptBuilder:
                 _timed_task("reference_docs", self.context_gatherer.get_reference_docs(user_input, PROMPT_MAX_REFERENCE_DOCS))
             )
 
+            # Git commit history (procedural memory)
+            tasks["git_commits"] = asyncio.create_task(
+                _timed_task("git_commits", self.context_gatherer.get_git_commits(user_input, PROMPT_MAX_GIT_COMMITS))
+            )
+
             # Web search (triggered based on query analysis, suppressed during crisis)
             tasks["web_search"] = asyncio.create_task(
                 _timed_task("web_search", self.context_gatherer._get_web_search_results(user_input, crisis_level))
@@ -477,6 +484,7 @@ class UnifiedPromptBuilder:
                 "wiki": gathered.get("wiki", []),
                 "personal_notes": gathered.get("personal_notes", []),  # User's Obsidian notes
                 "reference_docs": gathered.get("reference_docs", []),  # User uploaded documents
+                "git_commits": gathered.get("git_commits", []),      # Git commit history
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
             }
             # DEBUG: Log web search results
@@ -766,6 +774,7 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": context.get("semantic_chunks", []),
                 "wiki": context.get("wiki", []),
                 "personal_notes": context.get("personal_notes", []),  # User's Obsidian notes
+                "git_commits": context.get("git_commits", []),      # Git commit history
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
@@ -793,6 +802,7 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": [],
                 "wiki": [],
                 "personal_notes": [],
+                "git_commits": [],
                 "web_search_results": None,
                 "memory_id_map": {}
             }
@@ -866,6 +876,7 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": [],
                 "wiki": [],
                 "personal_notes": [],  # No personal notes for small-talk
+                "git_commits": [],
                 "web_search_results": None  # No web search for small-talk
             }
 
@@ -895,6 +906,7 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": [],
                 "wiki": [],
                 "personal_notes": [],
+                "git_commits": [],
                 "web_search_results": None
             }
 
@@ -1580,6 +1592,39 @@ class UnifiedPromptBuilder:
 
         if rd_lines:
             sections.append(f"[DAEMON DOCUMENTATION] n={len(rd_lines)}\n" + "\n\n".join(rd_lines))
+
+        # Git commit history (procedural memory)
+        git_commits = context.get("git_commits", []) or []
+        gc_lines: list[str] = []
+        for i, commit in enumerate(git_commits, start=1):
+            if isinstance(commit, dict):
+                content = commit.get("content", "")
+                meta = commit.get("metadata", {})
+                commit_hash = meta.get("commit_hash", "")
+                author = meta.get("author", "")
+                age = meta.get("age_relative", "")
+                tags = meta.get("tags", "")
+            else:
+                content = str(commit)
+                commit_hash, author, age, tags = "", "", "", ""
+
+            if content:
+                header_parts = []
+                if commit_hash:
+                    header_parts.append(f"[{commit_hash}]")
+                if author:
+                    header_parts.append(f"by {author}")
+                if age:
+                    header_parts.append(f"({age})")
+                if tags:
+                    tag_list = [t.strip() for t in tags.split(",") if t.strip() and t.strip() != "git-commit"]
+                    if tag_list:
+                        header_parts.append(" ".join(f"#{t}" for t in tag_list))
+                header = " ".join(header_parts) if header_parts else ""
+                gc_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
+
+        if gc_lines:
+            sections.append(f"[PROJECT COMMIT HISTORY] n={len(gc_lines)}\n" + "\n\n".join(gc_lines))
 
         # User Profile (replaces semantic_facts + fresh_facts)
         # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost

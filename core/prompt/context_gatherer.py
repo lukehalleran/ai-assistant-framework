@@ -506,6 +506,77 @@ class ContextGatherer:
             logger.warning(f"[ContextGatherer] Failed to get reference docs: {e}")
             return []
 
+    async def get_git_commits(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get relevant git commits from PROCEDURAL collection.
+
+        Uses hybrid retrieval: 1/3 most recent commits + 2/3 semantically
+        relevant commits, deduplicated by document ID.
+
+        Args:
+            query: Search query for semantic retrieval
+            limit: Maximum commits to return
+
+        Returns:
+            List of commit dicts with content, metadata, and relevance_score
+        """
+        try:
+            chroma = getattr(self.memory_coordinator, 'chroma_store', None)
+            if not chroma or 'procedural' not in chroma.collections:
+                return []
+
+            from config.app_config import GIT_MEMORY_ENABLED
+            if not GIT_MEMORY_ENABLED:
+                return []
+
+            # Hybrid split: 1/3 recent, 2/3 semantic
+            recent_limit = max(limit // 3, 1)
+            semantic_limit = limit - recent_limit
+
+            # 1/3: Most recent commits (chronological)
+            recent = chroma.get_recent('procedural', limit=recent_limit)
+
+            # 2/3: Semantically relevant commits
+            semantic = chroma.query_collection('procedural', query, n_results=semantic_limit + recent_limit)
+
+            # Deduplicate: recent first, then fill with semantic
+            seen_ids = set()
+            merged = []
+
+            for commit in recent:
+                doc_id = commit.get('id')
+                if doc_id and doc_id not in seen_ids:
+                    seen_ids.add(doc_id)
+                    merged.append(commit)
+
+            for commit in semantic:
+                if len(merged) >= limit:
+                    break
+                doc_id = commit.get('id')
+                if doc_id and doc_id not in seen_ids:
+                    seen_ids.add(doc_id)
+                    merged.append(commit)
+
+            # Track for citations
+            for idx, commit in enumerate(merged, start=1):
+                cid = f"COMMIT_{idx}"
+                meta = commit.get('metadata', {})
+                self.memory_id_map[cid] = {
+                    'type': 'git_commit',
+                    'timestamp': meta.get('timestamp', ''),
+                    'content': commit.get('content', '')[:500],
+                    'relevance_score': commit.get('relevance_score', 0.0),
+                    'commit_hash': meta.get('commit_hash', ''),
+                    'db_id': commit.get('id', None),
+                }
+
+            logger.debug(f"[ContextGatherer] Retrieved {len(merged)} git commits ({len(recent)} recent + {len(semantic)} semantic, deduped to {len(merged)})")
+            return merged
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get git commits: {e}")
+            return []
+
     async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT) -> List[Dict[str, Any]]:
         """Get recent conversation memories."""
         try:
