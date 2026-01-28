@@ -164,6 +164,17 @@ class MemoryStorageProtocol(Protocol):
         """Extract facts from conversation and store them"""
         ...
 
+    async def store_skill(
+        self,
+        skill: "ProceduralSkill",
+    ) -> Optional[str]:
+        """Store a procedural skill with semantic deduplication.
+
+        Returns:
+            str: Document ID if stored, None if duplicate or failed
+        """
+        ...
+
 
 @runtime_checkable
 class MemoryRetrieverProtocol(Protocol):
@@ -208,6 +219,14 @@ class MemoryRetrieverProtocol(Protocol):
 
     def get_dreams(self, limit: int = 2) -> List[Dict]:
         """Retrieve dream memories"""
+        ...
+
+    async def get_skills(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> List[Dict]:
+        """Retrieve procedural skills relevant to query"""
         ...
 
     async def search_by_type(
