@@ -432,6 +432,86 @@ class MemoryRetriever:
             } for d in (self.corpus_manager.get_dreams(limit) or [])]
         return []
 
+    async def get_skills(self, query: str, limit: int = 5) -> List[Dict]:
+        """
+        Retrieve procedural skills relevant to query.
+
+        Uses hybrid retrieval: 1/3 most recent + 2/3 semantically relevant,
+        deduplicated by document ID.  Bumps times_retrieved on returned skills.
+
+        Args:
+            query: User query for semantic matching
+            limit: Maximum skills to return
+
+        Returns:
+            List of skill dicts with content, metadata, and relevance_score
+        """
+        collection_name = "procedural_skills"
+        try:
+            from config.app_config import PROCEDURAL_SKILLS_ENABLED
+            if not PROCEDURAL_SKILLS_ENABLED:
+                return []
+
+            coll = self.chroma_store.collections.get(collection_name)
+            if coll is None or coll.count() == 0:
+                return []
+
+            count = coll.count()
+
+            # Hybrid split: 1/3 recent, 2/3 semantic
+            recent_limit = max(limit // 3, 1)
+            semantic_limit = limit - recent_limit
+
+            # 1/3: Most recent skills
+            recent = self.chroma_store.get_recent(collection_name, limit=recent_limit)
+
+            # 2/3: Semantically relevant skills
+            semantic = self.chroma_store.query_collection(
+                collection_name, query, n_results=min(semantic_limit + recent_limit, count)
+            )
+
+            # Deduplicate: recent first, then fill with semantic
+            seen_ids = set()
+            merged: List[Dict] = []
+
+            for item in recent:
+                doc_id = item.get("id")
+                if doc_id and doc_id not in seen_ids:
+                    seen_ids.add(doc_id)
+                    merged.append(item)
+
+            for item in semantic:
+                if len(merged) >= limit:
+                    break
+                doc_id = item.get("id")
+                if doc_id and doc_id not in seen_ids:
+                    seen_ids.add(doc_id)
+                    merged.append(item)
+
+            # Bump times_retrieved (best-effort, non-blocking)
+            for item in merged:
+                try:
+                    meta = item.get("metadata", {})
+                    doc_id = item.get("id")
+                    if doc_id and meta:
+                        import time as _time
+                        new_count = int(meta.get("times_retrieved", 0)) + 1
+                        # ChromaDB update is sync — fire-and-forget via metadata
+                        meta["times_retrieved"] = new_count
+                        meta["last_retrieved"] = _time.time()
+                except Exception:
+                    pass
+
+            logger.debug(
+                f"[MemoryRetriever] Retrieved {len(merged)} skills "
+                f"({len(recent)} recent + {len(semantic)} semantic, deduped)"
+            )
+            return merged[:limit]
+
+        except Exception as e:
+            logger.warning(f"[MemoryRetriever] Failed to retrieve skills: {e}")
+            return []
+
     async def search_by_type(self, type_name: str, query: str = "", limit: int = 5) -> List[Dict]:
         """Search memories by type."""
         results = []

@@ -181,6 +181,8 @@ def _sanitize_embedded_headers(text: str) -> str:
             r'\[RECENT FACTS[^\]]*\]',
             r'\[FACTS[^\]]*\]',
             r'\[DIRECTIVES[^\]]*\]',
+            r'\[ADAPTIVE WORKFLOWS[^\]]*\]',
+            r'\[PROJECT COMMIT HISTORY[^\]]*\]',
         ]
 
         # Combine into one pattern

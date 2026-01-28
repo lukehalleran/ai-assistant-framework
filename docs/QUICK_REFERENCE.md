@@ -117,6 +117,9 @@ class MemoryRetriever:
     async def get_semantic_top_memories(query, limit=10) -> List[Dict]:
         """Top memories with meta-conversational routing and gating."""
 
+    async def get_skills(query, limit=5) -> List[Dict]:
+        """Hybrid retrieval (1/3 recent + 2/3 semantic) from procedural_skills collection."""
+
 
 # memory/memory_scorer.py — Scoring and ranking
 class MemoryScorer:
@@ -133,10 +136,10 @@ class MemoryScorer:
         """Base 0.5 + length/question/keyword bonuses, capped at 1.0"""
 
 
-# memory/shutdown_processor.py — Session-end processing (~533 lines)
+# memory/shutdown_processor.py — Session-end processing
 class ShutdownProcessor:
     async def process_shutdown_memory(session_conversations=None):
-        """Block summaries + fact extraction + user profile updates"""
+        """Block summaries + fact extraction + procedural skills + user profile updates"""
 
     async def run_shutdown_reflection(session_conversations=None, session_summaries=None) -> bool:
         """LLM reflection generation + ChromaDB storage"""
@@ -352,7 +355,7 @@ class CorpusManager:
 
 # memory/storage/multi_collection_chroma_store.py
 class MultiCollectionChromaStore:
-    # Collections (8 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural
+    # Collections (9 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills
 
     async def add_memory(text: str, metadata: Dict, collection: str):
         """Embed text and store in ChromaDB collection"""
@@ -519,7 +522,7 @@ class MemoryType(Enum):
     NEW_TYPE = "new_type"
 
 # 2. multi_collection_chroma_store.py - initialize collection
-COLLECTIONS = ["episodic", "semantic", "procedural", "summary", "meta", "new_type"]
+COLLECTIONS = ["episodic", "semantic", "procedural", "procedural_skills", "summary", "meta", "new_type"]
 
 # 3. memory/memory_retriever.py - handle in get_memories() pipeline
 new_type_results = await self.chroma_store.query(query, "new_type", limit)
@@ -605,6 +608,7 @@ score = (
 [USER'S PERSONAL NOTES]        # Obsidian vault notes (hybrid retrieval)
 [DAEMON DOCUMENTATION]         # Self-knowledge: architecture docs, PROJECT_SKELETON
 [PROJECT COMMIT HISTORY]       # Git commit history (procedural memory)
+[ADAPTIVE WORKFLOWS]           # Reusable problem-solving patterns (WHEN/THEN)
 [WEB SEARCH RESULTS]           # Real-time Tavily results
 [RELEVANT INFORMATION]         # Wikipedia chunks
 [TIME CONTEXT]                 # Current datetime

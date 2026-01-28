@@ -3,7 +3,8 @@
 Shutdown memory processing module.
 
 Handles end-of-session consolidation: block summaries, fact extraction,
-LLM-assisted fact extraction, user profile updates, and session reflections.
+LLM-assisted fact extraction, user profile updates, procedural skill
+extraction, and session reflections.
 """
 
 import os
@@ -35,6 +36,7 @@ class ShutdownProcessor:
     - Fact extraction from session conversations
     - LLM-assisted triple extraction
     - User profile updates
+    - Procedural skill extraction (adaptive workflows)
     - Session-end reflection generation
     """
 
@@ -171,6 +173,9 @@ class ShutdownProcessor:
 
             # 4) Optional LLM-assisted facts
             await self._extract_llm_facts(session_conversations)
+
+            # 5) Extract procedural skills (adaptive workflows)
+            await self._extract_procedural_skills(session_conversations)
 
             logger.info("[Shutdown] Memory processing complete")
 
@@ -424,6 +429,152 @@ class ShutdownProcessor:
                 logger.info(f"[Shutdown] Added {added} facts to user profile")
             except Exception as profile_err:
                 logger.warning(f"[Shutdown] Failed to update user profile: {profile_err}")
+
+    # ------------------------------------------------------------------
+    # Procedural skill extraction
+    # ------------------------------------------------------------------
+
+    async def _extract_procedural_skills(self, session_conversations):
+        """Extract reusable problem-solving patterns from session conversations.
+
+        Uses LLM to identify 'How-To' patterns (trigger -> action) that could
+        be useful for future similar situations.  Stores them via MemoryStorage
+        with semantic deduplication.
+        """
+        try:
+            from config.app_config import PROCEDURAL_SKILLS_ENABLED
+            if not PROCEDURAL_SKILLS_ENABLED:
+                return
+        except ImportError:
+            return
+
+        if not self.model_manager or not hasattr(self.model_manager, 'generate_once'):
+            return
+
+        # Gather session conversations
+        if isinstance(session_conversations, list) and session_conversations:
+            sess_items = session_conversations
+        else:
+            try:
+                corpus = list(self.corpus_manager.corpus)
+            except (AttributeError, TypeError):
+                return
+            try:
+                sess_items = [
+                    e for e in corpus
+                    if (not self._is_summary(e)) and (not self._is_reflection(e))
+                    and self._ts(e) >= self.session_start
+                ]
+            except (ValueError, TypeError):
+                sess_items = [
+                    e for e in corpus
+                    if (not self._is_summary(e)) and (not self._is_reflection(e))
+                ]
+
+        # Need enough conversation to extract patterns
+        if len(sess_items) < 3:
+            return
+
+        # Build conversation excerpt
+        excerpts = []
+        for e in sess_items[-12:]:
+            q = (e.get('query') or '').strip()
+            a = (e.get('response') or '').strip()
+            if q or a:
+                lines = []
+                if q:
+                    lines.append(f"User: {q[:300]}")
+                if a:
+                    lines.append(f"Assistant: {a[:400]}")
+                excerpts.append("\n".join(lines))
+
+        if not excerpts:
+            return
+
+        conversation_text = "\n\n".join(excerpts)
+
+        prompt = (
+            "You are a pattern analyst. Review the conversation below and extract 0-3 "
+            "reusable problem-solving patterns (procedural skills). Only extract patterns "
+            "that are GENERALIZABLE -- not specific to a single instance.\n\n"
+            "For each pattern, output EXACTLY this JSON format (one per line):\n"
+            '{"trigger": "situation description (10-500 chars)", '
+            '"action_pattern": "abstract solution steps (20-1000 chars)", '
+            '"category": "one of: debugging|workflow|prompt_engineering|interpersonal|architectural|optimization|testing", '
+            '"confidence": 0.0-1.0, '
+            '"tags": ["keyword1", "keyword2"]}\n\n'
+            "Rules:\n"
+            "- trigger = the SITUATION that calls for this pattern\n"
+            "- action_pattern = the ABSTRACT approach, not specific code\n"
+            "- confidence = how generalizable (0.5 = niche, 1.0 = universal)\n"
+            "- Output ONLY valid JSON lines, no other text\n"
+            "- If no generalizable patterns exist, output nothing\n\n"
+            f"CONVERSATION:\n{conversation_text}\n\n"
+            "Patterns (JSON lines only):"
+        )
+
+        model_alias = os.getenv("LLM_SKILLS_MODEL", REFLECTION_MODEL_ALIAS)
+
+        prev_model = None
+        try:
+            if hasattr(self.model_manager, "get_active_model_name"):
+                prev_model = self.model_manager.get_active_model_name()
+            if hasattr(self.model_manager, "switch_model"):
+                api_models = getattr(self.model_manager, "api_models", {}) or {}
+                if model_alias in api_models:
+                    self.model_manager.switch_model(model_alias)
+
+            raw = await self.model_manager.generate_once(prompt, max_tokens=600)
+        except Exception as e:
+            logger.warning(f"[Shutdown] Skill extraction LLM call failed: {e}")
+            return
+        finally:
+            try:
+                if prev_model and hasattr(self.model_manager, "switch_model"):
+                    self.model_manager.switch_model(prev_model)
+            except (AttributeError, TypeError):
+                pass
+
+        if not raw or not raw.strip():
+            return
+
+        # Parse JSON lines
+        import json
+        import time
+        from memory.procedural_skill import ProceduralSkill, SkillCategory
+
+        kept = 0
+        session_id = self.session_start.isoformat() if isinstance(self.session_start, datetime) else str(self.session_start)
+
+        for line in raw.strip().splitlines():
+            line = line.strip()
+            if not line or not line.startswith('{'):
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            try:
+                skill = ProceduralSkill(
+                    trigger=data.get("trigger", ""),
+                    action_pattern=data.get("action_pattern", ""),
+                    category=SkillCategory(data.get("category", "workflow")),
+                    confidence=float(data.get("confidence", 0.6)),
+                    tags=data.get("tags", [])[:10],
+                    source_session_id=session_id,
+                    created_at=time.time(),
+                )
+            except (ValueError, KeyError) as e:
+                logger.debug(f"[Shutdown] Skipping invalid skill: {e}")
+                continue
+
+            doc_id = await self._storage.store_skill(skill)
+            if doc_id:
+                kept += 1
+
+        if kept:
+            logger.info(f"[Shutdown] Extracted {kept} procedural skill(s)")
 
     # ------------------------------------------------------------------
     # run_shutdown_reflection
