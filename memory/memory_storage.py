@@ -437,6 +437,67 @@ class MemoryStorage:
         except Exception as e:
             logger.error(f"Error during memory consolidation: {e}")
 
+    async def store_skill(self, skill) -> Optional[str]:
+        """
+        Store a procedural skill with semantic deduplication.
+
+        Args:
+            skill: ProceduralSkill instance
+
+        Returns:
+            str: Document ID if stored, None if duplicate or failed
+        """
+        try:
+            from config.app_config import PROCEDURAL_SKILLS_ENABLED, SKILL_DEDUP_THRESHOLD
+            if not PROCEDURAL_SKILLS_ENABLED:
+                return None
+
+            collection_name = "procedural_skills"
+
+            # Ensure collection exists
+            if collection_name not in self.chroma_store.collections or self.chroma_store.collections[collection_name] is None:
+                if hasattr(self.chroma_store, "create_collection"):
+                    self.chroma_store.create_collection(collection_name)
+
+            coll = self.chroma_store.collections.get(collection_name)
+            if coll is None:
+                logger.warning("[MemoryStorage] procedural_skills collection not available")
+                return None
+
+            embedding_text = skill.to_embedding_text()
+
+            # Semantic deduplication: query for similar skills
+            if coll.count() > 0:
+                similar = self.chroma_store.query_collection(
+                    collection_name,
+                    query_text=embedding_text,
+                    n_results=min(3, coll.count()),
+                )
+                for match in similar:
+                    score = match.get("relevance_score", 0.0)
+                    if score and score >= SKILL_DEDUP_THRESHOLD:
+                        existing_trigger = (match.get("metadata") or {}).get("trigger", "")
+                        logger.info(
+                            f"[MemoryStorage] Skill deduplicated (score={score:.2f}): "
+                            f"'{skill.trigger[:60]}' ~ '{existing_trigger[:60]}'"
+                        )
+                        return None
+
+            # Store
+            metadata = skill.to_metadata()
+            doc_id = self.chroma_store.add_to_collection(
+                collection_name, embedding_text, metadata
+            )
+            logger.info(
+                f"[MemoryStorage] Stored skill {doc_id}: "
+                f"trigger='{skill.trigger[:80]}', category={skill.category.value}"
+            )
+            return doc_id
+
+        except Exception as e:
+            logger.error(f"[MemoryStorage] Failed to store skill: {e}")
+            return None
+
     async def _maybe_regenerate_narrative(self) -> None:
         """
         Regenerate the narrative context after summary creation.

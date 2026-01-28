@@ -577,6 +577,49 @@ class ContextGatherer:
             logger.warning(f"[ContextGatherer] Failed to get git commits: {e}")
             return []
 
+    async def get_procedural_skills(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Get relevant procedural skills (adaptive workflows) from procedural_skills collection.
+
+        Uses hybrid retrieval via MemoryCoordinator.get_skills().
+
+        Args:
+            query: Search query for semantic retrieval
+            limit: Maximum skills to return
+
+        Returns:
+            List of skill dicts with content, metadata, and relevance_score
+        """
+        try:
+            from config.app_config import PROCEDURAL_SKILLS_ENABLED
+            if not PROCEDURAL_SKILLS_ENABLED:
+                return []
+
+            if not hasattr(self.memory_coordinator, 'get_skills'):
+                return []
+
+            skills = await self.memory_coordinator.get_skills(query, limit=limit)
+
+            # Track for citations
+            for idx, skill in enumerate(skills[:limit], start=1):
+                skill_id = f"SKILL_{idx}"
+                meta = skill.get('metadata', {})
+                self.memory_id_map[skill_id] = {
+                    'type': 'procedural_skill',
+                    'timestamp': meta.get('created_at', ''),
+                    'content': meta.get('trigger', '')[:500],
+                    'relevance_score': skill.get('relevance_score', 0.0),
+                    'category': meta.get('category', ''),
+                    'db_id': skill.get('id', None),
+                }
+
+            logger.debug(f"[ContextGatherer] Retrieved {len(skills)} procedural skills")
+            return skills or []
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get procedural skills: {e}")
+            return []
+
     async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT) -> List[Dict[str, Any]]:
         """Get recent conversation memories."""
         try:

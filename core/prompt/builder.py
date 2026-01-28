@@ -36,8 +36,9 @@ Module Contract
 Prompt Section Order:
   [RECENT CONVERSATION] → [RELEVANT MEMORIES] → [USER PROFILE] → [SUMMARIES] →
   [REFLECTIONS] → [DREAMS] → [USER'S PERSONAL NOTES] → [DAEMON DOCUMENTATION] →
-  [WEB SEARCH RESULTS] → [RELEVANT INFORMATION] → [TIME CONTEXT] →
-  [TEMPORAL GROUNDING] → [STM SUMMARY] → [CURRENT USER QUERY]
+  [PROJECT COMMIT HISTORY] → [ADAPTIVE WORKFLOWS] → [WEB SEARCH RESULTS] →
+  [RELEVANT INFORMATION] → [TIME CONTEXT] → [TEMPORAL GROUNDING] →
+  [STM SUMMARY] → [CURRENT USER QUERY]
 """
 
 import os
@@ -106,6 +107,7 @@ USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)
 PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
 PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 5)
 PROMPT_MAX_GIT_COMMITS = _cfg_int("prompt_max_git_commits", 10)
+PROMPT_MAX_SKILLS = _cfg_int("prompt_max_skills", 5)
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
@@ -120,6 +122,7 @@ PRIORITY_ORDER = [
     ("personal_notes", 6),  # User's Obsidian notes - high priority
     ("reference_docs", 5),  # User uploaded reference documents
     ("git_commits", 5),     # Git commit history (procedural memory)
+    ("procedural_skills", 5),  # Reusable problem-solving patterns
     ("memories", 5),
     ("semantic_facts", 4),
     ("fresh_facts", 4),
@@ -340,6 +343,11 @@ class UnifiedPromptBuilder:
                 _timed_task("git_commits", self.context_gatherer.get_git_commits(user_input, PROMPT_MAX_GIT_COMMITS))
             )
 
+            # Procedural skills (adaptive workflows)
+            tasks["procedural_skills"] = asyncio.create_task(
+                _timed_task("procedural_skills", self.context_gatherer.get_procedural_skills(user_input, PROMPT_MAX_SKILLS))
+            )
+
             # Web search (triggered based on query analysis, suppressed during crisis)
             tasks["web_search"] = asyncio.create_task(
                 _timed_task("web_search", self.context_gatherer._get_web_search_results(user_input, crisis_level))
@@ -485,6 +493,7 @@ class UnifiedPromptBuilder:
                 "personal_notes": gathered.get("personal_notes", []),  # User's Obsidian notes
                 "reference_docs": gathered.get("reference_docs", []),  # User uploaded documents
                 "git_commits": gathered.get("git_commits", []),      # Git commit history
+                "procedural_skills": gathered.get("procedural_skills", []),  # Adaptive workflows
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
             }
             # DEBUG: Log web search results
@@ -775,6 +784,7 @@ class UnifiedPromptBuilder:
                 "wiki": context.get("wiki", []),
                 "personal_notes": context.get("personal_notes", []),  # User's Obsidian notes
                 "git_commits": context.get("git_commits", []),      # Git commit history
+                "procedural_skills": context.get("procedural_skills", []),  # Adaptive workflows
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
@@ -803,6 +813,7 @@ class UnifiedPromptBuilder:
                 "wiki": [],
                 "personal_notes": [],
                 "git_commits": [],
+                "procedural_skills": [],
                 "web_search_results": None,
                 "memory_id_map": {}
             }
@@ -877,6 +888,7 @@ class UnifiedPromptBuilder:
                 "wiki": [],
                 "personal_notes": [],  # No personal notes for small-talk
                 "git_commits": [],
+                "procedural_skills": [],
                 "web_search_results": None  # No web search for small-talk
             }
 
@@ -907,6 +919,7 @@ class UnifiedPromptBuilder:
                 "wiki": [],
                 "personal_notes": [],
                 "git_commits": [],
+                "procedural_skills": [],
                 "web_search_results": None
             }
 
@@ -1625,6 +1638,60 @@ class UnifiedPromptBuilder:
 
         if gc_lines:
             sections.append(f"[PROJECT COMMIT HISTORY] n={len(gc_lines)}\n" + "\n\n".join(gc_lines))
+
+        # Procedural skills (adaptive workflows)
+        proc_skills = context.get("procedural_skills", []) or []
+        sk_lines: list[str] = []
+        for i, skill in enumerate(proc_skills, start=1):
+            if isinstance(skill, dict):
+                meta = skill.get("metadata", {})
+                trigger = meta.get("trigger", "")
+                action = meta.get("action_pattern", "")
+                category = meta.get("category", "")
+                confidence = meta.get("confidence", "")
+                tags_raw = meta.get("tags_json", "")
+                created_at = meta.get("created_at", 0)
+            else:
+                trigger = str(skill)
+                action, category, confidence, tags_raw, created_at = "", "", "", "", 0
+
+            if trigger and action:
+                parts = []
+                if category:
+                    parts.append(f"[{category}]")
+                # Relative age from created_at epoch
+                if created_at:
+                    try:
+                        import time as _time
+                        age_secs = _time.time() - float(created_at)
+                        if age_secs < 3600:
+                            age_str = f"{int(age_secs / 60)} minutes ago"
+                        elif age_secs < 86400:
+                            age_str = f"{int(age_secs / 3600)} hours ago"
+                        else:
+                            age_str = f"{int(age_secs / 86400)} days ago"
+                        parts.append(f"({age_str})")
+                    except (ValueError, TypeError):
+                        pass
+                if confidence:
+                    try:
+                        parts.append(f"(conf={float(confidence):.0%})")
+                    except (ValueError, TypeError):
+                        pass
+                if tags_raw:
+                    try:
+                        import json as _json
+                        tag_list = _json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
+                        if tag_list:
+                            parts.append(" ".join(f"#{t}" for t in tag_list))
+                    except Exception:
+                        pass
+                header = " ".join(parts) if parts else ""
+                entry = f"{i}) {header}\nWHEN: {trigger}\nTHEN: {action}" if header else f"{i}) WHEN: {trigger}\nTHEN: {action}"
+                sk_lines.append(entry)
+
+        if sk_lines:
+            sections.append(f"[ADAPTIVE WORKFLOWS] n={len(sk_lines)}\n" + "\n\n".join(sk_lines))
 
         # User Profile (replaces semantic_facts + fresh_facts)
         # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost

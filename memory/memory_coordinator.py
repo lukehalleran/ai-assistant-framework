@@ -6,7 +6,7 @@ Module Contract
 - Inputs:
   - store_interaction(query, response, tags?): adds a turn to corpus + Chroma
   - get_memories(query, limit, topic_filter?): unified retrieval/gating/ranking
-  - process_shutdown_memory(): summarize blocks (size N) and extract end‑of‑session facts → UPDATED: also populates UserProfile with categorized facts
+  - process_shutdown_memory(): summarize blocks (size N) and extract end‑of‑session facts and procedural skills → UPDATED: also populates UserProfile with categorized facts
   - run_shutdown_reflection(...): generate a short reflection at session end
 - Outputs:
   - Lists of normalized memory dicts with scores/metadata; new summary/reflection/fact nodes in storage.
@@ -496,3 +496,17 @@ class MemoryCoordinator:
         Delegates to MemoryRetriever component.
         """
         return self._retriever.get_dreams(limit)
+
+    async def store_skill(self, skill) -> Optional[str]:
+        """Store a procedural skill with semantic deduplication.
+
+        Delegates to MemoryStorage component.
+        """
+        return await self._storage.store_skill(skill)
+
+    async def get_skills(self, query: str, limit: int = 5) -> List[Dict]:
+        """Retrieve procedural skills relevant to query.
+
+        Delegates to MemoryRetriever component.
+        """
+        return await self._retriever.get_skills(query, limit)

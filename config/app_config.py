@@ -360,6 +360,20 @@ GIT_MEMORY_INCLUDE_DIFFS = bool(int(os.getenv("GIT_MEMORY_INCLUDE_DIFFS", "1" if
 GIT_MEMORY_DEFAULT_LIMIT = int(os.getenv("GIT_MEMORY_DEFAULT_LIMIT", str(GIT_MEMORY_DEFAULT_LIMIT)))
 
 # --------------------------------------------------------------------
+# Procedural Skills Configuration
+# --------------------------------------------------------------------
+# Reusable problem-solving patterns ("How-To" memory)
+SKILLS_CFG = config.get("procedural_skills", {})
+PROCEDURAL_SKILLS_ENABLED: bool = bool(SKILLS_CFG.get("enabled", True))
+PROMPT_MAX_SKILLS: int = int(SKILLS_CFG.get("prompt_max_skills", 5))
+SKILL_DEDUP_THRESHOLD: float = float(SKILLS_CFG.get("dedup_threshold", 0.85))
+
+# Environment variable overrides for Procedural Skills
+PROCEDURAL_SKILLS_ENABLED = bool(int(os.getenv("PROCEDURAL_SKILLS_ENABLED", "1" if PROCEDURAL_SKILLS_ENABLED else "0")))
+PROMPT_MAX_SKILLS = int(os.getenv("PROMPT_MAX_SKILLS", str(PROMPT_MAX_SKILLS)))
+SKILL_DEDUP_THRESHOLD = float(os.getenv("SKILL_DEDUP_THRESHOLD", str(SKILL_DEDUP_THRESHOLD)))
+
+# --------------------------------------------------------------------
 # Obsidian Vault Configuration
 # --------------------------------------------------------------------
 # Enable personal notes integration from Obsidian vault

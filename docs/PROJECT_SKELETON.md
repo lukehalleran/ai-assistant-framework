@@ -57,7 +57,8 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/memory_retriever.py` - Retrieval operations (incl. `get_semantic_top_memories`)
 - `memory/memory_storage.py` - Storage operations
 - `memory/memory_scorer.py` - Scoring and ranking
-- `memory/shutdown_processor.py` - Session-end summaries, facts, reflections
+- `memory/shutdown_processor.py` - Session-end summaries, facts, procedural skills, reflections
+- `memory/procedural_skill.py` - ProceduralSkill dataclass + SkillCategory enum
 - `memory/thread_manager.py` - Thread tracking
 - `memory/memory_interface.py` - Protocol contracts
 
@@ -308,6 +309,8 @@ MemoryCoordinator (memory_coordinator.py, ~498 lines)
 - `store_interaction(query, response, tags)` → delegates to `self._storage.store_interaction()`
 - `process_shutdown_memory(session_conversations)` → delegates to `self._shutdown.process_shutdown_memory()`
 - `run_shutdown_reflection(session_conversations, session_summaries)` → delegates to `self._shutdown.run_shutdown_reflection()`
+- `store_skill(skill)` → delegates to `self._storage.store_skill()`
+- `get_skills(query, limit)` → delegates to `self._retriever.get_skills()`
 - `detect_or_create_thread(query, is_heavy)` → delegates to `self.thread_manager`
 - `get_thread_context()` → delegates to `self.thread_manager`
 
@@ -378,7 +381,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 ---
 
 ### 2.3.1 memory/shutdown_processor.py **[NEW - EXTRACTED 2026-01-25]**
-**Purpose**: Session-end processing — block summaries, fact extraction, user profile updates, reflections (~533 lines)
+**Purpose**: Session-end processing — block summaries, fact extraction, procedural skill extraction, user profile updates, reflections
 
 **Key Methods**:
 - `async process_shutdown_memory(session_conversations=None)` → Main shutdown pipeline:
@@ -387,8 +390,9 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   2. Create block summaries (consolidator) for every N turns
   3. Store summaries in ChromaDB (summaries collection)
   4. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor)
-  5. Update UserProfile with extracted facts
-  6. Log statistics
+  5. Extract procedural skills via LLM (0-3 per session)
+  6. Update UserProfile with extracted facts
+  7. Log statistics
   ```
 
 - `async run_shutdown_reflection(session_conversations=None, session_summaries=None)` → End-of-session LLM reflection:
@@ -408,7 +412,13 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 - `SHUTDOWN_SUMMARY_BLOCK_SIZE` — Conversations per summary block (default: 10)
 - `SHUTDOWN_FACT_EXTRACTION` — Enable fact extraction (default: True)
 
-**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager
+**Additional Methods**:
+- `async _extract_procedural_skills(session_conversations)` → LLM-based pattern extraction:
+  - Identifies generalizable WHEN/THEN problem-solving patterns
+  - Categories: debugging, workflow, prompt_engineering, interpersonal, architectural, optimization, testing
+  - Stores via MemoryStorage.store_skill() with semantic deduplication
+
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill
 
 ---
 
@@ -432,6 +442,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 - `async _get_semantic_memories(query, limit)` → Semantic search via ChromaDB
 - `async _fallback_semantic_search(query, limit)` → Fallback when primary fails
 - `async _combine_memories(recent, semantic)` → Merge and deduplicate results
+- `async get_skills(query, limit)` → Hybrid retrieval (1/3 recent + 2/3 semantic) from procedural_skills collection
 - `async _gate_memories(query, memories, threshold)` → Apply gating filter
 - `_get_memory_key(memory)` → Generate unique key for deduplication
 - `_parse_result(item, source)` → Parse ChromaDB result to standard format
@@ -459,6 +470,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 - `async add_reflection(text, tags, source, timestamp)` → Store reflection memory
 - `async extract_and_store_facts(query, response, truth_score)` → Fact extraction and storage
 - `async consolidate_and_store_summary()` → Generate and store conversation summary
+- `async store_skill(skill)` → Store ProceduralSkill with semantic deduplication (SKILL_DEDUP_THRESHOLD=0.85)
 
 **Helper Methods**:
 - `_calculate_truth_score(query, response)` → Calculate truth score via scorer or fallback
@@ -725,9 +737,9 @@ career: current_role=Senior Engineer [2025-08-01T09:00:00]; programming_language
 ---
 
 ### 2.5 memory/storage/multi_collection_chroma_store.py (Vector Store)
-**Purpose**: Semantic search across 8 ChromaDB collections
+**Purpose**: Semantic search across 9 ChromaDB collections
 
-**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural
+**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills
 
 **Key Methods**:
 - `add_memory(text, metadata, collection)` → Embed and store
@@ -802,6 +814,7 @@ Priority order (with weights):
 - personal_notes: 6             # Obsidian notes
 - reference_docs: 5             # User uploaded docs
 - git_commits: 5               # Git commit history (procedural)
+- procedural_skills: 5         # Reusable problem-solving patterns
 - memories: 5
 - semantic_facts/fresh_facts: 4
 - summaries: 3
@@ -826,7 +839,8 @@ Priority order (with weights):
   "semantic_reflections": [...],  # Separated for distinct headers
   "dreams": [...],
   "semantic_chunks": [...],
-  "wiki": [...]
+  "wiki": [...],
+  "procedural_skills": [...],   # Adaptive workflows (WHEN/THEN patterns)
 }
 ```
 
@@ -2960,6 +2974,7 @@ daemon/
 │   ├── memory_storage.py          # Storage/persistence operations [NEW - REFACTORED]
 │   ├── thread_manager.py          # Thread tracking [NEW - REFACTORED]
 │   ├── memory_interface.py        # Protocol contracts [NEW - REFACTORED]
+│   ├── procedural_skill.py        # ProceduralSkill dataclass + SkillCategory enum [NEW 2026-01-27]
 │   ├── corpus_manager.py          # JSON persistence
 │   ├── memory_consolidator.py     # Summarization
 │   ├── fact_extractor.py          # Pattern-based extraction
@@ -3330,14 +3345,14 @@ python main.py inspect-summaries
 | response_parser.py | Parse: extract thinking blocks, strip reflections/XML/prompt artifacts [NEW 2026-01-23] |
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
 | memory_coordinator.py | Hub: thin orchestrator (~498 lines) delegating to modular components [REFACTORED] |
-| shutdown_processor.py | Shutdown: block summaries + fact extraction + reflections + user profile [NEW - EXTRACTED] |
+| shutdown_processor.py | Shutdown: block summaries + fact extraction + procedural skills + reflections + user profile [NEW - EXTRACTED] |
 | memory_scorer.py | Scoring: calculate truth/importance, rank by composite score with temporal decay [NEW - REFACTORED] |
 | memory_retriever.py | Retrieval: get_memories pipeline with gating and ranking [NEW - REFACTORED] |
 | memory_storage.py | Storage: store_interaction and fact extraction [NEW - REFACTORED] |
 | thread_manager.py | Threads: conversation continuity tracking [NEW - REFACTORED] |
 | memory_interface.py | Protocols: type contracts for memory components [NEW - REFACTORED] |
 | corpus_manager.py | JSON CRUD: load/save/query short-term memories |
-| multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 5 types |
+| multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 9 collections |
 | gate_system.py | Filter: FAISS → cosine → cross-encoder → top K |
 | prompt/builder.py | Assemble: system + separated context sections + STM within 15K tokens |
 | response_generator.py | Stream: async LLM + Best-of-N + Duel modes (buffer fix + DeepSeek EOS) [FIXED] |
@@ -3364,6 +3379,7 @@ python main.py inspect-summaries
 | tag_generator.py | Tags: LLM-based tag extraction for Obsidian notes (100+ vocabulary, 6 categories) [NEW 2026-01-22] |
 | git_memory.py | Extract: Git commit history with metadata + conventional commit tagging [NEW 2026-01-27] |
 | git_memory_loader.py | Load: Backfill/incremental sync of git commits to PROCEDURAL ChromaDB [NEW 2026-01-27] |
+| procedural_skill.py | Data: ProceduralSkill dataclass + SkillCategory enum for adaptive workflows [NEW 2026-01-27] |
 
 ---
 
