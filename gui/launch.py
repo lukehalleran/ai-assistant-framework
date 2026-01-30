@@ -214,14 +214,14 @@ def _find_free_port(preferred: int = 7860) -> int:
         s.bind(("", 0))
         return s.getsockname()[1]
 
-def _run_daily_notes_catchup(model_manager=None):
+def _run_daily_notes_catchup():
     """
     Run daily notes catch-up in background thread.
     Generates yesterday's note if missing, plus today's if there are conversations.
     Non-blocking - errors are logged but don't affect GUI startup.
 
-    Args:
-        model_manager: Optional ModelManager instance to use (avoids API key issues)
+    Note: Creates its own ModelManager to avoid sharing httpx clients across event loops,
+    which causes 'Event loop is closed' errors.
     """
     import threading
     import asyncio
@@ -235,8 +235,9 @@ def _run_daily_notes_catchup(model_manager=None):
             from utils.daily_notes_generator import DailyNotesGenerator
             from datetime import date, timedelta
 
-            # Use provided model_manager to ensure API key is available
-            generator = DailyNotesGenerator(model_manager=model_manager)
+            # Create a fresh generator for this thread - don't share model_manager
+            # across event loops (httpx.AsyncClient is not thread-safe)
+            generator = DailyNotesGenerator()
 
             # Create new event loop for this thread
             loop = asyncio.new_event_loop()
@@ -264,14 +265,14 @@ def _run_daily_notes_catchup(model_manager=None):
     print("[DailyNotes] Started background catch-up check...")
 
 
-def _run_weekly_notes_catchup(model_manager=None):
+def _run_weekly_notes_catchup():
     """
     Run weekly notes catch-up in background thread.
     Generates last week's summary if the week is complete (today is Monday+).
     Non-blocking - errors are logged but don't affect GUI startup.
 
-    Args:
-        model_manager: Optional ModelManager instance to use (avoids API key issues)
+    Note: Creates its own ModelManager to avoid sharing httpx clients across event loops,
+    which causes 'Event loop is closed' errors.
     """
     import threading
     import asyncio
@@ -284,8 +285,9 @@ def _run_weekly_notes_catchup(model_manager=None):
 
             from utils.weekly_notes_generator import WeeklyNotesGenerator
 
-            # Use provided model_manager to ensure API key is available
-            generator = WeeklyNotesGenerator(model_manager=model_manager)
+            # Create a fresh generator for this thread - don't share model_manager
+            # across event loops (httpx.AsyncClient is not thread-safe)
+            generator = WeeklyNotesGenerator()
 
             # Create new event loop for this thread
             loop = asyncio.new_event_loop()
@@ -513,12 +515,12 @@ def launch_gui(orchestrator, force_wizard=False):
         print("[DEBUG] Launching normal chat UI...")
 
     # ------- Daily notes catch-up (run in background) -------
-    # Pass model_manager to ensure API key is available in background thread
-    _run_daily_notes_catchup(model_manager=orchestrator.model_manager)
+    # Creates its own model_manager to avoid sharing httpx clients across event loops
+    _run_daily_notes_catchup()
 
     # ------- Weekly notes catch-up (run in background) -------
     # Generates last week's summary if week is complete (today is Monday+)
-    _run_weekly_notes_catchup(model_manager=orchestrator.model_manager)
+    _run_weekly_notes_catchup()
 
     # ------- Normal chat UI (non-first-run) -------
     def get_summary_status():

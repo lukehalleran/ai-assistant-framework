@@ -39,7 +39,8 @@ class ResponseGenerator:
         prompt: str,
         model_name: str,
         system_prompt: str = None,
-        max_tokens: int = None
+        max_tokens: int = None,
+        images: list = None
     ) -> AsyncGenerator[str, None]:
         """
         Generate response with streaming support
@@ -49,6 +50,8 @@ class ResponseGenerator:
             model_name: Model to use for generation
             system_prompt: System prompt (optional)
             max_tokens: Maximum tokens for response (optional, uses model default if None)
+            images: Optional list of image dicts for multimodal models
+                    Each dict should have 'data' (base64), 'media_type', 'filename'
         """
         self.logger.debug(f"[GENERATE] Starting async generation with model: {model_name}")
         start_time = time.time()
@@ -83,6 +86,14 @@ class ResponseGenerator:
             }
             if max_tokens is not None:
                 gen_kwargs["max_tokens"] = max_tokens
+
+            # Include images for multimodal models
+            if images:
+                gen_kwargs["images"] = images
+                total_img_size = sum(len(img.get("data", "")) for img in images)
+                self.logger.warning(f"[STREAMING] Including {len(images)} images for multimodal generation, total base64={total_img_size//1024}KB")
+            else:
+                self.logger.warning(f"[STREAMING] No images provided to generate_streaming_response (images={images})")
 
             # Always include the system message; "raw" only controls upstream prompt building
             self.logger.info(f"[STREAMING] >>> Calling generate_async...")

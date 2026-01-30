@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-27
+**Last Updated**: 2026-01-30
 
 ---
 
@@ -1655,36 +1655,67 @@ WebSearchDecision(
 
 ---
 
-### 2.12.3 knowledge/obsidian_manager.py (Personal Notes Integration) **[NEW 2026-01]**
-**Purpose**: Parse, embed, and retrieve user's personal notes from Obsidian vault
+### 2.12.3 knowledge/obsidian_manager.py (Personal Notes Integration) **[ENHANCED 2026-01-30]**
+**Purpose**: Parse, embed, and retrieve user's personal notes from Obsidian vault with multimodal image support
 
 **Data Classes**:
 - `EmbedResult`: Statistics from vault embedding (total_files, embedded_files, chunks, errors, duration)
 
 **Key Methods**:
 - `embed_vault(force_reindex)` → `EmbedResult`: Index vault to ChromaDB
-- `get_notes(query, limit)` → `List[Dict]`: Hybrid retrieval (1/3 keyword + 2/3 semantic)
-- `_keyword_search(query, limit)` → `List[Dict]`: Title/tag/content keyword matching
+- `get_notes(query, limit, include_images, max_images_per_note)` → `List[Dict]`: Hybrid retrieval (1/3 keyword + 2/3 semantic)
+- `_keyword_search(query, limit)` → `List[Dict]`: Title/tag/content/file_path keyword matching **[ENHANCED 2026-01-30]**
 - `get_vault_stats()` → `Dict`: Index statistics
 - `clear_index()` → `bool`: Clear ChromaDB collection
+
+**Image Support (Multimodal Models)** **[NEW 2026-01-30]**:
+- `_extract_images(content)` → `List[str]`: Extract `![[image.png]]` references from content
+- `_resolve_image_path(image_name, note_path)` → `Optional[Path]`: Find image in vault (checks: same folder, parent, attachments folders, vault root, global search)
+- `_load_image_as_base64(image_path)` → `Optional[Dict]`: Load image as base64 with media_type (PNG, JPG, GIF, WebP, max 10MB)
+- `load_images_for_chunk(image_names, note_path, max_images, max_total_mb)` → `List[Dict]`: Load multiple images with size limits
+
+**Image Loading Flow**:
+```
+get_notes(include_images=True)
+    → metadata['images'] contains comma-separated image names
+    → load_images_for_chunk() resolves and loads each image
+    → note['image_data'] = [{data: base64, media_type, filename, size_bytes}, ...]
+    → GUI handler extracts and passes to generate_streaming_response(images=...)
+```
 
 **Smart Chunking**:
 ```
 Note < 1500 chars → Embed whole note
 Note >= 1500 chars → Split by ## headers
+Each chunk stores: images specific to that chunk (not whole-note)
 ```
 
 **Metadata Extraction**:
 - `#tags` - Preserved as comma-separated metadata
 - `[[wiki links]]` - Extracted as related_notes references
+- `![[images]]` - Extracted per-chunk as comma-separated metadata **[NEW 2026-01-30]**
 - YAML frontmatter - Stripped from content
+- Inline tags - Stripped from content for cleaner embedding
 
-**Hybrid Retrieval**:
+**Hybrid Retrieval** **[ENHANCED 2026-01-30]**:
 ```
-Query → _keyword_search() → 1/3 results (title/tag match priority)
+Query → _keyword_search() → 1/3 results
+            ↓ Scoring includes: title + file_path components
+            ↓ e.g., "ISYE 6501 week 2" matches path "Vault/OMSA/Courses/ISYE 6501/Week 2/"
       → ChromaDB semantic → 2/3 results (vector similarity)
       → Deduplicate by title → Combined results
 ```
+
+**Keyword Search Scoring** (in order of priority):
+1. Exact phrase in title: 1.0
+2. Title starts with query: 0.95
+3. All query words in title: 0.9
+4. All query words in title + file_path: 0.88 **[NEW 2026-01-30]**
+5. Exact phrase in section: 0.85
+6. All query words in section: 0.8
+7. Partial title+path match: 0.6-0.85 **[NEW 2026-01-30]**
+8. Tag match: 0.5
+9. Content keyword match: 0.2-0.45
 
 **Configuration** (`config/app_config.py`):
 ```python
@@ -1692,6 +1723,10 @@ OBSIDIAN_ENABLED = True
 OBSIDIAN_VAULT_PATH = "~/Documents/Luke Notes"
 OBSIDIAN_CHUNK_THRESHOLD = 1500
 OBSIDIAN_MAX_NOTES_PROMPT = 5
+# Image support [NEW 2026-01-30]
+OBSIDIAN_INCLUDE_IMAGES = True        # Enable image loading for multimodal models
+OBSIDIAN_MAX_IMAGES_PER_NOTE = 3      # Max images per note chunk
+MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gpt-4-vision", "gemini-pro", ...]
 ```
 
 **CLI Commands** (`main.py`):
@@ -1706,10 +1741,12 @@ OBSIDIAN_MAX_NOTES_PROMPT = 5
 - Shows status message: new notes synced, skipped count, or error
 
 **Integration**:
-- ContextGatherer retrieves via `get_personal_notes()` method
+- ContextGatherer retrieves via `get_personal_notes(include_images=True)` for multimodal models
 - Builder adds `[USER'S PERSONAL NOTES]` section after dreams, before time context
+- Builder collects `note_images` list and adds to context for multimodal API calls **[NEW 2026-01-30]**
 - TokenManager includes `personal_notes` at priority 6 (high)
 - Notes filtered through 3-stage gate system (Cosine → Blended → CrossEncoder)
+- GUI handler (`handlers.py`) extracts `note_images` from context and passes to `generate_streaming_response(images=...)` **[NEW 2026-01-30]**
 
 ---
 

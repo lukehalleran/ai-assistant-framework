@@ -605,7 +605,7 @@ score = (
 [SUMMARIES]                    # Consolidated conversation blocks
 [REFLECTIONS]                  # Session reflections
 [DREAMS]                       # Dream memories (if enabled)
-[USER'S PERSONAL NOTES]        # Obsidian vault notes (hybrid retrieval)
+[USER'S PERSONAL NOTES]        # Obsidian vault notes (hybrid retrieval) + images for multimodal [ENHANCED 2026-01-30]
 [DAEMON DOCUMENTATION]         # Self-knowledge: architecture docs, PROJECT_SKELETON
 [PROJECT COMMIT HISTORY]       # Git commit history (procedural memory)
 [ADAPTIVE WORKFLOWS]           # Reusable problem-solving patterns (WHEN/THEN)
@@ -649,6 +649,12 @@ python main.py embed-vault                   # Index vault to ChromaDB
 python main.py embed-vault --force           # Force full re-index
 python main.py vault-stats                   # Show indexed chunk count
 python main.py clear-vault                   # Clear obsidian_notes collection
+
+# Obsidian Image Support (multimodal models) [NEW 2026-01-30]
+# Images (![[image.png]]) in notes are automatically loaded for multimodal models
+# Config: OBSIDIAN_INCLUDE_IMAGES=True, OBSIDIAN_MAX_IMAGES_PER_NOTE=3
+# Supported: PNG, JPG, GIF, WebP (max 10MB per image, 10MB total per note)
+# Image resolution: same folder → parent → attachments → vault root → global search
 
 # Git Memory (procedural knowledge from commit history) [NEW 2026-01-27]
 python main.py git-backfill [LIMIT]          # Initial load (default: 200 commits)
