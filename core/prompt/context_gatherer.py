@@ -421,30 +421,62 @@ class ContextGatherer:
             logger.warning(f"Error getting facts: {e}")
             return []
 
-    async def get_personal_notes(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    async def get_personal_notes(
+        self,
+        query: str,
+        limit: int = 10,
+        include_images: bool = False,
+        max_images_per_note: int = 3
+    ) -> List[Dict[str, Any]]:
         """
         Get relevant personal notes from Obsidian vault.
 
         Args:
             query: Search query for semantic retrieval
             limit: Maximum notes to return
+            include_images: If True, load actual image data for multimodal models
+            max_images_per_note: Maximum images to load per note chunk
 
         Returns:
-            List of note dicts with content, metadata, and relevance_score
+            List of note dicts with content, metadata, relevance_score,
+            and optionally 'image_data' containing base64-encoded images
         """
         manager = self.obsidian_manager
         if not manager:
             return []
 
         try:
-            # Retrieve notes via semantic search
-            notes = await manager.get_notes(query, limit=limit)
+            # Clean query: remove self-referential phrases that pollute search
+            import re
+            clean_query = re.sub(
+                r'\b(from|in|check|look at|search|find in)?\s*(my|the)?\s*(notes?|vault|obsidian)\b',
+                '', query, flags=re.IGNORECASE
+            )
+            # Clean up extra whitespace
+            clean_query = ' '.join(clean_query.split()).strip()
+            # Fall back to original if cleaning removed everything
+            search_query = clean_query if clean_query else query
+            logger.debug(f"[ContextGatherer] Personal notes query: '{query}' -> '{search_query}'")
+
+            # Retrieve notes via semantic search (with optional image loading)
+            logger.warning(f"[ContextGatherer] IMAGE DEBUG: Calling get_notes with include_images={include_images}")
+            notes = await manager.get_notes(
+                search_query,
+                limit=limit,
+                include_images=include_images,
+                max_images_per_note=max_images_per_note
+            )
+            # Debug: check what we got back
+            if notes:
+                total_images = sum(len(n.get('image_data', [])) for n in notes)
+                logger.warning(f"[ContextGatherer] IMAGE DEBUG: Got {len(notes)} notes with {total_images} total images")
 
             # Track note IDs for citations
             if notes:
                 for idx, note in enumerate(notes[:limit], start=1):
                     note_id = f"NOTE_{idx}"
                     meta = note.get('metadata', {})
+                    image_data = note.get('image_data', [])
                     self.memory_id_map[note_id] = {
                         'type': 'personal_note',
                         'timestamp': meta.get('timestamp', ''),
@@ -452,10 +484,13 @@ class ContextGatherer:
                         'relevance_score': note.get('relevance_score', 0.0),
                         'title': meta.get('title', ''),
                         'file_path': meta.get('file_path', ''),
+                        'has_images': len(image_data) > 0,
+                        'image_count': len(image_data),
                         'db_id': note.get('id', None),
                     }
 
-                logger.debug(f"[ContextGatherer] Retrieved {len(notes)} personal notes for query")
+                image_count = sum(len(n.get('image_data', [])) for n in notes)
+                logger.debug(f"[ContextGatherer] Retrieved {len(notes)} personal notes with {image_count} images")
 
             return notes or []
 

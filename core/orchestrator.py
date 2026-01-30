@@ -1021,6 +1021,12 @@ The user is processing/analyzing, open to engagement.
         if self.logger:
             duration = time.perf_counter() - _t_start
             self.logger.info(f"[BUILD_FULL_PROMPT] Completed in {duration:.2f}s")
+            # Debug: Check if note_images was added to prompt_ctx by _assemble_prompt
+            _note_imgs = prompt_ctx.get("note_images", []) if prompt_ctx else []
+            if _note_imgs:
+                self.logger.warning(f"[BUILD_FULL_PROMPT] note_images in prompt_ctx: {len(_note_imgs)} images")
+            else:
+                self.logger.warning(f"[BUILD_FULL_PROMPT] NO note_images in prompt_ctx! Keys: {list(prompt_ctx.keys()) if prompt_ctx else 'None'}")
 
         if return_raw_context:
             return prompt, system_prompt, prompt_ctx
@@ -1245,6 +1251,14 @@ The user is processing/analyzing, open to engagement.
                     if self.logger:
                         self.logger.debug(f"[Orchestrator] Deictic pre-retrieval failed or skipped: {e}")
 
+            # --- Determine Model Name FIRST (needed for multimodal image loading) ---
+            active_name_getter = getattr(self.model_manager, "get_active_model_name", None)
+            model_name = active_name_getter() if callable(active_name_getter) else None
+            model_name = model_name or "gpt-4-turbo"
+
+            if self.logger:
+                self.logger.info(f"[Orchestrator] Target model for response: {model_name}")
+
             # --- Build Prompt (NEW: via ContextPipeline) ---
             context = await self.build_context(
                 user_input=user_input,
@@ -1252,15 +1266,27 @@ The user is processing/analyzing, open to engagement.
                 use_raw_mode=use_raw_mode,
                 personality=personality,
             )
-            prompt, system_prompt = await self.build_full_prompt(
+            prompt, system_prompt, prompt_ctx = await self.build_full_prompt(
                 context=context,
                 use_raw_mode=use_raw_mode,
+                return_raw_context=True,  # Get prompt context for images
             )
+
+            # Extract images for multimodal models
+            note_images = prompt_ctx.get("note_images", []) if prompt_ctx else []
+            if self.logger:
+                if note_images:
+                    total_size = sum(len(img.get("data", "")) for img in note_images)
+                    self.logger.warning(f"[Orchestrator] IMAGE DEBUG: {len(note_images)} images extracted from prompt_ctx, total base64={total_size//1024}KB")
+                else:
+                    self.logger.warning(f"[Orchestrator] IMAGE DEBUG: No images in prompt_ctx. Keys={list(prompt_ctx.keys()) if prompt_ctx else 'None'}")
+
             debug_info["context_pipeline"] = {
                 "tone_level": context.tone_level.value,
                 "topics": context.topics[:3] if context.topics else [],
                 "has_stm": context.has_stm,
                 "has_thread": context.has_thread,
+                "note_images_count": len(note_images),
             }
 
             # Extract values needed for token limit logic
@@ -1268,9 +1294,7 @@ The user is processing/analyzing, open to engagement.
             tone_level = context.tone_level
 
             # --- Generate Response ---
-            active_name_getter = getattr(self.model_manager, "get_active_model_name", None)
-            model_name = active_name_getter() if callable(active_name_getter) else None
-            model_name = model_name or "gpt-4-turbo"
+            # (model_name already determined earlier for image loading)
 
             # --- Agentic Search Check ---
             # If agentic search is requested and available, check if we should use it
@@ -1406,7 +1430,11 @@ The user is processing/analyzing, open to engagement.
                 # Standard streaming path
                 full_response = ""
                 async for chunk in self.response_generator.generate_streaming_response(
-                    prompt, model_name, system_prompt=system_prompt, max_tokens=response_max_tokens
+                    prompt,
+                    model_name,
+                    system_prompt=system_prompt,
+                    max_tokens=response_max_tokens,
+                    images=note_images if note_images else None  # Pass images for multimodal models
                 ):
                     full_response += (chunk + " ")
                 full_response = full_response.strip()

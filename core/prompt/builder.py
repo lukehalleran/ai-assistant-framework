@@ -115,6 +115,26 @@ REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
 REFLECTIONS_SESSION_FILTER = _parse_bool(os.getenv("REFLECTIONS_SESSION_FILTER", "0"))
 REFLECTIONS_TOPUP = _parse_bool(os.getenv("REFLECTIONS_TOPUP", "1"))
 
+# Obsidian image loading for multimodal models
+try:
+    from config.app_config import (
+        OBSIDIAN_INCLUDE_IMAGES,
+        OBSIDIAN_MAX_IMAGES_PER_NOTE,
+        MULTIMODAL_MODELS,
+    )
+except ImportError:
+    OBSIDIAN_INCLUDE_IMAGES = True
+    OBSIDIAN_MAX_IMAGES_PER_NOTE = 3
+    MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gemini"]
+
+
+def _is_multimodal_model(model_id: str) -> bool:
+    """Check if a model ID corresponds to a multimodal-capable model."""
+    if not model_id:
+        return False
+    model_lower = model_id.lower()
+    return any(pattern.lower() in model_lower for pattern in MULTIMODAL_MODELS)
+
 # Priority order for token budget management
 PRIORITY_ORDER = [
     ("recent_conversations", 7),
@@ -329,8 +349,18 @@ class UnifiedPromptBuilder:
             )
 
             # Personal notes from Obsidian vault
+            # Check if model is multimodal to decide whether to load images
+            current_model = getattr(self.model_manager, 'active_model_name', '') if self.model_manager else ''
+            include_note_images = OBSIDIAN_INCLUDE_IMAGES and _is_multimodal_model(current_model)
+            logger.warning(f"[PromptBuilder] IMAGE DEBUG: model={current_model}, OBSIDIAN_INCLUDE_IMAGES={OBSIDIAN_INCLUDE_IMAGES}, is_multimodal={_is_multimodal_model(current_model)}, include_note_images={include_note_images}")
+
             tasks["personal_notes"] = asyncio.create_task(
-                _timed_task("personal_notes", self.context_gatherer.get_personal_notes(user_input, PROMPT_MAX_PERSONAL_NOTES))
+                _timed_task("personal_notes", self.context_gatherer.get_personal_notes(
+                    user_input,
+                    PROMPT_MAX_PERSONAL_NOTES,
+                    include_images=include_note_images,
+                    max_images_per_note=OBSIDIAN_MAX_IMAGES_PER_NOTE
+                ))
             )
 
             # Reference documents (user uploaded)
@@ -1548,16 +1578,20 @@ class UnifiedPromptBuilder:
         # Personal Notes from Obsidian vault
         personal_notes = context.get("personal_notes", []) or []
         pn_lines: list[str] = []
+        note_images: list[dict] = []  # Collect images for multimodal models
+
         for i, note in enumerate(personal_notes, start=1):
             if isinstance(note, dict):
                 title = note.get("metadata", {}).get("title", "")
                 section = note.get("metadata", {}).get("section", "")
                 tags = note.get("metadata", {}).get("tags", "")
                 content = note.get("content", "")
+                image_data = note.get("image_data", [])  # Base64 encoded images
                 # Sanitize content to prevent embedded headers
                 content = _sanitize_embedded_headers(content) if content else ""
             else:
                 title, section, tags, content = "", "", "", str(note)
+                image_data = []
 
             if content:
                 # Build header: **Title** (Section) #tag1 #tag2
@@ -1571,11 +1605,36 @@ class UnifiedPromptBuilder:
                     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
                     if tag_list:
                         header_parts.append(" ".join(f"#{t}" for t in tag_list))
+
+                # Add image indicator if images are present
+                if image_data:
+                    header_parts.append(f"[{len(image_data)} image(s) attached]")
+                    # Collect images with context about which note they belong to
+                    for img in image_data:
+                        note_images.append({
+                            "note_index": i,
+                            "note_title": title,
+                            "note_section": section,
+                            "filename": img.get("filename", ""),
+                            "media_type": img.get("media_type", ""),
+                            "data": img.get("data", ""),
+                        })
+
                 header = " ".join(header_parts) if header_parts else ""
                 pn_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
 
         if pn_lines:
             sections.append(f"[USER'S PERSONAL NOTES] n={len(pn_lines)}\n" + "\n\n".join(pn_lines))
+
+        # Store images in context for multimodal API calls
+        if note_images:
+            context["note_images"] = note_images
+            total_data_size = sum(len(img.get("data", "")) for img in note_images)
+            logger.warning(f"[PromptBuilder] IMAGE DEBUG: {len(note_images)} images collected, total base64 size={total_data_size//1024}KB")
+        else:
+            # Check why no images
+            total_image_data = sum(len(note.get("image_data", [])) for note in personal_notes if isinstance(note, dict))
+            logger.warning(f"[PromptBuilder] IMAGE DEBUG: No images in note_images list. personal_notes has {len(personal_notes)} notes, total image_data entries={total_image_data}")
 
         # Reference Documents (user uploaded technical docs, project outlines, etc.)
         reference_docs = context.get("reference_docs", []) or []

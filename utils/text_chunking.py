@@ -39,7 +39,8 @@ def chunk_by_headers(
         }]
 
     # Split by ## headers (keep the header with the content)
-    sections = re.split(r'\n(##+ .+)\n', content)
+    # Use \n+ to allow blank lines before headers (common in markdown)
+    sections = re.split(r'\n+(##+ .+)\n', content)
     chunks = []
     current_section = title
     current_text = []

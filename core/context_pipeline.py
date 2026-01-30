@@ -292,12 +292,17 @@ class ContextPipeline:
 
         # Stage 6: STM Analysis (if enabled and conversation is deep enough)
         if not use_raw_mode and self._should_run_stm():
-            stm_summary = await self._analyze_stm(
-                user_input,
-                conversation_history
-            )
-            if stm_summary:
-                logger.debug(f"Stage 6 (STM): analysis complete")
+            try:
+                async with asyncio.timeout(10.0):  # 10s timeout for STM
+                    stm_summary = await self._analyze_stm(
+                        user_input,
+                        conversation_history
+                    )
+                if stm_summary:
+                    logger.debug(f"Stage 6 (STM): analysis complete")
+            except asyncio.TimeoutError:
+                logger.warning("Stage 6 (STM): analysis timed out")
+                stm_summary = None
 
         # Stage 7: Identity Injection
         identity_block, user_name = self._get_identity_context()
