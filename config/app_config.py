@@ -391,6 +391,21 @@ OBSIDIAN_MAX_NOTES_PROMPT: int = int(OBSIDIAN_CFG.get("max_notes_prompt", 5))
 OBSIDIAN_ENABLED = bool(int(os.getenv("OBSIDIAN_ENABLED", "1" if OBSIDIAN_ENABLED else "0")))
 OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH", OBSIDIAN_VAULT_PATH)
 
+# Image loading for multimodal models
+# When enabled, actual image data from notes will be loaded for multimodal-capable models
+OBSIDIAN_INCLUDE_IMAGES: bool = bool(OBSIDIAN_CFG.get("include_images", True))
+# Maximum images to load per note chunk
+OBSIDIAN_MAX_IMAGES_PER_NOTE: int = int(OBSIDIAN_CFG.get("max_images_per_note", 3))
+# Maximum total image data size in MB
+OBSIDIAN_MAX_IMAGE_SIZE_MB: float = float(OBSIDIAN_CFG.get("max_image_size_mb", 10.0))
+
+# Known multimodal models that can process images
+# Format: partial model name/id patterns (case-insensitive matching)
+MULTIMODAL_MODELS: list = OBSIDIAN_CFG.get("multimodal_models", [
+    "opus-4", "claude-3", "sonnet-4", "gpt-4o", "gpt-4-vision", "gpt-4-turbo",
+    "gemini-pro", "gemini-1.5", "gemini-2", "llava", "qwen-vl", "pixtral"
+])
+
 # --------------------------------------------------------------------
 # Reference Documents Configuration
 # --------------------------------------------------------------------

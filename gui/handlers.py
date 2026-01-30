@@ -12,7 +12,8 @@ Module Contract
   - AGENTIC: If agentic_search.enabled and query triggers search OR computation, route through AgenticSearchController
     - Computational keyword detection triggers agentic mode with skip_initial_search=True [NEW 2026-01-22]
     - Keywords: calculate, compute, solve, fibonacci, integral, derivative, numpy, pandas, etc.
-  - ENHANCED: orchestrator.prepare_prompt → response_generator.generate_streaming_response → store interaction
+  - ENHANCED: orchestrator.prepare_prompt → extract note_images → response_generator.generate_streaming_response(images=...) → store interaction
+  - IMAGE SUPPORT [NEW 2026-01-30]: Extracts note_images from raw_context and passes to streaming for multimodal models
 - Side effects:
   - Writes to conversation logger; stores to memory_system; updates debug_state for Debug Trace tab.
 """
@@ -201,21 +202,23 @@ async def handle_submit(
     agentic_enabled = bool(agentic_cfg.get('enabled', False))
 
     # ENHANCED MODE: build prompt first via orchestrator.prepare_prompt (do NOT pass personality here)
-    # Request raw context if agentic search is enabled (for passing RAG context to agentic controller)
+    # Always request raw context (needed for images in multimodal models and agentic search)
     logger.info("[Handle Submit] >>> Starting prepare_prompt...")
     prep_result = await orchestrator.prepare_prompt(
         user_input=user_text,
         files=files,
         use_raw_mode=False,  # enhanced mode
-        return_context=agentic_enabled  # Get raw context for agentic search
+        return_context=True  # Always get raw context for images and agentic search
     )
 
-    # Unpack result based on whether context was requested
-    if agentic_enabled:
-        full_prompt, system_prompt, raw_context = prep_result
-    else:
-        full_prompt, system_prompt = prep_result
-        raw_context = {}
+    # Unpack result - always expect 3 values now
+    full_prompt, system_prompt, raw_context = prep_result
+    raw_context = raw_context or {}
+
+    # Extract images for multimodal models
+    note_images = raw_context.get("note_images", [])
+    if note_images:
+        logger.warning(f"[Handle Submit] Extracted {len(note_images)} images from raw_context for multimodal generation")
 
     logger.info(f"[Handle Submit] <<< prepare_prompt done, prompt_len={len(full_prompt)}")
 
@@ -707,7 +710,8 @@ async def handle_submit(
                 async for chunk in orchestrator.response_generator.generate_streaming_response(
                     prompt=full_prompt,
                     model_name=model_name,
-                    system_prompt=system_prompt
+                    system_prompt=system_prompt,
+                    images=note_images if note_images else None  # Pass images for multimodal models
                 ):
                     final_output = smart_join(final_output, chunk)
                     # Parse in real-time to separate thinking from answer
@@ -807,7 +811,8 @@ async def handle_submit(
             async for chunk in orchestrator.response_generator.generate_streaming_response(
                 prompt=full_prompt,
                 model_name=model_name,
-                system_prompt=system_prompt
+                system_prompt=system_prompt,
+                images=note_images if note_images else None  # Pass images for multimodal models
             ):
                 chunk_count += 1
                 if chunk_count <= 3 or chunk_count % 20 == 0:

@@ -813,13 +813,56 @@ class ModelManager:
         logger.error(f"[generate_once_with_tools] Model '{target_model}' not recognized")
         raise ValueError(f"Model '{target_model}' is not recognized")
 
+    def _format_user_content_with_images(self, text: str, images: list) -> list:
+        """
+        Format user content with images for multimodal API calls.
+
+        Args:
+            text: The text prompt
+            images: List of image dicts with 'data' (base64), 'media_type', and 'filename'
+
+        Returns:
+            List of content blocks suitable for OpenAI/Anthropic multimodal APIs
+        """
+        content = [{"type": "text", "text": text}]
+
+        for img in images:
+            if not img.get("data") or not img.get("media_type"):
+                continue
+
+            # Format for OpenAI/Anthropic vision API
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{img['media_type']};base64,{img['data']}",
+                    "detail": "auto"  # Let API decide resolution
+                }
+            })
+
+        logger.debug(f"[ModelManager] Formatted {len(images)} images for multimodal call")
+        return content
+
     @log_and_time("ModelManager Generate Async")
-    async def generate_async(self, prompt, raw=False, **kwargs):
-        """Async wrapper for generation using the active model"""
+    async def generate_async(self, prompt, raw=False, images=None, **kwargs):
+        """
+        Async wrapper for generation using the active model.
+
+        Args:
+            prompt: Text prompt
+            raw: If True, skip system prompt formatting
+            images: Optional list of image dicts for multimodal models
+                    Each dict should have 'data' (base64), 'media_type', 'filename'
+            **kwargs: Additional args (system_prompt, max_tokens, temperature, etc.)
+        """
         target_model = self.active_model_name  # No longer allows override
         logger.debug(f"[generate_async] Active model: {target_model}")
         logger.debug(f"[generate_async] Registered OpenAI models: {self.api_models}")
         logger.debug(f"[generate_async] Registered local models: {self.models}")
+        if images:
+            total_size = sum(len(img.get("data", "")) for img in images)
+            logger.warning(f"[generate_async] {len(images)} images included for multimodal processing, total base64={total_size//1024}KB")
+        else:
+            logger.warning(f"[generate_async] No images parameter received")
 
         if target_model in self.models:
             return await asyncio.to_thread(
@@ -834,20 +877,39 @@ class ModelManager:
 
                 # Build messages based on raw mode and system prompt
                 if raw:
-                    messages = [{"role": "user", "content": prompt}]
+                    # Handle images in raw mode
+                    if images:
+                        user_content = self._format_user_content_with_images(prompt, images)
+                        messages = [{"role": "user", "content": user_content}]
+                    else:
+                        messages = [{"role": "user", "content": prompt}]
                 else:
                     system_prompt_text = kwargs.get('system_prompt')
                     if system_prompt_text is None:
                         system_prompt_text = SYSTEM_PROMPT
 
+                    # Format user content (with images if provided)
+                    if images:
+                        user_content = self._format_user_content_with_images(prompt, images)
+                    else:
+                        user_content = prompt
+
                     # Check if model supports caching and format messages accordingly
                     if self.supports_prompt_caching(target_model):
                         logger.debug(f"Using prompt caching for model: {target_model}")
-                        messages = self._format_messages_with_cache(system_prompt_text, prompt)
+                        # Note: caching with images may need special handling
+                        if images:
+                            # For now, skip caching when images are present
+                            messages = [
+                                {"role": "system", "content": system_prompt_text},
+                                {"role": "user", "content": user_content}
+                            ]
+                        else:
+                            messages = self._format_messages_with_cache(system_prompt_text, prompt)
                     else:
                         messages = [
                             {"role": "system", "content": system_prompt_text},
-                            {"role": "user", "content": prompt}
+                            {"role": "user", "content": user_content}
                         ]
 
                 for i, msg in enumerate(messages):
