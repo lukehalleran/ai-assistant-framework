@@ -23,6 +23,7 @@ Module Contract
     • Chat: chat UI, file upload, raw toggle, personality selector, Sync Notes button
     • Debug Trace: renders debug_state entries
     • Status: shows counters (summaries, corpus counts, logs)
+    • Proposals: browse, filter, and generate code proposals from ChromaDB
     • Settings: slider to control summary cadence (every N exchanges)
   - Health endpoint: Lightweight checks (corpus, ChromaDB, API key) for Docker/K8s
 - Dependencies:
@@ -1217,6 +1218,317 @@ def launch_gui(orchestrator, force_wizard=False):
                     refresh_button = gr.Button("🔄 Refresh Status")
                 refresh_button.click(fn=get_summary_status, outputs=summary_json)
 
+            with gr.TabItem("Proposals"):
+                gr.Markdown("### Code Proposals")
+
+                # Filter controls
+                with gr.Row():
+                    proposal_status_filter = gr.Dropdown(
+                        choices=["all", "pending", "approved", "rejected", "completed", "failed"],
+                        value="all", label="Status"
+                    )
+                    proposal_type_filter = gr.Dropdown(
+                        choices=["all", "feature", "refactor", "bugfix", "test", "docs", "infra"],
+                        value="all", label="Type"
+                    )
+                    refresh_proposals_btn = gr.Button("Refresh")
+
+                # Collapsible proposal cards
+                proposals_view = gr.HTML(value="<p><em>Loading proposals...</em></p>")
+
+                # Proposal ideas generation
+                with gr.Row():
+                    generate_btn = gr.Button("Generate Proposals Now", variant="secondary")
+                    generate_status = gr.Markdown(value="")
+
+                # --- Code Generation ---
+                gr.Markdown("---")
+                gr.Markdown("### Generate Implementation Code")
+                proposals_map = gr.State({})  # title -> proposal_id mapping
+
+                with gr.Row():
+                    codegen_selector = gr.Dropdown(
+                        choices=[], label="Select Proposal", interactive=True
+                    )
+                    codegen_btn = gr.Button("Generate Code", variant="primary")
+
+                codegen_status = gr.Markdown(value="")
+                codegen_output = gr.HTML(value="")
+
+                def _load_proposals(status_f, type_f):
+                    """Load proposals from ChromaDB and render as collapsible HTML cards."""
+                    import json as _json
+                    try:
+                        chroma = getattr(orchestrator, 'memory_system', None)
+                        chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
+                        if not chroma_store:
+                            return (
+                                "<p><em>No chroma store available</em></p>",
+                                gr.update(choices=[]),
+                                {},
+                            )
+                        all_items = chroma_store.list_all("proposals")
+                        if not all_items:
+                            return (
+                                "<p><em>No proposals yet. Click 'Generate Proposals Now' to create some.</em></p>",
+                                gr.update(choices=[]),
+                                {},
+                            )
+
+                        # Collect and filter
+                        proposals = []
+                        for item in all_items:
+                            meta = item.get("metadata") or {}
+                            if not meta.get("proposal_id"):
+                                continue
+                            if status_f and status_f != "all" and meta.get("status") != status_f:
+                                continue
+                            if type_f and type_f != "all" and meta.get("proposal_type") != type_f:
+                                continue
+                            proposals.append(meta)
+
+                        # Sort by priority desc, then created_at desc
+                        proposals.sort(key=lambda m: (-int(m.get("priority", 5)), -float(m.get("created_at", 0))))
+
+                        if not proposals:
+                            return (
+                                "<p><em>No proposals match the current filters.</em></p>",
+                                gr.update(choices=[]),
+                                {},
+                            )
+
+                        # Build dropdown choices and mapping
+                        dropdown_choices = []
+                        title_to_id = {}
+                        for meta in proposals:
+                            title = meta.get("title", "Untitled")
+                            priority = int(meta.get("priority", 5))
+                            ptype = meta.get("proposal_type", "")
+                            label = f"[P{priority}] {title} ({ptype})"
+                            dropdown_choices.append(label)
+                            title_to_id[label] = meta.get("proposal_id", "")
+
+                        # Render collapsible cards
+                        html_parts = []
+                        for i, meta in enumerate(proposals):
+                            title = meta.get("title", "Untitled")
+                            ptype = meta.get("proposal_type", "")
+                            status = meta.get("status", "")
+                            priority = int(meta.get("priority", 5))
+                            complexity = meta.get("estimated_complexity", "medium")
+                            reasoning = meta.get("reasoning", "")
+                            description = meta.get("description", "")
+                            created = float(meta.get("created_at", 0))
+                            from datetime import datetime as _dt
+                            created_str = _dt.fromtimestamp(created).strftime('%Y-%m-%d %H:%M') if created else ""
+
+                            open_attr = " open" if i == 0 else ""
+
+                            body = []
+                            body.append(f'<div style="padding:8px 12px;color:#d1d5db;font-size:0.9em;">')
+                            body.append(f'<b>Type:</b> {ptype} &nbsp; <b>Status:</b> {status} &nbsp; '
+                                        f'<b>Priority:</b> {priority}/10 &nbsp; '
+                                        f'<b>Complexity:</b> {complexity} &nbsp; '
+                                        f'<b>Created:</b> {created_str}')
+
+                            if reasoning:
+                                body.append(f'<p><b>Reasoning:</b> {reasoning}</p>')
+                            if description:
+                                body.append(f'<p><b>Description:</b> {description}</p>')
+
+                            try:
+                                steps = _json.loads(meta.get("steps_json", "[]"))
+                                if steps:
+                                    body.append('<p><b>Implementation Steps:</b></p><ol>')
+                                    for s in steps:
+                                        fp = f' <code>{s.get("file_path")}</code>' if s.get("file_path") else ""
+                                        body.append(f'<li>[{s.get("action", "modify")}]{fp} {s.get("description", "")}</li>')
+                                    body.append('</ol>')
+                            except (ValueError, TypeError):
+                                pass
+
+                            try:
+                                files = _json.loads(meta.get("affected_files_json", "[]"))
+                                if files:
+                                    body.append('<p><b>Affected Files:</b> ' + ", ".join(f'<code>{f}</code>' for f in files) + '</p>')
+                            except (ValueError, TypeError):
+                                pass
+
+                            try:
+                                tags = _json.loads(meta.get("tags_json", "[]"))
+                                if tags:
+                                    body.append('<p><b>Tags:</b> ' + ", ".join(tags) + '</p>')
+                            except (ValueError, TypeError):
+                                pass
+
+                            body.append('</div>')
+                            body_html = "\n".join(body)
+
+                            html_parts.append(
+                                f'<details{open_attr} style="margin-bottom:6px;border:1px solid #374151;'
+                                f'border-radius:6px;background:#1f2937;">'
+                                f'<summary style="padding:10px 14px;cursor:pointer;font-weight:600;'
+                                f'color:#f3f4f6;font-size:1.0em;">'
+                                f'{title} '
+                                f'<span style="font-weight:400;color:#9ca3af;font-size:0.85em;">'
+                                f'({ptype} | P{priority})</span>'
+                                f'</summary>\n{body_html}\n</details>'
+                            )
+
+                        return (
+                            "\n".join(html_parts),
+                            gr.update(choices=dropdown_choices, value=dropdown_choices[0] if dropdown_choices else None),
+                            title_to_id,
+                        )
+                    except Exception as e:
+                        return (
+                            f"<p><em>Error loading proposals: {e}</em></p>",
+                            gr.update(choices=[]),
+                            {},
+                        )
+
+                async def _generate_proposals_now():
+                    """On-demand proposal generation."""
+                    try:
+                        from knowledge.proposal_generator import GoalDirectedGenerator
+                        from memory.proposal_store import ProposalStore
+                        mm = getattr(orchestrator, 'model_manager', None)
+                        chroma = getattr(orchestrator, 'memory_system', None)
+                        chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
+                        if not mm or not chroma_store:
+                            return "Model manager or chroma store not available."
+                        generator = GoalDirectedGenerator(model_manager=mm, repo_path=".")
+                        store = ProposalStore(chroma_store=chroma_store)
+                        extra_parts = []
+                        try:
+                            cm = orchestrator.memory_system.corpus_manager
+                            recent = cm.get_recent_memories(8)
+                            for e in recent:
+                                q = (e.get('query') or '').strip()
+                                a = (e.get('response') or '').strip()
+                                if q:
+                                    extra_parts.append(f"User: {q[:300]}")
+                                if a:
+                                    extra_parts.append(f"Assistant: {a[:400]}")
+                        except (AttributeError, TypeError):
+                            pass
+                        dedup_context = store.get_for_dedup()
+                        extra = "\n\n".join(extra_parts)
+                        if dedup_context:
+                            extra += f"\n\n## Existing Proposals (avoid duplicates)\n{dedup_context}"
+                        proposals = await generator.generate_proposals(extra_context=extra)
+                        kept = 0
+                        for p in proposals:
+                            if store.check_similarity(p):
+                                continue
+                            if store.store_proposal(p):
+                                kept += 1
+                        return f"Generated {len(proposals)} proposal(s), stored {kept} new."
+                    except Exception as e:
+                        return f"Generation failed: {e}"
+
+                async def _generate_code_now(selected_label, title_map):
+                    """Generate full implementation code for the selected proposal."""
+                    import html as _html
+                    if not selected_label or not title_map:
+                        return "Select a proposal first.", ""
+
+                    proposal_id = title_map.get(selected_label)
+                    if not proposal_id:
+                        return f"Proposal not found for: {selected_label}", ""
+
+                    try:
+                        from knowledge.proposal_generator import GoalDirectedGenerator
+                        from memory.proposal_store import ProposalStore
+                        from memory.code_proposal import CodeProposal
+
+                        mm = getattr(orchestrator, 'model_manager', None)
+                        chroma = getattr(orchestrator, 'memory_system', None)
+                        chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
+                        if not mm or not chroma_store:
+                            return "Model manager or chroma store not available.", ""
+
+                        store = ProposalStore(chroma_store=chroma_store)
+                        proposal = store.get_proposal(proposal_id)
+                        if not proposal:
+                            return f"Proposal {proposal_id} not found in store.", ""
+
+                        if not proposal.implementation_steps:
+                            return "This proposal has no implementation steps to generate code for.", ""
+
+                        generator = GoalDirectedGenerator(model_manager=mm, repo_path=".")
+                        result = await generator.generate_code_for_proposal(proposal)
+
+                        # Build HTML output with syntax-highlighted code blocks
+                        files = result.get("files", {})
+                        errors = result.get("errors", [])
+                        output_dir = result.get("output_dir", "")
+
+                        if not files:
+                            err_msg = "; ".join(errors) if errors else "No files generated"
+                            return f"Code generation produced no files: {err_msg}", ""
+
+                        html_parts = []
+                        html_parts.append(
+                            f'<div style="padding:10px;margin-bottom:8px;background:#1a2332;'
+                            f'border:1px solid #2563eb;border-radius:6px;color:#93c5fd;">'
+                            f'Generated {len(files)} file(s) in <code>{_html.escape(output_dir)}</code>'
+                            f'</div>'
+                        )
+
+                        for fpath, content in files.items():
+                            escaped = _html.escape(content)
+                            # Detect language for syntax hint
+                            lang = "python" if fpath.endswith(".py") else ""
+                            html_parts.append(
+                                f'<details open style="margin-bottom:8px;border:1px solid #374151;'
+                                f'border-radius:6px;background:#0d1117;">'
+                                f'<summary style="padding:8px 12px;cursor:pointer;font-weight:600;'
+                                f'color:#58a6ff;font-size:0.95em;background:#161b22;'
+                                f'border-radius:6px 6px 0 0;">'
+                                f'{_html.escape(fpath)}</summary>'
+                                f'<pre style="margin:0;padding:12px;overflow-x:auto;'
+                                f'color:#e6edf3;font-size:0.85em;line-height:1.5;'
+                                f'max-height:600px;overflow-y:auto;">'
+                                f'<code>{escaped}</code></pre>'
+                                f'</details>'
+                            )
+
+                        if errors:
+                            html_parts.append(
+                                f'<div style="padding:8px;color:#f87171;font-size:0.9em;">'
+                                f'Errors: {_html.escape("; ".join(errors))}</div>'
+                            )
+
+                        status_msg = f"Generated {len(files)} file(s) -> `{output_dir}`"
+                        if errors:
+                            status_msg += f" ({len(errors)} errors)"
+
+                        return status_msg, "\n".join(html_parts)
+
+                    except Exception as e:
+                        import traceback
+                        logging.error(f"[GUI] Code generation error: {traceback.format_exc()}")
+                        return f"Code generation failed: {e}", ""
+
+                refresh_proposals_btn.click(
+                    _load_proposals,
+                    inputs=[proposal_status_filter, proposal_type_filter],
+                    outputs=[proposals_view, codegen_selector, proposals_map],
+                )
+
+                generate_btn.click(
+                    _generate_proposals_now,
+                    inputs=[],
+                    outputs=[generate_status],
+                )
+
+                codegen_btn.click(
+                    _generate_code_now,
+                    inputs=[codegen_selector, proposals_map],
+                    outputs=[codegen_status, codegen_output],
+                )
+
             with gr.TabItem("Settings"):
                 gr.Markdown("### ⚙️ Runtime Settings")
 
@@ -1603,6 +1915,13 @@ def launch_gui(orchestrator, force_wizard=False):
                         return f"Failed to apply: {e}"
 
                 apply_btn.click(_apply_summary_n, inputs=[summary_n], outputs=[status_md])
+
+        # --- Auto-load proposals on page open ---
+        demo.load(
+            _load_proposals,
+            inputs=[proposal_status_filter, proposal_type_filter],
+            outputs=[proposals_view, codegen_selector, proposals_map],
+        )
 
     # --- Configure queue with timeout ---
     # Set max_size to allow long-running streaming responses (120s timeout)

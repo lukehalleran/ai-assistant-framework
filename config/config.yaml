@@ -61,13 +61,13 @@ models:
   load_local_model: true
   local_model_context_limit: 4096
   api_model_context_limit: 128000
-  default_max_tokens: 4096
+  default_max_tokens: 9984
   heavy_topic_max_tokens: 4096
   default_top_p: 0.9
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: glm-4.7
+  active: claude-opus-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18

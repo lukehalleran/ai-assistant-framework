@@ -89,6 +89,7 @@ class MultiCollectionChromaStore:
             'reference_docs': None,  # User uploaded reference documents
             'procedural': None,      # Git commits and how-to knowledge
             'procedural_skills': None,  # Reusable problem-solving patterns
+            'proposals': None,           # Goal-directed code change proposals
         }
 
         self._initialize_collections()

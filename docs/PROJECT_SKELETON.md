@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-01-30
+**Last Updated**: 2026-02-05
 
 ---
 
@@ -57,7 +57,7 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/memory_retriever.py` - Retrieval operations (incl. `get_semantic_top_memories`)
 - `memory/memory_storage.py` - Storage operations
 - `memory/memory_scorer.py` - Scoring and ranking
-- `memory/shutdown_processor.py` - Session-end summaries, facts, procedural skills, reflections
+- `memory/shutdown_processor.py` - Session-end summaries, facts, procedural skills, code proposals, reflections
 - `memory/procedural_skill.py` - ProceduralSkill dataclass + SkillCategory enum
 - `memory/thread_manager.py` - Thread tracking
 - `memory/memory_interface.py` - Protocol contracts
@@ -380,8 +380,8 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 
 ---
 
-### 2.3.1 memory/shutdown_processor.py **[NEW - EXTRACTED 2026-01-25]**
-**Purpose**: Session-end processing — block summaries, fact extraction, procedural skill extraction, user profile updates, reflections
+### 2.3.1 memory/shutdown_processor.py **[NEW - EXTRACTED 2026-01-25, ENHANCED 2026-02-05]**
+**Purpose**: Session-end processing — block summaries, fact extraction, procedural skill extraction, code proposal generation, user profile updates, reflections
 
 **Key Methods**:
 - `async process_shutdown_memory(session_conversations=None)` → Main shutdown pipeline:
@@ -391,8 +391,9 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   3. Store summaries in ChromaDB (summaries collection)
   4. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor)
   5. Extract procedural skills via LLM (0-3 per session)
-  6. Update UserProfile with extracted facts
-  7. Log statistics
+  6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [NEW 2026-02-05]
+  7. Update UserProfile with extracted facts
+  8. Log statistics
   ```
 
 - `async run_shutdown_reflection(session_conversations=None, session_summaries=None)` → End-of-session LLM reflection:
@@ -418,7 +419,15 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   - Categories: debugging, workflow, prompt_engineering, interpersonal, architectural, optimization, testing
   - Stores via MemoryStorage.store_skill() with semantic deduplication
 
-**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill
+- `async _generate_proposals(session_conversations)` → Goal-directed code proposal generation **[NEW 2026-02-05]**:
+  - Guards: CODE_PROPOSALS_ENABLED, model_manager with generate_once, ≥3 session items
+  - Creates GoalDirectedGenerator and ProposalStore instances
+  - Builds extra_context from last 8 session turns (truncated to 500 chars each)
+  - Includes existing proposals via get_for_dedup() for dedup context
+  - Checks similarity before storing each proposal (CODE_PROPOSALS_DEDUP_THRESHOLD)
+  - Logs count of stored proposals
+
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill, GoalDirectedGenerator, ProposalStore
 
 ---
 
@@ -737,9 +746,9 @@ career: current_role=Senior Engineer [2025-08-01T09:00:00]; programming_language
 ---
 
 ### 2.5 memory/storage/multi_collection_chroma_store.py (Vector Store)
-**Purpose**: Semantic search across 9 ChromaDB collections
+**Purpose**: Semantic search across 10 ChromaDB collections
 
-**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills
+**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals
 
 **Key Methods**:
 - `add_memory(text, metadata, collection)` → Embed and store
@@ -1108,6 +1117,13 @@ agentic_search:
   - Calls `ObsidianManager.embed_vault(force_reindex=False)`
   - Shows status: success count, skipped count, or error message
   - Non-blocking incremental sync (skips already-indexed notes)
+- **Proposals Tab** → Browse, filter, generate, and implement code proposals **[NEW 2026-02-05]**
+  - Collapsible HTML cards with `<details>/<summary>` for each proposal
+  - Filter by status (pending/approved/rejected/completed/failed) and type (feature/refactor/etc.)
+  - Auto-loads proposals on page open via `demo.load()`
+  - "Generate Proposals Now" button for on-demand LLM generation
+  - Code Generation: dropdown selector → "Generate Code" → staging directory output
+  - Rendered as HTML code blocks with syntax highlighting
 
 **Streaming Flow**:
 ```
@@ -1857,6 +1873,82 @@ GIT_MEMORY_DEFAULT_LIMIT = 200
 - Builder adds `[PROJECT COMMIT HISTORY]` section in prompt
 - TokenManager includes `git_commits` at priority 5
 - HybridRetriever and MemoryRetriever include `procedural` collection in queries
+
+---
+
+### 2.12.5a Code Proposals System (Goal-Directed Code Generation) **[NEW 2026-02-05]**
+**Purpose**: LLM-generated code improvement proposals with full code generation, stored in ChromaDB for browsing and implementation
+
+**Key Components**:
+
+**memory/code_proposal.py** - Data models (Pydantic BaseModel):
+- `ProposalType` (Enum): feature, refactor, bugfix, test, docs, infra
+- `ProposalStatus` (Enum): PENDING → APPROVED → COMPLETED (or REJECTED/FAILED)
+- `ProposalSource` (Enum): GOAL_DIRECTED, CONVERSATION, MANUAL
+- `ImplementationStep`: order, description, file_path, action (create/modify/delete/test)
+- `CodeProposal`: Full proposal with title, type, priority, reasoning, description, steps, affected_files, tags, complexity
+  - `to_metadata()` / `from_metadata()` for ChromaDB (flat primitives only)
+  - `to_dict()` / `from_dict()` for JSON serialization
+  - Status lifecycle: `mark_approved()`, `mark_rejected()`, `mark_completed()`, `mark_failed()`
+
+**knowledge/proposal_generator.py** - GoalDirectedGenerator:
+- `gather_context()` → Reads PROJECT_SKELETON.md, GOALS.md, git log (last 10 commits)
+- `_build_prompt(context, extra_context)` → Creative LLM prompt encouraging new features, APIs, capabilities
+- `_parse_response(response)` → Robust JSON parsing (fences, arrays, line-delimited)
+- `_parse_proposal(data)` → Validates raw dict into CodeProposal with type coercion
+- `generate_proposals(extra_context, max_proposals)` → Main entry: context → LLM → parsed proposals
+- `generate_code_for_proposal(proposal, output_dir)` → Full code generation:
+  - Iterates implementation steps
+  - Reads actual source files for 'modify' actions (capped at 15KB)
+  - Action-specific prompts: create, modify, test, delete
+  - Writes to staging directory: `data/proposal_code/<proposal_id>/`
+  - Creates `_manifest.json` with file list and errors
+  - Nothing touches the working tree
+- `_generate_step_code(proposal, step)` → Per-step code generation via LLM
+
+**memory/proposal_store.py** - ProposalStore:
+- `store_proposal(proposal)` → Embed title+reasoning, store metadata in ChromaDB proposals collection
+- `query_proposals(query_text, n_results, status, proposal_type)` → Semantic search with filters
+- `get_proposal(proposal_id)` → Retrieve by ID
+- `get_pending()` → All pending proposals
+- `update_status(proposal_id, new_status)` → Status transition via delete-and-re-add
+- `check_similarity(proposal, threshold)` → Dedup check against existing proposals
+- `get_for_dedup()` → Retrieve recent proposals for dedup context in generator prompt
+
+**Configuration** (`config/app_config.py`):
+```python
+CODE_PROPOSALS_ENABLED = True
+CODE_PROPOSALS_MAX_PER_SESSION = 5
+CODE_PROPOSALS_DEDUP_THRESHOLD = 0.85
+CODE_PROPOSALS_MODEL = "claude-opus-4.6"
+```
+
+**Integration Points**:
+1. **Shutdown**: `ShutdownProcessor._generate_proposals()` auto-generates after skills extraction
+2. **GUI**: Proposals tab with browse, filter, generate, and code generation
+3. **ChromaDB**: `proposals` collection (10th collection)
+
+**Data Flow**:
+```
+Session end / GUI button click
+    ↓
+GoalDirectedGenerator.generate_proposals()
+    ↓ reads PROJECT_SKELETON.md, GOALS.md, git log, session context
+LLM generates structured JSON proposals
+    ↓ parse + validate
+ProposalStore.store_proposal() → ChromaDB (with dedup check)
+    ↓
+GUI Proposals tab displays collapsible cards
+    ↓ user clicks "Generate Code"
+GoalDirectedGenerator.generate_code_for_proposal()
+    ↓ reads source files, generates per-step code
+data/proposal_code/<proposal_id>/ staging directory
+    ↓ user reviews and manually copies/commits
+```
+
+**Tests**: 71 unit tests across 3 files (test_code_proposal.py, test_proposal_generator.py, test_proposal_store.py)
+
+**Dependencies**: ModelManager, MultiCollectionChromaStore, config.app_config
 
 ---
 
@@ -2780,6 +2872,12 @@ WIKI_TIMEOUT_DEFAULT = 1.2
 
 # Corpus Management
 CORPUS_MAX_ENTRIES = 2000
+
+# Code Proposals [NEW 2026-02-05]
+CODE_PROPOSALS_ENABLED = True
+CODE_PROPOSALS_MAX_PER_SESSION = 5
+CODE_PROPOSALS_DEDUP_THRESHOLD = 0.85
+CODE_PROPOSALS_MODEL = "claude-opus-4.6"
 ```
 
 **Environment Overrides**: Any setting can be overridden via environment variables
@@ -2845,6 +2943,9 @@ CORPUS_MAX_ENTRIES = 2000
       iii. Store summary as SUMMARY memory type
    c. fact_extractor.extract_facts(recent_conversations)
    d. Store facts as SEMANTIC memory type
+   e. Extract procedural skills via LLM (0-3 per session)
+   f. Generate code proposals via GoalDirectedGenerator (0-5 per session) [NEW 2026-02-05]
+   g. Update UserProfile with extracted facts
 3. corpus_manager.save()
 ```
 

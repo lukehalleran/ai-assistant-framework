@@ -4,7 +4,7 @@ Shutdown memory processing module.
 
 Handles end-of-session consolidation: block summaries, fact extraction,
 LLM-assisted fact extraction, user profile updates, procedural skill
-extraction, and session reflections.
+extraction, code proposal generation, and session reflections.
 """
 
 import os
@@ -176,6 +176,9 @@ class ShutdownProcessor:
 
             # 5) Extract procedural skills (adaptive workflows)
             await self._extract_procedural_skills(session_conversations)
+
+            # 6) Generate code proposals (goal-directed)
+            await self._generate_proposals(session_conversations)
 
             logger.info("[Shutdown] Memory processing complete")
 
@@ -575,6 +578,99 @@ class ShutdownProcessor:
 
         if kept:
             logger.info(f"[Shutdown] Extracted {kept} procedural skill(s)")
+
+    # ------------------------------------------------------------------
+    # Code proposal generation
+    # ------------------------------------------------------------------
+
+    async def _generate_proposals(self, session_conversations):
+        """Generate goal-directed code proposals from session conversations.
+
+        Uses LLM to analyze session context and project state, then stores
+        non-duplicate proposals via ProposalStore.
+        """
+        try:
+            from config.app_config import CODE_PROPOSALS_ENABLED
+            if not CODE_PROPOSALS_ENABLED:
+                return
+        except ImportError:
+            return
+
+        if not self.model_manager or not hasattr(self.model_manager, 'generate_once'):
+            return
+
+        # Gather session conversations
+        if isinstance(session_conversations, list) and session_conversations:
+            sess_items = session_conversations
+        else:
+            try:
+                corpus = list(self.corpus_manager.corpus)
+            except (AttributeError, TypeError):
+                return
+            try:
+                sess_items = [
+                    e for e in corpus
+                    if (not self._is_summary(e)) and (not self._is_reflection(e))
+                    and self._ts(e) >= self.session_start
+                ]
+            except (ValueError, TypeError):
+                sess_items = [
+                    e for e in corpus
+                    if (not self._is_summary(e)) and (not self._is_reflection(e))
+                ]
+
+        if len(sess_items) < 3:
+            return
+
+        # Build conversation excerpt for extra context
+        excerpts = []
+        for e in sess_items[-8:]:
+            q = (e.get('query') or '').strip()
+            a = (e.get('response') or '').strip()
+            if q or a:
+                lines = []
+                if q:
+                    lines.append(f"User: {q[:300]}")
+                if a:
+                    lines.append(f"Assistant: {a[:400]}")
+                excerpts.append("\n".join(lines))
+
+        if not excerpts:
+            return
+
+        try:
+            from knowledge.proposal_generator import GoalDirectedGenerator
+            from memory.proposal_store import ProposalStore
+
+            generator = GoalDirectedGenerator(
+                model_manager=self.model_manager,
+                repo_path=".",
+            )
+            proposal_store = ProposalStore(chroma_store=self.chroma_store)
+
+            # Include existing proposals for dedup context
+            dedup_context = proposal_store.get_for_dedup()
+            extra_context = "## Recent Conversation\n" + "\n\n".join(excerpts)
+            if dedup_context:
+                extra_context += f"\n\n## Existing Proposals (avoid duplicates)\n{dedup_context}"
+
+            proposals = await generator.generate_proposals(extra_context=extra_context)
+
+            kept = 0
+            for proposal in proposals:
+                existing_id = proposal_store.check_similarity(proposal)
+                if existing_id:
+                    logger.debug(f"[Shutdown] Proposal skipped (duplicate of {existing_id}): {proposal.title}")
+                    continue
+                doc_id = proposal_store.store_proposal(proposal)
+                if doc_id:
+                    kept += 1
+
+            if kept:
+                logger.info(f"[Shutdown] Generated {kept} proposal(s)")
+
+        except Exception as e:
+            logger.warning(f"[Shutdown] Proposal generation failed: {e}")
 
     # ------------------------------------------------------------------
     # run_shutdown_reflection
