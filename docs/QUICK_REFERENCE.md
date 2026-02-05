@@ -139,7 +139,7 @@ class MemoryScorer:
 # memory/shutdown_processor.py — Session-end processing
 class ShutdownProcessor:
     async def process_shutdown_memory(session_conversations=None):
-        """Block summaries + fact extraction + procedural skills + user profile updates"""
+        """Block summaries + fact extraction + procedural skills + code proposals + user profile updates"""
 
     async def run_shutdown_reflection(session_conversations=None, session_summaries=None) -> bool:
         """LLM reflection generation + ChromaDB storage"""
@@ -355,7 +355,7 @@ class CorpusManager:
 
 # memory/storage/multi_collection_chroma_store.py
 class MultiCollectionChromaStore:
-    # Collections (9 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills
+    # Collections (10 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals
 
     async def add_memory(text: str, metadata: Dict, collection: str):
         """Embed text and store in ChromaDB collection"""
@@ -375,6 +375,78 @@ class MultiCollectionChromaStore:
             n_results=n_results
         )
         return self._parse_results(results)
+```
+
+---
+
+## Code Proposals System **[NEW 2026-02-05]**
+
+```python
+# memory/code_proposal.py — Pydantic data models
+class CodeProposal(BaseModel):
+    id: str                        # UUID
+    title: str                     # Short title
+    proposal_type: ProposalType    # feature|refactor|bugfix|test|docs|infra
+    status: ProposalStatus         # PENDING|APPROVED|REJECTED|COMPLETED|FAILED
+    source: ProposalSource         # GOAL_DIRECTED|CONVERSATION|MANUAL
+    priority: int                  # 1-10 (LLM-assigned)
+    reasoning: str                 # Why this change is needed
+    description: str               # Detailed description
+    implementation_steps: List[ImplementationStep]  # Ordered steps
+    affected_files: List[str]      # File paths
+    tags: List[str]                # Keywords
+    estimated_complexity: str      # low|medium|high
+
+    def to_metadata() -> dict:     # Flat dict for ChromaDB
+    def from_metadata(meta) -> CodeProposal:  # Reconstruct from ChromaDB
+
+
+# knowledge/proposal_generator.py — LLM-based proposal generation
+class GoalDirectedGenerator:
+    def __init__(model_manager, repo_path=".", model_alias="claude-opus-4.6", max_proposals=5):
+        pass
+
+    async def generate_proposals(extra_context="", max_proposals=None) -> List[CodeProposal]:
+        """
+        1. Read PROJECT_SKELETON.md, GOALS.md, git log (last 10)
+        2. Build creative prompt (new features, APIs, capabilities)
+        3. Call LLM for structured JSON
+        4. Parse + validate into CodeProposal objects
+        """
+
+    async def generate_code_for_proposal(proposal, output_dir=None) -> Dict:
+        """
+        Generate actual implementation code for every step.
+        1. For each step: read source (modify), build prompt, call LLM
+        2. Write files to staging: data/proposal_code/<proposal_id>/
+        3. Create _manifest.json
+        Returns: {proposal_id, output_dir, files: {path: content}, errors: [...]}
+        """
+
+
+# memory/proposal_store.py — ChromaDB-backed storage
+class ProposalStore:
+    def __init__(chroma_store: MultiCollectionChromaStore):
+        pass
+
+    def store_proposal(proposal: CodeProposal) -> str:
+        """Embed title+reasoning, store in 'proposals' collection. Returns doc_id."""
+
+    def query_proposals(query_text, n_results=20, status=None, proposal_type=None) -> List[CodeProposal]:
+        """Semantic search with optional status/type filters."""
+
+    def check_similarity(proposal, threshold=0.85) -> bool:
+        """True if similar proposal already exists (dedup check)."""
+
+    def get_for_dedup() -> str:
+        """Get recent proposal titles for dedup context in generator prompt."""
+
+
+# Config (app_config.py):
+CODE_PROPOSALS_ENABLED = True
+CODE_PROPOSALS_MAX_PER_SESSION = 5
+CODE_PROPOSALS_DEDUP_THRESHOLD = 0.85
+CODE_PROPOSALS_MODEL = "claude-opus-4.6"
 ```
 
 ---
@@ -996,4 +1068,4 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-This document is ~660 lines → ~4K tokens, providing instant lookup for critical functions and patterns.
+This document is ~730 lines → ~4.5K tokens, providing instant lookup for critical functions and patterns.

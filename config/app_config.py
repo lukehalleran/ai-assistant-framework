@@ -374,6 +374,22 @@ PROMPT_MAX_SKILLS = int(os.getenv("PROMPT_MAX_SKILLS", str(PROMPT_MAX_SKILLS)))
 SKILL_DEDUP_THRESHOLD = float(os.getenv("SKILL_DEDUP_THRESHOLD", str(SKILL_DEDUP_THRESHOLD)))
 
 # --------------------------------------------------------------------
+# Code Proposals Configuration
+# --------------------------------------------------------------------
+# Goal-directed code change proposals generated from project analysis
+PROPOSALS_CFG = config.get("code_proposals", {})
+CODE_PROPOSALS_ENABLED: bool = bool(PROPOSALS_CFG.get("enabled", True))
+CODE_PROPOSALS_COLLECTION: str = PROPOSALS_CFG.get("collection", "proposals")
+CODE_PROPOSALS_DEDUP_THRESHOLD: float = float(PROPOSALS_CFG.get("dedup_threshold", 0.85))
+CODE_PROPOSALS_MAX_PER_SESSION: int = int(PROPOSALS_CFG.get("max_per_session", 5))
+CODE_PROPOSALS_REQUIRE_TESTS: bool = bool(PROPOSALS_CFG.get("require_tests", True))
+
+# Environment variable overrides for Code Proposals
+CODE_PROPOSALS_ENABLED = bool(int(os.getenv("CODE_PROPOSALS_ENABLED", "1" if CODE_PROPOSALS_ENABLED else "0")))
+CODE_PROPOSALS_DEDUP_THRESHOLD = float(os.getenv("CODE_PROPOSALS_DEDUP_THRESHOLD", str(CODE_PROPOSALS_DEDUP_THRESHOLD)))
+CODE_PROPOSALS_MAX_PER_SESSION = int(os.getenv("CODE_PROPOSALS_MAX_PER_SESSION", str(CODE_PROPOSALS_MAX_PER_SESSION)))
+
+# --------------------------------------------------------------------
 # Obsidian Vault Configuration
 # --------------------------------------------------------------------
 # Enable personal notes integration from Obsidian vault
