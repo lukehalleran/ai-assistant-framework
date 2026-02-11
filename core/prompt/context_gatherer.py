@@ -501,6 +501,7 @@ class ContextGatherer:
     async def get_reference_docs(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Get relevant reference documents from uploaded docs collection.
+        Excludes user uploads (type='user_upload') which have their own section.
 
         Args:
             query: Search query for semantic retrieval
@@ -514,8 +515,12 @@ class ContextGatherer:
             return []
 
         try:
-            # Retrieve documents via hybrid search
-            docs = await manager.get_documents(query, limit=limit)
+            # Retrieve documents via hybrid search (fetch extra to allow filtering)
+            docs = await manager.get_documents(query, limit=limit * 2)
+
+            # Filter OUT user uploads — they appear in [USER UPLOADED ITEMS] instead
+            docs = [d for d in docs if d.get('metadata', {}).get('type') != 'user_upload']
+            docs = docs[:limit]
 
             # Track doc IDs for citations
             if docs:
@@ -539,6 +544,54 @@ class ContextGatherer:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get reference docs: {e}")
+            return []
+
+    async def get_user_uploads(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Get relevant user-uploaded items from reference_docs collection,
+        filtered to only include entries with type='user_upload'.
+
+        Args:
+            query: Search query for semantic retrieval
+            limit: Maximum uploads to return
+
+        Returns:
+            List of upload dicts with content, metadata, and relevance_score
+        """
+        manager = self.reference_docs_manager
+        if not manager:
+            return []
+
+        try:
+            # Fetch extra to allow filtering to user_upload type
+            docs = await manager.get_documents(query, limit=limit * 2)
+
+            # Filter to only user uploads
+            uploads = [d for d in docs if d.get('metadata', {}).get('type') == 'user_upload']
+            uploads = uploads[:limit]
+
+            # Track for citations
+            if uploads:
+                for idx, upload in enumerate(uploads, start=1):
+                    upload_id = f"UPLOAD_{idx}"
+                    meta = upload.get('metadata', {})
+                    self.memory_id_map[upload_id] = {
+                        'type': 'user_upload',
+                        'timestamp': meta.get('timestamp', ''),
+                        'content': upload.get('content', '')[:500],
+                        'relevance_score': upload.get('relevance_score', 0.0),
+                        'title': meta.get('title', ''),
+                        'is_image': meta.get('is_image', False),
+                        'image_path': meta.get('image_path', ''),
+                        'db_id': upload.get('id', None),
+                    }
+
+                logger.debug(f"[ContextGatherer] Retrieved {len(uploads)} user uploads for query")
+
+            return uploads or []
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get user uploads: {e}")
             return []
 
     async def get_git_commits(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -610,6 +663,61 @@ class ContextGatherer:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get git commits: {e}")
+            return []
+
+    async def get_proposed_features(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """
+        Get relevant code proposals (proposed features) for prompt injection.
+
+        Uses ProposalFilter for retrieval, dedup, gating, and ranking.
+        Only returns results for project-related queries.
+
+        Args:
+            query: Search query for relevance filtering
+            limit: Maximum proposals to return
+
+        Returns:
+            List of proposal dicts with content, metadata, and relevance_score
+        """
+        try:
+            from config.app_config import CODE_PROPOSALS_PROMPT_ENABLED
+            if not CODE_PROPOSALS_PROMPT_ENABLED:
+                return []
+
+            # Lazy-init ProposalFilter
+            if not hasattr(self, '_proposal_filter'):
+                self._proposal_filter = None
+
+            if self._proposal_filter is None:
+                from .proposal_filter import ProposalFilter
+                chroma = getattr(self.memory_coordinator, 'chroma_store', None)
+                self._proposal_filter = ProposalFilter(
+                    chroma_store=chroma,
+                    gate_system=self._gate_system,
+                    model_manager=self.model_manager,
+                )
+
+            proposals = await self._proposal_filter.get_proposals(query, limit=limit)
+
+            # Track for citations
+            for idx, prop in enumerate(proposals[:limit], start=1):
+                prop_id = f"PROPOSAL_{idx}"
+                meta = prop.get('metadata', {})
+                self.memory_id_map[prop_id] = {
+                    'type': 'code_proposal',
+                    'timestamp': str(meta.get('created_at', '')),
+                    'content': prop.get('content', '')[:500],
+                    'relevance_score': prop.get('relevance_score', 0.0),
+                    'title': meta.get('title', ''),
+                    'priority': meta.get('priority', 5),
+                    'db_id': meta.get('proposal_id', None),
+                }
+
+            logger.info(f"[ContextGatherer] Retrieved {len(proposals)} proposed features")
+            return proposals or []
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get proposed features: {e}", exc_info=True)
             return []
 
     async def get_procedural_skills(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:

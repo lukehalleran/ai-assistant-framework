@@ -380,14 +380,32 @@ SKILL_DEDUP_THRESHOLD = float(os.getenv("SKILL_DEDUP_THRESHOLD", str(SKILL_DEDUP
 PROPOSALS_CFG = config.get("code_proposals", {})
 CODE_PROPOSALS_ENABLED: bool = bool(PROPOSALS_CFG.get("enabled", True))
 CODE_PROPOSALS_COLLECTION: str = PROPOSALS_CFG.get("collection", "proposals")
-CODE_PROPOSALS_DEDUP_THRESHOLD: float = float(PROPOSALS_CFG.get("dedup_threshold", 0.85))
+CODE_PROPOSALS_DEDUP_THRESHOLD: float = float(PROPOSALS_CFG.get("dedup_threshold", 0.70))
 CODE_PROPOSALS_MAX_PER_SESSION: int = int(PROPOSALS_CFG.get("max_per_session", 5))
 CODE_PROPOSALS_REQUIRE_TESTS: bool = bool(PROPOSALS_CFG.get("require_tests", True))
+
+# Prompt integration: surface proposals in [PROPOSED FEATURES] section
+CODE_PROPOSALS_PROMPT_ENABLED: bool = bool(PROPOSALS_CFG.get("prompt_enabled", True))
+CODE_PROPOSALS_PROMPT_MAX: int = int(PROPOSALS_CFG.get("prompt_max", 3))
+CODE_PROPOSALS_KEYWORD_DEDUP_TAG_THRESHOLD: float = float(PROPOSALS_CFG.get("keyword_dedup_tag_threshold", 0.60))
+CODE_PROPOSALS_SEMANTIC_DEDUP_THRESHOLD: float = float(PROPOSALS_CFG.get("semantic_dedup_threshold", 0.75))
+# LLM pairwise ranking: tournament-bracket comparison of top candidates
+# Heavier (~1-2s) but far more accurate than pure semantic match
+CODE_PROPOSALS_LLM_RANKING: bool = bool(PROPOSALS_CFG.get("llm_ranking", False))
+CODE_PROPOSALS_LLM_RANKING_MODEL: str = PROPOSALS_CFG.get("llm_ranking_model", "gpt-4o-mini")
+# Composite score weights (sum to 1.0)
+CODE_PROPOSALS_WEIGHT_PRIORITY: float = float(PROPOSALS_CFG.get("weight_priority", 0.30))
+CODE_PROPOSALS_WEIGHT_BREADTH: float = float(PROPOSALS_CFG.get("weight_breadth", 0.20))
+CODE_PROPOSALS_WEIGHT_RECENCY: float = float(PROPOSALS_CFG.get("weight_recency", 0.10))
+CODE_PROPOSALS_WEIGHT_GOAL_ALIGNMENT: float = float(PROPOSALS_CFG.get("weight_goal_alignment", 0.40))
 
 # Environment variable overrides for Code Proposals
 CODE_PROPOSALS_ENABLED = bool(int(os.getenv("CODE_PROPOSALS_ENABLED", "1" if CODE_PROPOSALS_ENABLED else "0")))
 CODE_PROPOSALS_DEDUP_THRESHOLD = float(os.getenv("CODE_PROPOSALS_DEDUP_THRESHOLD", str(CODE_PROPOSALS_DEDUP_THRESHOLD)))
 CODE_PROPOSALS_MAX_PER_SESSION = int(os.getenv("CODE_PROPOSALS_MAX_PER_SESSION", str(CODE_PROPOSALS_MAX_PER_SESSION)))
+CODE_PROPOSALS_PROMPT_ENABLED = bool(int(os.getenv("CODE_PROPOSALS_PROMPT_ENABLED", "1" if CODE_PROPOSALS_PROMPT_ENABLED else "0")))
+CODE_PROPOSALS_PROMPT_MAX = int(os.getenv("CODE_PROPOSALS_PROMPT_MAX", str(CODE_PROPOSALS_PROMPT_MAX)))
+CODE_PROPOSALS_LLM_RANKING = bool(int(os.getenv("CODE_PROPOSALS_LLM_RANKING", "1" if CODE_PROPOSALS_LLM_RANKING else "0")))
 
 # --------------------------------------------------------------------
 # Obsidian Vault Configuration
@@ -573,9 +591,14 @@ FILE_UPLOAD_MAX_SIZE = int(config.get("security", {}).get("file_upload_max_size"
 # Maximum total size across all files in a single request (50MB default)
 FILE_UPLOAD_MAX_TOTAL_SIZE = int(config.get("security", {}).get("file_upload_max_total_size", 50 * 1024 * 1024))
 # Allowed file extensions for upload
-FILE_UPLOAD_ALLOWED_EXTENSIONS = list(config.get("security", {}).get("file_upload_allowed_extensions", ['.txt', '.docx', '.csv', '.py']))
+FILE_UPLOAD_ALLOWED_EXTENSIONS = list(config.get("security", {}).get("file_upload_allowed_extensions", ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']))
 # CSV formula prefixes to escape (prevent formula injection)
 FILE_UPLOAD_CSV_FORMULA_PREFIXES = tuple(config.get("security", {}).get("file_upload_csv_formula_prefixes", ['=', '+', '-', '@', '\t', '\r', '\n']))
+
+# Directory for persisted upload images (created on demand)
+FILE_UPLOAD_IMAGE_DIR = str(config.get("paths", {}).get("upload_image_dir", "data/uploads"))
+# Maximum user uploads to surface in prompt
+PROMPT_MAX_USER_UPLOADS = int(config.get("memory", {}).get("prompt_max_user_uploads", 5))
 
 # Environment variable overrides for file upload security
 FILE_UPLOAD_MAX_SIZE = int(os.getenv("FILE_UPLOAD_MAX_SIZE", FILE_UPLOAD_MAX_SIZE))

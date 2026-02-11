@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-02-05
+**Last Updated**: 2026-02-10
 
 ---
 
@@ -319,6 +319,8 @@ MemoryCoordinator (memory_coordinator.py, ~498 lines)
 - Temporal decay: `1.0 / (1.0 + decay_rate * age_hours)`
 - Access count boosts truth score
 
+**Init**: Passes `memory_coordinator=self` to ShutdownProcessor, enabling pipeline-enriched proposal generation **[ENHANCED 2026-02-09]**
+
 **Dependencies**: MemoryRetriever, MemoryStorage, MemoryScorer, ShutdownProcessor, ThreadManager, HybridRetriever, CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryConsolidator, UserProfile
 
 ---
@@ -380,8 +382,8 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 
 ---
 
-### 2.3.1 memory/shutdown_processor.py **[NEW - EXTRACTED 2026-01-25, ENHANCED 2026-02-05]**
-**Purpose**: Session-end processing — block summaries, fact extraction, procedural skill extraction, code proposal generation, user profile updates, reflections
+### 2.3.1 memory/shutdown_processor.py **[NEW - EXTRACTED 2026-01-25, ENHANCED 2026-02-09]**
+**Purpose**: Session-end processing — block summaries, fact extraction, procedural skill extraction, code proposal generation (pipeline-enriched), user profile updates, reflections
 
 **Key Methods**:
 - `async process_shutdown_memory(session_conversations=None)` → Main shutdown pipeline:
@@ -391,7 +393,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   3. Store summaries in ChromaDB (summaries collection)
   4. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor)
   5. Extract procedural skills via LLM (0-3 per session)
-  6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [NEW 2026-02-05]
+  6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
   7. Update UserProfile with extracted facts
   8. Log statistics
   ```
@@ -419,15 +421,31 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   - Categories: debugging, workflow, prompt_engineering, interpersonal, architectural, optimization, testing
   - Stores via MemoryStorage.store_skill() with semantic deduplication
 
-- `async _generate_proposals(session_conversations)` → Goal-directed code proposal generation **[NEW 2026-02-05]**:
+- `async _generate_proposals(session_conversations)` → Goal-directed code proposal generation **[ENHANCED 2026-02-09]**:
   - Guards: CODE_PROPOSALS_ENABLED, model_manager with generate_once, ≥3 session items
   - Creates GoalDirectedGenerator and ProposalStore instances
-  - Builds extra_context from last 8 session turns (truncated to 500 chars each)
-  - Includes existing proposals via get_for_dedup() for dedup context
+  - **Pipeline-enriched path** (when memory_coordinator available):
+    - Calls `_gather_proposal_context()` for rich semantic context
+    - Routes through `generate_proposals_with_context()` for better awareness
+    - Falls back to cold generation on failure
+  - **Cold fallback** (`_generate_proposals_cold()`):
+    - Builds extra_context from last 8 session turns (truncated to 500 chars each)
+    - Includes existing proposals via get_for_dedup() for dedup context
   - Checks similarity before storing each proposal (CODE_PROPOSALS_DEDUP_THRESHOLD)
   - Logs count of stored proposals
 
-**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill, GoalDirectedGenerator, ProposalStore
+- `async _generate_proposals_cold(sess_items, generator, dedup_context)` → Original cold generation **[NEW 2026-02-09]**:
+  - Truncated conversation excerpts + file reads only (no retrieval pipeline)
+
+- `async _gather_proposal_context(sess_items)` → Rich context assembly **[NEW 2026-02-09]**:
+  - Builds synthetic query from session topics
+  - Parallel retrieval via MemoryCoordinator: memories (5), skills (3), facts (5), reflections (2)
+  - Sync retrieval: summaries (3), git commits (5), user profile (300 tokens)
+  - Returns structured context sections: Recent Conversation, Relevant Memories, Session Summaries, Past Reflections, Problem-Solving Patterns, Known User Facts, User Profile, Recent Git Activity
+
+**Constructor**: `__init__(..., memory_coordinator=None)` — accepts MemoryCoordinator for pipeline-enriched generation **[ENHANCED 2026-02-09]**
+
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill, GoalDirectedGenerator, ProposalStore, MemoryCoordinator (optional)
 
 ---
 
@@ -499,7 +517,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 - `FACTS_EXTRACT_EACH_TURN`: Extract facts every turn (default: False)
 - `SUMMARIZE_AT_SHUTDOWN_ONLY`: Defer summarization (default: True)
 
-**Dependencies**: CorpusManager, MultiCollectionChromaStore, FactExtractor, MemoryConsolidator, MemoryScorer
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, FactExtractor, MemoryConsolidator, MemoryScorer, MemoryCoordinator (optional)
 
 ---
 
@@ -821,12 +839,14 @@ Priority order (with weights):
 - recent_conversations: 7
 - semantic_chunks: 6
 - personal_notes: 6             # Obsidian notes
-- reference_docs: 5             # User uploaded docs
+- user_uploads: 6               # Persisted user file/image uploads [NEW 2026-02-10]
+- reference_docs: 5             # Daemon self-knowledge docs
 - git_commits: 5               # Git commit history (procedural)
 - procedural_skills: 5         # Reusable problem-solving patterns
 - memories: 5
 - semantic_facts/fresh_facts: 4
 - summaries: 3
+- proposed_features: 3         # Code proposals (project-related queries only) [NEW 2026-02-09]
 - reflections/dreams: 2
 - wiki: 1
 ```
@@ -850,6 +870,7 @@ Priority order (with weights):
   "semantic_chunks": [...],
   "wiki": [...],
   "procedural_skills": [...],   # Adaptive workflows (WHEN/THEN patterns)
+  "proposed_features": [...],   # Code proposals for project-related queries [NEW 2026-02-09]
 }
 ```
 
@@ -866,6 +887,7 @@ Priority order (with weights):
   - Prevents prompt pollution when conversations discuss prompt structure
   - Converts `[RECENT CONVERSATION]` → `(RECENT CONVERSATION)` in stored memories
   - Applied to: memories, summaries, reflections, facts in builder.py
+  - Includes `[PROPOSED FEATURES]` pattern **[ENHANCED 2026-02-09]**
 
 **Deduplication Features**:
 - Cross-section semantic deduplication using embedder
@@ -1117,11 +1139,16 @@ agentic_search:
   - Calls `ObsidianManager.embed_vault(force_reindex=False)`
   - Shows status: success count, skipped count, or error message
   - Non-blocking incremental sync (skips already-indexed notes)
-- **Proposals Tab** → Browse, filter, generate, and implement code proposals **[NEW 2026-02-05]**
+- **Proposals Tab** → Browse, filter, manage, generate, and implement code proposals **[ENHANCED 2026-02-09]**
   - Collapsible HTML cards with `<details>/<summary>` for each proposal
+  - Status badges with color coding (pending=gray, approved=amber, completed=green, rejected/failed=red)
   - Filter by status (pending/approved/rejected/completed/failed) and type (feature/refactor/etc.)
   - Auto-loads proposals on page open via `demo.load()`
   - "Generate Proposals Now" button for on-demand LLM generation
+  - **Manage Proposals** section: dropdown selector + Mark Built / Reject / Approve buttons **[NEW 2026-02-09]**
+    - Rejection reason text input (optional)
+    - Auto-refreshes proposal list after status change
+    - Uses ProposalStore.update_status() for status transitions
   - Code Generation: dropdown selector → "Generate Code" → staging directory output
   - Rendered as HTML code blocks with syntax highlighting
 
@@ -1774,7 +1801,7 @@ MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gpt-4-vision",
 
 **Key Methods**:
 - `upload_document(file_path, title)` → `UploadResult`: Index file to ChromaDB
-- `upload_text(content, title)` → `UploadResult`: Upload text directly (GUI paste)
+- `upload_text(content, title, metadata_overrides=None)` → `UploadResult`: Upload text directly (GUI paste). metadata_overrides merged into per-chunk metadata (used by file upload to set type='user_upload') **[ENHANCED 2026-02-10]**
 - `get_documents(query, limit)` → `List[Dict]`: Hybrid retrieval (1/3 keyword + 2/3 semantic)
 - `list_documents()` → `List[Dict]`: List all uploaded documents
 - `delete_document(title)` → `bool`: Remove document from index
@@ -1892,11 +1919,13 @@ GIT_MEMORY_DEFAULT_LIMIT = 200
   - Status lifecycle: `mark_approved()`, `mark_rejected()`, `mark_completed()`, `mark_failed()`
 
 **knowledge/proposal_generator.py** - GoalDirectedGenerator:
-- `gather_context()` → Reads PROJECT_SKELETON.md, GOALS.md, git log (last 10 commits)
-- `_build_prompt(context, extra_context)` → Creative LLM prompt encouraging new features, APIs, capabilities
+- `gather_context()` → Reads CLAUDE.md, QUICK_REFERENCE.md (full), PROJECT_SKELETON.md (filtered), GOALS.md, git log. All live from disk. **[ENHANCED 2026-02-10]**
+- `_filter_skeleton_sections(text)` → Strips "Core Components" section (~112K chars) from skeleton, keeps architecture/config/patterns/etc. **[NEW 2026-02-10]**
+- `_build_prompt(context, extra_context)` → Creative LLM prompt with Project Conventions, API Quick Reference, architecture, goals, commits
 - `_parse_response(response)` → Robust JSON parsing (fences, arrays, line-delimited)
 - `_parse_proposal(data)` → Validates raw dict into CodeProposal with type coercion
 - `generate_proposals(extra_context, max_proposals)` → Main entry: context → LLM → parsed proposals
+- `generate_proposals_with_context(pipeline_context, extra_context, max_proposals)` → Pipeline-enriched generation with semantic memories, summaries, reflections, skills, user profile **[NEW 2026-02-09]**
 - `generate_code_for_proposal(proposal, output_dir)` → Full code generation:
   - Iterates implementation steps
   - Reads actual source files for 'modify' actions (capped at 15KB)
@@ -1912,31 +1941,45 @@ GIT_MEMORY_DEFAULT_LIMIT = 200
 - `get_proposal(proposal_id)` → Retrieve by ID
 - `get_pending()` → All pending proposals
 - `update_status(proposal_id, new_status)` → Status transition via delete-and-re-add
-- `check_similarity(proposal, threshold)` → Dedup check against existing proposals
-- `get_for_dedup()` → Retrieve recent proposals for dedup context in generator prompt
+- `check_similarity(proposal, threshold=0.70)` → Dedup check: cosine similarity OR title word overlap (Jaccard >= 0.60). n_results=5 **[ENHANCED 2026-02-09]**
+- `get_for_dedup(limit=25)` → Retrieve recent proposals for dedup context in generator prompt **[ENHANCED 2026-02-09]**
 
 **Configuration** (`config/app_config.py`):
 ```python
 CODE_PROPOSALS_ENABLED = True
 CODE_PROPOSALS_MAX_PER_SESSION = 5
-CODE_PROPOSALS_DEDUP_THRESHOLD = 0.85
-CODE_PROPOSALS_MODEL = "claude-opus-4.6"
+CODE_PROPOSALS_DEDUP_THRESHOLD = 0.70
+# Context: CLAUDE.md + QUICK_REFERENCE.md (full), PROJECT_SKELETON.md (filtered), GOALS.md, git log
+
+# Prompt integration [NEW 2026-02-09]
+CODE_PROPOSALS_PROMPT_ENABLED = True
+CODE_PROPOSALS_PROMPT_MAX = 3
+CODE_PROPOSALS_KEYWORD_DEDUP_TAG_THRESHOLD = 0.60
+CODE_PROPOSALS_SEMANTIC_DEDUP_THRESHOLD = 0.75
+CODE_PROPOSALS_LLM_RANKING = False             # Tournament-bracket pairwise ranking
+CODE_PROPOSALS_LLM_RANKING_MODEL = "gpt-4o-mini"
+CODE_PROPOSALS_WEIGHT_PRIORITY = 0.30
+CODE_PROPOSALS_WEIGHT_BREADTH = 0.20
+CODE_PROPOSALS_WEIGHT_RECENCY = 0.10
+CODE_PROPOSALS_WEIGHT_GOAL_ALIGNMENT = 0.40
 ```
 
 **Integration Points**:
-1. **Shutdown**: `ShutdownProcessor._generate_proposals()` auto-generates after skills extraction
-2. **GUI**: Proposals tab with browse, filter, generate, and code generation
-3. **ChromaDB**: `proposals` collection (10th collection)
+1. **Shutdown**: `ShutdownProcessor._generate_proposals()` auto-generates after skills extraction (pipeline-enriched or cold fallback)
+2. **GUI**: Proposals tab with browse, filter, manage (Mark Built/Reject/Approve), generate, and code generation
+3. **Prompt**: `[PROPOSED FEATURES]` section via ProposalFilter pipeline (project-related queries only) **[NEW 2026-02-09]**
+4. **ChromaDB**: `proposals` collection (10th collection)
 
-**Data Flow**:
+**Data Flow** (generation):
 ```
 Session end / GUI button click
     ↓
 GoalDirectedGenerator.generate_proposals()
-    ↓ reads PROJECT_SKELETON.md, GOALS.md, git log, session context
+    ↓ reads CLAUDE.md, QUICK_REFERENCE.md, PROJECT_SKELETON.md (filtered), GOALS.md, git log, session context
+    ↓ (if memory_coordinator: also retrieves memories, skills, facts, reflections, summaries, user profile)
 LLM generates structured JSON proposals
     ↓ parse + validate
-ProposalStore.store_proposal() → ChromaDB (with dedup check)
+ProposalStore.store_proposal() → ChromaDB (with dedup check: cosine + title word overlap)
     ↓
 GUI Proposals tab displays collapsible cards
     ↓ user clicks "Generate Code"
@@ -1946,9 +1989,69 @@ data/proposal_code/<proposal_id>/ staging directory
     ↓ user reviews and manually copies/commits
 ```
 
-**Tests**: 71 unit tests across 3 files (test_code_proposal.py, test_proposal_generator.py, test_proposal_store.py)
+**Data Flow** (prompt injection) **[NEW 2026-02-09]**:
+```
+Query → ProposalFilter.get_proposals(query, limit=3)
+    ↓ project-relevance keyword check (fast skip for non-project queries)
+    ↓ ProposalStore query with utility query (GOALS.md-based)
+    ↓ keyword dedup → semantic dedup
+    ↓ gate system scoring → composite scoring (priority+breadth+recency+goal)
+    ↓ novelty penalty (git commit overlap) → diversity selection
+    ↓ optional LLM pairwise ranking (tournament bracket)
+→ [PROPOSED FEATURES] section in prompt
+```
 
-**Dependencies**: ModelManager, MultiCollectionChromaStore, config.app_config
+**Tests**: 71+ unit tests across 5 files (test_code_proposal.py, test_proposal_generator.py, test_proposal_store.py, test_proposal_filter.py, test_shutdown_pipeline_proposals.py)
+
+**Dependencies**: ModelManager, MultiCollectionChromaStore, config.app_config, MultiStageGateSystem (optional), MemoryCoordinator (optional)
+
+---
+
+### 2.12.5b core/prompt/proposal_filter.py (Proposal Prompt Injection Pipeline) **[NEW 2026-02-09]**
+**Purpose**: Retrieval, dedup, gating, and ranking of code proposals for injection into the `[PROPOSED FEATURES]` prompt section
+
+**Module Contract**:
+```
+Purpose: Surface the most valuable pending/approved proposals in prompts for project-related queries
+Inputs: User query, optional limit
+Outputs: List of scored proposal dicts [{content, metadata, relevance_score}]
+Side effects: Reads GOALS.md, calls git log, optionally calls LLM for pairwise ranking
+Dependencies: ProposalStore, MultiStageGateSystem (optional), ModelManager (optional)
+```
+
+**Pipeline** (in `get_proposals()`):
+1. **Project-relevance check**: Fast keyword intersection with `_PROJECT_KEYWORDS` (50+ project terms). Non-project queries (casual/personal) return empty immediately
+2. **Utility query**: Reads GOALS.md active goals, builds composite query for goal-aligned retrieval. Cached with MD5 file-hash invalidation
+3. **ProposalStore query**: Semantic search for top 20 pending/approved proposals
+4. **Keyword dedup**: Pairwise Jaccard on tags (threshold 0.60) + title word overlap (50%) — keeps higher priority
+5. **Semantic dedup**: sentence-transformers cosine similarity (threshold 0.75) — keeps higher priority
+6. **Gate scoring**: MultiStageGateSystem for goal_alignment signal (one of four scoring factors)
+7. **Composite scoring**: `w_priority(0.30) × priority + w_breadth(0.20) × breadth + w_recency(0.10) × recency + w_goal(0.40) × goal_alignment`
+8. **Novelty penalty**: Compares proposal title words against recent git commit messages (Jaccard). High overlap → multiplicative penalty (0.5-1.0 factor)
+9. **Diversity selection**: Greedy selection using overlap coefficient (|intersection|/|smaller set|, threshold 0.34) — prevents topic clustering
+10. **Optional LLM pairwise ranking**: Tournament bracket comparison of top 6 candidates
+
+**Key Methods**:
+- `get_proposals(query, limit=3)` → Main entry point, runs full pipeline
+- `_is_project_related(query)` → Fast keyword check (static)
+- `_build_utility_query()` → GOALS.md-derived query (cached)
+- `_keyword_dedup(proposals, threshold=0.60)` → Tag + title dedup (static)
+- `_semantic_dedup(proposals, threshold=0.85)` → Embedding-based dedup (static)
+- `_compute_composite_score(proposal, goal_alignment, w_*)` → Weighted composite (static)
+- `_score_priority(proposal)` → Normalize 1-10 to 0.0-1.0
+- `_score_breadth(proposal)` → Files + dirs + tags diversity
+- `_score_recency(proposal)` → Exponential decay (14-day half-life)
+- `_score_novelty(proposal)` → Git commit overlap check
+- `_diverse_select(scored_dicts, limit, overlap_threshold)` → Anti-clustering selection (static)
+- `_llm_pairwise_rank(proposals, limit)` → Tournament bracket LLM ranking
+
+**Integration**:
+- `ContextGatherer.get_proposed_features(query, limit)` → Calls `ProposalFilter.get_proposals()`
+- Builder adds `[PROPOSED FEATURES]` section after `[ADAPTIVE WORKFLOWS]`
+- TokenManager includes `proposed_features` at priority 3 (trimmed before core context)
+- Formatter `_sanitize_embedded_headers()` includes `[PROPOSED FEATURES]` pattern
+
+**Dependencies**: ProposalStore, MultiStageGateSystem (lazy-init), ModelManager (optional, for LLM ranking)
 
 ---
 
@@ -2873,11 +2976,15 @@ WIKI_TIMEOUT_DEFAULT = 1.2
 # Corpus Management
 CORPUS_MAX_ENTRIES = 2000
 
-# Code Proposals [NEW 2026-02-05]
+# Code Proposals [ENHANCED 2026-02-10]
 CODE_PROPOSALS_ENABLED = True
 CODE_PROPOSALS_MAX_PER_SESSION = 5
-CODE_PROPOSALS_DEDUP_THRESHOLD = 0.85
-CODE_PROPOSALS_MODEL = "claude-opus-4.6"
+CODE_PROPOSALS_DEDUP_THRESHOLD = 0.70
+
+# File Upload [ENHANCED 2026-02-10]
+FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']
+FILE_UPLOAD_IMAGE_DIR = "data/uploads"
+PROMPT_MAX_USER_UPLOADS = 5
 ```
 
 **Environment Overrides**: Any setting can be overridden via environment variables
@@ -3146,7 +3253,7 @@ daemon/
 │   ├── query_rewriter.py      # Query expansion for retrieval
 │   ├── keyword_matcher.py     # Keyword overlap scoring
 │   ├── logging_utils.py       # Centralized logging
-│   ├── file_processor.py      # PDF/DOCX ingestion
+│   ├── file_processor.py      # File/image upload processing with security validation [ENHANCED 2026-02-10]
 │   ├── health_check.py        # Docker/K8s health endpoint
 │   ├── conversation_logger.py # Conversation persistence
 │   ├── web_search_trigger.py  # Web search detection (LLM-first + heuristics) [ENHANCED 2026-01]
@@ -3162,7 +3269,8 @@ daemon/
 │   ├── wolfram_manager.py     # Wolfram Alpha LLM API [NEW 2026-01-22]
 │   ├── sandbox_manager.py     # E2B code sandbox execution [NEW 2026-01-22]
 │   ├── obsidian_manager.py    # Obsidian vault integration [NEW 2026-01]
-│   ├── reference_docs_manager.py  # Daemon self-knowledge docs [NEW 2026-01]
+│   ├── reference_docs_manager.py  # Daemon self-knowledge docs + user uploads [ENHANCED 2026-02-10]
+│   ├── proposal_generator.py  # LLM-based code proposal generation [ENHANCED 2026-02-10]
 │   ├── git_memory.py          # Git commit extractor [NEW 2026-01-27]
 │   └── git_memory_loader.py   # Git → PROCEDURAL ChromaDB loader [NEW 2026-01-27]
 │
