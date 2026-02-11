@@ -35,10 +35,10 @@ Module Contract
 
 Prompt Section Order:
   [RECENT CONVERSATION] → [RELEVANT MEMORIES] → [USER PROFILE] → [SUMMARIES] →
-  [REFLECTIONS] → [DREAMS] → [USER'S PERSONAL NOTES] → [DAEMON DOCUMENTATION] →
-  [PROJECT COMMIT HISTORY] → [ADAPTIVE WORKFLOWS] → [WEB SEARCH RESULTS] →
-  [RELEVANT INFORMATION] → [TIME CONTEXT] → [TEMPORAL GROUNDING] →
-  [STM SUMMARY] → [CURRENT USER QUERY]
+  [REFLECTIONS] → [DREAMS] → [USER'S PERSONAL NOTES] → [USER UPLOADED ITEMS] →
+  [DAEMON DOCUMENTATION] → [PROJECT COMMIT HISTORY] → [ADAPTIVE WORKFLOWS] →
+  [PROPOSED FEATURES] → [WEB SEARCH RESULTS] → [RELEVANT INFORMATION] →
+  [TIME CONTEXT] → [TEMPORAL GROUNDING] → [STM SUMMARY] → [CURRENT USER QUERY]
 """
 
 import os
@@ -108,6 +108,8 @@ PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
 PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 5)
 PROMPT_MAX_GIT_COMMITS = _cfg_int("prompt_max_git_commits", 10)
 PROMPT_MAX_SKILLS = _cfg_int("prompt_max_skills", 5)
+PROMPT_MAX_PROPOSALS = _cfg_int("prompt_max_proposals", 3)
+PROMPT_MAX_USER_UPLOADS = _cfg_int("prompt_max_user_uploads", 5)
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
@@ -140,9 +142,11 @@ PRIORITY_ORDER = [
     ("recent_conversations", 7),
     ("semantic_chunks", 6),
     ("personal_notes", 6),  # User's Obsidian notes - high priority
-    ("reference_docs", 5),  # User uploaded reference documents
+    ("user_uploads", 6),    # User uploaded files/images - high priority
+    ("reference_docs", 5),  # Reference documents (system docs, project outlines)
     ("git_commits", 5),     # Git commit history (procedural memory)
     ("procedural_skills", 5),  # Reusable problem-solving patterns
+    ("proposed_features", 3),  # Code proposals (trimmed before core context)
     ("memories", 5),
     ("semantic_facts", 4),
     ("fresh_facts", 4),
@@ -151,6 +155,52 @@ PRIORITY_ORDER = [
     ("wiki", 1),
     ("dreams", 2),
 ]
+
+
+def _load_upload_image(image_path: str) -> Optional[dict]:
+    """
+    Load a persisted upload image from disk as base64 for multimodal API calls.
+
+    Args:
+        image_path: Path to the image file on disk
+
+    Returns:
+        Dict with 'data', 'media_type', 'filename' keys, or None if loading fails
+    """
+    import base64
+    from pathlib import Path
+
+    try:
+        path = Path(image_path)
+        if not path.exists() or not path.is_file():
+            logger.debug(f"[_load_upload_image] File not found: {image_path}")
+            return None
+
+        # Enforce 5MB cap to avoid memory issues
+        if path.stat().st_size > 5 * 1024 * 1024:
+            logger.warning(f"[_load_upload_image] File too large (>5MB), skipping: {image_path}")
+            return None
+
+        # Determine media type from extension
+        ext = path.suffix.lower()
+        media_types = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+        }
+        media_type = media_types.get(ext, 'application/octet-stream')
+
+        data = base64.b64encode(path.read_bytes()).decode('utf-8')
+        return {
+            'data': data,
+            'media_type': media_type,
+            'filename': path.name,
+        }
+    except Exception as e:
+        logger.warning(f"[_load_upload_image] Failed to load {image_path}: {e}")
+        return None
 
 
 class UnifiedPromptBuilder:
@@ -363,9 +413,14 @@ class UnifiedPromptBuilder:
                 ))
             )
 
-            # Reference documents (user uploaded)
+            # Reference documents (system docs, project outlines - excludes user uploads)
             tasks["reference_docs"] = asyncio.create_task(
                 _timed_task("reference_docs", self.context_gatherer.get_reference_docs(user_input, PROMPT_MAX_REFERENCE_DOCS))
+            )
+
+            # User uploads (previously uploaded files/images)
+            tasks["user_uploads"] = asyncio.create_task(
+                _timed_task("user_uploads", self.context_gatherer.get_user_uploads(user_input, PROMPT_MAX_USER_UPLOADS))
             )
 
             # Git commit history (procedural memory)
@@ -376,6 +431,11 @@ class UnifiedPromptBuilder:
             # Procedural skills (adaptive workflows)
             tasks["procedural_skills"] = asyncio.create_task(
                 _timed_task("procedural_skills", self.context_gatherer.get_procedural_skills(user_input, PROMPT_MAX_SKILLS))
+            )
+
+            # Proposed features (code proposals, only for project-related queries)
+            tasks["proposed_features"] = asyncio.create_task(
+                _timed_task("proposed_features", self.context_gatherer.get_proposed_features(user_input, PROMPT_MAX_PROPOSALS))
             )
 
             # Web search (triggered based on query analysis, suppressed during crisis)
@@ -403,6 +463,8 @@ class UnifiedPromptBuilder:
                         gathered[name] = result or []
                         if name == "memories":
                             logger.debug(f"MEMORIES TASK: Got {len(result) if result else 0} memories")
+                        if name == "proposed_features":
+                            logger.info(f"[PROPOSED_FEATURES] Task returned {len(result) if result else 0} proposals")
 
                 # Sort tasks by time (slowest first) for easy identification of bottlenecks
                 sorted_timings = sorted(task_timings.items(), key=lambda x: x[1], reverse=True)
@@ -521,9 +583,11 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": gathered.get("semantic", []),
                 "wiki": gathered.get("wiki", []),
                 "personal_notes": gathered.get("personal_notes", []),  # User's Obsidian notes
-                "reference_docs": gathered.get("reference_docs", []),  # User uploaded documents
+                "reference_docs": gathered.get("reference_docs", []),  # System/project documentation
+                "user_uploads": gathered.get("user_uploads", []),     # User uploaded files/images
                 "git_commits": gathered.get("git_commits", []),      # Git commit history
                 "procedural_skills": gathered.get("procedural_skills", []),  # Adaptive workflows
+                "proposed_features": gathered.get("proposed_features", []),  # Code proposals
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
             }
             # DEBUG: Log web search results
@@ -813,8 +877,10 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": context.get("semantic_chunks", []),
                 "wiki": context.get("wiki", []),
                 "personal_notes": context.get("personal_notes", []),  # User's Obsidian notes
+                "user_uploads": context.get("user_uploads", []),     # User uploaded files/images
                 "git_commits": context.get("git_commits", []),      # Git commit history
                 "procedural_skills": context.get("procedural_skills", []),  # Adaptive workflows
+                "proposed_features": context.get("proposed_features", []),  # Code proposals
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
@@ -842,8 +908,10 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": [],
                 "wiki": [],
                 "personal_notes": [],
+                "user_uploads": [],
                 "git_commits": [],
                 "procedural_skills": [],
+                "proposed_features": [],
                 "web_search_results": None,
                 "memory_id_map": {}
             }
@@ -917,8 +985,10 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": [],
                 "wiki": [],
                 "personal_notes": [],  # No personal notes for small-talk
+                "user_uploads": [],   # No uploads for small-talk
                 "git_commits": [],
                 "procedural_skills": [],
+                "proposed_features": [],  # No proposals for small-talk
                 "web_search_results": None  # No web search for small-talk
             }
 
@@ -948,8 +1018,10 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": [],
                 "wiki": [],
                 "personal_notes": [],
+                "user_uploads": [],
                 "git_commits": [],
                 "procedural_skills": [],
+                "proposed_features": [],
                 "web_search_results": None
             }
 
@@ -1636,7 +1708,57 @@ class UnifiedPromptBuilder:
             total_image_data = sum(len(note.get("image_data", [])) for note in personal_notes if isinstance(note, dict))
             logger.warning(f"[PromptBuilder] IMAGE DEBUG: No images in note_images list. personal_notes has {len(personal_notes)} notes, total image_data entries={total_image_data}")
 
-        # Reference Documents (user uploaded technical docs, project outlines, etc.)
+        # User Uploaded Items (files and images uploaded during sessions)
+        user_uploads = context.get("user_uploads", []) or []
+        uu_lines: list[str] = []
+        upload_images: list[dict] = []  # Collect images for multimodal models
+
+        for i, upload in enumerate(user_uploads, start=1):
+            if isinstance(upload, dict):
+                meta = upload.get("metadata", {})
+                title = meta.get("title", "")
+                is_image = meta.get("is_image", False)
+                media_type = meta.get("media_type", "")
+                image_path = meta.get("image_path", "")
+                content = upload.get("content", "")
+                content = _sanitize_embedded_headers(content) if content else ""
+            else:
+                title, is_image, media_type, image_path, content = "", False, "", "", str(upload)
+
+            if content:
+                header_parts = []
+                if title:
+                    # Strip "upload:" prefix for cleaner display
+                    display_title = title[7:] if title.startswith("upload:") else title
+                    header_parts.append(f"**{display_title}**")
+                if is_image:
+                    header_parts.append(f"[image: {media_type}]")
+                    # Load persisted image for multimodal API calls
+                    if image_path:
+                        img_data = _load_upload_image(image_path)
+                        if img_data:
+                            upload_images.append({
+                                "note_index": 0,
+                                "note_title": f"Upload: {title}",
+                                "note_section": "",
+                                "filename": img_data.get("filename", ""),
+                                "media_type": img_data.get("media_type", ""),
+                                "data": img_data.get("data", ""),
+                            })
+                header = " ".join(header_parts) if header_parts else ""
+                uu_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
+
+        if uu_lines:
+            sections.append(f"[USER UPLOADED ITEMS] n={len(uu_lines)}\n" + "\n\n".join(uu_lines))
+
+        # Merge upload images into note_images for multimodal API calls
+        if upload_images:
+            existing_images = context.get("note_images", [])
+            existing_images.extend(upload_images)
+            context["note_images"] = existing_images
+            logger.debug(f"[PromptBuilder] Merged {len(upload_images)} upload images into note_images")
+
+        # Reference Documents (system docs, project outlines, etc.)
         reference_docs = context.get("reference_docs", []) or []
         rd_lines: list[str] = []
         for i, doc in enumerate(reference_docs, start=1):
@@ -1751,6 +1873,38 @@ class UnifiedPromptBuilder:
 
         if sk_lines:
             sections.append(f"[ADAPTIVE WORKFLOWS] n={len(sk_lines)}\n" + "\n\n".join(sk_lines))
+
+        # Proposed Features (code proposals surfaced for project-related queries)
+        proposed_features = context.get("proposed_features", [])
+        logger.info(f"[PROPOSED_FEATURES] _assemble_prompt: {len(proposed_features)} proposals in context")
+        pf_lines = []
+        for i, pf in enumerate(proposed_features, 1):
+            meta = pf.get("metadata", {})
+            title = meta.get("title", "Untitled")
+            ptype = meta.get("proposal_type", "feature")
+            priority = meta.get("priority", 5)
+            tags_raw = meta.get("tags_json", "[]")
+            reasoning = meta.get("reasoning", "")
+
+            try:
+                import json as _json
+                tag_list = _json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+            except Exception:
+                tag_list = []
+
+            tag_str = " ".join(f"#{t}" for t in tag_list) if tag_list else ""
+            header = f"[{ptype}] P{priority}"
+            if tag_str:
+                header += f" {tag_str}"
+            header += f" **{title}**"
+
+            entry = f"{i}) {header}"
+            if reasoning:
+                entry += f"\n   Rationale: {reasoning[:200]}"
+            pf_lines.append(entry)
+
+        if pf_lines:
+            sections.append(f"[PROPOSED FEATURES] n={len(pf_lines)}\n" + "\n\n".join(pf_lines))
 
         # User Profile (replaces semantic_facts + fresh_facts)
         # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
@@ -1917,7 +2071,8 @@ class PromptBuilder:
                 "reflections": [],
                 "dreams": dreams or [],
                 "semantic_chunks": semantic_chunks or [],
-                "wiki": [{"content": wiki_snippet}] if wiki_snippet else []
+                "wiki": [{"content": wiki_snippet}] if wiki_snippet else [],
+                "proposed_features": [],
             }
             return self.unified_builder._assemble_prompt(context, user_input)
         else:

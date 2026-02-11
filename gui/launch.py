@@ -990,7 +990,7 @@ def launch_gui(orchestrator, force_wizard=False):
                 sync_status_md = gr.Markdown(value="", elem_id="sync_status")
 
                 with gr.Row():
-                    files = gr.File(file_types=[".txt", ".docx", ".csv", ".py"], file_count="multiple", label="Files")
+                    files = gr.File(file_types=[".txt", ".docx", ".csv", ".py", ".png", ".jpg", ".jpeg", ".gif", ".webp"], file_count="multiple", label="Files & Images")
                     use_raw = gr.Checkbox(label="Bypass Memory (Raw GPT)", value=False)
                     enable_citations = gr.Checkbox(label="Enable Memory Citations", value=False, info="Show which memories Claude references")
                     personality = gr.Dropdown(
@@ -1241,10 +1241,36 @@ def launch_gui(orchestrator, force_wizard=False):
                     generate_btn = gr.Button("Generate Proposals Now", variant="secondary")
                     generate_status = gr.Markdown(value="")
 
+                # Shared state for both manage and codegen sections
+                proposals_map = gr.State({})  # title -> proposal_id mapping
+
+                # --- Manage Proposals ---
+                gr.Markdown("---")
+                gr.Markdown("### Manage Proposals")
+
+                with gr.Row():
+                    manage_selector = gr.Dropdown(
+                        choices=[], label="Select Proposal to Manage",
+                        interactive=True, allow_custom_value=False,
+                    )
+
+                with gr.Row():
+                    mark_built_btn = gr.Button("Mark Built", variant="primary")
+                    mark_rejected_btn = gr.Button("Reject", variant="stop")
+                    mark_approved_btn = gr.Button("Approve", variant="secondary")
+
+                with gr.Row():
+                    rejection_reason_input = gr.Textbox(
+                        label="Rejection reason (optional)",
+                        placeholder="Why is this being rejected?",
+                        lines=1,
+                    )
+
+                manage_status = gr.Markdown(value="")
+
                 # --- Code Generation ---
                 gr.Markdown("---")
                 gr.Markdown("### Generate Implementation Code")
-                proposals_map = gr.State({})  # title -> proposal_id mapping
 
                 with gr.Row():
                     codegen_selector = gr.Dropdown(
@@ -1264,15 +1290,13 @@ def launch_gui(orchestrator, force_wizard=False):
                         if not chroma_store:
                             return (
                                 "<p><em>No chroma store available</em></p>",
-                                gr.update(choices=[]),
-                                {},
+                                gr.update(choices=[]), gr.update(choices=[]), {},
                             )
                         all_items = chroma_store.list_all("proposals")
                         if not all_items:
                             return (
                                 "<p><em>No proposals yet. Click 'Generate Proposals Now' to create some.</em></p>",
-                                gr.update(choices=[]),
-                                {},
+                                gr.update(choices=[]), gr.update(choices=[]), {},
                             )
 
                         # Collect and filter
@@ -1293,8 +1317,7 @@ def launch_gui(orchestrator, force_wizard=False):
                         if not proposals:
                             return (
                                 "<p><em>No proposals match the current filters.</em></p>",
-                                gr.update(choices=[]),
-                                {},
+                                gr.update(choices=[]), gr.update(choices=[]), {},
                             )
 
                         # Build dropdown choices and mapping
@@ -1364,6 +1387,22 @@ def launch_gui(orchestrator, force_wizard=False):
                             body.append('</div>')
                             body_html = "\n".join(body)
 
+                            # Status badge color
+                            _badge_colors = {
+                                "pending": "#6b7280",
+                                "approved": "#f59e0b",
+                                "completed": "#10b981",
+                                "rejected": "#ef4444",
+                                "failed": "#ef4444",
+                            }
+                            badge_color = _badge_colors.get(status, "#6b7280")
+                            badge_html = (
+                                f'<span style="display:inline-block;padding:1px 8px;'
+                                f'border-radius:9999px;font-size:0.75em;font-weight:600;'
+                                f'color:#fff;background:{badge_color};margin-left:8px;'
+                                f'vertical-align:middle;">{status}</span>'
+                            )
+
                             html_parts.append(
                                 f'<details{open_attr} style="margin-bottom:6px;border:1px solid #374151;'
                                 f'border-radius:6px;background:#1f2937;">'
@@ -1372,18 +1411,21 @@ def launch_gui(orchestrator, force_wizard=False):
                                 f'{title} '
                                 f'<span style="font-weight:400;color:#9ca3af;font-size:0.85em;">'
                                 f'({ptype} | P{priority})</span>'
+                                f'{badge_html}'
                                 f'</summary>\n{body_html}\n</details>'
                             )
 
+                        _first_val = dropdown_choices[0] if dropdown_choices else None
                         return (
                             "\n".join(html_parts),
-                            gr.update(choices=dropdown_choices, value=dropdown_choices[0] if dropdown_choices else None),
+                            gr.update(choices=dropdown_choices, value=_first_val),
+                            gr.update(choices=dropdown_choices, value=_first_val),
                             title_to_id,
                         )
                     except Exception as e:
                         return (
                             f"<p><em>Error loading proposals: {e}</em></p>",
-                            gr.update(choices=[]),
+                            gr.update(choices=[]), gr.update(choices=[]),
                             {},
                         )
 
@@ -1511,16 +1553,80 @@ def launch_gui(orchestrator, force_wizard=False):
                         logging.error(f"[GUI] Code generation error: {traceback.format_exc()}")
                         return f"Code generation failed: {e}", ""
 
+                def _update_proposal_status(selected_label, title_map, new_status, reason=""):
+                    """Update a proposal's status and return feedback message."""
+                    if not selected_label or not title_map:
+                        return "Select a proposal first."
+
+                    proposal_id = title_map.get(selected_label)
+                    if not proposal_id:
+                        return f"Proposal not found for: {selected_label}"
+
+                    try:
+                        from memory.proposal_store import ProposalStore
+                        from memory.code_proposal import ProposalStatus
+
+                        chroma = getattr(orchestrator, 'memory_system', None)
+                        chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
+                        if not chroma_store:
+                            return "Chroma store not available."
+
+                        store = ProposalStore(chroma_store=chroma_store)
+                        status_enum = ProposalStatus(new_status)
+                        ok = store.update_status(proposal_id, status_enum, reason=reason)
+
+                        if ok:
+                            return f"Proposal marked as **{new_status}**."
+                        else:
+                            return f"Failed to update proposal status."
+                    except Exception as e:
+                        return f"Error updating status: {e}"
+
                 refresh_proposals_btn.click(
                     _load_proposals,
                     inputs=[proposal_status_filter, proposal_type_filter],
-                    outputs=[proposals_view, codegen_selector, proposals_map],
+                    outputs=[proposals_view, manage_selector, codegen_selector, proposals_map],
                 )
 
                 generate_btn.click(
                     _generate_proposals_now,
                     inputs=[],
                     outputs=[generate_status],
+                ).then(
+                    _load_proposals,
+                    inputs=[proposal_status_filter, proposal_type_filter],
+                    outputs=[proposals_view, manage_selector, codegen_selector, proposals_map],
+                )
+
+                # --- Manage buttons: update status, then auto-refresh ---
+                mark_built_btn.click(
+                    lambda sel, m: _update_proposal_status(sel, m, "completed"),
+                    inputs=[manage_selector, proposals_map],
+                    outputs=[manage_status],
+                ).then(
+                    _load_proposals,
+                    inputs=[proposal_status_filter, proposal_type_filter],
+                    outputs=[proposals_view, manage_selector, codegen_selector, proposals_map],
+                )
+
+                mark_rejected_btn.click(
+                    lambda sel, m, r: _update_proposal_status(sel, m, "rejected", r),
+                    inputs=[manage_selector, proposals_map, rejection_reason_input],
+                    outputs=[manage_status],
+                ).then(
+                    _load_proposals,
+                    inputs=[proposal_status_filter, proposal_type_filter],
+                    outputs=[proposals_view, manage_selector, codegen_selector, proposals_map],
+                )
+
+                mark_approved_btn.click(
+                    lambda sel, m: _update_proposal_status(sel, m, "approved"),
+                    inputs=[manage_selector, proposals_map],
+                    outputs=[manage_status],
+                ).then(
+                    _load_proposals,
+                    inputs=[proposal_status_filter, proposal_type_filter],
+                    outputs=[proposals_view, manage_selector, codegen_selector, proposals_map],
                 )
 
                 codegen_btn.click(
@@ -1920,7 +2026,7 @@ def launch_gui(orchestrator, force_wizard=False):
         demo.load(
             _load_proposals,
             inputs=[proposal_status_filter, proposal_type_filter],
-            outputs=[proposals_view, codegen_selector, proposals_map],
+            outputs=[proposals_view, manage_selector, codegen_selector, proposals_map],
         )
 
     # --- Configure queue with timeout ---

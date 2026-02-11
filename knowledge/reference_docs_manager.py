@@ -258,13 +258,15 @@ class ReferenceDocsManager:
 
         return result
 
-    def upload_text(self, content: str, title: str) -> UploadResult:
+    def upload_text(self, content: str, title: str, metadata_overrides: dict = None) -> UploadResult:
         """
         Upload text content directly (e.g., from GUI paste or conversation).
 
         Args:
             content: Text content to upload
             title: Title for the document
+            metadata_overrides: Optional dict of metadata fields to merge into each chunk's metadata
+                               (e.g., {'type': 'user_upload', 'is_image': True, 'image_path': '...'})
 
         Returns:
             UploadResult with statistics about the operation
@@ -304,6 +306,10 @@ class ReferenceDocsManager:
                     'timestamp': datetime.now().isoformat(),
                     'truth_score': 0.85,
                 }
+
+                # Apply caller-provided metadata overrides (e.g., type='user_upload')
+                if metadata_overrides:
+                    metadata.update(metadata_overrides)
 
                 self.chroma_store.add_to_collection(
                     'reference_docs',

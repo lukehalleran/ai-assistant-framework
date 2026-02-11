@@ -182,6 +182,7 @@ def _sanitize_embedded_headers(text: str) -> str:
             r'\[FACTS[^\]]*\]',
             r'\[DIRECTIVES[^\]]*\]',
             r'\[ADAPTIVE WORKFLOWS[^\]]*\]',
+            r'\[PROPOSED FEATURES[^\]]*\]',
             r'\[PROJECT COMMIT HISTORY[^\]]*\]',
         ]
 
