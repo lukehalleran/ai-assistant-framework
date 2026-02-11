@@ -54,6 +54,7 @@ PRIORITY_ORDER = [
     ("memories",             5),
     ("facts",                4),
     ("summaries",            3),
+    ("proposed_features",    3),   # Code proposals (trimmed before core context)
     ("reflections", 2),  # below summaries; adjust if you want them stickier
     ("wiki",                 1),
     ("dreams",               2),   # still included; trimmed early if needed

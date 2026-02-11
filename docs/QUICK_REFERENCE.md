@@ -136,8 +136,11 @@ class MemoryScorer:
         """Base 0.5 + length/question/keyword bonuses, capped at 1.0"""
 
 
-# memory/shutdown_processor.py — Session-end processing
+# memory/shutdown_processor.py — Session-end processing [ENHANCED 2026-02-09]
 class ShutdownProcessor:
+    def __init__(..., memory_coordinator=None):
+        """memory_coordinator enables pipeline-enriched proposal generation."""
+
     async def process_shutdown_memory(session_conversations=None):
         """Block summaries + fact extraction + procedural skills + code proposals + user profile updates"""
 
@@ -408,11 +411,14 @@ class GoalDirectedGenerator:
 
     async def generate_proposals(extra_context="", max_proposals=None) -> List[CodeProposal]:
         """
-        1. Read PROJECT_SKELETON.md, GOALS.md, git log (last 10)
-        2. Build creative prompt (new features, APIs, capabilities)
+        1. Read CLAUDE.md, QUICK_REFERENCE.md, PROJECT_SKELETON.md (filtered), GOALS.md, git log
+        2. Build creative prompt with full project context
         3. Call LLM for structured JSON
         4. Parse + validate into CodeProposal objects
         """
+
+    async def generate_proposals_with_context(pipeline_context, extra_context="", max_proposals=None) -> List[CodeProposal]:
+        """Same as above but with pre-gathered rich context from Daemon retrieval pipeline."""
 
     async def generate_code_for_proposal(proposal, output_dir=None) -> Dict:
         """
@@ -435,18 +441,115 @@ class ProposalStore:
     def query_proposals(query_text, n_results=20, status=None, proposal_type=None) -> List[CodeProposal]:
         """Semantic search with optional status/type filters."""
 
-    def check_similarity(proposal, threshold=0.85) -> bool:
-        """True if similar proposal already exists (dedup check)."""
+    def check_similarity(proposal, threshold=0.70) -> bool:
+        """True if similar proposal exists (cosine OR title word overlap >= 0.60 Jaccard)."""
 
-    def get_for_dedup() -> str:
+    def get_for_dedup(limit=25) -> str:
         """Get recent proposal titles for dedup context in generator prompt."""
+
+
+# core/prompt/proposal_filter.py — Prompt-injection retrieval/ranking pipeline [NEW 2026-02-09]
+class ProposalFilter:
+    def __init__(chroma_store=None, gate_system=None, model_manager=None):
+        pass
+
+    async def get_proposals(query, limit=3) -> List[Dict]:
+        """
+        Full pipeline: project-relevance check → ProposalStore query (utility query)
+        → keyword dedup → semantic dedup → gate scoring → composite scoring
+        → novelty penalty → diversity selection → optional LLM pairwise ranking.
+        Returns [{content, metadata, relevance_score}, ...] ready for prompt.
+        """
+
+    # Composite score = w_priority(0.30) * priority + w_breadth(0.20) * breadth
+    #                 + w_recency(0.10) * recency + w_goal(0.40) * goal_alignment
+    # Novelty penalty: multiplicative factor from git commit overlap (0.5-1.0)
+    # Diversity: overlap-coefficient anti-clustering (threshold 0.34)
+
+
+# memory/shutdown_processor.py — Pipeline-enriched proposal generation [ENHANCED 2026-02-09]
+class ShutdownProcessor:
+    def __init__(..., memory_coordinator=None):
+        """memory_coordinator enables pipeline-enriched proposal generation."""
+
+    async def _generate_proposals(session_conversations):
+        """Routes through pipeline-enriched path (rich context from MemoryCoordinator)
+        or falls back to _generate_proposals_cold() (truncated excerpts + file reads only)."""
+
+    async def _generate_proposals_cold(sess_items, generator, dedup_context):
+        """Original fallback: conversation excerpts + file reads only."""
+
+    async def _gather_proposal_context(sess_items) -> str:
+        """Parallel retrieval: memories, skills, facts, reflections, summaries,
+        git commits, user profile. Builds structured context sections."""
 
 
 # Config (app_config.py):
 CODE_PROPOSALS_ENABLED = True
 CODE_PROPOSALS_MAX_PER_SESSION = 5
-CODE_PROPOSALS_DEDUP_THRESHOLD = 0.85
-CODE_PROPOSALS_MODEL = "claude-opus-4.6"
+CODE_PROPOSALS_DEDUP_THRESHOLD = 0.70
+# Proposal generation context: CLAUDE.md, QUICK_REFERENCE.md (full),
+# PROJECT_SKELETON.md (filtered, excludes Core Components section),
+# GOALS.md, git log (last 10 commits). All read live from disk.
+# Prompt integration:
+CODE_PROPOSALS_PROMPT_ENABLED = True
+CODE_PROPOSALS_PROMPT_MAX = 3
+CODE_PROPOSALS_KEYWORD_DEDUP_TAG_THRESHOLD = 0.60
+CODE_PROPOSALS_SEMANTIC_DEDUP_THRESHOLD = 0.75
+CODE_PROPOSALS_LLM_RANKING = False             # Tournament-bracket pairwise ranking
+CODE_PROPOSALS_LLM_RANKING_MODEL = "gpt-4o-mini"
+CODE_PROPOSALS_WEIGHT_PRIORITY = 0.30
+CODE_PROPOSALS_WEIGHT_BREADTH = 0.20
+CODE_PROPOSALS_WEIGHT_RECENCY = 0.10
+CODE_PROPOSALS_WEIGHT_GOAL_ALIGNMENT = 0.40
+```
+
+---
+
+## File Upload System **[ENHANCED 2026-02-10]**
+
+```python
+# utils/file_processor.py — Processes text documents and images
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+
+@dataclass
+class ProcessedFile:
+    filename: str; extension: str; content_text: str; file_path: str
+    is_image: bool; media_type: str; base64_data: str; file_size: int; error: str
+
+@dataclass
+class ProcessedFilesResult:
+    text_content: str               # Backward-compatible merged text
+    processed_files: List[ProcessedFile]  # All files
+    images: List[ProcessedFile]     # Image files only (base64 encoded)
+    documents: List[ProcessedFile]  # Text documents only
+
+class FileProcessor:
+    async def process_files(user_text, files) -> str:
+        """Legacy API — delegates to process_files_structured(), returns .text_content"""
+
+    async def process_files_structured(user_text, files) -> ProcessedFilesResult:
+        """New API — returns structured result with separate image/document handling.
+        Images: base64 encoded, saved to data/uploads/<timestamp>_<filename>
+        Documents: text extracted, security validated (path traversal, size limits, CSV sanitization)
+        """
+
+# gui/handlers.py — Upload persistence (fire-and-forget background task)
+async def _persist_uploads(orchestrator, files_result):
+    """Store uploads to ChromaDB reference_docs with type='user_upload' metadata.
+    Images also store is_image, media_type, image_path metadata.
+    Upload images injected into note_images for multimodal model use."""
+
+# core/prompt/context_gatherer.py — Retrieval
+async def get_user_uploads(query, limit=5) -> List[Dict]:
+    """Fetch from reference_docs, filter to type='user_upload' only."""
+async def get_reference_docs(query, limit) -> List[Dict]:
+    """Fetch from reference_docs, filter OUT type='user_upload'."""
+
+# Config (app_config.py):
+FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']
+FILE_UPLOAD_IMAGE_DIR = "data/uploads"
+PROMPT_MAX_USER_UPLOADS = 5
 ```
 
 ---
@@ -678,9 +781,11 @@ score = (
 [REFLECTIONS]                  # Session reflections
 [DREAMS]                       # Dream memories (if enabled)
 [USER'S PERSONAL NOTES]        # Obsidian vault notes (hybrid retrieval) + images for multimodal [ENHANCED 2026-01-30]
+[USER UPLOADED ITEMS]          # Persisted user file/image uploads from reference_docs collection [NEW 2026-02-10]
 [DAEMON DOCUMENTATION]         # Self-knowledge: architecture docs, PROJECT_SKELETON
 [PROJECT COMMIT HISTORY]       # Git commit history (procedural memory)
 [ADAPTIVE WORKFLOWS]           # Reusable problem-solving patterns (WHEN/THEN)
+[PROPOSED FEATURES]            # Code proposals surfaced for project-related queries [NEW 2026-02-09]
 [WEB SEARCH RESULTS]           # Real-time Tavily results
 [RELEVANT INFORMATION]         # Wikipedia chunks
 [TIME CONTEXT]                 # Current datetime
@@ -1068,4 +1173,4 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-This document is ~730 lines → ~4.5K tokens, providing instant lookup for critical functions and patterns.
+This document is ~800 lines → ~5K tokens, providing instant lookup for critical functions and patterns.

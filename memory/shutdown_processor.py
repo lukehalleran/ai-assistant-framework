@@ -8,6 +8,7 @@ extraction, code proposal generation, and session reflections.
 """
 
 import os
+import asyncio
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -50,6 +51,7 @@ class ShutdownProcessor:
         user_profile,
         storage,
         session_start: datetime,
+        memory_coordinator=None,
     ):
         self.corpus_manager = corpus_manager
         self.chroma_store = chroma_store
@@ -59,6 +61,7 @@ class ShutdownProcessor:
         self.user_profile = user_profile
         self._storage = storage
         self.session_start = session_start
+        self.memory_coordinator = memory_coordinator
 
     # ------------------------------------------------------------------
     # Helpers
@@ -586,8 +589,9 @@ class ShutdownProcessor:
     async def _generate_proposals(self, session_conversations):
         """Generate goal-directed code proposals from session conversations.
 
-        Uses LLM to analyze session context and project state, then stores
-        non-duplicate proposals via ProposalStore.
+        ENHANCED: Routes through the Daemon retrieval pipeline for rich context
+        when memory_coordinator is available. Falls back to cold generation
+        (truncated excerpts + file reads only) otherwise.
         """
         try:
             from config.app_config import CODE_PROPOSALS_ENABLED
@@ -622,22 +626,6 @@ class ShutdownProcessor:
         if len(sess_items) < 3:
             return
 
-        # Build conversation excerpt for extra context
-        excerpts = []
-        for e in sess_items[-8:]:
-            q = (e.get('query') or '').strip()
-            a = (e.get('response') or '').strip()
-            if q or a:
-                lines = []
-                if q:
-                    lines.append(f"User: {q[:300]}")
-                if a:
-                    lines.append(f"Assistant: {a[:400]}")
-                excerpts.append("\n".join(lines))
-
-        if not excerpts:
-            return
-
         try:
             from knowledge.proposal_generator import GoalDirectedGenerator
             from memory.proposal_store import ProposalStore
@@ -647,14 +635,27 @@ class ShutdownProcessor:
                 repo_path=".",
             )
             proposal_store = ProposalStore(chroma_store=self.chroma_store)
-
-            # Include existing proposals for dedup context
             dedup_context = proposal_store.get_for_dedup()
-            extra_context = "## Recent Conversation\n" + "\n\n".join(excerpts)
-            if dedup_context:
-                extra_context += f"\n\n## Existing Proposals (avoid duplicates)\n{dedup_context}"
 
-            proposals = await generator.generate_proposals(extra_context=extra_context)
+            # Try pipeline-enriched generation first
+            if self.memory_coordinator:
+                try:
+                    rich_context = await self._gather_proposal_context(sess_items)
+                    if dedup_context:
+                        rich_context += f"\n\n## Existing Proposals (avoid duplicates)\n{dedup_context}"
+                    proposals = await generator.generate_proposals_with_context(
+                        pipeline_context=rich_context,
+                    )
+                    logger.info("[Shutdown] Used pipeline-enriched proposal generation")
+                except Exception as e:
+                    logger.warning(f"[Shutdown] Pipeline proposal generation failed, falling back: {e}")
+                    proposals = await self._generate_proposals_cold(
+                        sess_items, generator, dedup_context
+                    )
+            else:
+                proposals = await self._generate_proposals_cold(
+                    sess_items, generator, dedup_context
+                )
 
             kept = 0
             for proposal in proposals:
@@ -671,6 +672,184 @@ class ShutdownProcessor:
 
         except Exception as e:
             logger.warning(f"[Shutdown] Proposal generation failed: {e}")
+
+    async def _generate_proposals_cold(self, sess_items, generator, dedup_context):
+        """Original cold proposal generation (fallback).
+
+        Uses only truncated conversation excerpts + file reads (skeleton, goals,
+        git log). No retrieval pipeline context.
+        """
+        excerpts = []
+        for e in sess_items[-8:]:
+            q = (e.get('query') or '').strip()
+            a = (e.get('response') or '').strip()
+            if q or a:
+                lines = []
+                if q:
+                    lines.append(f"User: {q[:300]}")
+                if a:
+                    lines.append(f"Assistant: {a[:400]}")
+                excerpts.append("\n".join(lines))
+
+        if not excerpts:
+            return []
+
+        extra_context = "## Recent Conversation\n" + "\n\n".join(excerpts)
+        if dedup_context:
+            extra_context += f"\n\n## Existing Proposals (avoid duplicates)\n{dedup_context}"
+
+        return await generator.generate_proposals(extra_context=extra_context)
+
+    async def _gather_proposal_context(self, sess_items: list) -> str:
+        """Gather rich context from the Daemon retrieval pipeline for proposals.
+
+        Calls MemoryCoordinator retrieval methods in parallel to build a
+        comprehensive context string with semantic memories, summaries,
+        reflections, procedural skills, user facts, git commits, and
+        user profile info.
+        """
+        mc = self.memory_coordinator
+
+        # Build synthetic query from session topics for semantic retrieval
+        queries = [
+            (e.get('query') or '').strip()
+            for e in sess_items
+            if (e.get('query') or '').strip()
+        ]
+        topic_summary = " ".join(q[:100] for q in queries[-5:])
+        synthetic_query = f"suggest improvements and features based on: {topic_summary}"
+
+        # Parallel retrieval with reduced limits (focused for proposals)
+        tasks = {
+            "memories": mc.get_memories(synthetic_query, limit=5),
+            "skills": mc.get_skills(synthetic_query, limit=3),
+            "facts": mc.get_facts(synthetic_query, limit=5),
+            "reflections": mc.get_reflections_hybrid(synthetic_query, limit=2),
+        }
+
+        # Sync methods — call directly (not via asyncio.gather)
+        summaries = []
+        try:
+            summaries = mc.get_summaries_hybrid(synthetic_query, limit=3)
+        except Exception as e:
+            logger.debug(f"[Shutdown] Summary retrieval failed: {e}")
+
+        git_commits = []
+        try:
+            git_commits = self.chroma_store.query_collection(
+                "procedural", synthetic_query, n_results=5
+            )
+        except Exception as e:
+            logger.debug(f"[Shutdown] Git commit retrieval failed: {e}")
+
+        profile_text = ""
+        try:
+            if self.user_profile:
+                profile_text = self.user_profile.get_context_injection(
+                    max_tokens=300, query=synthetic_query
+                )
+        except Exception as e:
+            logger.debug(f"[Shutdown] User profile retrieval failed: {e}")
+
+        # Await async tasks
+        results = {}
+        for key, task in tasks.items():
+            try:
+                results[key] = await task
+            except Exception as e:
+                logger.debug(f"[Shutdown] {key} retrieval failed: {e}")
+                results[key] = []
+
+        memories = results.get("memories", [])
+        skills = results.get("skills", [])
+        facts = results.get("facts", [])
+        reflections = results.get("reflections", [])
+
+        # Format into structured context sections
+        sections = []
+
+        # Recent conversation (from session items, richer than cold approach)
+        conv_lines = []
+        for e in sess_items[-8:]:
+            q = (e.get('query') or '').strip()
+            a = (e.get('response') or '').strip()
+            if q or a:
+                parts = []
+                if q:
+                    parts.append(f"User: {q[:300]}")
+                if a:
+                    parts.append(f"Assistant: {a[:400]}")
+                conv_lines.append("\n".join(parts))
+        if conv_lines:
+            sections.append("## Recent Conversation\n" + "\n\n".join(conv_lines))
+
+        # Semantic memories
+        if memories:
+            lines = []
+            for m in memories[:5]:
+                content = m.get('content') or m.get('response') or ''
+                if content:
+                    lines.append(f"- {content[:300]}")
+            if lines:
+                sections.append("## Relevant Memories\n" + "\n".join(lines))
+
+        # Session summaries
+        if summaries:
+            lines = [
+                f"- {(s.get('content') or s.get('text') or '')[:200]}"
+                for s in summaries[:3]
+                if s.get('content') or s.get('text')
+            ]
+            if lines:
+                sections.append("## Session Summaries\n" + "\n".join(lines))
+
+        # Reflections
+        if reflections:
+            lines = [
+                f"- {(r.get('content') or r.get('text') or '')[:200]}"
+                for r in reflections[:2]
+                if r.get('content') or r.get('text')
+            ]
+            if lines:
+                sections.append("## Past Reflections\n" + "\n".join(lines))
+
+        # Procedural skills
+        if skills:
+            lines = []
+            for sk in skills[:3]:
+                meta = sk.get('metadata', {})
+                trigger = meta.get('trigger', '')
+                action = meta.get('action_pattern', '')
+                if trigger and action:
+                    lines.append(f"- When: {trigger[:150]} → Do: {action[:200]}")
+            if lines:
+                sections.append("## Problem-Solving Patterns\n" + "\n".join(lines))
+
+        # User facts
+        if facts:
+            lines = [
+                f"- {(f.get('content') or f.get('text') or '')[:150]}"
+                for f in facts[:5]
+                if f.get('content') or f.get('text')
+            ]
+            if lines:
+                sections.append("## Known User Facts\n" + "\n".join(lines))
+
+        # User profile
+        if profile_text and profile_text.strip():
+            sections.append(f"## User Profile\n{profile_text[:400]}")
+
+        # Git commits
+        if git_commits:
+            lines = [
+                f"- {(c.get('content') or '')[:150]}"
+                for c in git_commits[:5]
+                if c.get('content')
+            ]
+            if lines:
+                sections.append("## Recent Git Activity\n" + "\n".join(lines))
+
+        return "\n\n".join(sections)
 
     # ------------------------------------------------------------------
     # run_shutdown_reflection

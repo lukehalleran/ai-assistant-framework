@@ -22,7 +22,7 @@ import logging
 from core.response_parser import ResponseParser
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
-from utils.file_processor import FileProcessor
+from utils.file_processor import FileProcessor, ProcessedFilesResult
 import json
 from config.app_config import load_system_prompt, ENABLE_BEST_OF, BEST_OF_N, BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_MIN_QUESTION, BEST_OF_MODEL, BEST_OF_MIN_TOKENS
 from utils.query_checker import analyze_query
@@ -100,6 +100,61 @@ async def wait_for_pending_storage(timeout: float = 10.0):
         logger.warning(f"[SHUTDOWN] Storage tasks timed out after {timeout}s, {len(_pending_storage_tasks)} may be incomplete")
 
 
+async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
+    """
+    Persist uploaded documents and images to ChromaDB reference_docs collection.
+
+    Runs as a fire-and-forget background task so upload persistence doesn't
+    block response delivery.
+    """
+    try:
+        from knowledge.reference_docs_manager import ReferenceDocsManager
+
+        # Get or create a ReferenceDocsManager
+        ref_manager = None
+        if hasattr(orchestrator, 'prompt_builder') and hasattr(orchestrator.prompt_builder, 'context_gatherer'):
+            ref_manager = orchestrator.prompt_builder.context_gatherer.reference_docs_manager
+        if not ref_manager:
+            ref_manager = ReferenceDocsManager()
+
+        # Persist text documents
+        for doc in files_result.documents:
+            if doc.content_text and not doc.error:
+                try:
+                    ref_manager.upload_text(
+                        content=doc.content_text,
+                        title=f"upload:{doc.filename}",
+                        metadata_overrides={'type': 'user_upload'}
+                    )
+                    logger.info(f"[PERSIST] Stored document upload: {doc.filename}")
+                except Exception as e:
+                    logger.warning(f"[PERSIST] Failed to store document {doc.filename}: {e}")
+
+        # Persist images (store a description text + image metadata)
+        for img in files_result.images:
+            if not img.error:
+                try:
+                    description = f"User uploaded image: {img.filename} ({img.media_type}, {img.file_size} bytes)"
+                    overrides = {
+                        'type': 'user_upload',
+                        'is_image': True,
+                        'media_type': img.media_type,
+                    }
+                    if img.file_path:
+                        overrides['image_path'] = img.file_path
+                    ref_manager.upload_text(
+                        content=description,
+                        title=f"upload:{img.filename}",
+                        metadata_overrides=overrides
+                    )
+                    logger.info(f"[PERSIST] Stored image upload: {img.filename}")
+                except Exception as e:
+                    logger.warning(f"[PERSIST] Failed to store image {img.filename}: {e}")
+
+    except Exception as e:
+        logger.error(f"[PERSIST] Upload persistence failed: {e}")
+
+
 def smart_join(prev: str, new: str) -> str:
     """
     Inserts a space between tokens unless the new chunk begins with punctuation or whitespace.
@@ -144,9 +199,16 @@ async def handle_submit(
         return
 
     # Process files using security-hardened FileProcessor
-    # This supports .txt, .csv, .py, and .docx files with security checks
+    # Supports .txt, .csv, .py, .docx files and .png, .jpg, .jpeg, .gif, .webp images
     file_names = [file.name for file in files] if files else []
-    merged_input = await file_processor.process_files(user_text, files or [])
+    files_result = await file_processor.process_files_structured(user_text, files or [])
+    merged_input = files_result.text_content
+
+    # Persist uploads to ChromaDB in background (fire-and-forget)
+    if files_result.documents or files_result.images:
+        persist_task = asyncio.create_task(_persist_uploads(orchestrator, files_result))
+        _pending_storage_tasks.add(persist_task)
+        persist_task.add_done_callback(_pending_storage_tasks.discard)
 
     # RAW MODE: go straight through orchestrator (personality hook is handled inside process_user_query)
     if use_raw_gpt:
@@ -219,6 +281,21 @@ async def handle_submit(
     note_images = raw_context.get("note_images", [])
     if note_images:
         logger.warning(f"[Handle Submit] Extracted {len(note_images)} images from raw_context for multimodal generation")
+
+    # Inject uploaded images into note_images for immediate multimodal use
+    if files_result.images:
+        for img in files_result.images:
+            if img.base64_data and not img.error:
+                note_images.append({
+                    "note_index": 0,
+                    "note_title": f"Upload: {img.filename}",
+                    "note_section": "",
+                    "filename": img.filename,
+                    "media_type": img.media_type,
+                    "data": img.base64_data,
+                })
+        raw_context["note_images"] = note_images
+        logger.warning(f"[Handle Submit] Injected {len(files_result.images)} upload images, total note_images={len(note_images)}")
 
     logger.info(f"[Handle Submit] <<< prepare_prompt done, prompt_len={len(full_prompt)}")
 

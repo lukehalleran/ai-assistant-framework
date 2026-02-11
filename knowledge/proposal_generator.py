@@ -16,7 +16,7 @@ Module Contract
   - List[CodeProposal]: Validated proposal objects ready for storage
   - Dict with generated files, staging directory path, and errors (code generation)
 - Key behaviors:
-  - Gathers project context (skeleton, goals, recent commits)
+  - Gathers project context (skeleton, goals, CLAUDE.md, QUICK_REFERENCE.md, recent commits)
   - Prompts LLM for structured JSON proposals (creative mandate for new features)
   - Robust parsing of LLM output (handles fences, arrays, line-delimited)
   - Graceful degradation when files/git unavailable
@@ -70,19 +70,23 @@ class GoalDirectedGenerator:
         """
         Gather project context for proposal generation.
 
-        Reads project skeleton, goals, and recent git history.
-        Handles missing files and unavailable git gracefully.
+        Reads project skeleton, goals, CLAUDE.md, QUICK_REFERENCE.md,
+        and recent git history. Handles missing files and unavailable
+        git gracefully.
 
         Returns:
-            Dict with keys: skeleton, goals, recent_commits
+            Dict with keys: skeleton, goals, recent_commits, claude_md, quick_reference
         """
         context: Dict[str, str] = {
             "skeleton": "",
             "goals": "",
             "recent_commits": "",
+            "claude_md": "",
+            "quick_reference": "",
         }
 
-        # Read project skeleton
+        # Read project skeleton (skip "Core Components" section which is
+        # ~112K chars of per-method docs redundant with CLAUDE.md + QUICK_REFERENCE.md)
         skeleton_paths = [
             self.repo_path / "docs" / "PROJECT_SKELETON.md",
             self.repo_path / "PROJECT_SKELETON.md",
@@ -91,8 +95,7 @@ class GoalDirectedGenerator:
             if path.exists():
                 try:
                     text = path.read_text(encoding="utf-8")
-                    # Cap to avoid blowing up the prompt
-                    context["skeleton"] = text[:6000]
+                    context["skeleton"] = self._filter_skeleton_sections(text)
                     break
                 except Exception as e:
                     logger.debug(f"Could not read skeleton at {path}: {e}")
@@ -111,6 +114,36 @@ class GoalDirectedGenerator:
                 except Exception as e:
                     logger.debug(f"Could not read goals at {path}: {e}")
 
+        # Read CLAUDE.md (project conventions and architecture)
+        claude_md_paths = [
+            self.repo_path / "CLAUDE.md",
+            self.repo_path / "docs" / "CLAUDE.md",
+        ]
+        for path in claude_md_paths:
+            if path.exists():
+                try:
+                    text = path.read_text(encoding="utf-8")
+                    context["claude_md"] = text
+                    logger.debug(f"Loaded CLAUDE.md ({len(text)} chars)")
+                    break
+                except Exception as e:
+                    logger.debug(f"Could not read CLAUDE.md at {path}: {e}")
+
+        # Read QUICK_REFERENCE.md (API signatures and patterns)
+        quick_ref_paths = [
+            self.repo_path / "docs" / "QUICK_REFERENCE.md",
+            self.repo_path / "QUICK_REFERENCE.md",
+        ]
+        for path in quick_ref_paths:
+            if path.exists():
+                try:
+                    text = path.read_text(encoding="utf-8")
+                    context["quick_reference"] = text
+                    logger.debug(f"Loaded QUICK_REFERENCE.md ({len(text)} chars)")
+                    break
+                except Exception as e:
+                    logger.debug(f"Could not read QUICK_REFERENCE.md at {path}: {e}")
+
         # Recent git commits
         try:
             result = subprocess.run(
@@ -127,9 +160,49 @@ class GoalDirectedGenerator:
 
         return context
 
+    @staticmethod
+    def _filter_skeleton_sections(text: str) -> str:
+        """
+        Filter PROJECT_SKELETON.md to exclude the massive 'Core Components'
+        section (~112K chars of per-method docs) which is redundant with
+        CLAUDE.md and QUICK_REFERENCE.md.
+
+        Keeps: architecture overview, config, data flow, algorithms, file
+        organization, patterns, testing, extension points, invariants, etc.
+        """
+        lines = text.split("\n")
+        result_lines: List[str] = []
+        skip = False
+
+        for line in lines:
+            # Detect top-level numbered sections: "## 2. Core Components"
+            if line.startswith("## ") and ". " in line[:20]:
+                # Check if this is the Core Components section
+                if "Core Components" in line:
+                    skip = True
+                    continue
+                else:
+                    skip = False
+
+            if not skip:
+                result_lines.append(line)
+
+        filtered = "\n".join(result_lines)
+        logger.debug(
+            f"Skeleton filtered: {len(text)} → {len(filtered)} chars "
+            f"(removed Core Components section)"
+        )
+        return filtered
+
     def _build_prompt(self, context: Dict[str, str], extra_context: str = "") -> str:
         """Build the LLM prompt from gathered context."""
         sections = []
+
+        if context.get("claude_md"):
+            sections.append(f"## Project Conventions (CLAUDE.md)\n{context['claude_md']}")
+
+        if context.get("quick_reference"):
+            sections.append(f"## API Quick Reference\n{context['quick_reference']}")
 
         if context.get("skeleton"):
             sections.append(f"## Project Architecture\n{context['skeleton']}")
@@ -172,8 +245,11 @@ class GoalDirectedGenerator:
             '"estimated_complexity": "low|medium|high", '
             '"requires_tests": true}\n\n'
             "Rules:\n"
+            "- Generate 3-5 diverse proposals per call\n"
             "- Prioritize proposals aligned with project goals (if provided)\n"
             "- Propose NEW capabilities, not just improvements to existing ones\n"
+            "- CRITICAL: If 'Existing Proposals' are listed below, do NOT propose anything "
+            "similar. Propose completely different ideas in different areas of the codebase.\n"
             "- Be specific: name concrete files, APIs, libraries, and patterns\n"
             "- For new features, use action 'create' and propose real file paths\n"
             "- Include concrete file paths where possible\n"
@@ -310,8 +386,8 @@ class GoalDirectedGenerator:
                 prompt,
                 model_name=self.model_alias,
                 system_prompt="You are a senior software architect. Output only valid JSON.",
-                max_tokens=1500,
-                temperature=0.4,
+                max_tokens=4000,
+                temperature=0.7,
             )
         except Exception as e:
             logger.error(f"[ProposalGenerator] LLM call failed: {e}")
@@ -335,6 +411,85 @@ class GoalDirectedGenerator:
                     break
 
         logger.info(f"[ProposalGenerator] Generated {len(proposals)} proposals from {len(raw_proposals)} raw")
+        return proposals
+
+    async def generate_proposals_with_context(
+        self,
+        pipeline_context: str,
+        extra_context: str = "",
+        max_proposals: Optional[int] = None,
+    ) -> List[CodeProposal]:
+        """
+        Generate proposals using pre-gathered pipeline context.
+
+        Unlike generate_proposals() which only has cold file reads + truncated
+        conversation excerpts, this method accepts rich context pre-gathered
+        from the Daemon retrieval pipeline (semantic memories, summaries,
+        reflections, skills, user profile, etc.).
+
+        The project skeleton and goals are still read from files for
+        architectural grounding.
+
+        Args:
+            pipeline_context: Rich context from the Daemon retrieval pipeline
+            extra_context: Additional context (e.g., dedup info)
+            max_proposals: Override max proposals
+
+        Returns:
+            List of validated CodeProposal objects
+        """
+        if not self.model_manager:
+            logger.warning("[ProposalGenerator] No model_manager available")
+            return []
+
+        limit = max_proposals or self.max_proposals
+
+        # Still gather skeleton + goals + git log (architectural grounding)
+        context = self.gather_context()
+
+        # Merge pipeline context with any extra context
+        combined_extra = pipeline_context
+        if extra_context:
+            combined_extra += f"\n\n{extra_context}"
+
+        if not any(context.values()) and not combined_extra:
+            logger.info("[ProposalGenerator] No project context available")
+            return []
+
+        # Build and send prompt (reuses existing _build_prompt)
+        prompt = self._build_prompt(context, combined_extra)
+
+        try:
+            response = await self.model_manager.generate_once(
+                prompt,
+                model_name=self.model_alias,
+                system_prompt="You are a senior software architect. Output only valid JSON.",
+                max_tokens=4000,
+                temperature=0.7,
+            )
+        except Exception as e:
+            logger.error(f"[ProposalGenerator] LLM call failed: {e}")
+            return []
+
+        if not response:
+            return []
+
+        logger.debug(f"Raw proposal generation response:\n{response[:2000]}")
+
+        raw_proposals = self._parse_response(response)
+
+        proposals = []
+        for raw in raw_proposals:
+            proposal = self._parse_proposal(raw)
+            if proposal:
+                proposals.append(proposal)
+                if len(proposals) >= limit:
+                    break
+
+        logger.info(
+            f"[ProposalGenerator] Generated {len(proposals)} proposals "
+            f"from {len(raw_proposals)} raw (pipeline-enriched)"
+        )
         return proposals
 
     # ------------------------------------------------------------------

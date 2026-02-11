@@ -293,7 +293,7 @@ class ProposalStore:
                 from config.app_config import CODE_PROPOSALS_DEDUP_THRESHOLD
                 threshold = CODE_PROPOSALS_DEDUP_THRESHOLD
             except ImportError:
-                threshold = 0.85
+                threshold = 0.70
 
         try:
             coll = self.chroma_store.collections.get(COLLECTION_NAME)
@@ -304,20 +304,38 @@ class ProposalStore:
             results = self.chroma_store.query_collection(
                 COLLECTION_NAME,
                 query_text=embedding_text,
-                n_results=min(3, coll.count()),
+                n_results=min(5, coll.count()),
             )
+
+            new_title_words = set(proposal.title.lower().split())
 
             for match in results:
                 score = match.get("relevance_score", 0.0)
+                meta = match.get("metadata") or {}
+                existing_id = meta.get("proposal_id", "")
+                existing_title = meta.get("title", "")
+
+                # Semantic similarity check
                 if score and score >= threshold:
-                    meta = match.get("metadata") or {}
-                    existing_id = meta.get("proposal_id", "")
-                    existing_title = meta.get("title", "")
                     logger.info(
                         f"[ProposalStore] Duplicate detected (score={score:.2f}): "
                         f"'{proposal.title[:60]}' ~ '{existing_title[:60]}'"
                     )
                     return existing_id
+
+                # Title word overlap check — catch near-dupes that
+                # rephrase the same idea with different embedding scores
+                if existing_title and new_title_words:
+                    existing_words = set(existing_title.lower().split())
+                    union = new_title_words | existing_words
+                    inter = new_title_words & existing_words
+                    if union and len(inter) / len(union) >= 0.60:
+                        logger.info(
+                            f"[ProposalStore] Duplicate detected (title overlap "
+                            f"{len(inter)}/{len(union)}): "
+                            f"'{proposal.title[:60]}' ~ '{existing_title[:60]}'"
+                        )
+                        return existing_id
 
             return None
 
@@ -325,7 +343,7 @@ class ProposalStore:
             logger.error(f"[ProposalStore] check_similarity failed: {e}")
             return None
 
-    def get_for_dedup(self, limit: int = 10) -> str:
+    def get_for_dedup(self, limit: int = 25) -> str:
         """
         Get a formatted string of recent proposals for LLM deduplication context.
 

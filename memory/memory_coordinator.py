@@ -155,6 +155,7 @@ class MemoryCoordinator:
             user_profile=self.user_profile,
             storage=self._storage,
             session_start=self.session_start,
+            memory_coordinator=self,
         )
 
         logger.debug("[MemoryCoordinator] All components initialized")

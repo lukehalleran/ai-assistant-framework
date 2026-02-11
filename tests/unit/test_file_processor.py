@@ -79,13 +79,13 @@ def create_mock_file(name: str, path: str = None):
 
 def test_init_supported_extensions(file_processor):
     """FileProcessor initializes with supported extensions"""
-    assert file_processor.supported_extensions == ['.txt', '.docx', '.csv', '.py']
+    assert file_processor.supported_extensions == ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']
 
 
 def test_get_supported_extensions(file_processor):
     """get_supported_extensions returns the list"""
     result = file_processor.get_supported_extensions()
-    assert result == ['.txt', '.docx', '.csv', '.py']
+    assert result == ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']
     assert isinstance(result, list)
 
 
