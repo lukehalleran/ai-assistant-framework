@@ -24,7 +24,7 @@ class TestSchemaVersion:
         """SCHEMA_VERSION constant should exist and be a string."""
         assert SCHEMA_VERSION is not None
         assert isinstance(SCHEMA_VERSION, str)
-        assert SCHEMA_VERSION == "1.0"
+        assert SCHEMA_VERSION == "2.0"
 
 
 class TestProfilePreferences:

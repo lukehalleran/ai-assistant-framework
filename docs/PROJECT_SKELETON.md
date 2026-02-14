@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-02-10
+**Last Updated**: 2026-02-13
 
 ---
 
@@ -57,8 +57,10 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/memory_retriever.py` - Retrieval operations (incl. `get_semantic_top_memories`)
 - `memory/memory_storage.py` - Storage operations
 - `memory/memory_scorer.py` - Scoring and ranking
-- `memory/shutdown_processor.py` - Session-end summaries, facts, procedural skills, code proposals, reflections
+- `memory/shutdown_processor.py` - Session-end summaries, facts, procedural skills, code proposals, cross-dedup preview, reflections
 - `memory/procedural_skill.py` - ProceduralSkill dataclass + SkillCategory enum
+- `memory/cross_deduplicator.py` - Cross-collection dedup (duplicates + fact contradictions, dry-run only on shutdown)
+- `memory/dedup_models.py` - Pydantic models: DedupPlan, DuplicatePair, ContradictionCluster
 - `memory/thread_manager.py` - Thread tracking
 - `memory/memory_interface.py` - Protocol contracts
 
@@ -394,8 +396,9 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   4. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor)
   5. Extract procedural skills via LLM (0-3 per session)
   6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
-  7. Update UserProfile with extracted facts
-  8. Log statistics
+  7. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
+  8. Update UserProfile with extracted facts
+  9. Log statistics
   ```
 
 - `async run_shutdown_reflection(session_conversations=None, session_summaries=None)` → End-of-session LLM reflection:
@@ -446,6 +449,146 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 **Constructor**: `__init__(..., memory_coordinator=None)` — accepts MemoryCoordinator for pipeline-enriched generation **[ENHANCED 2026-02-09]**
 
 **Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill, GoalDirectedGenerator, ProposalStore, MemoryCoordinator (optional)
+
+---
+
+### 2.3.1a memory/cross_deduplicator.py + dedup_models.py (Cross-Collection Dedup) **[NEW 2026-02-13]**
+**Purpose**: Unified deduplication across ChromaDB collections — detects near-duplicate documents and resolves fact contradictions (same subject+predicate, different object).
+
+**Data Models** (`memory/dedup_models.py`):
+```python
+class DedupAction(str, Enum):   # KEEP, DELETE, MERGE, SUPERSEDE
+class DedupReason(str, Enum):   # CROSS_DUPLICATE, WITHIN_DUPLICATE, FACT_CONTRADICTION, SUBSUMED
+class DuplicatePair(BaseModel):  # doc_id_a/b, collection_a/b, similarity, keep_id, delete_id
+class ContradictionCluster(BaseModel):  # subject, predicate, entries[], keep_id, delete_ids[]
+class DedupPlan(BaseModel):      # duplicate_pairs[], contradiction_clusters[], stats, to_markdown()
+```
+
+**Key Methods** (`memory/cross_deduplicator.py`):
+- `run(dry_run=True) -> DedupPlan` → Full dedup pass:
+  ```python
+  1. Load documents from target collections (via chroma_store.list_all)
+  2. Compute embeddings (chroma_store.embedding_fn), L2-normalize
+  3. Pairwise cosine similarity → find duplicates >= 0.92 threshold
+  4. Group facts by (subject, predicate) → find contradictions (differing objects)
+  5. Skip ephemeral predicates (from PROFILE_EPHEMERAL_RELATIONS config)
+  6. If not dry_run: execute deletions via collection.delete(ids=[...])
+  ```
+
+- `_find_cross_duplicates(docs, embeddings) -> List[DuplicatePair]` → Pairwise similarity scan
+  - Cascade prevention: `marked_for_delete` set prevents chain deletions
+  - Ephemeral fact pairs skipped via `_is_ephemeral_fact_pair()`
+  - Float clamping: `score = min(float(sim_matrix[i, j]), 1.0)` for fp32 overshoot
+
+- `_find_fact_contradictions(fact_docs) -> List[ContradictionCluster]` → Subject+predicate grouping
+  - Skips predicates in `PROFILE_EPHEMERAL_RELATIONS` (current_feeling, is, has, thinks, etc.)
+  - Keeps most recent entry per group (by timestamp)
+
+- `_pick_keep_delete(doc_a, doc_b) -> (keep, delete)` → Priority-based selection
+  - Collection priority: summaries(5) > reflections(4) > skills(3) > proposals(2) > facts(1)
+  - Same priority: keep more recent by timestamp
+
+- `_extract_triple(doc) -> (subject, predicate, object)` → Triple extraction
+  - Tries metadata fields first (subject/predicate/object or entity/relation/value)
+  - Falls back to content parsing: pipe-separated, dash-separated, natural language patterns
+
+- `_is_ephemeral_fact_pair(doc_a, doc_b, ephemeral) -> bool` → Ephemeral guard
+  - Both docs must be from "facts" collection
+  - Checks metadata then falls back to `_extract_triple()` content parsing
+
+**Protected Collections** (never scanned):
+- `conversations`, `obsidian_notes`, `reference_docs`, `wiki_knowledge`
+
+**Target Collections** (configurable):
+- `facts`, `summaries`, `procedural_skills`, `proposals`, `reflections`
+
+**Integration Points**:
+- Shutdown: `ShutdownProcessor._run_cross_collection_dedup()` — dry_run=True only, class-level `_dedup_ran` guard prevents double-run
+- GUI: Status tab → "Preview Dedup" (dry_run=True) / "Run Dedup" (dry_run=False) buttons
+
+**Configuration** (`config/app_config.py`):
+```python
+CROSS_DEDUP_ENABLED = True
+CROSS_DEDUP_DUPLICATE_THRESHOLD = 0.92      # Cosine similarity for duplicates
+CROSS_DEDUP_CONTRADICTION_THRESHOLD = 0.85  # Currently unused (reserved)
+CROSS_DEDUP_MAX_DOCS_PER_COLLECTION = 1000  # Per-collection cap (most recent kept)
+CROSS_DEDUP_ON_SHUTDOWN = True              # Enable shutdown preview (dry_run only)
+CROSS_DEDUP_COLLECTIONS = ["facts", "summaries", "procedural_skills", "proposals", "reflections"]
+```
+
+**Tests**: `tests/unit/test_cross_deduplicator.py` — 47 tests across 11 classes
+
+---
+
+### 2.1.3 core/escalation_tracker.py (Crisis Cooldown) **[NEW 2026-02-13]**
+**Purpose**: Session-level emotional momentum tracker for adaptive tone de-escalation. Prevents the "therapeutic echo chamber" problem where identical validating responses repeat during user spiraling.
+
+**Key Types**:
+```python
+class ResponseStrategy(Enum):
+    VALIDATE_AND_SUGGEST   # Default: validate feelings, offer suggestions
+    GROUNDING_PRESENCE     # Sustained escalation: drop advice, pure acknowledgment (2-3 sentences)
+    QUIET_COMPANIONSHIP    # Sustained + ignored suggestions: minimal presence (1-2 sentences)
+    GENTLE_REENGAGEMENT    # After de-escalation: carefully re-introduce engagement
+```
+
+**Key Methods**:
+- `update(tone_level, user_message, need_type=None) -> ResponseStrategy` → Main update loop:
+  - Tracks consecutive elevated/calm message counts
+  - Detects user engagement with previous suggestions (keyword overlap + engagement phrases)
+  - Computes strategy based on accumulated signals
+  - Stores need_type for de-escalation nuance
+
+- `record_response(response) -> None` → Extract suggestions from assistant response for engagement tracking on next turn
+
+- `get_strategy_instructions() -> str` → Supplemental tone instructions appended to system prompt:
+  - GROUNDING_PRESENCE: "Max 2-3 sentences. No advice. Pure acknowledgment."
+  - QUIET_COMPANIONSHIP: "Max 1-2 sentences. Just be present."
+  - GENTLE_REENGAGEMENT: "Acknowledge shift warmly. May offer ONE small suggestion."
+  - VALIDATE_AND_SUGGEST: empty string (use standard tone instructions)
+
+- `get_token_budget_override() -> Optional[int]` → Token budget for brevity enforcement:
+  - QUIET_COMPANIONSHIP: 300 tokens
+  - GROUNDING_PRESENCE: 500 tokens
+  - GENTLE_REENGAGEMENT: 800 tokens
+  - VALIDATE_AND_SUGGEST: None (default budget)
+
+- `get_escalation_velocity() -> float` → 0.0 (stable) to 1.0 (rapid escalation) from last 5 tone values
+
+- `get_debug_info() -> Dict` → Strategy, counts, velocity for debug logging
+
+**Strategy Transitions**:
+```
+VALIDATE_AND_SUGGEST  (default, < threshold consecutive elevated)
+    ↓ (threshold+ consecutive elevated)
+GROUNDING_PRESENCE    (drop suggestions, pure acknowledgment)
+    ↓ (2+ ignored suggestions while elevated)
+QUIET_COMPANIONSHIP   (minimal presence, 1-2 sentences max)
+    ↓ (tone drops to CONCERN/CONVERSATIONAL)
+GENTLE_REENGAGEMENT   (carefully re-introduce engagement)
+    ↓ (sustained calm past deescalation_window)
+VALIDATE_AND_SUGGEST  (back to normal)
+```
+
+**De-escalation Nuance**: When `need_type == "PERSPECTIVE"`, user is shifting to analytical mode (intensity shift, not genuine calming) → goes to VALIDATE_AND_SUGGEST instead of GENTLE_REENGAGEMENT.
+
+**Integration** (in `core/orchestrator.py`):
+```python
+# __init__: self.escalation_tracker = EscalationTracker()
+# After build_context(): tracker.update(tone_level, user_message)
+# Build prompt: append tracker.get_strategy_instructions() to system prompt
+# Token budget: tracker.get_token_budget_override() overrides tone-based budget
+# After generation: tracker.record_response(response_text)
+```
+
+**Configuration** (`config/app_config.py`):
+```python
+ESCALATION_ENABLED = True
+ESCALATION_THRESHOLD = 3          # Consecutive elevated before strategy shift
+ESCALATION_DEESCALATION_WINDOW = 2  # Consecutive calm before gentle re-engagement ends
+```
+
+**Tests**: `tests/unit/test_escalation_tracker.py` — 51 tests
 
 ---
 
@@ -598,14 +741,20 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 
 ---
 
-### 2.3.2 memory/user_profile.py & user_profile_schema.py (User Profile System) **[NEW - 2025-12-01]**
-**Purpose**: ChatGPT-style categorized user profile with persistent fact storage and hybrid retrieval
+### 2.3.6 memory/user_profile.py & user_profile_schema.py (User Profile System) **[NEW 2025-12-01, ENHANCED 2026-02-13]**
+**Purpose**: ChatGPT-style categorized user profile with append-only fact storage, historical tracking, temporal queries, and hybrid retrieval
+
+**Schema Version**: 2.0 (auto-migrates from 1.0)
 
 **Architecture Overview**:
 ```
 Query → LLMFactExtractor (categorizes) → UserProfile.add_facts_batch() → JSON persistence
                                               ↓
+                                   Append-only: old values marked is_current=False
+                                              ↓
 Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE] in prompt
+                                              ↓ (if temporal query)
+                                   Includes historical timeline
 ```
 
 **Replaces**: Previous [SEMANTIC FACTS] and [RECENT FACTS] sections in prompts
@@ -613,8 +762,9 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
 **Key Components**:
 
 **user_profile_schema.py**:
+- `SCHEMA_VERSION = "2.0"` — auto-migration from 1.0
 - `ProfileCategory` enum: 12 life domains (identity, education, career, projects, health, fitness, preferences, hobbies, study, finance, relationships, goals)
-- `ProfileFact` dataclass: Structured facts with relation, value, category, confidence, timestamp, source_excerpt, supersedes
+- `ProfileFact` dataclass: relation, value, category, confidence, timestamp, source_excerpt, **fact_id** (UUID), **is_current** (bool), **supersedes** (fact_id of replaced fact)
 - `RELATION_CATEGORY_MAP`: 40+ predefined relation→category mappings
 - `categorize_relation(relation)`: Direct lookup + heuristic fallbacks (pattern matching)
 
@@ -622,35 +772,39 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
 - `UserProfile` class: Persistent manager for categorized user facts
 - Storage: `data/user_profile.json` with atomic writes (temp file + os.replace())
 - Thread-safe: threading.Lock() for concurrent access
-- Conflict resolution: Newer + higher confidence wins, tracks supersedes
+- **Append-only**: Facts never deleted, only marked `is_current=False` when superseded
+- Conflict resolution:
+  - Same (relation, value) → confidence boost (+0.05, capped at 1.0)
+  - Same relation, different value → old fact marked `is_current=False`, new fact added with `supersedes=old_fact_id`
 
 **Key Methods**:
-- `add_fact(relation, value, category, confidence, source_excerpt)` → Add single fact with conflict resolution
+- `add_fact(relation, value, confidence, source_excerpt, category, timestamp)` → Append-only fact addition
 - `add_facts_batch(triples)` → Batch add from LLM extraction (used at shutdown)
-- `get_relevant_facts(query, category, limit=3)` → **Hybrid retrieval (2/3 semantic + 1/3 recent)**:
-  ```python
-  # Semantic scoring: keyword overlap between query and fact values/relations
-  query_words = set(query.lower().split())
-  fact_words = set(value.lower().split()) | set(relation.lower().split())
-  semantic_score = len(query_words & fact_words) / len(query_words)
+- `get_category(category, include_historical=False)` → Get facts for category
+  - Default: only `is_current=True` facts (backward compatible)
+  - `include_historical=True`: all facts including superseded ones
+- `get_relevant_facts(query, category, limit=3)` → **Hybrid retrieval (2/3 semantic + 1/3 recent)**
+  - Temporal queries automatically include historical facts
+- `get_context_injection(max_tokens, query)` → Format profile for prompt injection
+  - Temporal queries add `[TIMELINE]` section with historical values
+- `get_current_view(category=None)` → Dict of {category: [current_facts]} **[NEW v2]**
+- `get_profile_at(timestamp)` → Point-in-time snapshot: returns most recent fact per relation as of given datetime **[NEW v2]**
+- `get_fact_history(relation, category=None)` → Chronological list of all values a relation has had **[NEW v2]**
+- `export_markdown()` → Markdown export (current facts only per category)
+- `get_quick_profile()` → Extract identity fields (name, location, age)
+- `_is_temporal_query(query)` → Detect temporal keywords (history, progress, over time, used to, etc.) **[NEW v2]**
+- `_prune_category(cat_key)` → Ephemeral relation pruning when category exceeds soft cap **[NEW v2]**
+- `migrate_schema()` → Auto-migrate v1.0 → v2.0 (adds fact_id, is_current, supersedes chain) **[NEW v2]**
 
-  # Get top 2/3 by semantic score
-  semantic_facts = top_scored[:semantic_count]
-
-  # Get remaining 1/3 most recent (not in semantic set)
-  recent_facts = sorted_by_timestamp[:recent_count]
-
-  return semantic_facts + recent_facts
-  ```
-- `get_context_injection(max_tokens, query)` → Format profile for prompt injection **[UPDATED 2025-12-04: now includes timestamps]**
-  - Format: `relation=value [ISO_timestamp]`
-  - Enables temporal reasoning about when facts were learned
-- `export_markdown()` → Generate markdown export of all facts by category
-- `get_quick_profile()` → Extract identity fields (name, location, age) for compact summary
+**Ephemeral Pruning** (prevents unbounded growth of temporal facts):
+- When category size exceeds `PROFILE_CATEGORY_SOFT_CAP` (default: 50)
+- Only prunes relations listed in `PROFILE_EPHEMERAL_RELATIONS` (current_feeling, is, has, thinks, etc.)
+- Keeps at most `PROFILE_EPHEMERAL_MAX_HISTORY` (default: 20) historical entries per ephemeral relation
+- Non-ephemeral relations (name, squat_max, etc.) are never pruned
 
 **Integration Points**:
 
-1. **memory/memory_coordinator.py** (process_shutdown_memory):
+1. **memory/shutdown_processor.py** (process_shutdown_memory):
    ```python
    # After LLM fact extraction
    if triples and hasattr(self, 'user_profile'):
@@ -658,79 +812,37 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
    ```
 
 2. **memory/llm_fact_extractor.py** (Enhanced):
-   - Increased max_triples: 10 → 15
-   - Increased max_tokens: 400 → 600
    - Auto-categorization via `categorize_relation()` in `_normalize_triple()`
    - Enhanced prompt with 12 category descriptions
    - Confidence scoring (0.0-1.0)
-   - Case preservation for proper nouns
 
-3. **memory/fact_extractor.py** (Enhanced regex patterns):
-   - Temporal patterns: age, graduation year, experience duration
-   - Location patterns: lives_in with various phrasings
-   - Relationship patterns: pet names, family, friends
-   - Goal patterns: plans, intentions
-
-4. **core/prompt/context_gatherer.py** (NEW):
+3. **core/prompt/context_gatherer.py**:
    - `get_user_profile_context(query, max_tokens=500)` → Calls UserProfile.get_context_injection()
-   - Replaces old `get_facts()` and `get_recent_facts()` methods
 
-5. **core/prompt/builder.py** (UPDATED):
-   - Removed tasks: `semantic_facts`, `recent_facts`
-   - Added task: `user_profile` → async call to get_user_profile_context()
-   - Context dict changed: `{"user_profile": str}` replaces `{"semantic_facts": list, "fresh_facts": list}`
+4. **core/prompt/formatter.py**:
+   - `[USER PROFILE]` section → Pre-formatted string from context["user_profile"]
 
-6. **core/prompt/formatter.py** (UPDATED):
-   - Removed sections: `[SEMANTIC FACTS]`, `[RECENT FACTS]`
-   - Added section: `[USER PROFILE]` → Pre-formatted string from context["user_profile"]
+**Configuration** (`config/app_config.py`):
+```python
+PROFILE_CATEGORY_SOFT_CAP = 50           # Trigger ephemeral pruning above this
+PROFILE_EPHEMERAL_MAX_HISTORY = 20       # Max historical entries per ephemeral relation
+PROFILE_EPHEMERAL_RELATIONS = [          # Relations whose history gets pruned
+    "current_feeling", "current_mood", "current_activity", "current_time",
+    "is", "has", "was", "thinks", "needs", "plans", "wants", "likes",
+    "greeting", "expressed_feeling", "testing", ...
+]
+```
 
 **CLI Commands** (main.py):
 - `python main.py export-profile` → Write markdown to `data/user_profile_export.md`
 - `python main.py show-profile` → Print profile to console with fact count
 
-**Data Flow**:
-```
-User conversation
-    ↓
-process_shutdown_memory() (at session end)
-    ↓
-LLMFactExtractor.extract_batch() → categorized triples with confidence
-    ↓
-UserProfile.add_facts_batch() → conflict resolution + JSON persistence
-    ↓
-[Next conversation]
-    ↓
-get_user_profile_context(query) → hybrid retrieval per category
-    ↓
-[USER PROFILE] section in formatted prompt
-```
-
-**Example Profile Output (Prompt Format with Timestamps)**:
-```
-[USER PROFILE]
-User: name=Luke, location=San Francisco [profile_updated: 2025-12-04T15:30:00]
-fitness: squat_max=365 lb [2025-09-15T10:20:00]; bench_max=275 lb [2025-09-20T14:30:00]; training_frequency=5x per week [2025-10-01T08:15:00]
-career: current_role=Senior Engineer [2025-08-01T09:00:00]; programming_languages=Python, Go, Rust [2025-08-05T11:30:00]
-```
-
-**Example Markdown Export**:
-```
-## Quick Profile
-- name: Luke
-- location: San Francisco
-- age: 28
-
-## fitness (3 facts)
-- squat_max: 365 lb (confidence: 0.9)
-- bench_max: 275 lb (confidence: 0.85)
-- training_frequency: 5x per week (confidence: 0.8)
-```
-
 **Testing**:
 - tests/unit/test_user_profile_schema.py (5 tests): Schema validation, categorization, serialization
-- tests/unit/test_user_profile.py (10 tests): Persistence, conflict resolution, hybrid retrieval, markdown export
+- tests/unit/test_user_profile.py (~35 tests): Persistence, append-only storage, conflict resolution, computed views, migration, ephemeral pruning, temporal retrieval, backward compatibility
+- tests/test_user_profile_schema_preferences.py: Schema version assertion (2.0)
 
-**Dependencies**: threading, datetime, pathlib, logging
+**Dependencies**: threading, datetime, pathlib, uuid, config.app_config
 
 ---
 

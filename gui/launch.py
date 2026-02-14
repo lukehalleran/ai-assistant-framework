@@ -1218,6 +1218,33 @@ def launch_gui(orchestrator, force_wizard=False):
                     refresh_button = gr.Button("🔄 Refresh Status")
                 refresh_button.click(fn=get_summary_status, outputs=summary_json)
 
+                # --- Memory Maintenance (Cross-Collection Dedup) ---
+                gr.Markdown("---")
+                gr.Markdown("### Memory Maintenance")
+                with gr.Row():
+                    dedup_preview_btn = gr.Button("Preview Dedup", variant="secondary")
+                    dedup_execute_btn = gr.Button("Run Dedup", variant="primary")
+                dedup_report_md = gr.Markdown(value="*Click Preview to scan for duplicates.*")
+
+                def _run_dedup(dry_run: bool) -> str:
+                    try:
+                        from memory.cross_deduplicator import CrossCollectionDeduplicator
+                        store = orchestrator.memory_system.chroma_store
+                        dedup = CrossCollectionDeduplicator(store)
+                        plan = dedup.run(dry_run=dry_run)
+                        return plan.to_markdown()
+                    except Exception as e:
+                        return f"**Error:** {e}"
+
+                dedup_preview_btn.click(
+                    fn=lambda: _run_dedup(dry_run=True),
+                    outputs=dedup_report_md,
+                )
+                dedup_execute_btn.click(
+                    fn=lambda: _run_dedup(dry_run=False),
+                    outputs=dedup_report_md,
+                )
+
             with gr.TabItem("Proposals"):
                 gr.Markdown("### Code Proposals")
 

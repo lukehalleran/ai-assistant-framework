@@ -183,6 +183,9 @@ class ShutdownProcessor:
             # 6) Generate code proposals (goal-directed)
             await self._generate_proposals(session_conversations)
 
+            # 7) Cross-collection deduplication (if enabled)
+            await self._run_cross_collection_dedup()
+
             logger.info("[Shutdown] Memory processing complete")
 
         except Exception as e:
@@ -850,6 +853,53 @@ class ShutdownProcessor:
                 sections.append("## Recent Git Activity\n" + "\n".join(lines))
 
         return "\n\n".join(sections)
+
+    # ------------------------------------------------------------------
+    # Cross-collection deduplication
+    # ------------------------------------------------------------------
+
+    _dedup_ran = False  # class-level guard against double-run
+
+    async def _run_cross_collection_dedup(self):
+        """Run cross-collection deduplication after all extractions.
+
+        Runs as a non-blocking maintenance pass. Failures are logged
+        but never block shutdown. Guarded to run at most once per process.
+        """
+        if ShutdownProcessor._dedup_ran:
+            logger.debug("[Shutdown] Cross-dedup already ran this session, skipping")
+            return
+        ShutdownProcessor._dedup_ran = True
+
+        from config.app_config import CROSS_DEDUP_ENABLED, CROSS_DEDUP_ON_SHUTDOWN
+
+        if not CROSS_DEDUP_ENABLED or not CROSS_DEDUP_ON_SHUTDOWN:
+            logger.debug("[Shutdown] Cross-collection dedup disabled, skipping")
+            return
+
+        try:
+            from memory.cross_deduplicator import CrossCollectionDeduplicator
+
+            dedup = CrossCollectionDeduplicator(self.chroma_store)
+            plan = dedup.run(dry_run=True)
+
+            if plan.duplicates_found or plan.contradictions_found:
+                logger.info(
+                    "[Shutdown] Cross-dedup preview: %d duplicates, %d contradictions "
+                    "(%d would be deleted). Run from GUI to execute.",
+                    plan.duplicates_found,
+                    plan.contradictions_found,
+                    plan.deletions_executed,
+                )
+            else:
+                logger.debug("[Shutdown] Cross-dedup: no duplicates or contradictions found")
+
+            if plan.errors:
+                for err in plan.errors:
+                    logger.warning("[Shutdown] Cross-dedup error: %s", err)
+
+        except Exception as e:
+            logger.warning("[Shutdown] Cross-collection dedup failed (non-fatal): %s", e)
 
     # ------------------------------------------------------------------
     # run_shutdown_reflection

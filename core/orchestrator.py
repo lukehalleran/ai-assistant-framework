@@ -54,6 +54,7 @@ from utils.emotional_context import (
 from utils.need_detector import NeedType
 from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
 from core.best_of_handler import BestOfHandler, BestOfResult
+from core.escalation_tracker import EscalationTracker, ResponseStrategy
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
@@ -252,6 +253,31 @@ class DaemonOrchestrator:
             config=self.config
         )
         self.logger.debug("[Orchestrator] BestOfHandler initialized")
+
+        # Escalation Tracker - Session-level emotional momentum tracking
+        self.escalation_tracker = None
+        try:
+            from config.app_config import (
+                ESCALATION_ENABLED,
+                ESCALATION_THRESHOLD,
+                ESCALATION_DEESCALATION_WINDOW,
+                ESCALATION_MAX_HISTORY,
+            )
+            if ESCALATION_ENABLED:
+                self.escalation_tracker = EscalationTracker(
+                    escalation_threshold=ESCALATION_THRESHOLD,
+                    deescalation_window=ESCALATION_DEESCALATION_WINDOW,
+                    max_history=ESCALATION_MAX_HISTORY,
+                )
+                self.logger.info(
+                    f"[Orchestrator] EscalationTracker enabled "
+                    f"(threshold={ESCALATION_THRESHOLD}, "
+                    f"deesc_window={ESCALATION_DEESCALATION_WINDOW})"
+                )
+            else:
+                self.logger.debug("[Orchestrator] EscalationTracker disabled via config")
+        except Exception as e:
+            self.logger.warning(f"[Orchestrator] Failed to initialize EscalationTracker: {e}")
 
         # Memory citation system
         self.enable_citations = False  # Will be set from GUI checkbox
@@ -992,6 +1018,12 @@ The user is processing/analyzing, open to engagement.
                 response_instructions = self._get_response_instructions(emotional_ctx)
                 system_prompt = system_prompt.rstrip() + response_instructions
 
+            # Escalation adaptation: append strategy-specific overrides
+            if self.escalation_tracker:
+                escalation_instructions = self.escalation_tracker.get_strategy_instructions()
+                if escalation_instructions:
+                    system_prompt = system_prompt.rstrip() + escalation_instructions
+
             session_headers = self._get_session_headers_instructions()
             system_prompt = system_prompt.rstrip() + session_headers
 
@@ -1281,6 +1313,21 @@ The user is processing/analyzing, open to engagement.
                 else:
                     self.logger.warning(f"[Orchestrator] IMAGE DEBUG: No images in prompt_ctx. Keys={list(prompt_ctx.keys()) if prompt_ctx else 'None'}")
 
+            # Update escalation tracker with detected tone
+            if self.escalation_tracker:
+                need_type_str = None
+                if context.emotional_context and hasattr(context.emotional_context, 'need_type'):
+                    need_type_str = (
+                        context.emotional_context.need_type.value
+                        if hasattr(context.emotional_context.need_type, 'value')
+                        else str(context.emotional_context.need_type)
+                    )
+                self.escalation_tracker.update(
+                    context.tone_level,
+                    user_input,
+                    need_type=need_type_str,
+                )
+
             debug_info["context_pipeline"] = {
                 "tone_level": context.tone_level.value,
                 "topics": context.topics[:3] if context.topics else [],
@@ -1288,6 +1335,8 @@ The user is processing/analyzing, open to engagement.
                 "has_thread": context.has_thread,
                 "note_images_count": len(note_images),
             }
+            if self.escalation_tracker:
+                debug_info["escalation"] = self.escalation_tracker.get_debug_info()
 
             # Extract values needed for token limit logic
             is_heavy_topic = context.is_heavy_topic
@@ -1396,6 +1445,13 @@ The user is processing/analyzing, open to engagement.
                     response_max_tokens = DEFAULT_MAX_TOKENS
                     token_reason = "DEFAULT"
 
+                # Escalation tracker may override token budget for brevity
+                if self.escalation_tracker:
+                    budget_override = self.escalation_tracker.get_token_budget_override()
+                    if budget_override is not None:
+                        response_max_tokens = budget_override
+                        token_reason = f"{self.escalation_tracker.current_strategy.value} (escalation override)"
+
                 if self.logger:
                     self.logger.info(
                         f"[Orchestrator] Token limit: {response_max_tokens} ({token_reason})"
@@ -1466,6 +1522,10 @@ The user is processing/analyzing, open to engagement.
                     self._current_memory_id_map
                 )
                 debug_info['raw_response_with_citations'] = raw_response_with_citations
+
+            # Record response in escalation tracker for engagement detection
+            if self.escalation_tracker:
+                self.escalation_tracker.record_response(answer_for_storage)
 
             # --- Store Interaction ---
             if self.memory_system and not use_raw_mode:

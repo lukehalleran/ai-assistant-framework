@@ -26,13 +26,14 @@ Module Contract
   - None (pure data structures and mapping logic)
 """
 
+import uuid
 from enum import Enum
-from typing import Dict, List, Set
-from dataclasses import dataclass
+from typing import Dict, List, Set, Optional
+from dataclasses import dataclass, field
 from datetime import datetime
 
 # Schema version for migrations
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "2.0"
 
 class ProfileCategory(str, Enum):
     """Categories for organizing user facts - matches ChatGPT's structure."""
@@ -150,7 +151,9 @@ class ProfileFact:
     confidence: float
     source_excerpt: str
     timestamp: datetime
-    supersedes: str = None  # ID of fact this replaces
+    fact_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    is_current: bool = True
+    supersedes: str = None  # fact_id of fact this replaces
 
     def to_dict(self) -> dict:
         return {
@@ -160,6 +163,8 @@ class ProfileFact:
             "confidence": self.confidence,
             "source_excerpt": self.source_excerpt,
             "timestamp": self.timestamp.isoformat(),
+            "fact_id": self.fact_id,
+            "is_current": self.is_current,
             "supersedes": self.supersedes,
         }
 
@@ -172,6 +177,8 @@ class ProfileFact:
             confidence=data["confidence"],
             source_excerpt=data.get("source_excerpt", ""),
             timestamp=datetime.fromisoformat(data["timestamp"]),
+            fact_id=data.get("fact_id") or str(uuid.uuid4()),
+            is_current=data.get("is_current", True),
             supersedes=data.get("supersedes"),
         )
 

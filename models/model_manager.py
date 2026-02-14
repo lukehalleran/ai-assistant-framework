@@ -125,6 +125,7 @@ class ModelManager:
         # GLM models
         self.api_models["glm-4.6"] = "z-ai/glm-4.6"
         self.api_models["glm-4.7"] = "z-ai/glm-4.7"
+        self.api_models["glm-5"] = "z-ai/glm-5"
         # DeepSeek models
         self.api_models["deepseek-v3.1"] = "deepseek/deepseek-chat-v3.1"
         self.api_models["deepseek-r1"] = "deepseek/deepseek-r1-0528"
@@ -724,6 +725,7 @@ class ModelManager:
                 "claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
                 "deepseek-chat", "deepseek-coder",
                 "gemini",
+                "glm-5",
             ]
 
             return any(pattern in full_model for pattern in tool_capable_patterns)

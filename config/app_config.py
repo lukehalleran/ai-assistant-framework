@@ -408,6 +408,94 @@ CODE_PROPOSALS_PROMPT_MAX = int(os.getenv("CODE_PROPOSALS_PROMPT_MAX", str(CODE_
 CODE_PROPOSALS_LLM_RANKING = bool(int(os.getenv("CODE_PROPOSALS_LLM_RANKING", "1" if CODE_PROPOSALS_LLM_RANKING else "0")))
 
 # --------------------------------------------------------------------
+# Escalation Tracker Configuration
+# --------------------------------------------------------------------
+# Adaptive tone de-escalation with session momentum tracking.
+# Tracks consecutive crisis/elevated messages and adapts response strategy
+# to prevent therapeutic echo chamber (repeating identical validations).
+ESCALATION_CFG = config.get("escalation_tracker", {})
+ESCALATION_ENABLED: bool = bool(ESCALATION_CFG.get("enabled", True))
+# Consecutive elevated/crisis messages before shifting from VALIDATE_AND_SUGGEST
+ESCALATION_THRESHOLD: int = int(ESCALATION_CFG.get("threshold", 3))
+# Consecutive calm messages before GENTLE_REENGAGEMENT ends
+ESCALATION_DEESCALATION_WINDOW: int = int(ESCALATION_CFG.get("deescalation_window", 2))
+# Sliding window size for tone history
+ESCALATION_MAX_HISTORY: int = int(ESCALATION_CFG.get("max_history", 10))
+
+# Environment variable overrides for Escalation Tracker
+ESCALATION_ENABLED = bool(int(os.getenv("ESCALATION_ENABLED", "1" if ESCALATION_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Cross-Collection Deduplication Configuration
+# --------------------------------------------------------------------
+# Unified dedup across facts, summaries, skills, and proposals.
+# Detects near-duplicates across collection boundaries and resolves
+# fact contradictions (same subject+predicate, different object).
+CROSS_DEDUP_CFG = config.get("cross_dedup", {})
+CROSS_DEDUP_ENABLED: bool = bool(CROSS_DEDUP_CFG.get("enabled", True))
+CROSS_DEDUP_DUPLICATE_THRESHOLD: float = float(CROSS_DEDUP_CFG.get("duplicate_threshold", 0.92))
+CROSS_DEDUP_CONTRADICTION_THRESHOLD: float = float(CROSS_DEDUP_CFG.get("contradiction_threshold", 0.85))
+CROSS_DEDUP_MAX_DOCS_PER_COLLECTION: int = int(CROSS_DEDUP_CFG.get("max_docs_per_collection", 1000))
+CROSS_DEDUP_ON_SHUTDOWN: bool = bool(CROSS_DEDUP_CFG.get("on_shutdown", True))
+# Collections to scan for cross-duplicates
+CROSS_DEDUP_COLLECTIONS: list = CROSS_DEDUP_CFG.get("collections", [
+    "facts", "summaries", "procedural_skills", "proposals", "reflections",
+])
+
+# Environment variable overrides for Cross-Collection Dedup
+CROSS_DEDUP_ENABLED = bool(int(os.getenv("CROSS_DEDUP_ENABLED", "1" if CROSS_DEDUP_ENABLED else "0")))
+CROSS_DEDUP_DUPLICATE_THRESHOLD = float(os.getenv("CROSS_DEDUP_DUPLICATE_THRESHOLD", str(CROSS_DEDUP_DUPLICATE_THRESHOLD)))
+CROSS_DEDUP_CONTRADICTION_THRESHOLD = float(os.getenv("CROSS_DEDUP_CONTRADICTION_THRESHOLD", str(CROSS_DEDUP_CONTRADICTION_THRESHOLD)))
+CROSS_DEDUP_ON_SHUTDOWN = bool(int(os.getenv("CROSS_DEDUP_ON_SHUTDOWN", "1" if CROSS_DEDUP_ON_SHUTDOWN else "0")))
+
+# --------------------------------------------------------------------
+# User Profile Configuration
+# --------------------------------------------------------------------
+# Ephemeral relations that accumulate rapidly and should be pruned
+PROFILE_CFG = config.get("user_profile", {})
+PROFILE_EPHEMERAL_RELATIONS: list = PROFILE_CFG.get("ephemeral_relations", [
+    # Mood / emotional state
+    "current_activity", "current_feeling", "current_mood",
+    "emotional_state", "current_state", "status", "recent_activity",
+    "feeling", "feels",
+    # Health / sleep
+    "condition", "symptoms", "symptom", "current_condition",
+    "current_health_status", "current_health_condition", "recent_condition",
+    "recent_symptom", "medication_status", "medications_taken",
+    "medications_taken_time", "medication_taken", "medication_time",
+    "sleep_condition", "sleep_experience", "sleep_quality",
+    "woke_up_time", "wake_up_time", "woke_up_at", "sleep_duration",
+    # Work / schedule
+    "work_status", "work_activity", "work_in", "work_hours_left",
+    "work_duration", "time_until_work", "time_constraint",
+    "work_start_time", "worked_hours_today", "work_hours_today",
+    "workout_status", "workout_intent", "last_workout_time",
+    "took_nap", "current_time", "upcoming_activity",
+    "waiting_time", "note_taking_time",
+    # Greetings / expressions (time-of-day context)
+    "greeting", "expressed_feeling", "testing",
+    # Generic contextual predicates (change every conversation)
+    "is", "is_a", "has", "was",
+    "thinks", "needs", "plans", "wants",
+    "likes", "broke", "agree", "completed",
+    "asks_about", "ask_about", "goal",
+])
+# Max historical (is_current=False) entries to keep per ephemeral relation
+PROFILE_EPHEMERAL_MAX_HISTORY: int = int(PROFILE_CFG.get("ephemeral_max_history", 20))
+# TTL in hours for ephemeral facts — stale ephemeral facts excluded from prompt context
+PROFILE_EPHEMERAL_TTL_HOURS: int = int(PROFILE_CFG.get("ephemeral_ttl_hours", 24))
+# Soft cap on total facts per category before pruning triggers
+PROFILE_CATEGORY_SOFT_CAP: int = int(PROFILE_CFG.get("category_soft_cap", 200))
+
+# Environment variable overrides for User Profile
+PROFILE_EPHEMERAL_MAX_HISTORY = int(os.getenv("PROFILE_EPHEMERAL_MAX_HISTORY", str(PROFILE_EPHEMERAL_MAX_HISTORY)))
+PROFILE_EPHEMERAL_TTL_HOURS = int(os.getenv("PROFILE_EPHEMERAL_TTL_HOURS", str(PROFILE_EPHEMERAL_TTL_HOURS)))
+PROFILE_CATEGORY_SOFT_CAP = int(os.getenv("PROFILE_CATEGORY_SOFT_CAP", str(PROFILE_CATEGORY_SOFT_CAP)))
+ESCALATION_THRESHOLD = int(os.getenv("ESCALATION_THRESHOLD", str(ESCALATION_THRESHOLD)))
+ESCALATION_DEESCALATION_WINDOW = int(os.getenv("ESCALATION_DEESCALATION_WINDOW", str(ESCALATION_DEESCALATION_WINDOW)))
+ESCALATION_MAX_HISTORY = int(os.getenv("ESCALATION_MAX_HISTORY", str(ESCALATION_MAX_HISTORY)))
+
+# --------------------------------------------------------------------
 # Obsidian Vault Configuration
 # --------------------------------------------------------------------
 # Enable personal notes integration from Obsidian vault
