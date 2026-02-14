@@ -16,7 +16,8 @@ Module Contract
   - UPDATED: Query-relevant facts ranked by hybrid score (2/3 semantic + 1/3 recent)
 - Key behaviors:
   - JSON persistence with atomic writes (temp file swap)
-  - Conflict resolution: newer + higher confidence wins
+  - Append-only fact storage: facts are never deleted, only marked is_current=False
+  - Conflict resolution: same (relation,value) → confidence boost; same relation, diff value → supersede
   - Automatic categorization via user_profile_schema
   - Quick profile for identity fields (name, location, age)
   - Chronological raw_log like ChatGPT's memory system
@@ -27,6 +28,7 @@ Module Contract
 """
 import sys
 import os
+import uuid
 
 import json
 from datetime import datetime
@@ -39,6 +41,7 @@ from memory.user_profile_schema import (
     ProfileCategory, ProfileFact, categorize_relation,
     ProfilePreferences, ProfileIdentity, SCHEMA_VERSION
 )
+import config.app_config as app_config
 
 logger = get_logger("user_profile")
 
@@ -162,7 +165,13 @@ class UserProfile:
                  category: ProfileCategory = None,
                  timestamp: datetime = None) -> bool:
         """
-        Add a fact to the profile, handling conflicts.
+        Add a fact to the profile using append-only storage.
+
+        Behavior:
+        1. Same (relation, value) seen again: boost confidence by +0.05 (capped at 1.0). No duplicate appended.
+        2. Same relation, different value: mark existing facts for that relation as is_current=False,
+           append new fact with is_current=True and supersedes=old_fact_id.
+        3. New relation: append with is_current=True.
 
         Args:
             timestamp: Optional timestamp to preserve from imports (defaults to now)
@@ -195,43 +204,60 @@ class UserProfile:
             category=category,
             confidence=confidence,
             source_excerpt=source_excerpt[:200],
-            timestamp=timestamp
+            timestamp=timestamp,
+            fact_id=str(uuid.uuid4()),
+            is_current=True,
         )
 
         with self._lock:
             cat_key = category.value
+            facts_list = self.profile["categories"][cat_key]
 
-            # Check for existing fact with same relation AND value (to allow multiple facts with same relation but different values)
-            existing_idx = None
-            for i, existing in enumerate(self.profile["categories"][cat_key]):
-                if isinstance(existing, dict):
-                    existing_rel = existing.get("relation", "")
-                    existing_val = existing.get("value", "")
-                else:
-                    existing_rel = existing.relation if hasattr(existing, 'relation') else ""
-                    existing_val = existing.value if hasattr(existing, 'value') else ""
+            # Find existing facts with same relation
+            exact_match_idx = None  # same relation AND value
+            same_relation_current = []  # same relation, is_current=True, different value
 
-                # Match on both relation AND value to allow multiple facts with same relation
-                if existing_rel == relation and existing_val == value:
-                    existing_idx = i
-                    break
+            for i, existing in enumerate(facts_list):
+                if not isinstance(existing, dict):
+                    continue
+                existing_rel = existing.get("relation", "")
+                if existing_rel != relation:
+                    continue
+
+                existing_val = existing.get("value", "")
+                if existing_val == value:
+                    exact_match_idx = i
+                elif existing.get("is_current", True):
+                    same_relation_current.append(i)
 
             fact_dict = fact.to_dict()
 
-            if existing_idx is not None:
-                # Conflict resolution: newer + higher confidence wins
-                old = self.profile["categories"][cat_key][existing_idx]
-                old_conf = old.get("confidence", 0.5) if isinstance(old, dict) else 0.5
-
-                if confidence >= old_conf:
-                    fact_dict["supersedes"] = old.get("value", "") if isinstance(old, dict) else ""
-                    self.profile["categories"][cat_key][existing_idx] = fact_dict
-                    logger.info(f"[UserProfile] Updated {relation}: '{fact_dict['supersedes']}' → '{value}'")
-                else:
-                    logger.debug(f"[UserProfile] Rejected lower-confidence update for {relation}")
-                    return False
+            if exact_match_idx is not None:
+                # Case 1: Same (relation, value) — boost confidence, don't duplicate
+                old = facts_list[exact_match_idx]
+                old_conf = old.get("confidence", 0.5)
+                new_conf = min(1.0, old_conf + 0.05)
+                facts_list[exact_match_idx]["confidence"] = new_conf
+                facts_list[exact_match_idx]["timestamp"] = timestamp.isoformat()
+                # Ensure old fact has fact_id (migration compat)
+                if not facts_list[exact_match_idx].get("fact_id"):
+                    facts_list[exact_match_idx]["fact_id"] = str(uuid.uuid4())
+                logger.debug(f"[UserProfile] Confirmed {relation}='{value}', confidence {old_conf:.2f} → {new_conf:.2f}")
+            elif same_relation_current:
+                # Case 2: Same relation, different value — supersede old, append new
+                last_old_id = None
+                for idx in same_relation_current:
+                    facts_list[idx]["is_current"] = False
+                    # Ensure old fact has fact_id
+                    if not facts_list[idx].get("fact_id"):
+                        facts_list[idx]["fact_id"] = str(uuid.uuid4())
+                    last_old_id = facts_list[idx]["fact_id"]
+                fact_dict["supersedes"] = last_old_id
+                facts_list.append(fact_dict)
+                logger.info(f"[UserProfile] Superseded {relation}: → '{value}' (marked {len(same_relation_current)} old as historical)")
             else:
-                self.profile["categories"][cat_key].append(fact_dict)
+                # Case 3: New relation — append
+                facts_list.append(fact_dict)
                 logger.info(f"[UserProfile] Added {category.value}/{relation}: '{value}'")
 
             # Add to raw log
@@ -246,6 +272,9 @@ class UserProfile:
             if category == ProfileCategory.IDENTITY:
                 self._update_quick_profile(relation, value)
 
+            # Prune ephemeral facts if category exceeds soft cap
+            self._prune_category(cat_key)
+
         return True
 
     def _update_quick_profile(self, relation: str, value: str) -> None:
@@ -255,6 +284,41 @@ class UserProfile:
             # Normalize key name
             key = "location" if relation == "lives_in" else relation
             self.profile["quick_profile"][key] = value
+
+    def _prune_category(self, cat_key: str) -> None:
+        """
+        Prune is_current=False ephemeral facts when category exceeds soft cap.
+
+        Only removes historical entries for ephemeral relations (current_activity, etc.).
+        Stable facts (name, age, etc.) are never pruned.
+        """
+        facts_list = self.profile["categories"][cat_key]
+        if len(facts_list) <= app_config.PROFILE_CATEGORY_SOFT_CAP:
+            return
+
+        ephemeral_set = set(app_config.PROFILE_EPHEMERAL_RELATIONS)
+        pruned = 0
+
+        # Group historical ephemeral facts by relation
+        for rel in ephemeral_set:
+            historical = [
+                (i, f) for i, f in enumerate(facts_list)
+                if isinstance(f, dict)
+                and f.get("relation") == rel
+                and not f.get("is_current", True)
+            ]
+            if len(historical) > app_config.PROFILE_EPHEMERAL_MAX_HISTORY:
+                # Sort by timestamp ascending, remove oldest beyond limit
+                historical.sort(key=lambda x: x[1].get("timestamp", ""))
+                to_remove = len(historical) - app_config.PROFILE_EPHEMERAL_MAX_HISTORY
+                indices_to_remove = {historical[j][0] for j in range(to_remove)}
+                # Remove in reverse index order to preserve indices
+                for idx in sorted(indices_to_remove, reverse=True):
+                    facts_list.pop(idx)
+                    pruned += 1
+
+        if pruned > 0:
+            logger.info(f"[UserProfile] Pruned {pruned} historical ephemeral facts from '{cat_key}'")
 
     def add_facts_batch(self, facts: List[Dict]) -> int:
         """
@@ -282,9 +346,63 @@ class UserProfile:
 
         return added
 
-    def get_category(self, category: ProfileCategory) -> List[Dict]:
-        """Get all facts in a category."""
-        return self.profile["categories"].get(category.value, [])
+    # Suffix patterns that indicate ephemeral/transient facts
+    _EPHEMERAL_SUFFIXES = (
+        "_status", "_condition", "_concern", "_intent",
+        "_taken", "_left", "_duration", "_activity",
+        "_time", "_deadline", "_variant", "_feeling",
+        "_experience", "_plans", "_event",
+    )
+    # Prefix patterns that indicate ephemeral/transient facts
+    _EPHEMERAL_PREFIXES = (
+        "current_", "recent_", "upcoming_", "last_", "next_",
+        "time_", "waiting_", "took_", "woke_",
+    )
+
+    def _is_ephemeral_relation(self, relation: str) -> bool:
+        """Check if a relation is ephemeral (transient state, not stable identity)."""
+        # Explicit list from config
+        if relation in set(app_config.PROFILE_EPHEMERAL_RELATIONS):
+            return True
+        # Pattern matching
+        if any(relation.startswith(p) for p in self._EPHEMERAL_PREFIXES):
+            return True
+        if any(relation.endswith(s) for s in self._EPHEMERAL_SUFFIXES):
+            return True
+        return False
+
+    def get_category(self, category: ProfileCategory, include_historical: bool = False) -> List[Dict]:
+        """Get facts in a category.
+
+        Default returns only is_current=True facts, excluding stale ephemeral facts
+        (older than PROFILE_EPHEMERAL_TTL_HOURS).
+        """
+        facts = self.profile["categories"].get(category.value, [])
+        if include_historical:
+            return facts
+
+        ttl_hours = app_config.PROFILE_EPHEMERAL_TTL_HOURS
+        now = datetime.now()
+
+        result = []
+        for f in facts:
+            if not isinstance(f, dict):
+                continue
+            if not f.get("is_current", True):
+                continue
+            # Drop stale ephemeral facts beyond TTL
+            rel = f.get("relation", "")
+            if self._is_ephemeral_relation(rel) and ttl_hours > 0:
+                ts_str = f.get("timestamp", "")
+                try:
+                    ts = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else ts_str
+                    age_hours = (now - ts).total_seconds() / 3600
+                    if age_hours > ttl_hours:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            result.append(f)
+        return result
 
     def get_all_facts(self) -> Dict[str, List[Dict]]:
         """Get all categorized facts."""
@@ -297,6 +415,73 @@ class UserProfile:
     def get_fact_count(self) -> int:
         """Total number of facts stored."""
         return len(self.profile.get("raw_log", []))
+
+    def get_current_view(self, category: ProfileCategory = None) -> Dict[str, List[Dict]]:
+        """
+        Returns only is_current=True facts, grouped by category.
+
+        Args:
+            category: Optional single category to filter. If None, returns all categories.
+        """
+        result = {}
+        categories = [category] if category else list(ProfileCategory)
+        for cat in categories:
+            current = self.get_category(cat, include_historical=False)
+            if current:
+                result[cat.value] = current
+        return result
+
+    def get_profile_at(self, timestamp: datetime) -> Dict[str, List[Dict]]:
+        """
+        Point-in-time profile snapshot.
+
+        For each (relation, category), returns the latest fact at-or-before the given timestamp.
+        """
+        result = {}
+        for cat in ProfileCategory:
+            all_facts = self.get_category(cat, include_historical=True)
+            # Group by relation
+            by_relation: Dict[str, List[Dict]] = {}
+            for f in all_facts:
+                if not isinstance(f, dict):
+                    continue
+                rel = f.get("relation", "")
+                ts_str = f.get("timestamp", "")
+                try:
+                    ts = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else ts_str
+                except (ValueError, TypeError):
+                    continue
+                if ts <= timestamp:
+                    by_relation.setdefault(rel, []).append(f)
+
+            # For each relation, pick the latest fact at-or-before timestamp
+            cat_facts = []
+            for rel, facts in by_relation.items():
+                facts.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+                cat_facts.append(facts[0])
+
+            if cat_facts:
+                result[cat.value] = cat_facts
+        return result
+
+    def get_fact_history(self, relation: str, category: ProfileCategory = None) -> List[Dict]:
+        """
+        All values a relation has had, sorted chronologically (oldest first).
+
+        Args:
+            relation: The relation name to retrieve history for.
+            category: Optional category to narrow search. If None, searches all categories.
+        """
+        relation = relation.strip().lower()
+        results = []
+        categories = [category] if category else list(ProfileCategory)
+        for cat in categories:
+            all_facts = self.get_category(cat, include_historical=True)
+            for f in all_facts:
+                if isinstance(f, dict) and f.get("relation") == relation:
+                    results.append(f)
+        results.sort(key=lambda x: x.get("timestamp", ""))
+        return results
 
     def export_markdown(self) -> str:
         """
@@ -340,11 +525,24 @@ class UserProfile:
 
         return "\n".join(lines)
 
+    # Temporal keywords that signal the user wants historical facts
+    TEMPORAL_KEYWORDS = {
+        "history", "over time", "trend", "progress", "used to",
+        "before", "previously", "last month", "last week", "timeline",
+        "changed", "evolution", "pattern", "how has", "how have",
+    }
+
+    def _is_temporal_query(self, query: str) -> bool:
+        """Check if query contains temporal keywords requesting historical data."""
+        query_lower = query.lower()
+        return any(kw in query_lower for kw in self.TEMPORAL_KEYWORDS)
+
     def get_relevant_facts(self, query: str, category: ProfileCategory, limit: int = 3) -> List[Dict]:
         """
         Get most relevant facts for a category using hybrid approach.
 
         Strategy: 2/3 semantic (query-relevant) + 1/3 recent
+        When temporal keywords detected, includes historical timeline facts.
 
         Args:
             query: Current user query for semantic relevance
@@ -395,12 +593,30 @@ class UserProfile:
 
         # Combine and deduplicate
         result = semantic_facts + recent_facts
+
+        # If temporal query, include historical timeline for matched relations
+        if self._is_temporal_query(query):
+            matched_relations = set()
+            for f in result:
+                rel = f.get("relation", "")
+                # Check if relation overlaps with query words
+                rel_words = set(rel.lower().split("_"))
+                if rel_words & query_words:
+                    matched_relations.add(rel)
+
+            for rel in matched_relations:
+                history = self.get_fact_history(rel, category)
+                for hf in history:
+                    if hf not in result:
+                        result.append(hf)
+
         return result[:limit]
 
     def get_context_injection(self, max_tokens: int = 500, query: str = "", facts_per_category: int = 3) -> str:
         """
         Generate compact profile summary for prompt injection.
         Uses hybrid retrieval: 2/3 semantic (query-relevant) + 1/3 recent per category.
+        When temporal keywords detected, appends mini-timelines for relevant relations.
 
         Args:
             max_tokens: Approximate token budget for profile context
@@ -411,9 +627,9 @@ class UserProfile:
             Formatted profile string for prompt injection
         """
         parts = []
+        is_temporal = bool(query) and self._is_temporal_query(query)
 
         # Quick profile (always include)
-        # Note: Quick profile doesn't have individual timestamps, but we can add the profile updated_at
         quick = self.get_quick_profile()
         if quick:
             profile_updated = self.profile.get("updated_at", "")
@@ -422,6 +638,8 @@ class UserProfile:
                 parts.append(f"User: {quick_str} [profile_updated: {profile_updated}]")
             else:
                 parts.append(f"User: {quick_str}")
+
+        timeline_relations = set()
 
         for cat in ProfileCategory:
             if query:
@@ -442,13 +660,31 @@ class UserProfile:
                     # Include timestamp for temporal reasoning
                     ts = f.get('timestamp', '')
                     if isinstance(ts, str):
-                        # Format: relation=value [timestamp]
                         fact_strs.append(f"{f['relation']}={f['value']} [{ts}]")
                     else:
-                        # Fallback if timestamp is datetime object
                         ts_str = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
                         fact_strs.append(f"{f['relation']}={f['value']} [{ts_str}]")
+
+                    # Track relations that overlap with query for timeline
+                    if is_temporal:
+                        rel = f.get("relation", "")
+                        query_words = set(query.lower().split())
+                        rel_words = set(rel.lower().split("_"))
+                        if rel_words & query_words:
+                            timeline_relations.add((rel, cat))
+
                 parts.append(f"{cat.value}: {'; '.join(fact_strs)}")
+
+        # Append mini-timelines for temporal queries
+        if is_temporal and timeline_relations:
+            for rel, cat in timeline_relations:
+                history = self.get_fact_history(rel, cat)
+                if len(history) > 1:
+                    entries = []
+                    for h in history:
+                        ts_str = h.get("timestamp", "")[:10]  # Just date
+                        entries.append(f"{h.get('value', '?')} [{ts_str}]")
+                    parts.append(f"{rel} timeline: {' → '.join(entries)}")
 
         result = "\n".join(parts)
 
@@ -566,6 +802,7 @@ Skip emotional scaffolding unless crisis detected
 
         Currently handles:
         - Migration from 0.0 (no version) to 1.0 (adds identity, preferences, version)
+        - Migration from 1.0 to 2.0 (adds fact_id, is_current to all facts; builds supersedes chains)
         """
         if not hasattr(self, 'version') or self.version is None:
             self.version = "0.0"
@@ -580,7 +817,40 @@ Skip emotional scaffolding unless crisis detected
             if not hasattr(self, 'preferences'):
                 self.preferences = ProfilePreferences()
 
-            # Update version
+            self.version = "1.0"
+            logger.info("[UserProfile] Schema migration 0.0 → 1.0 complete")
+
+        # Migration: 1.0 → 2.0 (append-only facts with fact_id + is_current)
+        if self.version == "1.0":
+            logger.info("[UserProfile] Migrating schema from 1.0 to 2.0")
+
+            for cat_key, facts_list in self.profile.get("categories", {}).items():
+                # Group facts by relation to determine is_current
+                by_relation: Dict[str, List[int]] = {}
+                for i, fact in enumerate(facts_list):
+                    if not isinstance(fact, dict):
+                        continue
+                    # Add fact_id if missing
+                    if not fact.get("fact_id"):
+                        fact["fact_id"] = str(uuid.uuid4())
+                    rel = fact.get("relation", "")
+                    by_relation.setdefault(rel, []).append(i)
+
+                # For each relation, mark only the most recent as is_current=True
+                for rel, indices in by_relation.items():
+                    # Sort by timestamp
+                    indices.sort(key=lambda idx: facts_list[idx].get("timestamp", ""))
+                    for j, idx in enumerate(indices):
+                        if j == len(indices) - 1:
+                            # Most recent → current
+                            facts_list[idx]["is_current"] = True
+                            facts_list[idx].setdefault("supersedes", None)
+                        else:
+                            facts_list[idx]["is_current"] = False
+                            # Build supersedes chain: next fact supersedes this one
+                            next_idx = indices[j + 1]
+                            facts_list[next_idx]["supersedes"] = facts_list[idx]["fact_id"]
+
             self.version = SCHEMA_VERSION
             self.save()
-            logger.info(f"[UserProfile] Schema migration complete: {self.version}")
+            logger.info(f"[UserProfile] Schema migration 1.0 → 2.0 complete")

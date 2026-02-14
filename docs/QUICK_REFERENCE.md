@@ -136,16 +136,102 @@ class MemoryScorer:
         """Base 0.5 + length/question/keyword bonuses, capped at 1.0"""
 
 
-# memory/shutdown_processor.py — Session-end processing [ENHANCED 2026-02-09]
+# memory/shutdown_processor.py — Session-end processing [ENHANCED 2026-02-13]
 class ShutdownProcessor:
     def __init__(..., memory_coordinator=None):
         """memory_coordinator enables pipeline-enriched proposal generation."""
 
     async def process_shutdown_memory(session_conversations=None):
-        """Block summaries + fact extraction + procedural skills + code proposals + user profile updates"""
+        """Steps: 1) block summaries, 2) session facts, 3) LLM facts,
+        4) procedural skills, 5) code proposals, 6) cross-dedup (dry_run=True only),
+        7) user profile updates"""
+
+    async def _run_cross_collection_dedup():
+        """Dry-run only — logs findings but NEVER deletes. Guarded to run once per process."""
 
     async def run_shutdown_reflection(session_conversations=None, session_summaries=None) -> bool:
         """LLM reflection generation + ChromaDB storage"""
+
+
+# memory/cross_deduplicator.py — Cross-collection dedup [NEW 2026-02-13]
+class CrossCollectionDeduplicator:
+    def __init__(chroma_store):
+        """Thresholds from CROSS_DEDUP_* config. Skips protected collections."""
+
+    def run(dry_run=True) -> DedupPlan:
+        """
+        1. Load docs from target collections (facts, summaries, skills, proposals, reflections)
+        2. Compute embeddings via chroma_store.embedding_fn
+        3. Pairwise cosine → find duplicates >= 0.92 threshold
+        4. Group facts by (subject, predicate) → find contradictions (different objects)
+        5. Skip ephemeral predicates (current_feeling, is, has, thinks, etc.)
+        6. If not dry_run: execute deletions
+        Returns DedupPlan with full audit trail.
+        """
+
+    # Keep/delete priority: summaries(5) > reflections(4) > skills(3) > proposals(2) > facts(1)
+    # Protected (never scanned): conversations, obsidian_notes, reference_docs, wiki_knowledge
+    # GUI: Status tab → "Preview Dedup" (dry_run) / "Run Dedup" (live)
+
+# Config:
+CROSS_DEDUP_ENABLED = True
+CROSS_DEDUP_DUPLICATE_THRESHOLD = 0.92
+CROSS_DEDUP_CONTRADICTION_THRESHOLD = 0.85
+CROSS_DEDUP_ON_SHUTDOWN = True  # dry_run=True only, never auto-deletes
+CROSS_DEDUP_MAX_DOCS_PER_COLLECTION = 1000  # Per-collection cap
+
+# Protected (never scanned): conversations, obsidian_notes, reference_docs, wiki_knowledge
+```
+
+---
+
+## Escalation Tracker (Crisis Cooldown) **[NEW 2026-02-13]**
+
+```python
+# core/escalation_tracker.py
+class ResponseStrategy(Enum):
+    VALIDATE_AND_SUGGEST   # Default: validate + offer suggestions
+    GROUNDING_PRESENCE     # Sustained escalation: drop advice, 2-3 sentences max
+    QUIET_COMPANIONSHIP    # Sustained + ignored suggestions: 1-2 sentences, just be present
+    GENTLE_REENGAGEMENT    # After de-escalation: carefully re-engage
+
+class EscalationTracker:
+    def __init__(escalation_threshold=3, deescalation_window=2, max_history=10):
+        """Tracks consecutive elevated/calm counts, suggestion engagement, tone velocity."""
+
+    def update(tone_level, user_message, need_type=None) -> ResponseStrategy:
+        """Update with new message, return strategy. Tracks engagement with previous suggestions."""
+
+    def record_response(response) -> None:
+        """Extract suggestions from response for engagement detection on next turn."""
+
+    def get_strategy_instructions() -> str:
+        """Supplemental tone instructions appended to system prompt (or empty for default)."""
+
+    def get_token_budget_override() -> Optional[int]:
+        """QUIET=300, GROUNDING=500, GENTLE=800, default=None."""
+
+    def get_escalation_velocity() -> float:
+        """0.0 (stable) to 1.0 (rapid escalation) from last 5 tone values."""
+
+    def get_debug_info() -> Dict:
+        """Strategy, counts, velocity for debug logging."""
+
+# Strategy transitions:
+# VALIDATE → (threshold+ elevated) → GROUNDING → (2+ ignored) → QUIET
+#   → (tone drops) → GENTLE → (sustained calm) → VALIDATE
+# De-escalation nuance: need_type="PERSPECTIVE" = intensity shift → VALIDATE (not GENTLE)
+
+# Integration in orchestrator:
+# tracker.update(tone_level, user_message) → after build_context()
+# tracker.get_strategy_instructions() → append to system prompt
+# tracker.get_token_budget_override() → override tone-based budget
+# tracker.record_response(response) → after generation
+
+# Config (app_config.py):
+ESCALATION_ENABLED = True
+ESCALATION_THRESHOLD = 3          # Consecutive elevated before strategy shift
+ESCALATION_DEESCALATION_WINDOW = 2  # Consecutive calm before gentle ends
 ```
 
 ---
