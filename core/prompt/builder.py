@@ -282,6 +282,8 @@ class UnifiedPromptBuilder:
                           fresh_facts: Optional[List[Any]] = None, memories: Optional[List[Any]] = None,
                           stm_summary: Optional[Dict[str, Any]] = None,
                           crisis_level: Optional[str] = None,
+                          retrieval_overrides: Optional[Dict[str, int]] = None,
+                          weight_overrides: Optional[Dict[str, float]] = None,
                           **kwargs) -> Dict[str, Any]:
         """
         Build a complete prompt context for the given user input.
@@ -294,6 +296,10 @@ class UnifiedPromptBuilder:
             user_input: The user's query/input
             config: Optional configuration overrides
             crisis_level: Current crisis level (HIGH/MEDIUM suppresses web search)
+            retrieval_overrides: Optional dict of {max_*: count} to override
+                global PROMPT_MAX_* constants. Used by intent classifier.
+            weight_overrides: Optional dict of {weight_name: value} to override
+                global SCORE_WEIGHTS. Used by intent classifier.
 
         Returns:
             Dict containing the built prompt context with sections like:
@@ -342,6 +348,39 @@ class UnifiedPromptBuilder:
             except Exception as e:
                 logger.debug(f"[PromptBuilder] Failed to get narrative context: {e}")
 
+            # Apply intent-driven retrieval count overrides
+            _ro = retrieval_overrides or {}
+            eff_max_recent = _ro.get("max_recent", PROMPT_MAX_RECENT)
+            eff_max_mems = _ro.get("max_mems", PROMPT_MAX_MEMS)
+            eff_max_summaries_r = _ro.get("max_recent_summaries", PROMPT_MAX_RECENT_SUMMARIES)
+            eff_max_summaries_s = _ro.get("max_semantic_summaries", PROMPT_MAX_SEMANTIC_SUMMARIES)
+            # Convenience: "max_summaries" splits evenly into recent/semantic
+            if "max_summaries" in _ro and "max_recent_summaries" not in _ro:
+                half = max(1, _ro["max_summaries"] // 2)
+                eff_max_summaries_r = half
+                eff_max_summaries_s = _ro["max_summaries"] - half
+            eff_max_reflections_r = _ro.get("max_recent_reflections", PROMPT_MAX_RECENT_REFLECTIONS)
+            eff_max_reflections_s = _ro.get("max_semantic_reflections", PROMPT_MAX_SEMANTIC_REFLECTIONS)
+            if "max_reflections" in _ro and "max_recent_reflections" not in _ro:
+                half = max(1, _ro["max_reflections"] // 2)
+                eff_max_reflections_r = half
+                eff_max_reflections_s = _ro["max_reflections"] - half
+            eff_max_dreams = _ro.get("max_dreams", PROMPT_MAX_DREAMS)
+            eff_max_semantic = _ro.get("max_semantic", PROMPT_MAX_SEMANTIC)
+            eff_max_wiki = _ro.get("max_wiki", PROMPT_MAX_WIKI)
+            eff_max_skills = _ro.get("max_skills", PROMPT_MAX_SKILLS)
+            eff_max_proposals = _ro.get("max_proposals", PROMPT_MAX_PROPOSALS)
+            eff_max_git = _ro.get("max_git_commits", PROMPT_MAX_GIT_COMMITS)
+
+            if _ro:
+                logger.info(f"[BUILD_PROMPT] Intent retrieval overrides: {_ro}")
+
+            # Set intent-driven weight overrides on scorer (cleared after gather)
+            scorer = getattr(self.memory_coordinator, 'scorer', None)
+            if scorer and weight_overrides:
+                scorer._intent_weight_overrides = weight_overrides
+                logger.info(f"[BUILD_PROMPT] Intent weight overrides set on scorer")
+
             # Step 3: Launch parallel data gathering tasks with per-task timing
             tasks = {}
             task_timings = {}
@@ -359,12 +398,12 @@ class UnifiedPromptBuilder:
 
             # Recent conversations
             tasks["recent"] = asyncio.create_task(
-                _timed_task("recent", self.context_gatherer._get_recent_conversations(PROMPT_MAX_RECENT))
+                _timed_task("recent", self.context_gatherer._get_recent_conversations(eff_max_recent))
             )
 
             # Query-relevant memories (semantic search results only)
             tasks["memories"] = asyncio.create_task(
-                _timed_task("memories", self.context_gatherer._get_semantic_memories(user_input, PROMPT_MAX_MEMS))
+                _timed_task("memories", self.context_gatherer._get_semantic_memories(user_input, eff_max_mems))
             )
 
             # User Profile (replaces semantic_facts + fresh_facts with categorized hybrid retrieval)
@@ -375,27 +414,27 @@ class UnifiedPromptBuilder:
 
             # Summaries (separated into recent + semantic)
             tasks["summaries"] = asyncio.create_task(
-                _timed_task("summaries", self.context_gatherer._get_summaries_separate(user_input, PROMPT_MAX_RECENT_SUMMARIES, PROMPT_MAX_SEMANTIC_SUMMARIES))
+                _timed_task("summaries", self.context_gatherer._get_summaries_separate(user_input, eff_max_summaries_r, eff_max_summaries_s))
             )
 
             # Dreams (if enabled)
             tasks["dreams"] = asyncio.create_task(
-                _timed_task("dreams", self.context_gatherer._get_dreams(PROMPT_MAX_DREAMS))
+                _timed_task("dreams", self.context_gatherer._get_dreams(eff_max_dreams))
             )
 
             # Semantic chunks
             tasks["semantic"] = asyncio.create_task(
-                _timed_task("semantic", self.context_gatherer._get_semantic_chunks(user_input, max_results=PROMPT_MAX_SEMANTIC))
+                _timed_task("semantic", self.context_gatherer._get_semantic_chunks(user_input, max_results=eff_max_semantic))
             )
 
             # Reflections (separated into recent + semantic)
             tasks["reflections"] = asyncio.create_task(
-                _timed_task("reflections", self.context_gatherer._get_reflections_separate(user_input, PROMPT_MAX_RECENT_REFLECTIONS, PROMPT_MAX_SEMANTIC_REFLECTIONS))
+                _timed_task("reflections", self.context_gatherer._get_reflections_separate(user_input, eff_max_reflections_r, eff_max_reflections_s))
             )
 
             # Wiki content
             tasks["wiki"] = asyncio.create_task(
-                _timed_task("wiki", self.context_gatherer._get_wiki_content(user_input, PROMPT_MAX_WIKI))
+                _timed_task("wiki", self.context_gatherer._get_wiki_content(user_input, eff_max_wiki))
             )
 
             # Personal notes from Obsidian vault
@@ -425,17 +464,17 @@ class UnifiedPromptBuilder:
 
             # Git commit history (procedural memory)
             tasks["git_commits"] = asyncio.create_task(
-                _timed_task("git_commits", self.context_gatherer.get_git_commits(user_input, PROMPT_MAX_GIT_COMMITS))
+                _timed_task("git_commits", self.context_gatherer.get_git_commits(user_input, eff_max_git))
             )
 
             # Procedural skills (adaptive workflows)
             tasks["procedural_skills"] = asyncio.create_task(
-                _timed_task("procedural_skills", self.context_gatherer.get_procedural_skills(user_input, PROMPT_MAX_SKILLS))
+                _timed_task("procedural_skills", self.context_gatherer.get_procedural_skills(user_input, eff_max_skills))
             )
 
             # Proposed features (code proposals, only for project-related queries)
             tasks["proposed_features"] = asyncio.create_task(
-                _timed_task("proposed_features", self.context_gatherer.get_proposed_features(user_input, PROMPT_MAX_PROPOSALS))
+                _timed_task("proposed_features", self.context_gatherer.get_proposed_features(user_input, eff_max_proposals))
             )
 
             # Web search (triggered based on query analysis, suppressed during crisis)
@@ -476,6 +515,10 @@ class UnifiedPromptBuilder:
             except asyncio.TimeoutError:
                 logger.warning("Data gathering timed out, using partial results")
                 gathered = {name: [] for name in tasks.keys()}
+            finally:
+                # Clear intent weight overrides from scorer (set before gather)
+                if scorer and weight_overrides:
+                    scorer._intent_weight_overrides = None
 
             # Step 3: Post-fetch processing
 
@@ -952,6 +995,13 @@ class UnifiedPromptBuilder:
         if not isinstance(context, ContextResult):
             raise TypeError(f"Expected ContextResult, got {type(context)}")
 
+        # Extract intent overrides (if intent classifier ran)
+        retrieval_overrides = {}
+        weight_overrides = {}
+        if hasattr(context, 'intent') and context.intent is not None:
+            retrieval_overrides = context.intent.retrieval_overrides or {}
+            weight_overrides = context.intent.weight_overrides or {}
+
         # Map ContextResult to build_prompt parameters
         return await self.build_prompt(
             user_input=context.processed_query,
@@ -962,6 +1012,8 @@ class UnifiedPromptBuilder:
             memories=memories,
             stm_summary=context.stm_summary,
             crisis_level=context.crisis_level_str,
+            retrieval_overrides=retrieval_overrides,
+            weight_overrides=weight_overrides,
         )
 
     async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

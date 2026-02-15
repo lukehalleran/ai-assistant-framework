@@ -576,6 +576,28 @@ class MultiCollectionChromaStore:
 
         return results_dict
 
+    def update_metadata(self, collection_name: str, doc_id: str, metadata_updates: dict) -> bool:
+        """Update metadata fields on an existing document.
+
+        Merges *metadata_updates* into the document's current metadata
+        and writes the result back.  Returns True on success.
+        """
+        coll = self.collections.get(collection_name)
+        if not coll:
+            logger.warning("[ChromaStore] update_metadata: unknown collection '%s'", collection_name)
+            return False
+        try:
+            existing = coll.get(ids=[doc_id], include=["metadatas"])
+            if not existing or not existing.get("metadatas"):
+                logger.warning("[ChromaStore] update_metadata: doc '%s' not found in '%s'", doc_id, collection_name)
+                return False
+            merged = {**(existing["metadatas"][0] or {}), **metadata_updates}
+            coll.update(ids=[doc_id], metadatas=[_flatten_for_chroma(merged)])
+            return True
+        except Exception as e:
+            logger.error("[ChromaStore] update_metadata failed for %s/%s: %s", collection_name, doc_id, e)
+            return False
+
     def get_collection_stats(self) -> Dict[str, Dict]:
         """Get statistics for all collections"""
         stats = {}

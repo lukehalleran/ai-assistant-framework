@@ -514,8 +514,11 @@ class CrossCollectionDeduplicator:
                 logger.warning("[CrossDedup] %s", msg)
                 plan.errors.append(msg)
 
-        # Delete contradicting facts (keep most recent)
+        # Delete contradicting facts (keep most recent) + apply truth penalties
         for cluster in plan.contradiction_clusters:
+            # Apply truth score penalties for contradictions
+            self._apply_contradiction_truth_penalties(cluster)
+
             for del_id in cluster.delete_ids:
                 try:
                     coll = self.chroma_store.collections.get("facts")
@@ -533,3 +536,39 @@ class CrossCollectionDeduplicator:
                     plan.errors.append(msg)
 
         return deleted
+
+    def _apply_contradiction_truth_penalties(self, cluster: ContradictionCluster) -> None:
+        """Apply truth score penalties when contradictions are resolved.
+
+        The older (deleted) facts get a contradiction penalty; the kept
+        (newest) fact gets a small boost for surviving.
+        """
+        try:
+            from memory.truth_scorer import TruthScorer
+
+            # Penalize older contradicting facts
+            for del_id in cluster.delete_ids:
+                try:
+                    self.chroma_store.update_metadata("facts", del_id, {
+                        "truth_score": TruthScorer.apply_contradiction(0.7),
+                    })
+                except Exception:
+                    pass  # Best-effort; fact may be about to be deleted anyway
+
+            # Small boost for the kept (most recent) fact
+            if cluster.keep_id:
+                try:
+                    coll = self.chroma_store.collections.get("facts")
+                    if coll:
+                        existing = coll.get(ids=[cluster.keep_id], include=["metadatas"])
+                        if existing and existing.get("metadatas"):
+                            old_truth = float(existing["metadatas"][0].get("truth_score", 0.7))
+                            new_truth = min(1.0, old_truth + 0.03)
+                            self.chroma_store.update_metadata("facts", cluster.keep_id, {
+                                "truth_score": new_truth,
+                            })
+                except Exception as e:
+                    logger.debug("[CrossDedup] Failed to boost kept fact %s: %s", cluster.keep_id, e)
+
+        except ImportError:
+            logger.debug("[CrossDedup] TruthScorer not available; skipping contradiction penalties")

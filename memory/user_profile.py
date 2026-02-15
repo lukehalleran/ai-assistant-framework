@@ -42,6 +42,7 @@ from memory.user_profile_schema import (
     ProfilePreferences, ProfileIdentity, SCHEMA_VERSION
 )
 import config.app_config as app_config
+from memory.truth_scorer import TruthScorer
 
 logger = get_logger("user_profile")
 
@@ -233,30 +234,48 @@ class UserProfile:
             fact_dict = fact.to_dict()
 
             if exact_match_idx is not None:
-                # Case 1: Same (relation, value) — boost confidence, don't duplicate
+                # Case 1: Same (relation, value) — confirmation: boost confidence + truth
                 old = facts_list[exact_match_idx]
                 old_conf = old.get("confidence", 0.5)
                 new_conf = min(1.0, old_conf + 0.05)
                 facts_list[exact_match_idx]["confidence"] = new_conf
                 facts_list[exact_match_idx]["timestamp"] = timestamp.isoformat()
+                # Truth: confirmation boost + reset decay clock
+                old_truth = float(old.get("truth_score", TruthScorer.calculate_initial_score("user_stated")))
+                facts_list[exact_match_idx]["truth_score"] = TruthScorer.apply_confirmation(old_truth)
+                facts_list[exact_match_idx]["last_confirmed_at"] = timestamp.isoformat()
+                facts_list[exact_match_idx]["confirmation_count"] = old.get("confirmation_count", 0) + 1
                 # Ensure old fact has fact_id (migration compat)
                 if not facts_list[exact_match_idx].get("fact_id"):
                     facts_list[exact_match_idx]["fact_id"] = str(uuid.uuid4())
                 logger.debug(f"[UserProfile] Confirmed {relation}='{value}', confidence {old_conf:.2f} → {new_conf:.2f}")
             elif same_relation_current:
-                # Case 2: Same relation, different value — supersede old, append new
+                # Case 2: Same relation, different value — correction: penalize old, new gets corrected score
                 last_old_id = None
                 for idx in same_relation_current:
                     facts_list[idx]["is_current"] = False
+                    # Truth: apply correction penalty to superseded fact
+                    old_truth = float(facts_list[idx].get("truth_score", 0.7))
+                    facts_list[idx]["truth_score"] = TruthScorer.apply_correction(old_truth)
                     # Ensure old fact has fact_id
                     if not facts_list[idx].get("fact_id"):
                         facts_list[idx]["fact_id"] = str(uuid.uuid4())
                     last_old_id = facts_list[idx]["fact_id"]
                 fact_dict["supersedes"] = last_old_id
+                # Truth metadata for new corrected fact
+                fact_dict["truth_score"] = TruthScorer.calculate_initial_score("corrected")
+                fact_dict["truth_source"] = "corrected"
+                fact_dict["last_confirmed_at"] = timestamp.isoformat()
+                fact_dict["confirmation_count"] = 0
                 facts_list.append(fact_dict)
                 logger.info(f"[UserProfile] Superseded {relation}: → '{value}' (marked {len(same_relation_current)} old as historical)")
             else:
-                # Case 3: New relation — append
+                # Case 3: New relation — append with initial truth metadata
+                source = "user_stated" if confidence >= 0.7 else "llm_extracted"
+                fact_dict["truth_score"] = TruthScorer.calculate_initial_score(source)
+                fact_dict["truth_source"] = source
+                fact_dict["last_confirmed_at"] = timestamp.isoformat()
+                fact_dict["confirmation_count"] = 0
                 facts_list.append(fact_dict)
                 logger.info(f"[UserProfile] Added {category.value}/{relation}: '{value}'")
 

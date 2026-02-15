@@ -34,7 +34,9 @@ from config.app_config import (
     STM_MIN_CONVERSATION_DEPTH,
     STM_MAX_RECENT_MESSAGES,
     REWRITE_TIMEOUT_S,
+    INTENT_ENABLED,
 )
+from core.intent_classifier import IntentClassifier, IntentResult, IntentType
 
 if TYPE_CHECKING:
     from utils.topic_manager import TopicManager
@@ -106,6 +108,9 @@ class ContextResult:
 
     # Query analysis
     query_analysis: Optional[Any] = None  # QueryAnalysis dataclass
+
+    # Intent classification
+    intent: Optional["IntentResult"] = None
 
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -202,6 +207,10 @@ class ContextPipeline:
         self._rewrite_timeout = self.config.get("REWRITE_TIMEOUT_S", REWRITE_TIMEOUT_S)
         self._enable_query_rewrite = self.config.get("enable_query_rewrite", True)
 
+        # Intent classifier (regex-first, no LLM calls)
+        self._intent_enabled = self.config.get("INTENT_ENABLED", INTENT_ENABLED)
+        self._intent_classifier = IntentClassifier() if self._intent_enabled else None
+
         # Track conversation depth for STM decisions
         self._conversation_depth = 0
 
@@ -253,6 +262,7 @@ class ContextPipeline:
         thread_context = None
         identity_block = ""
         user_name = None
+        intent_result: Optional[IntentResult] = None
 
         # Stage 1: Topic Extraction
         primary_topic, topics = await self._extract_topics(user_input)
@@ -283,6 +293,17 @@ class ContextPipeline:
             if is_heavy_topic:
                 logger.debug(f"Stage 4 (Heavy Topic): detected, {len(extracted_facts)} facts extracted")
 
+        # Stage 4.5: Intent Classification (regex-first, no LLM)
+        if not use_raw_mode and self._intent_classifier:
+            intent_result = self._intent_classifier.classify(
+                user_input,
+                tone_level=tone_level.value,
+            )
+            logger.debug(
+                f"Stage 4.5 (Intent): {intent_result.intent.value} "
+                f"(conf={intent_result.confidence:.2f})"
+            )
+
         # Stage 5: Query Rewriting (for better retrieval)
         if not use_raw_mode and self._enable_query_rewrite:
             rewritten = await self._rewrite_query(user_input, query_analysis)
@@ -300,6 +321,12 @@ class ContextPipeline:
                     )
                 if stm_summary:
                     logger.debug(f"Stage 6 (STM): analysis complete")
+                    # Refine intent with STM's free-text intent (no extra LLM call)
+                    if intent_result and self._intent_classifier:
+                        stm_intent_str = stm_summary.get("intent") if isinstance(stm_summary, dict) else None
+                        intent_result = self._intent_classifier.refine_with_stm(
+                            intent_result, stm_intent_str
+                        )
             except asyncio.TimeoutError:
                 logger.warning("Stage 6 (STM): analysis timed out")
                 stm_summary = None
@@ -335,12 +362,15 @@ class ContextPipeline:
             is_heavy_topic=is_heavy_topic,
             extracted_facts=extracted_facts,
             query_analysis=query_analysis,
+            intent=intent_result,
             metadata={
                 "use_raw_mode": use_raw_mode,
                 "has_files": file_context is not None,
                 "topic_count": len(topics),
                 "conversation_depth": self._conversation_depth,
                 "stm_enabled": self._use_stm,
+                "intent": intent_result.intent.value if intent_result else None,
+                "intent_confidence": intent_result.confidence if intent_result else None,
             }
         )
 

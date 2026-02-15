@@ -449,6 +449,29 @@ CROSS_DEDUP_CONTRADICTION_THRESHOLD = float(os.getenv("CROSS_DEDUP_CONTRADICTION
 CROSS_DEDUP_ON_SHUTDOWN = bool(int(os.getenv("CROSS_DEDUP_ON_SHUTDOWN", "1" if CROSS_DEDUP_ON_SHUTDOWN else "0")))
 
 # --------------------------------------------------------------------
+# Truth Scorer Configuration
+# --------------------------------------------------------------------
+# Evidence-based truth scoring with time decay.
+# Replaces the old access-count echo chamber with decay-toward-uncertainty.
+TRUTH_SCORER_CFG = config.get("truth_scorer", {})
+TRUTH_SCORER_ENABLED: bool = bool(TRUTH_SCORER_CFG.get("enabled", True))
+TRUTH_SCORER_INITIAL_SCORE: float = float(TRUTH_SCORER_CFG.get("initial_score", 0.7))
+TRUTH_SCORER_CONFIRMED_BOOST: float = float(TRUTH_SCORER_CFG.get("confirmed_boost", 0.08))
+TRUTH_SCORER_CORRECTION_PENALTY: float = float(TRUTH_SCORER_CFG.get("correction_penalty", 0.25))
+TRUTH_SCORER_CONTRADICTION_PENALTY: float = float(TRUTH_SCORER_CFG.get("contradiction_penalty", 0.15))
+TRUTH_SCORER_DECAY_RATE: float = float(TRUTH_SCORER_CFG.get("decay_rate_per_week", 0.02))
+TRUTH_SCORER_DECAY_FLOOR: float = float(TRUTH_SCORER_CFG.get("decay_floor", 0.3))
+TRUTH_SCORER_CORRECTION_DETECTION: bool = bool(TRUTH_SCORER_CFG.get("correction_detection", True))
+TRUTH_SCORER_CONFIRMATION_DETECTION: bool = bool(TRUTH_SCORER_CFG.get("confirmation_detection", True))
+# Source-based initial scores
+TRUTH_SCORER_SOURCE_SCORES: dict = TRUTH_SCORER_CFG.get("source_scores", {
+    "user_stated": 0.8, "corrected": 0.85, "llm_extracted": 0.7, "inferred": 0.5
+})
+
+# Environment variable overrides for Truth Scorer
+TRUTH_SCORER_ENABLED = bool(int(os.getenv("TRUTH_SCORER_ENABLED", "1" if TRUTH_SCORER_ENABLED else "0")))
+
+# --------------------------------------------------------------------
 # User Profile Configuration
 # --------------------------------------------------------------------
 # Ephemeral relations that accumulate rapidly and should be pruned
@@ -767,6 +790,21 @@ def load_system_prompt(cfg: Optional[Dict] = None) -> str:
                                          "You are Daemon, a helpful AI assistant.")
     logger.info("Using default system prompt from config")
     return default
+
+# --------------------------------------------------------------------
+# Intent Classifier Configuration
+# --------------------------------------------------------------------
+# Fast regex-first query intent classification (no LLM calls).
+# Classifies queries into categorical intents that drive downstream
+# retrieval counts, scoring weights, and gating thresholds.
+INTENT_CFG = config.get("intent_classifier", {})
+INTENT_ENABLED: bool = bool(INTENT_CFG.get("enabled", True))
+# STM refinement threshold: below this confidence, STM free-text intent
+# can upgrade the classification (no extra LLM call — STM already ran)
+INTENT_STM_REFINEMENT_THRESHOLD: float = float(INTENT_CFG.get("stm_refinement_threshold", 0.50))
+
+# Environment variable overrides for Intent Classifier
+INTENT_ENABLED = bool(int(os.getenv("INTENT_ENABLED", "1" if INTENT_ENABLED else "0")))
 
 # --------------------------------------------------------------------
 # Final setup

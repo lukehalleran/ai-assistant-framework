@@ -13,13 +13,12 @@ from typing import List, Dict, Optional, Set
 from utils.logging_utils import get_logger
 from config.app_config import (
     RECENCY_DECAY_RATE,
-    TRUTH_SCORE_UPDATE_RATE,
-    TRUTH_SCORE_MAX,
     COLLECTION_BOOSTS,
     DEICTIC_ANCHOR_PENALTY,
     DEICTIC_CONTINUITY_MIN,
     SCORE_WEIGHTS,
 )
+from memory.truth_scorer import TruthScorer
 
 logger = get_logger("memory_scorer")
 
@@ -118,6 +117,10 @@ class MemoryScorer:
         self.time_manager = time_manager
         self.conversation_context = conversation_context or []
         self.access_history: Dict[str, int] = {}
+        # Intent-driven weight overrides — set by PromptBuilder before retrieval,
+        # cleared after. Used as fallback when rank_memories() is called without
+        # an explicit weight_overrides parameter (deep in the retrieval chain).
+        self._intent_weight_overrides: Optional[Dict[str, float]] = None
 
     def calculate_truth_score(self, query: str, response: str) -> float:
         """Calculate truth score based on response/continuity characteristics."""
@@ -151,20 +154,13 @@ class MemoryScorer:
         return min(score, 1.0)
 
     def update_truth_scores_on_access(self, memories: List[Dict]) -> None:
-        """Reinforce truth scores for accessed memories and stamp metadata."""
-        for mem in memories:
-            mem_id = mem.get('id')
-            if mem_id:
-                self.access_history[mem_id] = self.access_history.get(mem_id, 0) + 1
+        """No-op: access-based truth boosting removed to prevent echo chamber.
 
-            current_truth = float(mem.get('truth_score', 0.5))
-            new_truth = min(TRUTH_SCORE_MAX, current_truth + TRUTH_SCORE_UPDATE_RATE)
-            mem['truth_score'] = new_truth
-
-            md = mem.setdefault('metadata', {})
-            md['truth_score'] = new_truth
-            md['access_count'] = md.get('access_count', 0) + 1
-            md['last_accessed'] = datetime.now().isoformat()
+        Truth scores are now managed by TruthScorer via evidence-based
+        signals (confirmations, corrections, contradictions) and time decay.
+        This method is retained for API compatibility only.
+        """
+        pass
 
     def _calculate_topic_match(self, memory: Dict, current_topic: Optional[str]) -> float:
         """
@@ -241,7 +237,8 @@ class MemoryScorer:
         memories: List[Dict],
         current_query: str,
         current_topic: Optional[str] = None,
-        is_meta_conversational: bool = False
+        is_meta_conversational: bool = False,
+        weight_overrides: Optional[Dict[str, float]] = None,
     ) -> List[Dict]:
         """
         Score each memory using:
@@ -256,9 +253,22 @@ class MemoryScorer:
           - meta-conversational bonus (for history queries)
           - size penalty (for large irrelevant docs)
           - optional acceptance threshold (applied by caller after scoring)
+
+        Args:
+            weight_overrides: Optional dict of {weight_name: value} to override
+                global SCORE_WEIGHTS for this call. Used by intent classifier
+                to tune scoring per query intent.
         """
         if not memories:
             return []
+
+        # Merge weight overrides (intent-driven) on top of global defaults.
+        # Explicit parameter wins; instance attribute is the fallback
+        # (set by PromptBuilder to thread overrides through deep call chains).
+        effective_overrides = weight_overrides or self._intent_weight_overrides
+        weights = dict(SCORE_WEIGHTS)
+        if effective_overrides:
+            weights.update(effective_overrides)
 
         now = datetime.now()
         last_10m = now - timedelta(minutes=10)
@@ -294,12 +304,9 @@ class MemoryScorer:
                 age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
                 recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * age_hours)
 
-            # 3) truth (access-aware)
+            # 3) truth (evidence-based with time decay)
             md = m.get('metadata', {}) or {}
-            truth = float(m.get('truth_score', md.get('truth_score', 0.6)))
-            access_count = int(md.get('access_count', 0))
-            if access_count > 0:
-                truth = min(TRUTH_SCORE_MAX, truth + (TRUTH_SCORE_UPDATE_RATE * access_count))
+            truth = TruthScorer.compute_effective_truth(md)
 
             # 4) importance
             importance = float(m.get('importance_score', md.get('importance_score', 0.5)))
@@ -362,12 +369,12 @@ class MemoryScorer:
                     meta_bonus = 0.12
 
             m['final_score'] = (
-                SCORE_WEIGHTS.get('relevance', 0.35) * rel +
-                SCORE_WEIGHTS.get('recency', 0.25) * recency +
-                SCORE_WEIGHTS.get('truth', 0.20) * truth +
-                SCORE_WEIGHTS.get('importance', 0.05) * importance +
-                SCORE_WEIGHTS.get('continuity', 0.10) * continuity +
-                SCORE_WEIGHTS.get('topic_match', 0.00) * topic_match +
+                weights.get('relevance', 0.35) * rel +
+                weights.get('recency', 0.25) * recency +
+                weights.get('truth', 0.20) * truth +
+                weights.get('importance', 0.05) * importance +
+                weights.get('continuity', 0.10) * continuity +
+                weights.get('topic_match', 0.00) * topic_match +
                 structure +
                 anchor_bonus +
                 meta_bonus +

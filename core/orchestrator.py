@@ -55,6 +55,7 @@ from utils.need_detector import NeedType
 from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
 from core.best_of_handler import BestOfHandler, BestOfResult
 from core.escalation_tracker import EscalationTracker, ResponseStrategy
+from core.correction_detector import CorrectionDetector, CorrectionEvent
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
@@ -279,6 +280,18 @@ class DaemonOrchestrator:
         except Exception as e:
             self.logger.warning(f"[Orchestrator] Failed to initialize EscalationTracker: {e}")
 
+        # Correction/Confirmation Detector — truth score evidence from user messages
+        self.correction_detector = None
+        try:
+            from config.app_config import TRUTH_SCORER_ENABLED, TRUTH_SCORER_CORRECTION_DETECTION
+            if TRUTH_SCORER_ENABLED and TRUTH_SCORER_CORRECTION_DETECTION:
+                self.correction_detector = CorrectionDetector()
+                self.logger.info("[Orchestrator] CorrectionDetector enabled")
+            else:
+                self.logger.debug("[Orchestrator] CorrectionDetector disabled via config")
+        except Exception as e:
+            self.logger.warning(f"[Orchestrator] Failed to initialize CorrectionDetector: {e}")
+
         # Memory citation system
         self.enable_citations = False  # Will be set from GUI checkbox
         # Pattern matches citation formats: MEM_RECENT_3, MEM_SEMANTIC_4-7, SUM_RECENT_1, REFL_SEMANTIC_2, PROFILE_CONTEXT
@@ -333,6 +346,61 @@ class DaemonOrchestrator:
 
         except Exception as e:
             self.logger.debug(f"[Orchestrator] Narrative freshness check skipped: {e}")
+
+    # ---------- Truth Score Helper Methods ----------
+
+    def _get_recent_profile_facts(self, limit: int = 30) -> list:
+        """Gather recent current facts from user profile for correction/confirmation detection."""
+        facts = []
+        try:
+            from memory.user_profile_schema import ProfileCategory
+            for cat in ProfileCategory:
+                cat_facts = self.user_profile.get_category(cat, include_historical=False)
+                for f in cat_facts:
+                    if isinstance(f, dict) and f.get("fact_id"):
+                        facts.append(f)
+            # Sort by timestamp descending, take most recent
+            facts.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+            return facts[:limit]
+        except Exception as e:
+            self.logger.debug(f"[Orchestrator] Failed to get profile facts: {e}")
+            return []
+
+    def _apply_truth_event(self, event: CorrectionEvent) -> None:
+        """Apply a correction/confirmation event to the matching profile fact."""
+        try:
+            from memory.truth_scorer import TruthScorer
+            from memory.user_profile_schema import ProfileCategory
+
+            for cat in ProfileCategory:
+                cat_facts = self.user_profile.get_category(cat, include_historical=True)
+                for fact in cat_facts:
+                    if not isinstance(fact, dict):
+                        continue
+                    if fact.get("fact_id") != event.fact_id:
+                        continue
+
+                    old_truth = float(fact.get("truth_score", 0.7))
+                    if event.event_type == "correction":
+                        fact["truth_score"] = TruthScorer.apply_correction(old_truth)
+                        self.logger.info(
+                            f"[Orchestrator] Truth correction: {event.relation}='{event.old_value}' "
+                            f"truth {old_truth:.2f} → {fact['truth_score']:.2f}"
+                        )
+                    elif event.event_type == "confirmation":
+                        fact["truth_score"] = TruthScorer.apply_confirmation(old_truth)
+                        fact["last_confirmed_at"] = datetime.now().isoformat()
+                        fact["confirmation_count"] = fact.get("confirmation_count", 0) + 1
+                        self.logger.info(
+                            f"[Orchestrator] Truth confirmation: {event.relation}='{event.old_value}' "
+                            f"truth {old_truth:.2f} → {fact['truth_score']:.2f}"
+                        )
+
+                    self.user_profile.save()
+                    return  # Found and updated
+
+        except Exception as e:
+            self.logger.warning(f"[Orchestrator] Failed to apply truth event: {e}")
 
     # ---------- STM Helper Methods ----------
     def _compute_topic_similarity(self, topic1: str, topic2: str) -> float:
@@ -1540,6 +1608,17 @@ The user is processing/analyzing, open to engagement.
             # Use instance logger
             if self.logger:
                 self.logger.debug("[orchestrator] Persisted exchange; considering consolidation")
+
+            # --- Truth Score: correction/confirmation detection ---
+            if self.user_profile and self.correction_detector:
+                try:
+                    recent_facts = self._get_recent_profile_facts()
+                    events = self.correction_detector.detect_corrections(user_input, recent_facts)
+                    events += self.correction_detector.detect_confirmations(user_input, recent_facts)
+                    for event in events:
+                        self._apply_truth_event(event)
+                except Exception as e:
+                    self.logger.warning(f"[Orchestrator] Truth event detection failed: {e}")
 
             # Summaries now run on shutdown; skip mid-session consolidation
             debug_info.update({
