@@ -28,7 +28,7 @@ class DaemonOrchestrator:
 class ContextPipeline:
     async def build(user_input: str, files: List = None, use_raw_mode: bool = False) -> ContextResult:
         """
-        Pipeline: topics → tone → files → heavy_check → rewrite → stm → identity → thread
+        Pipeline: topics → tone → files → heavy_check → intent → rewrite → stm → identity → thread
         Returns ContextResult with all processed components.
 
         Stages:
@@ -36,8 +36,10 @@ class ContextPipeline:
         2. Tone detection (analyze_emotional_context)
         3. File processing (FileProcessor)
         4. Heavy topic check (QueryChecker)
+        4.5. Intent classification (IntentClassifier, regex-first, no LLM) [NEW 2026-02-15]
         5. Query rewriting (LLM)
         6. STM analysis (STMAnalyzer)
+           6b. STM intent refinement (low-confidence intents upgraded) [NEW 2026-02-15]
         7. Identity injection (UserProfile)
         8. Thread context (memory_system)
         """
@@ -56,6 +58,7 @@ class ContextResult:
     identity_block: str           # User identity
     is_heavy_topic: bool          # Heavy topic flag
     extracted_facts: List[Dict]   # Inline facts
+    intent: Optional[IntentResult]# Intent classification [NEW 2026-02-15]
 
 # Usage in orchestrator
 context = await self.build_context(user_input, files, use_raw_mode)
@@ -123,10 +126,15 @@ class MemoryRetriever:
 
 # memory/memory_scorer.py — Scoring and ranking
 class MemoryScorer:
-    def rank_memories(memories, query, current_topic=None) -> List[Dict]:
+    _intent_weight_overrides: Optional[Dict[str, float]] = None  # Set by PromptBuilder [NEW 2026-02-15]
+
+    def rank_memories(memories, query, current_topic=None, weight_overrides=None) -> List[Dict]:
         """
-        Score = 0.35*rel + 0.25*recency + 0.20*truth + 0.05*importance
-              + 0.10*continuity + topic_match + structure + bonuses - penalties
+        Score = weights['relevance']*rel + weights['recency']*recency + weights['truth']*truth
+              + weights['importance']*importance + weights['continuity']*continuity
+              + topic_match + structure + bonuses - penalties
+        weight_overrides: per-intent SCORE_WEIGHTS override (from IntentClassifier)
+        Falls back to _intent_weight_overrides if no explicit param.
         """
 
     def calculate_truth_score(query, response) -> float:
@@ -236,6 +244,57 @@ ESCALATION_DEESCALATION_WINDOW = 2  # Consecutive calm before gentle ends
 
 ---
 
+## Intent Classifier **[NEW 2026-02-15]**
+
+```python
+# core/intent_classifier.py — Regex-first query intent classification (no LLM calls)
+class IntentType(str, Enum):
+    FACTUAL_RECALL       # "What's my dog's name?"
+    TEMPORAL_RECALL      # "What happened last week?"
+    EMOTIONAL_SUPPORT    # "I feel so sad"
+    CASUAL_SOCIAL        # "hey", "thanks", "bye"
+    TECHNICAL_HELP       # "How do I fix this bug?"
+    CREATIVE_EXPLORATION # "Let's brainstorm ideas"
+    META_CONVERSATIONAL  # "What do you know about me?"
+    PROJECT_WORK         # "Add a feature for notifications"
+    GENERAL              # Fallback (no strong pattern match)
+
+@dataclass
+class IntentResult:
+    intent: IntentType
+    confidence: float              # 0.0 – 1.0
+    source: str = "regex"          # "regex" | "stm_refined"
+    weight_overrides: Dict[str, float]   # Override SCORE_WEIGHTS per intent
+    retrieval_overrides: Dict[str, int]  # Override PROMPT_MAX_* per intent
+    gate_threshold_override: Optional[float]  # Override gate threshold
+
+class IntentClassifier:
+    def classify(query: str, tone_level: str = None) -> IntentResult:
+        """Regex patterns checked in order, highest confidence wins.
+        Tone bias: HIGH/MEDIUM → EMOTIONAL_SUPPORT for ambiguous queries."""
+
+    def refine_with_stm(result: IntentResult, stm_intent: str = None) -> IntentResult:
+        """Upgrade low-confidence results (< 0.50) using STM free-text intent.
+        Keyword-matches STM text into IntentType. No extra LLM call."""
+
+# Per-intent profiles (_PROFILES dict) define:
+#   weights: {relevance, recency, truth, ...} overrides for SCORE_WEIGHTS
+#   retrieval: {max_mems, max_recent, max_summaries, ...} overrides for PROMPT_MAX_*
+#   gate: threshold override for gate system
+
+# Integration flow:
+# ContextPipeline Stage 4.5 → classify() → IntentResult on ContextResult
+# ContextPipeline Stage 6b  → refine_with_stm() after STM analysis
+# PromptBuilder             → extracts retrieval_overrides + weight_overrides
+# MemoryScorer              → uses weight_overrides in rank_memories()
+
+# Config (app_config.py):
+INTENT_ENABLED = True
+INTENT_STM_REFINEMENT_THRESHOLD = 0.50
+```
+
+---
+
 ## Gating System
 
 ```python
@@ -276,7 +335,8 @@ class MultiStageGateSystem:
 ```python
 # core/prompt/builder.py
 class UnifiedPromptBuilder:
-    def build_prompt(query: str, memories: List[Dict], topics: List[str] = None, budget: int = 2048) -> str:
+    def build_prompt(query: str, memories: List[Dict], topics: List[str] = None, budget: int = 2048,
+                     retrieval_overrides: Dict[str, int] = None, weight_overrides: Dict[str, float] = None) -> str:
         """
         Token allocation:
         1. System prompt (fixed ~500-800)
@@ -754,7 +814,7 @@ COLLECTION_BOOSTS = {
     "meta": 0.02
 }
 
-# Score weights (sum to 1.0)
+# Score weights (sum to 1.0) — can be overridden per-intent via IntentClassifier
 SCORE_WEIGHTS = {
     "relevance": 0.35,
     "recency": 0.25,
@@ -762,6 +822,10 @@ SCORE_WEIGHTS = {
     "importance": 0.05,
     "continuity": 0.10
 }
+
+# Intent Classifier [NEW 2026-02-15]
+INTENT_ENABLED = True
+INTENT_STM_REFINEMENT_THRESHOLD = 0.50
 
 # Summarization
 SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))

@@ -4,7 +4,7 @@ daemon:
   log_dir: ./conversation_logs
   in_harm_test: false
   debug_mode: false
-  log_level: WARNING
+  log_level: INFO
   device: cuda
 memory:
   corpus_file: ./data/corpus_v4.json
@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: glm-5
+  active: claude-opus-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -154,6 +154,10 @@ tag_generation:
   model: gpt-4o-mini
   max_tags: 10
   min_tags: 3
+intent_classifier:
+  enabled: true
+  stm_refinement_threshold: 0.50
+
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor
