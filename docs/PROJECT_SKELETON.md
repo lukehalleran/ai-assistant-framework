@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-02-13
+**Last Updated**: 2026-02-15
 
 ---
 
@@ -19,7 +19,10 @@ USER QUERY
     ↓
 [Heavy Topic Check] → Inline fact extraction for crisis/sensitive content
     ↓
-[STM Analysis] → Short-term memory pass (topic, intent, tone, threads) [NEW]
+[Intent Classification] → Regex-first query intent (9 types, no LLM) [NEW 2026-02-15]
+    ↓
+[STM Analysis] → Short-term memory pass (topic, intent, tone, threads)
+    ↓ (refines low-confidence intent via STM free-text)
     ↓
 [Hybrid Memory Retrieval] → Query rewriting + Semantic + Keyword matching
     ↓               ↓ (via MemoryCoordinator → modular components)
@@ -176,8 +179,10 @@ Side effects: May call LLM for tone detection, query rewriting, STM analysis
 2. **Tone Detection** - Detect emotional state via analyze_emotional_context
 3. **File Processing** - Extract text from PDF/DOCX/CSV via FileProcessor
 4. **Heavy Topic Check** - Check for sensitive content via QueryChecker
+4.5. **Intent Classification** - Regex-first query intent via IntentClassifier (no LLM) **[NEW 2026-02-15]**
 5. **Query Rewriting** - Rewrite for better retrieval (LLM)
 6. **STM Analysis** - Analyze recent conversation via STMAnalyzer
+   - 6b. **STM Intent Refinement** - Low-confidence intents refined by STM free-text intent **[NEW 2026-02-15]**
 7. **Identity Injection** - Add user identity context via UserProfile
 8. **Thread Context** - Get active thread via memory_system
 
@@ -185,6 +190,7 @@ Side effects: May call LLM for tone detection, query rewriting, STM analysis
 - `ToneLevel` - Enum mapping crisis levels (CRISIS/ELEVATED/CONCERN/CONVERSATIONAL)
 - `ContextResult` - Immutable dataclass with all processed context
 - `ContextPipeline` - Main builder class
+- `IntentResult` - Intent classification output (carried on ContextResult) **[NEW 2026-02-15]**
 
 **ContextResult Fields**:
 ```python
@@ -202,6 +208,7 @@ class ContextResult:
     identity_block: str           # User identity context
     is_heavy_topic: bool          # Heavy topic flag
     extracted_facts: List[Dict]   # Inline facts if heavy
+    intent: Optional[IntentResult]# Intent classification result [NEW 2026-02-15]
     metadata: Dict[str, Any]      # Additional context
 ```
 
@@ -333,8 +340,11 @@ MemoryCoordinator (memory_coordinator.py, ~498 lines)
 **Key Methods** (implements MemoryScorerProtocol):
 - `calculate_truth_score(query, response)` → Calculate truth/reliability score (0.0-1.0)
 - `calculate_importance_score(content)` → Calculate importance based on content analysis (0.0-1.0)
-- `rank_memories(memories, query, current_topic=None, is_meta_conversational=False)` → Rank memories by composite score for given query
-- `update_truth_scores_on_access(memories)` → Boost truth scores when memories are accessed
+- `rank_memories(memories, query, current_topic=None, is_meta_conversational=False, weight_overrides=None)` → Rank memories by composite score for given query. `weight_overrides` dict overrides global SCORE_WEIGHTS per call (used by intent classifier). **[UPDATED 2026-02-15]**
+- `update_truth_scores_on_access(memories)` → No-op (legacy, truth now evidence-based via TruthScorer)
+
+**Instance Attributes**:
+- `_intent_weight_overrides: Optional[Dict[str, float]]` — Set/cleared by PromptBuilder around gather. Fallback when `rank_memories()` called without explicit `weight_overrides` parameter (deep in retrieval chain). **[NEW 2026-02-15]**
 
 **Additional Methods**:
 - `apply_temporal_decay(memories)` → Apply time-based decay to memory scores
@@ -589,6 +599,68 @@ ESCALATION_DEESCALATION_WINDOW = 2  # Consecutive calm before gentle re-engageme
 ```
 
 **Tests**: `tests/unit/test_escalation_tracker.py` — 51 tests
+
+---
+
+### 2.1.4 core/intent_classifier.py (Query Intent Classifier) **[NEW 2026-02-15]**
+**Purpose**: Fast, regex-first classification of user query intent. No LLM calls. Produces per-intent weight overrides, retrieval count overrides, and gate threshold overrides that tune downstream memory retrieval and scoring.
+
+**Module Contract**:
+```
+Purpose: Classify user query into 1 of 9 intent types via regex patterns
+Inputs: query (str), optional tone_level (str)
+Outputs: IntentResult with intent type, confidence, weight/retrieval/gate overrides
+Side effects: None (pure computation, no LLM calls)
+```
+
+**Key Types**:
+```python
+class IntentType(str, Enum):
+    FACTUAL_RECALL       # "What's my dog's name?"
+    TEMPORAL_RECALL      # "What happened last week?"
+    EMOTIONAL_SUPPORT    # "I feel so sad"
+    CASUAL_SOCIAL        # "hey", "thanks", "bye"
+    TECHNICAL_HELP       # "How do I fix this bug?"
+    CREATIVE_EXPLORATION # "Let's brainstorm ideas"
+    META_CONVERSATIONAL  # "What do you know about me?"
+    PROJECT_WORK         # "Add a feature for notifications"
+    GENERAL              # Fallback (no strong pattern match)
+
+@dataclass
+class IntentResult:
+    intent: IntentType
+    confidence: float              # 0.0 – 1.0
+    source: str = "regex"          # "regex" | "stm_refined"
+    weight_overrides: Dict[str, float]   # Override SCORE_WEIGHTS per intent
+    retrieval_overrides: Dict[str, int]  # Override PROMPT_MAX_* per intent
+    gate_threshold_override: Optional[float]  # Override gate threshold
+```
+
+**Key Methods**:
+- `classify(query, tone_level=None) -> IntentResult` → Regex patterns checked in order, highest confidence wins. Tone bias: HIGH/MEDIUM tone biases toward EMOTIONAL_SUPPORT for ambiguous queries.
+- `refine_with_stm(result, stm_intent) -> IntentResult` → Upgrades low-confidence results (< 0.50) using STM's free-text intent via keyword matching. No extra LLM call.
+
+**Per-Intent Profiles** (`_PROFILES` dict):
+Each intent type defines:
+- `weights`: Override dict for SCORE_WEIGHTS (e.g., FACTUAL_RECALL boosts truth to 0.30)
+- `retrieval`: Override dict for PROMPT_MAX_* counts (e.g., CASUAL_SOCIAL reduces max_mems to 3)
+- `gate`: Override for gate threshold (e.g., CASUAL_SOCIAL raises to 0.65)
+
+**Integration Points**:
+1. **ContextPipeline** Stage 4.5: `intent_classifier.classify()` runs after heavy topic check
+2. **ContextPipeline** Stage 6b: `intent_classifier.refine_with_stm()` runs after STM analysis
+3. **ContextResult.intent**: Carries IntentResult downstream
+4. **UnifiedPromptBuilder.build_prompt_from_context()**: Extracts retrieval_overrides and weight_overrides
+5. **UnifiedPromptBuilder.build_prompt()**: Applies retrieval overrides to all max_* counts, sets weight overrides on scorer
+6. **MemoryScorer.rank_memories()**: Uses weight_overrides to tune scoring formula per intent
+
+**Configuration** (`config/app_config.py`):
+```python
+INTENT_ENABLED = True                    # Feature toggle
+INTENT_STM_REFINEMENT_THRESHOLD = 0.50   # Below this confidence, STM can refine
+```
+
+**Tests**: `tests/unit/test_intent_classifier.py` — 74 tests
 
 ---
 
@@ -987,7 +1059,7 @@ Priority order (with weights):
 ```
 
 **Key Methods**:
-- `builder.py::build_prompt(user_input, config)` → Complete context dict
+- `builder.py::build_prompt(user_input, config, ..., retrieval_overrides=None, weight_overrides=None)` → Complete context dict. Intent-driven overrides applied to all max_* retrieval counts and scorer weights. **[UPDATED 2026-02-15]**
 - `builder.py::_assemble_prompt(context, user_input)` → Format to string with headers
 - `builder.py::_hygiene_and_caps(context)` → Dedupe with semantic similarity (0.90 threshold)
 - `builder.py::_backfill_recent_conversations()` → Top-up after deduplication
@@ -3061,6 +3133,10 @@ BEST_OF_DUEL_MODE = False  # Optional 2-model duel
 ENABLE_QUERY_REWRITE = True
 REWRITE_TIMEOUT_S = 1.2
 
+# Intent Classifier [NEW 2026-02-15]
+INTENT_ENABLED = True                    # Feature toggle
+INTENT_STM_REFINEMENT_THRESHOLD = 0.50   # Below this, STM can refine classification
+
 # Memory Citation System [NEW 2025-12-04]
 ENABLE_MEMORY_CITATIONS = False      # Feature flag for citation mode
 MAX_CITATIONS_DISPLAY = 10           # Max citations to show in UI
@@ -3172,9 +3248,13 @@ PROMPT_MAX_USER_UPLOADS = 5
 
 ## 5. Key Algorithms
 
-### 5.1 Memory Ranking (memory_coordinator._rank_memories)
+### 5.1 Memory Ranking (memory_scorer.rank_memories)
 ```python
-def _rank_memories(memories, query):
+def rank_memories(memories, query, weight_overrides=None):
+    # Merge intent-driven weight overrides on top of global SCORE_WEIGHTS
+    weights = dict(SCORE_WEIGHTS)
+    if weight_overrides:
+        weights.update(weight_overrides)
     for memory in memories:
         # 1. Relevance + collection boost
         rel = memory.get('relevance_score', 0.5)
@@ -3307,6 +3387,7 @@ daemon/
 │   ├── orchestrator.py        # Main controller (tone, STM, coordinates subsystems)
 │   ├── response_parser.py     # Response parsing utilities (thinking blocks, XML stripping) [NEW 2026-01-23]
 │   ├── stm_analyzer.py        # Short-term memory analyzer [NEW]
+│   ├── intent_classifier.py   # Regex-first query intent classifier (9 types) [NEW 2026-02-15]
 │   ├── response_generator.py  # LLM streaming + Best-of-N/Duel (FIXED)
 │   ├── best_of_handler.py     # Best-of orchestration (duel/ensemble/single) [NEW]
 │   ├── competitive_scorer.py  # Judge-based response selection
@@ -3548,6 +3629,7 @@ except Exception as e:
 - `test_memory_coordinator_helpers.py` - Ranking and scoring
 - `test_prompt_builder_methods.py` - Context assembly
 - `test_orchestrator_helpers.py` - Thinking block parsing
+- `test_intent_classifier.py` - Intent classification, tone bias, STM refinement, profiles (74 tests) **[NEW 2026-02-15]**
 
 ### 8.2 Integration Tests
 - **Location**: `tests/`
@@ -3702,6 +3784,7 @@ python main.py inspect-summaries
 | orchestrator.py | Main loop: tone → topic → heavy check → STM → prompt → LLM → store |
 | response_parser.py | Parse: extract thinking blocks, strip reflections/XML/prompt artifacts [NEW 2026-01-23] |
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
+| intent_classifier.py | Classify: regex-first query intent (9 types), produces weight/retrieval/gate overrides [NEW 2026-02-15] |
 | memory_coordinator.py | Hub: thin orchestrator (~498 lines) delegating to modular components [REFACTORED] |
 | shutdown_processor.py | Shutdown: block summaries + fact extraction + procedural skills + reflections + user profile [NEW - EXTRACTED] |
 | memory_scorer.py | Scoring: calculate truth/importance, rank by composite score with temporal decay [NEW - REFACTORED] |
