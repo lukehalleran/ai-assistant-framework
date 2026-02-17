@@ -440,6 +440,15 @@ class IntentClassifier:
             best_conf = min(best_conf + 0.10, 1.0)
 
         result = self._build_result(best_intent, best_conf)
+
+        # Thread temporal anchor for TEMPORAL_RECALL so the scorer can
+        # reshape the recency decay curve around the referenced time window.
+        if best_intent == IntentType.TEMPORAL_RECALL:
+            from utils.query_checker import extract_temporal_window
+            days = extract_temporal_window(query_stripped)
+            if days > 0:
+                result.weight_overrides["_temporal_anchor_hours"] = days * 24
+
         logger.debug(
             f"Classified '{query_stripped[:40]}...' → {result.intent.value} "
             f"(conf={result.confidence:.2f}, source={result.source})"

@@ -102,17 +102,25 @@ class TestWriteApiKeyToEnv:
     def test_write_api_key_creates_new_file(self, temp_env_file):
         """Should create new .env file if it doesn't exist."""
         os.remove(temp_env_file)  # Start with no file
+        original_key = os.environ.get('OPENAI_API_KEY')
 
-        with patch('gui.wizard.Path') as mock_path:
-            mock_path.return_value = Path(temp_env_file)
-            result = write_api_key_to_env("sk-or-test-key-12345")
+        try:
+            with patch('gui.wizard.Path') as mock_path:
+                mock_path.return_value = Path(temp_env_file)
+                result = write_api_key_to_env("sk-or-test-key-12345")
 
-        assert result is True
-        assert os.path.exists(temp_env_file)
+            assert result is True
+            assert os.path.exists(temp_env_file)
 
-        with open(temp_env_file, 'r') as f:
-            content = f.read()
-        assert 'OPENAI_API_KEY=sk-or-test-key-12345' in content
+            with open(temp_env_file, 'r') as f:
+                content = f.read()
+            assert 'OPENAI_API_KEY=sk-or-test-key-12345' in content
+        finally:
+            # Restore real env var so tests don't poison the process
+            if original_key is not None:
+                os.environ['OPENAI_API_KEY'] = original_key
+            else:
+                os.environ.pop('OPENAI_API_KEY', None)
 
     def test_write_api_key_updates_existing_file(self, temp_env_file):
         """Should update existing OPENAI_API_KEY line in .env."""
@@ -121,20 +129,30 @@ class TestWriteApiKeyToEnv:
             f.write('OPENAI_API_KEY=old-key\n')
             f.write('OTHER_VAR=value\n')
 
-        with patch('gui.wizard.Path') as mock_path:
-            mock_path.return_value = Path(temp_env_file)
-            result = write_api_key_to_env("sk-or-new-key-67890")
+        original_key = os.environ.get('OPENAI_API_KEY')
 
-        assert result is True
+        try:
+            with patch('gui.wizard.Path') as mock_path:
+                mock_path.return_value = Path(temp_env_file)
+                result = write_api_key_to_env("sk-or-new-key-67890")
 
-        with open(temp_env_file, 'r') as f:
-            lines = f.readlines()
+            assert result is True
 
-        assert 'OPENAI_API_KEY=sk-or-new-key-67890\n' in lines
-        assert 'OTHER_VAR=value\n' in lines
+            with open(temp_env_file, 'r') as f:
+                lines = f.readlines()
+
+            assert 'OPENAI_API_KEY=sk-or-new-key-67890\n' in lines
+            assert 'OTHER_VAR=value\n' in lines
+        finally:
+            if original_key is not None:
+                os.environ['OPENAI_API_KEY'] = original_key
+            else:
+                os.environ.pop('OPENAI_API_KEY', None)
 
     def test_write_api_key_sets_os_environ(self):
         """Should set os.environ['OPENAI_API_KEY'] for immediate effect."""
+        original_key = os.environ.get('OPENAI_API_KEY')
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as f:
             temp_path = f.name
 
@@ -147,6 +165,11 @@ class TestWriteApiKeyToEnv:
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+            # Restore real env var
+            if original_key is not None:
+                os.environ['OPENAI_API_KEY'] = original_key
+            else:
+                os.environ.pop('OPENAI_API_KEY', None)
 
 
 class TestParseStylePreference:

@@ -270,6 +270,10 @@ class MemoryScorer:
         if effective_overrides:
             weights.update(effective_overrides)
 
+        # Pop temporal anchor (not a real scoring weight — used to reshape
+        # the recency decay curve for TEMPORAL_RECALL queries).
+        temporal_anchor = weights.pop('_temporal_anchor_hours', None)
+
         now = datetime.now()
         last_10m = now - timedelta(minutes=10)
 
@@ -295,13 +299,21 @@ class MemoryScorer:
             elif not isinstance(ts, datetime):
                 ts = now
 
-            # Use active day decay if time_manager supports it, otherwise fall back to hourly decay
-            if (self.time_manager is not None and
-                hasattr(self.time_manager, 'calculate_active_day_decay')):
+            age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
+
+            if temporal_anchor and temporal_anchor > 0:
+                # Temporal-aware decay: gentle within window, standard outside.
+                # Overrides both time_manager and fallback paths.
+                if age_hours <= temporal_anchor:
+                    recency = 1.0 - (age_hours / temporal_anchor) * 0.3
+                else:
+                    hours_past = age_hours - temporal_anchor
+                    recency = 0.7 / (1.0 + RECENCY_DECAY_RATE * hours_past)
+            elif (self.time_manager is not None and
+                  hasattr(self.time_manager, 'calculate_active_day_decay')):
                 recency = self.time_manager.calculate_active_day_decay(ts, RECENCY_DECAY_RATE)
             else:
                 # Fallback to original hourly decay
-                age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
                 recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * age_hours)
 
             # 3) truth (evidence-based with time decay)
