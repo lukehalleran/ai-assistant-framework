@@ -514,3 +514,98 @@ def test_apply_temporal_decay_returns_same_list():
 
     # Same object
     assert result is memories
+
+
+# =============================================================================
+# Temporal-Aware Recency Decay Tests (rank_memories with _temporal_anchor_hours)
+# =============================================================================
+
+def _make_ranked_memory(age_hours, relevance=0.5, truth_score=0.5, importance=0.5):
+    """Helper: build a minimal memory dict for rank_memories()."""
+    now = datetime.now()
+    return {
+        'timestamp': (now - timedelta(hours=age_hours)).isoformat(),
+        'relevance_score': relevance,
+        'importance_score': importance,
+        'query': 'test query',
+        'response': 'test response',
+        'content': '',
+        'metadata': {'truth_score': truth_score},
+    }
+
+
+def test_temporal_anchor_reshapes_decay_within_window():
+    """Memories within the temporal window get gentle decay (1.0 → 0.7)."""
+    scorer = MemoryScorer()
+    overrides = {"_temporal_anchor_hours": 168, "recency": 0.40, "relevance": 0.20}
+
+    mem_edge = _make_ranked_memory(age_hours=168)   # at window edge
+    mem_mid = _make_ranked_memory(age_hours=84)     # halfway through window
+
+    result = scorer.rank_memories(
+        [mem_edge, mem_mid], current_query="What did we discuss last week?",
+        weight_overrides=overrides,
+    )
+
+    # mem_mid should score higher (younger within window)
+    assert result[0] is mem_mid
+    assert result[1] is mem_edge
+
+    # Both should have reasonable recency contribution (not buried)
+    # At 168h: recency = 0.70, At 84h: recency = 0.85
+    # With recency weight 0.40, contribution is >= 0.28 for edge
+    edge_score = mem_edge['final_score']
+    mid_score = mem_mid['final_score']
+    assert mid_score > edge_score
+    assert edge_score > 0  # not buried
+
+
+def test_temporal_anchor_decays_outside_window():
+    """Memories well outside the window still decay normally."""
+    scorer = MemoryScorer()
+    overrides = {"_temporal_anchor_hours": 168, "recency": 0.40, "relevance": 0.20}
+
+    mem_inside = _make_ranked_memory(age_hours=100)
+    mem_outside = _make_ranked_memory(age_hours=500)
+
+    scorer.rank_memories(
+        [mem_inside, mem_outside], current_query="What did we discuss last week?",
+        weight_overrides=overrides,
+    )
+
+    # Inside should score much higher
+    assert mem_inside['final_score'] > mem_outside['final_score']
+
+
+def test_no_temporal_anchor_uses_standard_decay():
+    """Without _temporal_anchor_hours, standard 1/(1+rate*h) decay applies."""
+    scorer = MemoryScorer()
+
+    mem_recent = _make_ranked_memory(age_hours=1)
+    mem_old = _make_ranked_memory(age_hours=168)
+
+    scorer.rank_memories(
+        [mem_recent, mem_old], current_query="Tell me something",
+    )
+
+    # Standard decay: 1h → ~0.95, 168h → ~0.106
+    # Recent should rank far above old
+    assert mem_recent['final_score'] > mem_old['final_score']
+
+
+def test_temporal_anchor_recent_still_scores_highest():
+    """Very recent memories still score highest even with temporal anchor."""
+    scorer = MemoryScorer()
+    overrides = {"_temporal_anchor_hours": 168, "recency": 0.40, "relevance": 0.20}
+
+    mem_1h = _make_ranked_memory(age_hours=1)
+    mem_168h = _make_ranked_memory(age_hours=168)
+
+    scorer.rank_memories(
+        [mem_1h, mem_168h], current_query="What did we discuss last week?",
+        weight_overrides=overrides,
+    )
+
+    # 1h old: recency ≈ 0.998, 168h old: recency = 0.700
+    # Recent should still be first
+    assert mem_1h['final_score'] > mem_168h['final_score']

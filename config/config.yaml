@@ -156,8 +156,7 @@ tag_generation:
   min_tags: 3
 intent_classifier:
   enabled: true
-  stm_refinement_threshold: 0.50
-
+  stm_refinement_threshold: 0.5
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

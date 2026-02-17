@@ -135,6 +135,11 @@ class MemoryScorer:
               + topic_match + structure + bonuses - penalties
         weight_overrides: per-intent SCORE_WEIGHTS override (from IntentClassifier)
         Falls back to _intent_weight_overrides if no explicit param.
+
+        Temporal-aware decay [NEW 2026-02-17]:
+        If '_temporal_anchor_hours' in weight_overrides (set by IntentClassifier for TEMPORAL_RECALL),
+        recency uses gentle curve (1.0→0.7) within window, standard decay outside.
+        Temporal anchor takes priority over time_manager and standard fallback.
         """
 
     def calculate_truth_score(query, response) -> float:
@@ -271,7 +276,9 @@ class IntentResult:
 class IntentClassifier:
     def classify(query: str, tone_level: str = None) -> IntentResult:
         """Regex patterns checked in order, highest confidence wins.
-        Tone bias: HIGH/MEDIUM → EMOTIONAL_SUPPORT for ambiguous queries."""
+        Tone bias: HIGH/MEDIUM → EMOTIONAL_SUPPORT for ambiguous queries.
+        TEMPORAL_RECALL: extracts temporal anchor via extract_temporal_window(),
+        adds _temporal_anchor_hours to weight_overrides. [UPDATED 2026-02-17]"""
 
     def refine_with_stm(result: IntentResult, stm_intent: str = None) -> IntentResult:
         """Upgrade low-confidence results (< 0.50) using STM free-text intent.
@@ -892,8 +899,14 @@ logger.error(f"Error occurred: {e}")
 ## Critical Formulas (Quick Lookup)
 
 ```python
-# Recency decay
+# Recency decay (standard)
 recency = 1.0 / (1.0 + 0.05 * age_hours)
+
+# Temporal-aware recency decay (TEMPORAL_RECALL only) [NEW 2026-02-17]
+# Within window (e.g., 168h for "last week"):
+recency = 1.0 - (age_hours / temporal_anchor) * 0.3  # gentle 1.0→0.7
+# Outside window:
+recency = 0.7 / (1.0 + 0.05 * (age_hours - temporal_anchor))
 
 # Truth boost from access
 truth = min(1.0, base_truth + 0.02 * access_count)
@@ -1293,6 +1306,27 @@ Use Python for: multi-step computation, data analysis, visualization, custom alg
 Use Wolfram for: single-expression calculations, unit conversions, scientific data, equations
 Use search for: current events, recent news, real-time data, general facts
 """
+```
+
+---
+
+## Retrieval Quality Benchmarks **[NEW 2026-02-17]**
+
+```bash
+# Run benchmarks (real embeddings, ~5s)
+pytest tests/benchmarks/ -m benchmark -v
+
+# Exclude benchmarks from regular test runs
+pytest -m "not benchmark"
+```
+
+```python
+# tests/benchmarks/ — 30 seed memories + 19 test cases across all 9 intent types
+# conftest.py: session-scoped ChromaDB + CorpusManager + MockTimeManager fixtures
+# retrieval_benchmark.py: BenchmarkResult + RetrievalBenchmark harness (recall@K, MRR)
+# test_retrieval_quality.py: parametrized pytest cases + structural validation
+# report_generator.py: markdown report grouped by intent type
+# tests/fixtures/retrieval_benchmarks.yaml: seed memories + test case definitions
 ```
 
 ---

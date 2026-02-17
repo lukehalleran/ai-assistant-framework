@@ -340,7 +340,7 @@ MemoryCoordinator (memory_coordinator.py, ~498 lines)
 **Key Methods** (implements MemoryScorerProtocol):
 - `calculate_truth_score(query, response)` → Calculate truth/reliability score (0.0-1.0)
 - `calculate_importance_score(content)` → Calculate importance based on content analysis (0.0-1.0)
-- `rank_memories(memories, query, current_topic=None, is_meta_conversational=False, weight_overrides=None)` → Rank memories by composite score for given query. `weight_overrides` dict overrides global SCORE_WEIGHTS per call (used by intent classifier). **[UPDATED 2026-02-15]**
+- `rank_memories(memories, query, current_topic=None, is_meta_conversational=False, weight_overrides=None)` → Rank memories by composite score for given query. `weight_overrides` dict overrides global SCORE_WEIGHTS per call (used by intent classifier). **[UPDATED 2026-02-17]**
 - `update_truth_scores_on_access(memories)` → No-op (legacy, truth now evidence-based via TruthScorer)
 
 **Instance Attributes**:
@@ -367,6 +367,23 @@ final_score = (
     size_penalty  # NEW - scaled document size penalty
 )
 ```
+
+**Temporal-Aware Recency Decay** **[NEW 2026-02-17]**:
+When `_temporal_anchor_hours` is present in weight_overrides (set by IntentClassifier for TEMPORAL_RECALL), the standard exponential decay curve is replaced with a temporal-aware curve:
+```python
+# Standard decay (all other intents):
+recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * age_hours)
+
+# Temporal-aware decay (TEMPORAL_RECALL with anchor window):
+if age_hours <= temporal_anchor:
+    # Gentle decay within referenced window (1.0 → 0.7)
+    recency = 1.0 - (age_hours / temporal_anchor) * 0.3
+else:
+    # Standard decay from 0.7 baseline for memories outside window
+    hours_past = age_hours - temporal_anchor
+    recency = 0.7 / (1.0 + RECENCY_DECAY_RATE * hours_past)
+```
+This ensures memories from the referenced time period (e.g., "last week" → 168h window) score 0.70–1.00 instead of being buried at 0.10 by standard decay. The `_temporal_anchor_hours` key is popped from weights before scoring (not a real scoring weight). Temporal anchor takes priority over both `time_manager.calculate_active_day_decay()` and the standard fallback.
 
 **Configuration Constants**:
 ```python
@@ -637,8 +654,11 @@ class IntentResult:
 ```
 
 **Key Methods**:
-- `classify(query, tone_level=None) -> IntentResult` → Regex patterns checked in order, highest confidence wins. Tone bias: HIGH/MEDIUM tone biases toward EMOTIONAL_SUPPORT for ambiguous queries.
+- `classify(query, tone_level=None) -> IntentResult` → Regex patterns checked in order, highest confidence wins. Tone bias: HIGH/MEDIUM tone biases toward EMOTIONAL_SUPPORT for ambiguous queries. For TEMPORAL_RECALL, extracts temporal anchor via `extract_temporal_window()` and adds `_temporal_anchor_hours` to weight_overrides. **[UPDATED 2026-02-17]**
 - `refine_with_stm(result, stm_intent) -> IntentResult` → Upgrades low-confidence results (< 0.50) using STM's free-text intent via keyword matching. No extra LLM call.
+
+**Temporal Anchor Extraction** **[NEW 2026-02-17]**:
+When TEMPORAL_RECALL is classified, `classify()` calls `extract_temporal_window()` from `utils/query_checker.py` to convert temporal phrases ("last week" → 7 days, "yesterday" → 1 day, "last month" → 30 days) into hours. The value is added as `_temporal_anchor_hours` in `weight_overrides`, flowing automatically through the existing builder → scorer pipeline. `MemoryScorer.rank_memories()` pops this key and uses it to reshape the recency decay curve (see Section 2.3.0).
 
 **Per-Intent Profiles** (`_PROFILES` dict):
 Each intent type defines:
@@ -652,7 +672,7 @@ Each intent type defines:
 3. **ContextResult.intent**: Carries IntentResult downstream
 4. **UnifiedPromptBuilder.build_prompt_from_context()**: Extracts retrieval_overrides and weight_overrides
 5. **UnifiedPromptBuilder.build_prompt()**: Applies retrieval overrides to all max_* counts, sets weight overrides on scorer
-6. **MemoryScorer.rank_memories()**: Uses weight_overrides to tune scoring formula per intent
+6. **MemoryScorer.rank_memories()**: Uses weight_overrides to tune scoring formula per intent; pops `_temporal_anchor_hours` for temporal-aware decay
 
 **Configuration** (`config/app_config.py`):
 ```python
@@ -3631,6 +3651,25 @@ except Exception as e:
 - `test_orchestrator_helpers.py` - Thinking block parsing
 - `test_intent_classifier.py` - Intent classification, tone bias, STM refinement, profiles (74 tests) **[NEW 2026-02-15]**
 
+### 8.1b Retrieval Quality Benchmarks **[NEW 2026-02-17]**
+- **Location**: `tests/benchmarks/`
+- **Purpose**: End-to-end retrieval quality testing with real embeddings (all-MiniLM-L6-v2)
+- **Run**: `pytest tests/benchmarks/ -m benchmark -v` (~5s runtime)
+- **Exclude**: `pytest -m "not benchmark"`
+
+**Components**:
+- `tests/benchmarks/conftest.py` — Session-scoped fixtures: seeded ChromaDB + CorpusManager, MockTimeManager for deterministic recency scoring
+- `tests/benchmarks/retrieval_benchmark.py` — BenchmarkResult dataclass + RetrievalBenchmark harness (recall@K, MRR, marker substring matching)
+- `tests/benchmarks/test_retrieval_quality.py` — 19 parametrized test cases across all 9 intent types + structural validation
+- `tests/benchmarks/report_generator.py` — Markdown report grouped by intent type with pass/fail/recall/MRR summary
+- `tests/fixtures/retrieval_benchmarks.yaml` — 30 seed memories + 19 test cases (queries, expected intents, must_retrieve/must_not_retrieve markers)
+
+**Design**:
+- Seeds both ChromaDB AND CorpusManager for dual-retrieval testing
+- Uses marker substring matching to identify returned memories by `benchmark_id`
+- MockTimeManager with fixed reference time (2026-02-15 12:00) for deterministic scores
+- Covers all 9 intent types: FACTUAL_RECALL, TEMPORAL_RECALL, EMOTIONAL_SUPPORT, CASUAL_SOCIAL, TECHNICAL_HELP, CREATIVE_EXPLORATION, META_CONVERSATIONAL, PROJECT_WORK, GENERAL
+
 ### 8.2 Integration Tests
 - **Location**: `tests/`
 - **Count**: 40+ test files
@@ -4202,9 +4241,15 @@ if IS_FROZEN:
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2025-12-12
+**Last Updated**: 2026-02-17
 
-**Recent Changes** (2025-12-12):
+**Recent Changes** (2026-02-17):
+- **Temporal-Aware Recency Decay** (Section 2.3.0) — `rank_memories()` now reshapes decay curve for TEMPORAL_RECALL queries using `_temporal_anchor_hours` from IntentClassifier
+- **Temporal Anchor Extraction** (Section 2.1.4) — `classify()` extracts temporal window and threads `_temporal_anchor_hours` through weight_overrides pipeline
+- **Retrieval Quality Benchmarks** (Section 8.1b) — New benchmark suite with 30 seed memories, 19 test cases, real embeddings, and session-scoped fixtures
+- **Wizard Test Env Fix** — Fixed `tests/test_wizard.py` env var poisoning (save/restore `OPENAI_API_KEY` in try/finally)
+
+**Previous Changes** (2025-12-12):
 - **Added Desktop Executable Build System (Section 16)** - PyInstaller-based build for standalone distribution
 - **Created bootstrap module** - Handles frozen executable path resolution, data migration, and environment setup
 - **Custom PyInstaller hooks** - For chromadb, gradio, spacy, tiktoken, sentence_transformers

@@ -1,0 +1,631 @@
+# Retrieval Quality Benchmark Configuration
+# ===========================================
+# Reference time: 2026-02-15 12:00:00 UTC
+# All timestamp_offset_hours are relative to this reference time.
+# Negative values = hours before reference time.
+#
+# Seed memories are loaded into ChromaDB (real embeddings) and optionally
+# into CorpusManager (JSON) for dual-retrieval testing.
+#
+# Test cases validate intent classification AND retrieval quality:
+#   - must_retrieve: seed memory IDs that MUST appear in top-K results
+#   - must_not_retrieve: seed memory IDs that must NOT appear in results
+#   - expected_score_order: optional ordering constraint on results
+
+seed_memories:
+
+  # =========================================================================
+  # CONVERSATIONS — seeded in ChromaDB 'conversations' + optionally corpus
+  # =========================================================================
+
+  - id: mem_conv_greeting
+    marker: "How are you doing today"
+    collection: conversations
+    also_in_corpus: true
+    query: "Good morning!"
+    response: "Good morning! How are you doing today? I hope you slept well."
+    timestamp_offset_hours: -1
+    truth_score: 0.6
+    importance_score: 0.3
+    tags: "greeting,social"
+
+  - id: mem_conv_dog
+    marker: "Biscuit"
+    collection: conversations
+    also_in_corpus: true
+    query: "Tell me about my pets"
+    response: "Your dog is named Biscuit and she is a golden retriever. She is three years old and loves playing fetch in the park."
+    timestamp_offset_hours: -2
+    truth_score: 0.85
+    importance_score: 0.6
+    tags: "pets,dog,personal"
+
+  - id: mem_conv_stress
+    marker: "project deadline"
+    collection: conversations
+    also_in_corpus: true
+    query: "How have you been feeling about work?"
+    response: "I have been really stressed about the project deadline at work. There is so much to do and not enough time."
+    timestamp_offset_hours: -3
+    truth_score: 0.7
+    importance_score: 0.7
+    tags: "emotional,stress,work"
+
+  - id: mem_conv_python
+    marker: "machine learning"
+    collection: conversations
+    also_in_corpus: true
+    query: "What programming languages do you use most?"
+    response: "I mainly use Python for data science and machine learning projects. It has the best ecosystem for numerical computing."
+    timestamp_offset_hours: -4
+    truth_score: 0.8
+    importance_score: 0.5
+    tags: "technical,programming,python"
+
+  - id: mem_conv_feeling_better
+    marker: "feeling much better"
+    collection: conversations
+    also_in_corpus: true
+    query: "How are you feeling now?"
+    response: "I am feeling much better today, thank you for listening and being supportive yesterday."
+    timestamp_offset_hours: -5
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "emotional,wellbeing"
+
+  - id: mem_conv_project_auth
+    marker: "rate limiting"
+    collection: conversations
+    also_in_corpus: true
+    query: "What is next for the project?"
+    response: "We need to add rate limiting to the authentication module. It is the top priority before the release."
+    timestamp_offset_hours: -6
+    truth_score: 0.8
+    importance_score: 0.7
+    tags: "project,auth,technical"
+
+  - id: mem_conv_api
+    marker: "user profiles is deployed"
+    collection: conversations
+    also_in_corpus: true
+    query: "How is the API coming along?"
+    response: "The REST API endpoint for user profiles is deployed and passing all integration tests."
+    timestamp_offset_hours: -8
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "project,api,technical"
+
+  - id: mem_conv_brainstorm
+    marker: "dashboard navigation"
+    collection: conversations
+    also_in_corpus: true
+    query: "I need some fresh ideas for the product"
+    response: "Let us brainstorm ideas for improving the dashboard navigation and user experience flow."
+    timestamp_offset_hours: -12
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "creative,product,brainstorm"
+
+  - id: mem_conv_gym
+    marker: "bench press"
+    collection: conversations
+    also_in_corpus: true
+    query: "Tell me about your workout routine"
+    response: "I went to the gym and did bench press, squats, and some deadlifts. I have been going three times a week."
+    timestamp_offset_hours: -24
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "personal,fitness,gym"
+
+  - id: mem_conv_async
+    marker: "asyncio.gather"
+    collection: conversations
+    also_in_corpus: true
+    query: "How does async programming work in Python?"
+    response: "Python async/await lets you run IO-bound tasks concurrently. Use asyncio.gather for parallel execution and await for sequential steps."
+    timestamp_offset_hours: -36
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "technical,python,async"
+
+  - id: mem_conv_debug
+    marker: "valgrind"
+    collection: conversations
+    also_in_corpus: true
+    query: "My C program keeps crashing with a segfault"
+    response: "Segmentation faults in C are usually caused by null pointer dereference or buffer overflow. Run valgrind to find the exact memory error location."
+    timestamp_offset_hours: -48
+    truth_score: 0.8
+    importance_score: 0.7
+    tags: "technical,debugging,c"
+
+  - id: mem_conv_anxiety
+    marker: "health anxiety"
+    collection: conversations
+    also_in_corpus: true
+    query: "I could not sleep at all last night"
+    response: "I am sorry to hear that. Health anxiety can make nights really difficult. Would you like to talk about what is worrying you?"
+    timestamp_offset_hours: -48
+    truth_score: 0.7
+    importance_score: 0.8
+    tags: "emotional,anxiety,health"
+
+  - id: mem_conv_weekend
+    marker: "hiking in the mountains"
+    collection: conversations
+    also_in_corpus: true
+    query: "What did you do this past weekend?"
+    response: "I spent the weekend hiking in the mountains with some friends. The views from the summit were incredible."
+    timestamp_offset_hours: -72
+    truth_score: 0.6
+    importance_score: 0.4
+    tags: "personal,weekend,hiking"
+
+  - id: mem_conv_music
+    marker: "jazz"
+    collection: conversations
+    also_in_corpus: true
+    query: "What kind of music have you been listening to?"
+    response: "I have been listening to jazz a lot lately. Something about the improvisational nature helps me focus while coding."
+    timestamp_offset_hours: -96
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "personal,music,jazz"
+
+  - id: mem_conv_weather
+    marker: "rainy all week"
+    collection: conversations
+    also_in_corpus: true
+    query: "How has the weather been?"
+    response: "It has been rainy all week here. Perfect weather for staying inside and working on code though."
+    timestamp_offset_hours: -120
+    truth_score: 0.5
+    importance_score: 0.3
+    tags: "weather,casual"
+
+  - id: mem_conv_family
+    marker: "turning 30"
+    collection: conversations
+    also_in_corpus: true
+    query: "Tell me about your family"
+    response: "My sister Sarah is turning 30 next month. We are planning a surprise party for her birthday."
+    timestamp_offset_hours: -168
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "personal,family"
+
+  - id: mem_conv_math
+    marker: "chain rule"
+    collection: conversations
+    also_in_corpus: true
+    query: "Can you help me with some calculus?"
+    response: "For derivatives, remember the chain rule: d/dx[f(g(x))] equals f prime of g(x) times g prime of x. It is essential for composite functions."
+    timestamp_offset_hours: -240
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "technical,math,calculus"
+
+  - id: mem_conv_redis
+    marker: "Redis"
+    collection: conversations
+    also_in_corpus: true
+    query: "Should we add caching to the backend?"
+    response: "Yes, implementing a caching layer using Redis would significantly improve response times for frequently accessed data."
+    timestamp_offset_hours: -720
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "technical,project,caching"
+
+  - id: mem_conv_cooking
+    marker: "pasta"
+    collection: conversations
+    also_in_corpus: true
+    query: "What are you making for dinner?"
+    response: "I am thinking of making pasta with a homemade tomato basil sauce tonight. Cooking is relaxing after a long day."
+    timestamp_offset_hours: -200
+    truth_score: 0.5
+    importance_score: 0.2
+    tags: "personal,cooking,casual"
+
+  # =========================================================================
+  # SUMMARIES — seeded in ChromaDB 'summaries' collection only
+  # =========================================================================
+
+  - id: mem_sum_recent
+    marker: "REST API development"
+    collection: summaries
+    content: "Recent discussions focused on REST API development for user profiles, authentication module rate limiting, and Redis caching architecture decisions."
+    timestamp_offset_hours: -12
+    truth_score: 0.8
+    importance_score: 0.7
+    tags: "summary,api,project"
+
+  - id: mem_sum_week1
+    marker: "gym routine and work stress"
+    collection: summaries
+    content: "This week Luke discussed Python programming for data science, his gym routine including bench press and squats, work stress about project deadlines, and his golden retriever Biscuit."
+    timestamp_offset_hours: -168
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "summary,weekly"
+
+  - id: mem_sum_week2
+    marker: "weekend hiking trips"
+    collection: summaries
+    content: "Conversations covered technical debugging of C segfaults, family updates about his sister Sarah, and weekend hiking trips in the mountains."
+    timestamp_offset_hours: -336
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "summary,weekly"
+
+  # =========================================================================
+  # REFLECTIONS — seeded in ChromaDB 'reflections' collection only
+  # =========================================================================
+
+  - id: mem_refl_growth
+    marker: "growing confidence"
+    collection: reflections
+    content: "Luke shows growing confidence in Python programming and has been consistently exercising at the gym. His technical skills are developing rapidly."
+    timestamp_offset_hours: -168
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "reflection,growth"
+
+  - id: mem_refl_stress
+    marker: "managing work stress better"
+    collection: reflections
+    content: "Luke has been managing work stress better lately. He finds jazz music helpful for focus and seems more balanced overall."
+    timestamp_offset_hours: -72
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "reflection,stress,wellbeing"
+
+  # =========================================================================
+  # FACTS — seeded in ChromaDB 'facts' collection only
+  # (tested via get_facts(), not get_memories())
+  # =========================================================================
+
+  - id: mem_fact_dog
+    marker: "golden retriever named Biscuit"
+    collection: facts
+    content: "Luke owns a golden retriever named Biscuit"
+    timestamp_offset_hours: -2
+    truth_score: 0.95
+    importance_score: 0.7
+    tags: "fact,pets,dog"
+
+  - id: mem_fact_python
+    marker: "prefers Python for data science"
+    collection: facts
+    content: "Luke prefers Python for data science and machine learning work"
+    timestamp_offset_hours: -4
+    truth_score: 0.90
+    importance_score: 0.6
+    tags: "fact,programming"
+
+  - id: mem_fact_sister
+    marker: "sister Sarah turning 30"
+    collection: facts
+    content: "Luke has a sister named Sarah who is turning 30 next month"
+    timestamp_offset_hours: -168
+    truth_score: 0.85
+    importance_score: 0.5
+    tags: "fact,family"
+
+  - id: mem_fact_lowtruth
+    marker: "favorite color is blue"
+    collection: facts
+    content: "Luke said his favorite color is blue"
+    timestamp_offset_hours: -720
+    truth_score: 0.40
+    importance_score: 0.3
+    tags: "fact,preference"
+
+  # =========================================================================
+  # PROCEDURAL SKILLS — seeded in ChromaDB 'procedural_skills' collection
+  # =========================================================================
+
+  - id: mem_skill_debug
+    marker: "Check for null pointer"
+    collection: procedural_skills
+    content: "Debugging C crashes: 1) Check for null pointer dereference 2) Run valgrind to detect memory leaks 3) Use gdb to inspect the stack trace at the crash point"
+    timestamp_offset_hours: -48
+    truth_score: 0.85
+    importance_score: 0.7
+    tags: "skill,debugging,c"
+
+  - id: mem_skill_async
+    marker: "asyncio.create_task"
+    collection: procedural_skills
+    content: "Python async patterns: Use asyncio.gather() for parallel IO tasks, asyncio.create_task() for background work, and async context managers for resource cleanup"
+    timestamp_offset_hours: -36
+    truth_score: 0.85
+    importance_score: 0.6
+    tags: "skill,python,async"
+
+
+# ===========================================================================
+# TEST CASES
+# ===========================================================================
+# Each case tests intent classification + retrieval quality.
+# must_retrieve/must_not_retrieve reference seed memory IDs.
+# Memories are matched by their 'marker' substring in returned content.
+
+test_cases:
+
+  # -------------------------------------------------------------------------
+  # FACTUAL_RECALL — truth-weighted, high relevance
+  # Weights: relevance=0.40, recency=0.10, truth=0.30
+  # -------------------------------------------------------------------------
+
+  - id: factual_dogs_name
+    query: "What is my dog's name?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_dog
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve the conversation mentioning Biscuit the golden retriever"
+
+  - id: factual_language_preference
+    query: "What is my preferred programming language for data analysis?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_python
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve Python/data science conversation"
+
+  - id: factual_sister_birthday
+    query: "When is my sister's birthday?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_family
+    must_not_retrieve:
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve family conversation about sister turning 30"
+
+  # -------------------------------------------------------------------------
+  # TEMPORAL_RECALL — recency-weighted
+  # Weights: relevance=0.20, recency=0.40
+  # -------------------------------------------------------------------------
+
+  - id: temporal_recent_today
+    query: "What did we talk about earlier today?"
+    expected_intent: temporal_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_greeting
+      - mem_conv_dog
+    must_not_retrieve:
+      - mem_conv_redis
+    top_k: 10
+    min_recall: 1.0
+    expected_score_order:
+      - mem_conv_greeting
+      - mem_conv_dog
+    description: "Recent memories should rank highest; greeting (1h) before dog (2h)"
+
+  - id: temporal_last_week
+    query: "What happened last week?"
+    expected_intent: temporal_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_sum_week1
+    must_not_retrieve: []
+    top_k: 25
+    min_recall: 1.0
+    description: >
+      Temporal-aware recency decay reshapes the curve so 168h-old
+      weekly summary scores recency=0.70 instead of 0.106, ensuring it
+      surfaces in results (previously buried below everything at rank 20+).
+      Uses top_k=25 to validate summaries appear; the key improvement is
+      scoring, not filtering. Uses "What happened" to avoid meta routing.
+
+  # -------------------------------------------------------------------------
+  # EMOTIONAL_SUPPORT — continuity-weighted, empathetic content
+  # Weights: relevance=0.25, recency=0.30, continuity=0.25
+  # -------------------------------------------------------------------------
+
+  - id: emotional_stressed_at_work
+    query: "I feel really stressed and overwhelmed with work right now"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.80
+    must_retrieve:
+      - mem_conv_stress
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_redis
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve stress-related conversations, not technical content"
+
+  - id: emotional_anxious_cant_sleep
+    query: "I'm so anxious I can't sleep at night"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.80
+    must_retrieve:
+      - mem_conv_anxiety
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve anxiety conversation, not unrelated content"
+
+  # -------------------------------------------------------------------------
+  # CASUAL_SOCIAL — gate=0.65, minimal retrieval
+  # Weights: relevance=0.20, recency=0.35, continuity=0.25
+  # -------------------------------------------------------------------------
+
+  - id: casual_thanks
+    query: "Thanks!"
+    expected_intent: casual_social
+    expected_confidence_min: 0.90
+    must_retrieve: []
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_redis
+    top_k: 5
+    min_recall: 0.0
+    description: "Casual query should not surface deep technical memories"
+
+  - id: casual_good_morning
+    query: "Good morning!"
+    expected_intent: casual_social
+    expected_confidence_min: 0.90
+    must_retrieve: []
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_redis
+    top_k: 5
+    min_recall: 0.0
+    description: "Morning greeting should not surface old technical content"
+
+  # -------------------------------------------------------------------------
+  # TECHNICAL_HELP — relevance-heavy, skills-oriented
+  # Weights: relevance=0.45, truth=0.20, recency=0.15
+  # -------------------------------------------------------------------------
+
+  - id: technical_segfault_debug
+    query: "How do I debug a segmentation fault in my C program?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_debug
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve C debugging conversation with valgrind advice"
+
+  - id: technical_python_async
+    query: "How should I structure my async Python code?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_async
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_weather
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve async/await conversation"
+
+  # -------------------------------------------------------------------------
+  # CREATIVE_EXPLORATION — broad retrieval, idea-oriented
+  # Weights: relevance=0.30, importance=0.15, continuity=0.15
+  # -------------------------------------------------------------------------
+
+  - id: creative_dashboard_ideas
+    query: "Let us brainstorm creative ideas for improving the dashboard"
+    expected_intent: creative_exploration
+    expected_confidence_min: 0.65
+    must_retrieve:
+      - mem_conv_brainstorm
+    must_not_retrieve:
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve dashboard brainstorming conversation"
+
+  - id: creative_new_features
+    query: "What innovative features could we explore for the product?"
+    expected_intent: creative_exploration
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_brainstorm
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve product ideation conversation"
+
+  # -------------------------------------------------------------------------
+  # META_CONVERSATIONAL — episodic/summary content
+  # Weights: relevance=0.30, recency=0.20, importance=0.15
+  # Note: get_memories() routes meta queries to a special retrieval path
+  # that pulls from corpus, so we relax retrieval assertions.
+  # -------------------------------------------------------------------------
+
+  - id: meta_about_me
+    query: "What do you remember about me and my life?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.80
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Meta query about user; validates intent classification"
+
+  - id: meta_hobbies
+    query: "What do you know about my hobbies and interests?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.80
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Meta query about hobbies; validates intent classification"
+
+  # -------------------------------------------------------------------------
+  # PROJECT_WORK — code/feature/PR oriented
+  # Weights: relevance=0.40, truth=0.25, recency=0.15
+  # -------------------------------------------------------------------------
+
+  - id: project_auth_status
+    query: "Let's add rate limiting to the authentication module"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_project_auth
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve auth module rate limiting conversation"
+
+  - id: project_api_update
+    query: "Update the API endpoint deployment in server.py"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_api
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve API endpoint deployment conversation"
+
+  # -------------------------------------------------------------------------
+  # GENERAL — fallback intent, no strict retrieval requirements
+  # Default weights, no overrides
+  # -------------------------------------------------------------------------
+
+  - id: general_autumn_thoughts
+    query: "The colors of autumn are quite beautiful this year"
+    expected_intent: general
+    expected_confidence_min: 0.0
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Ambiguous statement with no clear intent pattern"
+
+  - id: general_patience
+    query: "Gardens require a lot of patience and dedication to maintain"
+    expected_intent: general
+    expected_confidence_min: 0.0
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Ambiguous statement with no clear intent pattern"

@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-02-15
+**Last Updated**: 2026-02-17
 
 ---
 
@@ -59,11 +59,18 @@ Daemon is a personal cognitive assistant with deep, persistent memory. It should
   - `IntentClassifier`: 9 intent types with per-intent weight/retrieval/gate profiles
   - Retrieval overrides: CASUAL_SOCIAL minimizes retrieval, FACTUAL_RECALL maximizes facts, TEMPORAL_RECALL boosts summaries
   - Weight overrides: EMOTIONAL_SUPPORT boosts continuity + lowers truth, FACTUAL_RECALL boosts truth
+- Retrieval quality benchmarks — **done 2026-02-17**
+  - `tests/benchmarks/`: 30 seed memories + 19 test cases with real embeddings (all-MiniLM-L6-v2)
+  - Covers all 9 intent types, measures recall@K and MRR
+  - Run: `pytest tests/benchmarks/ -m benchmark -v` (~5s)
 - Prune low-value entries over time (decay + consolidation)
 
 ### 5. Temporal Awareness
 - Narrative context system provides rolling "life state" grounding — **done**
 - Daily + weekly notes auto-generated from conversations — **done**
+- Temporal-aware recency decay for TEMPORAL_RECALL queries — **done 2026-02-17**
+  - "What happened last week?" now surfaces week-old summaries instead of burying them under standard decay
+  - IntentClassifier extracts temporal anchor, MemoryScorer reshapes decay curve within window
 - Goal: Daemon should know what you were working on last week without being told
 
 ### 6. Multi-Provider LLM Resilience
@@ -104,6 +111,24 @@ Daemon is a personal cognitive assistant with deep, persistent memory. It should
 ---
 
 ## Recent Completions
+
+### Temporal-Aware Recency Decay (2026-02-17)
+- `memory/memory_scorer.py` — `rank_memories()` now reshapes recency decay for TEMPORAL_RECALL queries
+  - Gentle decay within temporal window (1.0 → 0.7), standard decay outside
+  - `_temporal_anchor_hours` threaded via weight_overrides from IntentClassifier
+- `core/intent_classifier.py` — `classify()` extracts temporal anchor via `extract_temporal_window()` for TEMPORAL_RECALL
+- 4 new unit tests in `tests/unit/test_memory_scorer.py`
+
+### Retrieval Quality Benchmarks (2026-02-17)
+- `tests/benchmarks/` — End-to-end retrieval quality suite with real embeddings (all-MiniLM-L6-v2)
+- 30 seed memories + 19 test cases across all 9 intent types
+- Session-scoped fixtures: ChromaDB + CorpusManager + MockTimeManager
+- Measures recall@K and MRR, grouped report by intent type
+- Run: `pytest tests/benchmarks/ -m benchmark -v` (~5s)
+
+### Wizard Test Env Fix (2026-02-17)
+- `tests/test_wizard.py` — Fixed env var poisoning: `write_api_key_to_env()` tests now save/restore `os.environ['OPENAI_API_KEY']` in try/finally blocks
+- Prevents test runs from corrupting the real `.env` API key
 
 ### Query Intent Classifier (2026-02-15)
 - `core/intent_classifier.py` — Regex-first classification into 9 intent types (no LLM calls)
