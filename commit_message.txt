@@ -1,49 +1,49 @@
-feat: Integrate Obsidian vault, news-aware search, and fact correction detection
+feat: Add temporal-aware recency decay, retrieval benchmarks, and wizard env fix
 
-## Obsidian Vault Integration
+## Temporal-Aware Recency Decay
 
-Adds personal notes from user's Obsidian vault (~Documents/Luke Notes) to the
-context retrieval system. Notes are embedded in a dedicated ChromaDB collection
-and retrieved using hybrid search (1/3 keyword + 2/3 semantic).
+TEMPORAL_RECALL queries ("What happened last week?") now surface time-relevant
+memories instead of burying them under standard exponential decay.
 
-**New file:** `knowledge/obsidian_manager.py`
-- Smart chunking: whole notes <1500 chars, else split by ## headers
-- Extracts #tags and [[wiki links]] as metadata
-- Hybrid retrieval: keyword match on title/tags + semantic similarity
+**Changes:** `core/intent_classifier.py`, `memory/memory_scorer.py`
+- IntentClassifier.classify() extracts temporal anchor via extract_temporal_window()
+- Adds _temporal_anchor_hours to weight_overrides (e.g., "last week" → 168h)
+- MemoryScorer.rank_memories() reshapes decay curve:
+  - Within window: gentle decay (1.0 → 0.7)
+  - Outside window: standard decay from 0.7 baseline
+- Temporal anchor takes priority over time_manager and fallback paths
 
-**CLI commands:**
-- `python main.py embed-vault` - Index vault
-- `python main.py embed-vault --force` - Force re-index
-- `python main.py vault-stats` / `clear-vault`
+## Retrieval Quality Benchmarks
 
-## News-Aware Web Search
+End-to-end retrieval quality suite with real embeddings (all-MiniLM-L6-v2).
 
-Tavily searches now auto-detect news queries and use the optimized news agent.
+**New files:** `tests/benchmarks/`, `tests/fixtures/retrieval_benchmarks.yaml`
+- 30 seed memories + 19 test cases across all 9 intent types
+- Session-scoped fixtures: ChromaDB + CorpusManager + MockTimeManager
+- Measures recall@K and MRR, grouped report by intent type
+- Run: `pytest tests/benchmarks/ -m benchmark -v` (~5s)
+- pytest.ini: registered `benchmark` marker
 
-**Changes:** `knowledge/web_search_manager.py`
-- Added `_is_news_query()` detection (keywords: today, happened, news, latest)
-- Passes `topic="news", days=1` to Tavily for current events queries
-- Logs: "[WebSearch] News query detected, using topic='news', days=1"
+## Wizard Test Env Fix
 
-## Fact Correction Detection
+Fixed env var poisoning in test_wizard.py that could corrupt the real .env file.
 
-User corrections now extract with HIGH confidence (0.92) to supersede stale facts.
+**Changes:** `tests/test_wizard.py`
+- All 3 TestWriteApiKeyToEnv tests now save/restore os.environ['OPENAI_API_KEY']
+  in try/finally blocks
+- Prevents test runs from overwriting the production API key
 
-**Changes:** `memory/fact_extractor.py`
-- Added `_detect_corrections()` method
-- Patterns: "I'm X, not Y", "actually I'm X", "not Y, I'm X"
-- 0.92 confidence triggers UserProfile's supersedes logic
-- Corrections run first in extraction pipeline
+## Documentation Updates
 
-## Other Modified Files
+**Changes:** `docs/PROJECT_SKELETON.md`, `docs/QUICK_REFERENCE.md`, `docs/GOALS.md`
+- Documented temporal-aware decay in MemoryScorer and IntentClassifier sections
+- Added Retrieval Quality Benchmarks section (Section 8.1b in skeleton)
+- Updated Recent Completions and Goals with all new features
+- Updated Last Updated timestamps
 
-- `config/app_config.py` - Added OBSIDIAN_* constants (disabled by default)
-- `memory/storage/multi_collection_chroma_store.py` - Registered obsidian_notes
-- `main.py` - Added embed-vault, vault-stats, clear-vault commands
-- `core/prompt/context_gatherer.py` - Added get_personal_notes() method
-- `core/prompt/builder.py` - Added [USER'S PERSONAL NOTES] section
-- `core/prompt/token_manager.py` - Added personal_notes to PRIORITY_ORDER
-- `gui/launch.py` - Fixed Debug Trace tab CSS (white on white)
-- `docs/PROJECT_SKELETON.md` - Documented obsidian_manager.py
+## Other Changes
 
-Notes gated through 3-stage system (Cosine → Blended → CrossEncoder).
+- `tests/unit/test_memory_scorer.py` - 4 new tests for temporal-aware decay
+- `config/config.yaml` - Minor formatting (0.50 → 0.5)
+- `test_corpus.json` - Test data re-serialization
+
