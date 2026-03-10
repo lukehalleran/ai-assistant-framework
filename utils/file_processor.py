@@ -2,7 +2,7 @@
 # utils/file_processor.py
 
 Module Contract
-- Purpose: Normalize supported file uploads (txt/csv/py/docx/images) into text and structured data for prompt augmentation.
+- Purpose: Normalize supported file uploads (txt/csv/py/docx/pdf/images) into text and structured data for prompt augmentation.
 - Inputs:
   - process_files(user_input: str, files: List[IO]) → concatenated text (backward-compat)
   - process_files_structured(user_input: str, files: List[IO]) → ProcessedFilesResult
@@ -421,6 +421,22 @@ class FileProcessor:
                             df[col] = df[col].apply(self._sanitize_csv_cell)
 
                     result = df.to_string()
+
+                elif file_ext == '.pdf':
+                    import pdfplumber
+                    pages = []
+                    with pdfplumber.open(safe_path) as pdf:
+                        for i, page in enumerate(pdf.pages, 1):
+                            text = page.extract_text() or ''
+                            if text.strip():
+                                pages.append((i, text))
+                    if not pages:
+                        result = f"[No text content extracted from {basename}]"
+                    elif len(pages) == 1:
+                        result = pages[0][1]
+                    else:
+                        # Page headers let chunk_by_headers() split on page boundaries
+                        result = '\n\n'.join(f'## Page {num}\n\n{text}' for num, text in pages)
 
                 else:
                     result = f"[Unsupported file type: {basename}]"

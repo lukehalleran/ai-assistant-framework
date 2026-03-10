@@ -53,6 +53,7 @@ class EmbedResult:
     """Result of vault embedding operation."""
     total_files: int = 0
     embedded_files: int = 0
+    updated_files: int = 0
     total_chunks: int = 0
     skipped_files: int = 0
     errors: List[str] = field(default_factory=list)
@@ -382,6 +383,30 @@ class ObsidianManager:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")[:-3]
         return f"{prefix}_{content_hash}_{timestamp}"
 
+    def _delete_file_chunks(self, file_path: str) -> int:
+        """
+        Delete all chunks for a given file_path from ChromaDB.
+
+        Args:
+            file_path: The relative file path stored in chunk metadata.
+
+        Returns:
+            Number of chunks deleted.
+        """
+        try:
+            collection = self.chroma_store.collections.get('obsidian_notes')
+            if not collection:
+                return 0
+            docs = collection.get(where={"file_path": file_path}, include=[])
+            ids = docs.get('ids', []) or []
+            if ids:
+                collection.delete(ids=ids)
+                logger.debug(f"[Obsidian] Deleted {len(ids)} old chunks for {file_path}")
+            return len(ids)
+        except Exception as e:
+            logger.warning(f"[Obsidian] Failed to delete chunks for {file_path}: {e}")
+            return 0
+
     def embed_vault(self, force_reindex: bool = False) -> EmbedResult:
         """
         Embed all markdown files from the Obsidian vault.
@@ -414,12 +439,14 @@ class ObsidianManager:
         result.total_files = len(md_files)
         logger.info(f"[Obsidian] Found {result.total_files} markdown files in {vault}")
 
-        # Get existing file paths to skip if not force_reindex
-        existing_paths = set()
+        # Force reindex: clear collection first to avoid duplicate chunks
+        if force_reindex:
+            self.clear_index()
+
+        # Build mtime map from existing chunks: {file_path: stored_mtime_or_None}
+        existing_mtimes: Dict[str, Optional[float]] = {}
         if not force_reindex:
             try:
-                # Use collection.get() to retrieve all existing documents
-                # query_collection with empty string doesn't reliably return all docs
                 collection = self.chroma_store.collections.get('obsidian_notes')
                 if collection:
                     all_docs = collection.get(include=['metadatas'])
@@ -427,9 +454,10 @@ class ObsidianManager:
                     for meta in metadatas:
                         if meta and isinstance(meta, dict):
                             path = meta.get('file_path', '')
-                            if path:
-                                existing_paths.add(path)
-                    logger.info(f"[Obsidian] Found {len(existing_paths)} already indexed file paths")
+                            if path and path not in existing_mtimes:
+                                # Legacy chunks without file_mtime get None
+                                existing_mtimes[path] = meta.get('file_mtime')
+                    logger.info(f"[Obsidian] Found {len(existing_mtimes)} already indexed file paths")
             except Exception as e:
                 logger.warning(f"[Obsidian] Could not check existing files: {e}")
 
@@ -438,10 +466,19 @@ class ObsidianManager:
             try:
                 rel_path = str(md_file.relative_to(vault))
 
-                # Skip if already indexed (unless force_reindex)
-                if rel_path in existing_paths:
-                    result.skipped_files += 1
-                    continue
+                # Check mtime for change detection
+                current_mtime = os.path.getmtime(md_file)
+                is_update = False
+
+                if rel_path in existing_mtimes:
+                    stored_mtime = existing_mtimes[rel_path]
+                    if stored_mtime is not None and current_mtime <= stored_mtime:
+                        # File unchanged since last embed
+                        result.skipped_files += 1
+                        continue
+                    # File changed (or legacy chunk without mtime) — delete old chunks and re-embed
+                    self._delete_file_chunks(rel_path)
+                    is_update = True
 
                 # Read file content
                 try:
@@ -480,6 +517,7 @@ class ObsidianManager:
                         'type': 'obsidian_note',
                         'title': note_title,
                         'file_path': rel_path,
+                        'file_mtime': current_mtime,
                         'tags': ','.join(tags) if tags else '',
                         'related_notes': ','.join(wiki_links) if wiki_links else '',
                         'images': ','.join(chunk_images) if chunk_images else '',  # Images in THIS chunk
@@ -498,7 +536,10 @@ class ObsidianManager:
                     )
                     result.total_chunks += 1
 
-                result.embedded_files += 1
+                if is_update:
+                    result.updated_files += 1
+                else:
+                    result.embedded_files += 1
 
                 # Progress logging
                 if result.embedded_files % 50 == 0:
@@ -511,9 +552,10 @@ class ObsidianManager:
 
         result.duration_seconds = time.time() - start_time
         logger.info(
-            f"[Obsidian] Embedding complete: {result.embedded_files} files, "
-            f"{result.total_chunks} chunks, {result.skipped_files} skipped, "
-            f"{len(result.errors)} errors, {result.duration_seconds:.1f}s"
+            f"[Obsidian] Embedding complete: {result.embedded_files} new, "
+            f"{result.updated_files} updated, {result.total_chunks} chunks, "
+            f"{result.skipped_files} skipped, {len(result.errors)} errors, "
+            f"{result.duration_seconds:.1f}s"
         )
         return result
 

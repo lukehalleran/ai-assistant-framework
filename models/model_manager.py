@@ -115,6 +115,7 @@ class ModelManager:
         self.api_models["claude-opus-4.5"] = "anthropic/claude-opus-4.5"
         self.api_models["claude-opus-4.6"] = "anthropic/claude-opus-4.6"
         self.api_models["sonnet-4.5"] = "anthropic/claude-sonnet-4.5"
+        self.api_models["sonnet-4.6"] = "anthropic/claude-sonnet-4.6"
         # OpenAI models via OpenRouter
         self.api_models["gpt-4o-mini"] = "openai/gpt-4o-mini"
         self.api_models["gpt-4o"] = "openai/gpt-4o"

@@ -41,6 +41,9 @@ class HybridRetriever:
         self.semantic_weight = 0.7
         self.keyword_weight = 0.3
 
+        # Fast mode flag (set by context_gatherer for mobile/quick queries)
+        self._fast_mode = False
+
     async def retrieve(self, query: str, limit: int = 30) -> List[Dict]:
         """
         Main retrieval method combining all three approaches.
@@ -54,12 +57,19 @@ class HybridRetriever:
         """
         logger.info(f"[HybridRetriever] Retrieving for query: '{query[:50]}...'")
 
+        # FAST MODE: Dramatically reduce candidate pool for mobile (2150 → ~40)
+        if hasattr(self, '_fast_mode') and self._fast_mode:
+            logger.warning(f"[FAST MODE - HybridRetriever] Using minimal candidate pool: {limit} → {limit * 1} (vs {limit * 3})")
+            candidate_multiplier = 1  # No expansion - just get exactly what we need
+        else:
+            candidate_multiplier = 3  # Normal: get 3x candidates for better ranking
+
         # Step 1: Query rewriting
         expanded_query = rewrite_query(query)
         logger.debug(f"[HybridRetriever] Expanded query: '{expanded_query}'")
 
         # Step 2: Semantic search with expanded query
-        semantic_results = await self._semantic_search(expanded_query, limit * 3)  # Get more candidates
+        semantic_results = await self._semantic_search(expanded_query, limit * candidate_multiplier)
 
         # Step 3: Keyword matching
         keyword_results = self._keyword_match(query, semantic_results)

@@ -966,6 +966,14 @@ class ContextGatherer:
     async def _get_semantic_memories(self, query: str = "", limit: int = PROMPT_MAX_MEMS) -> List[Dict[str, Any]]:
         """Get relevant memories using semantic search only."""
         try:
+            # FAST MODE: Reduce retrieval pool 50x (2150 → ~45) for 15x speed boost
+            if hasattr(self, '_fast_mode') and self._fast_mode:
+                # With retrieval_limit=15: memory_retriever does 15*3=45, hybrid does 45*1=45 total
+                logger.warning(f"[FAST MODE] Quick semantic search: {limit} results from ~45 candidates (vs 2150)")
+                retrieval_limit = 15  # Tiny candidate pool for mobile
+            else:
+                retrieval_limit = SEMANTIC_RETRIEVAL_LIMIT  # Full 2150
+
             logger.debug(f"Semantic memories: retrieving up to {limit} semantic results")
 
             if not query:
@@ -976,7 +984,6 @@ class ContextGatherer:
             semantic_memories = []
             try:
                 # Retrieve memories for semantic search
-                retrieval_limit = SEMANTIC_RETRIEVAL_LIMIT
 
                 logger.debug(f"[CONTEXT_GATHERER] About to call memory_coordinator.get_memories with query='{query[:50]}...', limit={retrieval_limit}")
 

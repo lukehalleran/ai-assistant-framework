@@ -160,7 +160,7 @@ class DailyNotesGenerator:
             self.vault_path = Path(vault_path or "~/Documents/Luke Notes").expanduser()
             self.enabled = True
             self.daily_folder = "Daily"
-            self.model_name = "gpt-4o-mini"
+            self.model_name = "sonnet-4.5"
             self.max_tokens = 800
             self.tag_generation_enabled = True
 
@@ -218,24 +218,34 @@ class DailyNotesGenerator:
         week_num = monday.isocalendar()[1]
         return f"Week {week_num} {monday.strftime('%b %Y')}"
 
+    def _get_month_folder_name(self, target_date: date) -> str:
+        """Format monthly folder name based on Monday of the week: 'January 2026'."""
+        monday = target_date - timedelta(days=target_date.weekday())
+        return f"{monday.strftime('%B %Y')}"
+
     def _get_note_path(self, target_date: date) -> Path:
-        """Get note path - always uses weekly folder for organization."""
+        """Get note path - uses monthly/weekly folder structure."""
         filename = self._format_filename(target_date)
-        week_folder = self.output_dir / self._get_week_folder_name(target_date)
-        # Always use weekly folder - it gets created in _write_note if needed
-        return week_folder / filename
+        month_folder = self._get_month_folder_name(target_date)
+        week_folder = self._get_week_folder_name(target_date)
+        return self.output_dir / month_folder / week_folder / filename
 
     def note_exists(self, target_date: date) -> bool:
-        """Check if note already exists for date (in flat dir or weekly folder)."""
+        """Check if note already exists for date (flat, weekly-at-root, or monthly/weekly)."""
         filename = self._format_filename(target_date)
 
         # Check flat directory
         if (self.output_dir / filename).exists():
             return True
 
-        # Check weekly folder
-        week_folder = self.output_dir / self._get_week_folder_name(target_date)
-        if (week_folder / filename).exists():
+        # Check weekly folder at root (legacy layout)
+        week_folder = self._get_week_folder_name(target_date)
+        if (self.output_dir / week_folder / filename).exists():
+            return True
+
+        # Check monthly/weekly folder (new layout)
+        month_folder = self._get_month_folder_name(target_date)
+        if (self.output_dir / month_folder / week_folder / filename).exists():
             return True
 
         return False
@@ -505,10 +515,10 @@ generated: {datetime.now().isoformat()}
         # Try primary model first, then fallback to alternatives if it fails
         # Expanded list includes Claude, Gemini, and newer GPT models for better reliability
         fallback_models = [
+            "sonnet-4.5",       # Anthropic Claude (fast)
             "gpt-4o-mini",       # Fast, cheap OpenAI
             "deepseek-v3.1",    # DeepSeek
             "gpt-4o",           # Standard OpenAI
-            "sonnet-4.5",       # Anthropic Claude (fast)
             "claude-opus-4.5",  # Anthropic Claude (best)
             "gemini-3-pro",     # Google Gemini
             "gpt-5",            # Newer OpenAI
