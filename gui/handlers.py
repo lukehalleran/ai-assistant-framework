@@ -178,9 +178,10 @@ async def handle_submit(
     system_prompt=DEFAULT_SYSTEM_PROMPT,
     force_summarize=False,
     include_summaries=True,
-    personality=None
+    personality=None,
+    fast_mode=False
 ):
-    logger.info(f"[Handle Submit] ENTRY - raw_mode={use_raw_gpt}")
+    logger.info(f"[Handle Submit] ENTRY - raw_mode={use_raw_gpt}, fast_mode={fast_mode}")
     logger.info(f"[Handle Submit] Query: {user_text[:100]}...")
 
     # Update activity timestamp for idle monitor
@@ -213,6 +214,9 @@ async def handle_submit(
     # RAW MODE: go straight through orchestrator (personality hook is handled inside process_user_query)
     if use_raw_gpt:
         logger.info("[Handle Submit] RAW MODE ENABLED – skipping memory and prompt building.")
+
+        # Send immediate progress to prevent mobile timeout
+        yield {"role": "assistant", "content": "💭 Processing...", "is_progress": True}
 
         response_text, debug_info = await orchestrator.process_user_query(
             user_input=merged_input,
@@ -265,13 +269,62 @@ async def handle_submit(
 
     # ENHANCED MODE: build prompt first via orchestrator.prepare_prompt (do NOT pass personality here)
     # Always request raw context (needed for images in multimodal models and agentic search)
+
+    # Send immediate progress to prevent mobile timeout during prompt preparation
+    yield {"role": "assistant", "content": "💭 Thinking...", "is_progress": True}
+
     logger.info("[Handle Submit] >>> Starting prepare_prompt...")
-    prep_result = await orchestrator.prepare_prompt(
+
+    # Send periodic keepalive during slow prepare_prompt (prevents mobile timeout)
+
+    # Apply Fast Mode limits BEFORE prepare_prompt starts
+    _original_limits = {}
+    if fast_mode:
+        logger.warning("[Handle Submit] ⚡⚡⚡ FAST MODE ENABLED ⚡⚡⚡")
+        import core.prompt.builder as builder_module
+        # Override builder module constants (the REAL location of these limits)
+        _original_limits['PROMPT_MAX_MEMS'] = builder_module.PROMPT_MAX_MEMS
+        logger.warning(f"[Fast Mode] PROMPT_MAX_MEMS: {builder_module.PROMPT_MAX_MEMS} → 10")
+        builder_module.PROMPT_MAX_MEMS = 10
+
+        _original_limits['PROMPT_MAX_RECENT'] = builder_module.PROMPT_MAX_RECENT
+        logger.warning(f"[Fast Mode] PROMPT_MAX_RECENT: {builder_module.PROMPT_MAX_RECENT} → 5")
+        builder_module.PROMPT_MAX_RECENT = 5
+
+        if hasattr(builder_module, 'PROMPT_MAX_SEMANTIC'):
+            _original_limits['PROMPT_MAX_SEMANTIC'] = builder_module.PROMPT_MAX_SEMANTIC
+            logger.warning(f"[Fast Mode] PROMPT_MAX_SEMANTIC: {builder_module.PROMPT_MAX_SEMANTIC} → 8")
+            builder_module.PROMPT_MAX_SEMANTIC = 8
+
+        # CRITICAL: Set fast mode flags to reduce expensive hybrid retrieval (2150 → ~40 candidates)
+        if hasattr(orchestrator.prompt_builder, 'context_gatherer'):
+            orchestrator.prompt_builder.context_gatherer._fast_mode = True
+            logger.warning("[Fast Mode] Set context_gatherer._fast_mode = True")
+
+        # Also set on hybrid_retriever via memory_coordinator
+        if hasattr(orchestrator, 'memory_coordinator'):
+            retriever = getattr(orchestrator.memory_coordinator, '_retriever', None)
+            if retriever and hasattr(retriever, 'hybrid_retriever'):
+                retriever.hybrid_retriever._fast_mode = True
+                logger.warning("[Fast Mode] Set hybrid_retriever._fast_mode = True (2150 → ~40 candidates)")
+
+    prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
         user_input=user_text,
         files=files,
         use_raw_mode=False,  # enhanced mode
         return_context=True  # Always get raw context for images and agentic search
-    )
+    ))
+
+    # Yield progress every 2 seconds while waiting
+    progress_messages = ["💭 Analyzing context...", "🔍 Searching memories...", "📚 Building prompt..."]
+    progress_idx = 0
+    while not prepare_task.done():
+        await asyncio.sleep(2)
+        if not prepare_task.done():
+            yield {"role": "assistant", "content": progress_messages[progress_idx % len(progress_messages)], "is_progress": True}
+            progress_idx += 1
+
+    prep_result = await prepare_task
 
     # Unpack result - always expect 3 values now
     full_prompt, system_prompt, raw_context = prep_result
@@ -1016,6 +1069,19 @@ async def handle_submit(
         yield {"role": "assistant", "content": error_message}
 
     finally:
+        # Clean up fast mode flags (defensive try/except to never interfere with streaming)
+        if fast_mode:
+            try:
+                if hasattr(orchestrator.prompt_builder, 'context_gatherer'):
+                    orchestrator.prompt_builder.context_gatherer._fast_mode = False
+                if hasattr(orchestrator, 'memory_coordinator'):
+                    retriever = getattr(orchestrator.memory_coordinator, '_retriever', None)
+                    if retriever and hasattr(retriever, 'hybrid_retriever'):
+                        retriever.hybrid_retriever._fast_mode = False
+                logger.warning("[Fast Mode] Flags cleared")
+            except Exception as e:
+                logger.error(f"[Fast Mode] Cleanup error (non-fatal): {e}")
+
         # Persist interaction and debug after streaming, but do not emit additional
         # assistant content here (avoid overwriting the last streamed UI state).
         # Skip storage if response is an error message (starts with error indicators)
@@ -1110,3 +1176,11 @@ async def handle_submit(
             # Do not yield another assistant message here; the UI already
             # received the final content during streaming. If needed, a debug
             # record is captured in-stream above.
+
+        # Restore original config limits if Fast Mode was enabled
+        if fast_mode and '_original_limits' in locals():
+            from config import app_config
+            for key, value in _original_limits.items():
+                setattr(app_config, key, value)
+                logger.warning(f"[Fast Mode] Restored {key} = {value}")
+            logger.warning("[Handle Submit] ⚡ Fast Mode limits RESTORED to normal")

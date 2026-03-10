@@ -573,7 +573,7 @@ DAILY_NOTES_ENABLED: bool = bool(DAILY_NOTES_CFG.get("enabled", True))
 # Subfolder within Obsidian vault for daily notes
 DAILY_NOTES_FOLDER: str = DAILY_NOTES_CFG.get("folder", "Daily")
 # Model for generating daily summaries
-DAILY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("model", "gpt-4o-mini")
+DAILY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("model", "sonnet-4.5")
 # Max tokens for LLM response
 DAILY_NOTES_MAX_TOKENS: int = int(DAILY_NOTES_CFG.get("max_tokens", 800))
 
@@ -582,13 +582,21 @@ DAILY_NOTES_ENABLED = bool(int(os.getenv("DAILY_NOTES_ENABLED", "1" if DAILY_NOT
 
 # Weekly Notes Configuration (extends daily notes)
 WEEKLY_NOTES_ENABLED: bool = bool(DAILY_NOTES_CFG.get("weekly_enabled", True))
-WEEKLY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("weekly_model", "gpt-4o-mini")
+WEEKLY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("weekly_model", "sonnet-4.5")
 WEEKLY_NOTES_MAX_TOKENS: int = int(DAILY_NOTES_CFG.get("weekly_max_tokens", 1200))
+
+# Monthly Notes Configuration (extends daily/weekly notes)
+MONTHLY_NOTES_ENABLED: bool = bool(DAILY_NOTES_CFG.get("monthly_enabled", True))
+MONTHLY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("monthly_model", "sonnet-4.5")
+MONTHLY_NOTES_MAX_TOKENS: int = int(DAILY_NOTES_CFG.get("monthly_max_tokens", 2000))
+
+# Environment variable override for Monthly Notes
+MONTHLY_NOTES_ENABLED = bool(int(os.getenv("MONTHLY_NOTES_ENABLED", "1" if MONTHLY_NOTES_ENABLED else "0")))
 
 # Tag Generation Configuration (for daily/weekly notes and future .md memories)
 TAG_GENERATION_CFG = config.get("tag_generation", {})
 TAG_GENERATION_ENABLED: bool = bool(TAG_GENERATION_CFG.get("enabled", True))
-TAG_GENERATION_MODEL: str = TAG_GENERATION_CFG.get("model", "gpt-4o-mini")
+TAG_GENERATION_MODEL: str = TAG_GENERATION_CFG.get("model", "sonnet-4.5")
 TAG_GENERATION_MAX_TAGS: int = int(TAG_GENERATION_CFG.get("max_tags", 10))
 TAG_GENERATION_MIN_TAGS: int = int(TAG_GENERATION_CFG.get("min_tags", 3))
 
@@ -607,15 +615,17 @@ NARRATIVE_CONTEXT_PATH: str = os.getenv(
     NARRATIVE_CONTEXT_CFG.get("path", "./data/narrative_context.txt")
 )
 NARRATIVE_MAX_TOKENS: int = int(NARRATIVE_CONTEXT_CFG.get("max_tokens", 500))
-NARRATIVE_WEEKLIES_COUNT: int = int(NARRATIVE_CONTEXT_CFG.get("weeklies_count", 4))
-NARRATIVE_MONTHLIES_COUNT: int = int(NARRATIVE_CONTEXT_CFG.get("monthlies_count", 2))
-NARRATIVE_SYNTHESIS_MODEL: str = NARRATIVE_CONTEXT_CFG.get("synthesis_model", "gpt-4o-mini")
+NARRATIVE_WEEKLIES_COUNT: int = int(NARRATIVE_CONTEXT_CFG.get("weeklies_count", 3))
+NARRATIVE_MONTHLIES_COUNT: int = int(NARRATIVE_CONTEXT_CFG.get("monthlies_count", 1))
+NARRATIVE_DAILIES_COUNT: int = int(NARRATIVE_CONTEXT_CFG.get("dailies_count", 6))
+NARRATIVE_SYNTHESIS_MODEL: str = NARRATIVE_CONTEXT_CFG.get("synthesis_model", "sonnet-4.5")
 
 # Environment variable overrides for Narrative Context
 NARRATIVE_CONTEXT_ENABLED = bool(int(os.getenv("NARRATIVE_CONTEXT_ENABLED", "1" if NARRATIVE_CONTEXT_ENABLED else "0")))
 NARRATIVE_MAX_TOKENS = int(os.getenv("NARRATIVE_MAX_TOKENS", str(NARRATIVE_MAX_TOKENS)))
 NARRATIVE_WEEKLIES_COUNT = int(os.getenv("NARRATIVE_WEEKLIES_COUNT", str(NARRATIVE_WEEKLIES_COUNT)))
 NARRATIVE_MONTHLIES_COUNT = int(os.getenv("NARRATIVE_MONTHLIES_COUNT", str(NARRATIVE_MONTHLIES_COUNT)))
+NARRATIVE_DAILIES_COUNT = int(os.getenv("NARRATIVE_DAILIES_COUNT", str(NARRATIVE_DAILIES_COUNT)))
 NARRATIVE_SYNTHESIS_MODEL = os.getenv("NARRATIVE_SYNTHESIS_MODEL", NARRATIVE_SYNTHESIS_MODEL)
 
 DEICTIC_THRESHOLD = config.get("gating", {}).get("deictic_threshold", 0.60)
@@ -702,7 +712,7 @@ FILE_UPLOAD_MAX_SIZE = int(config.get("security", {}).get("file_upload_max_size"
 # Maximum total size across all files in a single request (50MB default)
 FILE_UPLOAD_MAX_TOTAL_SIZE = int(config.get("security", {}).get("file_upload_max_total_size", 50 * 1024 * 1024))
 # Allowed file extensions for upload
-FILE_UPLOAD_ALLOWED_EXTENSIONS = list(config.get("security", {}).get("file_upload_allowed_extensions", ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']))
+FILE_UPLOAD_ALLOWED_EXTENSIONS = list(config.get("security", {}).get("file_upload_allowed_extensions", ['.txt', '.docx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']))
 # CSV formula prefixes to escape (prevent formula injection)
 FILE_UPLOAD_CSV_FORMULA_PREFIXES = tuple(config.get("security", {}).get("file_upload_csv_formula_prefixes", ['=', '+', '-', '@', '\t', '\r', '\n']))
 

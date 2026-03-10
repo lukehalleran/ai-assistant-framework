@@ -141,7 +141,7 @@ OUTPUT (comma-separated tags only):'''
 class TagGenerator:
     """Generate contextual tags for Obsidian notes."""
 
-    def __init__(self, model_manager=None, tag_model: str = "gpt-4o-mini",
+    def __init__(self, model_manager=None, tag_model: str = "sonnet-4.5",
                  max_tags: int = 10, min_tags: int = 3):
         """
         Initialize TagGenerator.
@@ -332,10 +332,10 @@ class TagGenerator:
 
         # Call LLM with fallback models
         fallback_models = [
+            "sonnet-4.5",
             "gpt-4o-mini",
             "deepseek-v3.1",
             "gpt-4o",
-            "sonnet-4.5",
         ]
         models_to_try = [self.tag_model] + [m for m in fallback_models if m != self.tag_model]
 

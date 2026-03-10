@@ -300,6 +300,8 @@ class MemoryStorage:
                 })
         except Exception as e:
             logger.debug(f"[MemoryStorage] Corpus add_summary failed: {e}")
+            import traceback
+            logger.debug(f"[MemoryStorage] Traceback:\n{traceback.format_exc()}")
 
         # 2) Chroma (semantic)
         try:

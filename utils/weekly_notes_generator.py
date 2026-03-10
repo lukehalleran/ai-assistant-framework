@@ -171,7 +171,7 @@ class WeeklyNotesGenerator:
             self.daily_enabled = True
             self.enabled = True
             self.daily_folder = "Daily"
-            self.model_name = "gpt-4o-mini"
+            self.model_name = "sonnet-4.5"
             self.max_tokens = 1200
             self.tag_generation_enabled = True
 
@@ -212,6 +212,11 @@ class WeeklyNotesGenerator:
         week_num = monday.isocalendar()[1]
         return f"Week {week_num} {monday.strftime('%b %Y')}"
 
+    def _get_month_folder_name(self, target_date: date) -> str:
+        """Format monthly folder name based on Monday of the week: 'January 2026'."""
+        monday = target_date - timedelta(days=target_date.weekday())
+        return f"{monday.strftime('%B %Y')}"
+
     def _get_week_date_range(self, target_date: date) -> Tuple[date, date]:
         """Get Monday-Sunday range for the week containing target_date."""
         monday = target_date - timedelta(days=target_date.weekday())
@@ -225,7 +230,7 @@ class WeeklyNotesGenerator:
     def _find_daily_notes_for_week(self, start: date, end: date) -> List[Tuple[date, Path]]:
         """
         Find all daily notes in date range.
-        Searches both flat directory and weekly folders.
+        Searches flat directory, weekly-at-root, and monthly/weekly paths.
         Returns list of (date, path) tuples.
         """
         notes = []
@@ -241,11 +246,19 @@ class WeeklyNotesGenerator:
                 current += timedelta(days=1)
                 continue
 
-            # Check in weekly folder
+            # Check in weekly folder at root (legacy layout)
             week_folder = self.output_dir / self._get_week_folder_name(current)
             folder_path = week_folder / filename
             if folder_path.exists():
                 notes.append((current, folder_path))
+                current += timedelta(days=1)
+                continue
+
+            # Check in monthly/weekly folder (new layout)
+            month_folder = self.output_dir / self._get_month_folder_name(current)
+            monthly_path = month_folder / self._get_week_folder_name(current) / filename
+            if monthly_path.exists():
+                notes.append((current, monthly_path))
                 current += timedelta(days=1)
                 continue
 
@@ -426,10 +439,20 @@ generated: {datetime.now().isoformat()}
         return f"{folder_name} Summary.md"
 
     def week_summary_exists(self, target_date: date) -> bool:
-        """Check if weekly summary already exists."""
-        week_folder = self.output_dir / self._get_week_folder_name(target_date)
-        summary_path = week_folder / self._format_summary_filename(target_date)
-        return summary_path.exists()
+        """Check if weekly summary already exists (weekly-at-root or monthly/weekly)."""
+        summary_filename = self._format_summary_filename(target_date)
+        week_name = self._get_week_folder_name(target_date)
+
+        # Check weekly folder at root (legacy layout)
+        if (self.output_dir / week_name / summary_filename).exists():
+            return True
+
+        # Check monthly/weekly folder (new layout)
+        month_name = self._get_month_folder_name(target_date)
+        if (self.output_dir / month_name / week_name / summary_filename).exists():
+            return True
+
+        return False
 
     def _write_summary(self, folder: Path, filename: str, content: str) -> Path:
         """Atomic write of weekly summary."""
@@ -494,8 +517,9 @@ generated: {datetime.now().isoformat()}
             logger.info(f"[WeeklyNotes] Skipped Week {week_num}: no daily notes found")
             return result
 
-        # Create week folder and move notes
-        week_folder = self.output_dir / self._get_week_folder_name(monday)
+        # Create week folder inside monthly parent
+        month_folder = self._get_month_folder_name(monday)
+        week_folder = self.output_dir / month_folder / self._get_week_folder_name(monday)
         result.week_folder = week_folder
         result.daily_notes_moved = self._move_daily_notes_to_folder(daily_notes, week_folder)
 
@@ -528,10 +552,10 @@ generated: {datetime.now().isoformat()}
         # Call LLM with fallback models
         # Expanded list includes Claude, Gemini, and newer GPT models for better reliability
         fallback_models = [
+            "sonnet-4.5",       # Anthropic Claude (fast)
             "gpt-4o-mini",       # Fast, cheap OpenAI
             "deepseek-v3.1",    # DeepSeek
             "gpt-4o",           # Standard OpenAI
-            "sonnet-4.5",       # Anthropic Claude (fast)
             "claude-opus-4.5",  # Anthropic Claude (best)
             "gemini-3-pro",     # Google Gemini
             "gpt-5",            # Newer OpenAI
@@ -662,7 +686,8 @@ generated: {datetime.now().isoformat()}
             Tuple of (week_folder_path, notes_moved_count)
         """
         monday, sunday = self._get_week_date_range(target_date)
-        week_folder = self.output_dir / self._get_week_folder_name(monday)
+        month_folder = self._get_month_folder_name(monday)
+        week_folder = self.output_dir / month_folder / self._get_week_folder_name(monday)
 
         daily_notes = self._find_daily_notes_for_week(monday, sunday)
         moved = self._move_daily_notes_to_folder(daily_notes, week_folder)

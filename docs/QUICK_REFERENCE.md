@@ -700,7 +700,7 @@ async def get_reference_docs(query, limit) -> List[Dict]:
     """Fetch from reference_docs, filter OUT type='user_upload'."""
 
 # Config (app_config.py):
-FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']
+FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.docx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']  # .pdf added [2026-03-10]
 FILE_UPLOAD_IMAGE_DIR = "data/uploads"
 PROMPT_MAX_USER_UPLOADS = 5
 ```
@@ -952,7 +952,7 @@ score = (
 [WEB SEARCH RESULTS]           # Real-time Tavily results
 [RELEVANT INFORMATION]         # Wikipedia chunks
 [TIME CONTEXT]                 # Current datetime
-[TEMPORAL GROUNDING]           # Synthesized life context (daily/weekly notes) [NEW 2026-01-17]
+[TEMPORAL GROUNDING]           # Synthesized life context (monthly/weekly/daily notes) [ENHANCED 2026-03-10]
 [STM SUMMARY]                  # Short-term memory analysis
 [CURRENT USER QUERY]           # The actual query to respond to
 ```
@@ -975,8 +975,16 @@ python main.py weekly-note 2026-01-12        # Generate for week containing date
 python main.py weekly-note --force           # Overwrite existing
 python main.py weekly-note-catchup           # Generate last week if missing
 
-# Narrative Context (Temporal Grounding) [NEW 2026-01-17]
-python main.py refresh-narrative             # Regenerate life state from daily/weekly notes
+# Monthly Notes - auto-generated monthly summaries [NEW 2026-03-10]
+python main.py monthly-note                  # Generate for last month
+python main.py monthly-note 2026-02          # Generate for specific month (YYYY-MM)
+python main.py monthly-note last-month       # Explicit last month
+python main.py monthly-note --force          # Overwrite existing
+python main.py monthly-note-catchup          # Migrate weekly folders + generate last month
+python main.py migrate-monthly               # Just run weekly-to-monthly folder migration
+
+# Narrative Context (Temporal Grounding) [ENHANCED 2026-03-10 - now 3-tier: monthly/weekly/daily]
+python main.py refresh-narrative             # Regenerate life state from monthly/weekly/daily notes
 
 # Daemon Documentation (self-knowledge)
 python main.py upload-doc <file> [title]     # Upload doc to [DAEMON DOCUMENTATION]
@@ -1104,19 +1112,20 @@ class TagGenerator:
 
 ---
 
-## Narrative Context (Temporal Grounding) [NEW 2026-01-17]
+## Narrative Context (Temporal Grounding) [ENHANCED 2026-03-10]
 
 ```python
 # memory/memory_consolidator.py
 class MemoryConsolidator:
     async def generate_narrative_context(weeklies=None, monthlies=None) -> str:
         """
-        Synthesize daily/weekly notes into 'Current Life State' narrative.
+        Synthesize monthly/weekly/daily notes into 'Current Life State' narrative. [3-tier hierarchy]
 
-        Sources (hybrid):
-        1. Obsidian weekly summaries (Week */Week * Summary.md) - 2 max
-        2. Obsidian daily notes (Week */*Daily Note.md) - 7 max
-        3. Corpus summaries (fallback)
+        Sources (3-tier hierarchy):
+        1. Obsidian monthly summaries (<Month YYYY> Summary.md) - 1 max
+        2. Obsidian weekly summaries (both monthly-parent and root-level) - 3 max
+        3. Obsidian daily notes (both monthly-parent and root-level) - 6 max
+        4. Corpus summaries (fallback)
 
         Output sections:
         - Current Life State (life phase description)

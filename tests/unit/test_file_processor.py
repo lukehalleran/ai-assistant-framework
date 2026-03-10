@@ -79,13 +79,13 @@ def create_mock_file(name: str, path: str = None):
 
 def test_init_supported_extensions(file_processor):
     """FileProcessor initializes with supported extensions"""
-    assert file_processor.supported_extensions == ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']
+    assert file_processor.supported_extensions == ['.txt', '.docx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']
 
 
 def test_get_supported_extensions(file_processor):
     """get_supported_extensions returns the list"""
     result = file_processor.get_supported_extensions()
-    assert result == ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']
+    assert result == ['.txt', '.docx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']
     assert isinstance(result, list)
 
 
@@ -229,12 +229,12 @@ def test_process_single_file_csv(file_processor, temp_csv_file):
 
 def test_process_single_file_unsupported(file_processor):
     """_process_single_file returns message for unsupported types"""
-    mock_file = create_mock_file("test.pdf")
+    mock_file = create_mock_file("test.xyz")
 
     content, size = file_processor._process_single_file(mock_file)
 
     assert "Unsupported file type" in content
-    assert "test.pdf" in content
+    assert "test.xyz" in content
     assert size == 0
 
 
@@ -278,6 +278,78 @@ def test_process_single_file_empty_csv(file_processor, tmp_path):
     # Should return string representation
     assert isinstance(content, str)
     assert "name" in content or "age" in content or "Empty" in content  # Headers or empty message
+
+
+# =============================================================================
+# PDF Processing Tests
+# =============================================================================
+
+def _make_pdf(path, pages_text):
+    """Helper to create a real PDF file with given page texts using fpdf2."""
+    from fpdf import FPDF
+    pdf = FPDF()
+    for text in pages_text:
+        pdf.add_page()
+        pdf.set_font("Helvetica", size=12)
+        pdf.multi_cell(0, 10, text)
+    pdf.output(str(path))
+
+
+def test_process_single_file_pdf_single_page(file_processor, tmp_path):
+    """_process_single_file extracts text from a single-page PDF"""
+    pdf_path = tmp_path / "single.pdf"
+    _make_pdf(pdf_path, ["Hello from PDF"])
+    mock_file = create_mock_file("single.pdf", str(pdf_path))
+
+    content, size = file_processor._process_single_file(mock_file)
+
+    assert "Hello from PDF" in content
+    # Single-page PDFs should NOT have page headers
+    assert "## Page" not in content
+    assert size > 0
+
+
+def test_process_single_file_pdf_multi_page(file_processor, tmp_path):
+    """_process_single_file adds page headers for multi-page PDFs"""
+    pdf_path = tmp_path / "multi.pdf"
+    _make_pdf(pdf_path, ["First page content", "Second page content"])
+    mock_file = create_mock_file("multi.pdf", str(pdf_path))
+
+    content, size = file_processor._process_single_file(mock_file)
+
+    assert "## Page 1" in content
+    assert "## Page 2" in content
+    assert "First page content" in content
+    assert "Second page content" in content
+    assert size > 0
+
+
+def test_process_single_file_pdf_empty(file_processor, tmp_path):
+    """_process_single_file handles PDF with no extractable text"""
+    pdf_path = tmp_path / "empty.pdf"
+    # Create a PDF with a blank page (no text added)
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.output(str(pdf_path))
+    mock_file = create_mock_file("empty.pdf", str(pdf_path))
+
+    content, size = file_processor._process_single_file(mock_file)
+
+    assert "[No text content extracted from empty.pdf]" in content
+
+
+@pytest.mark.asyncio
+async def test_process_files_pdf(file_processor, tmp_path):
+    """process_files handles PDF upload end-to-end"""
+    pdf_path = tmp_path / "doc.pdf"
+    _make_pdf(pdf_path, ["PDF document text"])
+    mock_file = create_mock_file("doc.pdf", str(pdf_path))
+
+    result = await file_processor.process_files("Query:", [mock_file])
+
+    assert "Query:" in result
+    assert "PDF document text" in result
 
 
 # =============================================================================
