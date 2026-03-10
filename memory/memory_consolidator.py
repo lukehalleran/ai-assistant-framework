@@ -2,7 +2,7 @@
 # memory/memory_consolidator.py
 
 Module Contract
-- Purpose: Generate concise conversation summaries from recent exchanges. Used by shutdown summarizer and optionally mid‑session consolidation. Also synthesizes narrative context from Obsidian daily/weekly notes.
+- Purpose: Generate concise conversation summaries from recent exchanges. Used by shutdown summarizer and optionally mid‑session consolidation. Also synthesizes narrative context from Obsidian monthly/weekly/daily notes.
 - Inputs:
   - consolidation_threshold (N): target block size for summaries
   - maybe_consolidate(corpus_manager): returns True if a new summary node is stored
@@ -15,11 +15,12 @@ Module Contract
   - config.app_config for OBSIDIAN_VAULT_PATH, NARRATIVE_SYNTHESIS_MODEL [NEW 2026-01-17]
 - Side effects:
   - Writes summary nodes to corpus (and by caller pathways, to Chroma).
-  - Reads Obsidian daily/weekly notes from vault (Week * folders only) [NEW 2026-01-17]
+  - Reads Obsidian monthly/weekly/daily notes from vault [NEW 2026-01-17]
   - LLM API calls for narrative synthesis [NEW 2026-01-17]
 
-Narrative Context System (2026-01-17):
+Narrative Context System (2026-01-17, updated 2026-03-10 for 3-tier):
   - _get_obsidian_notes_path() -> Optional[str]: Discover vault daily notes folder
+  - _read_obsidian_monthly_summaries(limit) -> List[Dict]: Parse <Month YYYY> Summary.md files
   - _read_obsidian_weekly_summaries(limit) -> List[Dict]: Parse Week * Summary.md files
   - _read_obsidian_daily_notes(limit) -> List[Dict]: Parse *Daily Note.md from Week * folders
   - generate_narrative_context(): Synthesize "Current Life State" narrative from notes
@@ -176,24 +177,28 @@ class MemoryConsolidator:
 
     # --- Narrative Context Synthesis ---
     # Uses Obsidian daily/weekly notes as primary source, corpus summaries as fallback
-    NARRATIVE_SYNTHESIS_PROMPT = """You are synthesizing the user's recent life context from daily and weekly notes.
+    NARRATIVE_SYNTHESIS_PROMPT = """You are synthesizing the user's recent life context from monthly, weekly, and daily notes.
 
-WEEKLY SUMMARIES (most recent first):
+MONTHLY SUMMARY (broadest context — life arc over past month):
+{monthly_summaries}
+
+WEEKLY SUMMARIES (medium context — active threads, most recent first):
 {weekly_summaries}
 
-DAILY NOTES (most recent first):
+DAILY NOTES (immediate context — last few days, most recent first):
 {daily_notes}
 
 CORPUS SUMMARIES (fallback, if available):
 {corpus_summaries}
 
 Synthesize a 250-300 word "Current Life State" narrative covering:
-1. CURRENT CHAPTER: What life phase/season is the user in? (1-2 sentences)
-2. ACTIVE THREADS: Major ongoing projects, concerns, or goals (bullet list, 3-5 items)
-3. EMOTIONAL TRAJECTORY: Is their mood/stress trending better, worse, or stable? Why?
-4. RECURRING THEMES: Patterns you notice across multiple time periods
+1. CURRENT CHAPTER: What life phase is the user in? Use the monthly summary for arc. (1-2 sentences)
+2. ACTIVE THREADS: What's actively in progress this week? Use weekly summaries. (bullet list, 3-5 items)
+3. EMOTIONAL TRAJECTORY: How is mood/stress trending? Use daily notes for recent shifts. (2-3 sentences)
+4. RECURRING THEMES: Patterns visible across all three time scales.
 
-Write in third person ("The user is..."). Be specific and grounded in the summary data.
+Write in third person ("The user is..."). Be specific and grounded in the data.
+Prioritize recent daily notes for current state, weekly for active threads, monthly for trajectory.
 Do NOT make up information not present in the summaries."""
 
     def _get_obsidian_notes_path(self) -> Optional[str]:
@@ -231,11 +236,17 @@ Do NOT make up information not present in the summaries."""
             notes_dir = Path(notes_path)
             weekly_summaries = []
 
-            # Find all "Week N Mon YYYY" folders
+            # Find all "Week N Mon YYYY" folders (at root and inside monthly parents)
             week_folders = []
             for folder in notes_dir.iterdir():
                 if folder.is_dir() and folder.name.startswith("Week "):
+                    # Legacy: weekly folder at root
                     week_folders.append(folder)
+                elif folder.is_dir() and not folder.name.startswith("Week "):
+                    # New layout: monthly parent containing weekly folders
+                    for subfolder in folder.iterdir():
+                        if subfolder.is_dir() and subfolder.name.startswith("Week "):
+                            week_folders.append(subfolder)
 
             # Sort by folder name (most recent first based on modification time)
             week_folders.sort(key=lambda f: f.stat().st_mtime, reverse=True)
@@ -276,6 +287,69 @@ Do NOT make up information not present in the summaries."""
             logger.debug(f"[NarrativeSynthesis] Error reading weekly summaries: {e}")
             return []
 
+    def _read_obsidian_monthly_summaries(self, limit: int = 1) -> List[Dict]:
+        """
+        Read recent monthly summaries from Obsidian vault.
+
+        Looks for files like "February 2026/February 2026 Summary.md" inside
+        the daily-notes root. Returns list of dicts with 'content' and
+        'timestamp' keys, sorted by mtime (most recent first).
+        """
+        from pathlib import Path
+
+        notes_path = self._get_obsidian_notes_path()
+        if not notes_path:
+            return []
+
+        try:
+            notes_dir = Path(notes_path)
+            monthly_summaries = []
+
+            for folder in notes_dir.iterdir():
+                if not folder.is_dir() or folder.name.startswith("Week "):
+                    continue
+                # Monthly parent folder (e.g. "February 2026")
+                summary_files = list(folder.glob("*Summary.md"))
+                if not summary_files:
+                    continue
+                summary_file = summary_files[0]
+                content = summary_file.read_text(encoding="utf-8")
+
+                # Extract timestamp from YAML frontmatter if present
+                timestamp = ""
+                if content.startswith("---"):
+                    try:
+                        end_idx = content.find("---", 3)
+                        if end_idx > 0:
+                            frontmatter = content[3:end_idx]
+                            for line in frontmatter.split("\n"):
+                                if line.startswith("generated:"):
+                                    timestamp = line.split(":", 1)[1].strip()
+                                    break
+                                elif line.startswith("start_date:"):
+                                    timestamp = line.split(":", 1)[1].strip()
+                    except Exception:
+                        pass
+
+                monthly_summaries.append({
+                    "content": content,
+                    "timestamp": timestamp or folder.name,
+                    "source": "obsidian_monthly",
+                    "_mtime": summary_file.stat().st_mtime,
+                })
+
+            # Sort by mtime (most recent first), then trim
+            monthly_summaries.sort(key=lambda s: s.get("_mtime", 0), reverse=True)
+            for s in monthly_summaries:
+                s.pop("_mtime", None)
+
+            logger.debug(f"[NarrativeSynthesis] Found {len(monthly_summaries)} Obsidian monthly summaries")
+            return monthly_summaries[:limit]
+
+        except Exception as e:
+            logger.debug(f"[NarrativeSynthesis] Error reading monthly summaries: {e}")
+            return []
+
     def _read_obsidian_daily_notes(self, limit: int = 7) -> List[Dict]:
         """
         Read recent daily notes from Obsidian vault.
@@ -295,13 +369,20 @@ Do NOT make up information not present in the summaries."""
             notes_dir = Path(notes_path)
             daily_notes = []
 
-            # Only collect daily notes from Week * folders (new system)
+            # Collect daily notes from Week * folders (at root and inside monthly parents)
             all_daily_files = []
 
             for folder in notes_dir.iterdir():
                 if folder.is_dir() and folder.name.startswith("Week "):
+                    # Legacy: weekly folder at root
                     for f in folder.glob("*Daily Note.md"):
                         all_daily_files.append(f)
+                elif folder.is_dir() and not folder.name.startswith("Week "):
+                    # New layout: monthly parent containing weekly folders
+                    for subfolder in folder.iterdir():
+                        if subfolder.is_dir() and subfolder.name.startswith("Week "):
+                            for f in subfolder.glob("*Daily Note.md"):
+                                all_daily_files.append(f)
 
             # Sort by modification time (most recent first)
             all_daily_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
@@ -343,10 +424,10 @@ Do NOT make up information not present in the summaries."""
         max_tokens: int = 400
     ) -> str:
         """
-        Synthesize daily/weekly notes into a 'Current Life State' narrative.
+        Synthesize monthly/weekly/daily notes into a 'Current Life State' narrative.
 
-        Uses Obsidian daily/weekly notes as primary source, with corpus
-        summaries as fallback for historical data.
+        Uses Obsidian monthly/weekly/daily notes as primary source (3-tier),
+        with corpus summaries as fallback for historical data.
 
         Args:
             recent_weeklies: Corpus weekly summaries (fallback, optional)
@@ -357,9 +438,24 @@ Do NOT make up information not present in the summaries."""
             Synthesized narrative string, or empty string on failure
         """
         try:
-            # Primary: Read from Obsidian vault
-            obsidian_weeklies = self._read_obsidian_weekly_summaries(limit=2)
-            obsidian_dailies = self._read_obsidian_daily_notes(limit=7)
+            from config.app_config import (
+                NARRATIVE_SYNTHESIS_MODEL, NARRATIVE_MONTHLIES_COUNT,
+                NARRATIVE_WEEKLIES_COUNT, NARRATIVE_DAILIES_COUNT,
+            )
+
+            # Primary: Read from Obsidian vault (3-tier)
+            obsidian_monthlies = self._read_obsidian_monthly_summaries(limit=NARRATIVE_MONTHLIES_COUNT)
+            obsidian_weeklies = self._read_obsidian_weekly_summaries(limit=NARRATIVE_WEEKLIES_COUNT)
+            obsidian_dailies = self._read_obsidian_daily_notes(limit=NARRATIVE_DAILIES_COUNT)
+
+            # Format Obsidian monthly summaries
+            if obsidian_monthlies:
+                monthly_text = "\n\n---\n\n".join([
+                    f"[{s.get('timestamp', 'Unknown')}]\n{s.get('content', '')}"
+                    for s in obsidian_monthlies
+                ])
+            else:
+                monthly_text = "(No monthly summaries available)"
 
             # Format Obsidian weekly summaries
             if obsidian_weeklies:
@@ -391,12 +487,13 @@ Do NOT make up information not present in the summaries."""
                     corpus_text = "\n\n".join(corpus_parts)
 
             # Skip if no meaningful content from any source
-            if not obsidian_weeklies and not obsidian_dailies and not recent_weeklies and not recent_monthlies:
+            if not obsidian_monthlies and not obsidian_weeklies and not obsidian_dailies and not recent_weeklies and not recent_monthlies:
                 logger.debug("[NarrativeSynthesis] No content available for synthesis")
                 return ""
 
             # Build prompt from template
             prompt = self.NARRATIVE_SYNTHESIS_PROMPT.format(
+                monthly_summaries=monthly_text,
                 weekly_summaries=weekly_text,
                 daily_notes=daily_text,
                 corpus_summaries=corpus_text
@@ -408,7 +505,6 @@ Do NOT make up information not present in the summaries."""
                 return ""
 
             # Use fast, cheap model for synthesis
-            from config.app_config import NARRATIVE_SYNTHESIS_MODEL
             narrative = await self.model_manager.generate_once(
                 prompt,
                 model_name=NARRATIVE_SYNTHESIS_MODEL,
@@ -422,6 +518,8 @@ Do NOT make up information not present in the summaries."""
                 return ""
 
             sources = []
+            if obsidian_monthlies:
+                sources.append(f"{len(obsidian_monthlies)} monthly")
             if obsidian_weeklies:
                 sources.append(f"{len(obsidian_weeklies)} weekly")
             if obsidian_dailies:

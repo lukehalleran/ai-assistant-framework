@@ -567,6 +567,7 @@ if __name__ == "__main__":
             print(f"\nResults:")
             print(f"  Total files found: {result.total_files}")
             print(f"  Files embedded:    {result.embedded_files}")
+            print(f"  Files updated:     {result.updated_files}")
             print(f"  Total chunks:      {result.total_chunks}")
             print(f"  Files skipped:     {result.skipped_files}")
             print(f"  Errors:            {len(result.errors)}")
@@ -859,6 +860,106 @@ if __name__ == "__main__":
                 print(f"Failed: {result.error}")
             sys.exit(0)
 
+        elif mode == "monthly-note":
+            # Generate monthly summary from daily notes
+            # Usage: python main.py monthly-note [YYYY-MM|last-month] [--force]
+            import asyncio
+            from utils.monthly_notes_generator import MonthlyNotesGenerator
+            from datetime import date as date_type, datetime, timedelta
+            import calendar
+
+            # Parse arguments
+            target_date = date_type.today().replace(day=1)  # Default: current month
+            force = "--force" in sys.argv
+
+            for arg in sys.argv[2:]:
+                if arg == "--force":
+                    continue
+                elif arg == "last-month":
+                    today = date_type.today()
+                    if today.month == 1:
+                        target_date = date_type(today.year - 1, 12, 1)
+                    else:
+                        target_date = date_type(today.year, today.month - 1, 1)
+                else:
+                    try:
+                        target_date = datetime.strptime(arg, "%Y-%m").date()
+                    except ValueError:
+                        print(f"Invalid format: {arg} (use YYYY-MM or 'last-month')")
+                        sys.exit(1)
+
+            month_name = calendar.month_name[target_date.month]
+            print(f"\n{'='*60}")
+            print(f"MONTHLY NOTE GENERATION")
+            print(f"{'='*60}")
+            print(f"Month: {month_name} {target_date.year}")
+            print(f"Force: {force}")
+            print()
+
+            generator = MonthlyNotesGenerator()
+            result = asyncio.run(generator.generate_for_month(target_date, force=force))
+
+            if result.success:
+                print(f"Generated monthly summary:")
+                print(f"  Month: {result.month_name} {result.year}")
+                print(f"  Output: {result.output_path}")
+                print(f"  Daily notes: {result.daily_notes_found}")
+                print(f"  Total conversations: {result.total_conversations}")
+                print(f"  Avg intensity: {result.avg_intensity:.1f}/10")
+            elif result.skipped_reason:
+                print(f"Skipped: {result.skipped_reason}")
+            else:
+                print(f"Failed: {result.error}")
+            sys.exit(0)
+
+        elif mode == "monthly-note-catchup":
+            # Migrate weekly folders and generate last month's summary
+            import asyncio
+            from utils.monthly_notes_generator import MonthlyNotesGenerator
+
+            print(f"\n{'='*60}")
+            print("MONTHLY NOTE CATCH-UP")
+            print(f"{'='*60}")
+
+            generator = MonthlyNotesGenerator()
+
+            # Step 1: Migration
+            print("\nStep 1: Migrating weekly folders to monthly parents...")
+            migrated = generator.migrate_weekly_folders_to_monthly()
+            print(f"  Folders migrated: {migrated}")
+
+            # Step 2: Generate last month
+            print("\nStep 2: Generating last month's summary (if needed)...")
+            result = asyncio.run(generator.generate_last_month_if_complete())
+
+            if result is None:
+                print("  Last month's summary already exists or too early, nothing to do.")
+            elif result.success:
+                print(f"  Generated: {result.month_name} {result.year}")
+                print(f"  Output: {result.output_path}")
+                print(f"  Daily notes: {result.daily_notes_found}")
+            elif result.skipped_reason:
+                print(f"  Skipped: {result.skipped_reason}")
+            else:
+                print(f"  Failed: {result.error}")
+            sys.exit(0)
+
+        elif mode == "migrate-monthly":
+            # Just run the migration (move weekly folders into monthly parents)
+            from utils.monthly_notes_generator import MonthlyNotesGenerator
+
+            print(f"\n{'='*60}")
+            print("MIGRATE WEEKLY FOLDERS TO MONTHLY")
+            print(f"{'='*60}")
+
+            generator = MonthlyNotesGenerator()
+            migrated = generator.migrate_weekly_folders_to_monthly()
+
+            print(f"\nFolders migrated: {migrated}")
+            if migrated == 0:
+                print("(All weekly folders already in monthly parents, or none found)")
+            sys.exit(0)
+
         elif mode == "organize-weekly":
             # Organize daily notes into weekly folders without generating summary
             import asyncio
@@ -910,10 +1011,14 @@ if __name__ == "__main__":
                 model_manager = ModelManager()
                 consolidator = MemoryConsolidator(model_manager)
 
-                # Check Obsidian sources
+                # Check Obsidian sources (3-tier: monthly + weekly + daily)
+                from config.app_config import NARRATIVE_MONTHLIES_COUNT, NARRATIVE_WEEKLIES_COUNT, NARRATIVE_DAILIES_COUNT
+
                 print("Checking Obsidian vault...")
-                obsidian_weeklies = consolidator._read_obsidian_weekly_summaries(limit=2)
-                obsidian_dailies = consolidator._read_obsidian_daily_notes(limit=7)
+                obsidian_monthlies = consolidator._read_obsidian_monthly_summaries(limit=NARRATIVE_MONTHLIES_COUNT)
+                obsidian_weeklies = consolidator._read_obsidian_weekly_summaries(limit=NARRATIVE_WEEKLIES_COUNT)
+                obsidian_dailies = consolidator._read_obsidian_daily_notes(limit=NARRATIVE_DAILIES_COUNT)
+                print(f"  - Obsidian monthly summaries: {len(obsidian_monthlies)}")
                 print(f"  - Obsidian weekly summaries: {len(obsidian_weeklies)}")
                 print(f"  - Obsidian daily notes: {len(obsidian_dailies)}")
 
@@ -951,7 +1056,7 @@ if __name__ == "__main__":
                 print(f"  - Corpus monthly-range summaries: {len(corpus_monthlies)}")
 
                 # Check if we have any content
-                if not obsidian_weeklies and not obsidian_dailies and not corpus_weeklies and not corpus_monthlies:
+                if not obsidian_monthlies and not obsidian_weeklies and not obsidian_dailies and not corpus_weeklies and not corpus_monthlies:
                     print("\n✗ No content available for synthesis.")
                     print("  Generate daily notes first: python main.py daily-note")
                     return False

@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: claude-opus-4.6
+  active: sonnet-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -125,7 +125,7 @@ features:
   best_of_duel_mode: false
 web_search:
   enabled: true
-  api_key: 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
+  api_key: ''
   timeout_s: 30.0
   max_content_chars: 10000
   daily_credit_limit: 100
@@ -139,21 +139,29 @@ agentic_search:
   enabled: true
   max_rounds: 5
   context_budget_tokens: 8000
-  compression_model: gpt-4o-mini
+  compression_model: sonnet-4.5
   prefer_native_tools: true
 daily_notes:
   enabled: true
   folder: Vault/Daily Notes and To Do's
-  model: gpt-4o-mini
+  model: sonnet-4.5
   max_tokens: 800
   weekly_enabled: true
-  weekly_model: gpt-4o-mini
+  weekly_model: sonnet-4.5
   weekly_max_tokens: 1200
+  monthly_enabled: true
+  monthly_model: sonnet-4.5
+  monthly_max_tokens: 2000
 tag_generation:
   enabled: true
-  model: gpt-4o-mini
+  model: sonnet-4.5
   max_tags: 10
   min_tags: 3
+narrative_context:
+  enabled: true
+  weeklies_count: 3
+  monthlies_count: 1
+  dailies_count: 6
 intent_classifier:
   enabled: true
   stm_refinement_threshold: 0.5

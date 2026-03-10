@@ -314,6 +314,54 @@ def _run_weekly_notes_catchup():
     print("[WeeklyNotes] Started background catch-up check...")
 
 
+def _run_monthly_notes_catchup():
+    """
+    Run monthly notes catch-up in background thread.
+    Step 1: Migrate legacy weekly folders into monthly parents (sync).
+    Step 2: Generate last month's summary if complete and missing (async).
+    Non-blocking - errors are logged but don't affect GUI startup.
+    """
+    import threading
+    import asyncio
+
+    def _catchup_task():
+        try:
+            from config.app_config import MONTHLY_NOTES_ENABLED
+            if not MONTHLY_NOTES_ENABLED:
+                return
+
+            from utils.monthly_notes_generator import MonthlyNotesGenerator
+
+            generator = MonthlyNotesGenerator()
+
+            # Step 1: Migrate weekly folders to monthly parents (sync, no event loop)
+            migrated = generator.migrate_weekly_folders_to_monthly()
+            if migrated > 0:
+                print(f"[MonthlyNotes] Migrated {migrated} weekly folder(s) into monthly parents")
+
+            # Step 2: Generate last month's summary if complete (async)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                result = loop.run_until_complete(generator.generate_last_month_if_complete())
+                if result and result.success:
+                    print(f"[MonthlyNotes] Catch-up: Generated {result.month_name} {result.year} summary ({result.daily_notes_found} daily notes)")
+                elif result and result.skipped_reason:
+                    print(f"[MonthlyNotes] Catch-up: Skipped ({result.skipped_reason})")
+            finally:
+                loop.close()
+
+        except Exception as e:
+            # Non-critical: log and continue
+            print(f"[MonthlyNotes] Catch-up failed (non-critical): {e}")
+
+    # Run in background thread so it doesn't block GUI startup
+    thread = threading.Thread(target=_catchup_task, daemon=True)
+    thread.start()
+    print("[MonthlyNotes] Started background catch-up check...")
+
+
 def _launch_wizard_ui(orchestrator, share, server_name, port):
     """
     Launch the onboarding wizard UI for first-run users.
@@ -522,6 +570,10 @@ def launch_gui(orchestrator, force_wizard=False):
     # ------- Weekly notes catch-up (run in background) -------
     # Generates last week's summary if week is complete (today is Monday+)
     _run_weekly_notes_catchup()
+
+    # ------- Monthly notes catch-up (run in background) -------
+    # Migrates weekly folders into monthly parents, generates last month's summary
+    _run_monthly_notes_catchup()
 
     # ------- Normal chat UI (non-first-run) -------
     def get_summary_status():
@@ -732,7 +784,10 @@ def launch_gui(orchestrator, force_wizard=False):
         except Exception as e:
             return f"Error reading app log: {e}"
 
-    async def submit_chat(user_text, chat_history, files, use_raw_gpt, enable_citations_flag, personality, debug_entries):
+    async def submit_chat(user_text, chat_history, files, use_raw_gpt, enable_citations_flag, fast_mode, personality, debug_entries):
+        import logging
+        logger = logging.getLogger("gradio_gui")
+        logger.warning(f"[SUBMIT_CHAT] ENTRY - fast_mode={fast_mode}, type={type(fast_mode)}")
         personality_manager.switch_personality(personality)
 
         # Update orchestrator citation mode
@@ -767,7 +822,8 @@ def launch_gui(orchestrator, force_wizard=False):
             history=chat_history,
             use_raw_gpt=use_raw_gpt,
             orchestrator=orchestrator,
-            personality=personality
+            personality=personality,
+            fast_mode=fast_mode
         )
 
         # Prime the first fetch task
@@ -990,9 +1046,10 @@ def launch_gui(orchestrator, force_wizard=False):
                 sync_status_md = gr.Markdown(value="", elem_id="sync_status")
 
                 with gr.Row():
-                    files = gr.File(file_types=[".txt", ".docx", ".csv", ".py", ".png", ".jpg", ".jpeg", ".gif", ".webp"], file_count="multiple", label="Files & Images")
+                    files = gr.File(file_types=[".txt", ".docx", ".csv", ".py", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"], file_count="multiple", label="Files & Images")
                     use_raw = gr.Checkbox(label="Bypass Memory (Raw GPT)", value=False)
                     enable_citations = gr.Checkbox(label="Enable Memory Citations", value=False, info="Show which memories Claude references")
+                    fast_mode = gr.Checkbox(label="⚡ Fast Mode", value=False, info="Reduced context for mobile/slow connections (~2x faster)")
                     personality = gr.Dropdown(
                         label="Personality",
                         choices=list(personality_manager.personalities.keys()),
@@ -1021,7 +1078,7 @@ def launch_gui(orchestrator, force_wizard=False):
 
                 submit_button.click(
                     submit_chat,
-                    inputs=[user_input, chat_state, files, use_raw, enable_citations, personality, debug_state],
+                    inputs=[user_input, chat_state, files, use_raw, enable_citations, fast_mode, personality, debug_state],
                     outputs=[chatbot, chat_state, user_input, debug_state, typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md],
                 )
 
@@ -1044,10 +1101,15 @@ def launch_gui(orchestrator, force_wizard=False):
 
                         if result.errors:
                             return f"⚠️ Sync completed with errors: {', '.join(result.errors)}"
-                        elif result.embedded_files == 0 and result.skipped_files > 0:
-                            return f"✓ All {result.skipped_files} notes already synced"
+                        elif result.embedded_files == 0 and result.updated_files == 0 and result.skipped_files > 0:
+                            return f"✓ All {result.skipped_files} notes unchanged"
                         else:
-                            return f"✅ Synced {result.embedded_files} new notes ({result.total_chunks} chunks) in {result.duration_seconds:.1f}s. Skipped {result.skipped_files} existing."
+                            parts = []
+                            if result.embedded_files:
+                                parts.append(f"{result.embedded_files} new")
+                            if result.updated_files:
+                                parts.append(f"{result.updated_files} updated")
+                            return f"✅ Synced {', '.join(parts)} notes ({result.total_chunks} chunks) in {result.duration_seconds:.1f}s. Skipped {result.skipped_files} unchanged."
                     except Exception as e:
                         return f"❌ Sync failed: {str(e)}"
 
@@ -1673,7 +1735,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
                     _current_active = _mm.get_active_model_name() or (_model_choices[0] if _model_choices else 'gpt-4-turbo')
                 except (AttributeError, TypeError, KeyError):
-                    _model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.5']
+                    _model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5']
                     _current_active = 'gpt-5.1'
 
                 with gr.Row():
@@ -1845,7 +1907,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _local_models = list(getattr(_mm, 'models', {}).keys())
                     _all_model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
                 except (AttributeError, TypeError):
-                    _all_model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.5', 'gpt-4o', 'gpt-4o-mini']
+                    _all_model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5', 'gpt-4o', 'gpt-4o-mini']
 
                 _m1_value = _gens_default[0] if len(_gens_default) > 0 else (_all_model_choices[0] if _all_model_choices else None)
                 # Pick a second default different from the first, if possible
@@ -2057,8 +2119,12 @@ def launch_gui(orchestrator, force_wizard=False):
         )
 
     # --- Configure queue with timeout ---
-    # Set max_size to allow long-running streaming responses (120s timeout)
-    demo.queue(default_concurrency_limit=10, max_size=120)
+    # Configure for mobile compatibility: api_open keeps SSE alive during slow prepare_prompt
+    demo.queue(
+        default_concurrency_limit=10,
+        max_size=120,
+        api_open=True  # Keep API connections open during long context building (mobile fix)
+    )
 
     # --- Launch logic with graceful fallback ---
     # prevent_thread_lock so we can inspect URLs or handle fallback
@@ -2078,13 +2144,19 @@ def launch_gui(orchestrator, force_wizard=False):
         add_health_endpoint(app, orchestrator)
 
         # Print URLs for visibility
+        logger = logging.getLogger("gui.launch")
         print(f"[GUI] Local:  {local_url}")
+        logger.warning(f"[GUI] Local:  {local_url}")
         print(f"[GUI] Health: {local_url}/health")
+        logger.warning(f"[GUI] Health: {local_url}/health")
         if SHARE and share_url:
             print(f"[GUI] Public: {share_url}")
+            logger.warning(f"[GUI] Public: {share_url}")
             print(f"[GUI] Health: {share_url}/health")
+            logger.warning(f"[GUI] Share Health: {share_url}/health")
         elif SHARE and not share_url:
             print("[GUI] Requested share=True but no share URL returned.")
+            logger.warning("[GUI] Requested share=True but no share URL returned.")
 
         # Robust browser opening for frozen executable (handles icon launch)
         # Uses platform-specific commands which are more reliable than webbrowser module
@@ -2108,9 +2180,13 @@ def launch_gui(orchestrator, force_wizard=False):
 
     except Exception as e:
         # If public tunnel requested but failed (common with SSL/proxy), fall back to local
+        logger = logging.getLogger("gui.launch")
         print(f"[GUI] Launch error: {e}")
+        logger.error(f"[GUI] Launch error: {e}")
         if SHARE:
             print("[GUI] Falling back to local (share=False). "
+                  "Tip: set GRADIO_SHARE=0 to skip public tunnel.")
+            logger.warning("[GUI] Falling back to local (share=False). "
                   "Tip: set GRADIO_SHARE=0 to skip public tunnel.")
             app, local_url, _ = demo.launch(
                 server_name=SERVER_NAME,

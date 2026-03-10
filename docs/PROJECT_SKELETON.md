@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-02-15
+**Last Updated**: 2026-03-10
 
 ---
 
@@ -1307,8 +1307,9 @@ agentic_search:
 
 **Key Components**:
 
-**gui/handlers.py** - Event handlers, streaming relay, and agentic routing
+**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[ENHANCED 2026-03-10]**
 - `handle_submit()` → Main async generator yielding response chunks to GUI
+  - **Fast Mode** [NEW 2026-03-10]: When `fast_mode=True`, temporarily reduces retrieval limits (PROMPT_MAX_MEMS→10, PROMPT_MAX_RECENT→5, PROMPT_MAX_SEMANTIC→8), sets `context_gatherer._fast_mode` and `hybrid_retriever._fast_mode`. Yields progress keepalive messages ("Thinking...", "Analyzing context...", etc.) every 2s during `prepare_prompt()` to prevent mobile timeouts. All overrides restored in `finally` block.
   - **Agentic Search Path** (NEW 2026-01):
     - Quick filter skips casual acknowledgments (< 5 words, "nice", "thanks", etc.)
     - Calls `analyze_for_web_search_llm()` to decide if search needed
@@ -1568,12 +1569,13 @@ from config.app_config import config
 **Key Methods**:
 - `generate(prompt, model_alias, stream)` → async response
 - `_get_client(provider)` → Provider-specific client
-- `_map_alias_to_model(alias)` → "gpt-4o-mini" → "gpt-4o-mini"
+- `_map_alias_to_model(alias)` → e.g., "sonnet-4.6" → "anthropic/claude-sonnet-4.6" **[NEW 2026-03-10]**
+
+**Model Aliases** (includes `sonnet-4.6` added 2026-03-10):
+- All routing goes through OpenRouter base URL
 
 **Environment Variables**:
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `OPENROUTER_API_KEY`
+- `OPENAI_API_KEY` (used for OpenRouter — single key for all providers)
 
 ---
 
@@ -1902,14 +1904,15 @@ WebSearchDecision(
 
 ---
 
-### 2.12.3 knowledge/obsidian_manager.py (Personal Notes Integration) **[ENHANCED 2026-01-30]**
-**Purpose**: Parse, embed, and retrieve user's personal notes from Obsidian vault with multimodal image support
+### 2.12.3 knowledge/obsidian_manager.py (Personal Notes Integration) **[ENHANCED 2026-03-10]**
+**Purpose**: Parse, embed, and retrieve user's personal notes from Obsidian vault with multimodal image support and mtime-based change detection
 
 **Data Classes**:
-- `EmbedResult`: Statistics from vault embedding (total_files, embedded_files, chunks, errors, duration)
+- `EmbedResult`: Statistics from vault embedding (total_files, embedded_files, chunks, errors, duration, updated_files)
 
 **Key Methods**:
-- `embed_vault(force_reindex)` → `EmbedResult`: Index vault to ChromaDB
+- `embed_vault(force_reindex)` → `EmbedResult`: Index vault to ChromaDB (mtime-based change detection for re-embedding)
+- `_delete_file_chunks(file_path)`: Delete old chunks by file_path metadata filter before re-embedding **[NEW 2026-03-10]**
 - `get_notes(query, limit, include_images, max_images_per_note)` → `List[Dict]`: Hybrid retrieval (1/3 keyword + 2/3 semantic)
 - `_keyword_search(query, limit)` → `List[Dict]`: Title/tag/content/file_path keyword matching **[ENHANCED 2026-01-30]**
 - `get_vault_stats()` → `Dict`: Index statistics
@@ -2322,16 +2325,20 @@ tags: [daily, daemon-generated, coding, productivity, learning, focused] **[ENHA
 - Written from Daemon's perspective ("Today we...", "Luke seemed...")
 - Extracts Main Quest vs Side Quests (RPG-style framing)
 - Tracks emotional state throughout the day
-- Uses `gpt-4o-mini` with 800 max tokens
+- Uses `sonnet-4.5` with 800 max tokens
+
+**Folder Structure** **[UPDATED 2026-03-10]**:
+Notes now use a 3-level hierarchy: `<Month YYYY>/<Week N Mon YYYY>/<filename>` instead of flat `<Week N Mon YYYY>/`.
+`note_exists()` checks all 3 locations (flat, weekly-at-root, monthly/weekly) for backward compatibility.
 
 **Configuration** (`config/app_config.py`):
 ```python
 DAILY_NOTES_ENABLED = True
 DAILY_NOTES_FOLDER = "Vault/Daily Notes and To Do's"
-DAILY_NOTES_MODEL = "gpt-4o-mini"
+DAILY_NOTES_MODEL = "sonnet-4.5"   # was gpt-4o-mini [UPDATED 2026-03-10]
 DAILY_NOTES_MAX_TOKENS = 800
 TAG_GENERATION_ENABLED = True  **[NEW 2026-01-22]**
-TAG_GENERATION_MODEL = "gpt-4o-mini"  **[NEW 2026-01-22]**
+TAG_GENERATION_MODEL = "sonnet-4.5"  # was gpt-4o-mini [UPDATED 2026-03-10]
 TAG_GENERATION_MAX_TAGS = 10  **[NEW 2026-01-22]**
 TAG_GENERATION_MIN_TAGS = 3  **[NEW 2026-01-22]**
 ```
@@ -2375,14 +2382,16 @@ TAG_GENERATION_MIN_TAGS = 3  **[NEW 2026-01-22]**
 - `_move_daily_notes_to_week_folder(notes, week_folder)`: Organize notes into folders
 - `_parse_daily_note(path)` → `Dict`: Read and parse daily note (frontmatter + content)
 
-**Week Folder Structure**:
+**Folder Structure** **[UPDATED 2026-03-10]**:
 ```
 Obsidian vault/
 └── Daily Notes and To Do's/
-    └── Week 3 Jan 2026/
-        ├── 1 13 26 Daily Note.md
-        ├── 1 14 26 Daily Note.md
-        └── Week 3 Jan 2026 Summary.md
+    └── January 2026/                    # Monthly parent folder [NEW 2026-03-10]
+        └── Week 3 Jan 2026/
+            ├── 1 13 26 Daily Note.md
+            ├── 1 14 26 Daily Note.md
+            └── Week 3 Jan 2026 Summary.md
+        └── January 2026 Summary.md     # Monthly summary [NEW 2026-03-10]
 ```
 
 **Note Structure** (Obsidian-compatible markdown):
@@ -2421,18 +2430,51 @@ tags: [weekly, daemon-generated, work, study, productivity, learning, health, ex
 - `python main.py weekly-note --force` - Overwrite existing
 - `python main.py weekly-note-catchup` - Generate last week if missing
 
+**Folder Structure** **[UPDATED 2026-03-10]**:
+Notes now use monthly parent folders: `<Month YYYY>/<Week N Mon YYYY>/`. Weekly generator searches 3 paths for daily notes: flat (legacy), weekly-at-root (legacy), monthly/weekly (new).
+
 **Configuration** (`config/app_config.py`):
 ```python
 WEEKLY_NOTES_ENABLED = True
-WEEKLY_NOTES_MODEL = "gpt-4o-mini"
+WEEKLY_NOTES_MODEL = "sonnet-4.5"   # was gpt-4o-mini [UPDATED 2026-03-10]
 WEEKLY_NOTES_MAX_TOKENS = 1200
 ```
 
 **Integration**:
-- Writes to Obsidian vault at `OBSIDIAN_VAULT_PATH / DAILY_NOTES_FOLDER / Week N Month Year/`
+- Writes to Obsidian vault at `OBSIDIAN_VAULT_PATH / DAILY_NOTES_FOLDER / <Month YYYY> / Week N Month Year/`
 - Week summaries can be read by narrative context generator
 - Atomic file writes (temp → replace pattern)
 - **Tag generation** [NEW 2026-01-22]: Analyzes aggregated weekly content using TagGenerator to extract 5-10 contextual tags capturing recurring themes, patterns, and activities
+
+---
+
+### 2.12.6b utils/monthly_notes_generator.py (Auto-Generated Monthly Summaries) **[NEW 2026-03-10]**
+**Purpose**: Generate monthly summary notes from daily notes, organize weekly folders into monthly parent folders
+
+**Key Methods**:
+- `generate_for_month(year, month, force)` → Generate monthly summary from daily notes in that month
+- `migrate_weekly_folders()` → Move legacy root-level `Week N` folders into `<Month YYYY>/` parents
+- `_find_daily_notes_for_month(year, month)` → Find all daily notes within month range
+
+**Monthly Summary Structure**:
+- LLM-synthesized from all daily notes in the month
+- Covers: month overview, major themes, emotional arc, accomplishments, open threads
+
+**CLI Commands** (`main.py`):
+- `python main.py monthly-note` - Generate for last month
+- `python main.py monthly-note 2026-02` - Generate for specific month (YYYY-MM)
+- `python main.py monthly-note --force` - Overwrite existing
+- `python main.py monthly-note-catchup` - Migrate weekly folders + generate last month
+- `python main.py migrate-monthly` - Just run weekly-to-monthly folder migration
+
+**Configuration** (`config/app_config.py`):
+```python
+MONTHLY_NOTES_ENABLED = True
+MONTHLY_NOTES_MODEL = "sonnet-4.5"
+MONTHLY_NOTES_MAX_TOKENS = 2000
+```
+
+**GUI Startup**: `_run_monthly_notes_catchup()` runs in background thread on GUI launch — migrates legacy weekly folders, then generates last month's summary if complete.
 
 ---
 
@@ -2541,7 +2583,7 @@ TAG_GENERATION_MIN_TAGS = 3
 ---
 
 ### 2.14 memory/memory_consolidator.py (Summarization + Narrative Synthesis)
-**Purpose**: LLM-based conversation summarization and narrative context synthesis
+**Purpose**: LLM-based conversation summarization and 3-tier narrative context synthesis (monthly/weekly/daily)
 
 **Trigger**: Every N conversations (default 20) at shutdown
 
@@ -2549,20 +2591,22 @@ TAG_GENERATION_MIN_TAGS = 3
 ```python
 1. Collect last N unsummarized conversations
 2. Build summarization prompt
-3. Call LLM (default: gpt-4o-mini)
+3. Call LLM (default: sonnet-4.5)
 4. Store summary as SUMMARY memory type
 5. Link to parent conversations
 ```
 
 **Key Methods**:
 - `consolidate_memories(conversations, max_tokens)` → async summary
-- `generate_narrative_context(weeklies, monthlies)` → async narrative synthesis **[NEW 2026-01-17]**
-- `_read_obsidian_weekly_summaries(limit)` → List[Dict] from Obsidian vault
-- `_read_obsidian_daily_notes(limit)` → List[Dict] from Week * folders only
+- `generate_narrative_context(weeklies, monthlies)` → async narrative synthesis **[ENHANCED 2026-03-10]**
+- `_read_obsidian_monthly_summaries(limit)` → List[Dict] from `<Month YYYY> Summary.md` files **[NEW 2026-03-10]**
+- `_read_obsidian_weekly_summaries(limit)` → List[Dict] from Obsidian vault (searches both root-level and monthly-parent folders)
+- `_read_obsidian_daily_notes(limit)` → List[Dict] from weekly folders (searches both root and monthly parent paths)
 
-**Narrative Context Synthesis** [NEW 2026-01-17]:
-Generates a "Current Life State" narrative from daily/weekly notes for temporal grounding.
-- Primary source: Obsidian daily notes + weekly summaries
+**Narrative Context Synthesis** [ENHANCED 2026-03-10]:
+Generates a "Current Life State" narrative from 3-tier notes (monthly/weekly/daily) for temporal grounding.
+- Primary source: Obsidian monthly summaries + weekly summaries + daily notes
+- Monthly for arc, weekly for active threads, daily for recent shifts
 - Fallback: Corpus summaries
 - Output: ~300 word synthesis covering life chapter, active threads, emotional trajectory, recurring themes
 - Cached to `./data/narrative_context.txt` (0ms retrieval latency)
@@ -2570,9 +2614,9 @@ Generates a "Current Life State" narrative from daily/weekly notes for temporal 
 
 ---
 
-### 2.14.1 Narrative Context System (Temporal Grounding) **[NEW 2026-01-17]**
+### 2.14.1 Narrative Context System (Temporal Grounding) **[ENHANCED 2026-03-10]**
 
-**Purpose**: Provide trajectory-aware context by synthesizing daily/weekly notes into a cached "Life State" narrative.
+**Purpose**: Provide trajectory-aware context by synthesizing monthly/weekly/daily notes into a cached "Life State" narrative.
 
 **Architecture Decision**: Background cached updates (not per-query synthesis)
 ```
@@ -2580,14 +2624,15 @@ Per-Query Synthesis: +3-5s latency, ~5k tokens/query  ❌
 Background Cached:   0ms latency, ~500 tokens/query   ✅
 ```
 
-**Data Sources (Hybrid)**:
+**Data Sources (3-Tier Hierarchy)** **[UPDATED 2026-03-10]**:
 | Source | Priority | Count | Location |
 |--------|----------|-------|----------|
-| Obsidian Weekly Summaries | Primary | 2 | `Week */Week * Summary.md` |
-| Obsidian Daily Notes | Primary | 7 | `Week */*Daily Note.md` |
+| Obsidian Monthly Summaries | Primary | 1 | `<Month YYYY>/<Month YYYY> Summary.md` |
+| Obsidian Weekly Summaries | Primary | 3 | `<Month YYYY>/Week */Week * Summary.md` (+ root-level legacy) |
+| Obsidian Daily Notes | Primary | 6 | `<Month YYYY>/Week */*Daily Note.md` (+ root-level legacy) |
 | Corpus Summaries | Fallback | 3-5 | `corpus_v4.json` summaries |
 
-**Note**: Only reads daily notes from `Week *` folders (new system created 2026-01-15). Older notes in root folder excluded - they're searchable via `[PERSONAL NOTES]`.
+**Note**: Reads daily/weekly notes from both monthly-parent and root-level (legacy) paths for backward compatibility.
 
 **Output Structure**:
 ```markdown
@@ -2628,7 +2673,10 @@ Patterns across multiple time periods...
 NARRATIVE_CONTEXT_ENABLED = True      # Feature toggle
 NARRATIVE_CONTEXT_PATH = "./data/narrative_context.txt"
 NARRATIVE_MAX_TOKENS = 500            # Hard cap in prompt
-NARRATIVE_SYNTHESIS_MODEL = "gpt-4o-mini"
+NARRATIVE_SYNTHESIS_MODEL = "sonnet-4.5"  # was gpt-4o-mini [UPDATED 2026-03-10]
+NARRATIVE_WEEKLIES_COUNT = 3          # was 4 [UPDATED 2026-03-10]
+NARRATIVE_MONTHLIES_COUNT = 1         # [NEW 2026-03-10]
+NARRATIVE_DAILIES_COUNT = 6           # [NEW 2026-03-10]
 ```
 
 ---
@@ -3190,7 +3238,7 @@ CODE_PROPOSALS_MAX_PER_SESSION = 5
 CODE_PROPOSALS_DEDUP_THRESHOLD = 0.70
 
 # File Upload [ENHANCED 2026-02-10]
-FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.docx', '.csv', '.py', '.png', '.jpg', '.jpeg', '.gif', '.webp']
+FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.docx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']  # .pdf added [2026-03-10]
 FILE_UPLOAD_IMAGE_DIR = "data/uploads"
 PROMPT_MAX_USER_UPLOADS = 5
 ```
@@ -3466,12 +3514,13 @@ daemon/
 │   ├── query_rewriter.py      # Query expansion for retrieval
 │   ├── keyword_matcher.py     # Keyword overlap scoring
 │   ├── logging_utils.py       # Centralized logging
-│   ├── file_processor.py      # File/image upload processing with security validation [ENHANCED 2026-02-10]
+│   ├── file_processor.py      # File/image/PDF upload processing with security validation [ENHANCED 2026-03-10]
 │   ├── health_check.py        # Docker/K8s health endpoint
 │   ├── conversation_logger.py # Conversation persistence
 │   ├── web_search_trigger.py  # Web search detection (LLM-first + heuristics) [ENHANCED 2026-01]
-│   ├── daily_notes_generator.py # Auto-generated daily summaries [ENHANCED 2026-01-22]
-│   ├── weekly_notes_generator.py # Auto-generated weekly summaries [ENHANCED 2026-01-22]
+│   ├── daily_notes_generator.py # Auto-generated daily summaries with monthly folder hierarchy [ENHANCED 2026-03-10]
+│   ├── weekly_notes_generator.py # Auto-generated weekly summaries with monthly folder hierarchy [ENHANCED 2026-03-10]
+│   ├── monthly_notes_generator.py # Auto-generated monthly summaries from daily notes [NEW 2026-03-10]
 │   └── tag_generator.py       # LLM-based tag generation for notes [NEW 2026-01-22]
 │
 ├── knowledge/
@@ -3854,8 +3903,9 @@ python main.py inspect-summaries
 | query_checker.py | Analyze: heavy topics, thread detection, temporal windows |
 | hybrid_retriever.py | Retrieve: query rewrite + semantic + keyword scoring |
 | time_manager.py | Utils: timestamps and temporal decay calculations |
-| daily_notes_generator.py | Generate: daily summaries with Life Events + tags [ENHANCED 2026-01-22] |
-| weekly_notes_generator.py | Organize: weekly folders + summaries + tags [ENHANCED 2026-01-22] |
+| daily_notes_generator.py | Generate: daily summaries with Life Events + tags, monthly folder hierarchy [ENHANCED 2026-03-10] |
+| weekly_notes_generator.py | Organize: monthly/weekly folders + summaries + tags [ENHANCED 2026-03-10] |
+| monthly_notes_generator.py | Generate: monthly summaries from daily notes [NEW 2026-03-10] |
 | tag_generator.py | Tags: LLM-based tag extraction for Obsidian notes (100+ vocabulary, 6 categories) [NEW 2026-01-22] |
 | git_memory.py | Extract: Git commit history with metadata + conventional commit tagging [NEW 2026-01-27] |
 | git_memory_loader.py | Load: Backfill/incremental sync of git commits to PROCEDURAL ChromaDB [NEW 2026-01-27] |
