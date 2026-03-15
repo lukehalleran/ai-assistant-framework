@@ -763,6 +763,77 @@ class ContextGatherer:
             logger.warning(f"[ContextGatherer] Failed to get procedural skills: {e}")
             return []
 
+    async def get_graph_context(self, query: str, max_sentences: int = 12) -> List[str]:
+        """Retrieve knowledge graph context for entities mentioned in the query.
+
+        Extracts entities from the query, traverses their graph neighborhood,
+        and returns natural language sentences describing relationships.
+
+        Args:
+            query: User query to extract entities from
+            max_sentences: Maximum sentences to return
+
+        Returns:
+            List of natural language relationship sentences
+        """
+        try:
+            from config.app_config import KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH
+            if not KNOWLEDGE_GRAPH_ENABLED:
+                return []
+
+            mc = self.memory_coordinator
+            graph = getattr(mc, "graph_memory", None)
+            resolver = getattr(mc, "entity_resolver", None)
+            if not graph or not resolver or graph.node_count() == 0:
+                return []
+
+            # Extract entity mentions from query by checking each word/phrase
+            # against the alias index
+            sentences: list[str] = []
+            seen_entities: set[str] = set()
+
+            # Try multi-word then single-word resolution
+            words = query.lower().split()
+            candidates: list[str] = []
+            # Check bigrams and trigrams first
+            for n in (3, 2):
+                for i in range(len(words) - n + 1):
+                    phrase = " ".join(words[i:i + n])
+                    candidates.append(phrase)
+            # Then single words (skip stopwords)
+            _STOPWORDS = {"the", "a", "an", "is", "are", "was", "were", "do", "does",
+                          "did", "have", "has", "had", "what", "who", "where", "when",
+                          "how", "why", "about", "with", "from", "for", "and", "or",
+                          "but", "not", "to", "in", "on", "at", "of", "my", "your",
+                          "i", "me", "you", "we", "they", "it", "this", "that", "can",
+                          "will", "would", "should", "could", "tell", "know", "think"}
+            for w in words:
+                if w not in _STOPWORDS and len(w) > 2:
+                    candidates.append(w)
+
+            for mention in candidates:
+                eid = resolver.resolve(mention)
+                if eid and eid not in seen_entities:
+                    seen_entities.add(eid)
+                    ctx = graph.get_context_sentences(
+                        eid, depth=KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH,
+                        max_sentences=max_sentences - len(sentences),
+                    )
+                    sentences.extend(ctx)
+                    if len(sentences) >= max_sentences:
+                        break
+
+            if sentences:
+                logger.debug(
+                    f"[ContextGatherer] Graph context: {len(sentences)} sentences "
+                    f"for entities {seen_entities}"
+                )
+            return sentences[:max_sentences]
+
+        except Exception as e:
+            logger.debug(f"[ContextGatherer] Graph context retrieval failed: {e}")
+            return []
+
     async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT) -> List[Dict[str, Any]]:
         """Get recent conversation memories."""
         try:
@@ -963,6 +1034,62 @@ class ContextGatherer:
             logger.warning(f"Error in _get_summaries_separate: {e}")
             return {"recent": [], "semantic": []}
 
+    def _expand_query_with_graph(self, query: str, max_terms: int = 8) -> str:
+        """Expand a query with display names of graph-connected entities.
+
+        Extracts entities from the query via alias resolution, walks 2-hop
+        edges (to traverse through hub nodes like "user" in star topologies),
+        and appends target entity display names to the query.
+        This bridges vocabulary gaps (e.g. "my brother" → "dillion").
+
+        Args:
+            query: Original user query
+            max_terms: Maximum expansion terms to append
+
+        Returns:
+            Expanded query string (original + appended terms)
+        """
+        try:
+            from config.app_config import (
+                KNOWLEDGE_GRAPH_ENABLED,
+                GRAPH_QUERY_EXPANSION_ENABLED,
+                GRAPH_QUERY_EXPANSION_MAX_TERMS,
+            )
+            if not KNOWLEDGE_GRAPH_ENABLED or not GRAPH_QUERY_EXPANSION_ENABLED:
+                return query
+
+            mc = self.memory_coordinator
+            graph = getattr(mc, "graph_memory", None)
+            resolver = getattr(mc, "entity_resolver", None)
+            if not graph or not resolver or graph.node_count() == 0:
+                return query
+
+            from memory.graph_utils import extract_graph_entities, rank_expansion_candidates
+
+            effective_max = min(max_terms, GRAPH_QUERY_EXPANSION_MAX_TERMS)
+            query_entities = extract_graph_entities(query, resolver)
+            if not query_entities:
+                return query
+
+            # Rank by connectivity (non-hub edges), filter junk, cap at max
+            expansion_terms = rank_expansion_candidates(
+                query_entities, graph, depth=2,
+                skip_ids={"user"}, max_terms=effective_max,
+            )
+            if not expansion_terms:
+                return query
+
+            expanded = query + " " + " ".join(expansion_terms)
+            logger.debug(
+                f"[ContextGatherer] Query expansion: +{len(expansion_terms)} terms "
+                f"from entities {query_entities}: {expansion_terms}"
+            )
+            return expanded
+
+        except Exception as e:
+            logger.debug(f"[ContextGatherer] Query expansion failed: {e}")
+            return query
+
     async def _get_semantic_memories(self, query: str = "", limit: int = PROMPT_MAX_MEMS) -> List[Dict[str, Any]]:
         """Get relevant memories using semantic search only."""
         try:
@@ -980,15 +1107,19 @@ class ContextGatherer:
                 logger.debug("No query provided, returning empty memories")
                 return []
 
+            # Graph-driven query expansion: append related entity names
+            expanded_query = self._expand_query_with_graph(query)
+
             # Get semantic memories with filtering
             semantic_memories = []
             try:
-                # Retrieve memories for semantic search
+                # Retrieve memories for semantic search (use expanded query)
+                search_query = expanded_query
 
-                logger.debug(f"[CONTEXT_GATHERER] About to call memory_coordinator.get_memories with query='{query[:50]}...', limit={retrieval_limit}")
+                logger.debug(f"[CONTEXT_GATHERER] About to call memory_coordinator.get_memories with query='{search_query[:50]}...', limit={retrieval_limit}")
 
                 all_memories = await self.memory_coordinator.get_memories(
-                    query, limit=retrieval_limit, topic_filter=None
+                    search_query, limit=retrieval_limit, topic_filter=None
                 )
 
                 logger.debug(f"[CONTEXT_GATHERER] Retrieved {len(all_memories)} memories from coordinator (requested {retrieval_limit})")

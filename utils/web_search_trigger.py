@@ -1,9 +1,9 @@
 # /utils/web_search_trigger.py
 """
-WebSearchTrigger - Detects when a query should trigger web search.
+WebSearchTrigger - Detects when a query should trigger web search or memory search.
 
 Module Contract:
-- Purpose: Classify queries to determine if they need real-time web information
+- Purpose: Classify queries to determine if they need real-time web information or stored memory recall
 - Inputs:
   - Query text
   - Optional: model_manager (for LLM classification)
@@ -16,6 +16,7 @@ Module Contract:
     - search_terms: List[str] (LLM-optimized queries for better results)
     - num_searches: int (parallel search count, 1-4)
     - source: str ("llm" | "heuristic" | "explicit")
+    - needs_memory_search: bool (LLM detected memory/recall intent) [NEW 2026-03-15]
 - Side effects:
   - LLM API call when using analyze_for_web_search_llm() (async)
   - None for heuristic-only path
@@ -23,7 +24,7 @@ Module Contract:
 Detection Strategy (LLM-First with Heuristic Fallback):
 1. Crisis suppression: Block search during HIGH/MEDIUM crisis levels
 2. Quick pre-filter: Skip LLM for obvious non-search queries (conversational, emotional)
-3. LLM classification: Single call returns should_search + optimized search_terms + depth
+3. LLM classification: Single call returns should_search + needs_memory_search + optimized search_terms + depth
 4. Confidence blend: 70% LLM + 30% heuristic for final decision
 5. Heuristic fallback: On LLM timeout/error, use keyword-based detection
 
@@ -86,6 +87,7 @@ class WebSearchDecision:
     search_terms: List[str] = None  # LLM-optimized search queries
     num_searches: int = 1  # Parallel search count (1-4)
     source: str = "heuristic"  # "llm" | "heuristic" | "explicit"
+    needs_memory_search: bool = False  # LLM detected memory/recall intent
 
     def __post_init__(self):
         """Initialize mutable defaults."""
@@ -116,6 +118,7 @@ class LLMSearchTriggerResponse:
     search_terms: List[str]
     search_depth: str  # "quick" | "standard" | "deep"
     num_searches: int
+    needs_memory_search: bool = False  # Whether query wants stored memories/facts/notes
 
     @classmethod
     def parse(cls, json_str: str) -> Optional['LLMSearchTriggerResponse']:
@@ -168,7 +171,8 @@ class LLMSearchTriggerResponse:
                 reason=str(data.get("reason", "")),
                 search_terms=list(data.get("search_terms", [])),
                 search_depth=search_depth,
-                num_searches=num_searches
+                num_searches=num_searches,
+                needs_memory_search=bool(data.get("needs_memory_search", False))
             )
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             logger.debug(f"[LLMSearchTriggerResponse] JSON parse error: {e}")
@@ -692,13 +696,13 @@ def _build_llm_trigger_prompt(query: str, current_date: str, remaining_credits: 
     Returns:
         Formatted prompt string for LLM
     """
-    return f"""Analyze if this query needs real-time web search and generate optimized search terms.
+    return f"""Analyze if this query needs real-time web search OR stored memory search, and generate optimized search terms.
 
 Query: "{query[:500]}"
 Current date: {current_date}
 Available search budget: {remaining_credits:.0f} credits
 
-DECISION CRITERIA:
+WEB SEARCH CRITERIA:
 - SEARCH if: current events, recent news, live data (stocks, weather, sports), time-sensitive health info, or references dates/years needing verification
 - DON'T SEARCH if: historical facts, scientific concepts, how-to guides, personal/emotional topics, or can be answered with general knowledge
 - NEVER SEARCH for:
@@ -708,6 +712,11 @@ DECISION CRITERIA:
   * Follow-up references to prior conversation ("watched it", "saw that", "just read it", "i just watched", etc.) - these refer to something already discussed, not web content
   * Comments about media the user consumed ("i just watched", "i finished reading", "just saw") - these are conversation follow-ups, not search requests
 
+MEMORY SEARCH CRITERIA (needs_memory_search):
+- TRUE if: the user wants to recall past conversations, stored facts about themselves or people they know, personal notes, uploaded documents, or anything from their history with this assistant
+- Examples: "tell me more about Flapjack", "what was that thing we discussed?", "remind me about my dog", "what do my notes say about X", "what have I told you about my job"
+- FALSE if: general knowledge question, web search query, casual chat, or creative request
+
 OUTPUT (JSON only, no markdown):
 {{
   "should_search": true or false,
@@ -715,7 +724,8 @@ OUTPUT (JSON only, no markdown):
   "reason": "brief explanation",
   "search_terms": ["optimized query 1", "optimized query 2"],
   "search_depth": "quick" or "standard" or "deep",
-  "num_searches": 1-4
+  "num_searches": 1-4,
+  "needs_memory_search": true or false
 }}
 
 GUIDELINES:
@@ -723,6 +733,7 @@ GUIDELINES:
 - num_searches: Use 2-4 only for comparison queries or multi-faceted topics
 - search_depth: "quick" for simple facts, "standard" for news/analysis, "deep" for research
 - If not searching, return empty search_terms and num_searches: 0
+- needs_memory_search and should_search can both be false, but not both true (web vs memory are separate paths)
 
 JSON:"""
 
@@ -900,19 +911,24 @@ async def analyze_for_web_search_llm(
         logger.debug("[WebSearchTrigger] LLM failed, falling back to heuristics")
         return heuristic_result
 
-    # Heuristic veto: if heuristic is very confident there's NO search need,
-    # don't let the LLM override. This prevents false positives on deictic/follow-up queries.
-    HEURISTIC_VETO_THRESHOLD = 0.1
-    if heuristic_result.confidence <= HEURISTIC_VETO_THRESHOLD and not heuristic_result.should_search:
+    # Heuristic veto: only override LLM when heuristic has an ACTIVE reason
+    # to suppress (matched a suppression/static pattern). A confidence of 0.0
+    # with "No strong indicators" means the heuristic has no opinion — not a
+    # confident "no" — so it should not block the LLM.
+    has_active_suppression = (
+        heuristic_result.matched_patterns  # matched a suppression pattern
+        or "static topic" in heuristic_result.reason  # matched static topics
+    )
+    if has_active_suppression and not heuristic_result.should_search:
         logger.debug(
-            f"[WebSearchTrigger] Heuristic veto: conf={heuristic_result.confidence:.2f} <= {HEURISTIC_VETO_THRESHOLD}, "
-            f"LLM wanted search={llm_response.should_search} but heuristic says no"
+            f"[WebSearchTrigger] Heuristic veto: active suppression detected "
+            f"(reason={heuristic_result.reason}), LLM wanted search={llm_response.should_search} but heuristic says no"
         )
         veto_result = WebSearchDecision(
             should_search=False,
             depth=WebSearchDepth.QUICK,
             confidence=heuristic_result.confidence,
-            reason=f"Heuristic veto (conf={heuristic_result.confidence:.2f}); LLM overridden",
+            reason=f"Heuristic veto ({heuristic_result.reason}); LLM overridden",
             matched_keywords=heuristic_result.matched_keywords,
             matched_patterns=heuristic_result.matched_patterns,
             search_terms=[],
@@ -922,22 +938,26 @@ async def analyze_for_web_search_llm(
         _llm_trigger_cache[cache_key] = (time.time(), veto_result)
         return veto_result
 
-    # Blend LLM and heuristic confidence (70% LLM, 30% heuristic)
+    # Convert LLM confidence to directional search score.
+    # confidence=0.90 + should_search=False means "90% sure we DON'T need search" → search_score=0.10
+    # confidence=0.90 + should_search=True means "90% sure we DO need search" → search_score=0.90
+    llm_search_score = llm_response.confidence if llm_response.should_search else (1.0 - llm_response.confidence)
+
+    # Blend directional LLM score with heuristic confidence (70% LLM, 30% heuristic)
     llm_weight = LLM_HEURISTIC_BLEND_WEIGHT
     heuristic_weight = 1.0 - llm_weight
     blended_confidence = (
-        llm_weight * llm_response.confidence +
+        llm_weight * llm_search_score +
         heuristic_weight * heuristic_result.confidence
     )
 
     # Determine final should_search based on blended confidence
     should_search = blended_confidence >= SEARCH_CONFIDENCE_THRESHOLD
 
-    # Use LLM's should_search if it's definitive (high confidence)
-    # BUT only if heuristic doesn't strongly disagree (veto above handles extreme cases)
-    if llm_response.confidence >= 0.8 and heuristic_result.confidence >= 0.2:
-        should_search = llm_response.should_search
-    elif llm_response.confidence <= 0.2:
+    # High-confidence LLM override: if LLM is very confident (>=0.8) in either
+    # direction, trust it directly — the heuristic having no opinion (0.0)
+    # should not block a definitive LLM decision
+    if llm_response.confidence >= 0.8:
         should_search = llm_response.should_search
 
     # Map LLM depth string to enum
@@ -970,7 +990,8 @@ async def analyze_for_web_search_llm(
         matched_patterns=heuristic_result.matched_patterns,
         search_terms=llm_response.search_terms if should_search else [],
         num_searches=llm_response.num_searches if should_search else 0,
-        source="llm"
+        source="llm",
+        needs_memory_search=llm_response.needs_memory_search
     )
 
     # Cache the result to avoid duplicate LLM calls within same request

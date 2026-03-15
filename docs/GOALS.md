@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-03-10
+**Last Updated**: 2026-03-15
 
 ---
 
@@ -110,11 +110,26 @@ These systems are complete and working. Listed here for context, not as active w
 - **Agentic search**: ReAct loop with Tavily + Wolfram Alpha + E2B sandbox
 - **Production**: PyInstaller desktop build, Docker deployment, graceful shutdown
 - **Privacy**: All data local, API calls only for LLM generation, no telemetry
+- **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring
 - **Testing**: 1,670+ tests, retrieval quality benchmarks with 30 seed memories and 19 test cases
 
 ---
 
 ## Recent Completions
+
+### Broadened Agentic Gate for Memory Search (2026-03-15)
+- 3-tier agentic trigger in `gui/handlers.py`: keyword heuristic → knowledge graph entity match → LLM fallback
+- Memory keyword list (20 phrases): "do you remember", "my notes", "search your memory", etc.
+- Entity match via `extract_graph_entities()`: queries mentioning known entities (Flapjack, Auggie, etc.) auto-route to agentic memory search
+- LLM `needs_memory_search` field added to `WebSearchDecision` — piggybacks on existing web search trigger call (zero extra cost)
+- Fixed casual skip filter: `'no'` prefix was matching `'now'` (startswith bug); entity/keyword checks now run before skip filter
+- `skip_initial_search=True` for memory queries — skips web search, ReAct loop goes straight to `search_memory` tool
+
+### Smarter Query Expansion + Junk Node Prevention (2026-03-15)
+- `rank_expansion_candidates()` in `graph_utils.py` — ranks expansion terms by lateral connectivity (non-hub edge count) instead of name length. Real entities (Flapjack=8 edges) now rank above junk phrases ("coffee"=0 edges).
+- `_is_expansion_junk()` — filters temporal ("2 years"), measurements ("5'11\""), verb phrases ("stopped being religious"), 4+ word names from expansion results
+- Tightened `_is_graph_worthy_object()` in `memory_storage.py` — prevents new junk nodes at ingestion: temporal/duration, measurements, verb-phrase objects now stored as subject-node metadata instead of creating graph nodes
+- 50 graph integration tests (was 37), 70 knowledge graph tests — all passing
 
 ### Monthly Notes + 3-Tier Hierarchy (2026-03-10)
 - 3-level folder structure: `<Month YYYY>/<Week N Mon YYYY>/<filename>` with legacy path compatibility

@@ -127,6 +127,8 @@ class MemoryRetriever:
 # memory/memory_scorer.py — Scoring and ranking
 class MemoryScorer:
     _intent_weight_overrides: Optional[Dict[str, float]] = None  # Set by PromptBuilder [NEW 2026-02-15]
+    _graph_memory = None          # Set by PromptBuilder for graph-boosted scoring [NEW 2026-03]
+    _entity_resolver = None       # Set by PromptBuilder for entity extraction [NEW 2026-03]
 
     def rank_memories(memories, query, current_topic=None, weight_overrides=None) -> List[Dict]:
         """
@@ -149,7 +151,7 @@ class MemoryScorer:
         """Base 0.5 + length/question/keyword bonuses, capped at 1.0"""
 
 
-# memory/shutdown_processor.py — Session-end processing [ENHANCED 2026-02-13]
+# memory/shutdown_processor.py — Session-end processing [ENHANCED 2026-03]
 class ShutdownProcessor:
     def __init__(..., memory_coordinator=None):
         """memory_coordinator enables pipeline-enriched proposal generation."""
@@ -157,7 +159,7 @@ class ShutdownProcessor:
     async def process_shutdown_memory(session_conversations=None):
         """Steps: 1) block summaries, 2) session facts, 3) LLM facts,
         4) procedural skills, 5) code proposals, 6) cross-dedup (dry_run=True only),
-        7) user profile updates"""
+        7) user profile updates (user-only facts; entity facts stay in ChromaDB only)"""
 
     async def _run_cross_collection_dedup():
         """Dry-run only — logs findings but NEVER deletes. Guarded to run once per process."""
@@ -764,29 +766,86 @@ class MemoryConsolidator:
         return summary
 
 
-# memory/fact_extractor.py
+# memory/fact_extractor.py [ENHANCED 2026-03: entity facts]
 class FactExtractor:
-    def extract_facts(conversation: Dict) -> List[Dict]:
+    def extract_facts(query, response, conversation_context) -> List[MemoryNode]:
         """
-        1. Try regex patterns (fast):
-           - "X is Y"
-           - "X does Y"
-           - Entity definitions
-        2. Fallback to LLM if complex
+        Multi-stage extraction with dual-budget system:
+        1. Correction detection (0.9+ confidence): "I'm X, not Y", "actually X"
+        2. spaCy dependency parsing for SRO triples
+        3. REBEL neural extraction (if enabled)
+        4. Regex fallback patterns
+
+        Dual budget [NEW 2026-03]:
+        - User facts (subject="user"): capped at USER_FACTS_PER_TURN_CAP (6)
+        - Entity facts (subject=entity name): capped at ENTITY_FACTS_PER_TURN_CAP (4)
+        - Entity facts require ENTITY_FACT_MIN_CONFIDENCE (0.55)
+        - Entity metadata: fact_scope, entity_type (spaCy NER), user_connection
         """
-        text = f"{conversation['query']} {conversation['response']}"
-        facts = []
 
-        # Regex patterns
-        is_pattern = re.findall(r'(\w+(?:\s+\w+)?)\s+is\s+(.+?)(?:\.|$)', text)
-        for entity, definition in is_pattern:
-            facts.append({'entity': entity, 'fact': f"is {definition}", 'confidence': 0.8})
+# Helper functions [NEW 2026-03]:
+def _detect_entity_type(subject, nlp) -> str:
+    """spaCy NER → PERSON, ORG, GPE, PRODUCT, WORK_OF_ART, or UNKNOWN"""
 
-        # LLM fallback if needed
-        if not facts and self.use_llm:
-            facts = await self.llm_fact_extractor.extract(text)
+def _detect_user_connection(subject, source_text) -> Optional[str]:
+    """Regex: 'my X', 'X is my', 'X, my' → "user's boss" etc."""
+```
 
-        return facts
+---
+
+## Knowledge Graph [NEW 2026-03]
+
+```python
+# memory/graph_models.py — Pydantic data models
+class GraphNode(BaseModel):
+    entity_id: str; display_name: str; entity_type: str = ""; metadata: Dict = {}
+class GraphEdge(BaseModel):
+    source_id: str; target_id: str; relation: str; weight: float = 1.0
+    def to_natural_language() -> str:  # "Luke has brother Dillion"
+
+# memory/graph_memory.py — NetworkX DiGraph wrapper
+class GraphMemory:
+    add_entity(node: GraphNode)          # Upsert (merges metadata)
+    add_edge(edge: GraphEdge)            # Add or strengthen weight
+    get_entity(entity_id) -> GraphNode
+    neighbors(entity_id, depth=1) -> Dict[str, List[GraphEdge]]  # BFS
+    save() / load()                       # JSON at data/knowledge_graph.json
+
+# memory/entity_resolver.py — Alias resolution
+class EntityResolver:
+    resolve(text) -> Optional[str]        # Alias → canonical entity_id
+    resolve_or_create(text, display_name) -> str
+    save() / load()                       # JSON at data/entity_aliases.json
+
+# memory/graph_utils.py — Shared helpers for scoring + expansion
+def extract_graph_entities(text, resolver) -> Set[str]:
+    """Trigram→bigram→single word alias resolution, strips punctuation, skips stopwords."""
+def get_related_display_names(entity_ids, graph_memory, depth=1, skip_ids=None) -> Set[str]:
+    """BFS neighbor display names."""
+def get_related_entity_ids(entity_ids, graph_memory, depth=1) -> Set[str]:
+    """BFS neighbor entity IDs."""
+def _is_expansion_junk(name) -> bool:  # [NEW 2026-03-15]
+    """Rejects empty/≤2 chars, 4+ words, digit-starting, temporal, measurement, verb phrases."""
+def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_terms=8) -> List[str]:  # [NEW 2026-03-15]
+    """Ranks by non-hub edge count (lateral connectivity), filters junk, returns ordered names."""
+
+# Ingestion (memory_storage.py:_ingest_fact_to_graph):
+# Called after each add_fact(). _is_graph_worthy_object() rejects:
+#   4+ word phrases, generics, temporal ("2 years"), measurements ("20lbs"),
+#   verb phrases ("stopped being religious"). Rejected → stored as subject-node metadata.
+# Duplicate edges strengthen weight (DiGraph, not MultiDiGraph).
+
+# Retrieval (context_gatherer.py):
+# get_graph_context() → BFS from query entities, returns natural language sentences
+# _expand_query_with_graph() → calls rank_expansion_candidates() (connectivity-ranked, junk-filtered)
+
+# Scoring (memory_scorer.py):
+# graph_bonus = min(0.05 * graph_entity_matches, GRAPH_SCORING_BOOST_CAP)
+# Graph refs (_graph_memory, _entity_resolver) set/cleared by builder.py around gather
+
+# Scripts:
+# scripts/migrate_facts_to_graph.py --dry-run  # Populate graph from existing facts
+# scripts/cleanup_graph_junk.py --execute       # Remove junk nodes, migrate to metadata
 ```
 
 ---
@@ -833,6 +892,21 @@ SCORE_WEIGHTS = {
 # Intent Classifier [NEW 2026-02-15]
 INTENT_ENABLED = True
 INTENT_STM_REFINEMENT_THRESHOLD = 0.50
+
+# Entity Facts [NEW 2026-03]
+ENTITY_FACTS_ENABLED = True              # Toggle entity fact extraction
+ENTITY_FACTS_PER_TURN_CAP = 4           # Max entity facts per turn
+USER_FACTS_PER_TURN_CAP = 6             # Max user facts per turn
+ENTITY_FACT_MIN_CONFIDENCE = 0.55        # Min confidence for entity facts
+
+# Knowledge Graph [NEW 2026-03]
+KNOWLEDGE_GRAPH_ENABLED = True           # Toggle knowledge graph system
+KNOWLEDGE_GRAPH_MAX_DEPTH = 2            # BFS traversal depth
+KNOWLEDGE_GRAPH_MAX_EDGES = 50           # Max edges in prompt
+GRAPH_SCORING_BOOST_ENABLED = True       # Graph-boosted memory scoring
+GRAPH_SCORING_BOOST_CAP = 0.15          # Max graph bonus (0.05 per entity)
+GRAPH_QUERY_EXPANSION_ENABLED = True     # Append neighbors to search query
+GRAPH_QUERY_EXPANSION_MAX_TERMS = 8      # Max neighbor names appended
 
 # Summarization
 SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))
@@ -918,6 +992,9 @@ continuity = (0.1 if age < 10min else 0) + (0.3 * token_overlap_ratio)
 alignment = 1.0 - min(1.0, abs(query_density - memory_density) * 3.0)
 structure_score = 0.15 * alignment
 
+# Graph-boosted scoring [NEW 2026-03]
+graph_bonus = min(0.05 * graph_entity_matches, 0.15)  # capped at GRAPH_SCORING_BOOST_CAP
+
 # Final memory score
 score = (
     0.35 * relevance +
@@ -927,6 +1004,7 @@ score = (
     0.10 * continuity +
     structure_score +
     anchor_bonus +
+    graph_bonus +
     penalties
 )
 ```
@@ -949,6 +1027,7 @@ score = (
 [PROJECT COMMIT HISTORY]       # Git commit history (procedural memory)
 [ADAPTIVE WORKFLOWS]           # Reusable problem-solving patterns (WHEN/THEN)
 [PROPOSED FEATURES]            # Code proposals surfaced for project-related queries [NEW 2026-02-09]
+[KNOWLEDGE GRAPH]              # Graph traversal: related entities as natural language [NEW 2026-03]
 [WEB SEARCH RESULTS]           # Real-time Tavily results
 [RELEVANT INFORMATION]         # Wikipedia chunks
 [TIME CONTEXT]                 # Current datetime
@@ -987,6 +1066,8 @@ python main.py migrate-monthly               # Just run weekly-to-monthly folder
 python main.py refresh-narrative             # Regenerate life state from monthly/weekly/daily notes
 
 # Daemon Documentation (self-knowledge)
+# Auto-seeded from docs/ on GUI startup (mtime-based idempotency, skips unchanged files)
+# Config: REFERENCE_DOCS_AUTO_SEED=True, REFERENCE_DOCS_SEED_PATHS=["docs"]
 python main.py upload-doc <file> [title]     # Upload doc to [DAEMON DOCUMENTATION]
 python main.py list-docs                     # List uploaded docs
 python main.py delete-doc <title>            # Delete specific doc
@@ -1149,7 +1230,15 @@ class MemoryConsolidator:
 
 ---
 
-## Agentic Search & Tools [NEW 2026-01-22]
+## Agentic Search & Tools [NEW 2026-01-22, ENHANCED 2026-03-15]
+
+**Agentic Gate** (gui/handlers.py) — 3-tier trigger before ReAct loop:
+1. **Keyword heuristic** (0ms): computation keywords OR memory keywords ("do you remember", "my notes", etc.)
+2. **Entity match** (0ms): `extract_graph_entities()` checks query against knowledge graph aliases; known entities (e.g. "Flapjack") trigger memory search
+3. **LLM fallback**: piggybacks on `analyze_for_web_search_llm()`; `needs_memory_search` field in `WebSearchDecision` catches structural recall queries
+
+Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/entity trigger fired.
+`skip_initial_search=True` for computation and memory queries.
 
 ```python
 # core/agentic/controller.py
@@ -1198,6 +1287,9 @@ class SearchDecision:
     wants_sandbox: bool = False         # Code execution [NEW 2026-01-22]
     sandbox_code: Optional[str] = None
     sandbox_purpose: Optional[str] = None
+    wants_memory: bool = False          # Memory search [NEW 2026-03-15]
+    memory_query: Optional[str] = None
+    memory_collection: Optional[str] = None
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False

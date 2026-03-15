@@ -110,6 +110,7 @@ PROMPT_MAX_GIT_COMMITS = _cfg_int("prompt_max_git_commits", 10)
 PROMPT_MAX_SKILLS = _cfg_int("prompt_max_skills", 5)
 PROMPT_MAX_PROPOSALS = _cfg_int("prompt_max_proposals", 3)
 PROMPT_MAX_USER_UPLOADS = _cfg_int("prompt_max_user_uploads", 5)
+PROMPT_MAX_GRAPH_SENTENCES = _cfg_int("prompt_max_graph_sentences", 12)
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
@@ -381,6 +382,11 @@ class UnifiedPromptBuilder:
                 scorer._intent_weight_overrides = weight_overrides
                 logger.info(f"[BUILD_PROMPT] Intent weight overrides set on scorer")
 
+            # Set graph references on scorer for graph-boosted scoring
+            if scorer:
+                scorer._graph_memory = getattr(self.memory_coordinator, 'graph_memory', None)
+                scorer._entity_resolver = getattr(self.memory_coordinator, 'entity_resolver', None)
+
             # Step 3: Launch parallel data gathering tasks with per-task timing
             tasks = {}
             task_timings = {}
@@ -477,6 +483,11 @@ class UnifiedPromptBuilder:
                 _timed_task("proposed_features", self.context_gatherer.get_proposed_features(user_input, eff_max_proposals))
             )
 
+            # Knowledge graph context (entity relationships)
+            tasks["graph_context"] = asyncio.create_task(
+                _timed_task("graph_context", self.context_gatherer.get_graph_context(user_input, PROMPT_MAX_GRAPH_SENTENCES))
+            )
+
             # Web search (triggered based on query analysis, suppressed during crisis)
             tasks["web_search"] = asyncio.create_task(
                 _timed_task("web_search", self.context_gatherer._get_web_search_results(user_input, crisis_level))
@@ -519,6 +530,10 @@ class UnifiedPromptBuilder:
                 # Clear intent weight overrides from scorer (set before gather)
                 if scorer and weight_overrides:
                     scorer._intent_weight_overrides = None
+                # Clear graph references from scorer
+                if scorer:
+                    scorer._graph_memory = None
+                    scorer._entity_resolver = None
 
             # Step 3: Post-fetch processing
 
@@ -631,6 +646,7 @@ class UnifiedPromptBuilder:
                 "git_commits": gathered.get("git_commits", []),      # Git commit history
                 "procedural_skills": gathered.get("procedural_skills", []),  # Adaptive workflows
                 "proposed_features": gathered.get("proposed_features", []),  # Code proposals
+                "graph_context": gathered.get("graph_context", []),  # Knowledge graph relationships
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
             }
             # DEBUG: Log web search results
@@ -672,17 +688,14 @@ class UnifiedPromptBuilder:
                     except Exception as gate_err:
                         logger.warning(f"Personal notes gating failed, keeping original: {gate_err}")
 
-                # Gate reference docs through the multi-stage gate system
+                # Reference docs bypass gating — they're authored system knowledge
+                # already filtered by hybrid retrieval (keyword + semantic) in
+                # get_documents().  Double-gating drops most docs because
+                # conversational queries rarely cosine-match architecture docs.
                 reference_docs = context.get("reference_docs", [])
-                if reference_docs and hasattr(self.context_gatherer, 'gate_system'):
-                    try:
-                        gated_docs = await self.context_gatherer.gate_system.filter_memories(
-                            user_input, reference_docs
-                        )
-                        context["reference_docs"] = gated_docs[:PROMPT_MAX_REFERENCE_DOCS]
-                        logger.debug(f"Gated reference docs: {len(reference_docs)} -> {len(context['reference_docs'])}")
-                    except Exception as gate_err:
-                        logger.warning(f"Reference docs gating failed, keeping original: {gate_err}")
+                if reference_docs:
+                    context["reference_docs"] = reference_docs[:PROMPT_MAX_REFERENCE_DOCS]
+                    logger.debug(f"Reference docs (no gate): {len(reference_docs)} -> {len(context['reference_docs'])}")
             except Exception as e:
                 logger.warning(f"Gating failed: {e}")
 
@@ -920,10 +933,12 @@ class UnifiedPromptBuilder:
                 "semantic_chunks": context.get("semantic_chunks", []),
                 "wiki": context.get("wiki", []),
                 "personal_notes": context.get("personal_notes", []),  # User's Obsidian notes
+                "reference_docs": context.get("reference_docs", []),  # Daemon self-knowledge docs
                 "user_uploads": context.get("user_uploads", []),     # User uploaded files/images
                 "git_commits": context.get("git_commits", []),      # Git commit history
                 "procedural_skills": context.get("procedural_skills", []),  # Adaptive workflows
                 "proposed_features": context.get("proposed_features", []),  # Code proposals
+                "graph_context": context.get("graph_context", []),  # Knowledge graph relationships
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
@@ -955,6 +970,7 @@ class UnifiedPromptBuilder:
                 "git_commits": [],
                 "procedural_skills": [],
                 "proposed_features": [],
+                "graph_context": [],
                 "web_search_results": None,
                 "memory_id_map": {}
             }
@@ -1041,6 +1057,7 @@ class UnifiedPromptBuilder:
                 "git_commits": [],
                 "procedural_skills": [],
                 "proposed_features": [],  # No proposals for small-talk
+                "graph_context": [],  # No graph for small-talk
                 "web_search_results": None  # No web search for small-talk
             }
 
@@ -1074,6 +1091,7 @@ class UnifiedPromptBuilder:
                 "git_commits": [],
                 "procedural_skills": [],
                 "proposed_features": [],
+                "graph_context": [],
                 "web_search_results": None
             }
 
@@ -1958,6 +1976,12 @@ class UnifiedPromptBuilder:
         if pf_lines:
             sections.append(f"[PROPOSED FEATURES] n={len(pf_lines)}\n" + "\n\n".join(pf_lines))
 
+        # Knowledge Graph context (entity relationships)
+        graph_sentences = context.get("graph_context", []) or []
+        if graph_sentences:
+            graph_block = "\n".join(f"- {s}" for s in graph_sentences)
+            sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)}\n{graph_block}")
+
         # User Profile (replaces semantic_facts + fresh_facts)
         # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
         user_profile = context.get("user_profile", "")
@@ -2125,6 +2149,7 @@ class PromptBuilder:
                 "semantic_chunks": semantic_chunks or [],
                 "wiki": [{"content": wiki_snippet}] if wiki_snippet else [],
                 "proposed_features": [],
+                "graph_context": [],
             }
             return self.unified_builder._assemble_prompt(context, user_input)
         else:

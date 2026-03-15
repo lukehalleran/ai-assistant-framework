@@ -1,49 +1,76 @@
-feat: Add temporal-aware recency decay, retrieval benchmarks, and wizard env fix
+feat: Add knowledge graph, entity facts, smarter query expansion, junk node prevention, and broadened agentic memory gate
 
-## Temporal-Aware Recency Decay
+## Knowledge Graph System (NEW)
+- `memory/graph_models.py`: Pydantic models — GraphNode, GraphEdge (with to_dict/from_dict, to_natural_language)
+- `memory/graph_memory.py`: NetworkX DiGraph wrapper — CRUD, alias index, BFS traversal, JSON persistence at data/knowledge_graph.json, dirty-flag saves
+- `memory/entity_resolver.py`: EntityResolver (exact match + alias table), normalize_relation(), possessive alias extraction ("my brother Dillion" → alias "brother" → entity "dillion")
+- `memory/graph_utils.py`: Shared helpers — extract_graph_entities (trigram→bigram→single word alias resolution), get_related_display_names, get_related_entity_ids, rank_expansion_candidates, _is_expansion_junk
+- Ingestion hook in memory_storage.py:_ingest_fact_to_graph() — called after each add_fact() success
+- Retrieval hook in context_gatherer.py:get_graph_context() — BFS traversal, natural language output
+- Prompt section: [KNOWLEDGE GRAPH] in _assemble_prompt() after [PROPOSED FEATURES]
+- Graph-boosted scoring in memory_scorer.py: 0.05 bonus per graph-connected entity mention, capped at 0.15
+- Scripts: migrate_facts_to_graph.py (--dry-run), cleanup_graph_junk.py (--execute)
+- Config: KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_MAX_DEPTH, KNOWLEDGE_GRAPH_MAX_EDGES, GRAPH_SCORING_BOOST_*, GRAPH_QUERY_EXPANSION_*
 
-TEMPORAL_RECALL queries ("What happened last week?") now surface time-relevant
-memories instead of burying them under standard exponential decay.
+## Smarter Query Expansion (NEW)
+- rank_expansion_candidates() in graph_utils.py — ranks expansion terms by lateral connectivity (non-hub edge count) instead of name length
+- Score = min(non_hub_edges * 0.3, 1.0) + single-word bonus (+0.1) / 3+ word penalty (-0.1)
+- _is_expansion_junk() filters: empty/≤2 chars, 4+ words, digit-starting, temporal, measurement, verb phrases
+- context_gatherer.py:_expand_query_with_graph() now calls rank_expansion_candidates() instead of get_related_display_names() + name-length sort
 
-**Changes:** `core/intent_classifier.py`, `memory/memory_scorer.py`
-- IntentClassifier.classify() extracts temporal anchor via extract_temporal_window()
-- Adds _temporal_anchor_hours to weight_overrides (e.g., "last week" → 168h)
-- MemoryScorer.rank_memories() reshapes decay curve:
-  - Within window: gentle decay (1.0 → 0.7)
-  - Outside window: standard decay from 0.7 baseline
-- Temporal anchor takes priority over time_manager and fallback paths
+## Junk Node Prevention at Ingestion (NEW)
+- Tightened _is_graph_worthy_object() in memory_storage.py with 3 new rejection filters:
+  - Temporal/duration: "2 years", "6 months", "once a week"
+  - Measurements: "5'11\"", "20lbs", "10000iu", "500mg"
+  - Verb phrases: "stopped being religious", "finishing grad school", "working remotely"
+- Rejected objects stored as subject-node metadata instead of creating graph nodes
 
-## Retrieval Quality Benchmarks
+## Entity Facts System (NEW)
+- Dual-budget extraction in fact_extractor.py: user facts (cap 6) + entity facts (cap 4)
+- LLM prompt enhanced with entity fact section + fact_scope field in llm_fact_extractor.py
+- Dict-based source forwarding for entity metadata (fact_scope, entity_type, user_connection) in memory_storage.py
+- shutdown_processor.py filters user-only facts for UserProfile; all facts go to ChromaDB
+- Helper functions: _detect_entity_type (spaCy NER), _detect_user_connection (possessive regex)
+- Config: ENTITY_FACTS_ENABLED, ENTITY_FACTS_PER_TURN_CAP, USER_FACTS_PER_TURN_CAP, ENTITY_FACT_MIN_CONFIDENCE
 
-End-to-end retrieval quality suite with real embeddings (all-MiniLM-L6-v2).
+## Reference Docs Auto-Seed (NEW)
+- reference_docs_manager.py: sync_file() and sync_directory() methods with mtime-based idempotency
+- gui/launch.py: Background thread seeds docs/ into reference_docs collection on GUI startup
+- Config: REFERENCE_DOCS_AUTO_SEED, REFERENCE_DOCS_SEED_PATHS
 
-**New files:** `tests/benchmarks/`, `tests/fixtures/retrieval_benchmarks.yaml`
-- 30 seed memories + 19 test cases across all 9 intent types
-- Session-scoped fixtures: ChromaDB + CorpusManager + MockTimeManager
-- Measures recall@K and MRR, grouped report by intent type
-- Run: `pytest tests/benchmarks/ -m benchmark -v` (~5s)
-- pytest.ini: registered `benchmark` marker
-
-## Wizard Test Env Fix
-
-Fixed env var poisoning in test_wizard.py that could corrupt the real .env file.
-
-**Changes:** `tests/test_wizard.py`
-- All 3 TestWriteApiKeyToEnv tests now save/restore os.environ['OPENAI_API_KEY']
-  in try/finally blocks
-- Prevents test runs from overwriting the production API key
-
-## Documentation Updates
-
-**Changes:** `docs/PROJECT_SKELETON.md`, `docs/QUICK_REFERENCE.md`, `docs/GOALS.md`
-- Documented temporal-aware decay in MemoryScorer and IntentClassifier sections
-- Added Retrieval Quality Benchmarks section (Section 8.1b in skeleton)
-- Updated Recent Completions and Goals with all new features
-- Updated Last Updated timestamps
+## Bug Fixes
+- core/orchestrator.py: Pass prompt_ctx as initial_context to agentic search (was missing, so agentic mode had no RAG context)
+- core/agentic/controller.py: Add [DAEMON DOCUMENTATION] section to _build_final_prompt() — reference_docs now surface in agentic search mode
 
 ## Other Changes
+- core/prompt/builder.py: Graph refs set/cleared around gather, parallel graph_context task
+- memory/memory_coordinator.py: Creates GraphMemory + EntityResolver, passes to MemoryStorage
+- memory/memory_interface.py: Updated Protocol contracts for graph + entity facts
+- memory/user_profile.py: Truth metadata on add_fact
+- config/app_config.py: All new config constants for entity facts, knowledge graph, reference docs
+- config/config.yaml: New YAML sections for entity_facts, knowledge_graph, reference_docs
+- utils/query_checker.py: Heavy topic heuristic updates
+- utils/web_search_trigger.py: Search trigger refinements
+- scripts/build_faiss_index.py: Minor updates
+- data/pipeline/: Wikipedia pipeline improvements (extract, chunk, embed)
 
-- `tests/unit/test_memory_scorer.py` - 4 new tests for temporal-aware decay
-- `config/config.yaml` - Minor formatting (0.50 → 0.5)
-- `test_corpus.json` - Test data re-serialization
+## Documentation
+- docs/PROJECT_SKELETON.md: Full knowledge graph section (2.15a), entity facts rewrite (2.15), reference docs auto-seed, graph-boosted scoring, query expansion; handlers.py agentic gate rewrite, search_memory tool in agentic controller
+- docs/QUICK_REFERENCE.md: Knowledge graph section, entity facts, graph scoring formula, config constants, prompt section hierarchy; agentic gate 3-tier description, SearchDecision memory fields
+- docs/GOALS.md: "Broadened Agentic Gate for Memory Search" + "Smarter Query Expansion + Junk Node Prevention" in Recent Completions, knowledge graph in Foundational Infrastructure
 
+## Broadened Agentic Gate for Memory Search (NEW)
+- gui/handlers.py: 3-tier agentic trigger replaces web-search-only gate
+  - Tier 1: Keyword heuristic (instant) — 20 memory phrases + computation keywords
+  - Tier 2: Entity match (instant) — extract_graph_entities() checks query against knowledge graph alias index
+  - Tier 3: LLM fallback — needs_memory_search field piggybacks on existing web search trigger call
+- Casual skip filter restructured: keyword/entity checks run first, skip filter only applies when no trigger fired
+- Fixed 'no' prefix bug in casual skip (was matching 'now', 'not', 'nothing')
+- utils/web_search_trigger.py: needs_memory_search field on WebSearchDecision + LLMSearchTriggerResponse, LLM prompt expanded to classify memory intent alongside web search
+- skip_initial_search=True for memory queries — ReAct loop skips web search, goes straight to search_memory tool
+
+## Tests
+- tests/unit/test_knowledge_graph.py: 70 tests (graph models, CRUD, alias, traversal, persistence, ingestion)
+- tests/unit/test_graph_integration.py: 50 tests (entity extraction, display names, entity IDs, graph-boosted scoring, query expansion, rank_expansion_candidates, _is_graph_worthy_object)
+- tests/unit/test_entity_facts.py: 32 tests (dual budget, entity metadata, detection helpers)
+- tests/unit/test_temporal_resolver.py: Temporal resolution tests

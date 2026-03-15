@@ -8,6 +8,8 @@ Module Contract:
   - extract_facts(query, response, conversation_context) -> List[MemoryNode]
 - Outputs:
   - List of MemoryNode objects with extracted facts and confidence scores
+  - User facts: subject="user", capped at USER_FACTS_PER_TURN_CAP (default 6)
+  - Entity facts: subject=entity name, capped at ENTITY_FACTS_PER_TURN_CAP (default 4)
 - Behavior:
   - CORRECTION DETECTION (0.9+ confidence): Detects "I'm X, not Y", "actually I'm X" patterns
     These high-confidence facts supersede older facts via UserProfile's conflict resolution
@@ -15,14 +17,25 @@ Module Contract:
   - REBEL neural extraction (if enabled)
   - Regex fallback patterns for common fact types
   - Confidence scoring based on pattern quality and specificity
+  - ENTITY FACTS (2026-03): Non-user subjects (people, places, orgs) now pass through
+    with metadata: fact_scope="entity", entity_type (spaCy NER), user_connection (possessive patterns)
+    Entity facts require min confidence of ENTITY_FACT_MIN_CONFIDENCE (default 0.55)
+    Controlled by ENTITY_FACTS_ENABLED toggle
 - Dependencies:
-  - spaCy (optional, for NLP)
+  - spaCy (optional, for NLP + entity type detection)
   - REBEL pipeline (optional, for neural extraction)
   - memory.memory_interface (MemoryNode)
+  - config.app_config (ENTITY_FACTS_*, USER_FACTS_PER_TURN_CAP)
 
 Enhanced (2026-01):
 - Correction detection patterns for "not X", "actually X" with 0.92 confidence
 - Corrections supersede old facts in UserProfile (newer + higher confidence wins)
+
+Enhanced (2026-03):
+- Entity-to-entity triples: non-user subjects no longer filtered out
+- Dual budget: user facts (6) + entity facts (4) with separate caps
+- Entity metadata: fact_scope, entity_type, user_connection added to MemoryNode
+- Helper functions: _detect_entity_type(), _detect_user_connection()
 """
 import re
 import uuid
@@ -277,6 +290,54 @@ def _refine_is_relation(rel: str, obj: str) -> str:
         if ol.startswith(("a ", "an ", "the ")):
             return "is_a"
     return rel
+
+
+def _detect_entity_type(subject: str, nlp=None) -> str:
+    """Run spaCy NER on subject text and return entity type label.
+
+    Returns one of: PERSON, ORG, GPE, PRODUCT, WORK_OF_ART, or UNKNOWN.
+    """
+    if nlp is None:
+        return "UNKNOWN"
+    try:
+        doc = nlp(subject)
+        for ent in doc.ents:
+            if ent.label_ in {"PERSON", "ORG", "GPE", "PRODUCT", "WORK_OF_ART"}:
+                return ent.label_
+        # Fallback: if subject is a single PROPN token, guess PERSON
+        tokens = [t for t in doc if t.pos_ == "PROPN"]
+        if tokens and len(doc) <= 2:
+            return "PERSON"
+    except Exception:
+        pass
+    return "UNKNOWN"
+
+
+def _detect_user_connection(subject: str, source_text: str) -> Optional[str]:
+    """Detect possessive/relationship patterns linking entity to user.
+
+    Looks for patterns like "my X", "X is my", "X, my" in source_text
+    and returns a connection string like "user's boss" or None.
+    """
+    if not subject or not source_text:
+        return None
+    text_lower = source_text.lower()
+    subj_lower = subject.lower()
+
+    # Pattern: "my <relation> <subject>" or "my <relation>, <subject>"
+    # Use \w+ (single word) to avoid greedy over-capture
+    patterns = [
+        rf"\bmy\s+(\w+)\s+{re.escape(subj_lower)}\b",
+        rf"\bmy\s+(\w+),?\s+{re.escape(subj_lower)}\b",
+        rf"{re.escape(subj_lower)}\s*,?\s*my\s+(\w+)\b",
+        rf"{re.escape(subj_lower)}\s+is\s+my\s+(\w+)\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text_lower)
+        if m:
+            relation = m.group(1).strip()
+            return f"user's {relation}"
+    return None
 
 
 class FactExtractor:
@@ -586,9 +647,17 @@ class FactExtractor:
             logger.debug("[FactExtractor] Regex extraction disabled")
 
         # 3) Canonicalize + dedupe (augmented with preference logic + generic cleaner & scorer)
-        facts: List[MemoryNode] = []
+        #    Split into user facts and entity facts with separate budgets.
+        from config.app_config import (
+            ENTITY_FACTS_ENABLED, ENTITY_FACTS_PER_TURN_CAP,
+            USER_FACTS_PER_TURN_CAP, ENTITY_FACT_MIN_CONFIDENCE,
+        )
+
+        user_facts: List[MemoryNode] = []
+        entity_facts: List[MemoryNode] = []
         seen = set()
-        kept = 0
+        user_kept = 0
+        entity_kept = 0
         nlp_ref = _NLP  # pass once
 
         for subj, rel, obj, conf, method in triples:
@@ -606,9 +675,27 @@ class FactExtractor:
 
             # Final canon for the key (lowercasing etc. as you had)
             subj_c, rel_c, obj_c = self._canon(s3), self._canon(r3), self._canon(o3)
-            # Enforce that we only keep facts about the user
-            if subj_c != "user":
+
+            is_user_fact = (subj_c == "user")
+
+            # Skip entity facts if disabled
+            if not is_user_fact and not ENTITY_FACTS_ENABLED:
                 continue
+
+            # Budget check before processing
+            if is_user_fact and user_kept >= USER_FACTS_PER_TURN_CAP:
+                continue
+            if not is_user_fact and entity_kept >= ENTITY_FACTS_PER_TURN_CAP:
+                continue
+
+            # Confidence threshold for entity facts (higher floor for noisier triples)
+            if not is_user_fact and conf < ENTITY_FACT_MIN_CONFIDENCE:
+                logger.debug(
+                    f"[FactExtractor] Entity fact below confidence threshold: "
+                    f"subj='{subj_c}' rel='{rel_c}' obj='{obj_c}' conf={conf:.3f} < {ENTITY_FACT_MIN_CONFIDENCE}"
+                )
+                continue
+
             if not subj_c or not rel_c or not obj_c:
                 logger.debug(
                     f"[FactExtractor] Dropped empty field triple: subj='{subj}' rel='{rel}' obj='{obj}'"
@@ -629,20 +716,40 @@ class FactExtractor:
             if rel_c.startswith("favorite_") or rel_c in {"likes", "dislikes", "prefers"}:
                 tags.append("personal_preference")
 
+            # Add scope and entity metadata
+            extra_metadata = {}
+            if is_user_fact:
+                extra_metadata["fact_scope"] = "user"
+            else:
+                extra_metadata["fact_scope"] = "entity"
+                extra_metadata["entity_type"] = _detect_entity_type(subj_c, nlp=nlp_ref)
+                user_conn = _detect_user_connection(subj_c, text)
+                if user_conn:
+                    extra_metadata["user_connection"] = user_conn
+
             node = self._to_node(
                 subject=subj_c, relation=rel_c, object=obj_c,
-                confidence=conf2, method=method, source_text=text, extra_tags=tags
-            )
-            facts.append(node)
-            kept += 1
-            logger.debug(
-                f"[FactExtractor] Kept fact[{kept}]: id={node.id} '{node.content}' "
-                f"(conf={conf2:.3f}, method={method})"
+                confidence=conf2, method=method, source_text=text, extra_tags=tags,
+                extra_metadata=extra_metadata,
             )
 
-            if kept >= 8:  # cap per turn (unchanged)
-                logger.debug("[FactExtractor] Reached per-turn cap (8 facts); stopping")
-                break
+            if is_user_fact:
+                user_facts.append(node)
+                user_kept += 1
+                logger.debug(
+                    f"[FactExtractor] Kept user fact[{user_kept}]: id={node.id} '{node.content}' "
+                    f"(conf={conf2:.3f}, method={method})"
+                )
+            else:
+                entity_facts.append(node)
+                entity_kept += 1
+                logger.debug(
+                    f"[FactExtractor] Kept entity fact[{entity_kept}]: id={node.id} '{node.content}' "
+                    f"(conf={conf2:.3f}, method={method}, entity_type={extra_metadata.get('entity_type')})"
+                )
+
+        # Merge: user facts first, then entity facts
+        facts = user_facts + entity_facts
 
         # Post-filter: if a specific name part exists, drop generic name duplicate
         specific_name_vals = {
@@ -1255,6 +1362,7 @@ class FactExtractor:
         method: str,
         source_text: str,
         extra_tags: Optional[List[str]] = None,
+        extra_metadata: Optional[Dict[str, str]] = None,
     ) -> MemoryNode:
         # Merge base + extra tags
         tags = (extra_tags or [])[:]
@@ -1263,6 +1371,18 @@ class FactExtractor:
         if method and method not in tags:
             tags.append(method)
 
+        metadata = {
+            "subject": subject,
+            "relation": relation,
+            "object": object,
+            "confidence": float(confidence),
+            "method": method,
+            "source_excerpt": source_text[:400],
+        }
+        # Merge entity metadata (fact_scope, entity_type, user_connection)
+        if extra_metadata:
+            metadata.update(extra_metadata)
+
         node = MemoryNode(
             id=str(uuid.uuid4()),
             content=f"{subject} | {relation} | {object}",
@@ -1270,14 +1390,7 @@ class FactExtractor:
             timestamp=datetime.now(),
             importance_score=0.6,
             tags=tags,
-            metadata={
-                "subject": subject,
-                "relation": relation,
-                "object": object,
-                "confidence": float(confidence),
-                "method": method,
-                "source_excerpt": source_text[:400],
-            }
+            metadata=metadata,
         )
         logger.debug(
             f"[FactExtractor] Built MemoryNode(id={node.id}, type=FACT, "

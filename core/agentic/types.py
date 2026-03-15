@@ -12,12 +12,13 @@ Public Types:
     - SearchRequest, SearchRound, SearchDecision (dataclasses)
     - AgenticSearchSession (session state container)
     - ProgressEvent (UI update events)
-    - SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION, SANDBOX_TOOL_DEFINITION (tool schemas)
+    - SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION, SANDBOX_TOOL_DEFINITION, MEMORY_SEARCH_TOOL_DEFINITION (tool schemas)
 
 SearchDecision Fields (extended for multi-tool support):
     - wants_search, search_query, search_reason (web search)
     - wants_wolfram, wolfram_query, wolfram_reason (Wolfram Alpha computation)
     - wants_sandbox, sandbox_code, sandbox_purpose (E2B Python sandbox) [NEW 2026-01-22]
+    - wants_memory_search, memory_query, memory_collection, memory_reason (ChromaDB memory search)
     - is_done, done_reason, wants_answer, partial_response
 
 Dependencies:
@@ -94,6 +95,11 @@ class SearchDecision:
     wants_sandbox: bool = False
     sandbox_code: Optional[str] = None
     sandbox_purpose: Optional[str] = None
+    # Memory search (internal knowledge base)
+    wants_memory_search: bool = False
+    memory_query: Optional[str] = None
+    memory_collection: Optional[str] = None
+    memory_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -285,6 +291,48 @@ SANDBOX_TOOL_DEFINITION = {
     }
 }
 
+MEMORY_SEARCH_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "search_memory",
+        "description": (
+            "Search your own memory and knowledge base. Use for: "
+            "your architecture/documentation (reference_docs), "
+            "user's personal facts and entity relationships (facts), "
+            "past conversations (conversations), "
+            "session summaries (summaries), "
+            "session reflections (reflections), "
+            "user's Obsidian notes (obsidian_notes), "
+            "git history (procedural), "
+            "learned skills (procedural_skills). "
+            "Prefer this over web_search when the answer is likely in your own memory."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query. Be specific about what you're looking for."
+                },
+                "collection": {
+                    "type": "string",
+                    "description": "Which memory collection to search.",
+                    "enum": [
+                        "reference_docs", "facts", "conversations",
+                        "summaries", "reflections", "obsidian_notes",
+                        "procedural", "procedural_skills"
+                    ]
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this memory search is needed."
+                }
+            },
+            "required": ["query", "collection"]
+        }
+    }
+}
+
 # System prompt injection for local models
 AGENTIC_SYSTEM_PROMPT_INJECTION = """
 [AGENTIC TOOLS ENABLED]
@@ -320,6 +368,12 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 
 4. **Done**: <done/> - Signal you have enough information to answer.
 
+5. **Memory Search**: <memory collection="collection_name">your query</memory>
+   Use for: your own docs (reference_docs), user facts (facts), past conversations (conversations),
+   summaries (summaries), reflections (reflections), Obsidian notes (obsidian_notes),
+   git history (procedural), learned skills (procedural_skills).
+   Prefer this over web search when the answer is likely already in your memory.
+
 **Tool Selection Guidelines:**
 | Task Type | Best Tool |
 |-----------|-----------|
@@ -330,6 +384,9 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | Data analysis, statistics | Python |
 | Generate charts/visualizations | Python |
 | Current events, factual lookup | Search |
+| Internal docs, architecture questions | Memory (reference_docs) |
+| User facts, personal info | Memory (facts) |
+| Past conversations, "did we discuss" | Memory (conversations, summaries) |
 
 You can use tools up to {max_rounds} times total. Be specific with queries.
 

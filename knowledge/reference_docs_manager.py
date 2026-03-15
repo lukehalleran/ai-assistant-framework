@@ -11,9 +11,11 @@ Module Contract:
   - get_documents(query: str, limit: int) -> List[Dict]: Retrieve relevant document chunks
   - list_documents() -> List[Dict]: List all uploaded documents
   - delete_document(title: str) -> bool: Remove a document from the index
+  - sync_file(file_path: str, title: str) -> str: Sync single file using mtime ('uploaded'/'skipped'/'failed')
+  - sync_directory(directory: str, file_patterns: List[str]) -> Dict: Batch sync directory with summary counts
 - Outputs:
   - Embedded document chunks in reference_docs ChromaDB collection
-  - Retrieved chunks with metadata (title, section, file_type, chunk_index)
+  - Retrieved chunks with metadata (title, section, file_type, chunk_index, file_mtime)
   - Appears in prompt as [DAEMON DOCUMENTATION] section
 - Side effects:
   - Writes to reference_docs ChromaDB collection
@@ -27,6 +29,7 @@ Features:
 - Supports .md, .txt files (expandable to PDF, DOCX later)
 - Hybrid retrieval: 1/3 keyword + 2/3 semantic (like Obsidian notes)
 - Higher priority than wiki but lower than personal notes
+- Auto-seed on GUI startup: docs/ directory synced via mtime-based idempotency
 """
 
 import os
@@ -230,6 +233,7 @@ class ReferenceDocsManager:
                     'total_chunks': chunk['total_chunks'],
                     'timestamp': datetime.now().isoformat(),
                     'truth_score': 0.85,  # High confidence for uploaded docs
+                    'file_mtime': os.path.getmtime(str(path)),
                 }
 
                 self.chroma_store.add_to_collection(
@@ -361,6 +365,65 @@ class ReferenceDocsManager:
             logger.warning(f"[RefDocs] Failed to get document chunks: {e}")
             return []
 
+    def _get_document_mtime(self, title: str) -> Optional[float]:
+        """Get stored file_mtime for a document by title. Returns None if not found."""
+        chunks = self._get_document_chunks(title)
+        if chunks:
+            return chunks[0].get('metadata', {}).get('file_mtime')
+        return None
+
+    def sync_file(self, file_path: str, title: str = None) -> str:
+        """
+        Sync a single file. Returns 'uploaded', 'skipped', or 'failed'.
+        Uses mtime comparison to skip unchanged files.
+        """
+        path = Path(file_path).expanduser().resolve()
+        if not path.exists() or not path.is_file():
+            return 'failed'
+        title = title or path.stem
+        current_mtime = os.path.getmtime(str(path))
+        stored_mtime = self._get_document_mtime(title)
+        if stored_mtime and current_mtime <= stored_mtime:
+            return 'skipped'
+        result = self.upload_document(str(path), title)
+        return 'uploaded' if result.success else 'failed'
+
+    def sync_directory(self, directory: str, file_patterns: List[str] = None) -> Dict[str, Any]:
+        """
+        Sync all matching files from a directory into reference_docs.
+        Uses file mtime for idempotency — skips unchanged files.
+
+        Args:
+            directory: Path to directory to scan
+            file_patterns: Glob patterns to match (default: ['*.md'])
+
+        Returns:
+            dict with 'uploaded', 'skipped', 'failed' counts and 'details' list
+        """
+        file_patterns = file_patterns or ['*.md']
+        dir_path = Path(directory).expanduser().resolve()
+        summary = {'uploaded': 0, 'skipped': 0, 'failed': 0, 'details': []}
+
+        if not dir_path.is_dir():
+            logger.warning(f"[RefDocs] sync_directory: not a directory: {directory}")
+            return summary
+
+        matched_files = []
+        for pattern in file_patterns:
+            matched_files.extend(dir_path.glob(pattern))
+
+        for fpath in sorted(set(matched_files)):
+            status = self.sync_file(str(fpath))
+            summary[status] += 1
+            summary['details'].append({'file': fpath.name, 'status': status})
+
+        logger.info(
+            f"[RefDocs] sync_directory '{directory}': "
+            f"{summary['uploaded']} uploaded, {summary['skipped']} unchanged, "
+            f"{summary['failed']} failed"
+        )
+        return summary
+
     async def get_documents(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Retrieve relevant document chunks using hybrid search: 1/3 keyword + 2/3 semantic.
@@ -394,7 +457,7 @@ class ReferenceDocsManager:
                 semantic_formatted.append({
                     'content': r.get('content', ''),
                     'metadata': {
-                        'type': 'reference_doc',
+                        'type': meta.get('type', 'reference_doc'),
                         'title': meta.get('title', ''),
                         'section': meta.get('section', ''),
                         'file_type': meta.get('file_type', ''),
@@ -485,7 +548,7 @@ class ReferenceDocsManager:
                     scored.append({
                         'content': doc,
                         'metadata': {
-                            'type': 'reference_doc',
+                            'type': meta.get('type', 'reference_doc'),
                             'title': meta.get('title', ''),
                             'section': meta.get('section', ''),
                             'file_type': meta.get('file_type', ''),

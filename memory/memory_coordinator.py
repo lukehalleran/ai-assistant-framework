@@ -118,6 +118,30 @@ class MemoryCoordinator:
             time_manager=time_manager
         )
 
+        # Initialize knowledge graph (NetworkX-based entity relationship graph)
+        self.graph_memory = None
+        self.entity_resolver = None
+        try:
+            from config.app_config import (
+                KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_PERSIST_PATH,
+                KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD, KNOWLEDGE_GRAPH_ALIASES_PATH,
+            )
+            if KNOWLEDGE_GRAPH_ENABLED:
+                from memory.graph_memory import GraphMemory
+                from memory.entity_resolver import EntityResolver
+                self.graph_memory = GraphMemory(persist_path=KNOWLEDGE_GRAPH_PERSIST_PATH)
+                self.graph_memory._auto_save_threshold = KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD
+                self.entity_resolver = EntityResolver(
+                    graph_memory=self.graph_memory,
+                    aliases_path=KNOWLEDGE_GRAPH_ALIASES_PATH,
+                )
+                logger.info(
+                    f"[MemoryCoordinator] Knowledge graph initialized: "
+                    f"{self.graph_memory.node_count()} nodes, {self.graph_memory.edge_count()} edges"
+                )
+        except Exception as e:
+            logger.debug(f"[MemoryCoordinator] Knowledge graph init failed (non-fatal): {e}")
+
         self._storage = MemoryStorage(
             corpus_manager=corpus_manager,
             chroma_store=chroma_store,
@@ -125,7 +149,9 @@ class MemoryCoordinator:
             consolidator=self.consolidator,
             topic_manager=self.topic_manager,
             scorer=self.scorer,
-            time_manager=time_manager
+            time_manager=time_manager,
+            graph_memory=self.graph_memory,
+            entity_resolver=self.entity_resolver,
         )
         # Connect thread detection to storage
         self._storage._thread_detect_fn = self.thread_manager.detect_or_create_thread
