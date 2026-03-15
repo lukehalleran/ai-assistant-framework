@@ -185,6 +185,12 @@ class UserProfile:
         relation = relation.strip().lower()
         value = value.strip()
 
+        # Resolve relative temporal references ("tomorrow" → "Thu 2026-03-13")
+        from utils.temporal_resolver import resolve_temporal_references, has_temporal_reference
+        if has_temporal_reference(value):
+            ref_date = timestamp if isinstance(timestamp, datetime) else datetime.now()
+            value = resolve_temporal_references(value, reference_date=ref_date)
+
         # Auto-categorize if not provided
         if category is None:
             category = categorize_relation(relation)

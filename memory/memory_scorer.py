@@ -121,6 +121,11 @@ class MemoryScorer:
         # cleared after. Used as fallback when rank_memories() is called without
         # an explicit weight_overrides parameter (deep in the retrieval chain).
         self._intent_weight_overrides: Optional[Dict[str, float]] = None
+        # Graph references — set by PromptBuilder before retrieval, cleared after.
+        # Used for graph-boosted scoring (bonus for memories mentioning
+        # entities connected to query entities in the knowledge graph).
+        self._graph_memory = None
+        self._entity_resolver = None
 
     def calculate_truth_score(self, query: str, response: str) -> float:
         """Calculate truth score based on response/continuity characteristics."""
@@ -282,6 +287,39 @@ class MemoryScorer:
         cq_salient = _salient_tokens(current_query, k=12)
         cq_density = _num_op_density(current_query)
 
+        # Graph-boosted scoring: build set of related entity display names
+        graph_related_names: Set[str] = set()
+        graph_boost_enabled = False
+        graph_boost_cap = 0.15
+        try:
+            from config.app_config import (
+                KNOWLEDGE_GRAPH_ENABLED,
+                GRAPH_SCORING_BOOST_ENABLED,
+                GRAPH_SCORING_BOOST_CAP,
+            )
+            gm = self._graph_memory
+            er = self._entity_resolver
+            if (KNOWLEDGE_GRAPH_ENABLED and GRAPH_SCORING_BOOST_ENABLED
+                    and gm and er and gm.node_count() > 0):
+                from memory.graph_utils import extract_graph_entities, get_related_display_names
+                query_entities = extract_graph_entities(current_query, er)
+                if query_entities:
+                    # depth=1 intentional: depth=2 in star topology connects
+                    # everything through "user", making boost indiscriminate.
+                    # Scoring boost activates when graph has lateral edges.
+                    graph_related_names = get_related_display_names(
+                        query_entities, gm, depth=1, skip_ids={"user"},
+                    )
+                    graph_boost_enabled = bool(graph_related_names)
+                    graph_boost_cap = GRAPH_SCORING_BOOST_CAP
+                    if graph_related_names:
+                        logger.debug(
+                            f"[Ranker] Graph boost: {len(graph_related_names)} related names "
+                            f"from entities {query_entities}"
+                        )
+        except Exception as e:
+            logger.debug(f"[Ranker] Graph boost setup failed: {e}")
+
         for m in memories:
             # 1) base relevance with collection/source boost
             rel = float(m.get('relevance_score', 0.5))
@@ -380,6 +418,17 @@ class MemoryScorer:
                 elif mem_type == 'META' or collection == 'meta':
                     meta_bonus = 0.12
 
+            # 11) graph proximity bonus
+            graph_bonus = 0.0
+            if graph_boost_enabled and graph_related_names:
+                blob_lower = blob  # already lowered above
+                matches = sum(
+                    1 for name in graph_related_names
+                    if name.lower() in blob_lower
+                )
+                if matches > 0:
+                    graph_bonus = min(0.05 * matches, graph_boost_cap)
+
             m['final_score'] = (
                 weights.get('relevance', 0.35) * rel +
                 weights.get('recency', 0.25) * recency +
@@ -390,6 +439,7 @@ class MemoryScorer:
                 structure +
                 anchor_bonus +
                 meta_bonus +
+                graph_bonus +
                 penalty
             )
 
@@ -400,6 +450,7 @@ class MemoryScorer:
                     'topic_match': topic_match,
                     'structure': structure, 'anchor_bonus': anchor_bonus,
                     'meta_bonus': meta_bonus,
+                    'graph_bonus': graph_bonus,
                     'size_penalty': size_penalty,
                     'penalty': penalty,
                 }
@@ -420,7 +471,8 @@ class MemoryScorer:
                     f"truth={dbg.get('truth', 0):.2f}, imp={dbg.get('importance', 0):.2f}, "
                     f"cont={dbg.get('continuity', 0):.2f}, topic={dbg.get('topic_match', 0):.2f}, "
                     f"struct={dbg.get('structure', 0):.2f}, anchor={dbg.get('anchor_bonus', 0):.2f}, "
-                    f"meta={dbg.get('meta_bonus', 0):.2f}, pen={dbg.get('penalty', 0):.2f}) "
+                    f"meta={dbg.get('meta_bonus', 0):.2f}, graph={dbg.get('graph_bonus', 0):.2f}, "
+                    f"pen={dbg.get('penalty', 0):.2f}) "
                     f"Q: {mm.get('query', '')[:48]!r}"
                 )
 

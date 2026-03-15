@@ -27,12 +27,13 @@ TEST_MODE = os.environ.get("TEST_MODE") == "1" # Ensure TEST_MODE is read direct
 # ==== CONFIGURATION ====
 CHUNK_SIZE = 512 # These seem to be internal to semantic_chunk_text, not used externally for producer
 OVERLAP = 256
-ENCODE_BATCH_SIZE = 8
+# Batch size for SentenceTransformer.encode(). Use larger values on GPU (128-256 for A100).
+ENCODE_BATCH_SIZE = int(os.environ.get("ENCODE_BATCH_SIZE", "128"))
 SAFE_BATCH_SIZE = 50
 HEARTBEAT_INTERVAL = 100
 MIN_FREE_GB = 10
-MAX_QUEUE_SIZE = 100
-NUM_CONSUMER_THREADS = int(os.environ.get("NUM_CONSUMER_THREADS", "1"))
+MAX_QUEUE_SIZE = 200
+NUM_CONSUMER_THREADS = int(os.environ.get("NUM_CONSUMER_THREADS", "2"))
 
 # WIKI_PATH refers to the input directory for basic chunks.
 # We need to adjust this to point to semantic_chunks if using semantic chunking.
@@ -55,7 +56,7 @@ def check_disk_space(path="/"):
         sys.exit(1)
     print(f"[INFO] Disk check passed: {free_gb} GB free")
 
-check_disk_space("/run/media/lukeh/T9")
+check_disk_space(os.environ.get("DISK_CHECK_PATH", "."))
 
 # ==== INIT ====
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -197,6 +198,10 @@ def embedder(file_queue, done_chunks):
 
             if processed % HEARTBEAT_INTERVAL == 0:
                 save_checkpoint(done_chunks)
+                avg_time = total_time / max(1, processed)
+                print(f"[HEARTBEAT] {processed:,} articles embedded, "
+                      f"{total_chunks:,} total chunks, "
+                      f"avg {avg_time:.2f}s/article", flush=True)
 
         except Exception as e:
             print(f"[ERROR] Failed to embed {source_name}: {e}", flush=True)

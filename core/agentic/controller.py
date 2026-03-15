@@ -15,6 +15,7 @@ Tool Support:
     - Python code execution via SandboxManager (optional) [NEW 2026-01-22]
       - Persistent sessions for variable persistence across turns
       - Automatic cleanup in finally block
+    - Memory search via ChromaDB collections (optional)
 
 Key Parameters:
     - skip_initial_search: bool - Skip Round 1 web search for computation-only queries [NEW 2026-01-22]
@@ -91,10 +92,16 @@ class AgenticSearchController:
     Subsequent searches are model-driven via tool calls or XML markers.
     """
 
+    VALID_MEMORY_COLLECTIONS = frozenset({
+        "reference_docs", "facts", "conversations", "summaries",
+        "reflections", "obsidian_notes", "procedural", "procedural_skills",
+    })
+
     def __init__(
         self,
         model_manager: "ModelManager",
         web_search_manager: "WebSearchManager",
+        chroma_store=None,
         wolfram_manager: Optional["WolframManager"] = None,
         sandbox_manager: Optional["SandboxManager"] = None,
         token_manager: Optional["TokenManager"] = None,
@@ -108,6 +115,7 @@ class AgenticSearchController:
         Args:
             model_manager: LLM manager for generation
             web_search_manager: Web search manager for queries
+            chroma_store: Optional ChromaDB store for memory search
             wolfram_manager: Optional Wolfram Alpha manager for computations
             sandbox_manager: Optional E2B sandbox manager for code execution
             token_manager: Optional token counter for budget enforcement
@@ -117,6 +125,7 @@ class AgenticSearchController:
         """
         self.model_manager = model_manager
         self.web_search_manager = web_search_manager
+        self.chroma_store = chroma_store
         self.wolfram_manager = wolfram_manager
         self.sandbox_manager = sandbox_manager
         self.token_manager = token_manager
@@ -181,10 +190,12 @@ class AgenticSearchController:
         # Get protocol handler (pass tool availability for tool definitions)
         wolfram_available = self.wolfram_manager is not None and self.wolfram_manager.is_available()
         sandbox_available = self.sandbox_manager is not None and self.sandbox_manager.is_available()
+        memory_available = self.chroma_store is not None
         handler = get_protocol_handler(
             protocol,
             wolfram_available=wolfram_available,
-            sandbox_available=sandbox_available
+            sandbox_available=sandbox_available,
+            memory_available=memory_available,
         )
 
         # Augment system prompt for agentic mode
@@ -500,6 +511,56 @@ class AgenticSearchController:
                         session.current_round - 1,
                         purpose,
                         formatted_result
+                    )
+
+                elif decision.wants_memory_search and decision.memory_query:
+                    # Model wants to search internal memory/knowledge base
+                    collection = decision.memory_collection or "facts"
+                    yield ProgressEvent(
+                        event_type="searching_memory",
+                        message=f"Searching {collection}: {decision.memory_query}",
+                        round_number=session.current_round,
+                        metadata={
+                            "query": decision.memory_query,
+                            "collection": collection,
+                            "reason": decision.memory_reason,
+                        }
+                    )
+
+                    session.state = AgentState.SEARCHING
+                    start_time = time.time()
+                    memory_result = await self._execute_memory_search(
+                        decision.memory_query, collection
+                    )
+                    search_duration = (time.time() - start_time) * 1000
+
+                    round_data = SearchRound(
+                        round_number=session.current_round,
+                        request=SearchRequest(
+                            query=f"[Memory: {collection}] {decision.memory_query}",
+                            reason=decision.memory_reason,
+                            round_number=session.current_round
+                        ),
+                        results=None,
+                        duration_ms=search_duration
+                    )
+
+                    yield ProgressEvent(
+                        event_type="found_results",
+                        message=f"Found memory results from {collection}",
+                        round_number=session.current_round,
+                        metadata={"collection": collection, "duration_ms": search_duration}
+                    )
+
+                    session.state = AgentState.OBSERVING
+                    round_data.summary = memory_result
+                    session.rounds.append(round_data)
+
+                    session.accumulated_context += "\n\n" + self._format_memory_context(
+                        session.current_round - 1,
+                        collection,
+                        decision.memory_query,
+                        memory_result
                     )
 
                 elif decision.is_done:
@@ -902,6 +963,29 @@ What would you like to do?""")
                 if dreams_text:
                     parts.append(f"[RECENT DREAMS]\n{dreams_text}")
 
+            # Reference docs (Daemon self-knowledge)
+            reference_docs = initial_context.get('reference_docs', [])
+            if reference_docs:
+                doc_lines = []
+                for i, doc in enumerate(reference_docs, start=1):
+                    if isinstance(doc, dict):
+                        content = doc.get('content', '')
+                        meta = doc.get('metadata', {}) if isinstance(doc.get('metadata'), dict) else {}
+                        title = meta.get('title', '')
+                        section = meta.get('section', '')
+                        if content:
+                            header_parts = []
+                            if title:
+                                header_parts.append(f"**{title}**")
+                            if section:
+                                header_parts.append(f"({section})")
+                            header = " ".join(header_parts) if header_parts else ""
+                            doc_lines.append(f"{i}) {header}\n{content.strip()}" if header else f"{i}) {content.strip()}")
+                    elif isinstance(doc, str) and doc.strip():
+                        doc_lines.append(doc.strip())
+                if doc_lines:
+                    parts.append(f"[DAEMON DOCUMENTATION]\n" + "\n\n".join(doc_lines))
+
             # Reflections
             # Builder provides: reflections (flat list), recent_reflections, semantic_reflections
             recent_reflections = initial_context.get('recent_reflections', [])
@@ -1038,6 +1122,78 @@ What would you like to do?""")
     ) -> str:
         """Format a single Python code execution for context."""
         return f"[Code Execution Round {round_number}] Purpose: {purpose}\n{content}"
+
+    async def _execute_memory_search(self, query: str, collection: str) -> str:
+        """Execute raw semantic search against a ChromaDB collection."""
+        from config.app_config import AGENTIC_MEMORY_SEARCH_LIMIT
+
+        if not self.chroma_store:
+            return "[Memory search unavailable]"
+
+        if collection not in self.VALID_MEMORY_COLLECTIONS:
+            return f"[Invalid collection: {collection}. Valid: {', '.join(sorted(self.VALID_MEMORY_COLLECTIONS))}]"
+
+        try:
+            results = self.chroma_store.query_collection(
+                collection_name=collection,
+                query_text=query,
+                n_results=AGENTIC_MEMORY_SEARCH_LIMIT,
+            )
+
+            if not results:
+                return f"[No results found in {collection} for: {query}]"
+
+            return self._format_memory_results(results, collection)
+
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] Memory search failed: {e}")
+            return f"[Memory search error: {e}]"
+
+    def _format_memory_results(self, results: list, collection: str) -> str:
+        """Format ChromaDB results into readable text for the LLM."""
+        lines = []
+        for i, r in enumerate(results, 1):
+            content = r.get("content", "").strip()
+            score = r.get("relevance_score", 0.0)
+            meta = r.get("metadata", {})
+
+            header_parts = [f"[{i}]"]
+            if collection == "reference_docs":
+                title = meta.get("title", "")
+                section = meta.get("section", "")
+                if title:
+                    header_parts.append(title)
+                if section:
+                    header_parts.append(f"({section})")
+            elif collection == "facts":
+                subject = meta.get("subject", "")
+                relation = meta.get("relation", "")
+                if subject and relation:
+                    header_parts.append(f"{subject} — {relation}")
+            elif collection in ("conversations", "summaries", "reflections"):
+                ts = meta.get("timestamp", "")
+                if ts:
+                    header_parts.append(ts[:19])
+
+            header_parts.append(f"(score: {score:.2f})")
+            header = " ".join(header_parts)
+
+            if len(content) > 500:
+                content = content[:500] + "..."
+
+            lines.append(f"{header}\n{content}")
+
+        return "\n\n".join(lines)
+
+    def _format_memory_context(
+        self, round_num: int, collection: str, query: str, results: str
+    ) -> str:
+        """Format memory search results for accumulated context."""
+        return (
+            f"[MEMORY SEARCH — Round {round_num} — {collection}]\n"
+            f"Query: {query}\n"
+            f"Results:\n{results}"
+        )
 
     def _is_low_quality_result(
         self,

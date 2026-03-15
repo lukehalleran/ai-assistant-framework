@@ -20,6 +20,7 @@ Supported Tools:
     - web_search / <search>: Web search queries
     - execute_wolfram / <wolfram>: Wolfram Alpha computations
     - execute_python / <python>: E2B sandbox code execution [NEW 2026-01-22]
+    - search_memory / <memory>: ChromaDB memory/knowledge base search
     - signal_done / <done>: Signal task completion
 
 Dependencies:
@@ -125,19 +126,22 @@ class NativeToolsHandler(BaseProtocolHandler):
     Parses tool_calls from LLM response to detect search, Wolfram, and sandbox requests.
     """
 
-    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False):
+    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False):
         from core.agentic.types import (
             SEARCH_TOOL_DEFINITION,
             DONE_TOOL_DEFINITION,
             WOLFRAM_TOOL_DEFINITION,
             SANDBOX_TOOL_DEFINITION,
+            MEMORY_SEARCH_TOOL_DEFINITION,
         )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
         self.wolfram_tool = WOLFRAM_TOOL_DEFINITION
         self.sandbox_tool = SANDBOX_TOOL_DEFINITION
+        self.memory_tool = MEMORY_SEARCH_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
+        self.memory_available = memory_available
 
     def parse_response(self, response: Any) -> SearchDecision:
         """
@@ -241,6 +245,22 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] execute_python called without code")
                 return SearchDecision(wants_answer=True)
 
+        elif func_name == "search_memory":
+            query = args.get("query", "")
+            collection = args.get("collection", "facts")
+            reason = args.get("reason")
+            if query:
+                logger.debug(f"[AgenticProtocol] Native tool memory search: {collection}/{query}")
+                return SearchDecision(
+                    wants_memory_search=True,
+                    memory_query=query,
+                    memory_collection=collection,
+                    memory_reason=reason
+                )
+            else:
+                logger.warning("[AgenticProtocol] search_memory called without query")
+                return SearchDecision(wants_answer=True)
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return SearchDecision(wants_answer=True)
@@ -262,6 +282,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             tools.append(self.wolfram_tool)
         if self.sandbox_available:
             tools.append(self.sandbox_tool)
+        if self.memory_available:
+            tools.append(self.memory_tool)
         return tools
 
     def augment_system_prompt(self, system_prompt: str, max_rounds: int) -> str:
@@ -275,15 +297,22 @@ class NativeToolsHandler(BaseProtocolHandler):
             tool_list.append("wolfram_alpha")
         if self.sandbox_available:
             tool_list.append("execute_python")
+        if self.memory_available:
+            tool_list.append("search_memory")
         tool_list.append("done_searching")
 
         tools_str = ", ".join(tool_list)
+        memory_guidance = (
+            " Use search_memory for internal/personal questions "
+            "(your own docs, user facts, past conversations). "
+            "Use web_search for external/current events. Use both when needed."
+        ) if self.memory_available else ""
         addition = (
             f"\n\n[AGENTIC TOOLS MODE]\n"
             f"You have access to {tools_str} tools. "
             f"Use web_search for current info, wolfram_alpha for quick math/science computations, "
             f"execute_python for multi-step calculations and data analysis "
-            f"(up to {max_rounds} tool uses total). "
+            f"(up to {max_rounds} tool uses total).{memory_guidance} "
             "Use done_searching when you have enough information to answer."
         )
         return system_prompt + addition
@@ -305,6 +334,12 @@ class XMLMarkerHandler(BaseProtocolHandler):
     # Matches: <python>code</python> or <python purpose="description">code</python>
     PYTHON_PATTERN = re.compile(
         r'<python(?:\s+purpose=["\']([^"\']*)["\'])?\s*>(.*?)</python>',
+        re.DOTALL | re.IGNORECASE
+    )
+    # Memory search pattern with optional collection attribute
+    # Matches: <memory collection="facts">query</memory> or <memory>query</memory>
+    MEMORY_PATTERN = re.compile(
+        r'<memory(?:\s+collection=["\']([^"\']*)["\'])?\s*>(.*?)</memory>',
         re.DOTALL | re.IGNORECASE
     )
 
@@ -345,6 +380,19 @@ class XMLMarkerHandler(BaseProtocolHandler):
                 return SearchDecision(
                     wants_wolfram=True,
                     wolfram_query=query
+                )
+
+        # Check for memory search marker
+        memory_match = self.MEMORY_PATTERN.search(text)
+        if memory_match:
+            collection = memory_match.group(1) or "facts"
+            query = memory_match.group(2).strip()
+            if query:
+                logger.debug(f"[AgenticProtocol] XML memory marker found: {collection}/{query}")
+                return SearchDecision(
+                    wants_memory_search=True,
+                    memory_query=query,
+                    memory_collection=collection
                 )
 
         # Check for search marker
@@ -396,7 +444,8 @@ class XMLMarkerHandler(BaseProtocolHandler):
 def get_protocol_handler(
     protocol: SearchProtocol,
     wolfram_available: bool = False,
-    sandbox_available: bool = False
+    sandbox_available: bool = False,
+    memory_available: bool = False,
 ) -> BaseProtocolHandler:
     """
     Factory function to get appropriate protocol handler.
@@ -405,6 +454,7 @@ def get_protocol_handler(
         protocol: The protocol to use
         wolfram_available: Whether Wolfram Alpha is configured
         sandbox_available: Whether E2B sandbox is configured
+        memory_available: Whether ChromaDB memory search is available
 
     Returns:
         Protocol handler instance
@@ -412,7 +462,8 @@ def get_protocol_handler(
     if protocol == SearchProtocol.NATIVE_TOOLS:
         return NativeToolsHandler(
             wolfram_available=wolfram_available,
-            sandbox_available=sandbox_available
+            sandbox_available=sandbox_available,
+            memory_available=memory_available,
         )
     else:
         return XMLMarkerHandler()

@@ -9,10 +9,12 @@ import pyarrow.parquet as pq
 
 from pathlib import Path
 
-PARQUET_DIR       = "/run/media/lukeh/T9/embedded_parquet"  # Updated to use semantic chunks
-EMBED_MMAP_FILE   = "/run/media/lukeh/T9/wiki_data/embeddings_mmap.dat"
-METADATA_FILE     = "/run/media/lukeh/T9/wiki_data/metadata.parquet"
-FAISS_INDEX_FILE  = "/run/media/lukeh/T9/wiki_data/vector_index_ivf.faiss"
+# Paths — override with env vars for remote/cloud runs
+_DATA_ROOT        = os.environ.get("WIKI_DATA_ROOT", "/run/media/lukeh/T9")
+PARQUET_DIR       = os.environ.get("PARQUET_DIR", os.path.join(_DATA_ROOT, "embedded_parquet"))
+EMBED_MMAP_FILE   = os.path.join(_DATA_ROOT, "wiki_data", "embeddings_mmap.dat")
+METADATA_FILE     = os.path.join(_DATA_ROOT, "wiki_data", "metadata.parquet")
+FAISS_INDEX_FILE  = os.path.join(_DATA_ROOT, "wiki_data", "vector_index_ivf.faiss")
 MODEL_NAME        = "all-MiniLM-L6-v2"
 
 def load_merged_parquet_mmap(parquet_dir: str):
@@ -103,6 +105,7 @@ def build_production_faiss_index(embeddings: np.ndarray):
 
 if __name__ == "__main__":
     print("🔨 Building FAISS index…")
+    os.makedirs(os.path.dirname(FAISS_INDEX_FILE), exist_ok=True)
     # This is where the NameError was happening
     embeddings, metadata = load_merged_parquet_mmap(PARQUET_DIR)
 

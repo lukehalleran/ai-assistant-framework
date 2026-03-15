@@ -3,8 +3,11 @@
 Shutdown memory processing module.
 
 Handles end-of-session consolidation: block summaries, fact extraction,
-LLM-assisted fact extraction, user profile updates, procedural skill
-extraction, code proposal generation, and session reflections.
+LLM-assisted fact extraction, user profile updates (user-only facts),
+procedural skill extraction, code proposal generation, and session reflections.
+
+Note: Entity facts (non-user subjects) are stored in ChromaDB but NOT added
+to UserProfile. Only facts with subject="user" are passed to add_facts_batch().
 """
 
 import os
@@ -183,7 +186,10 @@ class ShutdownProcessor:
             # 6) Generate code proposals (goal-directed)
             await self._generate_proposals(session_conversations)
 
-            # 7) Cross-collection deduplication (if enabled)
+            # 7) Save knowledge graph and entity aliases
+            self._save_knowledge_graph()
+
+            # 8) Cross-collection deduplication (if enabled)
             await self._run_cross_collection_dedup()
 
             logger.info("[Shutdown] Memory processing complete")
@@ -431,11 +437,18 @@ class ShutdownProcessor:
                 continue
         logger.info(f"[LLM Facts] kept={kept} (model={model_alias})")
 
-        # Update user profile with extracted facts
+        # Update user profile with user-scoped facts only (entity facts stay in ChromaDB only)
         if triples and self.user_profile:
             try:
-                added = self.user_profile.add_facts_batch(triples)
-                logger.info(f"[Shutdown] Added {added} facts to user profile")
+                user_triples = [
+                    t for t in triples
+                    if t.get("subject", "user").lower() == "user"
+                ]
+                if user_triples:
+                    added = self.user_profile.add_facts_batch(user_triples)
+                    logger.info(f"[Shutdown] Added {added} user facts to profile (skipped {len(triples) - len(user_triples)} entity facts)")
+                else:
+                    logger.debug("[Shutdown] No user-scoped facts to add to profile")
             except Exception as profile_err:
                 logger.warning(f"[Shutdown] Failed to update user profile: {profile_err}")
 
@@ -853,6 +866,26 @@ class ShutdownProcessor:
                 sections.append("## Recent Git Activity\n" + "\n".join(lines))
 
         return "\n\n".join(sections)
+
+    # ------------------------------------------------------------------
+    # Knowledge graph persistence
+    # ------------------------------------------------------------------
+
+    def _save_knowledge_graph(self):
+        """Flush knowledge graph and entity aliases to disk."""
+        try:
+            mc = self.memory_coordinator
+            if mc and getattr(mc, "graph_memory", None):
+                mc.graph_memory.save()
+                logger.info(
+                    "[Shutdown] Knowledge graph saved: %d nodes, %d edges",
+                    mc.graph_memory.node_count(),
+                    mc.graph_memory.edge_count(),
+                )
+            if mc and getattr(mc, "entity_resolver", None):
+                mc.entity_resolver.save_external_aliases()
+        except Exception as e:
+            logger.warning("[Shutdown] Knowledge graph save failed (non-fatal): %s", e)
 
     # ------------------------------------------------------------------
     # Cross-collection deduplication

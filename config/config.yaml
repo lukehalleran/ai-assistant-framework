@@ -141,6 +141,8 @@ agentic_search:
   context_budget_tokens: 8000
   compression_model: sonnet-4.5
   prefer_native_tools: true
+  memory_search_enabled: true
+  memory_search_limit: 7
 daily_notes:
   enabled: true
   folder: Vault/Daily Notes and To Do's
@@ -165,6 +167,28 @@ narrative_context:
 intent_classifier:
   enabled: true
   stm_refinement_threshold: 0.5
+entity_facts:
+  enabled: true
+  per_turn_cap: 4
+  user_per_turn_cap: 6
+  min_confidence: 0.55
+reference_docs:
+  auto_seed: true
+  seed_paths:
+  - docs
+knowledge_graph:
+  enabled: true
+  persist_path: data/knowledge_graph.json
+  retrieval_depth: 2
+  max_sentences: 15
+  auto_save_threshold: 50
+  min_confidence: 0.5
+  aliases_path: data/entity_aliases.json
+  max_prompt_sentences: 12
+  scoring_boost_enabled: true
+  scoring_boost_cap: 0.15
+  query_expansion_enabled: true
+  query_expansion_max_terms: 8
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

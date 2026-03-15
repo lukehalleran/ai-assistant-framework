@@ -70,7 +70,7 @@ class ModelManager:
         self.tokenizers = {}
         # Dictionary mapping registered API models
         self.api_models = {}
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
 
         self.base_url = "https://openrouter.ai/api/v1"
 

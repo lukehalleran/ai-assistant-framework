@@ -663,6 +663,25 @@ def calculate_thread_continuity_score(
         score += THREAD_WEIGHT_DEICTIC
         logger.debug(f"[Thread] Deictic bonus: +{THREAD_WEIGHT_DEICTIC:.3f}")
 
+    # Factor 6: Casual-time decay
+    # When neither message is heavy/topical and the gap is beyond medium (30 min),
+    # decay the score so that keyword overlap alone can't bridge the gap.
+    # Important conversations (heavy topics, specific shared topics) are unaffected.
+    is_casual_pair = (
+        not both_heavy and not last_was_heavy
+        and (not same_topic or not current_topic or current_topic.lower() == "general")
+    )
+    if is_casual_pair and time_diff_seconds > THREAD_TIME_MEDIUM_BONUS:
+        casual_decay = max(0.0, 1.0 - (
+            (time_diff_seconds - THREAD_TIME_MEDIUM_BONUS)
+            / (THREAD_TIME_HARD_CUTOFF - THREAD_TIME_MEDIUM_BONUS)
+        ))
+        logger.debug(
+            f"[Thread] Casual-time decay: {casual_decay:.3f} "
+            f"(gap={time_diff_seconds:.0f}s, score {score:.3f} -> {score * casual_decay:.3f})"
+        )
+        score *= casual_decay
+
     return score
 
 

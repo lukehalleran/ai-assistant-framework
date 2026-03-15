@@ -33,6 +33,7 @@ from core.agentic.types import (
     ProgressEvent,
     SEARCH_TOOL_DEFINITION,
     DONE_TOOL_DEFINITION,
+    MEMORY_SEARCH_TOOL_DEFINITION,
 )
 from core.agentic.protocols import (
     detect_protocol,
@@ -53,6 +54,7 @@ __all__ = [
     "ProgressEvent",
     "SEARCH_TOOL_DEFINITION",
     "DONE_TOOL_DEFINITION",
+    "MEMORY_SEARCH_TOOL_DEFINITION",
     # Protocols
     "detect_protocol",
     "BaseProtocolHandler",

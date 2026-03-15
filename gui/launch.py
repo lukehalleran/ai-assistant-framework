@@ -18,6 +18,10 @@ Module Contract
     - Generates yesterday's daily note if missing
     - Non-blocking (runs in daemon thread)
     - Respects DAILY_NOTES_ENABLED config flag
+  - _run_reference_docs_seed(): Background thread for auto-seeding docs/ into reference_docs ChromaDB
+    - Syncs docs/ directory using file mtime for idempotency (skips unchanged files)
+    - Non-blocking (runs in daemon thread)
+    - Respects REFERENCE_DOCS_ENABLED and REFERENCE_DOCS_AUTO_SEED config flags
   - submit_chat(): async driver that streams tokens + timer updates
   - Tabs:
     • Chat: chat UI, file upload, raw toggle, personality selector, Sync Notes button
@@ -32,14 +36,16 @@ Module Contract
   - utils.health_check (add_health_endpoint)
   - utils.conversation_logger
   - utils.daily_notes_generator (DailyNotesGenerator) [NEW 2026-01-18]
+  - knowledge.reference_docs_manager (ReferenceDocsManager) — auto-seed on startup
 - Side effects:
   - Registers /health endpoint on FastAPI app after launch
   - Logs URLs and health endpoint to console
   - [FROZEN MODE] Auto-opens browser via platform-specific command (xdg-open/open/startfile)
   - Runs indefinite event loop (until KeyboardInterrupt)
   - [STARTUP] Spawns background thread for daily notes catch-up [NEW 2026-01-18]
+  - [STARTUP] Spawns background thread for reference docs auto-seed (mtime idempotent)
 - Threading/Async: Main thread blocked by event loop; Gradio handles async internally.
-  Daily notes catch-up runs in separate daemon thread.
+  Daily notes catch-up and reference docs seed run in separate daemon threads.
 """
 import os
 import sys
@@ -362,6 +368,63 @@ def _run_monthly_notes_catchup():
     print("[MonthlyNotes] Started background catch-up check...")
 
 
+def _run_reference_docs_seed():
+    """
+    Auto-seed docs/ directory into reference_docs ChromaDB collection on startup.
+    Uses file mtime for idempotency — unchanged files are skipped.
+    Non-blocking - runs in background daemon thread.
+    """
+    import threading
+
+    def _seed_task():
+        try:
+            from config.app_config import (
+                REFERENCE_DOCS_ENABLED, REFERENCE_DOCS_AUTO_SEED,
+                REFERENCE_DOCS_SEED_PATHS,
+            )
+            if not REFERENCE_DOCS_ENABLED or not REFERENCE_DOCS_AUTO_SEED:
+                return
+
+            from knowledge.reference_docs_manager import ReferenceDocsManager
+            from pathlib import Path
+
+            manager = ReferenceDocsManager()
+            total_uploaded = 0
+            total_skipped = 0
+            total_failed = 0
+
+            for seed_path in REFERENCE_DOCS_SEED_PATHS:
+                p = Path(seed_path).expanduser().resolve()
+                if p.is_dir():
+                    result = manager.sync_directory(str(p))
+                    total_uploaded += result['uploaded']
+                    total_skipped += result['skipped']
+                    total_failed += result['failed']
+                elif p.is_file():
+                    status = manager.sync_file(str(p))
+                    if status == 'uploaded':
+                        total_uploaded += 1
+                    elif status == 'skipped':
+                        total_skipped += 1
+                    else:
+                        total_failed += 1
+                else:
+                    print(f"[RefDocs] Seed path not found: {seed_path}")
+
+            print(
+                f"[RefDocs] Auto-seed complete: "
+                f"{total_uploaded} uploaded, {total_skipped} unchanged, "
+                f"{total_failed} failed"
+            )
+
+        except Exception as e:
+            print(f"[RefDocs] Auto-seed failed (non-critical): {e}")
+
+    thread = threading.Thread(target=_seed_task, daemon=True)
+    thread.start()
+    print("[RefDocs] Started background auto-seed...")
+
+
 def _launch_wizard_ui(orchestrator, share, server_name, port):
     """
     Launch the onboarding wizard UI for first-run users.
@@ -574,6 +637,10 @@ def launch_gui(orchestrator, force_wizard=False):
     # ------- Monthly notes catch-up (run in background) -------
     # Migrates weekly folders into monthly parents, generates last month's summary
     _run_monthly_notes_catchup()
+
+    # ------- Reference docs auto-seed (run in background) -------
+    # Seeds docs/ directory into ChromaDB reference_docs collection (mtime-based idempotency)
+    _run_reference_docs_seed()
 
     # ------- Normal chat UI (non-first-run) -------
     def get_summary_status():

@@ -792,9 +792,15 @@ The user is processing/analyzing, open to engagement.
                 if self.logger:
                     self.logger.debug(f"[Orchestrator] Sandbox manager not available: {e}")
 
+            # Get ChromaDB store for memory search if available
+            chroma_store = None
+            if self.memory_system and hasattr(self.memory_system, 'chroma_store'):
+                chroma_store = self.memory_system.chroma_store
+
             self._agentic_controller = AgenticSearchController(
                 model_manager=self.model_manager,
                 web_search_manager=web_search_manager,
+                chroma_store=chroma_store,
                 wolfram_manager=wolfram_manager,
                 sandbox_manager=sandbox_manager,
                 token_manager=token_manager,
@@ -1442,6 +1448,7 @@ The user is processing/analyzing, open to engagement.
                             system_prompt=system_prompt or "",
                             model_name=model_name,
                             initial_search_terms=web_decision.search_terms,
+                            initial_context=prompt_ctx,
                             crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
                         ):
                             if isinstance(event_or_chunk, ProgressEvent):
