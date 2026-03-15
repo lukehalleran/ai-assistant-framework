@@ -3,16 +3,22 @@
 
 Additive LLM-assisted fact extractor used at shutdown to augment regex/spaCy/REBEL facts.
 ENHANCED: Now extracts facts with category classification for user profile building.
+ENHANCED (2026-03): Extracts entity facts (non-user subjects) with user_connection metadata.
 
 Contract
 - Inputs: list of recent user-only messages (strings), model_manager
 - Behavior: calls a compact LLM prompt to extract SRO triples as strict JSON with category metadata
-- Output: list of dict triples (subject, relation, object, value, category, confidence)
+  - User facts: subject="user" for personal facts (pronouns normalized)
+  - Entity facts: subject=entity name for people/places/orgs the user discusses
+    Entity facts include user_connection field (e.g., "user's boss")
+- Output: list of dict triples (subject, relation, object, value, category, confidence, fact_scope)
+  - fact_scope: "user" or "entity" — indicates whether fact is about the user or a third-party entity
 """
 
 from __future__ import annotations
 
 from typing import List, Dict, Any
+from datetime import datetime
 import json
 import re
 import os
@@ -40,7 +46,7 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
     if not subj or not rel or not obj:
         return None
 
-    # Pronouns → user
+    # Pronouns → user (keep named entities as-is)
     if subj.lower() in {"i", "me", "my", "we", "us", "you", "user"}:
         subj = "user"
 
@@ -53,14 +59,26 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
     # Get confidence if provided
     confidence = float(t.get("confidence", 0.7))
 
-    return {
+    # Determine fact scope
+    is_user = (subj.lower() == "user")
+    fact_scope = "user" if is_user else "entity"
+
+    result = {
         "subject": subj.lower(),
         "relation": rel,
         "object": obj.strip().strip(". "),
         "value": obj.strip().strip(". "),  # Alias for compatibility
         "category": category.value,
         "confidence": confidence,
+        "fact_scope": fact_scope,
     }
+
+    # Forward user_connection if the LLM provided one
+    user_connection = str(t.get("user_connection") or "").strip()
+    if user_connection:
+        result["user_connection"] = user_connection
+
+    return result
 
 
 class LLMFactExtractor:
@@ -132,20 +150,29 @@ Output: [
   {{"subject": "user", "relation": "role", "object": "creator", "category": "projects", "confidence": 0.9}}
 ]
 
+ENTITY FACTS (in addition to user facts):
+- Also extract facts about people, places, topics the user discusses
+- Subject should be the entity name (NOT "user")
+- Add "user_connection" field explaining relation to user (if known)
+- Only extract when clearly stated, not hypothetical
+- Example: "My boss Oliver moved from London"
+  → {{"subject": "Oliver", "relation": "moved_from", "object": "London", "category": "relationships", "confidence": 0.75, "user_connection": "user's boss"}}
+
 RULES:
-- Subject is always "user" for personal facts
+- Subject is "user" for personal facts, or the entity name for entity facts
 - Relation must be snake_case (e.g., "squat_max", "lives_in", "favorite_beer")
 - Extract facts the user states about themselves - be generous, not restrictive
 - Confidence: 0.9+ for direct statements, 0.7-0.8 for inferred, <0.7 for uncertain
 - Do NOT extract questions or hypotheticals
-- Do NOT extract facts about other people unless relation to user is clear
 - IMPORTANT: If user introduces themselves or describes their role/activity, extract those as facts
+- TEMPORAL: Today's date is {today}. When the user mentions relative dates ("tomorrow", "next Monday", "the following day"), resolve them to absolute dates in the object field. Example: "I work tomorrow" on 2026-03-12 → object: "work on Thu 2026-03-13"
 
 MESSAGES (user only, newest last):
 {messages}
 
 JSON:"""
-        prompt = prompt_template.format(messages=joined)
+        today_str = datetime.now().strftime("%A, %Y-%m-%d")
+        prompt = prompt_template.format(messages=joined, today=today_str)
 
         # Always log the messages being processed (helps debug empty extractions)
         logger.info(f"[LLM Facts] Building prompt with {len(msgs)} messages, total chars={len(prompt)}")

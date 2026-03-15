@@ -16,18 +16,21 @@ Module Contract
   - Triggers fact extraction per turn (if FACTS_EXTRACT_EACH_TURN enabled)
   - Triggers summary consolidation (if not SUMMARIZE_AT_SHUTDOWN_ONLY)
   - _maybe_regenerate_narrative(): Triggers narrative context refresh after consolidation [NEW 2026-01-17]
+  - Entity metadata forwarding: extract_and_store_facts() uses dict-based source to pass
+    fact_scope, entity_type, user_connection through to ChromaDB metadata [NEW 2026-03]
 - Dependencies:
   - memory.corpus_manager (JSON persistence)
   - memory.storage.multi_collection_chroma_store (vector storage)
-  - memory.fact_extractor (fact extraction)
+  - memory.fact_extractor (fact extraction — user + entity facts)
   - memory.memory_consolidator (summary generation, narrative synthesis)
 - Side effects:
   - Writes to corpus JSON file
-  - Writes to ChromaDB collections
+  - Writes to ChromaDB collections (including entity fact metadata)
   - Triggers narrative context regeneration after summary consolidation [NEW 2026-01-17]
 """
 
 import os
+import re
 import logging
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -40,6 +43,14 @@ logger = get_logger("memory_storage")
 # Environment configuration
 FACTS_EXTRACT_EACH_TURN = os.getenv("FACTS_EXTRACT_EACH_TURN", "0").strip().lower() not in ("0", "false", "no", "off")
 SUMMARIZE_AT_SHUTDOWN_ONLY = os.getenv("SUMMARIZE_AT_SHUTDOWN_ONLY", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Knowledge graph config (imported inside methods to avoid circular imports)
+def _get_graph_enabled():
+    try:
+        from config.app_config import KNOWLEDGE_GRAPH_ENABLED
+        return KNOWLEDGE_GRAPH_ENABLED
+    except ImportError:
+        return False
 
 
 class MemoryStorage:
@@ -58,6 +69,8 @@ class MemoryStorage:
         topic_manager=None,
         scorer=None,
         time_manager=None,
+        graph_memory=None,
+        entity_resolver=None,
     ):
         """
         Initialize MemoryStorage.
@@ -70,6 +83,8 @@ class MemoryStorage:
             topic_manager: Optional TopicManager for topic detection
             scorer: Optional MemoryScorer for calculating scores
             time_manager: Optional TimeManager for timestamps
+            graph_memory: Optional GraphMemory for knowledge graph ingestion
+            entity_resolver: Optional EntityResolver for entity resolution
         """
         self.corpus_manager = corpus_manager
         self.chroma_store = chroma_store
@@ -78,6 +93,8 @@ class MemoryStorage:
         self.topic_manager = topic_manager
         self.scorer = scorer
         self.time_manager = time_manager
+        self.graph_memory = graph_memory
+        self.entity_resolver = entity_resolver
 
         # State
         self.conversation_context: deque = deque(maxlen=50)
@@ -372,14 +389,31 @@ class MemoryStorage:
                 conf = float(md.get("confidence", truth_score))
                 src = md.get("source", "conversation")
 
+                # Build source dict to forward entity metadata to ChromaDB
+                source_dict = {
+                    "source": src,
+                    "confidence": conf,
+                }
+                for key in ("fact_scope", "entity_type", "user_connection"):
+                    val = md.get(key)
+                    if val:
+                        source_dict[key] = val
+
                 try:
                     result = self.chroma_store.add_fact(
                         fact=fact_text,
-                        source=src,
-                        confidence=conf,
+                        source=source_dict,
                     )
                     if result is not None:
                         stored += 1
+                        # Feed knowledge graph if available
+                        if self.graph_memory and self.entity_resolver and _get_graph_enabled():
+                            self._ingest_fact_to_graph(
+                                subj=subj, rel=rel, obj=obj,
+                                fact_id=str(result) if result else "",
+                                entity_type=md.get("entity_type", ""),
+                                confidence=conf,
+                            )
                 except Exception as inner:
                     logger.warning(f"[MemoryStorage] add_fact failed: {inner}")
                     continue
@@ -388,6 +422,129 @@ class MemoryStorage:
 
         except Exception as e:
             logger.warning(f"Fact extraction failed: {e}", exc_info=True)
+
+    # Compiled regexes for _is_graph_worthy_object (class-level for performance)
+    _TEMPORAL_RE = re.compile(
+        r"^\d+(\.\d+)?\s*(years?|months?|weeks?|days?|hours?)", re.IGNORECASE
+    )
+    _FREQUENCY_RE = re.compile(
+        r"^(once|twice|three\s+times)\s+a\s+", re.IGNORECASE
+    )
+    _MEASUREMENT_RE = re.compile(
+        r"""^\d[\d'".,]*(lbs?|iu|mg|mcg|kg|oz|ft|in)?\s*$""", re.IGNORECASE
+    )
+    _VERB_STEMS = frozenset({
+        "stopped", "started", "went", "came", "used", "began",
+        "finished", "understands", "feels", "thinks", "strained",
+        "relying", "protecting", "finishing", "moved", "working",
+        "planning", "trying", "wanting", "becoming", "living",
+        "dealing", "struggling", "considering", "taking",
+    })
+
+    @staticmethod
+    def _is_graph_worthy_object(obj: str) -> bool:
+        """Check if a triple's object value is a real entity worth graphing.
+
+        Entities/attributes (1-3 words) are kept as nodes — they're valid
+        hop targets (e.g. auggie --breed--> golden retriever).  Phrases
+        (4+ words), temporal durations, measurements, and verb phrases
+        are stored as subject-node metadata instead.
+        """
+        o = obj.strip().lower()
+
+        # Too short or too long
+        if len(o) < 2 or len(o) > 60:
+            return False
+
+        # 4+ words = descriptive phrase, not an entity.
+        if len(o.split()) >= 4:
+            return False
+
+        # Generic/meaningless words
+        generic = {
+            "a lot", "some", "none", "true", "false",
+            "yes", "no", "many", "few", "lots", "not sure", "unknown",
+            "graph", "user",
+        }
+        if o in generic:
+            return False
+
+        # Temporal/duration patterns: "2 years", "6 months ago", "10 days"
+        if MemoryStorage._TEMPORAL_RE.match(o):
+            return False
+
+        # Frequency patterns: "once a week", "twice a day"
+        if MemoryStorage._FREQUENCY_RE.match(o):
+            return False
+
+        # Measurement patterns: "5'11\"", "20lbs", "10000iu"
+        if MemoryStorage._MEASUREMENT_RE.match(o):
+            return False
+
+        # Verb-phrase filter: "stopped being religious", "finishing grad school"
+        first_word = o.split()[0]
+        if first_word in MemoryStorage._VERB_STEMS:
+            return False
+
+        return True
+
+    def _ingest_fact_to_graph(
+        self, subj: str, rel: str, obj: str,
+        fact_id: str = "", entity_type: str = "", confidence: float = 0.5,
+    ) -> None:
+        """Push a single S-R-O triple into the knowledge graph.
+
+        Called after a fact is successfully stored in ChromaDB.
+        Resolves entities via EntityResolver and normalizes relations.
+        Filters out non-entity objects (durations, phrases, generic words).
+        """
+        if not subj or not rel or not obj:
+            return
+        try:
+            from memory.entity_resolver import normalize_relation
+            from memory.graph_models import GraphNode, GraphEdge
+            from config.app_config import KNOWLEDGE_GRAPH_MIN_CONFIDENCE
+
+            if confidence < KNOWLEDGE_GRAPH_MIN_CONFIDENCE:
+                return
+
+            canon_rel = normalize_relation(rel)
+
+            # Non-entity objects (sentence fragments, generic words) get stored
+            # as metadata on the subject node instead of creating junk nodes.
+            if not self._is_graph_worthy_object(obj):
+                subj_display = subj if subj.lower() != "user" else "User"
+                subj_type = "person" if subj.lower() == "user" else (entity_type or "other")
+                subj_id = self.entity_resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
+                # Store as node metadata: {"relation": "value"}
+                node = self.graph_memory.get_entity(subj_id)
+                if node:
+                    self.graph_memory.add_entity(GraphNode(
+                        entity_id=subj_id,
+                        display_name=node.display_name,
+                        entity_type=node.entity_type,
+                        metadata={canon_rel: obj},
+                    ))
+                    logger.debug(f"[MemoryStorage] Graph metadata: {subj_id}.{canon_rel} = '{obj}'")
+                return
+
+            # Map "user" subject to a canonical user node
+            subj_display = subj if subj.lower() != "user" else "User"
+            obj_display = obj
+
+            # Resolve or create entities
+            subj_type = "person" if subj.lower() == "user" else (entity_type or "other")
+            subj_id = self.entity_resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
+            obj_id = self.entity_resolver.resolve_or_create(obj, display_name=obj_display)
+
+            # Add relation as graph edge
+            self.graph_memory.add_relation(
+                GraphEdge(source_id=subj_id, relation=canon_rel, target_id=obj_id),
+                fact_id=fact_id,
+            )
+            logger.debug(f"[MemoryStorage] Graph: {subj_id} --{canon_rel}--> {obj_id}")
+        except Exception as e:
+            logger.debug(f"[MemoryStorage] Graph ingestion failed: {e}")
 
     async def consolidate_and_store_summary(self) -> None:
         """Consolidate recent memories and store the summary"""

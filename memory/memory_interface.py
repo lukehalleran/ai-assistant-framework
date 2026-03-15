@@ -107,7 +107,23 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class MemoryScorerProtocol(Protocol):
-    """Contract for memory scoring and ranking operations"""
+    """Contract for memory scoring and ranking operations.
+
+    Graph-boost attributes (_graph_memory, _entity_resolver) are set/cleared
+    externally by PromptBuilder around gather calls, similar to
+    _intent_weight_overrides.
+    """
+
+    # Intent-driven weight overrides — set by PromptBuilder before retrieval,
+    # cleared after.  Fallback when rank_memories() is called without an
+    # explicit weight_overrides parameter (deep in the retrieval chain).
+    _intent_weight_overrides: Optional[Dict[str, float]]
+
+    # Graph references — set by PromptBuilder before retrieval, cleared after.
+    # Used for graph-boosted scoring (bonus for memories mentioning entities
+    # connected to query entities in the knowledge graph).
+    _graph_memory: Optional[object]
+    _entity_resolver: Optional[object]
 
     def calculate_truth_score(self, query: str, response: str) -> float:
         """Calculate truth/reliability score for a memory"""
@@ -117,18 +133,42 @@ class MemoryScorerProtocol(Protocol):
         """Calculate importance score based on content analysis"""
         ...
 
-    def rank_memories(self, memories: List[Dict], query: str) -> List[Dict]:
-        """Rank memories by composite score for given query"""
+    def rank_memories(
+        self,
+        memories: List[Dict],
+        current_query: str,
+        current_topic: Optional[str] = None,
+        is_meta_conversational: bool = False,
+        weight_overrides: Optional[Dict[str, float]] = None,
+    ) -> List[Dict]:
+        """Rank memories by composite score for given query.
+
+        Args:
+            memories: List of memory dicts to rank
+            current_query: The user query driving retrieval
+            current_topic: Active topic for topic-match scoring
+            is_meta_conversational: Enables meta-conversational bonuses
+            weight_overrides: Per-intent SCORE_WEIGHTS override (from
+                IntentClassifier).  Falls back to _intent_weight_overrides
+                if not provided.  May contain special key
+                '_temporal_anchor_hours' for temporal-aware decay.
+        """
         ...
 
     def update_truth_scores_on_access(self, memories: List[Dict]) -> None:
-        """Boost truth scores when memories are accessed"""
+        """No-op (legacy). Truth now evidence-based via TruthScorer."""
         ...
 
 
 @runtime_checkable
 class MemoryStorageProtocol(Protocol):
-    """Contract for memory storage operations"""
+    """Contract for memory storage operations.
+
+    Implementations accept optional graph_memory (GraphMemory) and
+    entity_resolver (EntityResolver) constructor params.  When provided,
+    extract_and_store_facts() also ingests triples into the knowledge graph
+    via _ingest_fact_to_graph().
+    """
 
     async def store_interaction(
         self,

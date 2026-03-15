@@ -9,9 +9,13 @@ Module Contract
   - Yields streaming dicts {role, content, debug?, is_progress?} as Gradio updates.
 - Behavior:
   - RAW mode: send directly through orchestrator.process_user_query(use_raw_mode=True)
-  - AGENTIC: If agentic_search.enabled and query triggers search OR computation, route through AgenticSearchController
-    - Computational keyword detection triggers agentic mode with skip_initial_search=True [NEW 2026-01-22]
-    - Keywords: calculate, compute, solve, fibonacci, integral, derivative, numpy, pandas, etc.
+  - AGENTIC: If agentic_search.enabled and query triggers search, computation, OR memory recall, route through AgenticSearchController
+    - 3-tier agentic gate [ENHANCED 2026-03-15]:
+      - Tier 1: Keyword heuristic (instant) — computation keywords OR memory keywords ("do you remember", "my notes", etc.)
+      - Tier 2: Entity match (instant) — query mentions a known entity from the knowledge graph (e.g., "Flapjack", "Auggie")
+      - Tier 3: LLM fallback — piggybacks on web search trigger LLM call; also returns needs_memory_search field
+    - Casual skip filter only applies when no keyword/entity trigger fired
+    - skip_initial_search=True for computation and memory queries (skips Round 1 web search)
   - ENHANCED: orchestrator.prepare_prompt → extract note_images → response_generator.generate_streaming_response(images=...) → store interaction
   - IMAGE SUPPORT [NEW 2026-01-30]: Extracts note_images from raw_context and passes to streaming for multimodal models
 - Side effects:
@@ -356,36 +360,74 @@ async def handle_submit(
     logger.debug(f"[Handle Submit] Agentic pre-check: enabled={agentic_enabled}")
 
     if agentic_enabled:
-        # Quick filter: skip agentic for obvious non-search queries
         _lower = user_text.lower().strip()
         _words = _lower.split()
+        needs_computation = False
+        needs_memory = False
+        _matched_entities = set()
+
+        # --- Tier 1: Keyword heuristics (instant, no LLM) ---
+        _computation_keywords = [
+            'calculate', 'compute', 'solve', 'integral', 'derivative', 'equation',
+            'fibonacci', 'factorial', 'prime', 'mean', 'median', 'standard deviation',
+            'matrix', 'vector', 'plot', 'graph', 'chart', 'numpy', 'pandas', 'sympy',
+            'statistics', 'regression', 'correlation', 'sum of', 'product of',
+            'evaluate', 'simplify', 'expand', 'factor', 'differentiate', 'integrate'
+        ]
+        needs_computation = any(kw in _lower for kw in _computation_keywords)
+
+        _memory_keywords = [
+            'documentation', 'daemon docs', 'architecture',
+            'do you remember', 'did we talk', 'did we discuss',
+            'did i tell you', 'did i mention', 'have i told you',
+            'what do you know about me', 'what are my',
+            'my notes', 'obsidian', 'in my vault',
+            'past conversations', 'search your memory',
+            'search memory', 'check your memory', 'look up',
+            'my facts', 'what did i say',
+        ]
+        needs_memory = any(kw in _lower for kw in _memory_keywords)
+
+        # --- Tier 2: Entity match (instant, no LLM) ---
+        # If query mentions a known personal entity from the knowledge graph,
+        # it's almost certainly a memory query. Runs before casual skip so
+        # short entity queries like "tell me about Flapjack" aren't filtered out.
+        if not needs_computation and not needs_memory:
+            try:
+                _resolver = getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None)
+                if _resolver:
+                    from memory.graph_utils import extract_graph_entities
+                    _matched_entities = extract_graph_entities(user_text, _resolver)
+                    _matched_entities.discard("user")  # "user" is not a meaningful match
+                    if _matched_entities:
+                        needs_memory = True
+                        logger.debug(f"[Handle Submit] Agentic triggered - query mentions known entities: {_matched_entities}")
+            except Exception as e:
+                logger.debug(f"[Handle Submit] Entity match check failed (non-fatal): {e}")
+
+        # Casual skip filter: only applies when no keyword/entity trigger fired
         _skip_patterns = [
             len(_words) < 5 and not any(w in _lower for w in ['search', 'news', 'latest', 'current', 'today', 'recent', '2026', '2025']),
-            _lower.startswith(('nice', 'thanks', 'thank you', 'cool', 'great', 'awesome', 'got it', 'ok', 'okay', 'yeah', 'yes', 'no', 'nope')),
+            _lower.startswith(('nice', 'thanks', 'thank you', 'cool', 'great', 'awesome', 'got it', 'ok ', 'okay', 'yeah', 'yes', 'no ', 'nope', 'nah')),
             'working' in _lower and 'search' in _lower,  # meta-comments about search
             all(w in ['yes', 'no', 'ok', 'okay', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank', 'you'] for w in _words),
         ]
-        if any(_skip_patterns):
+        if not needs_computation and not needs_memory and any(_skip_patterns):
             logger.debug("[Handle Submit] Agentic skipped - casual/short message")
             should_use_agentic = False
             search_terms = []
         else:
-            # Check if computational tools should be triggered (sandbox/wolfram)
-            _computation_keywords = [
-                'calculate', 'compute', 'solve', 'integral', 'derivative', 'equation',
-                'fibonacci', 'factorial', 'prime', 'mean', 'median', 'standard deviation',
-                'matrix', 'vector', 'plot', 'graph', 'chart', 'numpy', 'pandas', 'sympy',
-                'statistics', 'regression', 'correlation', 'sum of', 'product of',
-                'evaluate', 'simplify', 'expand', 'factor', 'differentiate', 'integrate'
-            ]
-            needs_computation = any(kw in _lower for kw in _computation_keywords)
 
             if needs_computation:
                 logger.debug("[Handle Submit] Agentic triggered - computational query detected")
                 should_use_agentic = True
                 search_terms = []  # No web search needed, just computation
+            elif needs_memory:
+                logger.debug("[Handle Submit] Agentic triggered - memory search query detected")
+                should_use_agentic = True
+                search_terms = []  # No web search needed, memory tool handles it
             else:
-                # Check if web search should be triggered for this query using LLM-first trigger
+                # Check if web search or memory search should be triggered using LLM-first trigger
                 try:
                     from utils.web_search_trigger import analyze_for_web_search_llm
                     trigger_decision = await analyze_for_web_search_llm(
@@ -395,7 +437,16 @@ async def handle_submit(
                     # trigger_decision is a WebSearchDecision object with attributes
                     should_use_agentic = getattr(trigger_decision, 'should_search', False)
                     search_terms = getattr(trigger_decision, 'search_terms', []) or []
-                    logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, terms={search_terms}")
+
+                    # LLM-based memory search fallback: if web search not needed but
+                    # LLM detected memory/recall intent, enter agentic for search_memory tool
+                    if not should_use_agentic and getattr(trigger_decision, 'needs_memory_search', False):
+                        logger.debug("[Handle Submit] Agentic triggered - LLM detected memory search intent")
+                        should_use_agentic = True
+                        needs_memory = True  # skip initial web search
+                        search_terms = []
+
+                    logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, needs_memory={needs_memory}, terms={search_terms}")
                 except Exception as e:
                     logger.warning(f"[Handle Submit] Agentic trigger check failed: {e}")
                     import traceback
@@ -425,13 +476,14 @@ async def handle_submit(
                     model_name=model_name,
                     initial_search_terms=initial_terms,
                     initial_context=raw_context,  # Pass RAG context to agentic controller
-                    skip_initial_search=needs_computation,  # Skip web search for computation-only queries
+                    skip_initial_search=needs_computation or needs_memory,  # Skip web search for computation/memory-only queries
                 ):
                     if isinstance(item, ProgressEvent):
                         # Yield progress events as status messages
                         status_icon = {
                             "thinking": "💭",
                             "searching": "🔍",
+                            "searching_memory": "🧠",
                             "found_results": "📄",
                             "computing": "🔢",
                             "computed": "✓",

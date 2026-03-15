@@ -27,7 +27,8 @@ USER QUERY
 [Hybrid Memory Retrieval] → Query rewriting + Semantic + Keyword matching
     ↓               ↓ (via MemoryCoordinator → modular components)
     ↓               ├─> MemoryRetriever (parallel ChromaDB queries)
-    ↓               ├─> MemoryScorer (ranking with composite scores)
+    ↓               ├─> MemoryScorer (ranking with composite scores + graph boost)
+    ↓               ├─> GraphMemory (knowledge graph traversal + query expansion) [NEW 2026-03]
     ↓               ├─> ThreadManager (conversation continuity)
     ↓               └─> ShutdownProcessor (session-end summaries + facts)
     ↓
@@ -51,7 +52,8 @@ USER QUERY
     ↓               ↓ (via MemoryStorage) [REFACTORED]
     ↓               ├─> CorpusManager (JSON persistence)
     ↓               ├─> ChromaStore (vector embeddings)
-    ↓               └─> FactExtractor (optional fact extraction)
+    ↓               ├─> FactExtractor (optional fact extraction)
+    ↓               └─> GraphMemory (fact → graph ingestion) [NEW 2026-03]
     ↓
 RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 ```
@@ -64,6 +66,10 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/procedural_skill.py` - ProceduralSkill dataclass + SkillCategory enum
 - `memory/cross_deduplicator.py` - Cross-collection dedup (duplicates + fact contradictions, dry-run only on shutdown)
 - `memory/dedup_models.py` - Pydantic models: DedupPlan, DuplicatePair, ContradictionCluster
+- `memory/graph_memory.py` - Knowledge graph (NetworkX DiGraph, JSON persistence)
+- `memory/graph_models.py` - Pydantic models: GraphNode, GraphEdge
+- `memory/graph_utils.py` - Shared graph helpers: entity extraction, neighbor lookups
+- `memory/entity_resolver.py` - Entity alias resolution + relation normalization
 - `memory/thread_manager.py` - Thread tracking
 - `memory/memory_interface.py` - Protocol contracts
 
@@ -345,6 +351,8 @@ MemoryCoordinator (memory_coordinator.py, ~498 lines)
 
 **Instance Attributes**:
 - `_intent_weight_overrides: Optional[Dict[str, float]]` — Set/cleared by PromptBuilder around gather. Fallback when `rank_memories()` called without explicit `weight_overrides` parameter (deep in retrieval chain). **[NEW 2026-02-15]**
+- `_graph_memory: Optional[GraphMemory]` — Set/cleared by PromptBuilder around gather. Used for graph-boosted scoring. **[NEW 2026-03]**
+- `_entity_resolver: Optional[EntityResolver]` — Set/cleared by PromptBuilder around gather. Used for entity extraction in scoring. **[NEW 2026-03]**
 
 **Additional Methods**:
 - `apply_temporal_decay(memories)` → Apply time-based decay to memory scores
@@ -359,12 +367,13 @@ final_score = (
     SCORE_WEIGHTS['truth'] * truth_score +
     SCORE_WEIGHTS['importance'] * importance_score +
     SCORE_WEIGHTS['continuity'] * continuity_score +
-    SCORE_WEIGHTS['topic_match'] * topic_match +  # NEW
+    SCORE_WEIGHTS['topic_match'] * topic_match +
     structural_alignment +
     anchor_bonus +
-    meta_bonus +  # NEW - for meta-conversational queries
+    meta_bonus +            # for meta-conversational queries
+    graph_bonus +           # 0.05 per graph-connected entity, capped at 0.15 [NEW 2026-03]
     penalties +
-    size_penalty  # NEW - scaled document size penalty
+    size_penalty            # scaled document size penalty
 )
 ```
 
@@ -424,7 +433,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   5. Extract procedural skills via LLM (0-3 per session)
   6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
   7. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
-  8. Update UserProfile with extracted facts
+  8. Update UserProfile with user-only facts (entity facts stored in ChromaDB only) [ENHANCED 2026-03]
   9. Log statistics
   ```
 
@@ -896,17 +905,21 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
 
 **Integration Points**:
 
-1. **memory/shutdown_processor.py** (process_shutdown_memory):
+1. **memory/shutdown_processor.py** (process_shutdown_memory) [ENHANCED 2026-03]:
    ```python
-   # After LLM fact extraction
-   if triples and hasattr(self, 'user_profile'):
-       added = self.user_profile.add_facts_batch(triples)
+   # After LLM fact extraction — only user facts go to profile
+   user_triples = [t for t in triples if t.get("subject", "user").lower() == "user"]
+   if user_triples and hasattr(self, 'user_profile'):
+       added = self.user_profile.add_facts_batch(user_triples)
+   # All facts (user + entity) still stored in ChromaDB
    ```
 
-2. **memory/llm_fact_extractor.py** (Enhanced):
+2. **memory/llm_fact_extractor.py** (Enhanced) [ENHANCED 2026-03]:
    - Auto-categorization via `categorize_relation()` in `_normalize_triple()`
    - Enhanced prompt with 12 category descriptions
    - Confidence scoring (0.0-1.0)
+   - Entity facts: extracts facts about people/places/orgs with `user_connection` field
+   - `fact_scope` field: "user" or "entity" on all output triples
 
 3. **core/prompt/context_gatherer.py**:
    - `get_user_profile_context(query, max_tokens=500)` → Calls UserProfile.get_context_injection()
@@ -1296,7 +1309,8 @@ agentic_search:
 - Persistent session created at loop start (variables survive across turns)
 - Session cleanup in finally block
 - Progress events: `executing_code` → `code_executed` / `code_error`
-- `skip_initial_search` parameter skips Round 1 web search for computation-only queries
+- `skip_initial_search` parameter skips Round 1 web search for computation-only or memory-only queries
+- `search_memory` tool [NEW 2026-03-15]: Searches ChromaDB collections (facts, conversations, summaries, etc.) from within the ReAct loop
 
 **Dependencies**: WebSearchManager, WolframManager (optional), SandboxManager (optional), ModelManager, TokenizerManager
 
@@ -1307,14 +1321,18 @@ agentic_search:
 
 **Key Components**:
 
-**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[ENHANCED 2026-03-10]**
+**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[ENHANCED 2026-03-15]**
 - `handle_submit()` → Main async generator yielding response chunks to GUI
   - **Fast Mode** [NEW 2026-03-10]: When `fast_mode=True`, temporarily reduces retrieval limits (PROMPT_MAX_MEMS→10, PROMPT_MAX_RECENT→5, PROMPT_MAX_SEMANTIC→8), sets `context_gatherer._fast_mode` and `hybrid_retriever._fast_mode`. Yields progress keepalive messages ("Thinking...", "Analyzing context...", etc.) every 2s during `prepare_prompt()` to prevent mobile timeouts. All overrides restored in `finally` block.
-  - **Agentic Search Path** (NEW 2026-01):
-    - Quick filter skips casual acknowledgments (< 5 words, "nice", "thanks", etc.)
-    - Calls `analyze_for_web_search_llm()` to decide if search needed
-    - If triggered, routes through `AgenticSearchController.run_agentic_search()`
-    - Yields progress events (🔍 searching, 📄 found results, ✨ synthesizing)
+  - **Agentic Search Path** [ENHANCED 2026-03-15]:
+    - 3-tier agentic gate (all run before casual skip filter):
+      - Tier 1: Keyword heuristic — computation keywords (`calculate`, `solve`, etc.) OR memory keywords (`do you remember`, `my notes`, `search your memory`, etc.)
+      - Tier 2: Entity match — `extract_graph_entities()` checks query against knowledge graph alias index; if known entity found (e.g., "Flapjack", "Auggie"), triggers memory search
+      - Tier 3: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call; `needs_memory_search` field catches structurally obvious recall queries the keywords missed
+    - Casual skip filter (< 5 words, "nice"/"thanks"/etc.) only applies when no keyword/entity trigger fired
+    - `skip_initial_search=True` for computation and memory queries (skips Round 1 web search)
+    - Routes through `AgenticSearchController.run_agentic_search()`
+    - Yields progress events (🔍 searching, 🧠 searching memory, 📄 found results, ✨ synthesizing)
     - Strips thinking blocks from final response
   - **Standard Path**:
     - Receives streaming chunks from response_generator
@@ -2007,11 +2025,13 @@ MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gpt-4-vision",
 - `UploadResult`: Statistics from document upload (success, title, total_chunks, file_type, errors, duration)
 
 **Key Methods**:
-- `upload_document(file_path, title)` → `UploadResult`: Index file to ChromaDB
+- `upload_document(file_path, title)` → `UploadResult`: Index file to ChromaDB (stores `file_mtime` in metadata)
 - `upload_text(content, title, metadata_overrides=None)` → `UploadResult`: Upload text directly (GUI paste). metadata_overrides merged into per-chunk metadata (used by file upload to set type='user_upload') **[ENHANCED 2026-02-10]**
 - `get_documents(query, limit)` → `List[Dict]`: Hybrid retrieval (1/3 keyword + 2/3 semantic)
 - `list_documents()` → `List[Dict]`: List all uploaded documents
 - `delete_document(title)` → `bool`: Remove document from index
+- `sync_file(file_path, title)` → `str`: Sync single file using mtime comparison ('uploaded'/'skipped'/'failed')
+- `sync_directory(directory, file_patterns)` → `Dict`: Batch sync all matching files from directory (default `*.md`). Returns `{uploaded, skipped, failed, details}` counts
 - `get_stats()` → `Dict`: Collection statistics
 - `clear_all()` → `bool`: Clear entire collection
 
@@ -2038,7 +2058,16 @@ Query → _keyword_search() → 1/3 results (title/section match priority)
 REFERENCE_DOCS_ENABLED = True
 REFERENCE_DOCS_CHUNK_THRESHOLD = 2000
 REFERENCE_DOCS_MAX_PROMPT = 5
+REFERENCE_DOCS_AUTO_SEED = True           # Auto-seed docs/ on GUI startup
+REFERENCE_DOCS_SEED_PATHS = ["docs"]      # Directories/files to auto-seed
 ```
+
+**Auto-Seed on Startup**:
+- Background daemon thread in `gui/launch.py` (`_run_reference_docs_seed()`)
+- Iterates `REFERENCE_DOCS_SEED_PATHS`: directories scanned for `*.md`, files uploaded directly
+- Uses file mtime for idempotency — unchanged files skipped, modified files re-uploaded
+- Metadata includes `file_mtime` float for comparison on subsequent startups
+- Non-blocking; respects `REFERENCE_DOCS_ENABLED` and `REFERENCE_DOCS_AUTO_SEED` flags
 
 **CLI Commands** (`main.py`):
 - `python main.py upload-doc <file_path> [title]` - Upload document
@@ -2681,28 +2710,175 @@ NARRATIVE_DAILIES_COUNT = 6           # [NEW 2026-03-10]
 
 ---
 
-### 2.15 memory/fact_extractor.py (Entity/Fact Extraction)
-**Purpose**: Extract facts from conversations for semantic memory
+### 2.15 memory/fact_extractor.py (Entity/Fact Extraction) [ENHANCED 2026-03]
+**Purpose**: Extract structured facts (subject-relation-object triples) from user messages — both user-centric and entity-to-entity facts
 
-**Methods**:
-1. **Regex patterns** (fast):
-   - "X is Y" patterns
-   - "X does Y" patterns
-   - Entity definitions
+**Extraction Stages**:
+1. **Correction detection** (0.9+ confidence): "I'm X, not Y", "actually I'm X" patterns
+2. **spaCy dependency parsing** for grammar-based SRO extraction
+3. **REBEL neural extraction** (if enabled)
+4. **Regex fallback** patterns for common fact types
 
-2. **LLM extraction** (optional):
-   - For complex facts
-   - Calls LLMFactExtractor
+**Dual-Budget System** [NEW 2026-03]:
+- User facts (subject="user"): capped at `USER_FACTS_PER_TURN_CAP` (default 6)
+- Entity facts (subject=entity name): capped at `ENTITY_FACTS_PER_TURN_CAP` (default 4)
+- Entity facts require min confidence of `ENTITY_FACT_MIN_CONFIDENCE` (default 0.55)
+- Controlled by `ENTITY_FACTS_ENABLED` toggle
+
+**Entity Metadata** [NEW 2026-03]:
+- `fact_scope`: "user" or "entity"
+- `entity_type`: spaCy NER label (PERSON, ORG, GPE, PRODUCT, WORK_OF_ART, UNKNOWN)
+- `user_connection`: inferred from possessive patterns ("my boss" → "user's boss")
+
+**Helper Functions**:
+- `_detect_entity_type(subject, nlp)` → spaCy NER on subject text
+- `_detect_user_connection(subject, source_text)` → regex for "my X", "X is my", "X, my"
 
 **Key Methods**:
-- `extract_facts(conversation)` → List[Dict]
+- `extract_facts(query, response, conversation_context)` → List[MemoryNode]
   ```python
-  {
-    "entity": "Python",
-    "fact": "is a programming language",
-    "confidence": 0.8
-  }
+  # User fact:
+  {"subject": "user", "relation": "lives_in", "object": "Seattle",
+   "fact_scope": "user", "confidence": 0.9}
+  # Entity fact:
+  {"subject": "oliver", "relation": "moved_from", "object": "London",
+   "fact_scope": "entity", "entity_type": "PERSON", "user_connection": "user's boss"}
   ```
+
+---
+
+### 2.15a Knowledge Graph System [NEW 2026-03]
+**Purpose**: Queryable fact graph built from extracted triples — enables graph-boosted memory scoring, query expansion, and structured relationship traversal
+
+**Components**:
+
+**`memory/graph_models.py`** — Pydantic data models
+```python
+class GraphNode(BaseModel):
+    entity_id: str          # Canonical ID (snake_case)
+    display_name: str       # Human-readable name
+    entity_type: str = ""   # PERSON, ORG, GPE, etc.
+    metadata: Dict = {}     # Arbitrary key-value pairs (incl. migrated phrase attributes)
+    # to_dict(), from_dict() for JSON serialization
+
+class GraphEdge(BaseModel):
+    source_id: str          # Subject entity ID
+    target_id: str          # Object entity ID
+    relation: str           # Normalized relation (snake_case)
+    weight: float = 1.0     # Strengthened on duplicate edges
+    # to_natural_language() → "Luke has brother Dillion"
+```
+
+**`memory/graph_memory.py`** — NetworkX DiGraph wrapper
+```python
+class GraphMemory:
+    # CRUD
+    add_entity(node: GraphNode) → None          # Upsert node (merges metadata)
+    add_edge(edge: GraphEdge) → None            # Add/strengthen edge (weight += 1 for dupes)
+    get_entity(entity_id) → Optional[GraphNode]
+    remove_entity(entity_id) → None
+    remove_edge(source_id, target_id, relation) → None
+
+    # Traversal
+    neighbors(entity_id, depth=1) → Dict[str, List[GraphEdge]]  # BFS neighborhood
+    get_edges_for(entity_id) → List[GraphEdge]                   # All edges touching entity
+
+    # Persistence (JSON at data/knowledge_graph.json)
+    save() → None     # Only writes if dirty flag set
+    load() → None     # Reads from disk on init
+
+    # Alias index
+    rebuild_alias_index() → None    # Syncs with EntityResolver
+```
+- **Graph type**: DiGraph (not MultiDiGraph) — duplicate edges strengthen weight, not create parallel edges
+- **Persistence**: JSON at `data/knowledge_graph.json`, dirty-flag saves (only writes on change)
+
+**`memory/entity_resolver.py`** — Entity alias resolution
+```python
+class EntityResolver:
+    resolve(text: str) → Optional[str]           # Resolve alias → canonical entity_id
+    resolve_or_create(text, display_name, ...) → str  # Resolve or create new entity
+    add_alias(alias, entity_id) → None
+    get_aliases(entity_id) → List[str]
+    save() / load()                               # JSON at data/entity_aliases.json
+```
+- Possessive alias extraction: "my brother Dillion" → alias "brother" → entity "dillion"
+- `normalize_relation(text)` → snake_case, strips common prefixes
+
+**`memory/graph_utils.py`** — Shared helpers for graph-boosted scoring and query expansion
+```python
+extract_graph_entities(text, resolver) → Set[str]
+    # Strips punctuation, checks trigrams→bigrams→single words against alias index
+    # Skips stopwords and ≤2 char tokens
+
+get_related_display_names(entity_ids, graph_memory, depth=1, skip_ids=None) → Set[str]
+    # BFS neighbor display names (for scoring)
+
+get_related_entity_ids(entity_ids, graph_memory, depth=1) → Set[str]
+    # BFS neighbor entity IDs (for scoring)
+
+_is_expansion_junk(name) → bool  # [NEW 2026-03-15]
+    # Rejects: empty/≤2 chars, 4+ words, digit-starting, temporal, measurement, verb phrases
+
+rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_terms=8) → List[str]  # [NEW 2026-03-15]
+    # Ranks candidates by non-hub edge count (lateral connectivity)
+    # Score = min(non_hub_edges * 0.3, 1.0) + word_count_bonus
+    # Filters junk via _is_expansion_junk() + stopwords
+    # Returns ordered list of display names, best candidates first
+```
+
+**Ingestion** (`memory_storage.py:_ingest_fact_to_graph()`):
+- Called after each successful `add_fact()` in ChromaDB
+- Resolves subject/object to canonical entity IDs via EntityResolver
+- **Junk filter** `_is_graph_worthy_object()`: rejects objects that aren't real entities [TIGHTENED 2026-03-15]:
+  - 4+ word phrases (sentence fragments) → stored as subject-node metadata instead
+  - Generic words ("a lot", "some", "unknown")
+  - Temporal/duration patterns ("2 years", "6 months", "once a week")
+  - Measurements ("5'11\"", "20lbs", "10000iu", "500mg")
+  - Verb phrases ("stopped being religious", "finishing grad school", "working remotely")
+- Duplicate edges strengthen weight (DiGraph, not MultiDiGraph)
+
+**Retrieval** (`context_gatherer.py:get_graph_context()`):
+- Extracts entities from query via alias resolution
+- BFS traversal from matched entities (depth from config)
+- Returns natural language sentences via `GraphEdge.to_natural_language()`
+- Prompt section: `[KNOWLEDGE GRAPH]` in `_assemble_prompt()` after `[PROPOSED FEATURES]`
+- Runs as parallel task `graph_context` in `build_prompt()` alongside other retrieval tasks
+
+**Graph-Boosted Scoring** (`memory_scorer.py`):
+- Before scoring loop: extracts query entities, gets 1-hop related display names
+- Per memory: counts mentions of related entity names in content
+- `graph_bonus = min(0.05 * matches, GRAPH_SCORING_BOOST_CAP)` (default cap: 0.15)
+- Added to final_score alongside anchor_bonus, meta_bonus
+- Graph refs (`_graph_memory`, `_entity_resolver`) set/cleared by builder.py around gather
+
+**Graph-Driven Query Expansion** (`context_gatherer.py:_expand_query_with_graph()`):
+- Sync method called in `_get_semantic_memories()` before `get_memories()`
+- Extracts entities from query, calls `rank_expansion_candidates()` (depth=2, skips "user") [UPDATED 2026-03-15]
+- Candidates ranked by non-hub edge count (lateral connectivity), not name length
+- Junk phrases filtered: temporal, measurements, verb phrases, 4+ words
+- Example: "tell me about my brother" → "tell me about my brother Flapjack Auggie Mom"
+
+**Lifecycle**:
+- Init: `MemoryCoordinator.__init__()` creates GraphMemory + EntityResolver, passes to MemoryStorage
+- Shutdown: `shutdown_processor.py:_save_knowledge_graph()` flushes graph + aliases to disk
+
+**Scripts**:
+- `scripts/migrate_facts_to_graph.py` — Reads existing ChromaDB facts, populates graph (supports `--dry-run`)
+- `scripts/cleanup_graph_junk.py` — Removes 4+ word phrase nodes, migrates info to subject metadata (supports `--execute`)
+
+**Configuration** (`config/app_config.py`, YAML section `knowledge_graph`):
+```python
+KNOWLEDGE_GRAPH_ENABLED = True
+KNOWLEDGE_GRAPH_MAX_DEPTH = 2
+KNOWLEDGE_GRAPH_MAX_EDGES = 50
+GRAPH_SCORING_BOOST_ENABLED = True
+GRAPH_SCORING_BOOST_CAP = 0.15
+GRAPH_QUERY_EXPANSION_ENABLED = True
+GRAPH_QUERY_EXPANSION_MAX_TERMS = 8
+```
+
+**Tests**: `tests/unit/test_knowledge_graph.py` (70 tests), `tests/unit/test_graph_integration.py` (50 tests)
 
 ---
 
@@ -3205,6 +3381,21 @@ REWRITE_TIMEOUT_S = 1.2
 INTENT_ENABLED = True                    # Feature toggle
 INTENT_STM_REFINEMENT_THRESHOLD = 0.50   # Below this, STM can refine classification
 
+# Entity Facts [NEW 2026-03]
+ENTITY_FACTS_ENABLED = True              # Toggle entity (non-user) fact extraction
+ENTITY_FACTS_PER_TURN_CAP = 4           # Max entity facts per turn
+USER_FACTS_PER_TURN_CAP = 6             # Max user facts per turn (was 8 combined)
+ENTITY_FACT_MIN_CONFIDENCE = 0.55        # Higher floor for noisier entity triples
+
+# Knowledge Graph [NEW 2026-03]
+KNOWLEDGE_GRAPH_ENABLED = True           # Toggle knowledge graph system
+KNOWLEDGE_GRAPH_MAX_DEPTH = 2            # BFS traversal depth for context retrieval
+KNOWLEDGE_GRAPH_MAX_EDGES = 50           # Max edges to include in prompt
+GRAPH_SCORING_BOOST_ENABLED = True       # Graph-boosted memory scoring
+GRAPH_SCORING_BOOST_CAP = 0.15          # Max graph bonus per memory (0.05 per entity)
+GRAPH_QUERY_EXPANSION_ENABLED = True     # Append graph neighbor names to search query
+GRAPH_QUERY_EXPANSION_MAX_TERMS = 8      # Max neighbor names appended to query
+
 # Memory Citation System [NEW 2025-12-04]
 ENABLE_MEMORY_CITATIONS = False      # Feature flag for citation mode
 MAX_CITATIONS_DISPLAY = 10           # Max citations to show in UI
@@ -3485,6 +3676,10 @@ daemon/
 │   ├── memory_consolidator.py     # Summarization
 │   ├── fact_extractor.py          # Pattern-based extraction
 │   ├── llm_fact_extractor.py      # LLM-based extraction
+│   ├── graph_models.py            # Pydantic models: GraphNode, GraphEdge [NEW 2026-03]
+│   ├── graph_memory.py            # NetworkX DiGraph: CRUD, BFS, JSON persistence [NEW 2026-03]
+│   ├── graph_utils.py             # Shared graph helpers: entity extraction, neighbor lookups [NEW 2026-03]
+│   ├── entity_resolver.py         # Entity alias resolution + relation normalization [NEW 2026-03]
 │   ├── hybrid_retriever.py        # Query rewrite + semantic + keyword
 │   └── storage/
 │       └── multi_collection_chroma_store.py  # Vector DB
@@ -3548,6 +3743,8 @@ daemon/
 │   ├── corpus_v4.json         # Short-term memory store (current)
 │   ├── vector_index_ivf.faiss # FAISS index (781MB)
 │   ├── chroma_db_v4_v2/       # ChromaDB vector store (current)
+│   ├── knowledge_graph.json   # Knowledge graph nodes + edges [NEW 2026-03]
+│   ├── entity_aliases.json    # Entity alias → canonical ID mapping [NEW 2026-03]
 │   ├── wiki/                  # Wikipedia source data (102GB)
 │   └── pipeline/              # Wikipedia processing scripts (43GB)
 │

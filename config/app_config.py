@@ -562,8 +562,14 @@ REFERENCE_DOCS_CHUNK_THRESHOLD: int = int(REFERENCE_DOCS_CFG.get("chunk_threshol
 # Maximum document chunks to include in prompt
 REFERENCE_DOCS_MAX_PROMPT: int = int(REFERENCE_DOCS_CFG.get("max_prompt", 5))
 
+# Auto-seed docs/ directory on GUI startup (uses mtime for idempotency)
+REFERENCE_DOCS_AUTO_SEED: bool = bool(REFERENCE_DOCS_CFG.get("auto_seed", True))
+# Paths to auto-seed (directories scanned for *.md, files uploaded directly)
+REFERENCE_DOCS_SEED_PATHS: list = REFERENCE_DOCS_CFG.get("seed_paths", ["docs"])
+
 # Environment variable overrides for Reference Docs
 REFERENCE_DOCS_ENABLED = bool(int(os.getenv("REFERENCE_DOCS_ENABLED", "1" if REFERENCE_DOCS_ENABLED else "0")))
+REFERENCE_DOCS_AUTO_SEED = bool(int(os.getenv("REFERENCE_DOCS_AUTO_SEED", "1" if REFERENCE_DOCS_AUTO_SEED else "0")))
 
 # --------------------------------------------------------------------
 # Daily Notes Configuration (auto-generated conversation summaries)
@@ -815,6 +821,56 @@ INTENT_STM_REFINEMENT_THRESHOLD: float = float(INTENT_CFG.get("stm_refinement_th
 
 # Environment variable overrides for Intent Classifier
 INTENT_ENABLED = bool(int(os.getenv("INTENT_ENABLED", "1" if INTENT_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Entity Facts Configuration
+# --------------------------------------------------------------------
+# Allow non-user-centric triples (entity-to-entity) through to ChromaDB.
+# User-centric facts continue to flow to UserProfile unchanged.
+ENTITY_FACTS_CFG = config.get("entity_facts", {})
+ENTITY_FACTS_ENABLED: bool = bool(ENTITY_FACTS_CFG.get("enabled", True))
+ENTITY_FACTS_PER_TURN_CAP: int = int(ENTITY_FACTS_CFG.get("per_turn_cap", 4))
+USER_FACTS_PER_TURN_CAP: int = int(ENTITY_FACTS_CFG.get("user_per_turn_cap", 6))
+ENTITY_FACT_MIN_CONFIDENCE: float = float(ENTITY_FACTS_CFG.get("min_confidence", 0.55))
+
+# Environment variable overrides for Entity Facts
+ENTITY_FACTS_ENABLED = bool(int(os.getenv("ENTITY_FACTS_ENABLED", "1" if ENTITY_FACTS_ENABLED else "0")))
+ENTITY_FACTS_PER_TURN_CAP = int(os.getenv("ENTITY_FACTS_PER_TURN_CAP", str(ENTITY_FACTS_PER_TURN_CAP)))
+USER_FACTS_PER_TURN_CAP = int(os.getenv("USER_FACTS_PER_TURN_CAP", str(USER_FACTS_PER_TURN_CAP)))
+ENTITY_FACT_MIN_CONFIDENCE = float(os.getenv("ENTITY_FACT_MIN_CONFIDENCE", str(ENTITY_FACT_MIN_CONFIDENCE)))
+
+# --------------------------------------------------------------------
+# Knowledge Graph Configuration
+# --------------------------------------------------------------------
+# NetworkX-based knowledge graph for entity relationships and multi-hop
+# traversal.  Persisted as JSON, complementary to ChromaDB vector search.
+KNOWLEDGE_GRAPH_CFG = config.get("knowledge_graph", {})
+KNOWLEDGE_GRAPH_ENABLED: bool = bool(KNOWLEDGE_GRAPH_CFG.get("enabled", True))
+KNOWLEDGE_GRAPH_PERSIST_PATH: str = str(KNOWLEDGE_GRAPH_CFG.get("persist_path", os.path.join("data", "knowledge_graph.json")))
+KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH: int = int(KNOWLEDGE_GRAPH_CFG.get("retrieval_depth", 2))
+KNOWLEDGE_GRAPH_MAX_SENTENCES: int = int(KNOWLEDGE_GRAPH_CFG.get("max_sentences", 15))
+KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD: int = int(KNOWLEDGE_GRAPH_CFG.get("auto_save_threshold", 50))
+KNOWLEDGE_GRAPH_MIN_CONFIDENCE: float = float(KNOWLEDGE_GRAPH_CFG.get("min_confidence", 0.50))
+KNOWLEDGE_GRAPH_ALIASES_PATH: str = str(KNOWLEDGE_GRAPH_CFG.get("aliases_path", os.path.join("data", "entity_aliases.json")))
+PROMPT_MAX_GRAPH_SENTENCES: int = int(KNOWLEDGE_GRAPH_CFG.get("max_prompt_sentences", 12))
+
+# Graph-boosted scoring: memories mentioning graph-connected entities get a bonus
+GRAPH_SCORING_BOOST_ENABLED: bool = bool(KNOWLEDGE_GRAPH_CFG.get("scoring_boost_enabled", True))
+GRAPH_SCORING_BOOST_CAP: float = float(KNOWLEDGE_GRAPH_CFG.get("scoring_boost_cap", 0.15))
+
+# Graph-driven query expansion: append graph neighbor names to semantic search query
+GRAPH_QUERY_EXPANSION_ENABLED: bool = bool(KNOWLEDGE_GRAPH_CFG.get("query_expansion_enabled", True))
+GRAPH_QUERY_EXPANSION_MAX_TERMS: int = int(KNOWLEDGE_GRAPH_CFG.get("query_expansion_max_terms", 8))
+
+# Environment variable overrides for Knowledge Graph
+KNOWLEDGE_GRAPH_ENABLED = bool(int(os.getenv("KNOWLEDGE_GRAPH_ENABLED", "1" if KNOWLEDGE_GRAPH_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Agentic Memory Search
+# --------------------------------------------------------------------
+AGENTIC_CFG = config.get("agentic_search", {})
+AGENTIC_MEMORY_SEARCH_ENABLED: bool = bool(AGENTIC_CFG.get("memory_search_enabled", True))
+AGENTIC_MEMORY_SEARCH_LIMIT: int = int(AGENTIC_CFG.get("memory_search_limit", 7))
 
 # --------------------------------------------------------------------
 # Final setup

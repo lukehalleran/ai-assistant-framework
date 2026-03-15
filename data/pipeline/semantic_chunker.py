@@ -161,8 +161,11 @@ class SemanticWikiChunker:
             total_articles += 1
             total_chunks += len(chunks)
 
-            if total_articles % 10 == 0:
-                logger.debug(f"[PROGRESS] {total_articles} articles → {total_chunks} chunks")
+            if total_articles % 10000 == 0:
+                print(f"[CHUNKER] {total_articles:,} articles → {total_chunks:,} chunks "
+                      f"({total_chunks / max(1, total_articles):.1f} chunks/article avg)")
+            elif total_articles % 1000 == 0:
+                logger.debug(f"[PROGRESS] {total_articles:,} articles → {total_chunks:,} chunks")
 
             if len(chunk_buffer) >= batch_size:
                 output_path = os.path.join(output_dir, f'semantic_chunks_{file_idx:04}.jsonl')
