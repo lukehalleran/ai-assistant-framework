@@ -9,6 +9,7 @@ from memory.memory_scorer import MemoryScorer
 
 # Enable DEBUG logging to populate debug dict
 logging.basicConfig(level=logging.DEBUG)
+logging.getLogger("memory_scorer").setLevel(logging.DEBUG)
 
 def test_meta_conversational_bonus():
     """Test that meta-conversational queries boost episodic memories."""

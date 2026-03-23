@@ -6,6 +6,7 @@ Module Contract
 - Inputs:
   - store_interaction(query, response, tags?): adds a turn to corpus + Chroma
   - get_memories(query, limit, topic_filter?): unified retrieval/gating/ranking
+  - get_unresolved_threads(max_results): returns top-priority open threads for prompt surfacing
   - process_shutdown_memory(): summarize blocks (size N) and extract end‑of‑session facts and procedural skills → UPDATED: also populates UserProfile with categorized facts
   - run_shutdown_reflection(...): generate a short reflection at session end
 - Outputs:
@@ -17,6 +18,7 @@ Module Contract
   - MemoryConsolidator (LLM summarization API, may be bypassed for micro‑summaries)
   - MultiStageGateSystem (cosine/rerank gating)
   - UserProfile (NEW: structured user fact storage with 12 categories)
+  - ThreadStore (open thread persistence; initialized internally, passed to ShutdownProcessor)
 - Side effects:
   - Writes to corpus JSON and Chroma collections; updates access/score metadata.
   - UPDATED: Writes to data/user_profile.json with categorized user facts at shutdown
@@ -170,6 +172,17 @@ class MemoryCoordinator:
         # Initialize user profile for structured fact storage
         self.user_profile = UserProfile()
 
+        # Initialize thread store for proactive thread surfacing
+        self.thread_store = None
+        try:
+            from config.app_config import THREAD_SURFACING_ENABLED
+            if THREAD_SURFACING_ENABLED:
+                from memory.thread_store import ThreadStore
+                self.thread_store = ThreadStore(chroma_store=chroma_store)
+                logger.debug("[MemoryCoordinator] Thread store initialized")
+        except Exception as e:
+            logger.debug(f"[MemoryCoordinator] Thread store init failed (non-fatal): {e}")
+
         # Initialize shutdown processor for end-of-session consolidation
         from memory.shutdown_processor import ShutdownProcessor
         self._shutdown = ShutdownProcessor(
@@ -182,6 +195,7 @@ class MemoryCoordinator:
             storage=self._storage,
             session_start=self.session_start,
             memory_coordinator=self,
+            thread_store=self.thread_store,
         )
 
         logger.debug("[MemoryCoordinator] All components initialized")
@@ -191,7 +205,7 @@ class MemoryCoordinator:
         try:
             if self.time_manager is not None and hasattr(self.time_manager, "current"):
                 return self.time_manager.current()
-        except (AttributeError, TypeError) as e:
+        except Exception as e:
             logger.debug(f"[MemoryCoordinator] TimeManager.current() failed: {e}")
         return datetime.now()
 
@@ -199,7 +213,7 @@ class MemoryCoordinator:
         try:
             if self.time_manager is not None and hasattr(self.time_manager, "current_iso"):
                 return self.time_manager.current_iso()
-        except (AttributeError, TypeError) as e:
+        except Exception as e:
             logger.debug(f"[MemoryCoordinator] TimeManager.current_iso() failed: {e}")
         return self._now().isoformat()
 
@@ -452,7 +466,7 @@ class MemoryCoordinator:
         try:
             if hasattr(self.topic_manager, 'detect_topic'):
                 return self.topic_manager.detect_topic(text) or 'general'
-        except (AttributeError, TypeError):
+        except Exception:
             pass
         return 'general'
 
@@ -537,3 +551,20 @@ class MemoryCoordinator:
         Delegates to MemoryRetriever component.
         """
         return await self._retriever.get_skills(query, limit)
+
+    def get_unresolved_threads(self, max_results: int = 3) -> List[Dict]:
+        """Get top priority unresolved threads for session surfacing.
+
+        Delegates to ThreadStore component.
+
+        Returns:
+            List of thread dicts with topic, summary, thread_type, urgency, deadline_date
+        """
+        if not self.thread_store:
+            return []
+        try:
+            threads = self.thread_store.get_top_threads(max_results=max_results)
+            return [t.to_dict() for t in threads]
+        except Exception as e:
+            logger.debug(f"[MemoryCoordinator] get_unresolved_threads failed: {e}")
+            return []

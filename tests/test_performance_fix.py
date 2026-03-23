@@ -55,9 +55,14 @@ async def test_cross_encoder_caching():
 
     # Test ModelManager cross-encoder caching
     from models.model_manager import ModelManager
+    import models.model_manager as mm_module
 
     # Create model manager
     model_manager = ModelManager()
+
+    # Clear global cache so mock gets invoked fresh
+    saved_cache = mm_module._global_cross_encoders.copy()
+    mm_module._global_cross_encoders.clear()
 
     # Mock CrossEncoder to track loads
     with patch('sentence_transformers.CrossEncoder') as mock_cross_encoder:
@@ -83,6 +88,9 @@ async def test_cross_encoder_caching():
         assert summary['cross_encoder_loads'] == 1, f"Should only load once, but loaded {summary['cross_encoder_loads']} times"
 
         logger.info("✅ Cross-encoder caching test passed")
+
+    # Restore original cache
+    mm_module._global_cross_encoders.update(saved_cache)
 
 async def test_gate_system_reuse():
     """Test that ContextGatherer reuses gate systems"""
@@ -126,9 +134,9 @@ async def test_gate_system_reuse():
         test_query = "What are the concepts?"
 
         # Apply gating multiple times
-        result1 = await context_gatherer._apply_gating(test_query, test_memories.copy())
-        result2 = await context_gatherer._apply_gating(test_query, test_memories.copy())
-        result3 = await context_gatherer._apply_gating(test_query, test_memories.copy())
+        result1 = await context_gatherer._apply_gating(test_memories.copy(), test_query)
+        result2 = await context_gatherer._apply_gating(test_memories.copy(), test_query)
+        result3 = await context_gatherer._apply_gating(test_memories.copy(), test_query)
 
         # Should use cached gate system
         summary = counter.get_summary()
@@ -203,7 +211,7 @@ async def test_end_to_end_integration():
     test_memories = [create_test_memory(i) for i in range(5)]
     test_query = "Test query"
 
-    result = await context_gatherer._apply_gating(test_query, test_memories)
+    result = await context_gatherer._apply_gating(test_memories, test_query)
     assert isinstance(result, list), "Should return a list of memories"
 
     logger.info("✅ End-to-end integration test passed")

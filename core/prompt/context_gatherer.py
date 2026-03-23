@@ -12,6 +12,7 @@ Module Contract
   - UPDATED: get_user_profile_context(query: str) -> str [NEW: replaces semantic_facts + fresh_facts]
   - get_personal_notes(query: str, limit: int) -> List[Dict] [NEW: Obsidian vault retrieval via ObsidianManager]
   - get_reference_docs(query: str, limit: int) -> List[Dict] [NEW: User uploaded docs retrieval via ReferenceDocsManager]
+  - get_unresolved_threads(max_results: int) -> List[Dict] [NEW: top-priority open threads for proactive surfacing]
   - get_narrative_context() -> str [NEW 2026-01-17: Cached temporal grounding from corpus_manager]
 - Outputs:
   - Comprehensive context dictionary with all gathered data
@@ -832,6 +833,33 @@ class ContextGatherer:
 
         except Exception as e:
             logger.debug(f"[ContextGatherer] Graph context retrieval failed: {e}")
+            return []
+
+    async def get_unresolved_threads(self, max_results: int = 3) -> List[Dict[str, Any]]:
+        """Get top priority unresolved threads for session surfacing.
+
+        Delegates to MemoryCoordinator.get_unresolved_threads().
+
+        Args:
+            max_results: Maximum threads to return
+
+        Returns:
+            List of thread dicts with topic, summary, thread_type, urgency, deadline_date
+        """
+        try:
+            from config.app_config import THREAD_SURFACING_ENABLED
+            if not THREAD_SURFACING_ENABLED:
+                return []
+
+            if not hasattr(self.memory_coordinator, 'get_unresolved_threads'):
+                return []
+
+            threads = self.memory_coordinator.get_unresolved_threads(max_results=max_results)
+            logger.debug(f"[ContextGatherer] Retrieved {len(threads)} unresolved threads")
+            return threads or []
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get unresolved threads: {e}")
             return []
 
     async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT) -> List[Dict[str, Any]]:
@@ -1781,16 +1809,15 @@ class ContextGatherer:
             if search_terms:
                 logger.info(f"[ContextGatherer] Using LLM-optimized search terms: {search_terms}")
                 # Execute search with optimized terms (bypass auto_decompose since LLM already did this)
+                # Use first LLM term as primary query; skip auto_decompose since LLM already optimized
                 result = await manager.multi_search(
-                    query=search_terms[0] if len(search_terms) == 1 else query,
+                    query=search_terms[0],
                     depth=search_depth,
                     crisis_level=crisis_level,
                     timeout=WEB_SEARCH_TIMEOUT,
                     use_cache=True,
-                    auto_decompose=len(search_terms) <= 1  # Only decompose if LLM didn't provide multiple terms
+                    auto_decompose=False
                 )
-                # If LLM provided multiple search terms, we could do parallel searches here
-                # For now, use the first term; full multi-term support can be added later
             else:
                 # No LLM search terms, use original query with auto-decompose
                 result = await manager.multi_search(

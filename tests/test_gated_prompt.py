@@ -3,7 +3,7 @@
 import asyncio
 from models.model_manager import ModelManager
 from processing.gate_system import GatedPromptBuilder
-from core.prompt import PromptBuilder
+from core.prompt import UnifiedPromptBuilder
 
 # Set up dummy memory data
 dummy_memories = [
@@ -17,7 +17,7 @@ async def test_gated_builder():
     model_manager = ModelManager()
 
     # Create base and gated builders
-    base_pb = PromptBuilder(model_manager)
+    base_pb = UnifiedPromptBuilder(model_manager=model_manager)
     gated_pb = GatedPromptBuilder(base_pb, model_manager)
 
     # Build a gated prompt

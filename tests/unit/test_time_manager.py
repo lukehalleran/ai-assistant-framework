@@ -117,7 +117,7 @@ def test_current_iso_format(time_manager):
 
 def test_elapsed_since_last_no_previous(time_manager):
     """elapsed_since_last() returns N/A when no previous query"""
-    assert time_manager.elapsed_since_last() == "N/A (first query)"
+    assert time_manager.elapsed_since_last() == "N/A (first message)"
 
 
 def test_elapsed_since_last_seconds(time_manager):
