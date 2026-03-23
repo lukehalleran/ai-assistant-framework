@@ -166,9 +166,9 @@ class TestSuppressionPatterns:
 
 class TestYearPatterns:
     @pytest.mark.parametrize("query", [
-        "What happened in 2024?",
-        "Show me 2025 predictions",
-        "Events in 2024 related to AI",
+        "What happened in 2025?",
+        "Show me 2026 predictions",
+        "Events in 2025 related to AI",
     ])
     def test_recent_year_increases_confidence(self, query):
         """Test current/recent year mention increases confidence."""

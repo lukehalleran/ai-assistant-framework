@@ -305,6 +305,9 @@ class NativeToolsHandler(BaseProtocolHandler):
         memory_guidance = (
             " Use search_memory for internal/personal questions "
             "(your own docs, user facts, past conversations). "
+            "For user profile/biographical questions, prefer summaries and conversations "
+            "over facts — summaries contain rich narrative context while facts stores "
+            "individual triples (name=X, age=33). Diversify across collections. "
             "Use web_search for external/current events. Use both when needed."
         ) if self.memory_available else ""
         addition = (

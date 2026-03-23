@@ -59,9 +59,9 @@ async def test_no_llm_without_model_manager():
 
     result = await detect_crisis_level(message, model_manager=None)
 
-    # Should still detect via keywords
-    assert result.level == CrisisLevel.HIGH
-    assert result.trigger == "keyword: want to die"
+    # Single HIGH keyword (10pts) maps to MEDIUM in harm score system
+    assert result.level == CrisisLevel.MEDIUM
+    assert "harm_score" in result.trigger
     print(f"✅ Keyword detection works without LLM: {message}")
 
 

@@ -189,6 +189,13 @@ knowledge_graph:
   scoring_boost_cap: 0.15
   query_expansion_enabled: true
   query_expansion_max_terms: 8
+thread_surfacing:
+  enabled: true
+  max_open: 50
+  stale_days: 14
+  deadline_grace_hours: 48
+  max_surfaced: 3
+  model_alias: ''
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

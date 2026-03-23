@@ -668,6 +668,12 @@ def quick_prefilter_should_skip(query: str) -> bool:
     ):
         return True
 
+    # Long pastes (song lyrics, articles, etc.) without explicit search phrases
+    # are almost never search requests — skip LLM to save time and avoid Tavily 400s
+    if len(query_lower) > 500 and not any(p in query_lower for p in EXPLICIT_SEARCH_PHRASES):
+        logger.debug(f"[WebSearchTrigger] Prefilter: skipping long paste ({len(query)} chars)")
+        return True
+
     # Deictic follow-up references - these refer to conversation context, not web content
     # Patterns like "i just watched it", "saw that", "read it", etc.
     deictic_followup_patterns = (

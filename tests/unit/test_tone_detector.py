@@ -411,9 +411,12 @@ def test_keyword_detection_comprehensive():
     # "can't breathe" (5) + "losing control" (5) = 10 = MEDIUM
     assert result2[0] in [CrisisLevel.CONCERN, CrisisLevel.MEDIUM]
 
-    # CONCERN keywords (2 pts each)
-    assert _check_keyword_crisis("freaking out about this")[0] == CrisisLevel.CONCERN
-    assert _check_keyword_crisis("I'm terrified")[0] == CrisisLevel.CONCERN
+    # CONCERN keywords (2 pts each) - need multiple to reach 4pt threshold
+    result_freaking = _check_keyword_crisis("freaking out about this")
+    # Single CONCERN keyword (2pts) is below 4pt threshold, returns None
+    assert result_freaking is None
+    # Multiple CONCERN keywords reach threshold
+    assert _check_keyword_crisis("I'm terrified and scared")[0] == CrisisLevel.CONCERN
 
 
 def test_personal_distress_detection():

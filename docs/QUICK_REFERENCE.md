@@ -159,6 +159,7 @@ class ShutdownProcessor:
     async def process_shutdown_memory(session_conversations=None):
         """Steps: 1) block summaries, 2) session facts, 3) LLM facts,
         4) procedural skills, 5) code proposals, 6) cross-dedup (dry_run=True only),
+        6.5) open thread extraction + resolution detection [NEW 2026-03-23],
         7) user profile updates (user-only facts; entity facts stay in ChromaDB only)"""
 
     async def _run_cross_collection_dedup():
@@ -335,6 +336,11 @@ class MultiStageGateSystem:
             mem['relevance_score'] = scores[i]
 
         return sorted(filtered, key=lambda m: m['relevance_score'], reverse=True)[:k]
+
+# Post-gate filter for personal notes (builder.py) [NEW 2026-03-20]
+# After filter_memories(), notes below PERSONAL_NOTES_GATE_THRESHOLD (0.30)
+# are dropped. General gate threshold is 0.18; personal notes need stricter filtering.
+gated_notes = [n for n in gated_notes if n.get("relevance_score", 0) >= PERSONAL_NOTES_GATE_THRESHOLD]
 ```
 
 ---
@@ -513,7 +519,7 @@ class CorpusManager:
 
 # memory/storage/multi_collection_chroma_store.py
 class MultiCollectionChromaStore:
-    # Collections (10 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals
+    # Collections (11 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads
 
     async def add_memory(text: str, metadata: Dict, collection: str):
         """Embed text and store in ChromaDB collection"""
@@ -850,6 +856,96 @@ def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, 
 
 ---
 
+## Thread Surfacing System [NEW 2026-03-23]
+
+```python
+# memory/thread_models.py — Pydantic data models
+class ThreadType(str, Enum):
+    COMMITMENT = "commitment"   # "I'll study for the exam"
+    DEADLINE = "deadline"       # "exam next Tuesday"
+    UNFINISHED = "unfinished"   # Topic started but not completed
+    QUESTION = "question"       # Question not fully answered
+
+class ThreadStatus(str, Enum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+    STALE = "stale"
+
+class OpenThread(BaseModel):
+    thread_id: str; topic: str; summary: str; status: ThreadStatus
+    thread_type: ThreadType; urgency: float  # 0.0-1.0
+    mentioned_at: float; last_referenced: float  # epoch
+    resolution_hint: str; source_summary: str; deadline_date: Optional[str]
+
+    def priority_score() -> float:
+        """TYPE_PRIORITY[type] * urgency * recency_decay(14 days)"""
+    def is_stale(stale_days=14) -> bool:
+        """True if no reference in stale_days."""
+    def mark_resolved(resolution="") -> None
+    def mark_stale() -> None
+    def to_metadata() / from_metadata()   # ChromaDB flat primitives
+    def to_dict() / from_dict()           # Full JSON serialization
+    def to_embedding_text() -> str        # topic + summary for semantic matching
+
+# TYPE_PRIORITY: deadline(1.0) > commitment(0.8) > question(0.6) > unfinished(0.4)
+
+
+# memory/thread_store.py — ChromaDB-backed storage
+class ThreadStore:
+    def __init__(chroma_store):
+        """Uses 'threads' collection. Delete-and-re-add for updates."""
+
+    def store_thread(thread: OpenThread) -> Optional[str]:
+        """Embed topic+summary, store in 'threads' collection. Returns doc_id."""
+
+    def list_open_threads() -> List[OpenThread]:
+        """Get all threads with OPEN status."""
+
+    def get_top_threads(max_results=3, stale_days=14, deadline_grace_hours=48) -> List[OpenThread]:
+        """Priority-ranked open threads for session surfacing.
+        Lazy staleness: marks stale threads during retrieval."""
+
+    def query_threads(query, n_results=5) -> List[OpenThread]:
+        """Semantic search for threads matching a query."""
+
+    def resolve_thread(thread_id, resolution="") -> bool:
+        """Mark thread as resolved (delete-and-re-add pattern)."""
+
+    def enforce_cap(max_open=50) -> int:
+        """Prune lowest-priority threads when over cap. Returns count pruned."""
+
+
+# memory/thread_extractor.py — LLM-based extraction
+class ThreadExtractor:
+    def __init__(model_manager):
+        """Two-phase LLM approach: extraction + resolution detection."""
+
+    async def extract_new_threads(session_conversations) -> List[OpenThread]:
+        """Extract open loops from session. Few-shot prompt, temp=0.0, cap 5 per session.
+        Thread types: commitment, deadline, unfinished, question."""
+
+    async def detect_resolutions(session_conversations, open_threads) -> List[Tuple[str, str]]:
+        """Detect which existing threads were resolved. Returns (thread_id, resolution) tuples.
+        Only marks resolved with clear evidence, NOT just because thread wasn't mentioned."""
+
+
+# Integration:
+# - Shutdown: step 6.5 in process_shutdown_memory() — extract new threads + resolve existing
+# - Prompt: [UNRESOLVED THREADS] section (after [KNOWLEDGE GRAPH])
+# - Collection: 'threads' in ChromaDB (11 total collections)
+# - Builder: top threads retrieved via ThreadStore.get_top_threads() in build_prompt()
+
+# Config (app_config.py):
+THREAD_SURFACING_ENABLED = True
+THREAD_MAX_OPEN = 50
+THREAD_STALE_DAYS = 14
+THREAD_DEADLINE_GRACE_HOURS = 48
+THREAD_MAX_SURFACED = 3
+THREAD_MODEL_ALIAS = ""     # empty = default model
+```
+
+---
+
 ## Configuration Constants
 
 ```python
@@ -908,6 +1004,17 @@ GRAPH_SCORING_BOOST_CAP = 0.15          # Max graph bonus (0.05 per entity)
 GRAPH_QUERY_EXPANSION_ENABLED = True     # Append neighbors to search query
 GRAPH_QUERY_EXPANSION_MAX_TERMS = 8      # Max neighbor names appended
 
+# Personal Notes Gate [NEW 2026-03-20]
+PERSONAL_NOTES_GATE_THRESHOLD = 0.30     # Post-gate threshold for Obsidian notes (general gate is 0.18)
+
+# Thread Surfacing [NEW 2026-03-23]
+THREAD_SURFACING_ENABLED = True          # Toggle thread extraction/surfacing
+THREAD_MAX_OPEN = 50                     # Max open threads before pruning
+THREAD_STALE_DAYS = 14                   # Days without reference before stale
+THREAD_DEADLINE_GRACE_HOURS = 48         # Hours past deadline before stale
+THREAD_MAX_SURFACED = 3                  # Max threads in prompt
+THREAD_MODEL_ALIAS = ""                  # LLM alias for extraction (empty = default)
+
 # Summarization
 SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))
 SUMMARIZE_AT_SHUTDOWN_ONLY = True
@@ -915,6 +1022,8 @@ SUMMARIZE_AT_SHUTDOWN_ONLY = True
 # Models
 MODEL_DEFAULT = os.getenv("LLM_ALIAS", "gpt-4o-mini")
 MODEL_SUMMARY = os.getenv("LLM_SUMMARY_ALIAS", "gpt-4o-mini")
+# Available: gpt-4o-mini, gpt-4o, gpt-5, sonnet-4.5, claude-opus-4.6, deepseek-v3.1,
+#            deepseek-r1, glm-4.6, glm-4.7, glm-5, glm-5-turbo [glm-5* NEW 2026-03-23]
 ```
 
 ---
@@ -1021,13 +1130,14 @@ score = (
 [SUMMARIES]                    # Consolidated conversation blocks
 [REFLECTIONS]                  # Session reflections
 [DREAMS]                       # Dream memories (if enabled)
-[USER'S PERSONAL NOTES]        # Obsidian vault notes (hybrid retrieval) + images for multimodal [ENHANCED 2026-01-30]
+[USER'S PERSONAL NOTES]        # Obsidian vault notes; post-filtered by PERSONAL_NOTES_GATE_THRESHOLD (0.30); headers show [relevance: X.XX] [ENHANCED 2026-03-20]
 [USER UPLOADED ITEMS]          # Persisted user file/image uploads from reference_docs collection [NEW 2026-02-10]
 [DAEMON DOCUMENTATION]         # Self-knowledge: architecture docs, PROJECT_SKELETON
 [PROJECT COMMIT HISTORY]       # Git commit history (procedural memory)
 [ADAPTIVE WORKFLOWS]           # Reusable problem-solving patterns (WHEN/THEN)
 [PROPOSED FEATURES]            # Code proposals surfaced for project-related queries [NEW 2026-02-09]
 [KNOWLEDGE GRAPH]              # Graph traversal: related entities as natural language [NEW 2026-03]
+[UNRESOLVED THREADS]           # Open commitments, deadlines, unfinished topics [NEW 2026-03-23]
 [WEB SEARCH RESULTS]           # Real-time Tavily results
 [RELEVANT INFORMATION]         # Wikipedia chunks
 [TIME CONTEXT]                 # Current datetime
@@ -1078,6 +1188,11 @@ python main.py embed-vault                   # Index vault to ChromaDB
 python main.py embed-vault --force           # Force full re-index
 python main.py vault-stats                   # Show indexed chunk count
 python main.py clear-vault                   # Clear obsidian_notes collection
+
+# Obsidian Relevance Filtering [NEW 2026-03-20]
+# Post-gate threshold: PERSONAL_NOTES_GATE_THRESHOLD=0.30 (YAML: obsidian.gate_threshold)
+# Notes below this relevance_score are dropped after multi-stage gating (general gate is 0.18)
+# Each note header in prompt includes [relevance: X.XX] tag for LLM visibility
 
 # Obsidian Image Support (multimodal models) [NEW 2026-01-30]
 # Images (![[image.png]]) in notes are automatically loaded for multimodal models
@@ -1230,7 +1345,7 @@ class MemoryConsolidator:
 
 ---
 
-## Agentic Search & Tools [NEW 2026-01-22, ENHANCED 2026-03-15]
+## Agentic Search & Tools [NEW 2026-01-22, ENHANCED 2026-03-23]
 
 **Agentic Gate** (gui/handlers.py) — 3-tier trigger before ReAct loop:
 1. **Keyword heuristic** (0ms): computation keywords OR memory keywords ("do you remember", "my notes", etc.)
@@ -1249,8 +1364,10 @@ class AgenticSearchController:
         """
         Main loop:
         1. Build prompt with gathered context + tool instructions
-        2. Call LLM for decision (search/wolfram/done)
+        1b. Compute context inventory (summarize RAG-gathered sections) [ENHANCED 2026-03-23]
+        2. Call LLM for decision (search/wolfram/memory/done)
         3. Execute tool if requested, add result to context
+        3b. Track memory_search_counts per collection (diversity enforcement) [ENHANCED 2026-03-23]
         4. Repeat until done or max_turns reached
         5. Yield AgenticEvent for each stage (thinking/searching/computed/done)
         """
@@ -1268,6 +1385,11 @@ class AgenticSearchController:
                 result = await self._execute_wolfram(decision.wolfram_query)
                 context.append(self._format_wolfram_context(result))
                 yield AgenticEvent(type="computed", data=result)
+
+            elif decision.wants_memory_search:  # [ENHANCED 2026-03-23]
+                results = await self._execute_memory_search(decision.memory_query, decision.memory_collection)
+                context.append(self._format_memory_context(results))
+                yield AgenticEvent(type="memory_searched", data=results)
 
             elif decision.is_done:
                 yield AgenticEvent(type="done", response=final_response)
@@ -1287,13 +1409,33 @@ class SearchDecision:
     wants_sandbox: bool = False         # Code execution [NEW 2026-01-22]
     sandbox_code: Optional[str] = None
     sandbox_purpose: Optional[str] = None
-    wants_memory: bool = False          # Memory search [NEW 2026-03-15]
+    wants_memory_search: bool = False   # Memory search [NEW 2026-03-15]
     memory_query: Optional[str] = None
     memory_collection: Optional[str] = None
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False
     partial_response: Optional[str] = None
+
+
+# core/agentic/types.py — Session state [ENHANCED 2026-03-23]
+@dataclass
+class AgenticSearchSession:
+    memory_search_counts: Dict[str, int] = field(default_factory=dict)  # Per-collection diversity tracking
+    context_inventory: str = ""  # Summary of what RAG pipeline already gathered
+    # ... (also: round_count, search_results, memory_results, etc.)
+
+# MEMORY_SEARCH_TOOL_DEFINITION — Enhanced with per-collection descriptions [ENHANCED 2026-03-23]
+# Tool description includes what each collection contains:
+#   summaries → profile overviews, biographical questions
+#   conversations → temporal recall, specific exchanges
+#   facts → individual extracted triples (name=X, age=Y)
+#   reflections → session reflections/insights
+#   reference_docs → architecture/documentation
+#   obsidian_notes → user's personal notes
+#   procedural → git commits, how-to knowledge
+#   procedural_skills → learned problem-solving patterns
+# Diversity enforcement: "avoid searching the same collection repeatedly"
 
 
 # knowledge/wolfram_manager.py [NEW]
@@ -1358,8 +1500,8 @@ class SandboxResult:
 
 
 # Protocol handlers (core/agentic/protocols.py)
-# XMLMarkerHandler - for local models: <search>query</search>, <wolfram>query</wolfram>, <python>code</python>
-# NativeToolsHandler - for API models: OpenAI/Anthropic function calling
+# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <done>
+# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (5 tool definitions)
 ```
 
 ### Agentic Config Constants
@@ -1372,6 +1514,8 @@ WEB_SEARCH_ENABLED = True
 WEB_SEARCH_API_KEY = os.getenv("TAVILY_API_KEY", "")
 WEB_SEARCH_DAILY_CREDIT_LIMIT = 100
 WEB_SEARCH_CACHE_TTL_HOURS = 72
+# Fixes [2026-03-23]: Tavily 400-char query truncation (web_search_manager.py),
+#   long paste prefilter >500 chars skips LLM (web_search_trigger.py:quick_prefilter_should_skip)
 
 # Wolfram Alpha [NEW]
 WOLFRAM_ENABLED = True
@@ -1400,12 +1544,14 @@ SANDBOX_RATE_LIMIT_PER_MINUTE = 30
 Available Tools:
 1. <search>query</search> - Web search for current events, facts, data
 2. <wolfram>query</wolfram> - Computation, math, science, conversions
-3. <python purpose="...">code</python> - Execute Python code (NumPy, Pandas, SciPy, SymPy available) [NEW]
-4. <done>reason</done> - Signal task complete
+3. <python purpose="...">code</python> - Execute Python code (NumPy, Pandas, SciPy, SymPy available)
+4. <memory collection="...">query</memory> - Search internal memory/knowledge base [NEW 2026-03-15]
+5. <done>reason</done> - Signal task complete
 
 Use Python for: multi-step computation, data analysis, visualization, custom algorithms
 Use Wolfram for: single-expression calculations, unit conversions, scientific data, equations
 Use search for: current events, recent news, real-time data, general facts
+Use memory for: user facts, past conversations, personal notes, project history
 """
 ```
 
@@ -1458,4 +1604,4 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-This document is ~800 lines → ~5K tokens, providing instant lookup for critical functions and patterns.
+This document is ~1,600 lines → ~10K tokens, providing instant lookup for critical functions and patterns.

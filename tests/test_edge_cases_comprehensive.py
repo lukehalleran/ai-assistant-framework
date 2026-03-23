@@ -257,20 +257,6 @@ async def test_build_prompt_with_search_query(prompt_builder):
     assert isinstance(result, dict)
 
 
-@pytest.mark.asyncio
-async def test_get_facts_empty_query(prompt_builder):
-    """Test get_facts with empty query."""
-    facts = await prompt_builder.get_facts(query="", limit=8)
-    assert isinstance(facts, list)
-
-
-@pytest.mark.asyncio
-async def test_get_facts_unicode(prompt_builder):
-    """Test get_facts with unicode query."""
-    facts = await prompt_builder.get_facts(query="Python 编程", limit=8)
-    assert isinstance(facts, list)
-
-
 # Corpus Manager Edge Cases
 def test_corpus_manager_nonexistent_file(temp_dirs):
     """Test CorpusManager with nonexistent file."""

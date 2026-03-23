@@ -531,6 +531,10 @@ OBSIDIAN_VAULT_PATH: str = OBSIDIAN_CFG.get("vault_path", "") or os.path.expandu
 OBSIDIAN_CHUNK_THRESHOLD: int = int(OBSIDIAN_CFG.get("chunk_threshold", 1500))
 # Maximum notes to include in prompt
 OBSIDIAN_MAX_NOTES_PROMPT: int = int(OBSIDIAN_CFG.get("max_notes_prompt", 5))
+# Stricter relevance threshold for personal notes (vs 0.18 general gate)
+# Notes below this score are filtered out post-gating to prevent topically-similar
+# but contextually-irrelevant notes from leaking into responses
+PERSONAL_NOTES_GATE_THRESHOLD: float = float(OBSIDIAN_CFG.get("gate_threshold", 0.30))
 
 # Environment variable overrides for Obsidian
 OBSIDIAN_ENABLED = bool(int(os.getenv("OBSIDIAN_ENABLED", "1" if OBSIDIAN_ENABLED else "0")))
@@ -864,6 +868,20 @@ GRAPH_QUERY_EXPANSION_MAX_TERMS: int = int(KNOWLEDGE_GRAPH_CFG.get("query_expans
 
 # Environment variable overrides for Knowledge Graph
 KNOWLEDGE_GRAPH_ENABLED = bool(int(os.getenv("KNOWLEDGE_GRAPH_ENABLED", "1" if KNOWLEDGE_GRAPH_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Thread Surfacing (proactive open-thread detection)
+# --------------------------------------------------------------------
+THREAD_CFG = config.get("thread_surfacing", {})
+THREAD_SURFACING_ENABLED: bool = bool(THREAD_CFG.get("enabled", True))
+THREAD_MAX_OPEN: int = int(THREAD_CFG.get("max_open", 50))
+THREAD_STALE_DAYS: int = int(THREAD_CFG.get("stale_days", 14))
+THREAD_DEADLINE_GRACE_HOURS: int = int(THREAD_CFG.get("deadline_grace_hours", 48))
+THREAD_MAX_SURFACED: int = int(THREAD_CFG.get("max_surfaced", 3))
+THREAD_MODEL_ALIAS: str = str(THREAD_CFG.get("model_alias", ""))
+
+# Environment variable overrides for Thread Surfacing
+THREAD_SURFACING_ENABLED = bool(int(os.getenv("THREAD_SURFACING_ENABLED", "1" if THREAD_SURFACING_ENABLED else "0")))
 
 # --------------------------------------------------------------------
 # Agentic Memory Search

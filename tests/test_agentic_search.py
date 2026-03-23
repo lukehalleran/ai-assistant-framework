@@ -679,3 +679,285 @@ class TestAgenticSearchIntegration:
 
         assert session.can_continue is False
         assert len(session.rounds) == 1
+
+
+# =============================================================================
+# Test Context Inventory
+# =============================================================================
+
+class TestContextInventory:
+    """Tests for _compute_context_inventory() method."""
+
+    @pytest.fixture
+    def controller(self):
+        """Create a minimal controller for testing."""
+        from core.agentic.controller import AgenticSearchController
+        manager = MagicMock()
+        manager.api_models = {}
+        web_mgr = MagicMock()
+        return AgenticSearchController(
+            model_manager=manager,
+            web_search_manager=web_mgr,
+        )
+
+    def test_full_context_inventory(self, controller):
+        """Test inventory with a fully populated context dict."""
+        context = {
+            'user_profile': "identity:\n- name: Luke\n- age: 33\nhealth:\n- has condition X",
+            'recent_summaries': [{'content': 'sum1'}, {'content': 'sum2'}],
+            'semantic_summaries': [{'content': 'sem1'}],
+            'recent_reflections': [{'content': 'ref1'}, {'content': 'ref2'}, {'content': 'ref3'}],
+            'personal_notes': [{'content': 'note1'}],
+            'memories': [{'content': 'm1'}, {'content': 'm2'}, {'content': 'm3'}],
+            'recent_conversations': [{'query': 'q1'}, {'query': 'q2'}],
+            'reference_docs': [{'content': 'doc1'}],
+            'dreams': [{'content': 'dream1'}],
+        }
+
+        inventory = controller._compute_context_inventory(context)
+
+        assert "Context already gathered by retrieval pipeline:" in inventory
+        assert "[USER PROFILE]" in inventory
+        assert "[RECENT SUMMARIES]: 2" in inventory
+        assert "[SEMANTIC SUMMARIES]: 1" in inventory
+        assert "[RECENT REFLECTIONS]: 3" in inventory
+        assert "[PERSONAL NOTES]: 1" in inventory
+        assert "[RELEVANT MEMORIES]: 3" in inventory
+        assert "[RECENT CONVERSATIONS]: 2" in inventory
+        assert "[DAEMON DOCUMENTATION]: 1" in inventory
+        assert "[RECENT DREAMS]: 1" in inventory
+        assert "Do NOT re-search" in inventory
+
+    def test_empty_context_returns_empty_string(self, controller):
+        """Test that None or empty context returns empty string."""
+        assert controller._compute_context_inventory(None) == ""
+        assert controller._compute_context_inventory({}) == ""
+
+    def test_partial_context(self, controller):
+        """Test with only some sections populated."""
+        context = {
+            'user_profile': "name: Luke",
+            'memories': [{'content': 'm1'}],
+        }
+
+        inventory = controller._compute_context_inventory(context)
+
+        assert "[USER PROFILE]" in inventory
+        assert "[RELEVANT MEMORIES]: 1" in inventory
+        # Sections not present should not appear
+        assert "[RECENT SUMMARIES]" not in inventory
+        assert "[PERSONAL NOTES]" not in inventory
+
+    def test_inventory_conciseness(self, controller):
+        """Test that inventory is concise (doesn't dump full content)."""
+        context = {
+            'user_profile': "A " * 5000,  # Very long profile
+            'memories': [{'content': 'x' * 1000} for _ in range(20)],
+        }
+
+        inventory = controller._compute_context_inventory(context)
+
+        # Should be much shorter than the full content
+        assert len(inventory) < 500
+
+    def test_dict_format_summaries_fallback(self, controller):
+        """Test handling of old dict-format summaries."""
+        context = {
+            'summaries': {
+                'recent': [{'content': 'r1'}, {'content': 'r2'}],
+                'semantic': [{'content': 's1'}],
+            }
+        }
+
+        inventory = controller._compute_context_inventory(context)
+
+        assert "[RECENT SUMMARIES]: 2" in inventory
+        assert "[SEMANTIC SUMMARIES]: 1" in inventory
+
+
+# =============================================================================
+# Test Memory Search Tracking
+# =============================================================================
+
+class TestMemorySearchTracking:
+    """Tests for memory_search_counts tracking and diversity hints."""
+
+    def test_memory_search_counts_default(self):
+        """Test that memory_search_counts starts empty."""
+        from core.agentic.types import AgenticSearchSession
+
+        session = AgenticSearchSession(query="test")
+        assert session.memory_search_counts == {}
+
+    def test_memory_search_counts_increment(self):
+        """Test manual increment of memory_search_counts."""
+        from core.agentic.types import AgenticSearchSession
+
+        session = AgenticSearchSession(query="test")
+
+        # Simulate tracking
+        collection = "facts"
+        session.memory_search_counts[collection] = (
+            session.memory_search_counts.get(collection, 0) + 1
+        )
+        assert session.memory_search_counts["facts"] == 1
+
+        session.memory_search_counts[collection] = (
+            session.memory_search_counts.get(collection, 0) + 1
+        )
+        assert session.memory_search_counts["facts"] == 2
+
+    def test_diversity_hint_in_iteration_prompt(self):
+        """Test that diversity hint appears after 2 searches of same collection."""
+        from core.agentic.controller import AgenticSearchController
+        from core.agentic.types import AgenticSearchSession
+
+        manager = MagicMock()
+        manager.api_models = {}
+        controller = AgenticSearchController(
+            model_manager=manager,
+            web_search_manager=MagicMock(),
+        )
+
+        session = AgenticSearchSession(query="tell me about myself")
+        session.memory_search_counts = {"facts": 2}
+
+        prompt = controller._build_iteration_prompt(
+            query="tell me about myself",
+            search_context="[some results]",
+            round_number=3,
+            session=session,
+        )
+
+        assert "already searched 'facts' 2 times" in prompt
+        assert "different collection" in prompt
+
+    def test_no_diversity_hint_below_threshold(self):
+        """Test that no diversity hint when count < 2."""
+        from core.agentic.controller import AgenticSearchController
+        from core.agentic.types import AgenticSearchSession
+
+        manager = MagicMock()
+        manager.api_models = {}
+        controller = AgenticSearchController(
+            model_manager=manager,
+            web_search_manager=MagicMock(),
+        )
+
+        session = AgenticSearchSession(query="test")
+        session.memory_search_counts = {"facts": 1}
+
+        prompt = controller._build_iteration_prompt(
+            query="test",
+            search_context="[some results]",
+            round_number=2,
+            session=session,
+        )
+
+        assert "already searched" not in prompt
+
+    def test_multiple_collections_tracked(self):
+        """Test tracking across multiple collections."""
+        from core.agentic.types import AgenticSearchSession
+
+        session = AgenticSearchSession(query="test")
+        session.memory_search_counts["facts"] = 2
+        session.memory_search_counts["summaries"] = 1
+        session.memory_search_counts["conversations"] = 3
+
+        assert session.memory_search_counts["facts"] == 2
+        assert session.memory_search_counts["summaries"] == 1
+        assert session.memory_search_counts["conversations"] == 3
+
+
+# =============================================================================
+# Test Iteration Prompt With Inventory
+# =============================================================================
+
+class TestIterationPromptWithInventory:
+    """Tests for _build_iteration_prompt() with context inventory."""
+
+    @pytest.fixture
+    def controller(self):
+        """Create a minimal controller."""
+        from core.agentic.controller import AgenticSearchController
+        manager = MagicMock()
+        manager.api_models = {}
+        return AgenticSearchController(
+            model_manager=manager,
+            web_search_manager=MagicMock(),
+        )
+
+    def test_inventory_included_in_prompt(self, controller):
+        """Test that context inventory is included in iteration prompt."""
+        from core.agentic.types import AgenticSearchSession
+
+        session = AgenticSearchSession(query="tell me about myself")
+        session.context_inventory = (
+            "Context already gathered by retrieval pipeline:\n"
+            "- [USER PROFILE]: 40 categorized facts\n"
+            "- [RECENT SUMMARIES]: 7 session summaries\n"
+            "Do NOT re-search for information already covered above."
+        )
+
+        prompt = controller._build_iteration_prompt(
+            query="tell me about myself",
+            search_context="",
+            round_number=2,
+            session=session,
+        )
+
+        assert "Context already gathered by retrieval pipeline:" in prompt
+        assert "[USER PROFILE]: 40 categorized facts" in prompt
+        assert "Do NOT re-search" in prompt
+
+    def test_empty_inventory_no_issue(self, controller):
+        """Test that empty inventory doesn't break the prompt."""
+        from core.agentic.types import AgenticSearchSession
+
+        session = AgenticSearchSession(query="test")
+        session.context_inventory = ""
+
+        prompt = controller._build_iteration_prompt(
+            query="test",
+            search_context="[some results]",
+            round_number=2,
+            session=session,
+        )
+
+        assert "User Question: test" in prompt
+        assert "Context already gathered" not in prompt
+
+    def test_prompt_without_session(self, controller):
+        """Test iteration prompt still works without session."""
+        prompt = controller._build_iteration_prompt(
+            query="test",
+            search_context="results here",
+            round_number=2,
+            session=None,
+        )
+
+        assert "User Question: test" in prompt
+        assert "results here" in prompt
+
+    def test_inventory_and_diversity_hint_combined(self, controller):
+        """Test that both inventory and diversity hint appear together."""
+        from core.agentic.types import AgenticSearchSession
+
+        session = AgenticSearchSession(query="tell me about myself")
+        session.context_inventory = (
+            "Context already gathered by retrieval pipeline:\n"
+            "- [USER PROFILE]: 40 facts\n"
+            "Do NOT re-search for information already covered above."
+        )
+        session.memory_search_counts = {"facts": 3}
+
+        prompt = controller._build_iteration_prompt(
+            query="tell me about myself",
+            search_context="[some facts results]",
+            round_number=4,
+            session=session,
+        )
+
+        assert "Context already gathered" in prompt
+        assert "already searched 'facts' 3 times" in prompt

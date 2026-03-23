@@ -44,10 +44,6 @@ async def test_competitive_vs_baseline():
         print("📦 Gathering context...")
         context_baseline = await builder._gather_context(
             user_input=query,
-            include_dreams=False,
-            include_wiki=False,
-            include_semantic=True,
-            personality_config=None
         )
 
         # Apply gating if available (baseline does this)

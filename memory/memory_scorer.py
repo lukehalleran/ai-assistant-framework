@@ -177,7 +177,7 @@ class MemoryScorer:
             0.2 - Different topic (penalty)
         """
         # Extract topics from memory metadata
-        memory_topics = memory.get('metadata', {}).get('topics', [])
+        memory_topics = (memory.get('metadata', {}) or {}).get('topics', [])
 
         # Also check tags field for topic tags
         tags = memory.get('tags', [])

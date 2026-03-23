@@ -154,12 +154,12 @@ def test_score_answer_poor_quality(response_generator):
 
 
 def test_minmax_normalize_normal():
-    """Test _minmax_normalize static method."""
+    """Test _minmax_normalize static method (scales to 0-10 range)."""
     values = [1.0, 2.0, 3.0, 4.0, 5.0]
     normalized = ResponseGenerator._minmax_normalize(values)
     assert isinstance(normalized, list)
     assert len(normalized) == len(values)
-    assert max(normalized) <= 1.0
+    assert max(normalized) <= 10.0
     assert min(normalized) >= 0.0
 
 

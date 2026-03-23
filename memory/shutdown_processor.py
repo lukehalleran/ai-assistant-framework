@@ -4,7 +4,8 @@ Shutdown memory processing module.
 
 Handles end-of-session consolidation: block summaries, fact extraction,
 LLM-assisted fact extraction, user profile updates (user-only facts),
-procedural skill extraction, code proposal generation, and session reflections.
+procedural skill extraction, code proposal generation, open thread extraction
+and resolution detection, and session reflections.
 
 Note: Entity facts (non-user subjects) are stored in ChromaDB but NOT added
 to UserProfile. Only facts with subject="user" are passed to add_facts_batch().
@@ -41,7 +42,12 @@ class ShutdownProcessor:
     - LLM-assisted triple extraction
     - User profile updates
     - Procedural skill extraction (adaptive workflows)
+    - Open thread extraction and resolution detection (via thread_store)
     - Session-end reflection generation
+
+    Args (constructor):
+        thread_store: Optional ThreadStore for persisting open threads
+            (commitments, deadlines, unanswered questions) extracted at shutdown.
     """
 
     def __init__(
@@ -55,6 +61,7 @@ class ShutdownProcessor:
         storage,
         session_start: datetime,
         memory_coordinator=None,
+        thread_store=None,
     ):
         self.corpus_manager = corpus_manager
         self.chroma_store = chroma_store
@@ -65,6 +72,7 @@ class ShutdownProcessor:
         self._storage = storage
         self.session_start = session_start
         self.memory_coordinator = memory_coordinator
+        self.thread_store = thread_store
 
     # ------------------------------------------------------------------
     # Helpers
@@ -185,6 +193,9 @@ class ShutdownProcessor:
 
             # 6) Generate code proposals (goal-directed)
             await self._generate_proposals(session_conversations)
+
+            # 6.5) Extract open threads and detect resolutions
+            await self._process_open_threads(session_conversations)
 
             # 7) Save knowledge graph and entity aliases
             self._save_knowledge_graph()
@@ -866,6 +877,88 @@ class ShutdownProcessor:
                 sections.append("## Recent Git Activity\n" + "\n".join(lines))
 
         return "\n\n".join(sections)
+
+    # ------------------------------------------------------------------
+    # Open thread extraction
+    # ------------------------------------------------------------------
+
+    async def _process_open_threads(self, session_conversations):
+        """Extract open threads from session and detect resolutions of existing ones.
+
+        Phase 1: Get existing open threads → run detect_resolutions() → mark resolved
+        Phase 2: Run extract_new_threads() → store new threads
+        Phase 3: Enforce cap (THREAD_MAX_OPEN)
+        """
+        try:
+            from config.app_config import THREAD_SURFACING_ENABLED
+            if not THREAD_SURFACING_ENABLED:
+                return
+        except ImportError:
+            return
+
+        if not self.thread_store:
+            return
+
+        if not self.model_manager or not hasattr(self.model_manager, "generate_once"):
+            return
+
+        # Gather session conversations
+        if isinstance(session_conversations, list) and session_conversations:
+            sess_items = session_conversations
+        else:
+            try:
+                corpus = list(self.corpus_manager.corpus)
+            except (AttributeError, TypeError):
+                return
+            try:
+                sess_items = [
+                    e for e in corpus
+                    if (not self._is_summary(e)) and (not self._is_reflection(e))
+                    and self._ts(e) >= self.session_start
+                ]
+            except (ValueError, TypeError):
+                sess_items = [
+                    e for e in corpus
+                    if (not self._is_summary(e)) and (not self._is_reflection(e))
+                ]
+
+        if len(sess_items) < 2:
+            return
+
+        from memory.thread_extractor import ThreadExtractor
+
+        extractor = ThreadExtractor(model_manager=self.model_manager)
+
+        # Phase 1: Detect resolutions of existing threads
+        try:
+            existing_open = self.thread_store.list_open_threads()
+            if existing_open:
+                resolutions = await extractor.detect_resolutions(sess_items, existing_open)
+                for thread_id, resolution in resolutions:
+                    self.thread_store.resolve_thread(thread_id, resolution)
+                if resolutions:
+                    logger.info(f"[Shutdown] Resolved {len(resolutions)} thread(s)")
+        except Exception as e:
+            logger.warning(f"[Shutdown] Thread resolution detection failed: {e}")
+
+        # Phase 2: Extract new threads
+        try:
+            new_threads = await extractor.extract_new_threads(sess_items)
+            stored = 0
+            for thread in new_threads:
+                doc_id = self.thread_store.store_thread(thread)
+                if doc_id:
+                    stored += 1
+            if stored:
+                logger.info(f"[Shutdown] Stored {stored} new thread(s)")
+        except Exception as e:
+            logger.warning(f"[Shutdown] Thread extraction failed: {e}")
+
+        # Phase 3: Enforce cap
+        try:
+            self.thread_store.enforce_cap()
+        except Exception as e:
+            logger.debug(f"[Shutdown] Thread cap enforcement failed: {e}")
 
     # ------------------------------------------------------------------
     # Knowledge graph persistence

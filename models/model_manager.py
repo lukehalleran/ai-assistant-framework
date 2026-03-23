@@ -127,6 +127,7 @@ class ModelManager:
         self.api_models["glm-4.6"] = "z-ai/glm-4.6"
         self.api_models["glm-4.7"] = "z-ai/glm-4.7"
         self.api_models["glm-5"] = "z-ai/glm-5"
+        self.api_models["glm-5-turbo"] = "z-ai/glm-5-turbo"
         # DeepSeek models
         self.api_models["deepseek-v3.1"] = "deepseek/deepseek-chat-v3.1"
         self.api_models["deepseek-r1"] = "deepseek/deepseek-r1-0528"
@@ -141,12 +142,12 @@ class ModelManager:
         since the ModelManager was created before the key was available.
 
         Args:
-            api_key: The new API key. If None, reads from os.environ['OPENAI_API_KEY']
+            api_key: The new API key. If None, reads from OPENROUTER_API_KEY or OPENAI_API_KEY env vars
 
         Returns:
             bool: True if clients were successfully initialized, False otherwise
         """
-        new_key = api_key or os.getenv("OPENAI_API_KEY")
+        new_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not new_key:
             logger.warning("[ModelManager] Cannot reinitialize clients: no API key provided")
             return False

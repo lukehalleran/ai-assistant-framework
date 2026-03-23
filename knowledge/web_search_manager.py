@@ -723,6 +723,11 @@ class WebSearchManager:
             return []
 
         try:
+            # Tavily rejects queries over ~400 chars with 400 Bad Request
+            if len(query) > 400:
+                log.debug(f"[WebSearch] Truncating long query from {len(query)} to 400 chars")
+                query = query[:400]
+
             # Build search kwargs
             search_kwargs = {
                 "query": query,

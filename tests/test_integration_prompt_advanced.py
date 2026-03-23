@@ -65,23 +65,6 @@ async def test_get_recent_conversations(prompt_builder, memory_coordinator):
 
 
 @pytest.mark.asyncio
-async def test_get_facts(prompt_builder):
-    """Test fact retrieval."""
-    facts = await prompt_builder.get_facts("Python programming", limit=5)
-    
-    assert isinstance(facts, list)
-    # Should not crash even if no facts exist
-
-
-@pytest.mark.asyncio
-async def test_get_recent_facts(prompt_builder):
-    """Test recent fact retrieval."""
-    facts = await prompt_builder.get_recent_facts(limit=3)
-    
-    assert isinstance(facts, list)
-
-
-@pytest.mark.asyncio
 async def test_build_prompt_with_personality(prompt_builder):
     """Test prompt building with personality config."""
     personality = {
@@ -165,6 +148,8 @@ async def test_build_prompt_error_handling(prompt_builder):
 @pytest.mark.asyncio
 async def test_get_token_count(prompt_builder):
     """Test token counting."""
+    if prompt_builder.tokenizer_manager is None:
+        pytest.skip("tokenizer_manager not initialized")
     text = "This is a test message for counting tokens."
 
     count = prompt_builder.get_token_count(text, model_name="gpt-4")

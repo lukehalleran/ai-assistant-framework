@@ -16,6 +16,8 @@ Module Contract
   - _check_narrative_freshness(): Startup check for stale narrative context (>24h) [NEW 2026-01-17]
 - System prompt flow:
   - Resolved via config/app_config.load_system_prompt and/or path override; forwarded to response generation as system role message.
+  - Appends [THREAD CONTEXT] to system prompt for ongoing conversation threads (depth, topic, heavy-topic flag)
+  - Proactive thread surfacing: on first message of session, appends instruction to naturally reference [UNRESOLVED THREADS] from prior sessions
 - Side effects:
   - Writes conversation+metadata to corpus DB/Chroma via memory_system; logs events.
   - Logs warning if narrative context is stale on startup [NEW 2026-01-17]
@@ -1100,6 +1102,32 @@ The user is processing/analyzing, open to engagement.
 
             session_headers = self._get_session_headers_instructions()
             system_prompt = system_prompt.rstrip() + session_headers
+
+            # --- Proactive thread surfacing (first message only) ---
+            try:
+                from config.app_config import THREAD_SURFACING_ENABLED
+                if THREAD_SURFACING_ENABLED:
+                    is_first_message = False
+                    if hasattr(self, 'time_manager') and self.time_manager:
+                        try:
+                            gap = self.time_manager.time_since_previous_message()
+                            is_first_message = isinstance(gap, str) and "N/A" in gap
+                        except (AttributeError, TypeError):
+                            pass
+                    if is_first_message:
+                        system_prompt = system_prompt.rstrip() + (
+                            "\n\n## PROACTIVE THREAD SURFACING\n"
+                            "The [UNRESOLVED THREADS] section in the prompt contains open threads from prior sessions "
+                            "(commitments the user made, deadlines, unfinished topics, unanswered questions).\n"
+                            "Since this is the START of a new session:\n"
+                            "- Naturally weave 1-2 relevant threads into your greeting (don't list them all)\n"
+                            "- Keep it conversational, NOT a bulleted task list\n"
+                            "- Prioritize the user's current query first; mention threads secondarily\n"
+                            "- If no threads are present or relevant, just greet normally\n"
+                            "- Never fabricate threads — only reference what appears in [UNRESOLVED THREADS]\n"
+                        )
+            except (ImportError, Exception):
+                pass
 
         # --- Thinking block instruction ---
         if not use_raw_mode:
