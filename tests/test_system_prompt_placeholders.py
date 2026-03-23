@@ -61,8 +61,8 @@ class TestSystemPromptPlaceholders:
 
             # Check for standalone "Luke" (not in a placeholder context)
             if " Luke" in line or "Luke " in line or "(Luke)" in line:
-                # Make sure it's not part of {USER_NAME} documentation
-                if "{USER_NAME}" not in line:
+                # Make sure it's not part of {USER_NAME} documentation or examples
+                if "{USER_NAME}" not in line and "❌" not in line and "✅" not in line and "Bad:" not in line and "Good:" not in line:
                     problematic_lines.append((i, line.strip()))
 
         # Should have no hardcoded Luke references (all should use {USER_NAME})

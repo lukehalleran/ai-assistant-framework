@@ -37,7 +37,8 @@ Prompt Section Order:
   [RECENT CONVERSATION] → [RELEVANT MEMORIES] → [USER PROFILE] → [SUMMARIES] →
   [REFLECTIONS] → [DREAMS] → [USER'S PERSONAL NOTES] → [USER UPLOADED ITEMS] →
   [DAEMON DOCUMENTATION] → [PROJECT COMMIT HISTORY] → [ADAPTIVE WORKFLOWS] →
-  [PROPOSED FEATURES] → [WEB SEARCH RESULTS] → [RELEVANT INFORMATION] →
+  [PROPOSED FEATURES] → [KNOWLEDGE GRAPH] → [UNRESOLVED THREADS] →
+  [WEB SEARCH RESULTS] → [RELEVANT INFORMATION] →
   [TIME CONTEXT] → [TEMPORAL GROUNDING] → [STM SUMMARY] → [CURRENT USER QUERY]
 """
 
@@ -111,6 +112,7 @@ PROMPT_MAX_SKILLS = _cfg_int("prompt_max_skills", 5)
 PROMPT_MAX_PROPOSALS = _cfg_int("prompt_max_proposals", 3)
 PROMPT_MAX_USER_UPLOADS = _cfg_int("prompt_max_user_uploads", 5)
 PROMPT_MAX_GRAPH_SENTENCES = _cfg_int("prompt_max_graph_sentences", 12)
+PROMPT_MAX_SURFACED_THREADS = _cfg_int("prompt_max_surfaced_threads", 3)
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
@@ -124,11 +126,13 @@ try:
         OBSIDIAN_INCLUDE_IMAGES,
         OBSIDIAN_MAX_IMAGES_PER_NOTE,
         MULTIMODAL_MODELS,
+        PERSONAL_NOTES_GATE_THRESHOLD,
     )
 except ImportError:
     OBSIDIAN_INCLUDE_IMAGES = True
     OBSIDIAN_MAX_IMAGES_PER_NOTE = 3
     MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gemini"]
+    PERSONAL_NOTES_GATE_THRESHOLD = 0.30
 
 
 def _is_multimodal_model(model_id: str) -> bool:
@@ -148,6 +152,7 @@ PRIORITY_ORDER = [
     ("git_commits", 5),     # Git commit history (procedural memory)
     ("procedural_skills", 5),  # Reusable problem-solving patterns
     ("proposed_features", 3),  # Code proposals (trimmed before core context)
+    ("unresolved_threads", 4),  # Open threads for proactive surfacing
     ("memories", 5),
     ("semantic_facts", 4),
     ("fresh_facts", 4),
@@ -372,6 +377,7 @@ class UnifiedPromptBuilder:
             eff_max_skills = _ro.get("max_skills", PROMPT_MAX_SKILLS)
             eff_max_proposals = _ro.get("max_proposals", PROMPT_MAX_PROPOSALS)
             eff_max_git = _ro.get("max_git_commits", PROMPT_MAX_GIT_COMMITS)
+            eff_max_surfaced_threads = _ro.get("max_surfaced_threads", PROMPT_MAX_SURFACED_THREADS)
 
             if _ro:
                 logger.info(f"[BUILD_PROMPT] Intent retrieval overrides: {_ro}")
@@ -486,6 +492,11 @@ class UnifiedPromptBuilder:
             # Knowledge graph context (entity relationships)
             tasks["graph_context"] = asyncio.create_task(
                 _timed_task("graph_context", self.context_gatherer.get_graph_context(user_input, PROMPT_MAX_GRAPH_SENTENCES))
+            )
+
+            # Unresolved threads (proactive surfacing)
+            tasks["unresolved_threads"] = asyncio.create_task(
+                _timed_task("unresolved_threads", self.context_gatherer.get_unresolved_threads(eff_max_surfaced_threads))
             )
 
             # Web search (triggered based on query analysis, suppressed during crisis)
@@ -647,6 +658,7 @@ class UnifiedPromptBuilder:
                 "procedural_skills": gathered.get("procedural_skills", []),  # Adaptive workflows
                 "proposed_features": gathered.get("proposed_features", []),  # Code proposals
                 "graph_context": gathered.get("graph_context", []),  # Knowledge graph relationships
+                "unresolved_threads": gathered.get("unresolved_threads", []),  # Proactive thread surfacing
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
             }
             # DEBUG: Log web search results
@@ -683,8 +695,13 @@ class UnifiedPromptBuilder:
                         gated_notes = await self.context_gatherer.gate_system.filter_memories(
                             user_input, personal_notes
                         )
+                        # Apply stricter relevance threshold for personal notes
+                        # (general gate threshold is 0.18; personal notes need 0.30+)
+                        pre_filter_count = len(gated_notes)
+                        gated_notes = [n for n in gated_notes
+                                       if n.get("relevance_score", 0) >= PERSONAL_NOTES_GATE_THRESHOLD]
                         context["personal_notes"] = gated_notes[:PROMPT_MAX_PERSONAL_NOTES]
-                        logger.debug(f"Gated personal notes: {len(personal_notes)} -> {len(context['personal_notes'])}")
+                        logger.debug(f"Gated personal notes: {len(personal_notes)} -> {pre_filter_count} (gate) -> {len(context['personal_notes'])} (threshold={PERSONAL_NOTES_GATE_THRESHOLD})")
                     except Exception as gate_err:
                         logger.warning(f"Personal notes gating failed, keeping original: {gate_err}")
 
@@ -939,6 +956,7 @@ class UnifiedPromptBuilder:
                 "procedural_skills": context.get("procedural_skills", []),  # Adaptive workflows
                 "proposed_features": context.get("proposed_features", []),  # Code proposals
                 "graph_context": context.get("graph_context", []),  # Knowledge graph relationships
+                "unresolved_threads": context.get("unresolved_threads", []),  # Proactive thread surfacing
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
@@ -971,6 +989,7 @@ class UnifiedPromptBuilder:
                 "procedural_skills": [],
                 "proposed_features": [],
                 "graph_context": [],
+                "unresolved_threads": [],
                 "web_search_results": None,
                 "memory_id_map": {}
             }
@@ -1058,6 +1077,7 @@ class UnifiedPromptBuilder:
                 "procedural_skills": [],
                 "proposed_features": [],  # No proposals for small-talk
                 "graph_context": [],  # No graph for small-talk
+                "unresolved_threads": [],  # No threads for small-talk
                 "web_search_results": None  # No web search for small-talk
             }
 
@@ -1092,6 +1112,7 @@ class UnifiedPromptBuilder:
                 "procedural_skills": [],
                 "proposed_features": [],
                 "graph_context": [],
+                "unresolved_threads": [],
                 "web_search_results": None
             }
 
@@ -1748,6 +1769,11 @@ class UnifiedPromptBuilder:
                     if tag_list:
                         header_parts.append(" ".join(f"#{t}" for t in tag_list))
 
+                # Add relevance score so the LLM can see match strength
+                relevance = note.get("relevance_score", 0.0)
+                if relevance > 0:
+                    header_parts.append(f"[relevance: {relevance:.2f}]")
+
                 # Add image indicator if images are present
                 if image_data:
                     header_parts.append(f"[{len(image_data)} image(s) attached]")
@@ -1982,6 +2008,21 @@ class UnifiedPromptBuilder:
             graph_block = "\n".join(f"- {s}" for s in graph_sentences)
             sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)}\n{graph_block}")
 
+        # Unresolved threads (proactive surfacing)
+        unresolved_threads = context.get("unresolved_threads", []) or []
+        if unresolved_threads:
+            thread_lines = []
+            for t in unresolved_threads:
+                ttype = t.get("thread_type", "unfinished")
+                topic = t.get("topic", "")
+                summary = t.get("summary", "")
+                deadline = t.get("deadline_date")
+                line = f"- [{ttype}] {topic}: {summary}"
+                if deadline:
+                    line += f" (deadline: {deadline})"
+                thread_lines.append(line)
+            sections.append(f"[UNRESOLVED THREADS] n={len(thread_lines)}\n" + "\n".join(thread_lines))
+
         # User Profile (replaces semantic_facts + fresh_facts)
         # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
         user_profile = context.get("user_profile", "")
@@ -2150,6 +2191,7 @@ class PromptBuilder:
                 "wiki": [{"content": wiki_snippet}] if wiki_snippet else [],
                 "proposed_features": [],
                 "graph_context": [],
+                "unresolved_threads": [],
             }
             return self.unified_builder._assemble_prompt(context, user_input)
         else:

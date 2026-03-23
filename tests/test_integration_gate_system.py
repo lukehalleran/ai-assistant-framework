@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 from processing.gate_system import GatedPromptBuilder, MultiStageGateSystem
-from core.prompt import PromptBuilder
+from core.prompt import UnifiedPromptBuilder
 from models.model_manager import ModelManager
 from memory.memory_coordinator import MemoryCoordinator
 from memory.corpus_manager import CorpusManager
@@ -51,8 +51,8 @@ def gate_system(model_manager):
 
 @pytest.fixture
 def prompt_builder(model_manager, memory_coordinator):
-    """Fixture to provide PromptBuilder."""
-    return PromptBuilder(
+    """Fixture to provide UnifiedPromptBuilder."""
+    return UnifiedPromptBuilder(
         model_manager=model_manager,
         memory_coordinator=memory_coordinator
     )

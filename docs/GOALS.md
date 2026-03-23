@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-03-15
+**Last Updated**: 2026-03-23
 
 ---
 
@@ -39,9 +39,10 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 - Improve generation prompt to explicitly produce subtractive proposals (merges, deletions, simplifications)
 
 ### 3. Agentic Search Reliability
-- **Status**: Stabilizing
-- Improve loop termination, reduce unnecessary search triggers
-- Query relaxation for failed searches
+- **Status**: Stabilizing — context inventory + diversity tracking added
+- ~~Improve loop termination, reduce unnecessary search triggers~~ — context inventory prevents redundant re-searches; collection diversity hints steer away from over-searched collections
+- ~~Query relaxation for failed searches~~ — implemented
+- Remaining: evaluate real-world loop round counts and tune max_rounds / termination heuristics
 
 ---
 
@@ -107,7 +108,8 @@ These systems are complete and working. Listed here for context, not as active w
 - **PDF support**: Full pipeline from upload through pdfplumber text extraction
 - **Multi-provider LLM**: Duel mode, best-of-N, ensemble, fallback chains
 - **Code proposals**: LLM-generated, ChromaDB-stored, GUI management, shutdown integration
-- **Agentic search**: ReAct loop with Tavily + Wolfram Alpha + E2B sandbox
+- **Agentic search**: ReAct loop with Tavily + Wolfram Alpha + E2B sandbox, context inventory prevents redundant re-searches, collection diversity tracking
+- **Thread surfacing**: Proactive open-thread detection — LLM extracts unresolved commitments/deadlines/questions at shutdown, surfaces top threads at session start via `[UNRESOLVED THREADS]` prompt section
 - **Production**: PyInstaller desktop build, Docker deployment, graceful shutdown
 - **Privacy**: All data local, API calls only for LLM generation, no telemetry
 - **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring
@@ -116,6 +118,26 @@ These systems are complete and working. Listed here for context, not as active w
 ---
 
 ## Recent Completions
+
+### Thread Surfacing System (2026-03-23)
+- Proactive open-thread detection: LLM extracts unresolved commitments, deadlines, unanswered questions, and unfinished topics at shutdown
+- `ThreadStore` (ChromaDB-backed) stores threads with urgency scoring and deadline tracking
+- `ThreadExtractor` detects resolutions of existing threads in new session conversations
+- `[UNRESOLVED THREADS]` prompt section added, surfaced at session start with conversational weaving instructions
+- Configurable: `THREAD_SURFACING_ENABLED`, `THREAD_MAX_OPEN` (cap 50), `THREAD_STALE_DAYS` (14), `THREAD_MAX_SURFACED` (3)
+- Integrated into MemoryCoordinator, ShutdownProcessor, ContextGatherer, UnifiedPromptBuilder, and Orchestrator
+
+### Agentic Search: Context Inventory + Diversity Tracking (2026-03-23)
+- Context inventory: `_compute_context_inventory()` summarizes what RAG pipeline already gathered, injected into iteration prompt to prevent redundant re-searches
+- Collection diversity: `memory_search_counts` tracks per-collection search frequency; hints steer LLM to under-explored collections after 2+ searches of the same collection
+- Improved `search_memory` tool description with per-collection guidance and diversity instructions
+- Updated routing table for profile/biographical queries to prefer summaries over facts
+
+### Personal Notes Filtering + Web Search Robustness (2026-03-23)
+- Personal notes: stricter post-gate relevance threshold (`PERSONAL_NOTES_GATE_THRESHOLD=0.30` vs general 0.18) prevents topically-similar but contextually-irrelevant Obsidian notes from leaking into responses
+- Web search: query length truncation at 400 chars to prevent Tavily 400 Bad Request errors
+- Web search: long-paste prefilter (>500 chars without explicit search phrases) skips LLM trigger to save time
+- Web search: LLM-optimized search terms now always use first term as primary query with `auto_decompose=False`
 
 ### Broadened Agentic Gate for Memory Search (2026-03-15)
 - 3-tier agentic trigger in `gui/handlers.py`: keyword heuristic → knowledge graph entity match → LLM fallback

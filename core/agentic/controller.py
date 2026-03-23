@@ -295,6 +295,14 @@ class AgenticSearchController:
                         f"relaxation count: {session.low_quality_search_count}"
                     )
 
+            # Compute context inventory once for the session
+            session.context_inventory = self._compute_context_inventory(initial_context)
+            if session.context_inventory:
+                logger.debug(
+                    f"[AgenticSearch] Context inventory computed: "
+                    f"{session.context_inventory.count(chr(10))} sections"
+                )
+
             # === ROUNDS 2-N: Model-driven iteration ===
             while session.can_continue and session.current_round <= self.max_rounds:
                 session.state = AgentState.THINKING
@@ -555,6 +563,11 @@ class AgenticSearchController:
                     session.state = AgentState.OBSERVING
                     round_data.summary = memory_result
                     session.rounds.append(round_data)
+
+                    # Track per-collection search counts for diversity enforcement
+                    session.memory_search_counts[collection] = (
+                        session.memory_search_counts.get(collection, 0) + 1
+                    )
 
                     session.accumulated_context += "\n\n" + self._format_memory_context(
                         session.current_round - 1,
@@ -873,6 +886,80 @@ Provide a focused summary with the most important information."""
             logger.error(f"[AgenticSearch] Final generation failed: {e}")
             yield f"I apologize, but I encountered an error generating the response: {str(e)}"
 
+    def _compute_context_inventory(self, initial_context: Optional[Dict[str, Any]]) -> str:
+        """
+        Compute a short summary of what the RAG pipeline already gathered.
+
+        This prevents the agentic loop from re-searching for information
+        that's already available in the prompt context.
+
+        Args:
+            initial_context: The pre-gathered context dict from the prompt builder
+
+        Returns:
+            A concise inventory string listing available context sections
+        """
+        if not initial_context:
+            return ""
+
+        lines = []
+
+        user_profile = initial_context.get('user_profile', '')
+        if user_profile and isinstance(user_profile, str) and user_profile.strip():
+            # Count lines as rough proxy for fact count
+            fact_count = len([l for l in user_profile.strip().split('\n') if l.strip()])
+            lines.append(f"- [USER PROFILE]: {fact_count} categorized facts")
+
+        recent_summaries = initial_context.get('recent_summaries', [])
+        if recent_summaries:
+            lines.append(f"- [RECENT SUMMARIES]: {len(recent_summaries)} session summaries")
+
+        semantic_summaries = initial_context.get('semantic_summaries', [])
+        if semantic_summaries:
+            lines.append(f"- [SEMANTIC SUMMARIES]: {len(semantic_summaries)} topically relevant summaries")
+
+        # Handle both list and dict format for summaries
+        summaries = initial_context.get('summaries', [])
+        if isinstance(summaries, dict):
+            if not recent_summaries and summaries.get('recent'):
+                lines.append(f"- [RECENT SUMMARIES]: {len(summaries['recent'])} session summaries")
+            if not semantic_summaries and summaries.get('semantic'):
+                lines.append(f"- [SEMANTIC SUMMARIES]: {len(summaries['semantic'])} topically relevant summaries")
+
+        recent_reflections = initial_context.get('recent_reflections', [])
+        reflections = initial_context.get('reflections', [])
+        if recent_reflections:
+            lines.append(f"- [RECENT REFLECTIONS]: {len(recent_reflections)} reflections")
+        elif isinstance(reflections, list) and reflections:
+            lines.append(f"- [REFLECTIONS]: {len(reflections)} reflections")
+
+        personal_notes = initial_context.get('personal_notes', [])
+        if personal_notes:
+            lines.append(f"- [PERSONAL NOTES]: {len(personal_notes)} Obsidian notes")
+
+        memories = initial_context.get('memories', [])
+        if memories:
+            lines.append(f"- [RELEVANT MEMORIES]: {len(memories)} conversation memories")
+
+        recent = initial_context.get('recent_conversations', [])
+        if recent:
+            lines.append(f"- [RECENT CONVERSATIONS]: {len(recent)} recent exchanges")
+
+        reference_docs = initial_context.get('reference_docs', [])
+        if reference_docs:
+            lines.append(f"- [DAEMON DOCUMENTATION]: {len(reference_docs)} reference docs")
+
+        dreams = initial_context.get('dreams', [])
+        if dreams:
+            lines.append(f"- [RECENT DREAMS]: {len(dreams)} dream entries")
+
+        if not lines:
+            return ""
+
+        header = "Context already gathered by retrieval pipeline:"
+        footer = "Do NOT re-search for information already covered above. Use search_memory to fill gaps in specific collections not yet covered."
+        return f"{header}\n" + "\n".join(lines) + f"\n{footer}"
+
     def _build_iteration_prompt(
         self,
         query: str,
@@ -888,9 +975,23 @@ Search Results So Far:
 
 You are in round {round_number} of up to {self.max_rounds} search rounds."""]
 
+        # Include context inventory so the LLM knows what RAG already gathered
+        if session and session.context_inventory:
+            parts.append(session.context_inventory)
+
         # Include relaxation hint if present (guides LLM to broader queries or synthesis)
         if session and session.relaxation_hint:
             parts.append(session.relaxation_hint)
+
+        # Include memory diversity hint if a collection has been over-searched
+        if session and session.memory_search_counts:
+            for coll, count in session.memory_search_counts.items():
+                if count >= 2:
+                    parts.append(
+                        f"You've already searched '{coll}' {count} times. "
+                        "Try a different collection (summaries, conversations, reflections) "
+                        "for broader coverage."
+                    )
 
         parts.append("""Based on the search results above:
 1. If you have enough information to fully answer the question, signal you're done and answer.

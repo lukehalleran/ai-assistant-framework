@@ -134,6 +134,10 @@ class AgenticSearchSession:
     low_quality_search_count: int = 0
     relaxation_hint: Optional[str] = None
 
+    # Context awareness tracking
+    memory_search_counts: Dict[str, int] = field(default_factory=dict)
+    context_inventory: str = ""
+
     # Metadata
     start_time: datetime = field(default_factory=datetime.now)
     end_time: Optional[datetime] = None
@@ -296,16 +300,17 @@ MEMORY_SEARCH_TOOL_DEFINITION = {
     "function": {
         "name": "search_memory",
         "description": (
-            "Search your own memory and knowledge base. Use for: "
-            "your architecture/documentation (reference_docs), "
-            "user's personal facts and entity relationships (facts), "
-            "past conversations (conversations), "
-            "session summaries (summaries), "
-            "session reflections (reflections), "
-            "user's Obsidian notes (obsidian_notes), "
-            "git history (procedural), "
-            "learned skills (procedural_skills). "
-            "Prefer this over web_search when the answer is likely in your own memory."
+            "Search your own memory and knowledge base. Collections and what they contain:\n"
+            "- summaries: Rich narrative session summaries — best for profile overviews, biographical questions, 'tell me about' queries\n"
+            "- conversations: Raw past conversation turns — best for 'did we discuss', temporal recall, specific exchanges\n"
+            "- facts: Individual extracted triples (e.g. name=Luke, age=33) — best for specific single facts\n"
+            "- reflections: End-of-session reflections and insights\n"
+            "- reference_docs: Your own architecture/documentation\n"
+            "- obsidian_notes: User's personal Obsidian vault notes\n"
+            "- procedural: Git commit history and how-to knowledge\n"
+            "- procedural_skills: Learned reusable problem-solving patterns\n"
+            "IMPORTANT: Diversify across collections — avoid searching the same collection repeatedly. "
+            "For profile/biographical questions, prefer summaries and conversations over facts."
         ),
         "parameters": {
             "type": "object",
@@ -385,8 +390,10 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | Generate charts/visualizations | Python |
 | Current events, factual lookup | Search |
 | Internal docs, architecture questions | Memory (reference_docs) |
-| User facts, personal info | Memory (facts) |
+| User profile overview, "tell me about myself" | Memory (summaries, conversations) |
+| Individual facts (name, age, specific detail) | Memory (facts) |
 | Past conversations, "did we discuss" | Memory (conversations, summaries) |
+| User's personal notes | Memory (obsidian_notes) |
 
 You can use tools up to {max_rounds} times total. Be specific with queries.
 

@@ -89,7 +89,8 @@ def rewrite_query(query: str, use_topic_extraction: bool = True) -> str:
         try:
             from utils.topic_manager import TopicManager
             topic_mgr = TopicManager()
-            topics = topic_mgr.extract_topics(query)
+            topic = topic_mgr.get_primary_topic(query)
+            topics = [topic] if topic else []
 
             if topics:
                 # Add extracted topics

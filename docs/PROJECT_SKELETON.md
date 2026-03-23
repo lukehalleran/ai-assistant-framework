@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-03-10
+**Last Updated**: 2026-03-23
 
 ---
 
@@ -62,7 +62,7 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/memory_retriever.py` - Retrieval operations (incl. `get_semantic_top_memories`)
 - `memory/memory_storage.py` - Storage operations
 - `memory/memory_scorer.py` - Scoring and ranking
-- `memory/shutdown_processor.py` - Session-end summaries, facts, procedural skills, code proposals, cross-dedup preview, reflections
+- `memory/shutdown_processor.py` - Session-end summaries, facts, procedural skills, code proposals, cross-dedup preview, thread extraction, reflections
 - `memory/procedural_skill.py` - ProceduralSkill dataclass + SkillCategory enum
 - `memory/cross_deduplicator.py` - Cross-collection dedup (duplicates + fact contradictions, dry-run only on shutdown)
 - `memory/dedup_models.py` - Pydantic models: DedupPlan, DuplicatePair, ContradictionCluster
@@ -71,6 +71,9 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/graph_utils.py` - Shared graph helpers: entity extraction, neighbor lookups
 - `memory/entity_resolver.py` - Entity alias resolution + relation normalization
 - `memory/thread_manager.py` - Thread tracking
+- `memory/thread_models.py` - Pydantic models: ThreadType, ThreadStatus, OpenThread **[NEW 2026-03-20]**
+- `memory/thread_store.py` - ChromaDB-backed thread CRUD, priority ranking, staleness, cap enforcement **[NEW 2026-03-20]**
+- `memory/thread_extractor.py` - LLM-based thread extraction and resolution detection **[NEW 2026-03-20]**
 - `memory/memory_interface.py` - Protocol contracts
 
 The incomplete V2 `memory/coordinator.py` has been deleted.
@@ -432,6 +435,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   4. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor)
   5. Extract procedural skills via LLM (0-3 per session)
   6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
+  6.5. Extract open threads via LLM + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
   7. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
   8. Update UserProfile with user-only facts (entity facts stored in ChromaDB only) [ENHANCED 2026-03]
   9. Log statistics
@@ -484,7 +488,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 
 **Constructor**: `__init__(..., memory_coordinator=None)` — accepts MemoryCoordinator for pipeline-enriched generation **[ENHANCED 2026-02-09]**
 
-**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill, GoalDirectedGenerator, ProposalStore, MemoryCoordinator (optional)
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill, GoalDirectedGenerator, ProposalStore, ThreadExtractor, ThreadStore, MemoryCoordinator (optional)
 
 ---
 
@@ -981,9 +985,9 @@ PROFILE_EPHEMERAL_RELATIONS = [          # Relations whose history gets pruned
 ---
 
 ### 2.5 memory/storage/multi_collection_chroma_store.py (Vector Store)
-**Purpose**: Semantic search across 10 ChromaDB collections
+**Purpose**: Semantic search across 11 ChromaDB collections
 
-**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals
+**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads
 
 **Key Methods**:
 - `add_memory(text, metadata, collection)` → Embed and store
@@ -1064,6 +1068,8 @@ Priority order (with weights):
 - semantic_facts/fresh_facts: 4
 - summaries: 3
 - proposed_features: 3         # Code proposals (project-related queries only) [NEW 2026-02-09]
+- graph_context: 3             # Knowledge graph traversal [NEW 2026-03]
+- open_threads: 3              # Unresolved threads surfacing [NEW 2026-03-20]
 - reflections/dreams: 2
 - wiki: 1
 ```
@@ -1088,6 +1094,8 @@ Priority order (with weights):
   "wiki": [...],
   "procedural_skills": [...],   # Adaptive workflows (WHEN/THEN patterns)
   "proposed_features": [...],   # Code proposals for project-related queries [NEW 2026-02-09]
+  "graph_context": [...],       # Knowledge graph traversal results [NEW 2026-03]
+  "open_threads": [...],        # Unresolved threads for session surfacing [NEW 2026-03-20]
 }
 ```
 
@@ -1104,7 +1112,7 @@ Priority order (with weights):
   - Prevents prompt pollution when conversations discuss prompt structure
   - Converts `[RECENT CONVERSATION]` → `(RECENT CONVERSATION)` in stored memories
   - Applied to: memories, summaries, reflections, facts in builder.py
-  - Includes `[PROPOSED FEATURES]` pattern **[ENHANCED 2026-02-09]**
+  - Includes `[PROPOSED FEATURES]`, `[KNOWLEDGE GRAPH]`, `[UNRESOLVED THREADS]` patterns **[ENHANCED 2026-03-20]**
 
 **Deduplication Features**:
 - Cross-section semantic deduplication using embedder
@@ -1155,6 +1163,19 @@ Mood trending positive after resolving recent stressors...
 
 **Recurring Themes**
 Integration of technology into studies, self-care practices...
+
+[KNOWLEDGE GRAPH] n=N [NEW 2026-03]
+Luke has brother Dillion
+Dillion lives in Portland
+...
+
+[UNRESOLVED THREADS] n=N [NEW 2026-03-20]
+- [DEADLINE] Exam next Tuesday — ISYE 6501 midterm (urgency: 0.9)
+- [COMMITMENT] Call doctor about prescription — mentioned 3 days ago (urgency: 0.6)
+...
+
+[USER PROFILE]
+...
 
 [SHORT-TERM CONTEXT SUMMARY]
 Topic: Python debugging
@@ -1254,8 +1275,11 @@ else:
 - `SearchRequest`: Query + depth + max results
 - `SearchRound`: Results from a single search iteration
 - `AgenticSearchSession`: Full session state (rounds, tokens used, etc.)
+  - `memory_search_counts: Dict[str, int]` — Per-collection search count tracking **[NEW 2026-03-20]**
+  - `context_inventory: str` — Precomputed summary of what context is available **[NEW 2026-03-20]**
 - `ProgressEvent`: Status updates for UI (event_type, message)
 - `SEARCH_TOOL_DEFINITION`, `DONE_TOOL_DEFINITION`: OpenAI-style tool schemas
+- `MEMORY_SEARCH_TOOL_DEFINITION`: Tool schema for searching ChromaDB collections from ReAct loop **[NEW 2026-03-20]**
 - `AGENTIC_SYSTEM_PROMPT_INJECTION`: Instructions for local models to use XML markers
 
 **core/agentic/protocols.py** - Protocol detection and parsing
@@ -1263,6 +1287,7 @@ else:
 - `NativeToolsHandler`: Parses OpenAI/Anthropic tool_calls from response
 - `XMLMarkerHandler`: Parses `<search>query</search>` and `<done/>` from local model output
 - `BaseProtocolHandler`: Common interface for both
+- Enhanced `search_memory` tool guidance with per-collection descriptions **[ENHANCED 2026-03-20]**
 
 **core/agentic/controller.py** - Main controller
 - `AgenticSearchController`: Orchestrates the ReAct loop
@@ -1271,6 +1296,8 @@ else:
   - Max 5 rounds of search before forcing synthesis
   - Compresses accumulated context to fit token budget
   - Falls back gracefully on errors
+  - `_compute_context_inventory(initial_context)` → Summarizes available context (collections, user profile, graph entities) for LLM awareness **[NEW 2026-03-20]**
+  - Memory search diversity tracking: per-collection search counts prevent redundant queries **[NEW 2026-03-20]**
 
 **ReAct Loop Flow**:
 ```
@@ -1465,7 +1492,7 @@ WELCOME → API_KEY → STYLE → NAME → PRONOUNS → BACKGROUND → COMPLETE
 - `memory/user_profile.py` - Added is_first_run(), update_preferences(), update_identity(), get_style_modifier()
 - `core/orchestrator.py` - Runtime placeholder substitution ({USER_NAME}, {USER_PRONOUNS})
 - `gui/launch.py` - First-run detection and wizard routing
-- `core/system_prompt.txt` - Replaced hardcoded "Luke" with {USER_NAME} placeholders
+- `core/system_prompt.txt` - Replaced hardcoded "Luke" with {USER_NAME} placeholders; stricter "stick to context" rule + Obsidian note relevance guidance **[ENHANCED 2026-03-20]**
 - `main.py` - Added `python main.py wizard` command for testing
 
 **Test Coverage**: 100 new tests (6 test files)
@@ -1589,7 +1616,7 @@ from config.app_config import config
 - `_get_client(provider)` → Provider-specific client
 - `_map_alias_to_model(alias)` → e.g., "sonnet-4.6" → "anthropic/claude-sonnet-4.6" **[NEW 2026-03-10]**
 
-**Model Aliases** (includes `sonnet-4.6` added 2026-03-10):
+**Model Aliases** (includes `sonnet-4.6` added 2026-03-10, `glm-5-turbo` added 2026-03-20):
 - All routing goes through OpenRouter base URL
 
 **Environment Variables**:
@@ -1693,6 +1720,7 @@ from config.app_config import config
    - Tavily Search API (basic results) + Extract API (page content)
    - Automatic depth selection based on query complexity
    - **[NEW 2026-01]** Query decomposition for complex/multi-entity queries
+   - **[NEW 2026-03-20]** Tavily 400-char query truncation (prevents 400 Bad Request on long queries)
    - Methods:
      - `search(query, depth)` → `WebSearchResult`
      - `multi_search(query, depth, auto_decompose=True)` → `MultiSearchResult` **[NEW]**
@@ -1910,6 +1938,7 @@ WebSearchDecision(
 - `should_search_heuristic(query)` → Pure heuristic (fast, ~1ms)
 - `quick_prefilter_should_skip(query)` → Deictic follow-up detection **[ENHANCED 2026-01-08]**
   - Patterns: "watched it", "saw it", "read it", "just watched", etc.
+- Long paste prefilter: queries >500 chars without explicit search phrases skip web search **[NEW 2026-03-20]**
 
 **Depth Selection**:
 - `QUICK` (1 credit): Simple factual queries
@@ -1991,6 +2020,8 @@ OBSIDIAN_ENABLED = True
 OBSIDIAN_VAULT_PATH = "~/Documents/Luke Notes"
 OBSIDIAN_CHUNK_THRESHOLD = 1500
 OBSIDIAN_MAX_NOTES_PROMPT = 5
+# Stricter relevance gate for personal notes (vs 0.18 general gate) [NEW 2026-03-20]
+PERSONAL_NOTES_GATE_THRESHOLD = 0.30  # Post-gate filter: notes below this relevance_score are dropped
 # Image support [NEW 2026-01-30]
 OBSIDIAN_INCLUDE_IMAGES = True        # Enable image loading for multimodal models
 OBSIDIAN_MAX_IMAGES_PER_NOTE = 3      # Max images per note chunk
@@ -2013,7 +2044,8 @@ MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gpt-4-vision",
 - Builder adds `[USER'S PERSONAL NOTES]` section after dreams, before time context
 - Builder collects `note_images` list and adds to context for multimodal API calls **[NEW 2026-01-30]**
 - TokenManager includes `personal_notes` at priority 6 (high)
-- Notes filtered through 3-stage gate system (Cosine → Blended → CrossEncoder)
+- Notes filtered through 3-stage gate system (Cosine → Blended → CrossEncoder), then post-filtered by `PERSONAL_NOTES_GATE_THRESHOLD` (0.30) on `relevance_score` **[NEW 2026-03-20]**
+- Each note's prompt header includes `[relevance: X.XX]` tag so the LLM can gauge match strength **[NEW 2026-03-20]**
 - GUI handler (`handlers.py`) extracts `note_images` from context and passes to `generate_streaming_response(images=...)` **[NEW 2026-01-30]**
 
 ---
@@ -2204,7 +2236,7 @@ CODE_PROPOSALS_WEIGHT_GOAL_ALIGNMENT = 0.40
 1. **Shutdown**: `ShutdownProcessor._generate_proposals()` auto-generates after skills extraction (pipeline-enriched or cold fallback)
 2. **GUI**: Proposals tab with browse, filter, manage (Mark Built/Reject/Approve), generate, and code generation
 3. **Prompt**: `[PROPOSED FEATURES]` section via ProposalFilter pipeline (project-related queries only) **[NEW 2026-02-09]**
-4. **ChromaDB**: `proposals` collection (10th collection)
+4. **ChromaDB**: `proposals` collection
 
 **Data Flow** (generation):
 ```
@@ -2882,6 +2914,112 @@ GRAPH_QUERY_EXPANSION_MAX_TERMS = 8
 
 ---
 
+### 2.15b Thread Surfacing System (Proactive Open Thread Detection) **[NEW 2026-03-20]**
+**Purpose**: Extracts unresolved commitments, deadlines, unfinished topics, and unanswered questions from conversations. Surfaces them at session start so Daemon can proactively follow up.
+
+**Components**:
+
+**`memory/thread_models.py`** — Pydantic data models
+```python
+class ThreadType(str, Enum):
+    COMMITMENT   # "I'll study for the exam"
+    DEADLINE     # "exam next Tuesday"
+    UNFINISHED   # Topic started but not completed
+    QUESTION     # User question that wasn't fully answered
+
+class ThreadStatus(str, Enum):
+    OPEN         # Active, needs follow-up
+    RESOLVED     # Completed or addressed
+    STALE        # No reference in stale_days (default 14)
+
+class OpenThread(BaseModel):
+    thread_id: str              # UUID
+    topic: str                  # Short label (3-100 chars)
+    summary: str                # Brief description
+    status: ThreadStatus
+    thread_type: ThreadType
+    urgency: float              # 0.0-1.0
+    mentioned_at: float         # Epoch timestamp
+    last_referenced: float      # Epoch timestamp
+    resolution_hint: str        # What would resolve this
+    source_summary: str         # Source conversation excerpt
+    deadline_date: Optional[str] # ISO date for deadline threads
+
+    # Methods:
+    # to_embedding_text() → topic + summary for semantic matching
+    # to_metadata() / from_metadata() → ChromaDB storage (flat primitives)
+    # to_dict() / from_dict() → full JSON serialization
+    # priority_score() → TYPE_PRIORITY * urgency * recency_decay
+    # is_stale(stale_days) → bool
+    # mark_resolved() / mark_stale() → status transitions
+```
+
+**Priority Scoring**:
+```python
+priority = TYPE_PRIORITY[thread_type] * urgency * recency_decay
+# TYPE_PRIORITY: DEADLINE=1.0, COMMITMENT=0.8, QUESTION=0.6, UNFINISHED=0.4
+# recency_decay = max(0.1, 1.0 - (days_since_mention / 14.0))
+```
+
+**`memory/thread_store.py`** — ChromaDB-backed storage
+```python
+class ThreadStore:
+    store_thread(thread: OpenThread) → Optional[str]    # Store with embedding
+    get_open_threads(limit=50) → List[OpenThread]       # All OPEN threads, priority-sorted
+    get_surfaceable(limit=3) → List[OpenThread]         # Top N for session injection
+    query_threads(query, limit=5) → List[OpenThread]    # Semantic search
+    update_status(thread_id, status, resolution) → bool # Status transition
+    resolve_thread(thread_id, resolution) → bool        # Mark resolved
+    enforce_cap(max_threads=50) → int                   # Prune oldest low-priority
+    mark_stale_threads(stale_days=14) → int             # Batch staleness check
+```
+- Embedding text: topic + summary (for semantic matching)
+- Status updates via delete-and-re-add (ChromaDB lacks native update)
+- Lazy staleness: checked at retrieval time
+- Cap enforcement: oldest low-priority threads pruned when over limit
+
+**`memory/thread_extractor.py`** — LLM-based extraction
+```python
+class ThreadExtractor:
+    extract_threads(conversations, model_manager) → List[OpenThread]
+        # LLM prompt with few-shot examples per ThreadType
+        # Robust JSON parsing with find("[") / rfind("]")
+        # Temperature=0.0 for deterministic extraction
+
+    detect_resolutions(conversations, open_threads, model_manager) → List[Tuple[str, str]]
+        # LLM checks if existing threads were resolved in new conversations
+        # Returns (thread_id, resolution_reason) tuples
+        # Skipped if no existing open threads
+```
+
+**Integration Points**:
+1. **Shutdown**: `ShutdownProcessor` step 6.5 — calls `ThreadExtractor.extract_threads()` then `ThreadExtractor.detect_resolutions()`, stores new threads and resolves completed ones
+2. **Context Gathering**: `context_gatherer.py:get_open_threads()` — retrieves surfaceable threads via `ThreadStore.get_surfaceable()`
+3. **Builder**: Parallel task `open_threads` in `build_prompt()` alongside other retrieval tasks
+4. **Prompt Section**: `[UNRESOLVED THREADS]` after `[KNOWLEDGE GRAPH]`, before `[USER PROFILE]`
+5. **Orchestrator**: First-message thread injection — on first message of session, top threads injected into context for proactive follow-up
+
+**Collection**: `threads` (11th ChromaDB collection, registered in `multi_collection_chroma_store.py`)
+
+**Configuration** (`config/app_config.py`, YAML section `thread_surfacing`):
+```python
+THREAD_SURFACING_ENABLED = True
+THREAD_MAX_OPEN = 50              # Cap on total open threads
+THREAD_STALE_DAYS = 14            # Days before marking stale
+THREAD_DEADLINE_GRACE_HOURS = 48  # Grace period after deadline
+THREAD_MAX_SURFACED = 3           # Max threads in prompt per session
+THREAD_MODEL_ALIAS = ""           # LLM model for extraction (default: system default)
+```
+
+**Tests**: 137 tests across 5 files:
+- `tests/unit/test_thread_models.py` — Data model validation, serialization, priority scoring
+- `tests/unit/test_thread_store.py` — ChromaDB CRUD, status lifecycle, cap enforcement
+- `tests/unit/test_thread_extractor.py` — LLM extraction, resolution detection, JSON parsing
+- `tests/test_thread_surfacing.py` — Integration tests for full pipeline
+- `tests/test_thread_tracking.py` — Thread tracking integration
+
+---
+
 ### 2.16 utils/tone_detector.py (Crisis Detection)
 **Purpose**: Detect distress/crisis language to adjust response tone
 
@@ -3142,6 +3280,8 @@ hybrid_score = semantic_weight * semantic_score + keyword_weight * keyword_score
 - `rewrite_query(query)` → Expanded query with synonyms
 - `extract_keywords(query)` → List of meaningful keywords
 
+**Fix** [2026-03-20]: Changed `extract_topics()` → `get_primary_topic()` to match TopicManager API
+
 ---
 
 ### 2.22 utils/keyword_matcher.py (Term Matching)
@@ -3325,6 +3465,7 @@ DEICTIC_THRESHOLD = 0.60
 NORMAL_THRESHOLD = 0.35
 SUMMARY_COSINE_THRESHOLD = 0.30
 REFLECTION_COSINE_THRESHOLD = 0.25
+PERSONAL_NOTES_GATE_THRESHOLD = 0.30  # Stricter post-gate filter for Obsidian notes [NEW 2026-03-20]
 
 # Graceful Threshold Fallback (NEW)
 GATING_MIN_RESULTS = 5              # Minimum results before relaxing threshold
@@ -3395,6 +3536,14 @@ GRAPH_SCORING_BOOST_ENABLED = True       # Graph-boosted memory scoring
 GRAPH_SCORING_BOOST_CAP = 0.15          # Max graph bonus per memory (0.05 per entity)
 GRAPH_QUERY_EXPANSION_ENABLED = True     # Append graph neighbor names to search query
 GRAPH_QUERY_EXPANSION_MAX_TERMS = 8      # Max neighbor names appended to query
+
+# Thread Surfacing [NEW 2026-03-20]
+THREAD_SURFACING_ENABLED = True          # Toggle thread extraction and surfacing
+THREAD_MAX_OPEN = 50                     # Cap on total open threads in collection
+THREAD_STALE_DAYS = 14                   # Days before marking thread stale
+THREAD_DEADLINE_GRACE_HOURS = 48         # Grace period after deadline
+THREAD_MAX_SURFACED = 3                  # Max threads injected into prompt
+THREAD_MODEL_ALIAS = ""                  # LLM model for extraction (system default if empty)
 
 # Memory Citation System [NEW 2025-12-04]
 ENABLE_MEMORY_CITATIONS = False      # Feature flag for citation mode
@@ -3499,6 +3648,7 @@ PROMPT_MAX_USER_UPLOADS = 5
    d. Store facts as SEMANTIC memory type
    e. Extract procedural skills via LLM (0-3 per session)
    f. Generate code proposals via GoalDirectedGenerator (0-5 per session) [NEW 2026-02-05]
+   f2. Extract open threads + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
    g. Update UserProfile with extracted facts
 3. corpus_manager.save()
 ```
@@ -3680,6 +3830,9 @@ daemon/
 │   ├── graph_memory.py            # NetworkX DiGraph: CRUD, BFS, JSON persistence [NEW 2026-03]
 │   ├── graph_utils.py             # Shared graph helpers: entity extraction, neighbor lookups [NEW 2026-03]
 │   ├── entity_resolver.py         # Entity alias resolution + relation normalization [NEW 2026-03]
+│   ├── thread_models.py           # Pydantic models: ThreadType, ThreadStatus, OpenThread [NEW 2026-03-20]
+│   ├── thread_store.py            # ChromaDB-backed thread CRUD, priority ranking [NEW 2026-03-20]
+│   ├── thread_extractor.py        # LLM-based thread extraction + resolution detection [NEW 2026-03-20]
 │   ├── hybrid_retriever.py        # Query rewrite + semantic + keyword
 │   └── storage/
 │       └── multi_collection_chroma_store.py  # Vector DB
@@ -3748,7 +3901,7 @@ daemon/
 │   ├── wiki/                  # Wikipedia source data (102GB)
 │   └── pipeline/              # Wikipedia processing scripts (43GB)
 │
-├── tests/                     # All test files (114 files)
+├── tests/                     # All test files (119+ files)
 │   ├── unit/                  # Unit tests (20+ files)
 │   │   ├── test_tone_detector.py
 │   │   ├── test_need_detection.py  # [NEW]
@@ -3896,6 +4049,9 @@ except Exception as e:
 - `test_prompt_builder_methods.py` - Context assembly
 - `test_orchestrator_helpers.py` - Thinking block parsing
 - `test_intent_classifier.py` - Intent classification, tone bias, STM refinement, profiles (74 tests) **[NEW 2026-02-15]**
+- `test_thread_models.py` - Thread data model validation, serialization, priority scoring **[NEW 2026-03-20]**
+- `test_thread_store.py` - Thread ChromaDB CRUD, status lifecycle, cap enforcement **[NEW 2026-03-20]**
+- `test_thread_extractor.py` - Thread LLM extraction, resolution detection **[NEW 2026-03-20]**
 
 ### 8.1b Retrieval Quality Benchmarks **[NEW 2026-02-17]**
 - **Location**: `tests/benchmarks/`
@@ -3929,6 +4085,8 @@ except Exception as e:
 - `test_gated_prompt.py` - Gating + prompt building
 - `test_summaries.py` - Summary generation and retrieval
 - `test_competitive_scorer.py` - Best-of-N scoring
+- `test_thread_surfacing.py` - Thread surfacing integration (extraction → storage → retrieval → prompt) **[NEW 2026-03-20]**
+- `test_thread_tracking.py` - Thread tracking integration **[NEW 2026-03-20]**
 
 ### 8.3 Mutation Testing
 - **Tool**: Custom mutation testing framework
@@ -3957,7 +4115,7 @@ except Exception as e:
 **Test Files**:
 - **Unit tests**: ~20 files in `tests/unit/`
 - **Integration tests**: ~45 files in `tests/`
-- **Total test files**: 114
+- **Total test files**: 119+
 
 **Known Failure Categories** (not caused by recent changes):
 - UnifiedPromptBuilder API changes (missing `get_facts`, `get_recent_facts`)
@@ -4078,7 +4236,7 @@ python main.py inspect-summaries
 | thread_manager.py | Threads: conversation continuity tracking [NEW - REFACTORED] |
 | memory_interface.py | Protocols: type contracts for memory components [NEW - REFACTORED] |
 | corpus_manager.py | JSON CRUD: load/save/query short-term memories |
-| multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 9 collections |
+| multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 11 collections |
 | gate_system.py | Filter: FAISS → cosine → cross-encoder → top K |
 | prompt/builder.py | Assemble: system + separated context sections + STM within 15K tokens |
 | response_generator.py | Stream: async LLM + Best-of-N + Duel modes (buffer fix + DeepSeek EOS) [FIXED] |
@@ -4107,6 +4265,9 @@ python main.py inspect-summaries
 | git_memory.py | Extract: Git commit history with metadata + conventional commit tagging [NEW 2026-01-27] |
 | git_memory_loader.py | Load: Backfill/incremental sync of git commits to PROCEDURAL ChromaDB [NEW 2026-01-27] |
 | procedural_skill.py | Data: ProceduralSkill dataclass + SkillCategory enum for adaptive workflows [NEW 2026-01-27] |
+| thread_models.py | Data: OpenThread Pydantic model + ThreadType/ThreadStatus enums + priority scoring [NEW 2026-03-20] |
+| thread_store.py | Store: ChromaDB-backed thread CRUD, priority ranking, staleness, cap enforcement [NEW 2026-03-20] |
+| thread_extractor.py | Extract: LLM-based open thread extraction + resolution detection from conversations [NEW 2026-03-20] |
 
 ---
 
@@ -4179,6 +4340,12 @@ STM_MIN_CONVERSATION_DEPTH = 3
 REFLECTIONS_ON_DEMAND = True  # Generate reflections if below threshold
 REFLECTIONS_SESSION_FILTER = False  # Filter to session-level only
 REFLECTIONS_TOPUP = True  # Top up reflections from storage
+
+# Thread Surfacing [NEW 2026-03-20]
+THREAD_SURFACING_ENABLED = True
+THREAD_MAX_OPEN = 50
+THREAD_STALE_DAYS = 14
+THREAD_MAX_SURFACED = 3
 
 # Deduplication
 SIMILARITY_THRESHOLD = 0.90  # Semantic similarity for duplicates
