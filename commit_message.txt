@@ -1,50 +1,69 @@
-feat: Add proactive thread surfacing, agentic search context inventory, personal notes filtering, and web search robustness
+feat: Add expand_memory agentic tool for temporal context expansion and summary drill-down
 
-## Proactive Thread Surfacing System (NEW)
-- `memory/thread_models.py`: Pydantic models — ThreadType (COMMITMENT, DEADLINE, UNFINISHED, QUESTION), ThreadStatus (OPEN, RESOLVED, STALE), OpenThread with priority scoring, staleness detection, metadata serialization
-- `memory/thread_store.py`: ChromaDB-backed persistence — store, list, query, resolve, enforce_cap, lazy staleness marking via delete-and-re-add pattern
-- `memory/thread_extractor.py`: LLM-based extraction — extract_new_threads() identifies open loops, detect_resolutions() checks if existing threads were addressed; few-shot prompts, robust JSON parsing with find("[") / rfind("]") pattern
-- Collection `threads` registered in multi_collection_chroma_store.py (now 11 total collections)
-- Shutdown hook: step 6.5 in shutdown_processor.py:_process_open_threads() — Phase 1: detect resolutions → Phase 2: extract new threads → Phase 3: enforce cap (THREAD_MAX_OPEN=50)
-- Retrieval: context_gatherer.py:get_unresolved_threads() → memory_coordinator.get_unresolved_threads() → thread_store.get_top_threads()
-- Prompt section: [UNRESOLVED THREADS] in _assemble_prompt() after [KNOWLEDGE GRAPH], before [USER PROFILE] — format: [type] topic: summary (deadline: date)
-- Session opener: orchestrator.py injects ## PROACTIVE THREAD SURFACING instruction on first message only (detected via time_since_previous_message() returning "N/A")
-- Priority scoring: TYPE_PRIORITY[type] * urgency * recency_decay where DEADLINE=1.0, COMMITMENT=0.8, QUESTION=0.6, UNFINISHED=0.4; recency_decay = max(0.1, 1.0 - days/14)
-- Config: THREAD_SURFACING_ENABLED, THREAD_MAX_OPEN=50, THREAD_STALE_DAYS=14, THREAD_DEADLINE_GRACE_HOURS=48, THREAD_MAX_SURFACED=3, THREAD_MODEL_ALIAS
+New agentic tool that lets the LLM "zoom in" on a memory search hit to see
+surrounding conversation turns or, for summaries, the original conversations
+that were compressed into it.
 
-## Agentic Search: Context Inventory + Diversity Tracking (NEW)
-- core/agentic/controller.py: _compute_context_inventory() summarizes what RAG pipeline already gathered, preventing redundant agentic searches; memory_search_counts tracks per-collection search counts with diversity hints when over-searching same collection
-- core/agentic/protocols.py: Enhanced search_memory tool guidance with per-collection descriptions (summaries=narrative, conversations=raw turns, facts=triples, etc.)
-- core/agentic/types.py: New AgenticSearchSession fields (memory_search_counts, context_inventory), enhanced MEMORY_SEARCH_TOOL_DEFINITION with collection routing guidance
+## New System
 
-## Personal Notes Filtering (NEW)
-- core/prompt/builder.py: Post-gate PERSONAL_NOTES_GATE_THRESHOLD (0.30) filters low-relevance Obsidian notes after multi-stage gating (general gate is 0.18); relevance scores shown in note headers as [relevance: X.XX]
-- core/system_prompt.txt: Stricter "stick to context" rule — ignore retrieved notes that are topically similar but don't directly help answer the query; notes with low relevance scores (< 0.30) are marginal matches
+### Memory Expansion (memory/memory_expander.py)
+MemoryExpander class with two expansion strategies:
+- **timestamp_window**: For conversations, reflections, facts, obsidian_notes —
+  fetches chronological neighbors (configurable window, default ±3 turns).
+- **source_docs**: For summaries — retrieves the original conversation turns
+  that were compressed into the summary, using source_doc_ids metadata or
+  temporal_anchor_start/end range. Works retroactively on existing summaries.
 
-## Web Search Robustness
-- knowledge/web_search_manager.py: Tavily 400-char query truncation prevents 400 Bad Request errors
-- utils/web_search_trigger.py: Long paste prefilter — queries >500 chars without explicit search phrases skip LLM trigger call
-- core/prompt/context_gatherer.py: auto_decompose=False when LLM already optimized search terms
+Caches results per (memory_id, window, collection) tuple. Session-gated at
+EXPAND_MAX_PER_SESSION (default 3). Content truncated per configurable char
+limits (anchor: 600, context: 300).
 
-## Other Changes
-- models/model_manager.py: Added glm-5-turbo model alias (z-ai/glm-5-turbo)
-- utils/query_rewriter.py: Fixed extract_topics() → get_primary_topic() (returns single topic, not list)
-- memory/memory_scorer.py: Null-safety fix for metadata dict in _score_topic_match()
-- config/app_config.py: All new THREAD_* and PERSONAL_NOTES_GATE_THRESHOLD constants
-- config/config.yaml: New thread_surfacing YAML section
+## Agentic Integration
+- Tool definition (EXPAND_MEMORY_TOOL_DEFINITION) in types.py with anti-loop
+  guidance in description
+- SearchDecision fields: wants_memory_expand, expand_memory_id, expand_window,
+  expand_collection, expand_reason
+- Parsing in protocols.py: NativeToolsHandler (function calling) and
+  XMLMarkerHandler (<expand_memory> tag)
+- Execution branch in controller.py main loop with ProgressEvent emission,
+  session gating, and formatted context accumulation
+- GUI thought bubbles: "Recalling..." (conversations) or "Recalling Long Term
+  Memory..." (summaries) via new icon mappings in handlers.py
+
+## Supporting Changes
+- **get_by_id()** added to MultiCollectionChromaStore for direct doc lookup
+- **Thread metadata forwarding**: store_interaction() now propagates thread_id
+  and thread_depth from thread detection to ChromaDB conversation metadata
+- **Summary backlinks**: shutdown_processor._store_summary() captures source
+  conversation doc IDs by querying conversations collection within the block's
+  temporal anchor range, stored as comma-separated source_doc_ids metadata
+- **Search result format**: _format_memory_results() now shows full doc IDs
+  (not truncated) and [collection] tags so the LLM can pass IDs to expand_memory
 
 ## Documentation
-- docs/PROJECT_SKELETON.md: Full thread surfacing section (2.15b), agentic context inventory, personal notes filtering, web search fixes, updated collection counts (11), prompt section order, config constants
-- docs/QUICK_REFERENCE.md: Thread surfacing system section, agentic search enhancements, Obsidian relevance filtering, updated collection counts, config constants
-- docs/GOALS.md: Thread surfacing + agentic inventory + personal notes filtering in Recent Completions, updated Foundational Infrastructure
-- Module contracts updated: shutdown_processor.py, memory_coordinator.py, context_gatherer.py, orchestrator.py, multi_collection_chroma_store.py
+- CLAUDE.md: added MemoryExpander to components table, module structure,
+  config section, testing notes, current development
+- Module contracts updated: multi_collection_chroma_store.py, memory_storage.py,
+  controller.py, protocols.py, shutdown_processor.py
+
+## Configuration
+New YAML section: memory_expansion
+New app_config.py constants: EXPAND_MEMORY_ENABLED, EXPAND_MAX_PER_SESSION,
+EXPAND_MAX_WINDOW, EXPAND_DEFAULT_WINDOW, EXPAND_MAX_TOTAL_TOKENS,
+EXPAND_ANCHOR_CHAR_LIMIT, EXPAND_CONTEXT_CHAR_LIMIT
 
 ## Tests
-- tests/unit/test_thread_models.py: 56 tests (enums, construction, embedding text, metadata/dict serialization, priority scoring, staleness, status transitions)
-- tests/unit/test_thread_store.py: 40 tests (ensure_collection, store, list, get_top, query, resolve, enforce_cap, update, integration scenarios)
-- tests/unit/test_thread_extractor.py: 34 tests (conversation text builder, JSON parser, extraction, resolution detection, model alias, error handling)
-- tests/test_thread_surfacing.py: 7 tests (extract→store→retrieve pipeline, resolve cycle, shutdown integration, prompt assembly, context gatherer delegation)
-- tests/test_agentic_search.py: New tests for context inventory computation and memory search diversity tracking
-- tests/test_multi_collection_chroma_store.py: Updated collection count assertions (10→11)
-- Multiple test files updated for compatibility (year references, mock patterns, import fixes)
-- Total: 2545 tests passing, 0 failures
+21 unit tests in tests/unit/test_memory_expander.py covering:
+- Temporal window slicing (middle, first, last boundaries)
+- Deterministic tie-breaking (timestamp + doc_id sort)
+- Cache hit/miss/clear behavior
+- Error cases (unknown ID, unknown collection, non-expandable collection)
+- Summary expansion via temporal anchors and source_doc_ids
+- Summary fallback when no linkage metadata
+- Content truncation and window clamping
+
+## Files Changed
+- 2 new files: memory/memory_expander.py, tests/unit/test_memory_expander.py
+- 9 modified: app_config.py, config.yaml, multi_collection_chroma_store.py,
+  memory_storage.py, shutdown_processor.py, types.py, protocols.py,
+  controller.py, handlers.py

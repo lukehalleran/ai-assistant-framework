@@ -21,6 +21,10 @@ Supported Tools:
     - execute_wolfram / <wolfram>: Wolfram Alpha computations
     - execute_python / <python>: E2B sandbox code execution [NEW 2026-01-22]
     - search_memory / <memory>: ChromaDB memory/knowledge base search
+    - expand_memory / <expand_memory>: Expand a memory hit to surrounding context [NEW 2026-03]
+    - file_read / <file_read>: Read file contents from approved directories
+    - file_grep / <file_grep>: Search for patterns across files
+    - file_list / <file_list>: List directory contents
     - signal_done / <done>: Signal task completion
 
 Dependencies:
@@ -133,6 +137,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             WOLFRAM_TOOL_DEFINITION,
             SANDBOX_TOOL_DEFINITION,
             MEMORY_SEARCH_TOOL_DEFINITION,
+            EXPAND_MEMORY_TOOL_DEFINITION,
             FILE_READ_TOOL_DEFINITION,
             FILE_GREP_TOOL_DEFINITION,
             FILE_LIST_TOOL_DEFINITION,
@@ -142,6 +147,7 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.wolfram_tool = WOLFRAM_TOOL_DEFINITION
         self.sandbox_tool = SANDBOX_TOOL_DEFINITION
         self.memory_tool = MEMORY_SEARCH_TOOL_DEFINITION
+        self.expand_memory_tool = EXPAND_MEMORY_TOOL_DEFINITION
         self.file_read_tool = FILE_READ_TOOL_DEFINITION
         self.file_grep_tool = FILE_GREP_TOOL_DEFINITION
         self.file_list_tool = FILE_LIST_TOOL_DEFINITION
@@ -268,6 +274,22 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] search_memory called without query")
                 return SearchDecision(wants_answer=True)
 
+        elif func_name == "expand_memory":
+            memory_id = args.get("memory_id", "")
+            reason = args.get("reason")
+            if memory_id:
+                logger.debug(f"[AgenticProtocol] Native tool expand_memory: {memory_id[:8]}")
+                return SearchDecision(
+                    wants_memory_expand=True,
+                    expand_memory_id=memory_id,
+                    expand_window=int(args.get("window", 3)),
+                    expand_collection=args.get("collection"),
+                    expand_reason=reason,
+                )
+            else:
+                logger.warning("[AgenticProtocol] expand_memory called without memory_id")
+                return SearchDecision(wants_answer=True)
+
         elif func_name == "file_read":
             filepath = args.get("filepath", "")
             reason = args.get("reason")
@@ -338,6 +360,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             tools.append(self.sandbox_tool)
         if self.memory_available:
             tools.append(self.memory_tool)
+            tools.append(self.expand_memory_tool)
         if self.file_access_available:
             tools.extend([self.file_read_tool, self.file_grep_tool, self.file_list_tool])
         return tools
@@ -355,6 +378,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             tool_list.append("execute_python")
         if self.memory_available:
             tool_list.append("search_memory")
+            tool_list.append("expand_memory")
         if self.file_access_available:
             tool_list.extend(["file_read", "file_grep", "file_list"])
         tool_list.append("done_searching")
@@ -418,6 +442,14 @@ class XMLMarkerHandler(BaseProtocolHandler):
         r'<file_list\s+path=["\']([^"\']+)["\'](?:\s+recursive=["\']([^"\']*)["\'])?\s*/?>',
         re.IGNORECASE
     )
+    # Expand memory pattern: <expand_memory id="abc12345" collection="conversations" window="3">reason</expand_memory>
+    EXPAND_MEMORY_PATTERN = re.compile(
+        r'<expand_memory\s+id=["\']([^"\']+)["\']'
+        r'(?:\s+collection=["\']([^"\']*)["\'])?'
+        r'(?:\s+window=["\'](\d+)["\'])?'
+        r'\s*>(.*?)</expand_memory>',
+        re.DOTALL | re.IGNORECASE
+    )
 
     def parse_response(self, response: Any) -> SearchDecision:
         """
@@ -469,6 +501,21 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     wants_memory_search=True,
                     memory_query=query,
                     memory_collection=collection
+                )
+
+        # Check for expand_memory marker
+        expand_match = self.EXPAND_MEMORY_PATTERN.search(text)
+        if expand_match:
+            memory_id = expand_match.group(1).strip()
+            collection = expand_match.group(2) or None
+            window = int(expand_match.group(3)) if expand_match.group(3) else 3
+            if memory_id:
+                logger.debug(f"[AgenticProtocol] XML expand_memory marker found: {memory_id[:8]}")
+                return SearchDecision(
+                    wants_memory_expand=True,
+                    expand_memory_id=memory_id,
+                    expand_window=window,
+                    expand_collection=collection,
                 )
 
         # Check for file read marker

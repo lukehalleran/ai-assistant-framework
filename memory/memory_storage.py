@@ -18,6 +18,8 @@ Module Contract
   - _maybe_regenerate_narrative(): Triggers narrative context refresh after consolidation [NEW 2026-01-17]
   - Entity metadata forwarding: extract_and_store_facts() uses dict-based source to pass
     fact_scope, entity_type, user_connection through to ChromaDB metadata [NEW 2026-03]
+  - Thread metadata forwarding: store_interaction() propagates thread_id and thread_depth
+    from thread_info to ChromaDB conversation metadata [NEW 2026-03]
 - Dependencies:
   - memory.corpus_manager (JSON persistence)
   - memory.storage.multi_collection_chroma_store (vector storage)
@@ -256,6 +258,12 @@ class MemoryStorage:
                 "access_count": 0,
                 "last_accessed": self._now_iso(),
             }
+
+            # Forward thread metadata to ChromaDB for expand_memory window slicing
+            if thread_info.get("thread_id"):
+                raw_metadata["thread_id"] = thread_info["thread_id"]
+            if thread_info.get("depth") is not None:
+                raw_metadata["thread_depth"] = int(thread_info["depth"])
 
             # Filter out None values and ensure correct types
             clean_metadata = {}

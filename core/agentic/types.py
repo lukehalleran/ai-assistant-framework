@@ -12,7 +12,7 @@ Public Types:
     - SearchRequest, SearchRound, SearchDecision (dataclasses)
     - AgenticSearchSession (session state container)
     - ProgressEvent (UI update events)
-    - SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION, SANDBOX_TOOL_DEFINITION, MEMORY_SEARCH_TOOL_DEFINITION (tool schemas)
+    - SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION, SANDBOX_TOOL_DEFINITION, MEMORY_SEARCH_TOOL_DEFINITION, EXPAND_MEMORY_TOOL_DEFINITION (tool schemas)
     - FILE_READ_TOOL_DEFINITION, FILE_GREP_TOOL_DEFINITION, FILE_LIST_TOOL_DEFINITION (file access tool schemas)
 
 SearchDecision Fields (extended for multi-tool support):
@@ -20,6 +20,7 @@ SearchDecision Fields (extended for multi-tool support):
     - wants_wolfram, wolfram_query, wolfram_reason (Wolfram Alpha computation)
     - wants_sandbox, sandbox_code, sandbox_purpose (E2B Python sandbox) [NEW 2026-01-22]
     - wants_memory_search, memory_query, memory_collection, memory_reason (ChromaDB memory search)
+    - wants_memory_expand, expand_memory_id, expand_window, expand_collection, expand_reason (memory expansion)
     - wants_file_read, file_read_path, file_read_start_line, file_read_end_line, file_read_reason (file read)
     - wants_file_grep, file_grep_pattern, file_grep_folder, file_grep_glob, file_grep_reason (file grep)
     - wants_file_list, file_list_path, file_list_recursive, file_list_reason (file list)
@@ -104,6 +105,12 @@ class SearchDecision:
     memory_query: Optional[str] = None
     memory_collection: Optional[str] = None
     memory_reason: Optional[str] = None
+    # Memory expansion (temporal context around a doc)
+    wants_memory_expand: bool = False
+    expand_memory_id: Optional[str] = None
+    expand_window: int = 3
+    expand_collection: Optional[str] = None
+    expand_reason: Optional[str] = None
     # File read (approved-folder file access)
     wants_file_read: bool = False
     file_read_path: Optional[str] = None
@@ -157,6 +164,7 @@ class AgenticSearchSession:
 
     # Context awareness tracking
     memory_search_counts: Dict[str, int] = field(default_factory=dict)
+    expand_count: int = 0
     context_inventory: str = ""
 
     # Metadata
@@ -359,6 +367,48 @@ MEMORY_SEARCH_TOOL_DEFINITION = {
     }
 }
 
+EXPAND_MEMORY_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "expand_memory",
+        "description": (
+            "Expand a memory hit to see its surrounding context (neighboring turns). "
+            "Use AFTER search_memory when a result looks relevant but you need more "
+            "context to understand it fully (e.g., what was said before/after). "
+            "Provide the FULL doc ID from search results (shown in parentheses as 'id: ...'). "
+            "For summaries, this retrieves the original conversations that were compressed into the summary. "
+            "IMPORTANT: Do NOT loop — one expand per memory is enough. "
+            "Do NOT expand memories you have already expanded."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "The full document ID to expand (copy the complete ID from search results)"
+                },
+                "collection": {
+                    "type": "string",
+                    "description": "The collection this memory belongs to (from search results header).",
+                    "enum": [
+                        "conversations", "summaries", "reflections",
+                        "facts", "obsidian_notes"
+                    ]
+                },
+                "window": {
+                    "type": "integer",
+                    "description": "Number of neighbors on each side (1-5, default 3)"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why expansion is needed."
+                }
+            },
+            "required": ["memory_id"]
+        }
+    }
+}
+
 FILE_READ_TOOL_DEFINITION = {
     "type": "function",
     "function": {
@@ -514,6 +564,11 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
    List files in a directory. Use to orient before reading or grepping.
    Example: <file_list path="core/agentic/" recursive="false"/>
 
+9. **Expand Memory**: <expand_memory id="full_doc_id" collection="conversations" window="3">reason</expand_memory>
+   After a search_memory result looks relevant, expand it to see surrounding turns/source conversations.
+   Copy the FULL doc ID from search results. Do NOT loop — one expand per memory is enough.
+   Example: <expand_memory id="a1b2c3d4-e5f6-7890-abcd-ef1234567890" collection="conversations" window="3">need full conversation context</expand_memory>
+
 **Tool Selection Guidelines:**
 | Task Type | Best Tool |
 |-----------|-----------|
@@ -532,6 +587,7 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | View source code, configs, logs | File Read |
 | Find where something is defined/used | File Grep |
 | Explore directory structure | File List |
+| See context around a memory hit | Expand Memory |
 
 You can use tools up to {max_rounds} times total. Be specific with queries.
 
