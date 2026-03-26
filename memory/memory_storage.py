@@ -71,6 +71,7 @@ class MemoryStorage:
         time_manager=None,
         graph_memory=None,
         entity_resolver=None,
+        fact_verifier=None,
     ):
         """
         Initialize MemoryStorage.
@@ -85,6 +86,7 @@ class MemoryStorage:
             time_manager: Optional TimeManager for timestamps
             graph_memory: Optional GraphMemory for knowledge graph ingestion
             entity_resolver: Optional EntityResolver for entity resolution
+            fact_verifier: Optional FactVerifier for pre-storage conflict checking
         """
         self.corpus_manager = corpus_manager
         self.chroma_store = chroma_store
@@ -95,6 +97,7 @@ class MemoryStorage:
         self.time_manager = time_manager
         self.graph_memory = graph_memory
         self.entity_resolver = entity_resolver
+        self.fact_verifier = fact_verifier
 
         # State
         self.conversation_context: deque = deque(maxlen=50)
@@ -400,6 +403,42 @@ class MemoryStorage:
                         source_dict[key] = val
 
                 try:
+                    # Fact verification gate: check for conflicts before storage
+                    if self.fact_verifier:
+                        try:
+                            from memory.fact_verification import FactVerdict
+                            vr = await self.fact_verifier.verify(
+                                subject=subj, predicate=rel, object_val=obj,
+                                fact_text=fact_text, source=src, confidence=conf,
+                                fact_scope=md.get("fact_scope", "user"),
+                            )
+                            if vr.verdict == FactVerdict.REJECT:
+                                logger.debug(
+                                    f"[MemoryStorage] Fact rejected by verifier: "
+                                    f"{fact_text[:80]} (reason={vr.reason})"
+                                )
+                                continue
+                            if vr.verdict == FactVerdict.STORE_AND_FLAG:
+                                # Flag conflicting old facts as superseded
+                                for cand in vr.conflicting_candidates:
+                                    if cand.doc_id:
+                                        try:
+                                            supersede_md = {"superseded_by": fact_text[:200]}
+                                            supersede_md.update(vr.metadata_updates)
+                                            self.chroma_store.update_metadata(
+                                                "facts", cand.doc_id, supersede_md,
+                                            )
+                                            logger.debug(
+                                                f"[MemoryStorage] Marked fact {cand.doc_id} "
+                                                f"as superseded"
+                                            )
+                                        except Exception as flag_err:
+                                            logger.debug(
+                                                f"[MemoryStorage] Failed to flag old fact: {flag_err}"
+                                            )
+                        except Exception as verify_err:
+                            logger.debug(f"[MemoryStorage] Verification failed, proceeding: {verify_err}")
+
                     result = self.chroma_store.add_fact(
                         fact=fact_text,
                         source=source_dict,

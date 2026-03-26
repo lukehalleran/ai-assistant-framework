@@ -39,13 +39,70 @@ import torch
 # Optional OpenAI dependency (tests may run without the package installed)
 try:
     from openai import OpenAI, AsyncOpenAI
+    import openai as _openai_module
 except ImportError:  # pragma: no cover - triggered in trimmed test envs
     OpenAI = None  # type: ignore
     AsyncOpenAI = None  # type: ignore
+    _openai_module = None  # type: ignore
 import httpx
 import os
 import asyncio
 import json
+
+def _classify_api_error(e: Exception) -> str:
+    """Classify an OpenAI/API error into a user-friendly message with a prefix tag.
+
+    Returns a string like '[CREDITS EXHAUSTED] ...' or '[API Error] ...'
+    that the GUI can pattern-match on for specific display.
+    """
+    err_str = str(e).lower()
+    err_code = getattr(e, 'code', '') or ''
+    status_code = getattr(e, 'status_code', 0) or 0
+
+    # --- Quota / billing exhaustion ---
+    if (
+        'insufficient_quota' in err_str
+        or 'billing_hard_limit_reached' in err_str
+        or 'exceeded your current quota' in err_str
+        or err_code == 'insufficient_quota'
+        or (status_code == 429 and 'quota' in err_str)
+    ):
+        return (
+            "[CREDITS EXHAUSTED] You've run out of API credits. "
+            "Please add credits at your provider's billing page, "
+            "or switch to a different model."
+        )
+
+    # --- Rate limiting (temporary) ---
+    if status_code == 429 or 'rate_limit' in err_str or 'rate limit' in err_str:
+        return (
+            "[RATE LIMITED] API rate limit hit — too many requests. "
+            "Wait a moment and try again, or switch to a different model."
+        )
+
+    # --- Authentication ---
+    if (
+        status_code == 401
+        or 'invalid api key' in err_str
+        or 'incorrect api key' in err_str
+        or 'authentication' in err_str
+    ):
+        return (
+            "[AUTH ERROR] API key is invalid or expired. "
+            "Check your API key in .env or config.yaml."
+        )
+
+    # --- Model not found ---
+    if status_code == 404 or 'model_not_found' in err_str or 'does not exist' in err_str:
+        return f"[MODEL NOT FOUND] The requested model was not found. Check the model name in config. ({e})"
+
+    # --- Server error ---
+    if status_code >= 500:
+        return f"[SERVER ERROR] The API provider is experiencing issues (HTTP {status_code}). Try again later."
+
+    # --- Fallback ---
+    return f"[API Error] {e}"
+
 
 # Global embedding model cache to prevent re-loading SentenceTransformer
 _global_embed_model = None
@@ -485,7 +542,7 @@ class ModelManager:
             return response.choices[0].message.content.strip()
 
         except Exception as e:
-            return f"[API Error] {str(e)}"
+            return _classify_api_error(e)
 
     def switch_model(self, model_name):
         """Switch active model (local or API)."""
@@ -691,8 +748,9 @@ class ModelManager:
                 return response.choices[0].message.content.strip()
 
             except Exception as e:
-                logger.error(f"[ModelManager] OpenAI generate_once error: {e}")
-                return self._stub_response(prompt)
+                classified = _classify_api_error(e)
+                logger.error(f"[ModelManager] OpenAI generate_once error: {classified}")
+                return classified
 
         # --- Handle Unrecognized Models ---
         else:
@@ -811,8 +869,9 @@ class ModelManager:
                 return response.choices[0].message
 
             except Exception as e:
-                logger.error(f"[generate_once_with_tools] Error: {e}")
-                return {"content": self._stub_response(prompt), "tool_calls": None}
+                classified = _classify_api_error(e)
+                logger.error(f"[generate_once_with_tools] Error: {classified}")
+                return {"content": classified, "tool_calls": None}
 
         # Unrecognized model
         logger.error(f"[generate_once_with_tools] Model '{target_model}' not recognized")
@@ -941,8 +1000,11 @@ class ModelManager:
                 )
                 return stream
             except Exception as e:
-                logger.error(f"[ModelManager] OpenAI streaming error: {e}")
-                return self._stub_stream(prompt)
+                classified = _classify_api_error(e)
+                logger.error(f"[ModelManager] OpenAI streaming error: {classified}")
+                async def _error_stream():
+                    yield classified
+                return _error_stream()
         else:
             return await asyncio.to_thread(
                 self.generate, prompt, model_name=target_model, **kwargs

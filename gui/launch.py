@@ -1395,6 +1395,7 @@ def launch_gui(orchestrator, force_wizard=False):
                 # Proposal ideas generation
                 with gr.Row():
                     generate_btn = gr.Button("Generate Proposals Now", variant="secondary")
+                    check_impl_btn = gr.Button("Check Implementation", variant="secondary")
                     generate_status = gr.Markdown(value="")
 
                 # Shared state for both manage and codegen sections
@@ -1414,6 +1415,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     mark_built_btn = gr.Button("Mark Built", variant="primary")
                     mark_rejected_btn = gr.Button("Reject", variant="stop")
                     mark_approved_btn = gr.Button("Approve", variant="secondary")
+                    check_single_impl_btn = gr.Button("Check This", variant="secondary")
 
                 with gr.Row():
                     rejection_reason_input = gr.Textbox(
@@ -1559,6 +1561,27 @@ def launch_gui(orchestrator, force_wizard=False):
                                 f'vertical-align:middle;">{status}</span>'
                             )
 
+                            # Implementation tracking badge
+                            impl_status = meta.get("implementation_status", "not_checked")
+                            impl_conf = float(meta.get("implementation_confidence", 0))
+                            impl_badge_html = ""
+                            if impl_status != "not_checked":
+                                _impl_colors = {
+                                    "confirmed": "#10b981",
+                                    "likely": "#f59e0b",
+                                    "uncertain": "#6b7280",
+                                    "not_implemented": "#6b7280",
+                                }
+                                impl_color = _impl_colors.get(impl_status, "#6b7280")
+                                impl_evidence = meta.get("implementation_evidence", "")
+                                impl_badge_html = (
+                                    f'<span style="display:inline-block;padding:1px 8px;'
+                                    f'border-radius:9999px;font-size:0.75em;font-weight:600;'
+                                    f'color:#fff;background:{impl_color};margin-left:4px;'
+                                    f'vertical-align:middle;" title="{impl_evidence}">'
+                                    f'{impl_status} {impl_conf:.0%}</span>'
+                                )
+
                             html_parts.append(
                                 f'<details{open_attr} style="margin-bottom:6px;border:1px solid #374151;'
                                 f'border-radius:6px;background:#1f2937;">'
@@ -1568,6 +1591,7 @@ def launch_gui(orchestrator, force_wizard=False):
                                 f'<span style="font-weight:400;color:#9ca3af;font-size:0.85em;">'
                                 f'({ptype} | P{priority})</span>'
                                 f'{badge_html}'
+                                f'{impl_badge_html}'
                                 f'</summary>\n{body_html}\n</details>'
                             )
 
@@ -1624,6 +1648,87 @@ def launch_gui(orchestrator, force_wizard=False):
                         return f"Generated {len(proposals)} proposal(s), stored {kept} new."
                     except Exception as e:
                         return f"Generation failed: {e}"
+
+                async def _check_implementation_now():
+                    """Run full implementation detection on all pending+approved proposals."""
+                    try:
+                        from knowledge.implementation_detector import ImplementationDetector
+                        from memory.proposal_store import ProposalStore
+                        from knowledge.git_memory import GitMemoryExtractor
+
+                        chroma = getattr(orchestrator, 'memory_system', None)
+                        chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
+                        mm = getattr(orchestrator, 'model_manager', None)
+                        if not chroma_store:
+                            return "Chroma store not available."
+
+                        store = ProposalStore(chroma_store=chroma_store)
+                        proposals = store.get_pending_and_approved()
+                        if not proposals:
+                            return "No pending/approved proposals to check."
+
+                        detector = ImplementationDetector(
+                            repo_path=".",
+                            git_extractor=GitMemoryExtractor("."),
+                            model_manager=mm,
+                        )
+                        results = await detector.detect_batch(proposals, lightweight=False)
+
+                        updated = 0
+                        for result in results:
+                            if not result.skipped_reason:
+                                if store.update_tracking_metadata(result.proposal_id, result):
+                                    updated += 1
+
+                        summary_parts = []
+                        for r in results:
+                            if not r.skipped_reason:
+                                summary_parts.append(f"- {r.status} ({r.confidence:.0%})")
+                        return f"Checked {len(proposals)} proposals, updated {updated}. " + " ".join(summary_parts[:5])
+
+                    except Exception as e:
+                        return f"Implementation check failed: {e}"
+
+                async def _check_single_implementation(selected_label, title_map):
+                    """Run implementation detection on a single proposal."""
+                    if not selected_label or not title_map:
+                        return "Select a proposal first."
+
+                    proposal_id = title_map.get(selected_label)
+                    if not proposal_id:
+                        return f"Proposal not found for: {selected_label}"
+
+                    try:
+                        from knowledge.implementation_detector import ImplementationDetector
+                        from memory.proposal_store import ProposalStore
+                        from knowledge.git_memory import GitMemoryExtractor
+
+                        chroma = getattr(orchestrator, 'memory_system', None)
+                        chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
+                        mm = getattr(orchestrator, 'model_manager', None)
+                        if not chroma_store:
+                            return "Chroma store not available."
+
+                        store = ProposalStore(chroma_store=chroma_store)
+                        proposal = store.get_proposal(proposal_id)
+                        if not proposal:
+                            return f"Proposal {proposal_id} not found."
+
+                        detector = ImplementationDetector(
+                            repo_path=".",
+                            git_extractor=GitMemoryExtractor("."),
+                            model_manager=mm,
+                        )
+                        result = detector.detect_single(proposal, lightweight=False)
+                        store.update_tracking_metadata(proposal_id, result)
+
+                        return (
+                            f"**{result.status}** ({result.confidence:.0%})\n\n"
+                            f"{result.evidence}"
+                        )
+
+                    except Exception as e:
+                        return f"Check failed: {e}"
 
                 async def _generate_code_now(selected_label, title_map):
                     """Generate full implementation code for the selected proposal."""
@@ -1789,6 +1894,27 @@ def launch_gui(orchestrator, force_wizard=False):
                     _generate_code_now,
                     inputs=[codegen_selector, proposals_map],
                     outputs=[codegen_status, codegen_output],
+                )
+
+                # --- Implementation tracking buttons ---
+                check_impl_btn.click(
+                    _check_implementation_now,
+                    inputs=[],
+                    outputs=[generate_status],
+                ).then(
+                    _load_proposals,
+                    inputs=[proposal_status_filter, proposal_type_filter],
+                    outputs=[proposals_view, manage_selector, codegen_selector, proposals_map],
+                )
+
+                check_single_impl_btn.click(
+                    _check_single_implementation,
+                    inputs=[manage_selector, proposals_map],
+                    outputs=[manage_status],
+                ).then(
+                    _load_proposals,
+                    inputs=[proposal_status_filter, proposal_type_filter],
+                    outputs=[proposals_view, manage_selector, codegen_selector, proposals_map],
                 )
 
             with gr.TabItem("Settings"):

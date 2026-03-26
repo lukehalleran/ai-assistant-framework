@@ -862,6 +862,167 @@ class ContextGatherer:
             logger.warning(f"[ContextGatherer] Failed to get unresolved threads: {e}")
             return []
 
+    async def get_proactive_insights(self, query: str, max_insights: int = 2) -> List[str]:
+        """Get cross-domain proactive insights from the knowledge graph.
+
+        Delegates to MemoryCoordinator.context_surfacer.generate_insights().
+
+        Args:
+            query: Current user query
+            max_insights: Maximum insights to return
+
+        Returns:
+            List of insight text strings for prompt injection
+        """
+        try:
+            from config.app_config import PROACTIVE_SURFACING_ENABLED
+            if not PROACTIVE_SURFACING_ENABLED:
+                return []
+
+            surfacer = getattr(self.memory_coordinator, 'context_surfacer', None)
+            if not surfacer:
+                return []
+
+            insights = await surfacer.generate_insights(query, max_insights=max_insights)
+            logger.debug(f"[ContextGatherer] Retrieved {len(insights)} proactive insights")
+            return insights or []
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get proactive insights: {e}")
+            return []
+
+    async def get_codebase_changes(self, since_datetime) -> Dict[str, Any]:
+        """Detect codebase file changes since last session via git.
+
+        Runs git log, git diff, and git status to identify committed and
+        uncommitted changes, filtering by allowed extensions and excluding
+        build artifacts.
+
+        Args:
+            since_datetime: datetime object or None. If None, returns empty.
+
+        Returns:
+            Dict with committed, uncommitted_modified, uncommitted_new,
+            since_label keys. Empty dict on failure or when disabled.
+        """
+        try:
+            from config.app_config import (
+                SESSION_DIFF_ENABLED,
+                SESSION_DIFF_MAX_COMMITTED,
+                SESSION_DIFF_MAX_UNCOMMITTED,
+                SESSION_DIFF_EXTENSIONS,
+            )
+            if not SESSION_DIFF_ENABLED or since_datetime is None:
+                return {}
+
+            import subprocess
+            from datetime import datetime
+
+            # Resolve the repo root
+            repo_root = None
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    repo_root = result.stdout.strip()
+            except Exception:
+                return {}
+            if not repo_root:
+                return {}
+
+            # Exclusion patterns for paths
+            _EXCLUDE_PATTERNS = ("__pycache__", ".pyc", "venv/", "dist/", "build/", ".egg-info")
+
+            def _ext_ok(path: str) -> bool:
+                """Check if file extension is in the allowed list."""
+                import os as _os
+                _, ext = _os.path.splitext(path)
+                return ext.lower() in SESSION_DIFF_EXTENSIONS
+
+            def _path_ok(path: str) -> bool:
+                """Check if path is not in exclusion patterns."""
+                return not any(excl in path for excl in _EXCLUDE_PATTERNS)
+
+            def _filter(paths: list) -> list:
+                return [p for p in paths if _ext_ok(p) and _path_ok(p)]
+
+            # 1) Committed changes since last session
+            iso_since = since_datetime.isoformat() if hasattr(since_datetime, 'isoformat') else str(since_datetime)
+            committed = []
+            try:
+                result = subprocess.run(
+                    ["git", "log", f"--since={iso_since}", "--oneline", "--no-merges"],
+                    capture_output=True, text=True, timeout=10, cwd=repo_root
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    lines = result.stdout.strip().split("\n")
+                    committed = lines[:SESSION_DIFF_MAX_COMMITTED]
+            except Exception as e:
+                logger.debug(f"[ContextGatherer] git log failed: {e}")
+
+            # 2) Uncommitted modified files
+            uncommitted_modified = []
+            try:
+                result = subprocess.run(
+                    ["git", "diff", "--name-only"],
+                    capture_output=True, text=True, timeout=10, cwd=repo_root
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    files = result.stdout.strip().split("\n")
+                    uncommitted_modified = _filter(files)[:SESSION_DIFF_MAX_UNCOMMITTED]
+            except Exception as e:
+                logger.debug(f"[ContextGatherer] git diff failed: {e}")
+
+            # 3) Untracked new files
+            uncommitted_new = []
+            try:
+                result = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=10, cwd=repo_root
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    lines = result.stdout.strip().split("\n")
+                    untracked = [line[3:].strip() for line in lines if line.startswith("??")]
+                    uncommitted_new = _filter(untracked)[:SESSION_DIFF_MAX_UNCOMMITTED]
+            except Exception as e:
+                logger.debug(f"[ContextGatherer] git status failed: {e}")
+
+            # Human-readable time delta
+            since_label = "last session"
+            try:
+                if hasattr(since_datetime, 'timestamp'):
+                    now = datetime.now()
+                    delta = now - since_datetime
+                    total_secs = int(delta.total_seconds())
+                    if total_secs < 3600:
+                        since_label = f"{total_secs // 60}m ago"
+                    elif total_secs < 86400:
+                        hours = total_secs // 3600
+                        mins = (total_secs % 3600) // 60
+                        since_label = f"{hours}h {mins}m ago"
+                    else:
+                        days = total_secs // 86400
+                        hours = (total_secs % 86400) // 3600
+                        since_label = f"{days}d {hours}h ago"
+            except Exception:
+                pass
+
+            if not committed and not uncommitted_modified and not uncommitted_new:
+                return {}
+
+            return {
+                "committed": committed,
+                "uncommitted_modified": uncommitted_modified,
+                "uncommitted_new": uncommitted_new,
+                "since_label": since_label,
+            }
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get codebase changes: {e}")
+            return {}
+
     async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT) -> List[Dict[str, Any]]:
         """Get recent conversation memories."""
         try:
@@ -1729,29 +1890,23 @@ class ContextGatherer:
         Returns:
             WebSearchResult if search was triggered and successful, None otherwise
         """
-        logger.warning(f"[WebSearch] _get_web_search_results CALLED with query={query[:50]!r}, crisis_level={crisis_level}")
-
         # Check if web search is enabled
-        logger.warning(f"[WebSearch] WEB_SEARCH_ENABLED={WEB_SEARCH_ENABLED}")
         if not WEB_SEARCH_ENABLED:
-            logger.info("[ContextGatherer] Web search disabled in config")
+            logger.debug("[ContextGatherer] Web search disabled in config")
             return None
 
         # Check crisis suppression (also done in trigger, but early exit saves time)
         if crisis_level and crisis_level.upper() in ("HIGH", "MEDIUM"):
-            logger.info(f"[ContextGatherer] Web search suppressed during {crisis_level} crisis")
+            logger.debug(f"[ContextGatherer] Web search suppressed during {crisis_level} crisis")
             return None
 
         # Check if web search manager is available
-        logger.warning("[WebSearch] Getting web_search_manager...")
         manager = self.web_search_manager
-        logger.warning(f"[WebSearch] manager={manager}, type={type(manager)}")
         if not manager:
             logger.warning("[ContextGatherer] Web search manager failed to initialize")
             return None
-        logger.warning(f"[WebSearch] manager.is_available()={manager.is_available()}, api_key={manager.api_key[:10] if manager.api_key else 'NONE'}...")
         if not manager.is_available():
-            logger.warning(f"[ContextGatherer] Web search manager not available - API key configured: {bool(manager.api_key)}")
+            logger.debug("[ContextGatherer] Web search not available (API key missing or invalid)")
             return None
 
         try:

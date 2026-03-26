@@ -75,7 +75,7 @@ prompt_ctx = await prompt_builder.build_prompt_from_context(context)
 ## Memory Operations
 
 ```python
-# memory/memory_coordinator.py — Thin orchestrator (~498 lines)
+# memory/memory_coordinator.py — Thin orchestrator (~498 lines, plus new component wiring)
 # All methods delegate to modular components. No inline logic.
 class MemoryCoordinator:
     def __init__(self, ...):
@@ -84,6 +84,9 @@ class MemoryCoordinator:
         self._shutdown = ShutdownProcessor(...)   # Session-end processing
         self.scorer = MemoryScorer(...)           # Scoring and ranking
         self.thread_manager = ThreadManager(...)  # Thread tracking
+        self.claim_index = ClaimIndex(...)     # Staleness tracking [NEW 2026-03-25]
+        self.fact_verifier = FactVerifier(...)  # Pre-storage conflict gate [NEW 2026-03-24]
+        self.context_surfacer = ContextSurfacer(...)  # Proactive insights [NEW 2026-03-24]
 
     # Retrieval — delegates to MemoryRetriever
     async def get_memories(query, limit=30, topics=None) -> List[Dict]:
@@ -137,6 +140,7 @@ class MemoryScorer:
               + topic_match + structure + bonuses - penalties
         weight_overrides: per-intent SCORE_WEIGHTS override (from IntentClassifier)
         Falls back to _intent_weight_overrides if no explicit param.
+        + staleness_penalty  # staleness_ratio * STALENESS_WEIGHT, 2x at 80%+, capped 0.4 [NEW 2026-03-25]
 
         Temporal-aware decay [NEW 2026-02-17]:
         If '_temporal_anchor_hours' in weight_overrides (set by IntentClassifier for TEMPORAL_RECALL),
@@ -153,14 +157,17 @@ class MemoryScorer:
 
 # memory/shutdown_processor.py — Session-end processing [ENHANCED 2026-03]
 class ShutdownProcessor:
-    def __init__(..., memory_coordinator=None):
-        """memory_coordinator enables pipeline-enriched proposal generation."""
+    def __init__(..., memory_coordinator=None, claim_index=None):
+        """memory_coordinator enables pipeline-enriched proposal generation.
+        claim_index enables staleness tracking on summary creation. [NEW 2026-03-25]"""
 
     async def process_shutdown_memory(session_conversations=None):
         """Steps: 1) block summaries, 2) session facts, 3) LLM facts,
         4) procedural skills, 5) code proposals, 6) cross-dedup (dry_run=True only),
-        6.5) open thread extraction + resolution detection [NEW 2026-03-23],
-        7) user profile updates (user-only facts; entity facts stay in ChromaDB only)"""
+        6.5a) open thread extraction + resolution detection [NEW 2026-03-23],
+        6.5b) implementation tracking (lightweight file-existence check) [NEW 2026-03-24],
+        7) user profile updates (user-only facts; entity facts stay in ChromaDB only).
+        After summary storage: extract claims → register in ClaimIndex → add staleness metadata [NEW 2026-03-25]"""
 
     async def _run_cross_collection_dedup():
         """Dry-run only — logs findings but NEVER deletes. Guarded to run once per process."""
@@ -171,8 +178,9 @@ class ShutdownProcessor:
 
 # memory/cross_deduplicator.py — Cross-collection dedup [NEW 2026-02-13]
 class CrossCollectionDeduplicator:
-    def __init__(chroma_store):
-        """Thresholds from CROSS_DEDUP_* config. Skips protected collections."""
+    def __init__(chroma_store, claim_index=None, entity_resolver=None):
+        """Thresholds from CROSS_DEDUP_* config. Skips protected collections.
+        After contradiction detection, cascades staleness via ClaimIndex. [NEW 2026-03-25]"""
 
     def run(dry_run=True) -> DedupPlan:
         """
@@ -946,6 +954,155 @@ THREAD_MODEL_ALIAS = ""     # empty = default model
 
 ---
 
+## Fact Verification Gate **[NEW 2026-03-24]**
+
+```python
+# memory/fact_verification.py
+class FactVerdict(str, Enum):
+    STORE = "store"              # No conflict
+    STORE_AND_FLAG = "store_and_flag"  # Store new, mark old superseded
+    REJECT = "reject"            # Likely extraction error
+    SKIP = "skip"                # Ephemeral relation
+
+class FactVerifier:
+    def __init__(chroma_store, model_manager=None):
+        """Pre-storage conflict gate. Checks new facts against existing."""
+
+    async def verify_fact(fact_text, collection="facts") -> VerificationResult:
+        """Flow: ephemeral check → candidate query → confirmation → user-trust override
+        → entity-scope rejection → LLM adjudication → fallback trust-newer."""
+
+# Integration:
+# memory_storage.py: intercepts before add_fact()
+# shutdown_processor.py: gates _extract_session_facts() and _extract_llm_facts()
+# Old facts get superseded_by metadata — never deleted
+
+# Config:
+FACT_VERIFICATION_ENABLED = True
+FACT_VERIFICATION_CANDIDATE_LIMIT = 5
+```
+
+---
+
+## Proactive Context Surfacing **[NEW 2026-03-24]**
+
+```python
+# memory/context_surfacer.py + surfacing_models.py + surfacing_history.py
+class ContextSurfacer:
+    def __init__(graph_memory, entity_resolver, model_manager):
+        """Cross-domain insight generation from knowledge graph."""
+
+    async def generate_insights(query, max_insights=3) -> List[ProactiveInsight]:
+        """Star topology: classify entities by domain → find cross-domain bridges
+        → novelty filter (72h cooldown) → single LLM call → session cache.
+        Skips if graph < 20 nodes or < 15 edges."""
+
+# Models (surfacing_models.py):
+# DomainEntity, DomainCluster, CrossDomainCandidate, ProactiveInsight
+
+# Integration:
+# context_gatherer.py → get_proactive_insights() → context_surfacer.generate_insights()
+# Prompt: [PROACTIVE INSIGHTS] after [UNRESOLVED THREADS]
+# Parallel task in build_prompt()
+
+# Config:
+PROACTIVE_SURFACING_ENABLED = True
+PROACTIVE_SURFACING_COOLDOWN_HOURS = 72
+PROACTIVE_SURFACING_MAX_INSIGHTS = 3
+```
+
+---
+
+## Memory Staleness System **[NEW 2026-03-25]**
+
+```python
+# memory/claim_tracker.py
+class ClaimKey(BaseModel):
+    subject: str; relation: str; claim_hash: str  # MD5[:12]
+
+class ClaimIndex:
+    """Reverse index: claim_hash → [doc_ids], doc_id → [claim_hashes]"""
+
+    def add_claims(doc_id, collection, claims): ...
+    def cascade_staleness(claim_key, chroma_store=None) -> List[str]:
+        """Find affected docs, recompute staleness_ratio, update ChromaDB metadata."""
+    def save() / load(): ...  # JSON at data/claim_index.json
+
+def canonicalize_claim(subject, relation, entity_resolver=None) -> ClaimKey
+def extract_claims_from_text(text, entity_resolver=None) -> List[ClaimKey]
+
+# Scoring (memory_scorer.py step 12):
+# penalty = ratio * 0.15; if ratio >= 0.8: *= 2.0; reflections *= 0.6; cap 0.4
+
+# Prompt prefix (builder.py):
+# staleness_ratio >= 0.6 → "[HISTORICAL — PARTIALLY OUTDATED] ..."
+
+# Cascade triggers:
+# 1. Orchestrator: after correction detection
+# 2. Cross-deduplicator: after contradiction clusters
+# 3. Shutdown: claims extracted at summary creation time
+
+# Config:
+STALENESS_ENABLED = True
+STALENESS_WEIGHT = 0.15
+STALENESS_MAX_PENALTY = 0.4
+
+# Migration: python scripts/migrate_claims.py [--dry-run]
+```
+
+---
+
+## Implementation Tracking **[NEW 2026-03-24]**
+
+```python
+# knowledge/implementation_detector.py
+class DetectionResult(BaseModel):
+    proposal_id: str; confidence: float; status: str; evidence: List[str]; stage_reached: int
+
+class ImplementationDetector:
+    async def detect(proposal, lightweight=False) -> DetectionResult:
+        """4-stage: file existence → code grep → git history → LLM judgment (borderline only).
+        Lightweight = stage 1 only (~50ms). Cooldown prevents re-checking (86400s)."""
+
+    async def detect_batch(proposals, lightweight=False) -> List[DetectionResult]:
+        """Batch with cooldown respect."""
+
+# Confidence: confirmed (≥0.85), likely (≥0.60), uncertain (≥0.30), not_implemented (<0.30)
+
+# Integration:
+# Shutdown: Phase 6.5 (lightweight file-existence check)
+# CLI: python main.py check-proposals [--id UUID] [--verbose]
+# GUI: "Check Implementation" button (batch), "Check This" (single), badges
+
+# Config:
+IMPL_TRACKING_ENABLED = True
+IMPL_TRACKING_COOLDOWN = 86400
+```
+
+---
+
+## Session-Start Codebase Diff + Feature Inventory **[NEW 2026-03-24]**
+
+```python
+# context_gatherer.py:get_codebase_changes() — git log/diff/status since last session
+# builder.py:_build_feature_inventory() — compact 4-line enabled features summary
+
+# Prompt sections:
+# [CODEBASE CHANGES SINCE LAST SESSION] — first message only
+# [ACTIVE FEATURES] — always present
+# Placed after [USER PROFILE] before [TIME CONTEXT]
+
+# Orchestrator: ## CODEBASE CHANGE AWARENESS system prompt (first message only)
+# Codebase changes gathered BEFORE small-talk fork (even "Yo" gets change awareness)
+
+# Config:
+SESSION_DIFF_ENABLED = True
+SESSION_DIFF_MAX_COMMITS = 20
+SESSION_DIFF_MAX_FILES = 30
+```
+
+---
+
 ## Configuration Constants
 
 ```python
@@ -1014,6 +1171,28 @@ THREAD_STALE_DAYS = 14                   # Days without reference before stale
 THREAD_DEADLINE_GRACE_HOURS = 48         # Hours past deadline before stale
 THREAD_MAX_SURFACED = 3                  # Max threads in prompt
 THREAD_MODEL_ALIAS = ""                  # LLM alias for extraction (empty = default)
+
+# Fact Verification [NEW 2026-03-24]
+FACT_VERIFICATION_ENABLED = True
+FACT_VERIFICATION_LLM_MODEL = ""        # empty = default model
+FACT_VERIFICATION_CANDIDATE_LIMIT = 5
+
+# Proactive Context Surfacing [NEW 2026-03-24]
+PROACTIVE_SURFACING_ENABLED = True
+PROACTIVE_SURFACING_COOLDOWN_HOURS = 72
+PROACTIVE_SURFACING_MAX_INSIGHTS = 3
+
+# Memory Staleness [NEW 2026-03-25]
+STALENESS_ENABLED = True
+STALENESS_WEIGHT = 0.15
+STALENESS_MAX_PENALTY = 0.4
+STALENESS_STEEP_THRESHOLD = 0.8
+STALENESS_HISTORICAL_THRESHOLD = 0.6
+STALENESS_INDEX_PATH = "data/claim_index.json"
+
+# Implementation Tracking [NEW 2026-03-24]
+IMPL_TRACKING_ENABLED = True
+IMPL_TRACKING_COOLDOWN = 86400          # seconds between re-checks
 
 # Summarization
 SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))
@@ -1104,6 +1283,12 @@ structure_score = 0.15 * alignment
 # Graph-boosted scoring [NEW 2026-03]
 graph_bonus = min(0.05 * graph_entity_matches, 0.15)  # capped at GRAPH_SCORING_BOOST_CAP
 
+# Staleness penalty (summaries/reflections only) [NEW 2026-03-25]
+staleness_penalty = staleness_ratio * 0.15          # base
+if staleness_ratio >= 0.8: staleness_penalty *= 2.0  # steep curve
+if collection == 'reflections': staleness_penalty *= 0.6
+staleness_penalty = min(staleness_penalty, 0.4)     # capped
+
 # Final memory score
 score = (
     0.35 * relevance +
@@ -1138,6 +1323,9 @@ score = (
 [PROPOSED FEATURES]            # Code proposals surfaced for project-related queries [NEW 2026-02-09]
 [KNOWLEDGE GRAPH]              # Graph traversal: related entities as natural language [NEW 2026-03]
 [UNRESOLVED THREADS]           # Open commitments, deadlines, unfinished topics [NEW 2026-03-23]
+[PROACTIVE INSIGHTS]           # Cross-domain insights from knowledge graph [NEW 2026-03-24]
+[ACTIVE FEATURES]              # Feature inventory (always present) [NEW 2026-03-24]
+[CODEBASE CHANGES SINCE LAST SESSION]  # Git changes (first message only) [NEW 2026-03-24]
 [WEB SEARCH RESULTS]           # Real-time Tavily results
 [RELEVANT INFORMATION]         # Wikipedia chunks
 [TIME CONTEXT]                 # Current datetime
@@ -1604,4 +1792,4 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-This document is ~1,600 lines → ~10K tokens, providing instant lookup for critical functions and patterns.
+This document is ~1,800 lines → ~12K tokens, providing instant lookup for critical functions and patterns.

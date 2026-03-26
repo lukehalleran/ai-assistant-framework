@@ -17,6 +17,12 @@ from config.app_config import (
     DEICTIC_ANCHOR_PENALTY,
     DEICTIC_CONTINUITY_MIN,
     SCORE_WEIGHTS,
+    STALENESS_ENABLED,
+    STALENESS_WEIGHT,
+    STALENESS_MAX_PENALTY,
+    STALENESS_STEEP_THRESHOLD,
+    STALENESS_STEEP_MULTIPLIER,
+    STALENESS_REFLECTION_WEIGHT_FACTOR,
 )
 from memory.truth_scorer import TruthScorer
 
@@ -429,6 +435,24 @@ class MemoryScorer:
                 if matches > 0:
                     graph_bonus = min(0.05 * matches, graph_boost_cap)
 
+            # 12) staleness penalty (summaries/reflections with outdated claims)
+            staleness_penalty = 0.0
+            if STALENESS_ENABLED:
+                staleness_ratio = float(
+                    md.get('staleness_ratio', 0.0)
+                    or m.get('staleness_ratio', 0.0)
+                    or 0.0
+                )
+                if staleness_ratio > 0:
+                    base_penalty = staleness_ratio * STALENESS_WEIGHT
+                    if staleness_ratio >= STALENESS_STEEP_THRESHOLD:
+                        base_penalty *= STALENESS_STEEP_MULTIPLIER
+                    # Reduce penalty for reflections (behavioral patterns are more durable)
+                    collection = m.get('collection', '')
+                    if collection == 'reflections':
+                        base_penalty *= STALENESS_REFLECTION_WEIGHT_FACTOR
+                    staleness_penalty = -min(base_penalty, STALENESS_MAX_PENALTY)
+
             m['final_score'] = (
                 weights.get('relevance', 0.35) * rel +
                 weights.get('recency', 0.25) * recency +
@@ -440,6 +464,7 @@ class MemoryScorer:
                 anchor_bonus +
                 meta_bonus +
                 graph_bonus +
+                staleness_penalty +
                 penalty
             )
 
@@ -451,6 +476,7 @@ class MemoryScorer:
                     'structure': structure, 'anchor_bonus': anchor_bonus,
                     'meta_bonus': meta_bonus,
                     'graph_bonus': graph_bonus,
+                    'staleness_penalty': staleness_penalty,
                     'size_penalty': size_penalty,
                     'penalty': penalty,
                 }
@@ -472,7 +498,7 @@ class MemoryScorer:
                     f"cont={dbg.get('continuity', 0):.2f}, topic={dbg.get('topic_match', 0):.2f}, "
                     f"struct={dbg.get('structure', 0):.2f}, anchor={dbg.get('anchor_bonus', 0):.2f}, "
                     f"meta={dbg.get('meta_bonus', 0):.2f}, graph={dbg.get('graph_bonus', 0):.2f}, "
-                    f"pen={dbg.get('penalty', 0):.2f}) "
+                    f"stale={dbg.get('staleness_penalty', 0):.2f}, pen={dbg.get('penalty', 0):.2f}) "
                     f"Q: {mm.get('query', '')[:48]!r}"
                 )
 
