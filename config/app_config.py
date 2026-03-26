@@ -15,6 +15,7 @@ Module Contract
 - Important constants:
   - CORPUS_FILE, CHROMA_PATH, SYSTEM_PROMPT, DEFAULT_* model knobs, gating thresholds, CORPUS_MAX_ENTRIES
   - OBSIDIAN_ENABLED, OBSIDIAN_VAULT_PATH, OBSIDIAN_CHUNK_THRESHOLD, OBSIDIAN_MAX_NOTES_PROMPT [NEW]
+  - LLM_COMPRESSION_ENABLED, LLM_COMPRESSION_MODEL, LLM_COMPRESSION_TIMEOUT, LLM_COMPRESSION_RATIO_THRESHOLD, LLM_COMPRESSION_MAX_BATCH [NEW 2026-03-26]
 - Side effects:
   - Creates data directories on import to ensure persistence paths exist.
 - Error handling:
@@ -1018,6 +1019,34 @@ SESSION_DIFF_EXTENSIONS = SESSION_DIFF_CFG.get("include_extensions",
 
 # Environment variable overrides for Session Diff
 SESSION_DIFF_ENABLED = bool(int(os.getenv("SESSION_DIFF_ENABLED", "1" if SESSION_DIFF_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Token Budget (model-aware prompt budget)
+# --------------------------------------------------------------------
+TOKEN_BUDGET_CFG = config.get("token_budget", {})
+PROMPT_TOKEN_BUDGET_DEFAULT: int = int(TOKEN_BUDGET_CFG.get("default", 40000))
+PROMPT_TOKEN_BUDGET_LOCAL: int = int(TOKEN_BUDGET_CFG.get("local_model", 12000))
+PROMPT_TOKEN_BUDGET_FLOOR: int = int(TOKEN_BUDGET_CFG.get("floor", 8000))
+PROMPT_TOKEN_BUDGET_CEILING: int = int(TOKEN_BUDGET_CFG.get("ceiling", 60000))
+PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION: float = float(TOKEN_BUDGET_CFG.get("context_fraction", 0.25))
+_BUDGET_ENV = os.getenv("PROMPT_TOKEN_BUDGET")
+PROMPT_TOKEN_BUDGET_OVERRIDE: Optional[int] = int(_BUDGET_ENV) if _BUDGET_ENV else None
+
+# --------------------------------------------------------------------
+# LLM Compression (smart memory item compression)
+# --------------------------------------------------------------------
+# For heavily oversized memory items (>= ratio_threshold * max_tokens),
+# use an LLM summary instead of middle-out character slicing.
+# Mildly oversized items still use middle-out compression.
+LLM_COMPRESS_CFG = config.get("llm_compression", {})
+LLM_COMPRESSION_ENABLED: bool = bool(LLM_COMPRESS_CFG.get("enabled", True))
+LLM_COMPRESSION_MODEL: str = str(LLM_COMPRESS_CFG.get("model", "gpt-4o-mini"))
+LLM_COMPRESSION_TIMEOUT: float = float(LLM_COMPRESS_CFG.get("timeout_s", 3.0))
+LLM_COMPRESSION_RATIO_THRESHOLD: float = float(LLM_COMPRESS_CFG.get("ratio_threshold", 3.0))
+LLM_COMPRESSION_MAX_BATCH: int = int(LLM_COMPRESS_CFG.get("max_batch", 8))
+
+# Environment variable overrides for LLM Compression
+LLM_COMPRESSION_ENABLED = bool(int(os.getenv("LLM_COMPRESSION_ENABLED", "1" if LLM_COMPRESSION_ENABLED else "0")))
 
 # --------------------------------------------------------------------
 # Final setup

@@ -202,7 +202,7 @@ The final retrieval returns: rho(x, C) = top-K documents sorted by sigma descend
 beta : X x D* x iota x E -> P
 ```
 
-where P is the **prompt space** (system prompt + context + query, token-budgeted). Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps.
+where P is the **prompt space** (system prompt + context + query, token-budgeted). The token budget is **model-aware**: computed as `min(context_window * 0.25, ceiling)` clamped to `[floor, ceiling]`, with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps.
 
 Assembly produces an ordered sequence of 26 conditional sections:
 
@@ -239,7 +239,7 @@ prompt = [
 
 Sections near the end receive higher attention weight in transformer models. The ordering places high-signal, low-token sections (user profile, time, STM, query) in the high-attention zone.
 
-Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 15,000 tokens with middle-out compression (preserves start and end, compresses middle).
+Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 15,000 tokens with two-tier compression: heavily oversized items (≥3x over token limit) get LLM summary via `_llm_compress_oversized()` (async parallel batch, ~0.3-0.5s), while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle).
 
 **Code**: `prompt/builder.py` -> `_assemble_prompt()`
 

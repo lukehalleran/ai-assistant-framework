@@ -539,7 +539,8 @@ class ModelManager:
                 stop=stop_sequences,
             )
 
-            return response.choices[0].message.content.strip()
+            content = response.choices[0].message.content
+            return content.strip() if content else ""
 
         except Exception as e:
             return _classify_api_error(e)
@@ -745,7 +746,8 @@ class ModelManager:
                     stream=False  # Key change for non-streaming response
                 )
 
-                return response.choices[0].message.content.strip()
+                content = response.choices[0].message.content
+                return content.strip() if content else ""
 
             except Exception as e:
                 classified = _classify_api_error(e)

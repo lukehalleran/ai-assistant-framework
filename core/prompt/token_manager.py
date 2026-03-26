@@ -14,7 +14,8 @@ Module Contract
 - Behavior:
   - Extracts text from various context sections (conversations, memories, facts, reference_docs, narrative_state, etc.)
   - Applies priority-based trimming when content exceeds token budget
-  - Uses middle-out compression for large text blocks
+  - Uses middle-out compression for mildly oversized text blocks (1x-3x over limit)
+  - Heavily oversized items (≥3x) are pre-compressed by LLM in builder._llm_compress_oversized() [NEW 2026-03-26]
   - Preserves most important content while respecting limits
   - narrative_state: Priority 8 (high), capped at NARRATIVE_STATE_MAX_TOKENS (500) [NEW 2026-01-17]
 - Dependencies:
@@ -25,15 +26,14 @@ Module Contract
 
 Priority Order (highest to lowest):
   - stm_summary: 10 (metadata only, never trimmed)
-  - narrative_state: 8 (temporal grounding, 500 token cap) [NEW 2026-01-17]
-  - recent_conversations: 7
-  - semantic_chunks: 6
-  - personal_notes: 6
-  - reference_docs: 5
-  - memories: 5
-  - facts: 4
-  - summaries: 3
-  - reflections/dreams: 2
+  - user_profile: 9 (critical identity, naturally bounded)
+  - narrative_state: 8 (temporal grounding, 500 token cap)
+  - recent_conversations / graph_context / unresolved_threads: 7
+  - semantic_chunks / personal_notes / user_uploads: 6
+  - reference_docs / memories / web_search_results: 5
+  - procedural_skills / facts: 4
+  - summaries / proposed_features / git_commits / proactive_insights: 3
+  - reflections / dreams / codebase_changes: 2
   - wiki: 1
 """
 
@@ -46,18 +46,27 @@ logger = get_logger("prompt_token_manager")
 # Constants for token management
 PRIORITY_ORDER = [
     ("stm_summary",          10),  # Highest priority - STM context should never be trimmed
+    ("user_profile",          9),  # Critical identity context, naturally bounded (~1-3K)
     ("narrative_state",       8),  # Temporal grounding - high priority, capped at 500 tokens
-    ("recent_conversations", 7),
-    ("semantic_chunks",      6),
-    ("personal_notes",       6),   # User's Obsidian notes - high priority
-    ("reference_docs",       5),   # User uploaded reference documents
-    ("memories",             5),
-    ("facts",                4),
-    ("summaries",            3),
-    ("proposed_features",    3),   # Code proposals (trimmed before core context)
-    ("reflections", 2),  # below summaries; adjust if you want them stickier
-    ("wiki",                 1),
-    ("dreams",               2),   # still included; trimmed early if needed
+    ("recent_conversations",  7),
+    ("graph_context",         7),  # Knowledge graph entities, small (~200-800 tokens)
+    ("unresolved_threads",    7),  # Continuity threads, small (~100-500 tokens)
+    ("semantic_chunks",       6),
+    ("personal_notes",        6),  # User's Obsidian notes - high priority
+    ("user_uploads",          6),  # User explicitly uploaded content
+    ("reference_docs",        5),  # User uploaded reference documents
+    ("memories",              5),
+    ("web_search_results",    5),  # Real-time web content, can be large (2-10K)
+    ("procedural_skills",     4),  # Adaptive workflows
+    ("facts",                 4),
+    ("summaries",             3),
+    ("proposed_features",     3),  # Code proposals (trimmed before core context)
+    ("git_commits",           3),  # Project commit history
+    ("proactive_insights",    3),  # Cross-domain insights, naturally bounded
+    ("reflections",           2),  # Below summaries
+    ("dreams",                2),  # Still included; trimmed early if needed
+    ("codebase_changes",      2),  # First message only, session diff
+    ("wiki",                  1),
 ]
 
 # Max tokens for narrative_state section (temporal grounding)
@@ -266,22 +275,31 @@ class TokenManager:
         logger.debug(f"[PROMPT] Token budget (pre-trim check): {usage}/{self.token_budget}")
 
         if usage > self.token_budget:
-            # Second pass: trim from lowest priority upward
-            for name, prio in sorted(PRIORITY_ORDER, key=lambda x: x[1]):  # low → high
-                v = trimmed.get(name)
-                if not v:
-                    continue
-
-                if isinstance(v, list) and v:
-                    # Drop a conservative slice from the tail
-                    drop_n = max(1, int(len(v) * 0.25))
-                    trimmed[name] = v[:-drop_n]
-                elif isinstance(v, str) and v:
-                    trimmed[name] = ""
-
-                usage = _total_tokens(trimmed)
+            # Second pass: iterative trim from lowest priority upward (max 3 passes)
+            for _pass in range(3):
                 if usage <= self.token_budget:
                     break
+                for name, prio in sorted(PRIORITY_ORDER, key=lambda x: x[1]):  # low → high
+                    v = trimmed.get(name)
+                    if not v:
+                        continue
+
+                    if isinstance(v, list) and v:
+                        # Drop a conservative slice from the tail
+                        drop_n = max(1, int(len(v) * 0.25))
+                        trimmed[name] = v[:-drop_n]
+                    elif isinstance(v, str) and v:
+                        trimmed[name] = ""
+
+                    usage = _total_tokens(trimmed)
+                    if usage <= self.token_budget:
+                        break
+
+            if usage > self.token_budget:
+                logger.warning(
+                    f"[TOKEN BUDGET] Still over budget after 3 trim passes: "
+                    f"{usage}/{self.token_budget} tokens"
+                )
 
         logger.debug(f"[PROMPT] Token budget: {usage}/{self.token_budget}")
         self._prompt_token_usage = usage
