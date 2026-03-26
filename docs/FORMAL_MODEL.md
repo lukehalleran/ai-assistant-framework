@@ -1,6 +1,6 @@
 # Formal Model: Daemon RAG Agent
 
-**Last verified against codebase**: 2026-03-24
+**Last verified against codebase**: 2026-03-26
 
 ## 1. Primitive Sets
 
@@ -9,7 +9,7 @@ Let the following sets be given:
 - **Q** — the set of all natural-language query strings (user inputs)
 - **R** — the set of all natural-language response strings (agent outputs)
 - **D** — the set of all documents (memory entries), where each d in D is a tuple d = (content, metadata, embedding)
-- **T** — the set of all tool calls (web search, memory search, code execution, Wolfram Alpha)
+- **T** — the set of all tool calls (web search, memory search, memory expansion, code execution, Wolfram Alpha)
 - **A = R U T** — the action space (the agent either responds or invokes a tool)
 
 ---
@@ -76,10 +76,10 @@ The pipeline is a composition phi = phi_8 . phi_7 . ... . phi_1 where each stage
 Retrieval selects a relevant subset of the corpus given the processed context.
 
 ```
-rho : X x C -> D*
+rho_iota : X x C x G -> D*
 ```
 
-where D* is an **ordered** sequence of documents (ranked by relevance).
+where D* is an **ordered** sequence of documents (ranked by relevance), and iota (intent) parameterizes both retrieval counts and scoring weights.
 
 This decomposes into four stages:
 
@@ -107,7 +107,7 @@ Example: "what about my brother" -> "what about my brother Auggie Mom Flapjack"
 candidates : X x C -> P(D)
 ```
 
-19 parallel retrieval tasks via `asyncio.gather()` (30s timeout):
+18 parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
 - Conversations (recent by time + semantic by expanded query)
 - Facts (user profile: hybrid 2/3 semantic + 1/3 recent)
 - Summaries (recent + semantic, separate)
@@ -135,13 +135,13 @@ Each stage eliminates candidates below a threshold (overridable per-intent via `
 ### 4.3 Scoring and Ranking
 
 ```
-sigma : D x X -> R
+sigma_iota : D x X x G -> R
 ```
 
-The composite score for a document d given context x is:
+The composite score for a document d given context x is (parameterized by intent iota for weights, and knowledge graph G for graph bonus):
 
 ```
-sigma(d, x) = SUM_i w_i * f_i(d, x)  +  SUM_j b_j(d, x)  +  SUM_k p_k(d, x)
+sigma_iota(d, x) = SUM_i w_i(iota) * f_i(d, x)  +  SUM_j b_j(d, x, G)  +  SUM_k p_k(d, x)
 ```
 
 **Weighted factors** (w_i overridable per-intent via `weight_overrides`):
@@ -177,6 +177,7 @@ structure = 0.05 * 0.15 * density_alignment
 | deictic_anchor_penalty | -0.10 | Deictic follow-up AND anchor_overlap < 0.05 |
 | analogy_penalty | -0.10 | numeric_op_density > 0.08 AND analogy markers AND "analogy" not in query |
 | size_penalty | -0.25 * (size_bytes / 10000), capped at -1.0 | Document > 10KB AND keyword_score < 0.30 |
+| staleness_penalty | -min(staleness_ratio * STALENESS_WEIGHT, 0.4) | staleness_ratio > 0 (summaries/reflections with outdated claims). 2x multiplier at ratio >= 0.8; reflections at 60% weight |
 | deictic_drift | final_score *= 0.85 | Post-calculation: deictic AND continuity < 0.12 AND anchor_bonus < 0.04 |
 
 **Temporal-aware recency** (when intent = TEMPORAL_RECALL with anchor window alpha hours):
@@ -198,10 +199,10 @@ The final retrieval returns: rho(x, C) = top-K documents sorted by sigma descend
 ## 5. Prompt Construction
 
 ```
-beta : X x D* -> P
+beta : X x D* x iota x E -> P
 ```
 
-where P is the **prompt space** (system prompt + context + query, token-budgeted).
+where P is the **prompt space** (system prompt + context + query, token-budgeted). Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps.
 
 Assembly produces an ordered sequence of 26 conditional sections:
 
@@ -258,7 +259,7 @@ Internally:
 AGENT(q, s):
     x    <- phi(q, s)                            // context pipeline (perceive)
     iota <- classify_intent(q, x.tone)           // intent classification (interpret)
-    d*   <- rho_iota(x, s.C)                     // memory retrieval (remember)
+    d*   <- rho_iota(x, s.C, s.G)                 // memory retrieval (remember)
                                                   // NOTE: web search runs as a PARALLEL
                                                   // retrieval task here, not post-generation
     p    <- beta(x, d*, iota, E_t)               // prompt construction (plan)
@@ -273,7 +274,7 @@ AGENT(q, s):
             thought_i <- LLM(p, observations, inventory)
             tool_i    <- extract_tool_call(thought_i)
             if tool_i = empty: break
-            obs_i     <- execute(tool_i)              // Tavily, Wolfram, E2B, memory_search
+            obs_i     <- execute(tool_i)              // Tavily, Wolfram, E2B, memory_search, expand_memory
             observations <- observations + {obs_i}
         r <- LLM(p, observations)                     // final synthesis
     else:
@@ -284,7 +285,37 @@ AGENT(q, s):
     return (r, s')
 ```
 
-**Key distinction**: Web search runs as one of the 19 parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
+**Key distinction**: Web search runs as one of the 18 parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
+
+### 6.1 Memory Expansion (expand_memory)
+
+Within the agent loop, the LLM may invoke `expand_memory` to zoom into a search hit:
+
+```
+mu : D_id x W x C_name -> D_context
+
+mu(d_id, w, c):
+    d_anchor <- get_by_id(c, d_id)                   // fetch anchor document
+    if c = "summaries":
+        // Source-docs strategy: retrieve original conversations
+        if d_anchor.metadata.source_doc_ids exists:
+            D_source <- fetch(source_doc_ids)          // direct backlinks
+        else:
+            D_source <- query_range(conversations,     // temporal anchor fallback
+                          d_anchor.temporal_anchor_start,
+                          d_anchor.temporal_anchor_end)
+        return format(d_anchor, D_source)
+    else:
+        // Timestamp-window strategy: chronological neighbors
+        D_all   <- list_all(c), sorted by (timestamp, doc_id)
+        idx     <- index_of(d_anchor, D_all)
+        D_window <- D_all[max(0, idx-w) : idx+w+1]
+        return format(d_anchor, D_window)
+```
+
+Session-gated: `expand_count <= EXPAND_MAX_PER_SESSION` (default 3). Cached per `(d_id, w, c)` tuple.
+
+**Code**: `memory/memory_expander.py` -> `MemoryExpander.expand()`
 
 **Code**: `orchestrator.py` -> `process_user_query()` and `core/agentic/controller.py`
 
@@ -525,7 +556,7 @@ Agent(q, s_t) =
     let x       = phi(q, s_t)                       in    // perceive
     let iota    = classify_intent(q, x.tone)         in    // interpret
     let q'      = expand(q, s_t.G)                   in    // expand (graph-augmented query)
-    let d*      = rho_iota(x, q', s_t.C)             in    // remember (19 parallel retrievals)
+    let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (18 parallel retrievals)
     let p       = beta(x, d*, iota, s_t.E)           in    // plan (26-section prompt assembly)
     let r       = generate_or_search(p)              in    // act (LLM + optional agentic loop)
     let s_{t+1} = delta(s_t, q, r)                   in    // learn (store + truth + escalation)
@@ -553,12 +584,13 @@ Seven operations. Perceive, interpret, expand, remember, plan, act, learn.
 | X | Context space | `ContextResult` dataclass in `context_pipeline.py` |
 | P | Prompt space (26 sections) | `prompt/builder.py` -> `_assemble_prompt()` |
 | A = R U T | Action space | Response or tool call |
-| phi | Context function (8 stages) | `context_pipeline.py` |
-| rho | Retrieval function (19 parallel tasks) | `context_gatherer.py` + `memory_retriever.py` + `memory_scorer.py` |
-| sigma | Scoring function | `memory_scorer.py` -> `rank_memories()` |
-| beta | Prompt construction | `prompt/builder.py` |
+| phi | Context function (8 integer stages + 2 half-stages) | `context_pipeline.py` |
+| rho_iota | Retrieval function (18 parallel tasks, parameterized by intent) | `context_gatherer.py` + `memory_retriever.py` + `memory_scorer.py` |
+| sigma_iota | Scoring function (parameterized by intent + graph) | `memory_scorer.py` -> `rank_memories()` |
+| beta | Prompt construction (X x D* x iota x E -> P) | `prompt/builder.py` |
 | iota | Intent classification | `intent_classifier.py` |
 | delta | State transition (per-turn) | `memory_storage.py:store_interaction()` + `orchestrator.py` |
 | delta_shutdown | State transition (session-end) | `shutdown_processor.py` |
 | expand | Query expansion (graph-augmented) | `context_gatherer.py:_expand_query_with_graph()` + `graph_utils.py` |
+| mu | Memory expansion (temporal window / summary drill-down) | `memory/memory_expander.py` |
 | gate | Multi-stage gating | `processing/gate_system.py` |
