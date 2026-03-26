@@ -119,6 +119,10 @@ class CodeProposal(BaseModel):
     created_at: float = Field(default_factory=time.time)
     modified_at: float = Field(default_factory=time.time)
     executed_at: Optional[float] = Field(default=None)
+    implementation_confidence: float = Field(default=0.0)
+    implementation_status: str = Field(default="not_checked")
+    implementation_evidence: str = Field(default="")
+    last_tracked_at: Optional[float] = Field(default=None)
 
     def to_embedding_text(self) -> str:
         """
@@ -161,6 +165,10 @@ class CodeProposal(BaseModel):
             "created_at": self.created_at,
             "modified_at": self.modified_at,
             "executed_at": self.executed_at or 0.0,
+            "implementation_confidence": self.implementation_confidence,
+            "implementation_status": self.implementation_status,
+            "implementation_evidence": self.implementation_evidence[:500],
+            "last_tracked_at": self.last_tracked_at or 0.0,
         }
 
     @classmethod
@@ -191,6 +199,12 @@ class CodeProposal(BaseModel):
             executed_at=float(metadata["executed_at"]) or None
             if metadata.get("executed_at")
             else None,
+            implementation_confidence=float(metadata.get("implementation_confidence", 0.0)),
+            implementation_status=metadata.get("implementation_status", "not_checked"),
+            implementation_evidence=metadata.get("implementation_evidence", ""),
+            last_tracked_at=float(metadata["last_tracked_at"]) or None
+            if metadata.get("last_tracked_at")
+            else None,
         )
 
     def to_dict(self) -> dict:
@@ -215,6 +229,10 @@ class CodeProposal(BaseModel):
             "created_at": self.created_at,
             "modified_at": self.modified_at,
             "executed_at": self.executed_at,
+            "implementation_confidence": self.implementation_confidence,
+            "implementation_status": self.implementation_status,
+            "implementation_evidence": self.implementation_evidence,
+            "last_tracked_at": self.last_tracked_at,
         }
 
     @classmethod
@@ -246,6 +264,10 @@ class CodeProposal(BaseModel):
             created_at=float(data.get("created_at", time.time())),
             modified_at=float(data.get("modified_at", time.time())),
             executed_at=data.get("executed_at"),
+            implementation_confidence=float(data.get("implementation_confidence", 0.0)),
+            implementation_status=data.get("implementation_status", "not_checked"),
+            implementation_evidence=data.get("implementation_evidence", ""),
+            last_tracked_at=data.get("last_tracked_at"),
         )
 
     # ------------------------------------------------------------------

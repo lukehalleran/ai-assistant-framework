@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: sonnet-4.6
+  active: claude-opus-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -143,6 +143,34 @@ agentic_search:
   prefer_native_tools: true
   memory_search_enabled: true
   memory_search_limit: 7
+file_access:
+  enabled: true
+  approved_folders:
+  - .
+  - ~/Documents/Luke Notes
+  - ~/Documents
+  - ~/Downloads
+  max_read_bytes: 100000
+  max_grep_results: 25
+  max_list_entries: 200
+  allowed_extensions:
+  - .py
+  - .md
+  - .txt
+  - .json
+  - .yaml
+  - .yml
+  - .toml
+  - .cfg
+  - .ini
+  - .log
+  - .csv
+  - .doc
+  - .docx
+  - .pdf
+  - .rst
+  - .tex
+  - .xml
 daily_notes:
   enabled: true
   folder: Vault/Daily Notes and To Do's
@@ -176,6 +204,21 @@ reference_docs:
   auto_seed: true
   seed_paths:
   - docs
+fact_verification:
+  enabled: true
+  llm_enabled: true
+  model: gpt-4o-mini
+  user_trust_threshold: 0.85
+  max_candidates: 10
+proactive_surfacing:
+  enabled: true
+  min_graph_nodes: 20
+  min_graph_edges: 15
+  max_insights: 2
+  cooldown_hours: 72
+  model: ''
+  history_path: data/surfacing_history.json
+  max_prompt_insights: 2
 knowledge_graph:
   enabled: true
   persist_path: data/knowledge_graph.json
@@ -189,6 +232,10 @@ knowledge_graph:
   scoring_boost_cap: 0.15
   query_expansion_enabled: true
   query_expansion_max_terms: 8
+session_diff:
+  enabled: true
+  max_committed: 20
+  max_uncommitted: 20
 thread_surfacing:
   enabled: true
   max_open: 50
@@ -196,6 +243,23 @@ thread_surfacing:
   deadline_grace_hours: 48
   max_surfaced: 3
   model_alias: ''
+staleness:
+  enabled: true
+  max_penalty: 0.4
+  weight: 0.15
+  steep_threshold: 0.8
+  steep_multiplier: 2.0
+  historical_threshold: 0.6
+  reflection_weight_factor: 0.6
+  index_path: data/claim_index.json
+implementation_tracking:
+  enabled: true
+  cooldown_seconds: 86400
+  confidence_confirmed: 0.85
+  confidence_likely: 0.6
+  git_depth: 50
+  at_shutdown: true
+  auto_complete: false
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

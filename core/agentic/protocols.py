@@ -126,22 +126,29 @@ class NativeToolsHandler(BaseProtocolHandler):
     Parses tool_calls from LLM response to detect search, Wolfram, and sandbox requests.
     """
 
-    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False):
+    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False):
         from core.agentic.types import (
             SEARCH_TOOL_DEFINITION,
             DONE_TOOL_DEFINITION,
             WOLFRAM_TOOL_DEFINITION,
             SANDBOX_TOOL_DEFINITION,
             MEMORY_SEARCH_TOOL_DEFINITION,
+            FILE_READ_TOOL_DEFINITION,
+            FILE_GREP_TOOL_DEFINITION,
+            FILE_LIST_TOOL_DEFINITION,
         )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
         self.wolfram_tool = WOLFRAM_TOOL_DEFINITION
         self.sandbox_tool = SANDBOX_TOOL_DEFINITION
         self.memory_tool = MEMORY_SEARCH_TOOL_DEFINITION
+        self.file_read_tool = FILE_READ_TOOL_DEFINITION
+        self.file_grep_tool = FILE_GREP_TOOL_DEFINITION
+        self.file_list_tool = FILE_LIST_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
         self.memory_available = memory_available
+        self.file_access_available = file_access_available
 
     def parse_response(self, response: Any) -> SearchDecision:
         """
@@ -261,6 +268,53 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] search_memory called without query")
                 return SearchDecision(wants_answer=True)
 
+        elif func_name == "file_read":
+            filepath = args.get("filepath", "")
+            reason = args.get("reason")
+            if filepath:
+                logger.debug(f"[AgenticProtocol] Native tool file read: {filepath}")
+                return SearchDecision(
+                    wants_file_read=True,
+                    file_read_path=filepath,
+                    file_read_start_line=args.get("start_line"),
+                    file_read_end_line=args.get("end_line"),
+                    file_read_reason=reason
+                )
+            else:
+                logger.warning("[AgenticProtocol] file_read called without filepath")
+                return SearchDecision(wants_answer=True)
+
+        elif func_name == "file_grep":
+            pattern = args.get("pattern", "")
+            reason = args.get("reason")
+            if pattern:
+                logger.debug(f"[AgenticProtocol] Native tool file grep: {pattern}")
+                return SearchDecision(
+                    wants_file_grep=True,
+                    file_grep_pattern=pattern,
+                    file_grep_folder=args.get("folder"),
+                    file_grep_glob=args.get("file_glob"),
+                    file_grep_reason=reason
+                )
+            else:
+                logger.warning("[AgenticProtocol] file_grep called without pattern")
+                return SearchDecision(wants_answer=True)
+
+        elif func_name == "file_list":
+            dirpath = args.get("dirpath", "")
+            reason = args.get("reason")
+            if dirpath:
+                logger.debug(f"[AgenticProtocol] Native tool file list: {dirpath}")
+                return SearchDecision(
+                    wants_file_list=True,
+                    file_list_path=dirpath,
+                    file_list_recursive=args.get("recursive", False),
+                    file_list_reason=reason
+                )
+            else:
+                logger.warning("[AgenticProtocol] file_list called without dirpath")
+                return SearchDecision(wants_answer=True)
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return SearchDecision(wants_answer=True)
@@ -284,6 +338,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             tools.append(self.sandbox_tool)
         if self.memory_available:
             tools.append(self.memory_tool)
+        if self.file_access_available:
+            tools.extend([self.file_read_tool, self.file_grep_tool, self.file_list_tool])
         return tools
 
     def augment_system_prompt(self, system_prompt: str, max_rounds: int) -> str:
@@ -299,6 +355,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             tool_list.append("execute_python")
         if self.memory_available:
             tool_list.append("search_memory")
+        if self.file_access_available:
+            tool_list.extend(["file_read", "file_grep", "file_list"])
         tool_list.append("done_searching")
 
         tools_str = ", ".join(tool_list)
@@ -344,6 +402,21 @@ class XMLMarkerHandler(BaseProtocolHandler):
     MEMORY_PATTERN = re.compile(
         r'<memory(?:\s+collection=["\']([^"\']*)["\'])?\s*>(.*?)</memory>',
         re.DOTALL | re.IGNORECASE
+    )
+    # File read pattern: <file_read path="filepath">optional reason</file_read>
+    FILE_READ_PATTERN = re.compile(
+        r'<file_read\s+path=["\']([^"\']+)["\'](?:\s+start_line=["\'](\d+)["\'])?(?:\s+end_line=["\'](\d+)["\'])?\s*>(.*?)</file_read>',
+        re.DOTALL | re.IGNORECASE
+    )
+    # File grep pattern: <file_grep pattern="pat" glob="*.py">optional folder</file_grep>
+    FILE_GREP_PATTERN = re.compile(
+        r'<file_grep\s+pattern=["\']([^"\']+)["\'](?:\s+glob=["\']([^"\']*)["\'])?\s*>(.*?)</file_grep>',
+        re.DOTALL | re.IGNORECASE
+    )
+    # File list pattern: <file_list path="dirpath" recursive="false"/>
+    FILE_LIST_PATTERN = re.compile(
+        r'<file_list\s+path=["\']([^"\']+)["\'](?:\s+recursive=["\']([^"\']*)["\'])?\s*/?>',
+        re.IGNORECASE
     )
 
     def parse_response(self, response: Any) -> SearchDecision:
@@ -398,6 +471,49 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     memory_collection=collection
                 )
 
+        # Check for file read marker
+        file_read_match = self.FILE_READ_PATTERN.search(text)
+        if file_read_match:
+            filepath = file_read_match.group(1).strip()
+            start_line = int(file_read_match.group(2)) if file_read_match.group(2) else None
+            end_line = int(file_read_match.group(3)) if file_read_match.group(3) else None
+            if filepath:
+                logger.debug(f"[AgenticProtocol] XML file_read marker found: {filepath}")
+                return SearchDecision(
+                    wants_file_read=True,
+                    file_read_path=filepath,
+                    file_read_start_line=start_line,
+                    file_read_end_line=end_line,
+                )
+
+        # Check for file grep marker
+        file_grep_match = self.FILE_GREP_PATTERN.search(text)
+        if file_grep_match:
+            pattern = file_grep_match.group(1).strip()
+            glob = file_grep_match.group(2)
+            folder = file_grep_match.group(3).strip() if file_grep_match.group(3) else None
+            if pattern:
+                logger.debug(f"[AgenticProtocol] XML file_grep marker found: {pattern}")
+                return SearchDecision(
+                    wants_file_grep=True,
+                    file_grep_pattern=pattern,
+                    file_grep_folder=folder if folder else None,
+                    file_grep_glob=glob if glob else None,
+                )
+
+        # Check for file list marker
+        file_list_match = self.FILE_LIST_PATTERN.search(text)
+        if file_list_match:
+            dirpath = file_list_match.group(1).strip()
+            recursive = file_list_match.group(2) or "false"
+            if dirpath:
+                logger.debug(f"[AgenticProtocol] XML file_list marker found: {dirpath}")
+                return SearchDecision(
+                    wants_file_list=True,
+                    file_list_path=dirpath,
+                    file_list_recursive=recursive.lower() == "true",
+                )
+
         # Check for search marker
         search_match = self.SEARCH_PATTERN.search(text)
         if search_match:
@@ -449,6 +565,7 @@ def get_protocol_handler(
     wolfram_available: bool = False,
     sandbox_available: bool = False,
     memory_available: bool = False,
+    file_access_available: bool = False,
 ) -> BaseProtocolHandler:
     """
     Factory function to get appropriate protocol handler.
@@ -458,6 +575,7 @@ def get_protocol_handler(
         wolfram_available: Whether Wolfram Alpha is configured
         sandbox_available: Whether E2B sandbox is configured
         memory_available: Whether ChromaDB memory search is available
+        file_access_available: Whether file access manager is configured
 
     Returns:
         Protocol handler instance
@@ -467,6 +585,7 @@ def get_protocol_handler(
             wolfram_available=wolfram_available,
             sandbox_available=sandbox_available,
             memory_available=memory_available,
+            file_access_available=file_access_available,
         )
     else:
         return XMLMarkerHandler()

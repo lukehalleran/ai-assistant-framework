@@ -62,6 +62,7 @@ class ShutdownProcessor:
         session_start: datetime,
         memory_coordinator=None,
         thread_store=None,
+        claim_index=None,
     ):
         self.corpus_manager = corpus_manager
         self.chroma_store = chroma_store
@@ -73,6 +74,7 @@ class ShutdownProcessor:
         self.session_start = session_start
         self.memory_coordinator = memory_coordinator
         self.thread_store = thread_store
+        self.claim_index = claim_index
 
     # ------------------------------------------------------------------
     # Helpers
@@ -194,7 +196,10 @@ class ShutdownProcessor:
             # 6) Generate code proposals (goal-directed)
             await self._generate_proposals(session_conversations)
 
-            # 6.5) Extract open threads and detect resolutions
+            # 6.5) Lightweight implementation tracking (file existence only)
+            await self._check_implementation_tracking()
+
+            # 6.75) Extract open threads and detect resolutions
             await self._process_open_threads(session_conversations)
 
             # 7) Save knowledge graph and entity aliases
@@ -322,9 +327,43 @@ class ShutdownProcessor:
                 'importance_score': 0.7,
                 'tags': f'summary:consolidated,source:consolidator,block_n:{N}:{b},block_span_n:{N}:{start}-{end - 1}',
                 'memory_count': len(block),
+                'staleness_ratio': 0.0,
             }
+            # Add temporal anchors from the block's timestamp range
+            try:
+                block_times = [self._ts(e) for e in block if self._ts(e) != datetime.min]
+                if block_times:
+                    md['temporal_anchor_start'] = min(block_times).isoformat()
+                    md['temporal_anchor_end'] = max(block_times).isoformat()
+            except Exception:
+                pass
+
+            doc_id = None
             if hasattr(self.chroma_store, 'add_to_collection'):
-                self.chroma_store.add_to_collection('summaries', summary_text, md)
+                doc_id = self.chroma_store.add_to_collection('summaries', summary_text, md)
+
+            # Extract and register claims in the ClaimIndex
+            if doc_id and self.claim_index:
+                try:
+                    from config.app_config import STALENESS_ENABLED
+                    if STALENESS_ENABLED:
+                        from memory.claim_tracker import extract_claims_from_text
+                        entity_resolver = None
+                        mc = self.memory_coordinator
+                        if mc and getattr(mc, 'entity_resolver', None):
+                            entity_resolver = mc.entity_resolver
+                        claims = extract_claims_from_text(summary_text, entity_resolver)
+                        if claims:
+                            self.claim_index.add_claims(doc_id, 'summaries', claims)
+                            # Store claim hashes in metadata for cross-reference
+                            claim_hashes = ",".join(c.claim_hash for c in claims)
+                            self.chroma_store.update_metadata('summaries', doc_id, {
+                                'embedded_claims': claim_hashes,
+                            })
+                            logger.debug(f"[Staleness] Registered {len(claims)} claims for summary {doc_id}")
+                except Exception as ce:
+                    logger.debug(f"[Staleness] Claim extraction for summary failed: {ce}")
+
         except (AttributeError, TypeError) as e:
             logger.debug(f"[Shutdown] Failed to add summary to chroma: {e}")
 
@@ -359,13 +398,43 @@ class ShutdownProcessor:
                 facts = []
             for fact in (facts or []):
                 try:
+                    fact_content = getattr(fact, 'content', str(fact))
+                    # Verification gate (if available via storage)
+                    verifier = getattr(self._storage, 'fact_verifier', None)
+                    if verifier:
+                        try:
+                            from memory.fact_verification import FactVerdict
+                            from memory.cross_deduplicator import CrossCollectionDeduplicator
+                            s, p, o = CrossCollectionDeduplicator._extract_triple({
+                                "content": fact_content, "metadata": {},
+                            })
+                            vr = await verifier.verify(
+                                subject=s, predicate=p, object_val=o,
+                                fact_text=fact_content,
+                                source="shutdown_extraction", confidence=0.7,
+                            )
+                            if vr.verdict == FactVerdict.REJECT:
+                                logger.debug(f"[Shutdown] Fact rejected by verifier: {fact_content[:80]}")
+                                continue
+                            if vr.verdict == FactVerdict.STORE_AND_FLAG:
+                                for cand in vr.conflicting_candidates:
+                                    if cand.doc_id:
+                                        try:
+                                            supersede_md = {"superseded_by": fact_content[:200]}
+                                            supersede_md.update(vr.metadata_updates)
+                                            self.chroma_store.update_metadata("facts", cand.doc_id, supersede_md)
+                                        except Exception:
+                                            pass
+                        except Exception as ve:
+                            logger.debug(f"[Shutdown] Verification failed, proceeding: {ve}")
+
                     result = self.chroma_store.add_fact(
-                        fact=getattr(fact, 'content', str(fact)),
+                        fact=fact_content,
                         source='shutdown_extraction',
                         confidence=0.7
                     )
                     if result is None:
-                        logger.debug(f"[Shutdown] Fact skipped as duplicate: {getattr(fact, 'content', str(fact))}")
+                        logger.debug(f"[Shutdown] Fact skipped as duplicate: {fact_content}")
                 except (AttributeError, TypeError, ValueError):
                     continue
 
@@ -426,6 +495,32 @@ class ShutdownProcessor:
             max_triples=max_triples,
         )
         triples = await llm_ex.extract_triples(user_tail)
+
+        # Verification gate: batch-verify before storage
+        verifier = getattr(self._storage, 'fact_verifier', None)
+        verification_results = {}
+        if verifier and triples:
+            try:
+                from memory.fact_verification import FactVerdict
+                batch = [
+                    {
+                        "subject": t.get("subject", ""),
+                        "predicate": t.get("relation", ""),
+                        "object": t.get("object", ""),
+                        "fact_text": f"{t.get('subject','')} | {t.get('relation','')} | {t.get('object','')}",
+                        "source": "llm_shutdown",
+                        "confidence": 0.75,
+                        "fact_scope": t.get("fact_scope", "user"),
+                    }
+                    for t in triples
+                    if t.get("subject") and t.get("relation") and t.get("object")
+                ]
+                vr_list = await verifier.verify_batch(batch)
+                for b, vr in zip(batch, vr_list):
+                    verification_results[b["fact_text"]] = vr
+            except Exception as ve:
+                logger.debug(f"[Shutdown] Batch verification failed, proceeding: {ve}")
+
         kept = 0
         for t in triples:
             subj = t.get('subject')
@@ -434,6 +529,24 @@ class ShutdownProcessor:
             if not subj or not rel or not obj:
                 continue
             fact_text = f"{subj} | {rel} | {obj}"
+
+            # Apply verification verdict if available
+            if fact_text in verification_results:
+                from memory.fact_verification import FactVerdict
+                vr = verification_results[fact_text]
+                if vr.verdict == FactVerdict.REJECT:
+                    logger.debug(f"[Shutdown] LLM fact rejected by verifier: {fact_text[:80]}")
+                    continue
+                if vr.verdict == FactVerdict.STORE_AND_FLAG:
+                    for cand in vr.conflicting_candidates:
+                        if cand.doc_id:
+                            try:
+                                supersede_md = {"superseded_by": fact_text[:200]}
+                                supersede_md.update(vr.metadata_updates)
+                                self.chroma_store.update_metadata("facts", cand.doc_id, supersede_md)
+                            except Exception:
+                                pass
+
             try:
                 result = self.chroma_store.add_fact(
                     fact=fact_text,
@@ -879,6 +992,49 @@ class ShutdownProcessor:
         return "\n\n".join(sections)
 
     # ------------------------------------------------------------------
+    # Lightweight implementation tracking
+    # ------------------------------------------------------------------
+
+    async def _check_implementation_tracking(self):
+        """
+        Lightweight file-existence check for pending proposals (Stage 1 only).
+
+        Runs at shutdown to keep implementation_status metadata fresh.
+        ~50ms per proposal (pure os.path.exists calls, no git/LLM).
+        """
+        try:
+            from config.app_config import IMPL_TRACKING_ENABLED, IMPL_TRACKING_AT_SHUTDOWN
+
+            if not IMPL_TRACKING_ENABLED or not IMPL_TRACKING_AT_SHUTDOWN:
+                return
+
+            from knowledge.implementation_detector import ImplementationDetector
+            from memory.proposal_store import ProposalStore
+
+            chroma_store = self.chroma_store
+            if not chroma_store:
+                return
+
+            store = ProposalStore(chroma_store=chroma_store)
+            proposals = store.get_pending_and_approved()
+            if not proposals:
+                return
+
+            detector = ImplementationDetector(repo_path=".")
+            updated = 0
+            for proposal in proposals:
+                result = detector.detect_single(proposal, lightweight=True)
+                if not result.skipped_reason:
+                    if store.update_tracking_metadata(proposal.id, result):
+                        updated += 1
+
+            if updated:
+                logger.info(f"[Shutdown] Implementation tracking: updated {updated}/{len(proposals)} proposals")
+
+        except Exception as e:
+            logger.warning(f"[Shutdown] Implementation tracking failed: {e}")
+
+    # ------------------------------------------------------------------
     # Open thread extraction
     # ------------------------------------------------------------------
 
@@ -965,7 +1121,7 @@ class ShutdownProcessor:
     # ------------------------------------------------------------------
 
     def _save_knowledge_graph(self):
-        """Flush knowledge graph and entity aliases to disk."""
+        """Flush knowledge graph, entity aliases, and claim index to disk."""
         try:
             mc = self.memory_coordinator
             if mc and getattr(mc, "graph_memory", None):
@@ -979,6 +1135,13 @@ class ShutdownProcessor:
                 mc.entity_resolver.save_external_aliases()
         except Exception as e:
             logger.warning("[Shutdown] Knowledge graph save failed (non-fatal): %s", e)
+
+        # Save claim index (staleness tracking)
+        try:
+            if self.claim_index:
+                self.claim_index.save()
+        except Exception as e:
+            logger.warning("[Shutdown] Claim index save failed (non-fatal): %s", e)
 
     # ------------------------------------------------------------------
     # Cross-collection deduplication

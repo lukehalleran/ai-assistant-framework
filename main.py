@@ -1168,6 +1168,76 @@ if __name__ == "__main__":
                 print("Collection was already empty")
             sys.exit(0)
 
+        elif mode == "check-proposals":
+            # Check implementation status of pending/approved proposals
+            # Usage: python main.py check-proposals [--id UUID] [--verbose]
+            from knowledge.implementation_detector import ImplementationDetector
+            from memory.proposal_store import ProposalStore
+            from knowledge.git_memory import GitMemoryExtractor
+
+            verbose = "--verbose" in sys.argv
+            specific_id = None
+            for i, arg in enumerate(sys.argv):
+                if arg == "--id" and i + 1 < len(sys.argv):
+                    specific_id = sys.argv[i + 1]
+
+            print(f"\n{'='*60}")
+            print("IMPLEMENTATION TRACKING")
+            print(f"{'='*60}")
+
+            chroma_store = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
+            store = ProposalStore(chroma_store=chroma_store)
+
+            # Optional model manager for LLM stage
+            mm = None
+            try:
+                mm = ModelManager()
+            except Exception:
+                print("(ModelManager unavailable — skipping LLM stage)")
+
+            detector = ImplementationDetector(
+                repo_path=".",
+                git_extractor=GitMemoryExtractor("."),
+                model_manager=mm,
+            )
+
+            if specific_id:
+                proposal = store.get_proposal(specific_id)
+                if not proposal:
+                    print(f"Proposal {specific_id} not found.")
+                    sys.exit(1)
+                proposals = [proposal]
+            else:
+                proposals = store.get_pending_and_approved()
+
+            if not proposals:
+                print("No pending/approved proposals to check.")
+                sys.exit(0)
+
+            print(f"Checking {len(proposals)} proposal(s)...\n")
+
+            results = asyncio.run(detector.detect_batch(proposals, lightweight=False))
+
+            _status_icons = {
+                "confirmed": "+",
+                "likely": "~",
+                "uncertain": "?",
+                "not_implemented": "-",
+            }
+
+            for proposal, result in zip(proposals, results):
+                icon = _status_icons.get(result.status, "?")
+                store.update_tracking_metadata(proposal.id, result)
+
+                print(f"  [{icon}] {result.status:16s} {result.confidence:5.0%}  {proposal.title}")
+                if verbose and result.evidence:
+                    print(f"      {result.evidence}")
+                if result.skipped_reason:
+                    print(f"      (skipped: {result.skipped_reason})")
+
+            print(f"\n{'='*60}")
+            sys.exit(0)
+
         else:
             print(f"[DEBUG] Building orchestrator (mode={mode}, force_wizard={force_wizard})...")
             orchestrator = build_orchestrator()

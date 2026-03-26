@@ -144,6 +144,20 @@ class MemoryCoordinator:
         except Exception as e:
             logger.debug(f"[MemoryCoordinator] Knowledge graph init failed (non-fatal): {e}")
 
+        # Initialize fact verification gate (pre-storage conflict checking)
+        self.fact_verifier = None
+        try:
+            from config.app_config import FACT_VERIFICATION_ENABLED
+            if FACT_VERIFICATION_ENABLED:
+                from memory.fact_verification import FactVerifier
+                self.fact_verifier = FactVerifier(
+                    chroma_store=chroma_store,
+                    model_manager=model_manager,
+                )
+                logger.debug("[MemoryCoordinator] Fact verification gate initialized")
+        except Exception as e:
+            logger.debug(f"[MemoryCoordinator] Fact verifier init failed (non-fatal): {e}")
+
         self._storage = MemoryStorage(
             corpus_manager=corpus_manager,
             chroma_store=chroma_store,
@@ -154,6 +168,7 @@ class MemoryCoordinator:
             time_manager=time_manager,
             graph_memory=self.graph_memory,
             entity_resolver=self.entity_resolver,
+            fact_verifier=self.fact_verifier,
         )
         # Connect thread detection to storage
         self._storage._thread_detect_fn = self.thread_manager.detect_or_create_thread
@@ -183,6 +198,35 @@ class MemoryCoordinator:
         except Exception as e:
             logger.debug(f"[MemoryCoordinator] Thread store init failed (non-fatal): {e}")
 
+        # Initialize proactive context surfacer
+        self.context_surfacer = None
+        try:
+            from config.app_config import PROACTIVE_SURFACING_ENABLED
+            if PROACTIVE_SURFACING_ENABLED and self.graph_memory and self.entity_resolver:
+                from memory.context_surfacer import ContextSurfacer
+                self.context_surfacer = ContextSurfacer(
+                    graph_memory=self.graph_memory,
+                    entity_resolver=self.entity_resolver,
+                    model_manager=model_manager,
+                )
+                logger.debug("[MemoryCoordinator] Context surfacer initialized")
+        except Exception as e:
+            logger.debug(f"[MemoryCoordinator] Context surfacer init failed (non-fatal): {e}")
+
+        # Initialize claim index for memory staleness tracking
+        self.claim_index = None
+        try:
+            from config.app_config import STALENESS_ENABLED, STALENESS_INDEX_PATH
+            if STALENESS_ENABLED:
+                from memory.claim_tracker import ClaimIndex
+                self.claim_index = ClaimIndex(persist_path=STALENESS_INDEX_PATH)
+                logger.debug(
+                    "[MemoryCoordinator] Claim index initialized: %d claims, %d docs",
+                    self.claim_index.total_claims, self.claim_index.total_documents,
+                )
+        except Exception as e:
+            logger.debug(f"[MemoryCoordinator] Claim index init failed (non-fatal): {e}")
+
         # Initialize shutdown processor for end-of-session consolidation
         from memory.shutdown_processor import ShutdownProcessor
         self._shutdown = ShutdownProcessor(
@@ -196,6 +240,7 @@ class MemoryCoordinator:
             session_start=self.session_start,
             memory_coordinator=self,
             thread_store=self.thread_store,
+            claim_index=self.claim_index,
         )
 
         logger.debug("[MemoryCoordinator] All components initialized")

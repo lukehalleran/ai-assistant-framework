@@ -304,32 +304,54 @@ class ContextPipeline:
                 f"(conf={intent_result.confidence:.2f})"
             )
 
-        # Stage 5: Query Rewriting (for better retrieval)
-        if not use_raw_mode and self._enable_query_rewrite:
+        # Stages 5+6: Query Rewriting + STM Analysis (parallelized — independent LLM calls)
+        run_rewrite = not use_raw_mode and self._enable_query_rewrite
+        run_stm = not use_raw_mode and self._should_run_stm()
+
+        if run_rewrite and run_stm:
+            # Both needed — run in parallel for ~1-2s savings
+            async def _do_rewrite():
+                return await self._rewrite_query(user_input, query_analysis)
+
+            async def _do_stm():
+                try:
+                    async with asyncio.timeout(10.0):
+                        return await self._analyze_stm(user_input, conversation_history)
+                except asyncio.TimeoutError:
+                    logger.warning("Stage 6 (STM): analysis timed out")
+                    return None
+
+            rewritten, stm_summary = await asyncio.gather(
+                _do_rewrite(), _do_stm()
+            )
+            if rewritten and rewritten != user_input:
+                processed_query = rewritten
+                logger.debug("Stage 5 (Rewrite): query rewritten")
+            if stm_summary:
+                logger.debug("Stage 6 (STM): analysis complete")
+
+        elif run_rewrite:
             rewritten = await self._rewrite_query(user_input, query_analysis)
             if rewritten and rewritten != user_input:
                 processed_query = rewritten
-                logger.debug(f"Stage 5 (Rewrite): query rewritten")
+                logger.debug("Stage 5 (Rewrite): query rewritten")
 
-        # Stage 6: STM Analysis (if enabled and conversation is deep enough)
-        if not use_raw_mode and self._should_run_stm():
+        elif run_stm:
             try:
-                async with asyncio.timeout(10.0):  # 10s timeout for STM
-                    stm_summary = await self._analyze_stm(
-                        user_input,
-                        conversation_history
-                    )
+                async with asyncio.timeout(10.0):
+                    stm_summary = await self._analyze_stm(user_input, conversation_history)
                 if stm_summary:
-                    logger.debug(f"Stage 6 (STM): analysis complete")
-                    # Refine intent with STM's free-text intent (no extra LLM call)
-                    if intent_result and self._intent_classifier:
-                        stm_intent_str = stm_summary.get("intent") if isinstance(stm_summary, dict) else None
-                        intent_result = self._intent_classifier.refine_with_stm(
-                            intent_result, stm_intent_str
-                        )
+                    logger.debug("Stage 6 (STM): analysis complete")
             except asyncio.TimeoutError:
                 logger.warning("Stage 6 (STM): analysis timed out")
                 stm_summary = None
+
+        # Stage 6b: Refine intent with STM (no LLM, just keyword matching)
+        if stm_summary and intent_result and self._intent_classifier:
+            stm_intent_str = stm_summary.get("intent") if isinstance(stm_summary, dict) else None
+            intent_result = self._intent_classifier.refine_with_stm(
+                intent_result, stm_intent_str
+            )
 
         # Stage 7: Identity Injection
         identity_block, user_name = self._get_identity_context()

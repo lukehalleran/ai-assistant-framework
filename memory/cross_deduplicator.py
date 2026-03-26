@@ -47,12 +47,17 @@ class CrossCollectionDeduplicator:
         plan = dedup.run(dry_run=False)  # execute deletions
     """
 
-    def __init__(self, chroma_store):
+    def __init__(self, chroma_store, claim_index=None, entity_resolver=None):
         """
         Args:
             chroma_store: MultiCollectionChromaStore instance.
+            claim_index: Optional ClaimIndex for staleness cascade.
+            entity_resolver: Optional EntityResolver for claim canonicalization.
         """
-        self.chroma_store = chroma_store
+        self._chroma_store = chroma_store
+        self.chroma_store = chroma_store  # backwards compat
+        self._claim_index = claim_index
+        self._entity_resolver = entity_resolver
         self.duplicate_threshold: float = cfg.CROSS_DEDUP_DUPLICATE_THRESHOLD
         self.contradiction_threshold: float = cfg.CROSS_DEDUP_CONTRADICTION_THRESHOLD
         self.max_docs: int = cfg.CROSS_DEDUP_MAX_DOCS_PER_COLLECTION
@@ -106,6 +111,31 @@ class CrossCollectionDeduplicator:
         contradiction_clusters = self._find_fact_contradictions(fact_docs)
         plan.contradiction_clusters = contradiction_clusters
         plan.contradictions_found = len(contradiction_clusters)
+
+        # 4.5. Cascade staleness for contradiction clusters
+        if contradiction_clusters:
+            try:
+                from config.app_config import STALENESS_ENABLED
+                if STALENESS_ENABLED and self._claim_index:
+                    from memory.claim_tracker import canonicalize_claim
+                    total_affected = 0
+                    for cluster in contradiction_clusters:
+                        ck = canonicalize_claim(
+                            cluster.subject, cluster.predicate,
+                            entity_resolver=self._entity_resolver,
+                        )
+                        affected = self._claim_index.cascade_staleness(
+                            ck, chroma_store=self._chroma_store,
+                        )
+                        total_affected += len(affected)
+                    if total_affected:
+                        logger.info(
+                            "[CrossDedup] Staleness cascade: %d documents affected "
+                            "from %d contradiction clusters",
+                            total_affected, len(contradiction_clusters),
+                        )
+            except Exception as e:
+                logger.debug("[CrossDedup] Staleness cascade failed (non-fatal): %s", e)
 
         # 5. Execute deletions if not dry_run
         if not dry_run:

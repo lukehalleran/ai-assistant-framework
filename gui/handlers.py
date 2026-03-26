@@ -490,6 +490,12 @@ async def handle_submit(
                             "executing_code": "🐍",
                             "code_executed": "✅",
                             "code_error": "⚠️",
+                            "reading_file": "📄",
+                            "file_read": "✅",
+                            "searching_files": "🔎",
+                            "files_searched": "✅",
+                            "listing_files": "📂",
+                            "files_listed": "✅",
                             "synthesizing": "✨",
                             "done": "✅",
                             "error": "❌",
@@ -1046,6 +1052,24 @@ async def handle_submit(
                 logger.warning(f"[Handle Submit] Empty response detected from {model_name_for_error}")
                 yield {"role": "assistant", "content": error_msg}
                 return
+
+            # Detect classified API errors from model_manager
+            _stripped = final_output.strip()
+            _API_ERROR_PREFIXES = {
+                "[CREDITS EXHAUSTED]": "💳 **Out of API Credits**\n\n{msg}\n\nYou can add credits at your provider's billing page or switch models in the dropdown above.",
+                "[RATE LIMITED]": "⏳ **Rate Limited**\n\n{msg}",
+                "[AUTH ERROR]": "🔑 **Authentication Error**\n\n{msg}",
+                "[MODEL NOT FOUND]": "❓ **Model Not Found**\n\n{msg}",
+                "[SERVER ERROR]": "🔥 **Server Error**\n\n{msg}",
+                "[API Error]": "⚠️ **API Error**\n\n{msg}",
+                "[API unavailable]": "⚠️ **API Unavailable**\n\n{msg}",
+            }
+            for prefix, template in _API_ERROR_PREFIXES.items():
+                if _stripped.startswith(prefix):
+                    friendly = template.format(msg=_stripped[len(prefix):].strip())
+                    logger.warning(f"[Handle Submit] API error detected: {prefix}")
+                    yield {"role": "assistant", "content": friendly}
+                    return
 
             thinking_part_stream, final_answer_stream = ResponseParser.parse_thinking_block(final_output)
             if thinking_part_stream:
