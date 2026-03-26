@@ -301,3 +301,90 @@ def test_strip_prompt_artifacts_current_query():
     result = ResponseParser.strip_prompt_artifacts(text)
     assert "[CURRENT USER QUERY]" not in result
     assert "Python is a language" in result
+
+
+# --- Tests for <think> tag handling (DeepSeek/Qwen/GLM) ---
+
+def test_parse_think_block_both_tags():
+    """Test extracting <think>...</think> block (GLM/DeepSeek style)."""
+    response = "<think>My reasoning here</think>Final answer text"
+    thinking, answer = ResponseParser.parse_thinking_block(response)
+    assert thinking == "My reasoning here"
+    assert answer == "Final answer text"
+
+
+def test_parse_think_block_closing_only():
+    """Test extracting think block with only closing tag."""
+    response = "Some reasoning</think>Final answer"
+    thinking, answer = ResponseParser.parse_thinking_block(response)
+    assert thinking == "Some reasoning"
+    assert answer == "Final answer"
+
+
+def test_parse_think_block_with_newlines():
+    """Test <think> block with multiline reasoning."""
+    response = "<think>\nStep 1: analyze\nStep 2: decide\n</think>\nMy final answer"
+    thinking, answer = ResponseParser.parse_thinking_block(response)
+    assert "Step 1" in thinking
+    assert "Step 2" in thinking
+    assert answer == "My final answer"
+
+
+def test_leaked_partial_think_tag():
+    """Test that /think> (partial leak without <) gets stripped."""
+    response = "/think>Nice. Sounds like a solid afternoon."
+    thinking, answer = ResponseParser.parse_thinking_block(response)
+    assert thinking == ""
+    assert "/think>" not in answer
+    assert "Nice. Sounds like a solid afternoon." in answer
+
+
+def test_leaked_closing_think_tag():
+    """Test that </think> at start of response gets stripped."""
+    response = "</think>Here is my actual response."
+    thinking, answer = ResponseParser.parse_thinking_block(response)
+    # This hits the split path — thinking is empty, answer is clean
+    assert "Here is my actual response." in answer
+    assert "</think>" not in answer
+
+
+def test_strip_thinking_tag_leaks_various():
+    """Test strip_thinking_tag_leaks catches all variants."""
+    cases = [
+        ("/think>Hello", "Hello"),
+        ("</think>Hello", "Hello"),
+        ("<think>Hello", "Hello"),
+        ("</thinking>Hello", "Hello"),
+        ("/thinking>Hello", "Hello"),
+        ("<|think|>Hello", "Hello"),
+    ]
+    for input_text, expected_content in cases:
+        result = ResponseParser.strip_thinking_tag_leaks(input_text)
+        assert expected_content in result, f"Failed for input: {input_text!r} -> {result!r}"
+        assert "<think" not in result.lower() and "/think" not in result.lower(), (
+            f"Tag remnant in: {input_text!r} -> {result!r}"
+        )
+
+
+def test_strip_thinking_tag_leaks_preserves_clean_text():
+    """Text without thinking tags passes through unchanged."""
+    text = "Just a normal response about thinking deeply."
+    result = ResponseParser.strip_thinking_tag_leaks(text)
+    assert result == text
+
+
+def test_thinking_preferred_over_think():
+    """<thinking> tags take precedence over <think> when both present."""
+    response = "<thinking>Long reasoning</thinking>Final answer"
+    thinking, answer = ResponseParser.parse_thinking_block(response)
+    assert thinking == "Long reasoning"
+    assert answer == "Final answer"
+
+
+def test_think_tag_mid_response_stripped():
+    """Leaked tag in the middle of a response gets cleaned."""
+    text = "First sentence.</think> Second sentence."
+    result = ResponseParser.strip_thinking_tag_leaks(text)
+    assert "</think>" not in result
+    assert "First sentence." in result
+    assert "Second sentence." in result

@@ -76,7 +76,7 @@ The answer is 4."""
     assert answer4 == "", "Empty input should give empty answer"
     print("✅ PASS")
 
-    # Test case 5: Only opening tag (malformed)
+    # Test case 5: Only opening tag (malformed) — leaked tag gets stripped
     response5 = "<thinking>Some thinking but no closing tag. The answer is unclear."
     thinking5, answer5 = ResponseParser.parse_thinking_block(response5)
 
@@ -84,7 +84,8 @@ The answer is 4."""
     print(f"Thinking: '{thinking5}'")
     print(f"Answer: {answer5[:50]}...")
     assert thinking5 == "", "Malformed should return empty thinking"
-    assert answer5 == response5, "Malformed should return full response as answer"
+    assert "<thinking>" not in answer5, "Leaked tag should be stripped from answer"
+    assert "Some thinking but no closing tag" in answer5, "Content should be preserved"
     print("✅ PASS")
 
     print("\n" + "="*80)
