@@ -547,6 +547,9 @@ class MultiCollectionChromaStore:
             n_results=n_results
         )
         return self._parse_results(results)
+
+    def get_by_id(collection_name: str, doc_id: str) -> Optional[Dict]:  # [NEW 2026-03-26]
+        """Direct document lookup by UUID → {id, content, metadata} or None"""
 ```
 
 ---
@@ -1194,6 +1197,14 @@ STALENESS_INDEX_PATH = "data/claim_index.json"
 IMPL_TRACKING_ENABLED = True
 IMPL_TRACKING_COOLDOWN = 86400          # seconds between re-checks
 
+# Memory Expansion [NEW 2026-03-26]
+EXPAND_MEMORY_ENABLED = True            # Toggle expand_memory agentic tool
+EXPAND_MAX_PER_SESSION = 3             # Max expansions per agentic session
+EXPAND_MAX_WINDOW = 5                  # Max temporal window (±N turns)
+EXPAND_DEFAULT_WINDOW = 3              # Default temporal window
+EXPAND_ANCHOR_CHAR_LIMIT = 600        # Char limit for anchor document
+EXPAND_CONTEXT_CHAR_LIMIT = 300       # Char limit for context documents
+
 # Summarization
 SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))
 SUMMARIZE_AT_SHUTDOWN_ONLY = True
@@ -1579,6 +1590,11 @@ class AgenticSearchController:
                 context.append(self._format_memory_context(results))
                 yield AgenticEvent(type="memory_searched", data=results)
 
+            elif decision.wants_memory_expand:  # [NEW 2026-03-26]
+                result = await self._execute_memory_expand(decision.expand_memory_id, decision.expand_window, decision.expand_collection)
+                context.append(self._format_expand_context(result))
+                yield AgenticEvent(type="memory_expanded", data=result)
+
             elif decision.is_done:
                 yield AgenticEvent(type="done", response=final_response)
                 break
@@ -1600,6 +1616,11 @@ class SearchDecision:
     wants_memory_search: bool = False   # Memory search [NEW 2026-03-15]
     memory_query: Optional[str] = None
     memory_collection: Optional[str] = None
+    wants_memory_expand: bool = False   # Memory expansion [NEW 2026-03-26]
+    expand_memory_id: Optional[str] = None
+    expand_window: int = 3
+    expand_collection: Optional[str] = None
+    expand_reason: Optional[str] = None
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False
@@ -1611,6 +1632,7 @@ class SearchDecision:
 class AgenticSearchSession:
     memory_search_counts: Dict[str, int] = field(default_factory=dict)  # Per-collection diversity tracking
     context_inventory: str = ""  # Summary of what RAG pipeline already gathered
+    expand_count: int = 0  # Memory expansion count for session gating [NEW 2026-03-26]
     # ... (also: round_count, search_results, memory_results, etc.)
 
 # MEMORY_SEARCH_TOOL_DEFINITION — Enhanced with per-collection descriptions [ENHANCED 2026-03-23]
@@ -1687,9 +1709,26 @@ class SandboxResult:
     cached: bool = False
 
 
+# memory/memory_expander.py [NEW 2026-03-26]
+class MemoryExpander:
+    """Temporal context expansion + summary drill-down for expand_memory tool"""
+
+    def expand(memory_id: str, window: int = 3, collection: str = None) -> dict:
+        """
+        Two strategies:
+        - timestamp_window: fetch ±window chronological neighbors (conversations, reflections, facts, obsidian_notes)
+        - source_docs: for summaries, retrieve original conversations via source_doc_ids metadata
+          or temporal_anchor_start/end range. Falls back to timestamp_window if no linkage.
+        Returns: {anchor_id, collection, expansion_method, turns, total_in_collection, error}
+        """
+
+    def clear_cache():
+        """Reset cache between ReAct sessions"""
+
+
 # Protocol handlers (core/agentic/protocols.py)
-# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <done>
-# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (5 tool definitions)
+# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <expand_memory>, <done>
+# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (6 tool definitions)
 ```
 
 ### Agentic Config Constants
@@ -1734,12 +1773,14 @@ Available Tools:
 2. <wolfram>query</wolfram> - Computation, math, science, conversions
 3. <python purpose="...">code</python> - Execute Python code (NumPy, Pandas, SciPy, SymPy available)
 4. <memory collection="...">query</memory> - Search internal memory/knowledge base [NEW 2026-03-15]
-5. <done>reason</done> - Signal task complete
+5. <expand_memory id="..." collection="..." window="3">reason</expand_memory> - Zoom in on a memory [NEW 2026-03-26]
+6. <done>reason</done> - Signal task complete
 
 Use Python for: multi-step computation, data analysis, visualization, custom algorithms
 Use Wolfram for: single-expression calculations, unit conversions, scientific data, equations
 Use search for: current events, recent news, real-time data, general facts
 Use memory for: user facts, past conversations, personal notes, project history
+Use expand_memory for: see surrounding conversation turns or drill into summaries
 """
 ```
 
