@@ -256,6 +256,33 @@ def migrate_user_data() -> None:
 
 
 # =============================================================================
+# API KEY VALIDATION
+# =============================================================================
+
+_PLACEHOLDER_PATTERNS = ("test-key", "your_", "your-", "placeholder", "xxx", "changeme", "TODO")
+
+_API_KEY_CHECKS = {
+    "TAVILY_API_KEY": "Web search will not work",
+    "OPENAI_API_KEY": "LLM calls will fail",
+    "OPENROUTER_API_KEY": "OpenRouter LLM calls will fail",
+    "ANTHROPIC_API_KEY": "Anthropic LLM calls will fail",
+    "WOLFRAM_APP_ID": "Wolfram Alpha computations will fail",
+    "E2B_API_KEY": "Code sandbox execution will fail",
+}
+
+
+def _validate_api_keys() -> None:
+    """Warn on startup if any API keys look like placeholders."""
+    for key_name, consequence in _API_KEY_CHECKS.items():
+        value = os.environ.get(key_name, "")
+        if not value:
+            continue
+        lower = value.lower()
+        if any(p in lower for p in _PLACEHOLDER_PATTERNS):
+            print(f"[Bootstrap] WARNING: {key_name} appears to be a placeholder — {consequence}")
+
+
+# =============================================================================
 # ENVIRONMENT SETUP
 # =============================================================================
 
@@ -283,6 +310,9 @@ def setup_environment() -> str:
         except ImportError:
             # Manual parsing if dotenv not available
             _load_env_manual(env_path)
+
+    # Validate API keys — warn on placeholders or test keys
+    _validate_api_keys()
 
     # Set default paths for frozen mode
     # These environment variables are read by config/app_config.py

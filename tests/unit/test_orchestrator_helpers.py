@@ -91,13 +91,14 @@ def test_parse_thinking_block_empty_string():
 
 
 def test_parse_thinking_block_only_opening_tag():
-    """Handles malformed block with only opening tag"""
+    """Handles malformed block with only opening tag — leaked tag stripped"""
     response = "<thinking>Some thought but no closing tag"
     thinking, answer = ResponseParser.parse_thinking_block(response)
 
-    # No </thinking> delimiter found, so returns full response as answer
+    # No </thinking> delimiter found, leaked <thinking> tag stripped from answer
     assert thinking == ""
-    assert answer == response
+    assert "<thinking>" not in answer
+    assert "Some thought but no closing tag" in answer
 
 
 def test_parse_thinking_block_no_opening_tag():
@@ -111,12 +112,14 @@ def test_parse_thinking_block_no_opening_tag():
 
 
 def test_parse_thinking_block_multiple_closing_tags():
-    """Only splits on first closing tag"""
+    """Only splits on first closing tag, remaining tags stripped from answer"""
     response = "<thinking>thought</thinking>answer</thinking>more"
     thinking, answer = ResponseParser.parse_thinking_block(response)
 
     assert thinking == "thought"
-    assert answer == "answer</thinking>more"
+    assert "</thinking>" not in answer
+    assert "answer" in answer
+    assert "more" in answer
 
 
 # =============================================================================

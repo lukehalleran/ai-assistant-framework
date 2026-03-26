@@ -1,14 +1,28 @@
-feat: Add LLM-based memory compression and rewrite README
+fix: Strip leaked <think> tags from GLM/DeepSeek, update system prompt, warn on placeholder API keys
 
-- Two-tier compression: items ≥3x over token limit get LLM summary
-  via async _llm_compress_oversized() pre-pass in builder.py;
-  mildly oversized items (1x-3x) still use middle-out character slicing
-- Parallel batch compression via asyncio.gather() with per-call timeout
-- Graceful fallback: timeout/error/empty response leaves item unchanged
-- Config: llm_compression section in config.yaml + LLM_COMPRESSION_*
-  constants in app_config.py (enabled, model, timeout, ratio, max_batch)
-- README.md: comprehensive rewrite with corrected stats (40K token budget,
-  180+ config options, 103K lines, 2850+ tests), added LLM compression
-  docs, fixed scoring weights and config key names
-- Updated module contracts in builder.py, token_manager.py, app_config.py
-- 16 unit tests in test_llm_compression.py, all passing
+## Think Tag Leak Fix
+- response_parser.py: parse_thinking_block() now handles <think>...</think>
+  (DeepSeek/Qwen/GLM) in addition to <thinking>...</thinking>
+- New strip_thinking_tag_leaks() catches partial/malformed remnants like
+  /think>, <|think|>, etc. that slip through into visible responses
+- All existing parse_thinking_block() call sites automatically benefit
+
+## System Prompt Update
+- New "Agentic Capabilities" section documenting all 9 tools (web_search,
+  wolfram_alpha, search_memory, expand_memory, file_read/grep/list,
+  sandbox, done) with usage guidelines
+- Expanded "Response Scope" with all current prompt sections organized
+  into 4 groups: core context, knowledge sources, project/system, query
+- Added: KNOWLEDGE GRAPH, UNRESOLVED THREADS, PROACTIVE INSIGHTS,
+  USER PROFILE, ADAPTIVE WORKFLOWS, PROPOSED FEATURES, ACTIVE FEATURES,
+  CODEBASE CHANGES, SHORT-TERM CONTEXT SUMMARY, TIME CONTEXT
+- Corrected scoring weights example to match actual values
+
+## API Key Placeholder Warning
+- bootstrap.py: _validate_api_keys() runs after .env load on startup
+- Warns if any key contains "test-key", "your_", "placeholder", etc.
+- Covers TAVILY, OPENAI, OPENROUTER, ANTHROPIC, WOLFRAM, E2B keys
+
+## Tests
+- 10 new tests for <think> tag handling and leak stripping
+- 3 existing tests updated for new stripping behavior
