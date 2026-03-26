@@ -343,6 +343,71 @@ class ProposalStore:
             logger.error(f"[ProposalStore] check_similarity failed: {e}")
             return None
 
+    def update_tracking_metadata(self, proposal_id: str, detection_result) -> bool:
+        """
+        Update a proposal's implementation tracking fields via metadata merge.
+
+        Args:
+            proposal_id: ID of the proposal to update
+            detection_result: DetectionResult with confidence/status/evidence
+
+        Returns:
+            True if updated successfully
+        """
+        if not self._ensure_collection():
+            return False
+
+        try:
+            import time as _time
+            all_items = self.chroma_store.list_all(COLLECTION_NAME)
+            for item in all_items:
+                meta = item.get("metadata") or {}
+                if meta.get("proposal_id") == proposal_id:
+                    doc_id = item.get("id")
+                    if not doc_id:
+                        return False
+
+                    updates = {
+                        "implementation_confidence": detection_result.confidence,
+                        "implementation_status": detection_result.status,
+                        "implementation_evidence": (detection_result.evidence or "")[:500],
+                        "last_tracked_at": _time.time(),
+                    }
+                    self.chroma_store.update_metadata(COLLECTION_NAME, doc_id, updates)
+                    logger.info(
+                        f"[ProposalStore] Updated tracking for {proposal_id}: "
+                        f"{detection_result.status} ({detection_result.confidence:.0%})"
+                    )
+                    return True
+
+            logger.warning(f"[ProposalStore] Proposal {proposal_id} not found for tracking update")
+            return False
+
+        except Exception as e:
+            logger.error(f"[ProposalStore] update_tracking_metadata failed: {e}")
+            return False
+
+    def get_pending_and_approved(self) -> List[CodeProposal]:
+        """Get all proposals with PENDING or APPROVED status."""
+        if not self._ensure_collection():
+            return []
+
+        try:
+            all_items = self.chroma_store.list_all(COLLECTION_NAME)
+            proposals = []
+            target_statuses = {ProposalStatus.PENDING.value, ProposalStatus.APPROVED.value}
+            for item in all_items:
+                meta = item.get("metadata") or {}
+                if meta.get("status") in target_statuses:
+                    try:
+                        proposals.append(CodeProposal.from_metadata(meta))
+                    except Exception:
+                        continue
+            return proposals
+        except Exception as e:
+            logger.error(f"[ProposalStore] get_pending_and_approved failed: {e}")
+            return []
+
     def get_for_dedup(self, limit: int = 25) -> str:
         """
         Get a formatted string of recent proposals for LLM deduplication context.

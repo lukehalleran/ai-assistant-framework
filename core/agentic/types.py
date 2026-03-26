@@ -13,12 +13,16 @@ Public Types:
     - AgenticSearchSession (session state container)
     - ProgressEvent (UI update events)
     - SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION, SANDBOX_TOOL_DEFINITION, MEMORY_SEARCH_TOOL_DEFINITION (tool schemas)
+    - FILE_READ_TOOL_DEFINITION, FILE_GREP_TOOL_DEFINITION, FILE_LIST_TOOL_DEFINITION (file access tool schemas)
 
 SearchDecision Fields (extended for multi-tool support):
     - wants_search, search_query, search_reason (web search)
     - wants_wolfram, wolfram_query, wolfram_reason (Wolfram Alpha computation)
     - wants_sandbox, sandbox_code, sandbox_purpose (E2B Python sandbox) [NEW 2026-01-22]
     - wants_memory_search, memory_query, memory_collection, memory_reason (ChromaDB memory search)
+    - wants_file_read, file_read_path, file_read_start_line, file_read_end_line, file_read_reason (file read)
+    - wants_file_grep, file_grep_pattern, file_grep_folder, file_grep_glob, file_grep_reason (file grep)
+    - wants_file_list, file_list_path, file_list_recursive, file_list_reason (file list)
     - is_done, done_reason, wants_answer, partial_response
 
 Dependencies:
@@ -100,6 +104,23 @@ class SearchDecision:
     memory_query: Optional[str] = None
     memory_collection: Optional[str] = None
     memory_reason: Optional[str] = None
+    # File read (approved-folder file access)
+    wants_file_read: bool = False
+    file_read_path: Optional[str] = None
+    file_read_start_line: Optional[int] = None
+    file_read_end_line: Optional[int] = None
+    file_read_reason: Optional[str] = None
+    # File grep (approved-folder search)
+    wants_file_grep: bool = False
+    file_grep_pattern: Optional[str] = None
+    file_grep_folder: Optional[str] = None
+    file_grep_glob: Optional[str] = None
+    file_grep_reason: Optional[str] = None
+    # File list (approved-folder directory listing)
+    wants_file_list: bool = False
+    file_list_path: Optional[str] = None
+    file_list_recursive: bool = False
+    file_list_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -338,6 +359,108 @@ MEMORY_SEARCH_TOOL_DEFINITION = {
     }
 }
 
+FILE_READ_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "file_read",
+        "description": (
+            "Read the contents of a file from an approved directory. "
+            "Use for viewing source code, configs, logs, notes, or any text file on disk. "
+            "Supports optional line range to read specific sections of large files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filepath": {
+                    "type": "string",
+                    "description": "Path to the file to read (relative or absolute)"
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "Optional: start reading from this line (1-indexed)"
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Optional: stop reading at this line"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this file is needed."
+                }
+            },
+            "required": ["filepath"]
+        }
+    }
+}
+
+FILE_GREP_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "file_grep",
+        "description": (
+            "Search for a text pattern across files in approved directories. "
+            "Returns matching lines with surrounding context. "
+            "Use for finding where something is defined, used, or referenced in the codebase."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Search pattern (regex supported)"
+                },
+                "folder": {
+                    "type": "string",
+                    "description": "Optional: limit search to this folder"
+                },
+                "file_glob": {
+                    "type": "string",
+                    "description": "File pattern to search, e.g. '*.py', '*.md'. Default: '*'"
+                },
+                "case_sensitive": {
+                    "type": "boolean",
+                    "description": "Case-sensitive search. Default: false"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this search is needed."
+                }
+            },
+            "required": ["pattern"]
+        }
+    }
+}
+
+FILE_LIST_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "file_list",
+        "description": (
+            "List files in an approved directory. "
+            "Use to orient yourself before reading or grepping — "
+            "see what files exist, their sizes, and directory structure."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "dirpath": {
+                    "type": "string",
+                    "description": "Directory path to list"
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Include subdirectories. Default: false"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why listing this directory."
+                }
+            },
+            "required": ["dirpath"]
+        }
+    }
+}
+
 # System prompt injection for local models
 AGENTIC_SYSTEM_PROMPT_INJECTION = """
 [AGENTIC TOOLS ENABLED]
@@ -379,6 +502,18 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
    git history (procedural), learned skills (procedural_skills).
    Prefer this over web search when the answer is likely already in your memory.
 
+6. **File Read**: <file_read path="filepath">optional reason</file_read>
+   Read the contents of a file from disk. Use for viewing source code, configs, logs, notes.
+   Example: <file_read path="core/orchestrator.py">checking main request handler</file_read>
+
+7. **File Grep**: <file_grep pattern="search_pattern" glob="*.py">optional folder</file_grep>
+   Search for a text pattern across files. Returns matching lines with context.
+   Example: <file_grep pattern="def generate_response" glob="*.py">core/</file_grep>
+
+8. **File List**: <file_list path="directory" recursive="false"/>
+   List files in a directory. Use to orient before reading or grepping.
+   Example: <file_list path="core/agentic/" recursive="false"/>
+
 **Tool Selection Guidelines:**
 | Task Type | Best Tool |
 |-----------|-----------|
@@ -394,6 +529,9 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | Individual facts (name, age, specific detail) | Memory (facts) |
 | Past conversations, "did we discuss" | Memory (conversations, summaries) |
 | User's personal notes | Memory (obsidian_notes) |
+| View source code, configs, logs | File Read |
+| Find where something is defined/used | File Grep |
+| Explore directory structure | File List |
 
 You can use tools up to {max_rounds} times total. Be specific with queries.
 

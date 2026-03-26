@@ -38,6 +38,8 @@ Prompt Section Order:
   [REFLECTIONS] → [DREAMS] → [USER'S PERSONAL NOTES] → [USER UPLOADED ITEMS] →
   [DAEMON DOCUMENTATION] → [PROJECT COMMIT HISTORY] → [ADAPTIVE WORKFLOWS] →
   [PROPOSED FEATURES] → [KNOWLEDGE GRAPH] → [UNRESOLVED THREADS] →
+  [PROACTIVE INSIGHTS] → [USER PROFILE] → [ACTIVE FEATURES] →
+  [CODEBASE CHANGES SINCE LAST SESSION] →
   [WEB SEARCH RESULTS] → [RELEVANT INFORMATION] →
   [TIME CONTEXT] → [TEMPORAL GROUNDING] → [STM SUMMARY] → [CURRENT USER QUERY]
 """
@@ -106,6 +108,28 @@ PROMPT_MAX_SEMANTIC = _cfg_int("prompt_max_semantic", 8)
 PROMPT_MAX_WIKI = _cfg_int("prompt_max_wiki", 3)
 USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)
 PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
+
+def _staleness_prefix(item) -> str:
+    """Return a staleness prefix for highly stale summaries/reflections.
+
+    Items with staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD get prefixed
+    with [HISTORICAL — PARTIALLY OUTDATED] to signal the LLM to treat claims
+    skeptically.
+    """
+    try:
+        from config.app_config import STALENESS_ENABLED, STALENESS_HISTORICAL_THRESHOLD
+        if not STALENESS_ENABLED:
+            return ""
+        if isinstance(item, dict):
+            md = item.get("metadata", {}) or {}
+            ratio = float(md.get("staleness_ratio", 0) or item.get("staleness_ratio", 0) or 0)
+        else:
+            return ""
+        if ratio >= STALENESS_HISTORICAL_THRESHOLD:
+            return "[HISTORICAL — PARTIALLY OUTDATED] "
+    except Exception:
+        pass
+    return ""
 PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 5)
 PROMPT_MAX_GIT_COMMITS = _cfg_int("prompt_max_git_commits", 10)
 PROMPT_MAX_SKILLS = _cfg_int("prompt_max_skills", 5)
@@ -113,9 +137,10 @@ PROMPT_MAX_PROPOSALS = _cfg_int("prompt_max_proposals", 3)
 PROMPT_MAX_USER_UPLOADS = _cfg_int("prompt_max_user_uploads", 5)
 PROMPT_MAX_GRAPH_SENTENCES = _cfg_int("prompt_max_graph_sentences", 12)
 PROMPT_MAX_SURFACED_THREADS = _cfg_int("prompt_max_surfaced_threads", 3)
+PROMPT_MAX_PROACTIVE_INSIGHTS = _cfg_int("prompt_max_proactive_insights", 2)
 
 # Feature toggles
-REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
+REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "0"))  # Off by default — blocks prompt build with LLM call
 # Keep broad by default so we don't drop historical reflections
 REFLECTIONS_SESSION_FILTER = _parse_bool(os.getenv("REFLECTIONS_SESSION_FILTER", "0"))
 REFLECTIONS_TOPUP = _parse_bool(os.getenv("REFLECTIONS_TOPUP", "1"))
@@ -153,6 +178,7 @@ PRIORITY_ORDER = [
     ("procedural_skills", 5),  # Reusable problem-solving patterns
     ("proposed_features", 3),  # Code proposals (trimmed before core context)
     ("unresolved_threads", 4),  # Open threads for proactive surfacing
+    ("proactive_insights", 3),  # Cross-domain insights from knowledge graph
     ("memories", 5),
     ("semantic_facts", 4),
     ("fresh_facts", 4),
@@ -330,6 +356,23 @@ class UnifiedPromptBuilder:
         logger.info(f"Building prompt for user input: {len(user_input)} chars")
 
         try:
+            # Pre-fork: Detect first message + gather codebase changes BEFORE small-talk check
+            # This ensures even "Yo" gets codebase change awareness.
+            is_first_message = False
+            codebase_changes = {}
+            if self.time_manager:
+                try:
+                    gap = self.time_manager.time_since_previous_message()
+                    is_first_message = isinstance(gap, str) and "N/A" in gap
+                except (AttributeError, TypeError):
+                    pass
+            if is_first_message:
+                _since_dt = getattr(self.time_manager, 'last_session_end_time', None)
+                try:
+                    codebase_changes = await self.context_gatherer.get_codebase_changes(_since_dt)
+                except Exception as e:
+                    logger.debug(f"[BUILD_PROMPT] Codebase changes failed: {e}")
+
             # Step 1: Analyze the query
             query_analysis = {}
             try:
@@ -343,7 +386,7 @@ class UnifiedPromptBuilder:
             logger.warning(f"SMALL_TALK CHECK: is_small_talk={is_small_talk}")
             if is_small_talk:
                 logger.warning("USING LIGHTWEIGHT CONTEXT - this will drop separated keys!")
-                return await self._build_lightweight_context(user_input, stm_summary=stm_summary)
+                return await self._build_lightweight_context(user_input, stm_summary=stm_summary, codebase_changes=codebase_changes)
 
             # Step 2: Gather narrative context (synchronous, cheap file read)
             narrative_state = ""
@@ -497,6 +540,11 @@ class UnifiedPromptBuilder:
             # Unresolved threads (proactive surfacing)
             tasks["unresolved_threads"] = asyncio.create_task(
                 _timed_task("unresolved_threads", self.context_gatherer.get_unresolved_threads(eff_max_surfaced_threads))
+            )
+
+            # Proactive cross-domain insights from knowledge graph
+            tasks["proactive_insights"] = asyncio.create_task(
+                _timed_task("proactive_insights", self.context_gatherer.get_proactive_insights(user_input, PROMPT_MAX_PROACTIVE_INSIGHTS))
             )
 
             # Web search (triggered based on query analysis, suppressed during crisis)
@@ -659,14 +707,11 @@ class UnifiedPromptBuilder:
                 "proposed_features": gathered.get("proposed_features", []),  # Code proposals
                 "graph_context": gathered.get("graph_context", []),  # Knowledge graph relationships
                 "unresolved_threads": gathered.get("unresolved_threads", []),  # Proactive thread surfacing
+                "proactive_insights": gathered.get("proactive_insights", []),  # Cross-domain insights
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
+                "codebase_changes": codebase_changes,  # Git changes since last session (first message only)
             }
-            # DEBUG: Log web search results
-            ws_debug = gathered.get("web_search")
-            logger.warning(f"[WEB_SEARCH_DEBUG] gathered['web_search'] = {type(ws_debug)}, has_results={getattr(ws_debug, 'has_results', 'N/A') if ws_debug else 'None'}")
-            if ws_debug and hasattr(ws_debug, 'pages'):
-                logger.warning(f"[WEB_SEARCH_DEBUG] pages count = {len(ws_debug.pages)}")
-            logger.warning(f"CONTEXT BUILT: recent_summaries={len(recent_summaries)}, semantic_summaries={len(semantic_summaries)}, recent_reflections={len(recent_reflections)}, semantic_reflections={len(semantic_reflections)}")
+            logger.debug(f"CONTEXT BUILT: recent_summaries={len(recent_summaries)}, semantic_summaries={len(semantic_summaries)}, recent_reflections={len(recent_reflections)}, semantic_reflections={len(semantic_reflections)}")
             logger.debug(f"CONTEXT BUILD: context memories count = {len(context['memories'])}")
 
             # Override with directly provided parameters (legacy interface)
@@ -718,12 +763,7 @@ class UnifiedPromptBuilder:
 
             # Step 6: Apply hygiene and caps
             logger.warning(f"BEFORE HYGIENE_AND_CAPS: memories count = {len(context.get('memories', []))}")
-            logger.warning(f"BEFORE HYGIENE_AND_CAPS: web_search_results = {context.get('web_search_results')}")
             context = await self._hygiene_and_caps(context, stm_summary=stm_summary)
-            logger.warning(f"AFTER HYGIENE_AND_CAPS: context has {len(context)} keys: {list(context.keys())}")
-            logger.warning(f"AFTER HYGIENE_AND_CAPS: web_search_results = {context.get('web_search_results')}")
-            logger.warning(f"AFTER HYGIENE_AND_CAPS: memories count = {len(context.get('memories', []))}")
-            logger.warning(f"AFTER HYGIENE_AND_CAPS: recent_summaries={len(context.get('recent_summaries', []))}, semantic_summaries={len(context.get('semantic_summaries', []))}")
 
             # Step 6.1: Top-up relevant memories if cross-effects reduced them too much.
             try:
@@ -957,6 +997,7 @@ class UnifiedPromptBuilder:
                 "proposed_features": context.get("proposed_features", []),  # Code proposals
                 "graph_context": context.get("graph_context", []),  # Knowledge graph relationships
                 "unresolved_threads": context.get("unresolved_threads", []),  # Proactive thread surfacing
+                "proactive_insights": context.get("proactive_insights", []),  # Cross-domain insights
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
@@ -990,6 +1031,7 @@ class UnifiedPromptBuilder:
                 "proposed_features": [],
                 "graph_context": [],
                 "unresolved_threads": [],
+                "proactive_insights": [],
                 "web_search_results": None,
                 "memory_id_map": {}
             }
@@ -1051,7 +1093,8 @@ class UnifiedPromptBuilder:
             weight_overrides=weight_overrides,
         )
 
-    async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None,
+                                          codebase_changes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build lightweight context for small-talk queries."""
         try:
             # Just get recent conversations for small-talk
@@ -1078,7 +1121,9 @@ class UnifiedPromptBuilder:
                 "proposed_features": [],  # No proposals for small-talk
                 "graph_context": [],  # No graph for small-talk
                 "unresolved_threads": [],  # No threads for small-talk
-                "web_search_results": None  # No web search for small-talk
+                "proactive_insights": [],  # No insights for small-talk
+                "web_search_results": None,  # No web search for small-talk
+                "codebase_changes": codebase_changes or {},  # Git changes since last session
             }
 
             # Add STM summary if provided
@@ -1113,7 +1158,9 @@ class UnifiedPromptBuilder:
                 "proposed_features": [],
                 "graph_context": [],
                 "unresolved_threads": [],
-                "web_search_results": None
+                "proactive_insights": [],
+                "web_search_results": None,
+                "codebase_changes": codebase_changes or {},
             }
 
     async def _hygiene_and_caps(self, context: Dict[str, Any], stm_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1167,20 +1214,10 @@ class UnifiedPromptBuilder:
         # NOTE: We only dedup conversations/memories across each other, NOT summaries/reflections
         # because those need to stay in their dedicated sections with proper headers
 
-        # For conversations, we need semantic similarity because responses have minor variations
-        # ("abundantly clear" vs "painfully clear", "storm" vs "tempest", etc.)
-        seen_embeddings = []  # List of (embedding, original_item) tuples
-        seen_content = set()  # Fallback for string-based dedup
-        SIMILARITY_THRESHOLD = 0.90  # 90% similar = duplicate (lowered from 0.95 to catch more variations)
-
-        # Get embedder for semantic dedup
-        embedder = None
-        try:
-            embedder = self.model_manager.get_embedder() if hasattr(self.model_manager, "get_embedder") else None
-            if embedder:
-                logger.info("[DEDUP] Using semantic similarity for conversation deduplication")
-        except (AttributeError, RuntimeError):
-            logger.warning("[DEDUP] No embedder available, falling back to string-based dedup")
+        # String-based cross-section dedup (normalized first 500 chars).
+        # Previously used embedding-based O(n²) cosine similarity which added 300-500ms.
+        # String dedup catches the vast majority of exact/near-exact duplicates at ~0 cost.
+        seen_content = set()
 
         cross_dedup_sections = [
             "recent_conversations", "memories", "personal_notes"
@@ -1207,7 +1244,6 @@ class UnifiedPromptBuilder:
                 if isinstance(item, dict):
                     content = item.get("content", "")
                     if not content:
-                        # Fallback to query/response (for conversations)
                         response = item.get("response", "")
                         content = response if response else str(item.get("query", ""))
                 else:
@@ -1219,50 +1255,12 @@ class UnifiedPromptBuilder:
                     if normalized.startswith(prefix):
                         normalized = normalized[len(prefix):].strip()
 
-                is_duplicate = False
-
-                # Use semantic similarity if embedder available
-                if embedder:
-                    try:
-                        # Embed the content (use first 512 chars for speed)
-                        item_embedding = embedder.encode(normalized[:512], convert_to_numpy=True)
-
-                        # Check against all seen embeddings
-                        for seen_emb, _ in seen_embeddings:
-                            # Compute cosine similarity
-                            import numpy as np
-                            similarity = np.dot(item_embedding, seen_emb) / (
-                                np.linalg.norm(item_embedding) * np.linalg.norm(seen_emb) + 1e-8
-                            )
-
-                            if similarity >= SIMILARITY_THRESHOLD:
-                                is_duplicate = True
-                                logger.debug(f"CROSS-SECTION DEDUP: Skipped semantic duplicate in {section} (similarity={similarity:.3f})")
-                                break
-
-                        if not is_duplicate:
-                            seen_embeddings.append((item_embedding, item))
-                            deduplicated.append(item)
-
-                    except Exception as e:
-                        logger.debug(f"[DEDUP] Embedding failed, using string fallback: {e}")
-                        # Fallback to string-based dedup
-                        dedup_key = normalized[:500]
-                        if dedup_key and dedup_key not in seen_content:
-                            seen_content.add(dedup_key)
-                            deduplicated.append(item)
-                        else:
-                            is_duplicate = True
-
+                dedup_key = normalized[:500]
+                if dedup_key and dedup_key not in seen_content:
+                    seen_content.add(dedup_key)
+                    deduplicated.append(item)
                 else:
-                    # String-based fallback
-                    dedup_key = normalized[:500]
-                    if dedup_key and dedup_key not in seen_content:
-                        seen_content.add(dedup_key)
-                        deduplicated.append(item)
-                    else:
-                        is_duplicate = True
-                        logger.debug(f"CROSS-SECTION DEDUP: Skipped duplicate in {section} (key: {dedup_key[:80]}...)")
+                    logger.debug(f"CROSS-SECTION DEDUP: Skipped duplicate in {section} (key: {dedup_key[:80]}...)")
 
             original_count = len(items)
             if len(deduplicated) < original_count:
@@ -1276,12 +1274,12 @@ class UnifiedPromptBuilder:
 
                 backfill_result = await self._backfill_recent_conversations(
                     existing_items=deduplicated,
-                    seen_embeddings=seen_embeddings,
+                    seen_embeddings=[],
                     seen_content=seen_content,
                     target_count=target_count,
                     offset=original_count,
-                    embedder=embedder,
-                    similarity_threshold=SIMILARITY_THRESHOLD
+                    embedder=None,
+                    similarity_threshold=0.90
                 )
 
                 context[section] = backfill_result
@@ -1481,6 +1479,82 @@ class UnifiedPromptBuilder:
         """Legacy context gathering method - delegates to build_prompt."""
         return await self.build_prompt(user_input, config)
 
+    def _build_feature_inventory(self, context: Dict[str, Any]) -> str:
+        """Build a compact feature inventory showing which systems are active and what they returned.
+
+        Reads config flags and counts results from the context dict.
+        No retrieval needed — purely reads config flags and context dict counts.
+
+        Returns:
+            Compact multi-line string grouped by category, or empty string.
+        """
+        try:
+            from config import app_config as cfg
+
+            def _on_off(flag: bool) -> str:
+                return "ON" if flag else "OFF"
+
+            def _count(key: str, fallback=None) -> str:
+                """Get count annotation from context, e.g. '(3)' or ''."""
+                val = context.get(key, fallback)
+                if val is None:
+                    return ""
+                if isinstance(val, list):
+                    return f"({len(val)})" if val else "(0)"
+                if isinstance(val, str):
+                    return f"({len(val.split(chr(10)))})" if val.strip() else "(0)"
+                if isinstance(val, dict):
+                    total = sum(len(v) for v in val.values() if isinstance(v, list))
+                    return f"({total})" if total else "(0)"
+                return ""
+
+            lines = []
+
+            # Memory category
+            mem_parts = []
+            kg_enabled = getattr(cfg, 'KNOWLEDGE_GRAPH_ENABLED', False)
+            kg_ctx = context.get("graph_context", []) or []
+            mem_parts.append(f"knowledge_graph={_on_off(kg_enabled)}{f'({len(kg_ctx)} edges)' if kg_ctx else ''}")
+            mem_parts.append(f"fact_verification={_on_off(getattr(cfg, 'FACT_VERIFICATION_ENABLED', False))}")
+            mem_parts.append(f"truth_scorer={_on_off(getattr(cfg, 'TRUTH_SCORER_ENABLED', True))}")
+            mem_parts.append(f"dedup={_on_off(getattr(cfg, 'CROSS_DEDUP_ENABLED', False))}")
+            lines.append("Memory: " + " | ".join(mem_parts))
+
+            # Knowledge category
+            know_parts = []
+            git = context.get("git_commits", []) or []
+            know_parts.append(f"git_commits={_on_off(getattr(cfg, 'GIT_MEMORY_ENABLED', False))}{f'({len(git)})' if git else ''}")
+            notes = context.get("personal_notes", []) or []
+            know_parts.append(f"obsidian={_on_off(bool(notes))}{f'({len(notes)} notes)' if notes else ''}")
+            ref_docs = context.get("reference_docs", []) or []
+            know_parts.append(f"reference_docs={_on_off(getattr(cfg, 'REFERENCE_DOCS_AUTO_SEED', False))}{f'({len(ref_docs)})' if ref_docs else ''}")
+            web = context.get("web_search_results")
+            know_parts.append(f"web_search={_on_off(getattr(cfg, 'WEB_SEARCH_ENABLED', False))}{_count('web_search_results')}")
+            lines.append("Knowledge: " + " | ".join(know_parts))
+
+            # Proactive category
+            pro_parts = []
+            threads = context.get("unresolved_threads", []) or []
+            pro_parts.append(f"threads={_on_off(getattr(cfg, 'THREAD_SURFACING_ENABLED', False))}{f'({len(threads)} open)' if threads else ''}")
+            insights = context.get("proactive_insights", []) or []
+            pro_parts.append(f"insights={_on_off(getattr(cfg, 'PROACTIVE_SURFACING_ENABLED', False))}{f'({len(insights)})' if insights else ''}")
+            pro_parts.append(f"narrative={_on_off(getattr(cfg, 'NARRATIVE_CONTEXT_ENABLED', True) if hasattr(cfg, 'NARRATIVE_CONTEXT_ENABLED') else bool(context.get('narrative_state')))}")
+            lines.append("Proactive: " + " | ".join(pro_parts))
+
+            # Analysis category
+            ana_parts = []
+            ana_parts.append(f"intent={_on_off(getattr(cfg, 'INTENT_ENABLED', False))}")
+            ana_parts.append(f"escalation={_on_off(getattr(cfg, 'ESCALATION_ENABLED', False))}")
+            skills = context.get("procedural_skills", []) or []
+            ana_parts.append(f"skills={_on_off(getattr(cfg, 'PROCEDURAL_SKILLS_ENABLED', False))}{f'({len(skills)})' if skills else ''}")
+            lines.append("Analysis: " + " | ".join(ana_parts))
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.debug(f"[PromptBuilder] Feature inventory failed: {e}")
+            return ""
+
     def _assemble_prompt(self, context: Dict[str, Any] = None, user_input: str = "",
                         directives: str = "", system_prompt: str = "", **kwargs) -> str:
         """
@@ -1614,7 +1688,8 @@ class UnifiedPromptBuilder:
                 ts = ""
             if content:
                 content = _sanitize_embedded_headers(content)
-                recent_sum_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
+                prefix = _staleness_prefix(s)
+                recent_sum_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
         if recent_sum_lines:
             sections.append(f"[RECENT SUMMARIES] n={len(recent_sum_lines)}\n" + "\n\n".join(recent_sum_lines))
             logger.warning(f"PROMPT ASSEMBLY: Added recent summaries section with {len(recent_sum_lines)} items")
@@ -1633,7 +1708,8 @@ class UnifiedPromptBuilder:
                 ts = ""
             if content:
                 content = _sanitize_embedded_headers(content)
-                semantic_sum_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
+                prefix = _staleness_prefix(s)
+                semantic_sum_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
         if semantic_sum_lines:
             sections.append(f"[SEMANTIC SUMMARIES] n={len(semantic_sum_lines)}\n" + "\n\n".join(semantic_sum_lines))
 
@@ -1649,7 +1725,8 @@ class UnifiedPromptBuilder:
                 ts = ""
             if content:
                 content = _sanitize_embedded_headers(content)
-                recent_refl_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
+                prefix = _staleness_prefix(r)
+                recent_refl_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
         if recent_refl_lines:
             sections.append(f"[RECENT REFLECTIONS] n={len(recent_refl_lines)}\n" + "\n\n".join(recent_refl_lines))
 
@@ -1665,7 +1742,8 @@ class UnifiedPromptBuilder:
                 ts = ""
             if content:
                 content = _sanitize_embedded_headers(content)
-                semantic_refl_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
+                prefix = _staleness_prefix(r)
+                semantic_refl_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
         if semantic_refl_lines:
             sections.append(f"[SEMANTIC REFLECTIONS] n={len(semantic_refl_lines)}\n" + "\n\n".join(semantic_refl_lines))
 
@@ -1685,7 +1763,6 @@ class UnifiedPromptBuilder:
 
         # Web search results (real-time web content)
         web_search = context.get("web_search_results")
-        logger.warning(f"[ASSEMBLE_PROMPT] web_search_results = {type(web_search)}, value = {web_search}")
         if web_search is not None:
             try:
                 # Handle WebSearchResult object
@@ -2023,6 +2100,16 @@ class UnifiedPromptBuilder:
                 thread_lines.append(line)
             sections.append(f"[UNRESOLVED THREADS] n={len(thread_lines)}\n" + "\n".join(thread_lines))
 
+        # Proactive cross-domain insights
+        proactive_insights = context.get("proactive_insights", []) or []
+        if proactive_insights:
+            insight_block = "\n".join(f"- {s}" for s in proactive_insights)
+            sections.append(
+                f"[PROACTIVE INSIGHTS] n={len(proactive_insights)}\n"
+                "These are non-obvious connections across different areas of the user's life. "
+                "Weave them in naturally IF relevant. Do NOT announce them as insights.\n"
+                f"{insight_block}")
+
         # User Profile (replaces semantic_facts + fresh_facts)
         # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
         user_profile = context.get("user_profile", "")
@@ -2030,6 +2117,37 @@ class UnifiedPromptBuilder:
             # Count facts (each fact ends with [timestamp])
             fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
             sections.append(f"[USER PROFILE] n={fact_count}\n{user_profile}")
+
+        # Active Features Inventory (always present, compact)
+        feature_inventory = self._build_feature_inventory(context)
+        if feature_inventory:
+            sections.append(f"[ACTIVE FEATURES]\n{feature_inventory}")
+
+        # Codebase changes since last session (first message only)
+        codebase_changes = context.get("codebase_changes", {})
+        if codebase_changes:
+            cc_lines = []
+            since_label = codebase_changes.get("since_label", "last session")
+            committed = codebase_changes.get("committed", [])
+            uncommitted_mod = codebase_changes.get("uncommitted_modified", [])
+            uncommitted_new = codebase_changes.get("uncommitted_new", [])
+            if committed:
+                cc_lines.append(f"Committed ({len(committed)}):")
+                for c in committed:
+                    cc_lines.append(f"  - {c}")
+            if uncommitted_mod:
+                cc_lines.append(f"Modified uncommitted ({len(uncommitted_mod)}):")
+                for f in uncommitted_mod:
+                    cc_lines.append(f"  - {f}")
+            if uncommitted_new:
+                cc_lines.append(f"New untracked ({len(uncommitted_new)}):")
+                for f in uncommitted_new:
+                    cc_lines.append(f"  - {f}")
+            if cc_lines:
+                total = len(committed) + len(uncommitted_mod) + len(uncommitted_new)
+                sections.append(
+                    f"[CODEBASE CHANGES SINCE LAST SESSION] n={total} (since {since_label})\n"
+                    + "\n".join(cc_lines))
 
         # Time context
         # MOVED: Placed here (right before STM and query) for temporal grounding with high attention
@@ -2192,6 +2310,7 @@ class PromptBuilder:
                 "proposed_features": [],
                 "graph_context": [],
                 "unresolved_threads": [],
+                "proactive_insights": [],
             }
             return self.unified_builder._assemble_prompt(context, user_input)
         else:

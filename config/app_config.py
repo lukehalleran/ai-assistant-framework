@@ -408,6 +408,24 @@ CODE_PROPOSALS_PROMPT_MAX = int(os.getenv("CODE_PROPOSALS_PROMPT_MAX", str(CODE_
 CODE_PROPOSALS_LLM_RANKING = bool(int(os.getenv("CODE_PROPOSALS_LLM_RANKING", "1" if CODE_PROPOSALS_LLM_RANKING else "0")))
 
 # --------------------------------------------------------------------
+# Implementation Tracking Configuration
+# --------------------------------------------------------------------
+# Automatic detection of whether pending proposals have been implemented.
+# 4-stage pipeline: file existence → code content grep → git history → LLM judgment.
+IMPL_TRACKING_CFG = config.get("implementation_tracking", {})
+IMPL_TRACKING_ENABLED = bool(IMPL_TRACKING_CFG.get("enabled", True))
+IMPL_TRACKING_COOLDOWN = int(IMPL_TRACKING_CFG.get("cooldown_seconds", 86400))
+IMPL_TRACKING_CONFIDENCE_CONFIRMED = float(IMPL_TRACKING_CFG.get("confidence_confirmed", 0.85))
+IMPL_TRACKING_CONFIDENCE_LIKELY = float(IMPL_TRACKING_CFG.get("confidence_likely", 0.60))
+IMPL_TRACKING_GIT_DEPTH = int(IMPL_TRACKING_CFG.get("git_depth", 50))
+IMPL_TRACKING_AT_SHUTDOWN = bool(IMPL_TRACKING_CFG.get("at_shutdown", True))
+IMPL_TRACKING_AUTO_COMPLETE = bool(IMPL_TRACKING_CFG.get("auto_complete", False))
+
+# Environment variable overrides for Implementation Tracking
+IMPL_TRACKING_ENABLED = bool(int(os.getenv("IMPL_TRACKING_ENABLED", "1" if IMPL_TRACKING_ENABLED else "0")))
+IMPL_TRACKING_AT_SHUTDOWN = bool(int(os.getenv("IMPL_TRACKING_AT_SHUTDOWN", "1" if IMPL_TRACKING_AT_SHUTDOWN else "0")))
+
+# --------------------------------------------------------------------
 # Escalation Tracker Configuration
 # --------------------------------------------------------------------
 # Adaptive tone de-escalation with session momentum tracking.
@@ -844,6 +862,23 @@ USER_FACTS_PER_TURN_CAP = int(os.getenv("USER_FACTS_PER_TURN_CAP", str(USER_FACT
 ENTITY_FACT_MIN_CONFIDENCE = float(os.getenv("ENTITY_FACT_MIN_CONFIDENCE", str(ENTITY_FACT_MIN_CONFIDENCE)))
 
 # --------------------------------------------------------------------
+# Fact Verification Gate
+# --------------------------------------------------------------------
+# Intercept newly extracted facts before ChromaDB storage, checking for
+# contradictions against existing facts.  Verdicts: STORE, STORE_AND_FLAG
+# (marks old fact as superseded), REJECT, SKIP (ephemeral).
+FACT_VERIFICATION_CFG = config.get("fact_verification", {})
+FACT_VERIFICATION_ENABLED: bool = bool(FACT_VERIFICATION_CFG.get("enabled", True))
+FACT_VERIFICATION_LLM_ENABLED: bool = bool(FACT_VERIFICATION_CFG.get("llm_enabled", True))
+FACT_VERIFICATION_MODEL: str = str(FACT_VERIFICATION_CFG.get("model", "gpt-4o-mini"))
+FACT_VERIFICATION_USER_TRUST_THRESHOLD: float = float(FACT_VERIFICATION_CFG.get("user_trust_threshold", 0.85))
+FACT_VERIFICATION_MAX_CANDIDATES: int = int(FACT_VERIFICATION_CFG.get("max_candidates", 10))
+
+# Environment variable overrides for Fact Verification
+FACT_VERIFICATION_ENABLED = bool(int(os.getenv("FACT_VERIFICATION_ENABLED", "1" if FACT_VERIFICATION_ENABLED else "0")))
+FACT_VERIFICATION_LLM_ENABLED = bool(int(os.getenv("FACT_VERIFICATION_LLM_ENABLED", "1" if FACT_VERIFICATION_LLM_ENABLED else "0")))
+
+# --------------------------------------------------------------------
 # Knowledge Graph Configuration
 # --------------------------------------------------------------------
 # NetworkX-based knowledge graph for entity relationships and multi-hop
@@ -884,11 +919,92 @@ THREAD_MODEL_ALIAS: str = str(THREAD_CFG.get("model_alias", ""))
 THREAD_SURFACING_ENABLED = bool(int(os.getenv("THREAD_SURFACING_ENABLED", "1" if THREAD_SURFACING_ENABLED else "0")))
 
 # --------------------------------------------------------------------
+# Proactive Context Surfacing
+# --------------------------------------------------------------------
+# Uses the knowledge graph to surface cross-domain connections unprompted.
+# Classifies user-adjacent entities by life domain and bridges across domains
+# using a single LLM call to synthesize non-obvious insights.
+PROACTIVE_SURFACING_CFG = config.get("proactive_surfacing", {})
+PROACTIVE_SURFACING_ENABLED: bool = bool(PROACTIVE_SURFACING_CFG.get("enabled", True))
+PROACTIVE_SURFACING_MIN_GRAPH_NODES: int = int(PROACTIVE_SURFACING_CFG.get("min_graph_nodes", 20))
+PROACTIVE_SURFACING_MIN_GRAPH_EDGES: int = int(PROACTIVE_SURFACING_CFG.get("min_graph_edges", 15))
+PROACTIVE_SURFACING_MAX_INSIGHTS: int = int(PROACTIVE_SURFACING_CFG.get("max_insights", 2))
+PROACTIVE_SURFACING_COOLDOWN_HOURS: int = int(PROACTIVE_SURFACING_CFG.get("cooldown_hours", 72))
+PROACTIVE_SURFACING_MODEL: str = str(PROACTIVE_SURFACING_CFG.get("model", ""))
+PROACTIVE_SURFACING_HISTORY_PATH: str = str(PROACTIVE_SURFACING_CFG.get("history_path", os.path.join("data", "surfacing_history.json")))
+PROMPT_MAX_PROACTIVE_INSIGHTS: int = int(PROACTIVE_SURFACING_CFG.get("max_prompt_insights", 2))
+
+# Environment variable overrides for Proactive Surfacing
+PROACTIVE_SURFACING_ENABLED = bool(int(os.getenv("PROACTIVE_SURFACING_ENABLED", "1" if PROACTIVE_SURFACING_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Memory Staleness Configuration
+# --------------------------------------------------------------------
+# Detect and penalize stale claims embedded in summaries/reflections.
+# When a fact is corrected, all summaries containing that (subject, relation)
+# claim get their staleness_ratio updated.  Scoring applies a proportional
+# penalty; prompt formatting prefixes highly stale items.
+STALENESS_CFG = config.get("staleness", {})
+STALENESS_ENABLED: bool = bool(STALENESS_CFG.get("enabled", True))
+# Maximum score penalty from staleness (caps the deduction)
+STALENESS_MAX_PENALTY: float = float(STALENESS_CFG.get("max_penalty", 0.4))
+# Base weight applied to staleness_ratio
+STALENESS_WEIGHT: float = float(STALENESS_CFG.get("weight", 0.15))
+# Ratio threshold for steep (2x) penalty multiplier
+STALENESS_STEEP_THRESHOLD: float = float(STALENESS_CFG.get("steep_threshold", 0.8))
+# Multiplier applied when staleness_ratio >= steep_threshold
+STALENESS_STEEP_MULTIPLIER: float = float(STALENESS_CFG.get("steep_multiplier", 2.0))
+# Ratio threshold for [HISTORICAL — PARTIALLY OUTDATED] prompt prefix
+STALENESS_HISTORICAL_THRESHOLD: float = float(STALENESS_CFG.get("historical_threshold", 0.6))
+# Reflections get reduced penalty (behavioral patterns are more durable)
+STALENESS_REFLECTION_WEIGHT_FACTOR: float = float(STALENESS_CFG.get("reflection_weight_factor", 0.6))
+# Persistence path for the claim reverse-index
+STALENESS_INDEX_PATH: str = str(STALENESS_CFG.get("index_path", os.path.join("data", "claim_index.json")))
+
+# Environment variable overrides for Staleness
+STALENESS_ENABLED = bool(int(os.getenv("STALENESS_ENABLED", "1" if STALENESS_ENABLED else "0")))
+
+# --------------------------------------------------------------------
 # Agentic Memory Search
 # --------------------------------------------------------------------
 AGENTIC_CFG = config.get("agentic_search", {})
 AGENTIC_MEMORY_SEARCH_ENABLED: bool = bool(AGENTIC_CFG.get("memory_search_enabled", True))
 AGENTIC_MEMORY_SEARCH_LIMIT: int = int(AGENTIC_CFG.get("memory_search_limit", 7))
+
+# --------------------------------------------------------------------
+# Agentic File Access (read/grep/list within approved folders)
+# --------------------------------------------------------------------
+FILE_ACCESS_CFG = config.get("file_access", {})
+FILE_ACCESS_ENABLED: bool = bool(FILE_ACCESS_CFG.get("enabled", True))
+FILE_ACCESS_APPROVED_FOLDERS: list = FILE_ACCESS_CFG.get("approved_folders", ["."])
+FILE_ACCESS_MAX_READ_BYTES: int = int(FILE_ACCESS_CFG.get("max_read_bytes", 100_000))
+FILE_ACCESS_MAX_GREP_RESULTS: int = int(FILE_ACCESS_CFG.get("max_grep_results", 25))
+FILE_ACCESS_MAX_LIST_ENTRIES: int = int(FILE_ACCESS_CFG.get("max_list_entries", 200))
+FILE_ACCESS_ALLOWED_EXTENSIONS: list = FILE_ACCESS_CFG.get("allowed_extensions", [
+    ".py", ".md", ".txt", ".json", ".yaml", ".yml",
+    ".toml", ".cfg", ".ini", ".log", ".csv", ".r", ".R",
+    ".html", ".css", ".js", ".ts", ".sh", ".bash",
+    ".doc", ".docx", ".pdf", ".rst", ".tex", ".xml",
+])
+
+# Environment overrides
+FILE_ACCESS_ENABLED = bool(int(os.getenv("FILE_ACCESS_ENABLED", "1" if FILE_ACCESS_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Session Diff (codebase change awareness on first message)
+# --------------------------------------------------------------------
+# On the first message of a session, detect what files changed since
+# last_session_end_time and inject a [CODEBASE CHANGES SINCE LAST SESSION]
+# section into the prompt so the agent knows about external edits.
+SESSION_DIFF_CFG = config.get("session_diff", {})
+SESSION_DIFF_ENABLED: bool = bool(SESSION_DIFF_CFG.get("enabled", True))
+SESSION_DIFF_MAX_COMMITTED: int = int(SESSION_DIFF_CFG.get("max_committed", 20))
+SESSION_DIFF_MAX_UNCOMMITTED: int = int(SESSION_DIFF_CFG.get("max_uncommitted", 20))
+SESSION_DIFF_EXTENSIONS = SESSION_DIFF_CFG.get("include_extensions",
+    [".py", ".yaml", ".yml", ".json", ".md", ".toml", ".cfg"])
+
+# Environment variable overrides for Session Diff
+SESSION_DIFF_ENABLED = bool(int(os.getenv("SESSION_DIFF_ENABLED", "1" if SESSION_DIFF_ENABLED else "0")))
 
 # --------------------------------------------------------------------
 # Final setup

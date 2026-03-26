@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-03-23
+**Last Updated**: 2026-03-25
 
 ---
 
@@ -74,6 +74,12 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/thread_models.py` - Pydantic models: ThreadType, ThreadStatus, OpenThread **[NEW 2026-03-20]**
 - `memory/thread_store.py` - ChromaDB-backed thread CRUD, priority ranking, staleness, cap enforcement **[NEW 2026-03-20]**
 - `memory/thread_extractor.py` - LLM-based thread extraction and resolution detection **[NEW 2026-03-20]**
+- `memory/claim_tracker.py` - ClaimKey model, ClaimIndex reverse index, claim extraction from text (staleness cascade) **[NEW 2026-03-25]**
+- `memory/fact_verification.py` - Pre-storage conflict detection (STORE/STORE_AND_FLAG/REJECT/SKIP) **[NEW 2026-03-25]**
+- `memory/context_surfacer.py` - Cross-domain proactive insight generation from knowledge graph **[NEW 2026-03-25]**
+- `memory/surfacing_models.py` - Pydantic models: DomainEntity, DomainCluster, CrossDomainCandidate, ProactiveInsight **[NEW 2026-03-25]**
+- `memory/surfacing_history.py` - JSON-backed novelty tracking for surfacing cooldowns **[NEW 2026-03-25]**
+- `knowledge/implementation_detector.py` - 4-stage proposal implementation tracking **[NEW 2026-03-25]**
 - `memory/memory_interface.py` - Protocol contracts
 
 The incomplete V2 `memory/coordinator.py` has been deleted.
@@ -311,7 +317,10 @@ MemoryCoordinator (memory_coordinator.py, ~498 lines)
 ├── ShutdownProcessor (shutdown_processor.py) - Session-end processing
 ├── ThreadManager (thread_manager.py) - Conversation thread tracking
 ├── HybridRetriever (hybrid_retriever.py) - Query rewrite + keyword
-└── UserProfile (user_profile.py) - User fact profile
+├── UserProfile (user_profile.py) - User fact profile
+├── FactVerifier (fact_verification.py) - Pre-storage conflict gate [NEW 2026-03-25]
+├── ClaimIndex (claim_tracker.py) - Claim staleness tracking [NEW 2026-03-25]
+└── ContextSurfacer (context_surfacer.py) - Proactive cross-domain insights [NEW 2026-03-25]
 ```
 
 **5 Memory Types** (MemoryType enum):
@@ -338,8 +347,11 @@ MemoryCoordinator (memory_coordinator.py, ~498 lines)
 - Access count boosts truth score
 
 **Init**: Passes `memory_coordinator=self` to ShutdownProcessor, enabling pipeline-enriched proposal generation **[ENHANCED 2026-02-09]**
+- Creates `FactVerifier(chroma_store, model_manager)` when `FACT_VERIFICATION_ENABLED`, passes to MemoryStorage as `fact_verifier=` **[NEW 2026-03-25]**
+- Creates `ContextSurfacer(graph_memory, entity_resolver, model_manager)` when graph_memory + entity_resolver available **[NEW 2026-03-25]**
+- Creates `ClaimIndex(persist_path=STALENESS_INDEX_PATH)` when `STALENESS_ENABLED`, passes to ShutdownProcessor as `claim_index=` **[NEW 2026-03-25]**
 
-**Dependencies**: MemoryRetriever, MemoryStorage, MemoryScorer, ShutdownProcessor, ThreadManager, HybridRetriever, CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryConsolidator, UserProfile
+**Dependencies**: MemoryRetriever, MemoryStorage, MemoryScorer, ShutdownProcessor, ThreadManager, HybridRetriever, CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryConsolidator, UserProfile, FactVerifier, ClaimIndex, ContextSurfacer
 
 ---
 
@@ -375,9 +387,21 @@ final_score = (
     anchor_bonus +
     meta_bonus +            # for meta-conversational queries
     graph_bonus +           # 0.05 per graph-connected entity, capped at 0.15 [NEW 2026-03]
+    staleness_penalty +     # negative penalty for summaries/reflections with outdated claims [NEW 2026-03-25]
     penalties +
     size_penalty            # scaled document size penalty
 )
+```
+
+**Staleness Penalty** (step 12 in scoring loop) **[NEW 2026-03-25]**:
+When `STALENESS_ENABLED`, reads `staleness_ratio` from memory metadata (set by `ClaimIndex.cascade_staleness()`):
+```python
+base_penalty = staleness_ratio * STALENESS_WEIGHT  # default 0.15
+if staleness_ratio >= STALENESS_STEEP_THRESHOLD:    # default 0.8
+    base_penalty *= STALENESS_STEEP_MULTIPLIER      # default 2.0
+if collection == 'reflections':
+    base_penalty *= STALENESS_REFLECTION_WEIGHT_FACTOR  # default 0.6 (reflections more durable)
+staleness_penalty = -min(base_penalty, STALENESS_MAX_PENALTY)  # capped at -0.4
 ```
 
 **Temporal-Aware Recency Decay** **[NEW 2026-02-17]**:
@@ -431,14 +455,18 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   ```python
   1. Gather unsummarized conversations (from session or corpus)
   2. Create block summaries (consolidator) for every N turns
+     2a. After each summary stored, extract claims via extract_claims_from_text()
+         and register in ClaimIndex (if STALENESS_ENABLED) [NEW 2026-03-25]
   3. Store summaries in ChromaDB (summaries collection)
   4. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor)
   5. Extract procedural skills via LLM (0-3 per session)
   6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
-  6.5. Extract open threads via LLM + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
-  7. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
-  8. Update UserProfile with user-only facts (entity facts stored in ChromaDB only) [ENHANCED 2026-03]
-  9. Log statistics
+  6.5. Lightweight implementation tracking — file existence only, ~50ms/proposal (ImplementationDetector) [NEW 2026-03-25]
+  6.75. Extract open threads via LLM + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
+  7. Save knowledge graph + entity aliases + claim index to disk [ENHANCED 2026-03-25]
+  8. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
+  9. Update UserProfile with user-only facts (entity facts stored in ChromaDB only) [ENHANCED 2026-03]
+  10. Log statistics
   ```
 
 - `async run_shutdown_reflection(session_conversations=None, session_summaries=None)` → End-of-session LLM reflection:
@@ -486,9 +514,9 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   - Sync retrieval: summaries (3), git commits (5), user profile (300 tokens)
   - Returns structured context sections: Recent Conversation, Relevant Memories, Session Summaries, Past Reflections, Problem-Solving Patterns, Known User Facts, User Profile, Recent Git Activity
 
-**Constructor**: `__init__(..., memory_coordinator=None)` — accepts MemoryCoordinator for pipeline-enriched generation **[ENHANCED 2026-02-09]**
+**Constructor**: `__init__(..., memory_coordinator=None, thread_store=None, claim_index=None)` — accepts MemoryCoordinator for pipeline-enriched generation, optional ClaimIndex for staleness tracking **[ENHANCED 2026-03-25]**
 
-**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill, GoalDirectedGenerator, ProposalStore, ThreadExtractor, ThreadStore, MemoryCoordinator (optional)
+**Dependencies**: CorpusManager, MultiCollectionChromaStore, MemoryConsolidator, LLMFactExtractor, FactExtractor, ModelManager, UserProfile, MemoryScorer, TimeManager, ProceduralSkill, GoalDirectedGenerator, ProposalStore, ThreadExtractor, ThreadStore, ImplementationDetector, ClaimIndex, MemoryCoordinator (optional)
 
 ---
 
@@ -504,6 +532,8 @@ class ContradictionCluster(BaseModel):  # subject, predicate, entries[], keep_id
 class DedupPlan(BaseModel):      # duplicate_pairs[], contradiction_clusters[], stats, to_markdown()
 ```
 
+**Constructor**: `__init__(chroma_store, claim_index=None, entity_resolver=None)` — optional ClaimIndex for staleness cascade on contradiction resolution, optional EntityResolver for claim canonicalization **[ENHANCED 2026-03-25]**
+
 **Key Methods** (`memory/cross_deduplicator.py`):
 - `run(dry_run=True) -> DedupPlan` → Full dedup pass:
   ```python
@@ -512,7 +542,8 @@ class DedupPlan(BaseModel):      # duplicate_pairs[], contradiction_clusters[], 
   3. Pairwise cosine similarity → find duplicates >= 0.92 threshold
   4. Group facts by (subject, predicate) → find contradictions (differing objects)
   5. Skip ephemeral predicates (from PROFILE_EPHEMERAL_RELATIONS config)
-  6. If not dry_run: execute deletions via collection.delete(ids=[...])
+  6. If STALENESS_ENABLED and claim_index: cascade staleness for contradiction losers [NEW 2026-03-25]
+  7. If not dry_run: execute deletions via collection.delete(ids=[...])
   ```
 
 - `_find_cross_duplicates(docs, embeddings) -> List[DuplicatePair]` → Pairwise similarity scan
@@ -1070,6 +1101,8 @@ Priority order (with weights):
 - proposed_features: 3         # Code proposals (project-related queries only) [NEW 2026-02-09]
 - graph_context: 3             # Knowledge graph traversal [NEW 2026-03]
 - open_threads: 3              # Unresolved threads surfacing [NEW 2026-03-20]
+- proactive_insights: 3        # Cross-domain insights from knowledge graph [NEW 2026-03-25]
+- feature_inventory: 3         # Active features summary [NEW 2026-03-25]
 - reflections/dreams: 2
 - wiki: 1
 ```
@@ -1096,6 +1129,9 @@ Priority order (with weights):
   "proposed_features": [...],   # Code proposals for project-related queries [NEW 2026-02-09]
   "graph_context": [...],       # Knowledge graph traversal results [NEW 2026-03]
   "open_threads": [...],        # Unresolved threads for session surfacing [NEW 2026-03-20]
+  "proactive_insights": [...],  # Cross-domain insights from knowledge graph [NEW 2026-03-25]
+  "codebase_changes": str,      # Git changes since last session (first message only) [NEW 2026-03-25]
+  "feature_inventory": str,     # Active features summary [NEW 2026-03-25]
 }
 ```
 
@@ -1105,6 +1141,8 @@ Priority order (with weights):
 - `builder.py::_hygiene_and_caps(context)` → Dedupe with semantic similarity (0.90 threshold)
 - `builder.py::_backfill_recent_conversations()` → Top-up after deduplication
 - `builder.py::_build_lightweight_context()` → Minimal context for small-talk
+- `builder.py::_build_feature_inventory(context)` → Compact 4-line inventory of enabled features + result counts **[NEW 2026-03-25]**
+- `builder.py::_staleness_prefix(item)` → Module-level helper: returns "[HISTORICAL — some claims outdated] " prefix for items with `staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD` **[NEW 2026-03-25]**
 - `token_manager.py::_manage_token_budget(context)` → Budget enforcement
 - `context_gatherer.py::_get_summaries_separate()` → Hybrid recent+semantic retrieval
 - `summarizer.py::_reflect_on_demand()` → Generate reflections if below threshold
@@ -1112,7 +1150,7 @@ Priority order (with weights):
   - Prevents prompt pollution when conversations discuss prompt structure
   - Converts `[RECENT CONVERSATION]` → `(RECENT CONVERSATION)` in stored memories
   - Applied to: memories, summaries, reflections, facts in builder.py
-  - Includes `[PROPOSED FEATURES]`, `[KNOWLEDGE GRAPH]`, `[UNRESOLVED THREADS]` patterns **[ENHANCED 2026-03-20]**
+  - Includes `[PROPOSED FEATURES]`, `[KNOWLEDGE GRAPH]`, `[UNRESOLVED THREADS]`, `[PROACTIVE INSIGHTS]`, `[ACTIVE FEATURES]`, `[CODEBASE CHANGES]` patterns **[ENHANCED 2026-03-25]**
 
 **Deduplication Features**:
 - Cross-section semantic deduplication using embedder
@@ -1140,7 +1178,10 @@ Time since last session: 2 d 3 h
 ...
 
 [RECENT SUMMARIES] n=5
+# Summaries/reflections with staleness_ratio >= 0.6 get prefix:
+# "[HISTORICAL — PARTIALLY OUTDATED] ..." [NEW 2026-03-25]
 1) 2025-11-15: Summary content...
+2) [HISTORICAL — PARTIALLY OUTDATED] 2025-11-10: Older summary with stale claims...
 ...
 
 [SEMANTIC SUMMARIES] n=5
@@ -1174,7 +1215,23 @@ Dillion lives in Portland
 - [COMMITMENT] Call doctor about prescription — mentioned 3 days ago (urgency: 0.6)
 ...
 
+[PROACTIVE INSIGHTS] n=N [NEW 2026-03-25]
+- Your brewery work schedule might be affecting the gym routine you mentioned wanting to improve
+- The Python skills from your Daemon project could help automate the data analysis for your ISYE class
+...
+
 [USER PROFILE]
+...
+
+[ACTIVE FEATURES] [NEW 2026-03-25]
+Memories: 12 | Facts: 8 | Summaries: 3 | Skills: 2 | Graph: 45 nodes | Threads: 2 open
+...
+
+[CODEBASE CHANGES SINCE LAST SESSION] (first message only) [NEW 2026-03-25]
+Since last session (2 days ago):
+Committed: core/prompt/builder.py, memory/claim_tracker.py, ...
+Uncommitted modified: config/app_config.py, ...
+Uncommitted new: memory/context_surfacer.py, ...
 ...
 
 [SHORT-TERM CONTEXT SUMMARY]
@@ -2275,7 +2332,7 @@ Query → ProposalFilter.get_proposals(query, limit=3)
 
 ---
 
-### 2.12.5b core/prompt/proposal_filter.py (Proposal Prompt Injection Pipeline) **[NEW 2026-02-09]**
+### 2.12.5c core/prompt/proposal_filter.py (Proposal Prompt Injection Pipeline) **[NEW 2026-02-09]**
 **Purpose**: Retrieval, dedup, gating, and ranking of code proposals for injection into the `[PROPOSED FEATURES]` prompt section
 
 **Module Contract**:
@@ -3020,6 +3077,366 @@ THREAD_MODEL_ALIAS = ""           # LLM model for extraction (default: system de
 
 ---
 
+### 2.15c Fact Verification Gate (memory/fact_verification.py) **[NEW 2026-03-25]**
+**Purpose**: Pre-storage gate that intercepts newly extracted facts before ChromaDB storage, checks against existing facts for contradictions, and returns a verdict. No auto-deletion — conflicting old facts get `superseded_by` metadata.
+
+**Data Models**:
+```python
+class FactVerdict(str, Enum):
+    STORE            # No conflict — proceed normally
+    STORE_AND_FLAG   # Store new, mark old as superseded
+    REJECT           # Likely extraction error — discard
+    SKIP             # Ephemeral relation — store without checking
+
+class ConflictCandidate(BaseModel):
+    doc_id: str
+    content: str
+    subject: str
+    predicate: str
+    object: str
+    confidence: float
+    timestamp: str
+
+class VerificationResult(BaseModel):
+    verdict: FactVerdict
+    confidence: float
+    reason: str
+    conflicting_candidates: List[ConflictCandidate]
+    metadata_updates: dict
+```
+
+**FactVerifier Flow**:
+```python
+verify(subject, predicate, object_val, fact_text, source, confidence, fact_scope) →
+  1. No parseable triple? → SKIP
+  2. Ephemeral relation (from PROFILE_EPHEMERAL_RELATIONS)? → SKIP
+  3. Query ChromaDB facts for candidates with matching subject+predicate
+  4. No candidates? → STORE (fast path)
+  5. Candidates have same object? → STORE (re-confirmation)
+  6. User-stated source + confidence >= FACT_VERIFICATION_USER_TRUST_THRESHOLD? → STORE_AND_FLAG
+  7. Entity-scope + low confidence (< 0.6)? → REJECT
+  8. LLM adjudication (if FACT_VERIFICATION_LLM_ENABLED): A=update, B=coexist, C=implausible
+  9. Fallback → STORE_AND_FLAG (trust newer)
+```
+
+**LLM Adjudication** (Stage 8):
+- Minimal prompt (~200 tokens): presents existing facts + new fact, asks A/B/C
+- A → STORE_AND_FLAG (update), B → STORE (complementary), C → REJECT (implausible)
+- `max_tokens=4`, `temperature=0.0`
+- Graceful fallback on LLM failure → trust newer
+
+**Additional Methods**:
+- `verify_batch(facts: List[dict]) -> List[VerificationResult]` — Verify a batch of facts, returns results in same order
+
+**Integration Points**:
+1. **Init**: Created in `MemoryCoordinator.__init__()` when `FACT_VERIFICATION_ENABLED`, passed to MemoryStorage as `fact_verifier=`
+2. **Storage**: `memory_storage.py` intercepts before `add_fact()`, calls `verify()` and acts on verdict
+3. **Shutdown**: `shutdown_processor.py` gates `_extract_session_facts()` and `_extract_llm_facts()`
+4. **Reuses**: `CrossCollectionDeduplicator._extract_triple()` for triple parsing from existing facts
+
+**Configuration** (`config/app_config.py`, YAML section `fact_verification`):
+```python
+FACT_VERIFICATION_ENABLED = True
+FACT_VERIFICATION_LLM_ENABLED = True
+FACT_VERIFICATION_MODEL = "gpt-4o-mini"
+FACT_VERIFICATION_USER_TRUST_THRESHOLD = 0.85
+FACT_VERIFICATION_MAX_CANDIDATES = 10
+```
+
+**Tests**: `tests/unit/test_fact_verification.py` — 39 tests
+
+---
+
+### 2.15d Proactive Context Surfacing (memory/context_surfacer.py + surfacing_models.py + surfacing_history.py) **[NEW 2026-03-25]**
+**Purpose**: Cross-domain insight generation from knowledge graph. Classifies user-adjacent entities by life domain, detects which domains the current conversation touches, and uses a single LLM call to synthesize insights that bridge across domains.
+
+**Data Models** (`memory/surfacing_models.py`):
+```python
+class DomainEntity(BaseModel):
+    entity_id: str           # Canonical entity ID from graph
+    display_name: str        # Human-readable name
+    domain: str              # ProfileCategory value (career, health, etc.)
+    relation: str            # Relation from user to this entity
+    edge_weight: float       # Edge weight in graph
+
+class DomainCluster(BaseModel):
+    domain: str              # ProfileCategory value
+    entities: List[DomainEntity]
+    fact_sentences: List[str]  # Natural language facts about entities in cluster
+
+class CrossDomainCandidate(BaseModel):
+    active_domain: str       # Domain the current query touches
+    bridged_domain: str      # Domain being connected to
+    active_cluster: DomainCluster
+    bridged_cluster: DomainCluster
+    relevance_score: float   # 0.0-1.0
+
+class ProactiveInsight(BaseModel):
+    insight_text: str        # One-sentence insight for the user
+    active_domain: str
+    bridged_domain: str
+    entity_ids: List[str]
+    confidence: float
+    generated_at: Optional[datetime]
+    # novelty_key() → deterministic key for dedup (sorted domains + entity IDs)
+```
+
+**SurfacingHistory** (`memory/surfacing_history.py`):
+- JSON-backed at `data/surfacing_history.json`
+- `was_recently_shown(novelty_key, cooldown_hours=72) -> bool`
+- `record_surfaced(novelty_key)` — records timestamp + increments count
+- `cleanup_old(max_age_days=30) -> int` — prune old entries
+
+**ContextSurfacer Flow**:
+```python
+generate_insights(query, max_insights=2) →
+  1. Config check: PROACTIVE_SURFACING_ENABLED
+  2. Session cache check (LLM fires once per session, subsequent calls return cached)
+  3. Graph sparsity guard: skip if < 20 nodes or < 15 edges
+  4. Classify user-adjacent edges by domain via categorize_relation()
+     (with _SURFACING_RELATION_OVERRIDES for pet, sibling, parent, etc.)
+  5. Identify active domains from query (entity resolution + keyword heuristics)
+  6. Select bridge candidates from non-active domains
+     Scoring: entity_count(0.3) + avg_weight(0.3) + lateral_edges(0.4)
+  7. Filter by SurfacingHistory cooldown
+  8. Single LLM call to synthesize insights from all candidates
+     (~200-400 input tokens, max_tokens=400, temperature=0.3)
+  9. Parse JSON array response → ProactiveInsight objects
+  10. Record in history, cache for session
+```
+
+**Domain Classification**:
+- Star topology: walks all outgoing edges from "user" node
+- `_SURFACING_RELATION_OVERRIDES` dict handles pet, sibling, parent, etc. that `categorize_relation()` misclassifies
+- `_DOMAIN_KEYWORDS` dict: 9 domains (health, career, fitness, education, relationships, hobbies, finance, goals, projects) with keyword lists for fallback detection
+- Dirty-check cache: domain clusters rebuilt only when edge_count changes
+
+**Integration Points**:
+1. **Init**: Created in `MemoryCoordinator.__init__()` when graph_memory + entity_resolver available
+2. **Retrieval**: `context_gatherer.py:get_proactive_insights()` → `context_surfacer.generate_insights()`
+3. **Builder**: Parallel task `proactive_insights` in `build_prompt()` alongside other retrieval tasks
+4. **Prompt Section**: `[PROACTIVE INSIGHTS]` in `_assemble_prompt()` after `[UNRESOLVED THREADS]`, before `[USER PROFILE]`
+
+**Configuration** (`config/app_config.py`, YAML section `proactive_surfacing`):
+```python
+PROACTIVE_SURFACING_ENABLED = True
+PROACTIVE_SURFACING_MIN_GRAPH_NODES = 20
+PROACTIVE_SURFACING_MIN_GRAPH_EDGES = 15
+PROACTIVE_SURFACING_MAX_INSIGHTS = 2
+PROACTIVE_SURFACING_COOLDOWN_HOURS = 72
+PROACTIVE_SURFACING_MODEL = ""
+PROACTIVE_SURFACING_HISTORY_PATH = "data/surfacing_history.json"
+PROMPT_MAX_PROACTIVE_INSIGHTS = 2
+```
+
+**Tests**: `tests/unit/test_context_surfacer.py` — 55 tests
+
+---
+
+### 2.15e Memory Staleness / Claim Tracker (memory/claim_tracker.py) **[NEW 2026-03-25]**
+**Purpose**: Track which claims (subject, relation) are embedded in which summaries/reflections so that when a fact is corrected or contradicted, all documents containing the stale claim can have their staleness metadata updated (cascade invalidation).
+
+**Data Models**:
+```python
+class ClaimKey(BaseModel):
+    subject: str             # Canonicalized subject entity
+    relation: str            # Canonicalized relation/predicate
+    claim_hash: str          # MD5[:12] hash of "subject|relation" (auto-computed)
+
+class IndexEntry(BaseModel):
+    doc_id: str
+    collection: str
+```
+
+**Key Functions**:
+- `_compute_hash(subject, relation) -> str` — MD5[:12] of `"subject|relation"` after lowercasing
+- `canonicalize_claim(subject, relation, entity_resolver=None) -> ClaimKey` — Uses EntityResolver.resolve() + normalize_relation() when available, falls back to lowercasing + underscore normalization
+- `extract_claims_from_text(text, entity_resolver=None) -> List[ClaimKey]` — Multi-strategy extraction:
+  1. Triple-separator patterns (`|`, `---`, `---`)
+  2. Declarative sentence patterns ("Luke lives in Atlanta") — 20+ verbs matched
+  3. Subject-verb patterns ("the user works at Google") — user-centric fallback
+  - Returns deduplicated ClaimKeys (objects intentionally discarded -- hashes on (subject, relation) to catch all value changes)
+
+**ClaimIndex** (reverse index: claim_hash -> document references):
+```python
+class ClaimIndex:
+    add_claims(doc_id, collection, claims: List[ClaimKey])  # Register claims for a document
+    get_documents_for_claim(claim_hash) -> List[Dict]       # {doc_id, collection} entries
+    get_claims_for_document(doc_id) -> List[str]            # claim_hashes for a doc
+    remove_document(doc_id)                                  # Remove all index entries
+    cascade_staleness(claim_key, chroma_store=None) -> List[Dict]  # Propagate staleness
+    save() / load()                                          # JSON persistence (dirty-flag)
+    total_claims: int  # property — unique claim hashes
+    total_documents: int  # property — unique documents tracked
+```
+
+**Cascade Staleness Flow**:
+```python
+cascade_staleness(claim_key, chroma_store) →
+  1. Find all documents containing the claim (via claim_hash lookup)
+  2. For each affected document:
+     a. Count total claims and stale claims for this doc
+     b. Read existing stale_claims from ChromaDB metadata (comma-separated hashes)
+     c. Add new stale claim hash to set
+     d. Compute staleness_ratio = len(stale_set) / total_claims
+     e. Update ChromaDB metadata: stale_claims, staleness_ratio
+  3. Return list of {doc_id, collection, staleness_ratio}
+  4. Clean up orphaned docs (doc_id not found in ChromaDB) from index
+```
+
+**Staleness Scoring** (in `memory_scorer.py`, step 12):
+```python
+if STALENESS_ENABLED:
+    base_penalty = staleness_ratio * STALENESS_WEIGHT   # default 0.15
+    if staleness_ratio >= STALENESS_STEEP_THRESHOLD:     # default 0.8
+        base_penalty *= STALENESS_STEEP_MULTIPLIER       # default 2.0
+    if collection == 'reflections':
+        base_penalty *= STALENESS_REFLECTION_WEIGHT_FACTOR  # default 0.6
+    staleness_penalty = -min(base_penalty, STALENESS_MAX_PENALTY)  # capped at -0.4
+```
+
+**Staleness Prompt Prefix** (in `builder.py:_staleness_prefix()`):
+- Items with `staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD` (0.6) get `[HISTORICAL -- some claims outdated]` prefix
+- Applied to summaries and reflections in prompt assembly
+
+**Persistence**: JSON at `data/claim_index.json` (same pattern as entity_aliases.json — loaded at startup, saved on shutdown)
+
+**Integration Points**:
+1. **Init**: Created in `MemoryCoordinator.__init__()` when `STALENESS_ENABLED`, loaded from `STALENESS_INDEX_PATH`
+2. **Summary Storage**: `shutdown_processor.py` extracts claims from each summary via `extract_claims_from_text()` and registers in ClaimIndex; stores `embedded_claims` in summary metadata
+3. **Contradiction Resolution**: `cross_deduplicator.py` calls `cascade_staleness()` for contradiction losers when `STALENESS_ENABLED` and `claim_index` available
+4. **Scoring**: `memory_scorer.py` reads `staleness_ratio` from metadata for penalty calculation
+5. **Prompt**: `builder.py:_staleness_prefix()` adds historical warning prefix to stale summaries/reflections
+6. **Shutdown**: `shutdown_processor.py:_save_knowledge_graph()` saves ClaimIndex to disk
+
+**Configuration** (`config/app_config.py`, YAML section `staleness`):
+```python
+STALENESS_ENABLED = True
+STALENESS_WEIGHT = 0.15
+STALENESS_MAX_PENALTY = 0.4
+STALENESS_STEEP_THRESHOLD = 0.8
+STALENESS_STEEP_MULTIPLIER = 2.0
+STALENESS_HISTORICAL_THRESHOLD = 0.6
+STALENESS_REFLECTION_WEIGHT_FACTOR = 0.6
+STALENESS_INDEX_PATH = "data/claim_index.json"
+```
+
+---
+
+### 2.15f Implementation Tracking (knowledge/implementation_detector.py) **[NEW 2026-03-25]**
+**Purpose**: 4-stage pipeline to check if a CodeProposal's changes already exist in the codebase. Stages: file existence, code content grep, git history, LLM judgment (borderline only).
+
+**Data Model**:
+```python
+class DetectionResult(BaseModel):
+    proposal_id: str
+    confidence: float          # 0.0-1.0 composite score
+    status: str                # "confirmed", "likely", "uncertain", "not_implemented"
+    evidence: str              # Human-readable evidence (capped at 500 chars)
+    file_existence_ratio: float
+    code_match_ratio: float
+    git_match_score: float
+    llm_adjusted: bool
+    skipped_reason: str        # "cooldown" or ""
+```
+
+**ImplementationDetector Pipeline**:
+```python
+detect_single(proposal, lightweight=False) →
+  Stage 1: File existence — do affected files exist? (ratio of existing/total)
+           Fallback: gather file_path from implementation_steps if affected_files empty
+           Lightweight mode stops here (~50ms)
+  Stage 2: Code content — extract identifiers (class/function/constant names)
+           from title + implementation step descriptions, grep in existing files
+           Identifier extraction: class names, function names, ALL_CAPS constants
+  Stage 3: Git history — check recent N commits for file overlap + keyword overlap
+           score = file_overlap * 0.7 + keyword_overlap * 0.3
+           Uses subprocess.run("git log --name-only --pretty=format:%H|||%s")
+  Composite: confidence = file_ratio * 0.35 + code_ratio * 0.35 + git_score * 0.30
+
+detect_batch(proposals, lightweight=False) →
+  Run detect_single per proposal, collect borderline (0.30-0.84 confidence)
+  Stage 4: LLM judgment — batch up to 5 borderline proposals
+           Prompt: "estimate probability (0.0-1.0) already implemented"
+           Parse JSON: {"1": 0.75, "2": 0.40, ...}
+           max_tokens=200, temperature=0.0
+```
+
+**Confidence Thresholds**:
+- confirmed: >= 0.85
+- likely: >= 0.60
+- uncertain: >= 0.30
+- not_implemented: < 0.30
+
+**Cooldown**: `IMPL_TRACKING_COOLDOWN` (default 86400s) prevents re-checking recently scanned proposals; checks `proposal.last_tracked_at`
+
+**CodeProposal Model Fields** (added to `memory/code_proposal.py`):
+- `implementation_confidence: float` — 0.0-1.0
+- `implementation_status: str` — confirmed/likely/uncertain/not_implemented
+- `implementation_evidence: str` — human-readable evidence
+- `last_tracked_at: float` — epoch timestamp
+
+**Integration Points**:
+1. **Shutdown**: `shutdown_processor.py:_check_implementation_tracking()` — Phase 6.5 lightweight (file existence only), updates tracking metadata via `ProposalStore.update_tracking_metadata()`
+2. **CLI**: `python main.py check-proposals [--id UUID] [--verbose]`
+3. **GUI**: "Check Implementation" button (batch), "Check This" button (single), badges on proposal cards
+4. **ProposalStore**: `update_tracking_metadata(proposal_id, result)` merges detection results into metadata, `get_pending_and_approved()` returns checkable proposals
+
+**Configuration** (`config/app_config.py`, YAML section `implementation_tracking`):
+```python
+IMPL_TRACKING_ENABLED = True
+IMPL_TRACKING_COOLDOWN = 86400
+IMPL_TRACKING_CONFIDENCE_CONFIRMED = 0.85
+IMPL_TRACKING_CONFIDENCE_LIKELY = 0.60
+IMPL_TRACKING_GIT_DEPTH = 50
+IMPL_TRACKING_AT_SHUTDOWN = True
+IMPL_TRACKING_AUTO_COMPLETE = False
+```
+
+**Tests**: `tests/unit/test_implementation_detector.py` — 66 tests
+
+---
+
+### 2.15g Session-Start Codebase Diff + Active Features Inventory **[NEW 2026-03-25]**
+**Purpose**: On session start, detect codebase changes since last session and provide a compact inventory of enabled features + result counts, so Daemon is aware of what has changed in the project.
+
+**Codebase Changes** (`context_gatherer.py:get_codebase_changes(since_datetime)`):
+- Runs `git log`, `git diff`, and `git status` to detect changes since `last_session_end_time`
+- Returns dict with:
+  - `since_label`: human-readable time delta (e.g., "2 days ago")
+  - `committed`: list of committed files (capped at `SESSION_DIFF_MAX_COMMITTED`)
+  - `uncommitted_modified`: list of modified but unstaged files (capped at `SESSION_DIFF_MAX_UNCOMMITTED`)
+  - `uncommitted_new`: list of new untracked files
+- Gathered BEFORE small-talk fork in `build_prompt()` so even casual greetings get change awareness
+- File extension filter: `SESSION_DIFF_EXTENSIONS` (default: .py, .yaml, .yml, .json, .md, .txt, .toml)
+
+**Feature Inventory** (`builder.py:_build_feature_inventory(context)`):
+- Compact 4-line summary of enabled features + result counts from current context
+- Shows: memory count, fact count, summary count, skill count, graph stats, thread count
+- Always included in prompt as `[ACTIVE FEATURES]` section
+
+**Prompt Sections**:
+- `[ACTIVE FEATURES]` — always present, after `[USER PROFILE]` before `[TIME CONTEXT]`
+- `[CODEBASE CHANGES SINCE LAST SESSION]` — first message of session only, shows committed + uncommitted files
+
+**Orchestrator Integration**:
+- `## CODEBASE CHANGE AWARENESS` instruction appended to system prompt on first message only
+- Self-contained first-message detection (separate from thread surfacing's `is_first_message`)
+
+**Configuration** (`config/app_config.py`, YAML section `session_diff`):
+```python
+SESSION_DIFF_ENABLED = True
+SESSION_DIFF_MAX_COMMITTED = 20
+SESSION_DIFF_MAX_UNCOMMITTED = 20
+SESSION_DIFF_EXTENSIONS = [".py", ".yaml", ".yml", ".json", ".md", ".txt", ".toml"]
+```
+
+**Tests**: 17 unit tests across 2 files:
+- `tests/unit/test_session_diff.py` — 12 tests for codebase change detection
+- `tests/unit/test_feature_inventory.py` — 5 tests for feature inventory generation
+
+---
+
 ### 2.16 utils/tone_detector.py (Crisis Detection)
 **Purpose**: Detect distress/crisis language to adjust response tone
 
@@ -3545,6 +3962,46 @@ THREAD_DEADLINE_GRACE_HOURS = 48         # Grace period after deadline
 THREAD_MAX_SURFACED = 3                  # Max threads injected into prompt
 THREAD_MODEL_ALIAS = ""                  # LLM model for extraction (system default if empty)
 
+# Fact Verification Gate [NEW 2026-03-25]
+FACT_VERIFICATION_ENABLED = True         # Toggle pre-storage fact verification
+FACT_VERIFICATION_LLM_ENABLED = True     # Enable LLM adjudication for borderline conflicts
+FACT_VERIFICATION_MODEL = "gpt-4o-mini"  # Model for LLM adjudication
+FACT_VERIFICATION_USER_TRUST_THRESHOLD = 0.85  # Confidence threshold for user-trust override
+FACT_VERIFICATION_MAX_CANDIDATES = 10    # Max existing facts to check against
+
+# Memory Staleness / Claim Tracker [NEW 2026-03-25]
+STALENESS_ENABLED = True                 # Toggle staleness tracking system
+STALENESS_WEIGHT = 0.15                  # Base penalty weight per staleness_ratio
+STALENESS_MAX_PENALTY = 0.4             # Maximum staleness penalty cap
+STALENESS_STEEP_THRESHOLD = 0.8         # Ratio above which steep multiplier applies
+STALENESS_STEEP_MULTIPLIER = 2.0        # Multiplier for highly stale documents
+STALENESS_HISTORICAL_THRESHOLD = 0.6    # Ratio for "[HISTORICAL]" prefix in prompt
+STALENESS_REFLECTION_WEIGHT_FACTOR = 0.6 # Reflections get reduced penalty (more durable)
+STALENESS_INDEX_PATH = "data/claim_index.json"  # JSON persistence path
+
+# Proactive Context Surfacing [NEW 2026-03-25]
+PROACTIVE_SURFACING_ENABLED = True       # Toggle cross-domain insight surfacing
+PROACTIVE_SURFACING_MIN_GRAPH_NODES = 20 # Min graph nodes before surfacing activates
+PROACTIVE_SURFACING_MIN_GRAPH_EDGES = 15 # Min graph edges before surfacing activates
+PROACTIVE_SURFACING_MAX_INSIGHTS = 2     # Max insights per session
+PROACTIVE_SURFACING_COOLDOWN_HOURS = 72  # Hours before same insight can resurface
+PROACTIVE_SURFACING_MODEL = ""           # LLM model (empty = system default)
+PROACTIVE_SURFACING_HISTORY_PATH = "data/surfacing_history.json"
+
+# Implementation Tracking [NEW 2026-03-25]
+IMPL_TRACKING_ENABLED = True             # Toggle implementation detection
+IMPL_TRACKING_COOLDOWN = 86400           # Seconds between re-checks (24h)
+IMPL_TRACKING_CONFIDENCE_CONFIRMED = 0.85  # Confidence threshold for "confirmed"
+IMPL_TRACKING_CONFIDENCE_LIKELY = 0.60   # Confidence threshold for "likely"
+IMPL_TRACKING_GIT_DEPTH = 50            # Git log depth for Stage 3
+IMPL_TRACKING_AT_SHUTDOWN = True         # Run lightweight check at shutdown
+IMPL_TRACKING_AUTO_COMPLETE = False      # Auto-complete confirmed proposals (disabled by default)
+
+# Session-Start Codebase Diff [NEW 2026-03-25]
+SESSION_DIFF_ENABLED = True              # Toggle codebase change detection
+SESSION_DIFF_MAX_COMMITTED = 20          # Max committed files to show
+SESSION_DIFF_MAX_UNCOMMITTED = 20        # Max uncommitted files to show
+
 # Memory Citation System [NEW 2025-12-04]
 ENABLE_MEMORY_CITATIONS = False      # Feature flag for citation mode
 MAX_CITATIONS_DISPLAY = 10           # Max citations to show in UI
@@ -3648,8 +4105,11 @@ PROMPT_MAX_USER_UPLOADS = 5
    d. Store facts as SEMANTIC memory type
    e. Extract procedural skills via LLM (0-3 per session)
    f. Generate code proposals via GoalDirectedGenerator (0-5 per session) [NEW 2026-02-05]
+   f1. Lightweight implementation tracking — file existence check (~50ms/proposal) [NEW 2026-03-25]
    f2. Extract open threads + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
-   g. Update UserProfile with extracted facts
+   f3. Save knowledge graph + entity aliases + claim index [NEW 2026-03-25]
+   g. Cross-collection dedup preview (dry_run=True only) [NEW 2026-02-13]
+   h. Update UserProfile with extracted facts
 3. corpus_manager.save()
 ```
 
@@ -3719,6 +4179,8 @@ def rank_memories(memories, query, weight_overrides=None):
             structure +
             anchor_bonus +
             meta_bonus +      # NEW - for meta-conversational queries
+            graph_bonus +     # 0.05 per graph-connected entity, capped at 0.15 [NEW 2026-03]
+            staleness_penalty + # negative penalty for stale summaries/reflections [NEW 2026-03-25]
             penalty +
             size_penalty      # NEW - scaled document size penalty
         )
@@ -3833,6 +4295,11 @@ daemon/
 │   ├── thread_models.py           # Pydantic models: ThreadType, ThreadStatus, OpenThread [NEW 2026-03-20]
 │   ├── thread_store.py            # ChromaDB-backed thread CRUD, priority ranking [NEW 2026-03-20]
 │   ├── thread_extractor.py        # LLM-based thread extraction + resolution detection [NEW 2026-03-20]
+│   ├── claim_tracker.py           # ClaimKey model, ClaimIndex reverse index, staleness cascade [NEW 2026-03-25]
+│   ├── fact_verification.py       # FactVerifier pre-storage gate (STORE/FLAG/REJECT/SKIP) [NEW 2026-03-25]
+│   ├── context_surfacer.py        # Cross-domain insight generation from knowledge graph [NEW 2026-03-25]
+│   ├── surfacing_models.py        # Pydantic models: DomainEntity, DomainCluster, ProactiveInsight [NEW 2026-03-25]
+│   ├── surfacing_history.py       # JSON-backed novelty tracking for proactive surfacing [NEW 2026-03-25]
 │   ├── hybrid_retriever.py        # Query rewrite + semantic + keyword
 │   └── storage/
 │       └── multi_collection_chroma_store.py  # Vector DB
@@ -3882,7 +4349,8 @@ daemon/
 │   ├── reference_docs_manager.py  # Daemon self-knowledge docs + user uploads [ENHANCED 2026-02-10]
 │   ├── proposal_generator.py  # LLM-based code proposal generation [ENHANCED 2026-02-10]
 │   ├── git_memory.py          # Git commit extractor [NEW 2026-01-27]
-│   └── git_memory_loader.py   # Git → PROCEDURAL ChromaDB loader [NEW 2026-01-27]
+│   ├── git_memory_loader.py   # Git → PROCEDURAL ChromaDB loader [NEW 2026-01-27]
+│   └── implementation_detector.py  # 4-stage proposal implementation detection [NEW 2026-03-25]
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)
@@ -3898,6 +4366,8 @@ daemon/
 │   ├── chroma_db_v4_v2/       # ChromaDB vector store (current)
 │   ├── knowledge_graph.json   # Knowledge graph nodes + edges [NEW 2026-03]
 │   ├── entity_aliases.json    # Entity alias → canonical ID mapping [NEW 2026-03]
+│   ├── claim_index.json       # Claim reverse index for staleness cascade [NEW 2026-03-25]
+│   ├── surfacing_history.json # Proactive insight novelty tracking [NEW 2026-03-25]
 │   ├── wiki/                  # Wikipedia source data (102GB)
 │   └── pipeline/              # Wikipedia processing scripts (43GB)
 │
@@ -4268,6 +4738,12 @@ python main.py inspect-summaries
 | thread_models.py | Data: OpenThread Pydantic model + ThreadType/ThreadStatus enums + priority scoring [NEW 2026-03-20] |
 | thread_store.py | Store: ChromaDB-backed thread CRUD, priority ranking, staleness, cap enforcement [NEW 2026-03-20] |
 | thread_extractor.py | Extract: LLM-based open thread extraction + resolution detection from conversations [NEW 2026-03-20] |
+| claim_tracker.py | Track: ClaimKey reverse index for staleness cascade when facts corrected [NEW 2026-03-25] |
+| fact_verification.py | Gate: Pre-storage fact verification (STORE/STORE_AND_FLAG/REJECT/SKIP) with LLM adjudication [NEW 2026-03-25] |
+| context_surfacer.py | Surface: Cross-domain insight generation bridging life domains via knowledge graph [NEW 2026-03-25] |
+| surfacing_models.py | Data: DomainEntity, DomainCluster, CrossDomainCandidate, ProactiveInsight Pydantic models [NEW 2026-03-25] |
+| surfacing_history.py | History: JSON-backed novelty tracking for proactive context surfacing [NEW 2026-03-25] |
+| implementation_detector.py | Detect: 4-stage pipeline (file/code/git/LLM) for proposal implementation status [NEW 2026-03-25] |
 
 ---
 
@@ -4346,6 +4822,27 @@ THREAD_SURFACING_ENABLED = True
 THREAD_MAX_OPEN = 50
 THREAD_STALE_DAYS = 14
 THREAD_MAX_SURFACED = 3
+
+# Fact Verification [NEW 2026-03-25]
+FACT_VERIFICATION_ENABLED = True
+FACT_VERIFICATION_USER_TRUST_THRESHOLD = 0.85
+
+# Staleness [NEW 2026-03-25]
+STALENESS_ENABLED = True
+STALENESS_WEIGHT = 0.15
+STALENESS_MAX_PENALTY = 0.4
+STALENESS_STEEP_THRESHOLD = 0.8
+STALENESS_HISTORICAL_THRESHOLD = 0.6
+
+# Proactive Surfacing [NEW 2026-03-25]
+PROACTIVE_SURFACING_ENABLED = True
+PROACTIVE_SURFACING_MIN_GRAPH_NODES = 20
+PROACTIVE_SURFACING_COOLDOWN_HOURS = 72
+
+# Implementation Tracking [NEW 2026-03-25]
+IMPL_TRACKING_ENABLED = True
+IMPL_TRACKING_COOLDOWN = 86400
+IMPL_TRACKING_CONFIDENCE_CONFIRMED = 0.85
 
 # Deduplication
 SIMILARITY_THRESHOLD = 0.90  # Semantic similarity for duplicates
@@ -4655,9 +5152,21 @@ if IS_FROZEN:
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2026-02-17
+**Last Updated**: 2026-03-25
 
-**Recent Changes** (2026-02-17):
+**Recent Changes** (2026-03-25):
+- **Fact Verification Gate** (Section 2.15c) — Pre-storage fact verification with ephemeral skip, user-trust override, entity-scope rejection, and LLM adjudication (A/B/C)
+- **Proactive Context Surfacing** (Section 2.15d) — Cross-domain insight generation from knowledge graph with domain classification, bridge scoring, single LLM call per session, and novelty tracking
+- **Memory Staleness / Claim Tracker** (Section 2.15e) — ClaimIndex reverse index for cascade staleness invalidation of summaries/reflections when facts corrected; staleness penalty in memory scoring; historical prefix in prompt
+- **Implementation Tracking** (Section 2.15f) — 4-stage pipeline (file existence / code content / git history / LLM judgment) for detecting whether code proposals have been implemented
+- **Session-Start Codebase Diff** (Section 2.15g) — git log/diff/status detection of changes since last session; compact feature inventory; codebase awareness system prompt injection
+- **Updated memory_coordinator** (Section 2.3) — New components: FactVerifier, ClaimIndex, ContextSurfacer
+- **Updated memory_scorer** (Section 2.3.0) — Staleness penalty (step 12) with steep curve, reflection factor, and max cap
+- **Updated shutdown_processor** (Section 2.3.1) — Phase 6.5 implementation tracking, claim extraction at summary time, ClaimIndex persistence
+- **Updated cross_deduplicator** (Section 2.3.1a) — New constructor params: claim_index, entity_resolver; staleness cascade on contradiction resolution
+- **Updated prompt builder** (Section 2.7) — New context items: proactive_insights, codebase_changes, feature_inventory; staleness prefix for stale memories
+
+**Previous Changes** (2026-02-17):
 - **Temporal-Aware Recency Decay** (Section 2.3.0) — `rank_memories()` now reshapes decay curve for TEMPORAL_RECALL queries using `_temporal_anchor_hours` from IntentClassifier
 - **Temporal Anchor Extraction** (Section 2.1.4) — `classify()` extracts temporal window and threads `_temporal_anchor_hours` through weight_overrides pipeline
 - **Retrieval Quality Benchmarks** (Section 8.1b) — New benchmark suite with 30 seed memories, 19 test cases, real embeddings, and session-scoped fixtures

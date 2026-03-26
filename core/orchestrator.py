@@ -799,12 +799,42 @@ The user is processing/analyzing, open to engagement.
             if self.memory_system and hasattr(self.memory_system, 'chroma_store'):
                 chroma_store = self.memory_system.chroma_store
 
+            # Initialize file access manager if configured
+            file_access_manager = None
+            try:
+                from config.app_config import (
+                    FILE_ACCESS_ENABLED,
+                    FILE_ACCESS_APPROVED_FOLDERS,
+                    FILE_ACCESS_MAX_READ_BYTES,
+                    FILE_ACCESS_MAX_GREP_RESULTS,
+                    FILE_ACCESS_MAX_LIST_ENTRIES,
+                    FILE_ACCESS_ALLOWED_EXTENSIONS,
+                )
+                if FILE_ACCESS_ENABLED and FILE_ACCESS_APPROVED_FOLDERS:
+                    from core.file_access_manager import FileAccessManager
+                    file_access_manager = FileAccessManager(
+                        approved_folders=FILE_ACCESS_APPROVED_FOLDERS,
+                        max_read_bytes=FILE_ACCESS_MAX_READ_BYTES,
+                        max_grep_results=FILE_ACCESS_MAX_GREP_RESULTS,
+                        max_list_entries=FILE_ACCESS_MAX_LIST_ENTRIES,
+                        allowed_extensions=FILE_ACCESS_ALLOWED_EXTENSIONS,
+                    )
+                    if self.logger:
+                        self.logger.info(
+                            f"[Orchestrator] File access manager initialized "
+                            f"({len(FILE_ACCESS_APPROVED_FOLDERS)} approved folders)"
+                        )
+            except ImportError as e:
+                if self.logger:
+                    self.logger.debug(f"[Orchestrator] File access manager not available: {e}")
+
             self._agentic_controller = AgenticSearchController(
                 model_manager=self.model_manager,
                 web_search_manager=web_search_manager,
                 chroma_store=chroma_store,
                 wolfram_manager=wolfram_manager,
                 sandbox_manager=sandbox_manager,
+                file_access_manager=file_access_manager,
                 token_manager=token_manager,
                 max_rounds=self._agentic_config.get("max_rounds", 5),
                 context_budget_tokens=self._agentic_config.get("context_budget_tokens", 8000),
@@ -1125,6 +1155,29 @@ The user is processing/analyzing, open to engagement.
                             "- Prioritize the user's current query first; mention threads secondarily\n"
                             "- If no threads are present or relevant, just greet normally\n"
                             "- Never fabricate threads — only reference what appears in [UNRESOLVED THREADS]\n"
+                        )
+            except (ImportError, Exception):
+                pass
+
+            # --- Codebase change awareness (first message only) ---
+            try:
+                from config.app_config import SESSION_DIFF_ENABLED
+                if SESSION_DIFF_ENABLED:
+                    _is_first = False
+                    if hasattr(self, 'time_manager') and self.time_manager:
+                        try:
+                            _gap = self.time_manager.time_since_previous_message()
+                            _is_first = isinstance(_gap, str) and "N/A" in _gap
+                        except (AttributeError, TypeError):
+                            pass
+                    if _is_first:
+                        system_prompt = system_prompt.rstrip() + (
+                            "\n\n## CODEBASE CHANGE AWARENESS\n"
+                            "The [CODEBASE CHANGES SINCE LAST SESSION] section lists files that "
+                            "changed since your last conversation.\n"
+                            "- If you discussed implementing a feature, check if relevant files "
+                            "appear in the changes — if so, acknowledge the implementation.\n"
+                            "- Do NOT list every change. Only mention changes relevant to conversation.\n"
                         )
             except (ImportError, Exception):
                 pass
@@ -1650,8 +1703,37 @@ The user is processing/analyzing, open to engagement.
                     recent_facts = self._get_recent_profile_facts()
                     events = self.correction_detector.detect_corrections(user_input, recent_facts)
                     events += self.correction_detector.detect_confirmations(user_input, recent_facts)
+                    correction_events = []
                     for event in events:
                         self._apply_truth_event(event)
+                        if event.event_type == "correction":
+                            correction_events.append(event)
+
+                    # --- Staleness cascade for corrections ---
+                    if correction_events:
+                        try:
+                            from config.app_config import STALENESS_ENABLED
+                            claim_index = getattr(self.memory_coordinator, 'claim_index', None) if self.memory_coordinator else None
+                            if STALENESS_ENABLED and claim_index:
+                                from memory.claim_tracker import canonicalize_claim
+                                entity_resolver = getattr(self.memory_coordinator, 'entity_resolver', None)
+                                for event in correction_events:
+                                    ck = canonicalize_claim(
+                                        "user", event.relation,
+                                        entity_resolver=entity_resolver,
+                                    )
+                                    affected = claim_index.cascade_staleness(
+                                        ck,
+                                        chroma_store=self.memory_coordinator.chroma_store if self.memory_coordinator else None,
+                                    )
+                                    if affected:
+                                        self.logger.info(
+                                            f"[Staleness] Cascade from correction on '{event.relation}': "
+                                            f"{len(affected)} document(s) updated"
+                                        )
+                        except Exception as se:
+                            self.logger.debug(f"[Staleness] Cascade failed (non-fatal): {se}")
+
                 except Exception as e:
                     self.logger.warning(f"[Orchestrator] Truth event detection failed: {e}")
 

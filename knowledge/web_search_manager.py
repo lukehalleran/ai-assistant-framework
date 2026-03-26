@@ -535,9 +535,13 @@ class WebSearchManager:
 
         self._tavily_client = None
         self._initialized = False
+        self._api_key_invalid = False  # Set True on 401 to stop retrying
 
     def _ensure_tavily(self) -> bool:
         """Lazy initialization of Tavily client."""
+        if self._api_key_invalid:
+            return False
+
         if self._initialized:
             return self._tavily_client is not None
 
@@ -561,6 +565,8 @@ class WebSearchManager:
 
     def is_available(self) -> bool:
         """Check if web search is available."""
+        if self._api_key_invalid:
+            return False
         return bool(self.api_key) and self._ensure_tavily()
 
     async def search(
@@ -672,6 +678,14 @@ class WebSearchManager:
         session.search_results = search_pages
         session.credits_used += 1.0  # Base search cost
 
+        # If the API key was just flagged invalid, bail out with error
+        if self._api_key_invalid:
+            return WebSearchResult(
+                query=query,
+                search_depth=depth,
+                error="Tavily API key is invalid"
+            )
+
         # Step 2: Extract content for STANDARD and DEEP
         if depth in (WebSearchDepth.STANDARD, WebSearchDepth.DEEP) and search_pages:
             urls_to_extract = [p.url for p in search_pages[:2]]  # Top 2 results
@@ -766,7 +780,12 @@ class WebSearchManager:
             return pages
 
         except Exception as e:
-            log.error(f"[WebSearch] Tavily search failed: {e}")
+            error_str = str(e).lower()
+            if "invalid" in error_str and ("api" in error_str or "key" in error_str) or "401" in error_str:
+                log.error(f"[WebSearch] Tavily API key is invalid — disabling web search for this session: {e}")
+                self._api_key_invalid = True
+            else:
+                log.error(f"[WebSearch] Tavily search failed: {e}")
             return []
 
     async def _tavily_extract(self, urls: List[str]) -> List[WebPage]:
@@ -799,7 +818,12 @@ class WebSearchManager:
             return pages
 
         except Exception as e:
-            log.error(f"[WebSearch] Tavily extract failed: {e}")
+            error_str = str(e).lower()
+            if "invalid" in error_str and ("api" in error_str or "key" in error_str) or "401" in error_str:
+                log.error(f"[WebSearch] Tavily API key is invalid — disabling web search for this session: {e}")
+                self._api_key_invalid = True
+            else:
+                log.error(f"[WebSearch] Tavily extract failed: {e}")
             return []
 
     async def _select_links_for_following(
@@ -1173,6 +1197,7 @@ If not splitting, leave SUB_QUERIES empty."""
         return {
             "available": self.is_available(),
             "api_key_configured": bool(self.api_key),
+            "api_key_valid": not self._api_key_invalid,
             "remaining_credits": self.rate_limiter.get_remaining_credits(),
             "daily_limit": self.rate_limiter.daily_limit,
             "cache_initialized": self.cache._initialized
