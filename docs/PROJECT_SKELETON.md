@@ -80,6 +80,7 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/surfacing_models.py` - Pydantic models: DomainEntity, DomainCluster, CrossDomainCandidate, ProactiveInsight **[NEW 2026-03-25]**
 - `memory/surfacing_history.py` - JSON-backed novelty tracking for surfacing cooldowns **[NEW 2026-03-25]**
 - `knowledge/implementation_detector.py` - 4-stage proposal implementation tracking **[NEW 2026-03-25]**
+- `memory/memory_expander.py` - Temporal context expansion + summary drill-down for agentic tool **[NEW 2026-03-26]**
 - `memory/memory_interface.py` - Protocol contracts
 
 The incomplete V2 `memory/coordinator.py` has been deleted.
@@ -1025,6 +1026,7 @@ PROFILE_EPHEMERAL_RELATIONS = [          # Relations whose history gets pruned
 - `query(text, collection, n_results)` → Semantic search
   - Uses sentence-transformers for embeddings
   - Returns: {ids, documents, metadatas, distances}
+- `get_by_id(collection_name, doc_id)` → Direct document lookup by UUID, returns `{id, content, metadata}` or None **[NEW 2026-03-26]**
 
 **Embedding Model**: `all-MiniLM-L6-v2` (default, configurable)
 
@@ -1395,8 +1397,9 @@ agentic_search:
 - Progress events: `executing_code` → `code_executed` / `code_error`
 - `skip_initial_search` parameter skips Round 1 web search for computation-only or memory-only queries
 - `search_memory` tool [NEW 2026-03-15]: Searches ChromaDB collections (facts, conversations, summaries, etc.) from within the ReAct loop
+- `expand_memory` tool [NEW 2026-03-26]: Expands a search hit to show surrounding context (temporal neighbors) or, for summaries, the original conversations that were compressed into it. Two strategies: `timestamp_window` (±N chronological neighbors) and `source_docs` (summary drill-down via `source_doc_ids` or `temporal_anchor` range). Session-gated at `EXPAND_MAX_PER_SESSION`.
 
-**Dependencies**: WebSearchManager, WolframManager (optional), SandboxManager (optional), ModelManager, TokenizerManager
+**Dependencies**: WebSearchManager, WolframManager (optional), SandboxManager (optional), MemoryExpander (optional), ModelManager, TokenizerManager
 
 ---
 
@@ -4002,6 +4005,15 @@ SESSION_DIFF_ENABLED = True              # Toggle codebase change detection
 SESSION_DIFF_MAX_COMMITTED = 20          # Max committed files to show
 SESSION_DIFF_MAX_UNCOMMITTED = 20        # Max uncommitted files to show
 
+# Memory Expansion (expand_memory agentic tool) [NEW 2026-03-26]
+EXPAND_MEMORY_ENABLED = True             # Toggle expand_memory tool
+EXPAND_MAX_PER_SESSION = 3              # Max expansions per agentic session
+EXPAND_MAX_WINDOW = 5                   # Max temporal window (±N turns)
+EXPAND_DEFAULT_WINDOW = 3               # Default temporal window
+EXPAND_MAX_TOTAL_TOKENS = 2000          # Token budget for expanded context
+EXPAND_ANCHOR_CHAR_LIMIT = 600          # Char limit for anchor document
+EXPAND_CONTEXT_CHAR_LIMIT = 300         # Char limit for context documents
+
 # Memory Citation System [NEW 2025-12-04]
 ENABLE_MEMORY_CITATIONS = False      # Feature flag for citation mode
 MAX_CITATIONS_DISPLAY = 10           # Max citations to show in UI
@@ -5152,9 +5164,16 @@ if IS_FROZEN:
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2026-03-25
+**Last Updated**: 2026-03-26
 
-**Recent Changes** (2026-03-25):
+**Recent Changes** (2026-03-26):
+- **Memory Expansion / expand_memory** (Section 2.8b) — New agentic tool: temporal context expansion (±N chronological neighbors) and summary drill-down (original conversations via source_doc_ids or temporal_anchor range). Session-gated, cached, two strategies.
+- **get_by_id()** on MultiCollectionChromaStore (Section 2.5) — Direct document lookup by UUID
+- **Summary backlinks** — shutdown_processor captures source conversation doc IDs in summary metadata
+- **Thread metadata forwarding** — memory_storage propagates thread_id/thread_depth to ChromaDB
+- **Search result doc IDs** — Full doc IDs + [collection] tags shown in agentic search results
+
+**Previous Changes** (2026-03-25):
 - **Fact Verification Gate** (Section 2.15c) — Pre-storage fact verification with ephemeral skip, user-trust override, entity-scope rejection, and LLM adjudication (A/B/C)
 - **Proactive Context Surfacing** (Section 2.15d) — Cross-domain insight generation from knowledge graph with domain classification, bridge scoring, single LLM call per session, and novelty tracking
 - **Memory Staleness / Claim Tracker** (Section 2.15e) — ClaimIndex reverse index for cascade staleness invalidation of summaries/reflections when facts corrected; staleness penalty in memory scoring; historical prefix in prompt
