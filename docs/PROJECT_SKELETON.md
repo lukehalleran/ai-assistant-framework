@@ -1107,6 +1107,11 @@ Priority order (with weights):
 - feature_inventory: 3         # Active features summary [NEW 2026-03-25]
 - reflections/dreams: 2
 - wiki: 1
+
+Compression strategy (two-tier):
+- Items >= 3x over max_tokens: LLM summary via _llm_compress_oversized() (async, parallel batch)
+- Items 1x-3x over max_tokens: middle-out character slicing in token_manager
+- Config: LLM_COMPRESSION_ENABLED, LLM_COMPRESSION_MODEL, LLM_COMPRESSION_RATIO_THRESHOLD
 ```
 
 **Context Dict Structure**:
@@ -1145,6 +1150,7 @@ Priority order (with weights):
 - `builder.py::_build_lightweight_context()` → Minimal context for small-talk
 - `builder.py::_build_feature_inventory(context)` → Compact 4-line inventory of enabled features + result counts **[NEW 2026-03-25]**
 - `builder.py::_staleness_prefix(item)` → Module-level helper: returns "[HISTORICAL — some claims outdated] " prefix for items with `staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD` **[NEW 2026-03-25]**
+- `builder.py::_llm_compress_oversized(context)` → Async pre-pass: LLM-compresses items >= 3x over token limit before middle-out. Parallel batch with per-item timeout. **[NEW 2026-03-26]**
 - `token_manager.py::_manage_token_budget(context)` → Budget enforcement
 - `context_gatherer.py::_get_summaries_separate()` → Hybrid recent+semantic retrieval
 - `summarizer.py::_reflect_on_demand()` → Generate reflections if below threshold
@@ -3862,8 +3868,13 @@ CORPUS_FILE = "./data/corpus_v4.json"
 CHROMA_PATH = "./data/chroma_db_v4_v2"
 SYSTEM_PROMPT_PATH = "./core/system_prompt.txt"
 
-# Memory Limits (in prompt/builder.py)
-PROMPT_TOKEN_BUDGET = 15000  # Higher for middle-out compression
+# Memory Limits (in prompt/builder.py — model-aware)
+# Token budget auto-computed: min(context_window * 0.25, ceiling)
+# Override with PROMPT_TOKEN_BUDGET env var for legacy compat
+PROMPT_TOKEN_BUDGET_DEFAULT = 40000   # API models fallback
+PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
+PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
+PROMPT_TOKEN_BUDGET_CEILING = 60000   # Maximum budget
 PROMPT_MAX_RECENT = 15
 PROMPT_MAX_MEMS = 15  # Semantic search results only
 PROMPT_MAX_FACTS = 30
@@ -4075,6 +4086,7 @@ PROMPT_MAX_USER_UPLOADS = 5
       - context_gatherer._get_summaries_separate() → {recent: 5, semantic: 5}
       - context_gatherer._get_reflections_separate() → {recent: 5, semantic: 5}
       - _hygiene_and_caps() → Dedupe with semantic similarity
+      - _llm_compress_oversized() → LLM summary for items ≥3x over limit
       - token_manager._manage_token_budget()
    c. _assemble_prompt(context, user_input) → Formatted string
 6. response_generator.generate_streaming_response(prompt)
@@ -4622,8 +4634,8 @@ except Exception as e:
 # CPU-only mode (no GPU)
 export CHROMA_DEVICE=cpu
 
-# Reduce memory footprint
-export PROMPT_TOKEN_BUDGET=2048
+# Override model-aware budget with a fixed value
+export PROMPT_TOKEN_BUDGET=15000
 export PROMPT_MAX_MEMS=20
 
 # Fast profile
@@ -4805,8 +4817,8 @@ TONE_THRESHOLD_CONCERN = 0.43
 HYBRID_SEMANTIC_WEIGHT = 0.7
 HYBRID_KEYWORD_WEIGHT = 0.3
 
-# Prompt Limits
-PROMPT_TOKEN_BUDGET = 15000
+# Prompt Limits (model-aware — auto-computed from context window)
+PROMPT_TOKEN_BUDGET_DEFAULT = 40000  # Override: PROMPT_TOKEN_BUDGET env var
 PROMPT_MAX_RECENT = 15
 PROMPT_MAX_MEMS = 15
 PROMPT_MAX_FACTS = 30

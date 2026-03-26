@@ -16,6 +16,7 @@ Module Contract
   - Manages async context collection with parallel data fetching (including personal notes and reference docs)
   - Applies gating system for relevance filtering and content selection
   - Enforces token budgets and applies priority-based trimming
+  - LLM-compresses heavily oversized items (≥3x over limit) before middle-out fallback [NEW 2026-03-26]
   - Handles different prompt modes (enhanced, raw, specialized)
   - Assembles [USER'S PERSONAL NOTES] section from Obsidian vault content
   - Assembles [DAEMON DOCUMENTATION] section from reference docs (system self-knowledge)
@@ -29,7 +30,7 @@ Module Contract
   - processing.gate_system (relevance filtering)
 - Side effects:
   - Memory system queries and data retrieval
-  - LLM API calls for summarization
+  - LLM API calls for summarization and oversized item compression [UPDATED 2026-03-26]
   - Cache operations for performance
   - Comprehensive logging and metrics collection
 
@@ -88,8 +89,77 @@ def _cfg_int(key: str, default_val: int) -> int:
 # Token and model configuration
 MODEL_MAX_TOKENS = int(os.getenv("MODEL_MAX_TOKENS", "4096"))
 RESERVE_FOR_COMPLETION = int(os.getenv("RESERVE_FOR_COMPLETION", "1024"))
-# Set to 15000 to force middle-out compression and speed up Opus processing
-PROMPT_TOKEN_BUDGET = int(os.getenv("PROMPT_TOKEN_BUDGET", "15000"))
+
+# Model-aware token budget (replaces static PROMPT_TOKEN_BUDGET = 15000)
+try:
+    from config.app_config import (
+        PROMPT_TOKEN_BUDGET_OVERRIDE,
+        PROMPT_TOKEN_BUDGET_DEFAULT,
+        PROMPT_TOKEN_BUDGET_LOCAL,
+        PROMPT_TOKEN_BUDGET_FLOOR,
+        PROMPT_TOKEN_BUDGET_CEILING,
+        PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION,
+    )
+except ImportError:
+    PROMPT_TOKEN_BUDGET_OVERRIDE = None
+    PROMPT_TOKEN_BUDGET_DEFAULT = 40000
+    PROMPT_TOKEN_BUDGET_LOCAL = 12000
+    PROMPT_TOKEN_BUDGET_FLOOR = 8000
+    PROMPT_TOKEN_BUDGET_CEILING = 60000
+    PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION = 0.25
+
+# LLM compression config (smart compression for heavily oversized items)
+try:
+    from config.app_config import (
+        LLM_COMPRESSION_ENABLED,
+        LLM_COMPRESSION_MODEL,
+        LLM_COMPRESSION_TIMEOUT,
+        LLM_COMPRESSION_RATIO_THRESHOLD,
+        LLM_COMPRESSION_MAX_BATCH,
+    )
+except ImportError:
+    LLM_COMPRESSION_ENABLED = True
+    LLM_COMPRESSION_MODEL = "gpt-4o-mini"
+    LLM_COMPRESSION_TIMEOUT = 3.0
+    LLM_COMPRESSION_RATIO_THRESHOLD = 3.0
+    LLM_COMPRESSION_MAX_BATCH = 8
+
+
+def _compute_token_budget(model_manager) -> int:
+    """Compute prompt token budget based on model context window.
+
+    Priority: env-var override > model-aware fraction > default.
+    """
+    # 1. Explicit env-var override (legacy compat: PROMPT_TOKEN_BUDGET=15000)
+    if PROMPT_TOKEN_BUDGET_OVERRIDE is not None:
+        logger.info(f"[PromptBuilder] Token budget: {PROMPT_TOKEN_BUDGET_OVERRIDE} (env override)")
+        return PROMPT_TOKEN_BUDGET_OVERRIDE
+
+    # 2. No model_manager available — use default
+    if model_manager is None:
+        logger.info(f"[PromptBuilder] Token budget: {PROMPT_TOKEN_BUDGET_DEFAULT} (default, no model_manager)")
+        return PROMPT_TOKEN_BUDGET_DEFAULT
+
+    # 3. Model-aware computation
+    try:
+        ctx_limit = model_manager.get_context_limit()
+        is_local = not model_manager.is_api_model(model_manager.get_active_model_name())
+
+        raw = int(ctx_limit * PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION)
+
+        if is_local:
+            budget = max(PROMPT_TOKEN_BUDGET_FLOOR, min(raw, PROMPT_TOKEN_BUDGET_LOCAL))
+        else:
+            budget = max(PROMPT_TOKEN_BUDGET_FLOOR, min(raw, PROMPT_TOKEN_BUDGET_CEILING))
+
+        logger.info(
+            f"[PromptBuilder] Token budget: {budget} "
+            f"(model-aware, ctx={ctx_limit}, local={is_local})"
+        )
+        return budget
+    except Exception as e:
+        logger.warning(f"[PromptBuilder] Could not determine context limit: {e}, using default")
+        return PROMPT_TOKEN_BUDGET_DEFAULT
 
 # Content limits (aligned with ContextGatherer defaults and user expectations)
 # - Recent conversations: 15
@@ -247,7 +317,7 @@ class UnifiedPromptBuilder:
     """
 
     def __init__(self, memory_coordinator=None, model_manager=None, tokenizer_manager=None,
-                 consolidator=None, time_manager=None, token_budget: int = PROMPT_TOKEN_BUDGET,
+                 consolidator=None, time_manager=None, token_budget: int = None,
                  wiki_manager=None, topic_manager=None, gate_system=None, **kwargs):
         """
         Initialize the UnifiedPromptBuilder.
@@ -258,7 +328,7 @@ class UnifiedPromptBuilder:
             tokenizer_manager: Manager for token counting
             consolidator: Memory consolidation manager
             time_manager: Time management utilities
-            token_budget: Maximum tokens for prompt context
+            token_budget: Maximum tokens for prompt context (None = auto-compute from model)
         """
         # Core dependencies
         self.memory_coordinator = memory_coordinator or self._build_default_memory_coordinator()
@@ -272,7 +342,9 @@ class UnifiedPromptBuilder:
         self.topic_manager = topic_manager
         self.gate_system = gate_system
 
-        # Token management
+        # Token management — model-aware if token_budget not explicitly passed
+        if token_budget is None:
+            token_budget = _compute_token_budget(model_manager)
         self.token_budget = token_budget
 
         # Initialize modular components
@@ -307,6 +379,119 @@ class UnifiedPromptBuilder:
         """Build a fallback memory coordinator if none provided."""
         logger.warning("No memory coordinator provided, using fallback")
         return _FallbackMemoryCoordinator()
+
+    async def _llm_compress_oversized(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Pre-pass: LLM-compress heavily oversized items before budget trimming.
+
+        Only targets items >= ratio_threshold * max_tokens (default 3x).
+        Mildly oversized items still handled by middle-out in token_manager.
+        """
+        if not LLM_COMPRESSION_ENABLED:
+            return context
+        if not self.model_manager or not hasattr(self.model_manager, 'generate_once'):
+            return context
+
+        from .token_manager import MEMORY_ITEM_MAX_TOKENS, SEMANTIC_ITEM_MAX_TOKENS, PRIORITY_ORDER as TM_PRIORITY_ORDER
+
+        try:
+            model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
+        except Exception:
+            model_name = "default"
+
+        # Scan all list sections for heavily oversized items
+        candidates = []  # (section_name, index, item, item_tokens, max_tokens)
+        for name, _prio in TM_PRIORITY_ORDER:
+            val = context.get(name)
+            if not val or not isinstance(val, list):
+                continue
+            if name in ("stm_summary", "user_profile", "narrative_state"):
+                continue
+
+            max_tokens = MEMORY_ITEM_MAX_TOKENS if name == "memories" else SEMANTIC_ITEM_MAX_TOKENS
+            threshold = max_tokens * LLM_COMPRESSION_RATIO_THRESHOLD
+
+            for i, item in enumerate(val):
+                item_text = self.token_manager._extract_text(item)
+                try:
+                    t = self.token_manager.get_token_count(item_text, model_name)
+                except Exception:
+                    t = len(item_text.split())
+                if t >= threshold:
+                    candidates.append((name, i, item, t, max_tokens))
+
+        if not candidates:
+            return context
+
+        # Sort by ratio (largest first), cap at max_batch
+        candidates.sort(key=lambda c: c[3] / c[4], reverse=True)
+        candidates = candidates[:LLM_COMPRESSION_MAX_BATCH]
+
+        logger.info(f"[LLM-COMPRESS] {len(candidates)} items queued for LLM compression")
+
+        # Build compression tasks
+        async def _compress_one(section: str, idx: int, item, item_tokens: int, max_tok: int):
+            item_text = self.token_manager._extract_text(item)
+            target = max_tok
+            prompt = (
+                f"Compress the following text to approximately {target} tokens. "
+                f"Preserve ALL key facts, names, dates, numbers, and decisions. "
+                f"Output ONLY the compressed text, nothing else.\n\n"
+                f"Text:\n{item_text}"
+            )
+            try:
+                compressed = await asyncio.wait_for(
+                    self.model_manager.generate_once(
+                        prompt,
+                        model_name=LLM_COMPRESSION_MODEL,
+                        system_prompt="You are a precise text compressor. Output only the compressed text.",
+                        max_tokens=target + 64,  # small buffer for token estimation mismatch
+                        temperature=0.0,
+                    ),
+                    timeout=LLM_COMPRESSION_TIMEOUT,
+                )
+                if compressed and isinstance(compressed, str) and len(compressed.strip()) > 20:
+                    try:
+                        new_tokens = self.token_manager.get_token_count(compressed.strip(), model_name)
+                    except Exception:
+                        new_tokens = len(compressed.strip().split())
+                    logger.info(
+                        f"[LLM-COMPRESS] {section}[{idx}]: {item_tokens}→{new_tokens} tokens (LLM)"
+                    )
+                    return (section, idx, compressed.strip())
+            except asyncio.TimeoutError:
+                logger.warning(f"[LLM-COMPRESS] Timeout compressing {section}[{idx}], falling back to middle-out")
+            except Exception as e:
+                logger.warning(f"[LLM-COMPRESS] Failed {section}[{idx}]: {e}, falling back to middle-out")
+            return None
+
+        # Fire all compressions in parallel
+        tasks = [
+            _compress_one(section, idx, item, item_tokens, max_tok)
+            for section, idx, item, item_tokens, max_tok in candidates
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Apply successful compressions back into context
+        for result in results:
+            if result is None or isinstance(result, Exception):
+                continue
+            section, idx, compressed_text = result
+            items = context.get(section)
+            if items and isinstance(items, list) and idx < len(items):
+                original = items[idx]
+                if isinstance(original, dict):
+                    updated = dict(original)
+                    for text_key in ('content', 'text', 'query', 'response'):
+                        if text_key in updated:
+                            updated[text_key] = compressed_text
+                            break
+                    else:
+                        updated['content'] = compressed_text
+                    items[idx] = updated
+                else:
+                    items[idx] = compressed_text
+
+        return context
 
     async def build_prompt(self, user_input: str, config: Optional[Dict[str, Any]] = None,
                           search_query: Optional[str] = None, personality_config: Optional[Dict[str, Any]] = None,
@@ -877,6 +1062,11 @@ class UnifiedPromptBuilder:
                         context['reflections'] = (context.get('reflections') or []) + add_refl
             except (TypeError, AttributeError, KeyError) as e:
                 logger.debug(f"Reflection pre-budget top-up failed: {e}")
+
+            # Step 6.9: LLM-compress heavily oversized items (async pre-pass)
+            # Items >= 3x over their token limit get LLM summary instead of middle-out slicing.
+            # Mildly oversized items (1x-3x) still use middle-out in token_manager.
+            context = await self._llm_compress_oversized(context)
 
             # Step 7: Token budget management
             logger.warning(f"BEFORE TOKEN BUDGET: memories count = {len(context.get('memories', []))}")

@@ -1115,8 +1115,13 @@ SESSION_DIFF_MAX_FILES = 30
 CORPUS_FILE = os.getenv("CORPUS_FILE", "./data/corpus.json")
 CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
 
-# Token budgets
-PROMPT_TOKEN_BUDGET = int(os.getenv("PROMPT_TOKEN_BUDGET", "2048"))
+# Token budgets (model-aware — see config.yaml token_budget: section)
+# Auto-computed: min(context_window * 0.25, ceiling) clamped to [floor, ceiling]
+# Override: PROMPT_TOKEN_BUDGET=15000 env var forces a specific value
+PROMPT_TOKEN_BUDGET_DEFAULT = 40000   # API models fallback
+PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
+PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
+PROMPT_TOKEN_BUDGET_CEILING = 60000   # Maximum budget
 PROMPT_MAX_MEMS = int(os.getenv("PROMPT_MAX_MEMS", "30"))
 
 # Decay & scoring
@@ -1204,6 +1209,13 @@ EXPAND_MAX_WINDOW = 5                  # Max temporal window (±N turns)
 EXPAND_DEFAULT_WINDOW = 3              # Default temporal window
 EXPAND_ANCHOR_CHAR_LIMIT = 600        # Char limit for anchor document
 EXPAND_CONTEXT_CHAR_LIMIT = 300       # Char limit for context documents
+
+# LLM Compression [NEW 2026-03-26]
+LLM_COMPRESSION_ENABLED = True         # Use LLM to compress heavily oversized items
+LLM_COMPRESSION_MODEL = "gpt-4o-mini"  # Model for compression calls
+LLM_COMPRESSION_TIMEOUT = 3.0          # Per-item timeout (seconds)
+LLM_COMPRESSION_RATIO_THRESHOLD = 3.0  # Only compress items >= 3x over token limit
+LLM_COMPRESSION_MAX_BATCH = 8          # Max items to compress per request (cost guard)
 
 # Summarization
 SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))

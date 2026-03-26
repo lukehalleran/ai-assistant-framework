@@ -1,69 +1,14 @@
-feat: Add expand_memory agentic tool for temporal context expansion and summary drill-down
+feat: Add LLM-based memory compression and rewrite README
 
-New agentic tool that lets the LLM "zoom in" on a memory search hit to see
-surrounding conversation turns or, for summaries, the original conversations
-that were compressed into it.
-
-## New System
-
-### Memory Expansion (memory/memory_expander.py)
-MemoryExpander class with two expansion strategies:
-- **timestamp_window**: For conversations, reflections, facts, obsidian_notes —
-  fetches chronological neighbors (configurable window, default ±3 turns).
-- **source_docs**: For summaries — retrieves the original conversation turns
-  that were compressed into the summary, using source_doc_ids metadata or
-  temporal_anchor_start/end range. Works retroactively on existing summaries.
-
-Caches results per (memory_id, window, collection) tuple. Session-gated at
-EXPAND_MAX_PER_SESSION (default 3). Content truncated per configurable char
-limits (anchor: 600, context: 300).
-
-## Agentic Integration
-- Tool definition (EXPAND_MEMORY_TOOL_DEFINITION) in types.py with anti-loop
-  guidance in description
-- SearchDecision fields: wants_memory_expand, expand_memory_id, expand_window,
-  expand_collection, expand_reason
-- Parsing in protocols.py: NativeToolsHandler (function calling) and
-  XMLMarkerHandler (<expand_memory> tag)
-- Execution branch in controller.py main loop with ProgressEvent emission,
-  session gating, and formatted context accumulation
-- GUI thought bubbles: "Recalling..." (conversations) or "Recalling Long Term
-  Memory..." (summaries) via new icon mappings in handlers.py
-
-## Supporting Changes
-- **get_by_id()** added to MultiCollectionChromaStore for direct doc lookup
-- **Thread metadata forwarding**: store_interaction() now propagates thread_id
-  and thread_depth from thread detection to ChromaDB conversation metadata
-- **Summary backlinks**: shutdown_processor._store_summary() captures source
-  conversation doc IDs by querying conversations collection within the block's
-  temporal anchor range, stored as comma-separated source_doc_ids metadata
-- **Search result format**: _format_memory_results() now shows full doc IDs
-  (not truncated) and [collection] tags so the LLM can pass IDs to expand_memory
-
-## Documentation
-- CLAUDE.md: added MemoryExpander to components table, module structure,
-  config section, testing notes, current development
-- Module contracts updated: multi_collection_chroma_store.py, memory_storage.py,
-  controller.py, protocols.py, shutdown_processor.py
-
-## Configuration
-New YAML section: memory_expansion
-New app_config.py constants: EXPAND_MEMORY_ENABLED, EXPAND_MAX_PER_SESSION,
-EXPAND_MAX_WINDOW, EXPAND_DEFAULT_WINDOW, EXPAND_MAX_TOTAL_TOKENS,
-EXPAND_ANCHOR_CHAR_LIMIT, EXPAND_CONTEXT_CHAR_LIMIT
-
-## Tests
-21 unit tests in tests/unit/test_memory_expander.py covering:
-- Temporal window slicing (middle, first, last boundaries)
-- Deterministic tie-breaking (timestamp + doc_id sort)
-- Cache hit/miss/clear behavior
-- Error cases (unknown ID, unknown collection, non-expandable collection)
-- Summary expansion via temporal anchors and source_doc_ids
-- Summary fallback when no linkage metadata
-- Content truncation and window clamping
-
-## Files Changed
-- 2 new files: memory/memory_expander.py, tests/unit/test_memory_expander.py
-- 9 modified: app_config.py, config.yaml, multi_collection_chroma_store.py,
-  memory_storage.py, shutdown_processor.py, types.py, protocols.py,
-  controller.py, handlers.py
+- Two-tier compression: items ≥3x over token limit get LLM summary
+  via async _llm_compress_oversized() pre-pass in builder.py;
+  mildly oversized items (1x-3x) still use middle-out character slicing
+- Parallel batch compression via asyncio.gather() with per-call timeout
+- Graceful fallback: timeout/error/empty response leaves item unchanged
+- Config: llm_compression section in config.yaml + LLM_COMPRESSION_*
+  constants in app_config.py (enabled, model, timeout, ratio, max_batch)
+- README.md: comprehensive rewrite with corrected stats (40K token budget,
+  180+ config options, 103K lines, 2850+ tests), added LLM compression
+  docs, fixed scoring weights and config key names
+- Updated module contracts in builder.py, token_manager.py, app_config.py
+- 16 unit tests in test_llm_compression.py, all passing

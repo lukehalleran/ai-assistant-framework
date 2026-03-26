@@ -241,7 +241,7 @@ class AgenticSearchController:
                 session.accumulated_context = ""
                 yield ProgressEvent(
                     event_type="thinking",
-                    message="Analyzing query for computation...",
+                    message="Entering Agentic Loop...",
                     round_number=1,
                     metadata={"skip_search": True}
                 )
