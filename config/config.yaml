@@ -224,7 +224,7 @@ proactive_surfacing:
   min_graph_edges: 15
   max_insights: 2
   cooldown_hours: 72
-  model: ''
+  model: gpt-4o-mini
   history_path: data/surfacing_history.json
   max_prompt_insights: 2
 knowledge_graph:
@@ -244,6 +244,18 @@ session_diff:
   enabled: true
   max_committed: 20
   max_uncommitted: 20
+token_budget:
+  default: 40000
+  local_model: 12000
+  floor: 8000
+  ceiling: 60000
+  context_fraction: 0.25
+llm_compression:
+  enabled: true
+  model: gpt-4o-mini
+  timeout_s: 3.0
+  ratio_threshold: 3.0    # Only LLM-compress items >= 3x over their token limit
+  max_batch: 8            # Max items to compress per request (cost guard)
 thread_surfacing:
   enabled: true
   max_open: 50

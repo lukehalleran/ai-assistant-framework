@@ -1,6 +1,6 @@
 # Daemon
 
-**A cognitive RAG agent with persistent memory, knowledge graph reasoning, and a long-term vision for automated cross-domain knowledge synthesis.**
+**A formally-specified cognitive agent with persistent memory, knowledge graph reasoning, agentic tool use, and a long-term vision for automated cross-domain knowledge synthesis.**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-2%2C800%2B-brightgreen.svg)](#testing)
@@ -12,9 +12,11 @@
 
 ## What Is This?
 
-Daemon is a **personal AI assistant with deep, persistent memory** — not a stateless chatbot wrapper. It remembers your projects, relationships, preferences, emotional state, and conversation history across sessions, then uses a multi-stage retrieval pipeline to surface relevant context for every response.
+Daemon is a **personal AI agent with deep, persistent memory** — not a stateless chatbot wrapper. It remembers your projects, relationships, preferences, emotional state, and conversation history across sessions, then uses a multi-stage retrieval pipeline to surface relevant context for every response.
 
-But the personal assistant is also infrastructure for a harder problem: **automated knowledge synthesis**. The long-term goal is to use random walks across large embedded knowledge bases (Wikipedia, arXiv, PubMed) to generate candidate cross-domain connections, then filter them through a multi-stage novelty pipeline. Most output will be noise. The entire value is in the filter — and that filter is what the assistant pipeline tests daily against real retrieval problems.
+It is also **a fully agentic system**. When a query requires real-time information, computation, or deeper memory exploration, Daemon enters a ReAct reasoning loop — thinking, selecting tools, observing results, and iterating until it has what it needs. The agent can search the web, run sandboxed Python code, query Wolfram Alpha, search its own memory collections, and drill into compressed conversation summaries to recover original context.
+
+But the agent is also infrastructure for a harder problem: **automated knowledge synthesis**. The long-term goal is to use random walks across large embedded knowledge bases (Wikipedia, arXiv, PubMed) to generate candidate cross-domain connections, then filter them through a multi-stage novelty pipeline. Most output will be noise. The entire value is in the filter — and that filter is what the assistant pipeline tests daily against real retrieval problems.
 
 ### Demo
 
@@ -24,19 +26,58 @@ https://github.com/user-attachments/assets/38e4c2ff-d992-4152-a98e-df58faa54533
 
 ## What Makes This Different
 
-Most "AI memory" projects store conversation history and do cosine similarity lookups. Daemon implements a full cognitive pipeline:
+Most "AI memory" projects store conversation history and do cosine similarity lookups. Daemon implements a full cognitive pipeline with formal mathematical specification, agentic tool use, and self-improving infrastructure.
 
-**Formalized retrieval architecture.** The entire agent is [formally modeled](docs/FORMAL_MODEL.md) as a composition of mathematical functions — perceive, interpret, expand, remember, plan, act, learn. Every scoring weight, gating threshold, and state transition is documented with its mathematical definition and code location.
+### Formally Specified Agent Architecture
 
-**Intent-parameterized scoring.** A single scoring function serves all 9 query intent types (factual recall, emotional support, temporal recall, etc.) by swapping weight vectors and retrieval limits per-intent. No separate pipelines — just different lenses on the same infrastructure.
+The entire agent is [formally modeled](docs/FORMAL_MODEL.md) as a composition of mathematical functions — perceive, interpret, expand, remember, plan, act, learn. Every scoring weight, gating threshold, state transition, and prompt section is documented with its mathematical definition and code location. The agent state, retrieval function, scoring function, and session lifecycle are all specified with enough precision to verify behavior against the codebase.
 
-**Knowledge graph query expansion.** Before retrieval, queries are expanded using a NetworkX knowledge graph built from extracted facts. Entity resolution with alias tables turns "what about my brother" into "what about my brother Auggie Mom Flapjack" — surfacing related entities the user didn't explicitly mention.
+### Agentic Tool System (ReAct Loop)
 
-**Evidence-based truth scoring.** Memories aren't trusted equally. A TruthScorer tracks confirmation/correction events across sessions, and a CorrectionDetector adjusts scores when the user corrects stored facts. This replaced an earlier access-count system that created echo chambers.
+When a query needs more than stored memory, Daemon enters a multi-round ReAct loop with six tools:
 
-**Crisis-aware escalation FSM.** A 4-state finite state machine (VALIDATE → GROUNDING → QUIET → GENTLE) tracks emotional momentum across turns and modifies response length, tone, and token budget. It distinguishes genuine calming from analytical shifts (PERSPECTIVE), avoiding premature de-escalation.
+| Tool | Purpose |
+|------|---------|
+| **Web Search** | Tavily API with query decomposition, caching, and rate limiting |
+| **Wolfram Alpha** | Symbolic computation, unit conversions, scientific data |
+| **Code Sandbox** | Secure Python execution in ephemeral Firecracker microVMs (E2B) |
+| **Memory Search** | Targeted search across 11 ChromaDB collections from within the loop |
+| **Memory Expansion** | Drill into a search hit — retrieve chronological neighbors or decompress summaries back to original conversations |
+| **Done** | Signal synthesis complete |
 
-**Retrieval quality benchmarks.** 30 seed memories and 19 test cases with real embeddings (all-MiniLM-L6-v2) measure recall@K and MRR across all intent types. No scoring or weight changes ship without before-and-after benchmark runs.
+The agent receives a **context inventory** summarizing what RAG already gathered, preventing redundant searches. A 3-tier agentic gate (keyword heuristic → knowledge graph entity match → LLM fallback) decides when to enter the loop at all. The loop runs up to 5 rounds with token-budgeted context compression between iterations.
+
+### Intent-Parameterized Retrieval
+
+A single scoring function serves all 9 query intent types (factual recall, emotional support, temporal recall, project work, etc.) by swapping weight vectors, retrieval limits, and gating thresholds per-intent. No separate pipelines — just different lenses on the same infrastructure. Intent classification is regex-first with no LLM calls, refined by short-term memory analysis when confidence is low.
+
+### Knowledge Graph Query Expansion
+
+Before retrieval, queries are expanded using a NetworkX knowledge graph built from extracted facts. Entity resolution with alias tables (trigram → bigram → unigram matching) turns "what about my brother" into "what about my brother Auggie Mom Flapjack" — surfacing related entities the user didn't explicitly mention. Expansion candidates are ranked by lateral connectivity and filtered for junk nodes.
+
+### Evidence-Based Truth Scoring & Fact Verification
+
+Memories aren't trusted equally. A TruthScorer tracks confirmation and correction events across sessions, and a CorrectionDetector adjusts scores when the user corrects stored facts. Before any new fact is stored, a FactVerifier runs conflict detection against existing knowledge — producing STORE, STORE_AND_FLAG (supersede old), REJECT, or SKIP verdicts with optional LLM adjudication.
+
+### Memory Staleness Cascade
+
+When a fact is corrected, a ClaimIndex traces which summaries and reflections cited it, then cascades staleness ratios to downstream documents. Stale memories receive scoring penalties with a steep curve (2x multiplier above 80% staleness) and are prefixed with `[HISTORICAL — PARTIALLY OUTDATED]` in the prompt so the LLM knows to treat them cautiously.
+
+### Proactive Cross-Domain Insight Surfacing
+
+A ContextSurfacer analyzes the knowledge graph to find non-obvious connections across different domains of the user's life — e.g., linking programming skills to academic coursework, or work schedule patterns to fitness goals. Insights are generated once per session with novelty tracking and cooldown periods to avoid repetition.
+
+### Crisis-Aware Escalation FSM
+
+A 4-state finite state machine (VALIDATE → GROUNDING → QUIET → GENTLE) tracks emotional momentum across turns and modifies response length, tone, and token budget. It distinguishes genuine calming from analytical shifts (PERSPECTIVE), avoiding premature de-escalation. The 250+ keyword tone detector separates personal crisis ("I can't go on") from world observation ("People are suffering due to deportations").
+
+### Self-Improving Proposals Pipeline
+
+At session end, Daemon generates its own improvement proposals filtered against a GOALS.md file. Proposals are stored in ChromaDB with deduplication, then surfaced during project-related conversations through a 10-stage pipeline: project-relevance check → goal-aligned retrieval → keyword dedup → semantic dedup → gate scoring → composite scoring → novelty penalty (git overlap) → diversity selection → optional LLM pairwise ranking. A 4-stage implementation detector (file existence → code content → git history → LLM judgment) tracks which proposals have been built.
+
+### Retrieval Quality Benchmarks
+
+30 seed memories and 19 test cases with real embeddings (all-MiniLM-L6-v2) measure recall@K and MRR across all intent types. No scoring or weight changes ship without before-and-after benchmark runs.
 
 ---
 
@@ -73,30 +114,47 @@ See [`conversation_logs/gold_star_example.txt`](./conversation_logs/gold_star_ex
 ```
 User Query
     │
-    ├─ Context Pipeline ──── 8 stages: topic extraction → tone detection →
-    │                        intent classification (9 types) → query rewriting → STM analysis
+    ├─ Context Pipeline ──── 8 stages: topic extraction (spaCy NER + LLM fallback) →
+    │                        tone detection (250+ keywords, 4 crisis levels) →
+    │                        intent classification (9 types, regex-first, no LLM) →
+    │                        query rewriting → STM analysis → intent refinement
     │
-    ├─ Knowledge Graph ───── Entity resolution + BFS expansion (depth 2)
-    │                        Lateral connectivity ranking, junk node prevention
+    ├─ Knowledge Graph ───── Entity resolution (alias tables, trigram matching) +
+    │                        BFS expansion (depth 2) + lateral connectivity ranking
     │
     ├─ Parallel Retrieval ── 18 async tasks across 11 ChromaDB collections
     │                        (conversations, facts, summaries, reflections, wiki,
-    │                         obsidian notes, git commits, procedural skills, threads, ...)
+    │                         obsidian notes, git commits, procedural skills, threads,
+    │                         proposals, reference docs, proactive insights, ...)
     │
-    ├─ Multi-Stage Gating ── FAISS → Cosine similarity → Cross-encoder reranking (~200ms)
+    ├─ Multi-Stage Gating ── Batch cosine similarity → Cross-encoder reranking (~200ms)
+    │                        Per-intent threshold overrides
     │
-    ├─ Composite Scoring ─── 6 weighted factors + bonuses/penalties, parameterized by intent
+    ├─ Composite Scoring ─── 6 weighted factors + graph/anchor/meta bonuses +
+    │                        staleness/size/deictic penalties, all parameterized by intent
     │                        Temporal-aware recency decay for time-windowed queries
     │
-    ├─ Prompt Assembly ───── ~24 conditional sections, token-budgeted (15K default)
+    ├─ Prompt Assembly ───── 26 conditional sections, token-budgeted (40K default)
+    │                        Two-tier compression: LLM summary (≥3x oversized) +
+    │                        middle-out slicing (mildly oversized)
     │                        Attention-aware ordering (high-signal sections at end)
+    │                        Codebase diff injection on session start
     │
-    ├─ Agentic Search ────── ReAct loop: Tavily + Wolfram Alpha + E2B sandbox
+    ├─ Agentic Tool Loop ─── ReAct pattern: Think → Tool → Observe → Repeat (max 5 rounds)
+    │                        Tools: Tavily + Wolfram Alpha + E2B sandbox +
+    │                        memory search + memory expansion + done
     │                        Context inventory prevents redundant re-searches
     │
-    └─ State Transition ──── Per-turn: memory storage + truth events + staleness cascade + escalation FSM
-                             Per-session: block summaries + fact extraction + knowledge graph
-                             ingestion + thread extraction + staleness indexing + cross-collection dedup (dry-run)
+    ├─ Generation ─────────── Standard streaming | Best-of-N | Duel (A vs B + judge) |
+    │                        Multi-model ensemble with voter selection
+    │
+    └─ State Transition ──── Per-turn: memory storage + truth events + fact verification +
+                                       graph ingestion + escalation FSM
+                             Per-session: block summaries + fact extraction (regex + LLM) +
+                                          knowledge graph update + thread extraction/resolution +
+                                          staleness cascade + procedural skills + proposals +
+                                          implementation tracking + cross-collection dedup (dry-run) +
+                                          session reflection
 ```
 
 > For the full formal model with mathematical definitions, see [FORMAL_MODEL.md](docs/FORMAL_MODEL.md).
@@ -111,43 +169,112 @@ Five memory tiers modeled on cognitive architecture, stored across 11 ChromaDB c
 | Tier | What It Stores | Retrieval Bias |
 |------|---------------|----------------|
 | **Episodic** | Raw conversation turns | Recency |
-| **Semantic** | Extracted fact triples + Wikipedia | Truth score + relevance |
+| **Semantic** | Extracted fact triples + Wikipedia (6.5M articles) | Truth score + relevance |
 | **Procedural** | Git commits + learned skill patterns | Pattern matching |
-| **Summary** | LLM-compressed conversation blocks | Relevance |
-| **Meta** | Session reflections + open threads + code proposals | Priority / urgency |
+| **Summary** | LLM-compressed conversation blocks (with source backlinks) | Relevance |
+| **Meta** | Session reflections + open threads + code proposals + proactive insights | Priority / urgency |
 
 The scoring function for ranking retrieved memories:
 
 ```
-σ(d, x) = Σ wᵢ · fᵢ(d, x) + structure + bonuses - penalties
+σ_ι(d, x) = Σ wᵢ(ι) · fᵢ(d, x) + bonuses - penalties
 
-where weights wᵢ are overridden per-intent:
+where weights wᵢ are overridden per-intent ι:
   relevance (0.35) + recency (0.25) + truth (0.20) +
-  importance (0.05) + continuity (0.10) + topic_match (0.00)
+  importance (0.05) + continuity (0.10) + structure (0.05)
 
-structure: density alignment bonus (up to ~0.15)
-bonuses: anchor_bonus + meta_bonus + graph_bonus (0.05 per related entity, capped 0.15)
-penalties: size penalty, deictic drift, staleness penalty (ratio*0.15, steep at 80%, capped 0.4)
+bonuses:  anchor_bonus + meta_bonus + graph_bonus (0.05 per entity, capped 0.15)
+penalties: staleness (cascade from corrected facts, steep at 80%, capped 0.4) +
+           size penalty + deictic drift + analogy penalty
+
+temporal-aware recency (for TEMPORAL_RECALL with anchor α hours):
+  within window:  1.0 - (age/α) × 0.3      (gentle decay)
+  outside window: 0.7 / (1 + λ(age - α))   (standard decay)
 ```
 
 Cross-collection deduplication detects both cosine duplicates (threshold 0.92) and fact contradictions (same subject+predicate, different object). Runs dry-run only by default — live deletions require explicit GUI action.
 
 ---
 
-## Tone Detection
+## Session Lifecycle
 
-Crisis-aware tone detection adapts response depth using 250+ weighted keywords:
+Daemon doesn't just chat — it performs structured cognitive maintenance at session boundaries.
 
-| Level | Trigger Examples | Response Style |
-|-------|------------------|----------------|
-| **HIGH** | "I want to die", "can't go on" | Full therapeutic presence, multi-paragraph |
-| **MEDIUM** | "panic attack", "falling apart" | 2-3 paragraphs, supportive |
-| **CONCERN** | "really anxious", "scared" | 2-4 sentences, brief validation |
-| **CONVERSATIONAL** | Status updates, technical questions | 1-3 sentences, direct |
+**Session start:** Detects git changes since last session (committed + uncommitted), builds a compact feature inventory, and injects codebase awareness into the first prompt.
 
-The system distinguishes personal crisis from world event observation:
-- "I'm suffering and can't go on" → HIGH (personal crisis)
-- "People are suffering due to deportations" → CONVERSATIONAL (world observation)
+**Per-turn:** Stores episodic memory, updates truth scores from correction/confirmation detection, runs optional fact extraction with verification gate, ingests facts into the knowledge graph, and transitions the escalation FSM.
+
+**Session end (9-step pipeline):**
+1. Block summaries — LLM-compressed conversation history with source document backlinks
+2. Regex-based fact extraction (last 10 turns) with conflict verification
+3. LLM-assisted fact extraction (last 12 turns) with batch verification and graph ingestion
+4. Procedural skill extraction (learned trigger → action patterns)
+5. Self-improvement proposal generation (filtered against GOALS.md)
+6. Cross-collection deduplication scan (dry-run only, never auto-deletes)
+7. Open thread processing — resolution detection + new thread extraction + cap enforcement
+8. Implementation tracking — checks if previously proposed features have been built
+9. Session reflection — LLM meta-reflection stored for future context
+
+**Critical invariant:** No user data is auto-deleted at shutdown.
+
+---
+
+## Agentic Tool System
+
+The agentic system uses a ReAct (Reason + Act) pattern with dual protocol support — native function calling for API models (OpenAI, Anthropic) and XML markers for local models.
+
+**Triggering:** A 3-tier gate decides when to enter the agentic loop:
+1. Keyword heuristic — computation or memory-recall triggers
+2. Entity match — query terms checked against knowledge graph alias index
+3. LLM fallback — catches structurally obvious recall/search queries the heuristics missed
+
+**Tool details:**
+
+| Tool | Implementation | Key Feature |
+|------|---------------|-------------|
+| Web Search | Tavily API | Query decomposition for multi-entity queries, 72hr ChromaDB cache, daily credit tracking |
+| Wolfram Alpha | LLM API | Token bucket rate limiting, MD5-keyed result cache, assumption parsing |
+| Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across loop iterations), NumPy/Pandas/SciPy pre-installed |
+| Memory Search | ChromaDB (11 collections) | Per-collection search descriptions, diversity tracking prevents redundant queries |
+| Memory Expansion | Temporal + backlink strategies | For summaries: recovers original conversations via source_doc_ids or temporal anchors. For other collections: ±N chronological neighbors. Session-gated, cached. |
+
+---
+
+## Open Thread Tracking
+
+Daemon tracks commitments, deadlines, and unresolved questions across sessions using a ChromaDB-backed thread store:
+
+- **Extraction:** LLM identifies new threads from conversation (commitments, deadlines, open questions)
+- **Resolution detection:** LLM checks if existing threads were addressed during the session
+- **Priority scoring:** Threads ranked by urgency and surfaced in the prompt as `[UNRESOLVED THREADS]`
+- **Cap enforcement:** Lowest-priority threads pruned when over the maximum (only auto-deletion in the system)
+- **Prompt injection:** Active threads appear in the high-attention zone of the prompt
+
+---
+
+## Prompt Architecture
+
+The prompt is assembled from 26 conditional sections, ordered by transformer attention patterns (high-signal, low-token sections placed at the end for maximum attention weight):
+
+```
+[RECENT CONVERSATION]              [KNOWLEDGE GRAPH]
+[RELEVANT MEMORIES]                 [UNRESOLVED THREADS]
+[RECENT SUMMARIES]                  [PROACTIVE INSIGHTS]
+[SEMANTIC SUMMARIES]                [USER PROFILE]
+[BACKGROUND KNOWLEDGE]              [ACTIVE FEATURES]
+[WEB SEARCH RESULTS]                [CODEBASE CHANGES SINCE LAST SESSION]
+[RELEVANT INFORMATION]              [TIME CONTEXT]
+[RECENT REFLECTIONS]                [TEMPORAL GROUNDING]
+[SEMANTIC REFLECTIONS]              [SHORT-TERM CONTEXT SUMMARY]
+[USER'S PERSONAL NOTES]             [CURRENT USER QUERY]
+[USER UPLOADED ITEMS]
+[DAEMON DOCUMENTATION]
+[PROJECT COMMIT HISTORY]
+[ADAPTIVE WORKFLOWS]
+[PROPOSED FEATURES]
+```
+
+Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Default budget: 40,000 tokens with two-tier compression: heavily oversized items (≥3x over limit) get LLM summary, while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle). Escalation FSM states override the token budget (300–800 tokens during crisis states).
 
 ---
 
@@ -246,9 +373,9 @@ python -m pytest --cov=. --cov-report=html  # With coverage
 - 51 escalation tracker tests
 - 50 graph integration tests
 - 47 cross-deduplication tests
-- 39 fact verification tests
 - 47 claim tracker / staleness tests
 - 44 file access manager tests
+- 39 fact verification tests
 - 19 retrieval quality benchmarks (30 seed memories, real embeddings, recall@K + MRR)
 
 ---
@@ -256,57 +383,19 @@ python -m pytest --cov=. --cov-report=html  # With coverage
 ## Project Stats
 
 ```
-Lines of Python:      ~102,000
-Python files:         284
-Test files:           137
-Test functions:       2,800+
-ChromaDB collections: 11
-Prompt sections:      ~24 (conditional)
-Intent types:         9
-Retrieval tasks:      18 (parallel)
-Memory tiers:         5
-Gating latency:       ~200ms
+Lines of Python:        ~102,000
+Python files:           284
+Test files:             137
+Test functions:         2,800+
+ChromaDB collections:   11
+Prompt sections:        26 (conditional)
+Intent types:           9
+Retrieval tasks:        18 (parallel)
+Memory tiers:           5
+Agentic tools:          6
+Gating latency:         ~200ms
+Config options:         180+
 ```
-
----
-
-## Configuration
-
-Core settings via `config.yaml` with environment variable overrides:
-
-```yaml
-# config.yaml
-daemon:
-  version: v4
-  data_dir: ./data
-
-models:
-  default_model: sonnet-4.5
-  default_max_tokens: 1850
-  enable_thinking_blocks: true
-
-memory:
-  corpus_max_entries: 2000
-  prompt_max_recent: 15
-  prompt_max_mems: 15
-  prompt_max_facts: 30
-
-gating:
-  cosine_threshold: 0.15
-  xenc_threshold: 0.55
-```
-
-```bash
-# Environment variables (required)
-OPENAI_API_KEY=sk-...      # Or ANTHROPIC_API_KEY, etc.
-
-# Environment overrides (optional)
-CORPUS_MAX_ENTRIES=2000
-PROMPT_TOKEN_BUDGET=15000
-CHROMA_DEVICE=cpu          # Or "cuda" for GPU
-```
-
-See [config/app_config.py](config/app_config.py) for the full list of ~80+ configuration options with defaults.
 
 ---
 
@@ -316,30 +405,39 @@ See [config/app_config.py](config/app_config.py) for the full list of ~80+ confi
 core/                        # Request orchestration
 ├── orchestrator.py          # Main controller
 ├── best_of_handler.py       # Best-of-N/duel/ensemble generation
-├── context_pipeline.py      # Query analysis (tone, topic, intent, STM)
+├── context_pipeline.py      # 8-stage query analysis (tone, topic, intent, STM)
 ├── intent_classifier.py     # Regex-first intent classification (9 types)
-├── escalation_tracker.py    # Crisis cooldown FSM
+├── escalation_tracker.py    # Crisis cooldown FSM (4 states)
 ├── correction_detector.py   # User correction/confirmation detection
-├── agentic/                 # ReAct agentic search loop
+├── response_parser.py       # Thinking block + tag stripping utilities
+├── agentic/                 # ReAct agentic tool loop
+│   ├── controller.py        # ReAct loop orchestration (5-round max)
+│   ├── types.py             # Tool definitions, state machine, progress events
+│   └── protocols.py         # Native function calling + XML marker handlers
 └── prompt/                  # Modular prompt system
-    ├── builder.py           # UnifiedPromptBuilder
-    ├── context_gatherer.py  # Parallel async retrieval
-    ├── formatter.py         # Section assembly
-    └── token_manager.py     # Budget management
+    ├── builder.py           # 26-section prompt assembly
+    ├── context_gatherer.py  # 18 parallel async retrieval tasks
+    ├── formatter.py         # Section assembly + attention ordering
+    ├── token_manager.py     # Priority-based budget management
+    └── proposal_filter.py   # 10-stage proposal injection pipeline
 
 memory/                      # 5-tier memory system
-├── memory_coordinator.py    # Thin orchestrator (~500 lines)
-├── shutdown_processor.py    # Session-end processing pipeline
-├── memory_scorer.py         # Composite scoring with intent overrides
+├── memory_coordinator.py    # Thin orchestrator (~500 lines, 24 delegation methods)
+├── memory_retriever.py      # Parallel ChromaDB retrieval pipeline
+├── memory_scorer.py         # Composite scoring with intent overrides + graph boost
+├── memory_storage.py        # Persistence with fact verification gate
+├── shutdown_processor.py    # 9-step session-end processing pipeline
 ├── truth_scorer.py          # Evidence-based truth tracking
-├── graph_memory.py          # NetworkX knowledge graph
-├── entity_resolver.py       # Entity alias resolution
+├── graph_memory.py          # NetworkX knowledge graph (JSON persistence)
+├── entity_resolver.py       # Entity alias resolution + relation normalization
 ├── fact_extractor.py        # Dual-budget fact extraction (user + entity)
-├── claim_tracker.py         # Staleness tracking + cascade invalidation
-├── cross_deduplicator.py    # Cross-collection dedup (dry-run default)
-├── fact_verification.py     # Conflict detection before storage
-├── context_surfacer.py      # Proactive cross-domain insights
-├── thread_store.py          # Open thread tracking
+├── fact_verification.py     # Pre-storage conflict detection (STORE/FLAG/REJECT/SKIP)
+├── claim_tracker.py         # ClaimIndex reverse index + staleness cascade
+├── cross_deduplicator.py    # Cross-collection dedup + contradiction detection
+├── context_surfacer.py      # Proactive cross-domain insight generation
+├── memory_expander.py       # Temporal expansion + summary drill-down
+├── thread_store.py          # ChromaDB-backed thread CRUD + priority ranking
+├── thread_extractor.py      # LLM-based thread extraction + resolution detection
 └── storage/
     └── multi_collection_chroma_store.py  # ChromaDB wrapper (11 collections)
 
@@ -351,30 +449,32 @@ models/
 └── tokenizer_manager.py
 
 knowledge/
-├── web_search_manager.py    # Tavily API + caching
-├── git_memory.py            # Git commit extraction
+├── web_search_manager.py    # Tavily API + query decomposition + caching
+├── wolfram_manager.py       # Wolfram Alpha LLM API + rate limiting
+├── sandbox_manager.py       # E2B Firecracker sandbox + persistent sessions
+├── git_memory.py            # Git commit extraction + procedural indexing
+├── obsidian_manager.py      # Obsidian vault sync + multimodal image support
 ├── reference_docs_manager.py # Auto-seeded docs/ knowledge
-└── implementation_detector.py # Proposal implementation tracking
-
-scripts/
-├── migrate_claims.py        # Backfill claim index from existing summaries
-├── migrate_facts_to_graph.py # Populate knowledge graph from ChromaDB facts
-└── cleanup_graph_junk.py    # Remove junk nodes from knowledge graph
+├── wiki_manager.py          # FAISS-indexed Wikipedia (6.5M articles)
+└── implementation_detector.py # 4-stage proposal implementation tracking
 
 utils/
 ├── tone_detector.py         # 250+ weighted keywords, 4 crisis levels
-├── topic_manager.py
-└── web_search_trigger.py
+├── topic_manager.py         # 3-stage: heuristic → spaCy NER → LLM fallback
+├── web_search_trigger.py    # 3-tier agentic gate (keyword → entity → LLM)
+├── daily_notes_generator.py # Auto daily summaries with LLM tag generation
+├── weekly_notes_generator.py # Weekly aggregation + folder organization
+└── monthly_notes_generator.py # Monthly summaries with folder migration
 
 gui/                         # Gradio web interface
 ├── launch.py                # Dark theme, tab layout, startup hooks
-├── handlers.py              # Chat streaming
-└── wizard.py                # First-run onboarding
+├── handlers.py              # Chat streaming + agentic routing + fast mode
+└── wizard.py                # 7-step onboarding wizard
 
 tests/                       # 137 test files
 ├── unit/                    # Component tests
-├── benchmarks/              # Retrieval quality (real embeddings)
-└── fixtures/                # Benchmark seed data
+├── benchmarks/              # Retrieval quality (real embeddings, recall@K, MRR)
+└── fixtures/                # Benchmark seed data (30 memories, 19 test cases)
 ```
 
 ---
@@ -391,6 +491,52 @@ python data/pipeline/unified_pipeline.py --download --semantic
 ```
 
 **Requirements:** ~102GB storage for the full index. Optional — the assistant works without it.
+
+---
+
+## Configuration
+
+Core settings via `config.yaml` with environment variable overrides:
+
+```yaml
+# config.yaml
+daemon:
+  version: v4
+  data_dir: ./data
+
+models:
+  default: sonnet-4.5
+  default_max_tokens: 9984
+
+memory:
+  corpus_max_entries: 2000
+  prompt_max_recent: 15
+  prompt_max_mems: 15
+  prompt_max_facts: 30
+
+gating:
+  cosine_similarity_threshold: 0.15
+  score_weights:
+    relevance: 0.30
+    recency: 0.22
+    truth: 0.18
+    importance: 0.05
+    continuity: 0.10
+    structure: 0.05
+    topic_match: 0.10
+```
+
+```bash
+# Environment variables (required)
+OPENAI_API_KEY=sk-...      # Or ANTHROPIC_API_KEY, etc.
+
+# Environment overrides (optional)
+CORPUS_MAX_ENTRIES=2000
+PROMPT_TOKEN_BUDGET=40000
+CHROMA_DEVICE=cpu          # Or "cuda" for GPU
+```
+
+See [config/app_config.py](config/app_config.py) for the full list of 180+ configuration options with defaults.
 
 ---
 

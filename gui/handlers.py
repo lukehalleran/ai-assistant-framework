@@ -389,9 +389,8 @@ async def handle_submit(
         needs_memory = any(kw in _lower for kw in _memory_keywords)
 
         # --- Tier 2: Entity match (instant, no LLM) ---
-        # If query mentions a known personal entity from the knowledge graph,
-        # it's almost certainly a memory query. Runs before casual skip so
-        # short entity queries like "tell me about Flapjack" aren't filtered out.
+        # If query mentions a known entity AND has a recall/question signal,
+        # treat as memory query. Entity mention alone (casual chat) is not enough.
         if not needs_computation and not needs_memory:
             try:
                 _resolver = getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None)
@@ -400,8 +399,20 @@ async def handle_submit(
                     _matched_entities = extract_graph_entities(user_text, _resolver)
                     _matched_entities.discard("user")  # "user" is not a meaningful match
                     if _matched_entities:
-                        needs_memory = True
-                        logger.debug(f"[Handle Submit] Agentic triggered - query mentions known entities: {_matched_entities}")
+                        # Require a recall/question signal alongside entity mention
+                        _has_recall_signal = (
+                            '?' in user_text
+                            or any(w in _lower for w in [
+                                'what', 'when', 'where', 'who', 'how', 'why',
+                                'tell me', 'remind', 'remember', 'know about',
+                                'recall', 'anything about', 'details on',
+                            ])
+                        )
+                        if _has_recall_signal:
+                            needs_memory = True
+                            logger.debug(f"[Handle Submit] Agentic triggered - entity {_matched_entities} + recall signal")
+                        else:
+                            logger.debug(f"[Handle Submit] Entity match {_matched_entities} but no recall signal — skipping agentic")
             except Exception as e:
                 logger.debug(f"[Handle Submit] Entity match check failed (non-fatal): {e}")
 
@@ -502,7 +513,12 @@ async def handle_submit(
                             "done": "✅",
                             "error": "❌",
                         }.get(item.event_type, "•")
-                        status_msg = f"{status_icon} {item.message}"
+                        # Override display message for specific event types
+                        _display_msg = {
+                            "computing": "Computing...",
+                            "executing_code": "Coding...",
+                        }.get(item.event_type, item.message)
+                        status_msg = f"{status_icon} {_display_msg}"
                         logger.debug(f"[Handle Submit] Agentic progress: {item.event_type}")
                         yield {"role": "assistant", "content": status_msg, "is_progress": True}
                     else:
