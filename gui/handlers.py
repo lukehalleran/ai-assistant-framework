@@ -496,6 +496,8 @@ async def handle_submit(
                             "files_searched": "✅",
                             "listing_files": "📂",
                             "files_listed": "✅",
+                            "expanding_memory": "🧠",
+                            "memory_expanded": "✅",
                             "synthesizing": "✨",
                             "done": "✅",
                             "error": "❌",
