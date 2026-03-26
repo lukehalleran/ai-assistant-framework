@@ -16,6 +16,10 @@ Tool Support:
       - Persistent sessions for variable persistence across turns
       - Automatic cleanup in finally block
     - Memory search via ChromaDB collections (optional)
+    - Memory expansion via MemoryExpander (optional) [NEW 2026-03]
+      - Expands a search result to show surrounding turns (timestamp window)
+      - For summaries, retrieves original source conversations
+      - Gated by EXPAND_MAX_PER_SESSION per session
 
 Key Parameters:
     - skip_initial_search: bool - Skip Round 1 web search for computation-only queries [NEW 2026-01-22]
@@ -25,6 +29,7 @@ Dependencies:
     - knowledge.web_search_manager.WebSearchManager (for web searches)
     - knowledge.wolfram_manager.WolframManager (for computations, optional)
     - knowledge.sandbox_manager.SandboxManager (for code execution, optional) [NEW 2026-01-22]
+    - memory.memory_expander.MemoryExpander (for memory expansion, optional) [NEW 2026-03]
     - core.prompt.token_manager.TokenManager (for budget enforcement)
 
 Public Interface:
@@ -136,6 +141,15 @@ class AgenticSearchController:
         self.max_rounds = max_rounds
         self.context_budget_tokens = context_budget_tokens
         self.compression_model = compression_model
+
+        # Memory expander (temporal window around a doc)
+        self.memory_expander = None
+        if chroma_store:
+            try:
+                from memory.memory_expander import MemoryExpander
+                self.memory_expander = MemoryExpander(chroma_store)
+            except Exception as e:
+                logger.warning(f"[AgenticSearch] Could not init MemoryExpander: {e}")
 
     def detect_protocol(self, model_name: str) -> SearchProtocol:
         """
@@ -580,6 +594,73 @@ class AgenticSearchController:
                         collection,
                         decision.memory_query,
                         memory_result
+                    )
+
+                elif decision.wants_memory_expand and decision.expand_memory_id:
+                    # Model wants to expand a memory hit for surrounding context
+                    from config.app_config import EXPAND_MEMORY_ENABLED, EXPAND_MAX_PER_SESSION
+                    memory_id = decision.expand_memory_id
+                    if not EXPAND_MEMORY_ENABLED or not self.memory_expander:
+                        logger.info("[AgenticSearch] expand_memory disabled or no expander")
+                        # Treat as implicit answer to avoid stalling
+                        break
+                    if session.expand_count >= EXPAND_MAX_PER_SESSION:
+                        logger.info("[AgenticSearch] expand_memory limit reached (%d/%d)",
+                                    session.expand_count, EXPAND_MAX_PER_SESSION)
+                        break
+
+                    is_summary = (decision.expand_collection == "summaries")
+                    recall_label = "Recalling Long Term Memory..." if is_summary else "Recalling..."
+
+                    yield ProgressEvent(
+                        event_type="expanding_memory",
+                        message=recall_label,
+                        round_number=session.current_round,
+                        metadata={
+                            "memory_id": memory_id,
+                            "collection": decision.expand_collection,
+                            "reason": decision.expand_reason,
+                        }
+                    )
+
+                    session.state = AgentState.SEARCHING
+                    start_time = time.time()
+                    expand_result = self._execute_memory_expand(
+                        memory_id, decision.expand_window, decision.expand_collection
+                    )
+                    duration = (time.time() - start_time) * 1000
+
+                    formatted = self._format_expanded_results(expand_result)
+                    n_turns = len(expand_result.get("turns", []))
+
+                    round_data = SearchRound(
+                        round_number=session.current_round,
+                        request=SearchRequest(
+                            query=f"[Expand Memory] {memory_id[:8]}",
+                            reason=decision.expand_reason,
+                            round_number=session.current_round
+                        ),
+                        results=None,
+                        duration_ms=duration
+                    )
+
+                    done_label = (
+                        f"Recalled {n_turns} memories from long term"
+                        if is_summary else f"Recalled {n_turns} surrounding turns"
+                    )
+                    yield ProgressEvent(
+                        event_type="memory_expanded",
+                        message=done_label,
+                        round_number=session.current_round,
+                        metadata={"duration_ms": duration}
+                    )
+
+                    session.state = AgentState.OBSERVING
+                    round_data.summary = formatted
+                    session.rounds.append(round_data)
+                    session.expand_count += 1
+                    session.accumulated_context += "\n\n" + self._format_expand_context(
+                        session.current_round - 1, memory_id, formatted
                     )
 
                 elif decision.wants_file_read and decision.file_read_path:
@@ -1397,8 +1478,11 @@ What would you like to do?""")
             content = r.get("content", "").strip()
             score = r.get("relevance_score", 0.0)
             meta = r.get("metadata", {})
+            doc_id = r.get("id", "")
 
             header_parts = [f"[{i}]"]
+            if doc_id:
+                header_parts.append(f"(id: {doc_id})")
             if collection == "reference_docs":
                 title = meta.get("title", "")
                 section = meta.get("section", "")
@@ -1417,6 +1501,7 @@ What would you like to do?""")
                     header_parts.append(ts[:19])
 
             header_parts.append(f"(score: {score:.2f})")
+            header_parts.append(f"[{collection}]")
             header = " ".join(header_parts)
 
             if len(content) > 500:
@@ -1434,6 +1519,72 @@ What would you like to do?""")
             f"[MEMORY SEARCH — Round {round_num} — {collection}]\n"
             f"Query: {query}\n"
             f"Results:\n{results}"
+        )
+
+    # ------------------------------------------------------------------
+    # Memory expansion execution
+    # ------------------------------------------------------------------
+
+    def _execute_memory_expand(
+        self, memory_id: str, window: int = 3, collection: Optional[str] = None
+    ) -> dict:
+        """Run MemoryExpander.expand() and return the result dict."""
+        if not self.memory_expander:
+            return {"anchor_id": memory_id, "turns": [], "error": "Expander not available"}
+        try:
+            from config.app_config import EXPAND_MAX_WINDOW
+            window = max(1, min(window, EXPAND_MAX_WINDOW))
+            return self.memory_expander.expand(memory_id, window, collection)
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] Memory expand failed: {e}")
+            return {"anchor_id": memory_id, "turns": [], "error": str(e)}
+
+    def _format_expanded_results(self, result: dict) -> str:
+        """Format expand result dict into readable text for the LLM."""
+        error = result.get("error")
+        turns = result.get("turns", [])
+        collection = result.get("collection", "?")
+        method = result.get("expansion_method", "timestamp_window")
+        total = result.get("total_in_collection", 0)
+
+        if method == "source_docs":
+            # Summary expansion — first turn is the summary anchor, rest are source conversations
+            anchor_turns = [t for t in turns if t.get("is_anchor")]
+            source_turns = [t for t in turns if not t.get("is_anchor")]
+            lines = [f"[Summary expanded to {len(source_turns)} source conversations]"]
+            if error:
+                lines.append(f"Note: {error}")
+            if anchor_turns:
+                lines.append(f"--- SUMMARY ---")
+                lines.append(anchor_turns[0].get("content", ""))
+            if source_turns:
+                lines.append(f"\n--- ORIGINAL CONVERSATIONS ({len(source_turns)}) ---")
+                for t in source_turns:
+                    ts = t.get("timestamp", "")[:19]
+                    tid = t.get("id", "")[:8]
+                    content = t.get("content", "")
+                    lines.append(f"[{tid}] {ts}")
+                    lines.append(content)
+                    lines.append("")
+        else:
+            lines = [f"[Expanded from {collection} | method: {method} | {len(turns)} turns shown / {total} total]"]
+            if error:
+                lines.append(f"Note: {error}")
+            for t in turns:
+                marker = "  <<<< TARGET" if t.get("is_anchor") else ""
+                ts = t.get("timestamp", "")[:19]
+                tid = t.get("id", "")[:8]
+                content = t.get("content", "")
+                lines.append(f"--- [{tid}] {ts}{marker} ---")
+                lines.append(content)
+
+        return "\n".join(lines)
+
+    def _format_expand_context(self, round_num: int, memory_id: str, results: str) -> str:
+        """Format expanded results for accumulated context."""
+        return (
+            f"[MEMORY EXPANSION — Round {round_num} — {memory_id[:8]}]\n"
+            f"{results}"
         )
 
     # ------------------------------------------------------------------

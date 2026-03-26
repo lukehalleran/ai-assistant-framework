@@ -8,8 +8,10 @@ Module Contract
   - add_summary(summary, period, metadata) [back‑compat]
   - add_wiki_chunk(chunk), add_fact(...), add_reflection(...)
   - query_collection(name, query_text, n_results)
+  - get_by_id(collection_name, doc_id) -> dict|None [NEW 2026-03]
 - Outputs:
   - Stored documents with consistent metadata; formatted search results.
+  - get_by_id returns {id, content, metadata} or None if not found.
 - Key behaviors:
   - Embedding function (SentenceTransformer) is configured once for all collections
   - Metadata values are flattened to primitives/JSON strings for Chroma acceptance
@@ -231,6 +233,29 @@ class MultiCollectionChromaStore:
         all_items.sort(key=_ts, reverse=True)
         return all_items[:limit]
 
+
+    def get_by_id(self, collection_name: str, doc_id: str) -> Optional[Dict]:
+        """Fetch a single document by its ID.
+
+        Returns:
+            Dict with {id, content, metadata} or None if not found.
+        """
+        if collection_name not in self.collections:
+            return None
+        coll = self.collections[collection_name]
+        try:
+            results = coll.get(ids=[doc_id], include=["documents", "metadatas"])
+            docs = results.get("documents", []) or []
+            metas = results.get("metadatas", []) or []
+            if not docs:
+                return None
+            return {
+                "id": doc_id,
+                "content": docs[0] or "",
+                "metadata": metas[0] if metas else {},
+            }
+        except Exception:
+            return None
 
     def _generate_id(self, content: str, collection_type: str) -> str:
         """Generate a unique ID for a document"""

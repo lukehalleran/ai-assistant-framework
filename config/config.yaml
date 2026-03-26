@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: claude-opus-4.6
+  active: glm-5
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -171,6 +171,14 @@ file_access:
   - .rst
   - .tex
   - .xml
+memory_expansion:
+  enabled: true
+  max_per_session: 3
+  max_window: 5
+  default_window: 3
+  max_total_tokens: 2000
+  anchor_char_limit: 600
+  context_char_limit: 300
 daily_notes:
   enabled: true
   folder: Vault/Daily Notes and To Do's

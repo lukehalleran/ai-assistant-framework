@@ -9,6 +9,11 @@ and resolution detection, and session reflections.
 
 Note: Entity facts (non-user subjects) are stored in ChromaDB but NOT added
 to UserProfile. Only facts with subject="user" are passed to add_facts_batch().
+
+Summary backlinks: _store_summary() captures source conversation doc IDs from
+ChromaDB by matching the block's temporal_anchor_start/end range against the
+conversations collection. Stored as comma-separated ``source_doc_ids`` in
+summary metadata for expand_memory drill-down. [NEW 2026-03]
 """
 
 import os
@@ -337,6 +342,32 @@ class ShutdownProcessor:
                     md['temporal_anchor_end'] = max(block_times).isoformat()
             except Exception:
                 pass
+
+            # Capture source conversation doc IDs for expand_memory drill-down
+            try:
+                if md.get('temporal_anchor_start') and md.get('temporal_anchor_end'):
+                    ts_lo = datetime.fromisoformat(md['temporal_anchor_start'])
+                    ts_hi = datetime.fromisoformat(md['temporal_anchor_end'])
+                    all_convos = self.chroma_store.list_all('conversations') if hasattr(self.chroma_store, 'list_all') else []
+                    source_ids = []
+                    for cdoc in all_convos:
+                        cmeta = cdoc.get('metadata') or {}
+                        cts = cmeta.get('timestamp', '')
+                        if not cts:
+                            continue
+                        try:
+                            ct = datetime.fromisoformat(cts)
+                        except (ValueError, TypeError):
+                            continue
+                        if ts_lo <= ct <= ts_hi:
+                            cid = cdoc.get('id')
+                            if cid:
+                                source_ids.append(cid)
+                    if source_ids:
+                        md['source_doc_ids'] = ','.join(source_ids)
+                        logger.debug(f"[Shutdown] Summary linked to {len(source_ids)} source conversations")
+            except Exception as se:
+                logger.debug(f"[Shutdown] Could not capture source doc IDs: {se}")
 
             doc_id = None
             if hasattr(self.chroma_store, 'add_to_collection'):

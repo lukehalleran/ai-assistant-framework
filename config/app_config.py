@@ -991,6 +991,19 @@ FILE_ACCESS_ALLOWED_EXTENSIONS: list = FILE_ACCESS_CFG.get("allowed_extensions",
 FILE_ACCESS_ENABLED = bool(int(os.getenv("FILE_ACCESS_ENABLED", "1" if FILE_ACCESS_ENABLED else "0")))
 
 # --------------------------------------------------------------------
+# Memory Expansion (expand_memory agentic tool)
+# --------------------------------------------------------------------
+EXPAND_CFG = config.get("memory_expansion", {})
+EXPAND_MEMORY_ENABLED: bool = bool(EXPAND_CFG.get("enabled", True))
+EXPAND_MAX_PER_SESSION: int = int(EXPAND_CFG.get("max_per_session", 3))
+EXPAND_MAX_WINDOW: int = int(EXPAND_CFG.get("max_window", 5))
+EXPAND_DEFAULT_WINDOW: int = int(EXPAND_CFG.get("default_window", 3))
+EXPAND_MAX_TOTAL_TOKENS: int = int(EXPAND_CFG.get("max_total_tokens", 2000))
+EXPAND_ANCHOR_CHAR_LIMIT: int = int(EXPAND_CFG.get("anchor_char_limit", 600))
+EXPAND_CONTEXT_CHAR_LIMIT: int = int(EXPAND_CFG.get("context_char_limit", 300))
+EXPAND_MEMORY_ENABLED = bool(int(os.getenv("EXPAND_MEMORY_ENABLED", "1" if EXPAND_MEMORY_ENABLED else "0")))
+
+# --------------------------------------------------------------------
 # Session Diff (codebase change awareness on first message)
 # --------------------------------------------------------------------
 # On the first message of a session, detect what files changed since
