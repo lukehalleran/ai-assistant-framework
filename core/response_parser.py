@@ -22,13 +22,38 @@ class ResponseParser:
     All methods are static and stateless - no instance required.
     """
 
+    # Regex to catch leaked thinking tags: <think>, </think>, <thinking>, </thinking>,
+    # and partial/malformed variants like /think>, /thinking>, <|think|>, etc.
+    _THINK_TAG_LEAK_RE = re.compile(
+        r'<\|?/?think(?:ing)?\|?>|'   # <think>, </think>, <thinking>, </thinking>, <|think|>
+        r'/?think(?:ing)?>',            # /think>, /thinking> (missing opening <)
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def strip_thinking_tag_leaks(text: str) -> str:
+        """Remove leaked/partial thinking tags from model output.
+
+        Some models (DeepSeek, Qwen, GLM) use <think>...</think> and occasionally
+        leak partial tags like '/think>' into the visible response. This strips
+        any remnant thinking tags that weren't caught by parse_thinking_block.
+        """
+        if not text:
+            return text
+        cleaned = ResponseParser._THINK_TAG_LEAK_RE.sub('', text)
+        # Collapse any leading whitespace left behind
+        return cleaned.lstrip('\n').strip() if cleaned != text else text
+
     @staticmethod
     def parse_thinking_block(response: str) -> Tuple[str, str]:
         """
         Parse response to extract thinking block and final answer.
 
+        Handles both <thinking>...</thinking> (Anthropic/OpenAI style) and
+        <think>...</think> (DeepSeek/Qwen/GLM style).
+
         Args:
-            response: Full LLM response potentially containing <thinking>...</thinking>
+            response: Full LLM response potentially containing thinking blocks
 
         Returns:
             Tuple of (thinking_part, final_answer_part)
@@ -37,23 +62,27 @@ class ResponseParser:
         if not response or not isinstance(response, str):
             return "", response or ""
 
-        # Look for </thinking> delimiter
-        delimiter = "</thinking>"
-        if delimiter in response:
-            parts = response.split(delimiter, 1)
-            if len(parts) == 2:
-                thinking_raw = parts[0]
-                final_answer = parts[1].strip()
+        # Try both tag variants: <thinking> and <think>
+        for close_tag, open_tag in [("</thinking>", "<thinking>"), ("</think>", "<think>")]:
+            if close_tag in response:
+                parts = response.split(close_tag, 1)
+                if len(parts) == 2:
+                    thinking_raw = parts[0]
+                    final_answer = parts[1].strip()
 
-                # Extract thinking content (remove opening tag if present)
-                thinking_content = thinking_raw
-                if "<thinking>" in thinking_raw:
-                    thinking_content = thinking_raw.split("<thinking>", 1)[1]
+                    # Extract thinking content (remove opening tag if present)
+                    thinking_content = thinking_raw
+                    if open_tag in thinking_raw:
+                        thinking_content = thinking_raw.split(open_tag, 1)[1]
 
-                return thinking_content.strip(), final_answer
+                    # Clean any remaining tag leaks from the final answer
+                    final_answer = ResponseParser.strip_thinking_tag_leaks(final_answer)
 
-        # No thinking block found - return empty thinking and full response as answer
-        return "", response
+                    return thinking_content.strip(), final_answer
+
+        # No thinking block found — still strip any leaked partial tags
+        cleaned = ResponseParser.strip_thinking_tag_leaks(response)
+        return "", cleaned
 
     @staticmethod
     def strip_reflection_blocks(response: str) -> str:
