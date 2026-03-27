@@ -1,34 +1,33 @@
 """
-utils/tone_detector.py
+# utils/tone_detector.py
 
-Crisis vs. casual tone detection system with composite harm scoring.
-
-Provides 3-stage detection (harm scoring → semantic → LLM fallback) to determine
-appropriate response tone based on user message content. Distinguishes genuine crisis/distress
-from casual conversation, world event observations, and routine updates.
-
-Detection Pipeline:
-1. Observational check - Filter world events vs personal crisis
-2. Harm scoring - Composite keyword system (NEW 2025-12-09):
-   - Scans entire message for ALL crisis indicators (250+ keywords)
-   - Accumulates weighted points: HIGH (10pts), MEDIUM (5pts), CONCERN (2pts)
-   - Applies pattern multipliers for dangerous combinations (1.2x-1.4x)
-   - Routes: ≥20 HIGH, ≥10 MEDIUM, ≥4 CONCERN
-3. Semantic similarity - Embedding comparison to crisis exemplars (fallback)
-4. LLM fallback - For borderline cases near thresholds
-
-Crisis levels:
-- HIGH: Suicidal ideation, severe mental health crisis, immediate danger
-- MEDIUM: Panic attacks, breakdown, severe emotional distress
-- CONCERN: Significant anxiety, worry, stress (light support)
-- CONVERSATIONAL: Default casual/friend mode (most interactions)
-
-Key improvements (2025-12-09):
-- Replaced "first keyword wins" with composite harm scoring
-- Catches messages with multiple distress signals
-- Pattern multipliers escalate severity for dangerous combinations
-  (e.g., self-harm + crying, abuse + distress, hopelessness + suicidal)
-- Comprehensive keyword coverage (50+ HIGH, 80+ MEDIUM, 100+ CONCERN)
+Module Contract
+- Purpose: Crisis vs. casual tone detection with composite harm scoring. Determines
+  appropriate response tone (CrisisLevel) based on user message content.
+- Data classes:
+  - CrisisLevel(Enum): CONVERSATIONAL, CONCERN, MEDIUM, HIGH
+  - ToneAnalysis: level, confidence, trigger, raw_scores, explanation
+- Key public functions:
+  - detect_crisis_level(message, model_manager, conversation_history) -> ToneAnalysis  [async]
+    Main entry point — runs full 4-stage pipeline.
+  - format_tone_log(analysis, message) -> str  [formatted log string]
+  - should_log_tone_shift(prev_level, new_level) -> bool
+  - format_tone_shift_log(prev_level, new_level, query) -> str
+- Detection pipeline (4 stages):
+  1. Observational check — _check_observational_language(): filters world events vs personal crisis
+  2. Composite harm scoring — _calculate_harm_score(): 250+ weighted keywords (HIGH=10pts, MEDIUM=5pts,
+     CONCERN=2pts), pattern multipliers (1.2x-1.4x), routes: >=20 HIGH, >=10 MEDIUM, >=4 CONCERN
+  3. Semantic similarity — _semantic_crisis_detection(): embedding comparison to crisis exemplars
+     using configurable thresholds (all-MiniLM-L6-v2)
+  4. LLM fallback — _llm_crisis_fallback(): for borderline cases near thresholds
+- Config: TONE_CONFIG dict with threshold_high/medium/concern, context_window, escalation_boost.
+  All overridable via TONE_THRESHOLD_* env vars.
+- Dependencies:
+  - numpy (similarity computation)
+  - models.model_manager (embedding + LLM for stages 3-4) [optional]
+- Side effects:
+  - Embedding computation (cached per session)
+  - LLM API call for borderline cases only (stage 4)
 """
 
 import os

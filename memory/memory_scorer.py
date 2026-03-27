@@ -1,8 +1,39 @@
 # memory/memory_scorer.py
 """
-Memory scoring and ranking module.
-
-Implements the MemoryScorerProtocol contract for scoring/ranking memory items.
+Module Contract
+- Purpose: Unified memory scoring and ranking with intent-driven weight overrides,
+  graph-boosted proximity scoring, evidence-based truth scoring, and staleness penalties.
+- Inputs:
+  - MemoryScorer(time_manager, conversation_context)
+  - rank_memories(memories, current_query, current_topic, is_meta_conversational, weight_overrides) -> List[Dict]
+  - calculate_truth_score(query, response) -> float
+  - calculate_importance_score(content) -> float
+  - apply_temporal_decay(memories) -> List[Dict]
+  - update_truth_scores_on_access(memories) -> None [no-op, retained for API compat]
+- Outputs:
+  - Ranked memory list with final_score and optional debug dict per item
+  - Individual truth/importance scores for new memories
+- Key behaviors:
+  - 12-step scoring pipeline: base relevance + collection boost, recency decay (active-day or hourly),
+    evidence-based truth (TruthScorer), importance, continuity (token overlap + last-10m),
+    structural alignment (numeric/op density), topic match, analogy penalty, anchor bonus
+    (deictic follow-ups), meta-conversational bonus, graph proximity bonus, staleness penalty
+  - Intent-driven weight overrides: instance attribute _intent_weight_overrides set/cleared by
+    PromptBuilder to thread IntentClassifier overrides through deep call chains
+  - Graph-boosted scoring: _graph_memory + _entity_resolver set by PromptBuilder; adds 0.05 per
+    graph-connected entity mention (capped at GRAPH_SCORING_BOOST_CAP=0.15)
+  - Temporal anchor: _temporal_anchor_hours weight key reshapes recency decay for TEMPORAL_RECALL
+  - Staleness penalty: staleness_ratio from ClaimIndex, 2x multiplier at >=0.8, reflections at 60%
+  - Size penalty for large docs lacking keyword relevance (>10KB threshold)
+  - Deictic drift guardrail: 0.85x multiplier when continuity + anchor are both low
+- Dependencies:
+  - config.app_config (SCORE_WEIGHTS, RECENCY_DECAY_RATE, COLLECTION_BOOSTS, STALENESS_*, GRAPH_*)
+  - memory.truth_scorer.TruthScorer (evidence-based truth at read time)
+  - memory.graph_utils (extract_graph_entities, get_related_display_names) [optional]
+  - utils.time_manager (active-day decay) [optional]
+- Side effects:
+  - Mutates memory dicts in-place (sets final_score, debug keys)
+  - Debug dict only populated when logger level is DEBUG
 """
 
 import re

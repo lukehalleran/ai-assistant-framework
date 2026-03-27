@@ -1,8 +1,42 @@
 # memory/memory_retriever.py
 """
-Memory retrieval module.
-
-Implements the MemoryRetrieverProtocol contract for retrieving memories.
+Module Contract
+- Purpose: Central memory retrieval with multi-source gathering, gating, ranking,
+  and graceful threshold fallback. Handles both normal and meta-conversational queries.
+- Inputs:
+  - MemoryRetriever(corpus_manager, chroma_store, gate_system, scorer, hybrid_retriever, time_manager)
+  - get_memories(query, limit, topic_filter) -> List[Dict]  [main pipeline]
+  - get_semantic_top_memories(query, limit) -> List[Dict]  [gated semantic across collections]
+  - get_facts(query, limit) -> List[Dict]  [semantic + recency-ranked facts]
+  - get_recent_facts(limit) -> List[Dict]
+  - get_reflections(limit) -> List[Dict]  [corpus-first, semantic fallback]
+  - get_reflections_hybrid(query, limit) -> List[Dict]  [n/3 recent + 2n/3 semantic]
+  - get_summaries(limit) -> List[Dict]  [ChromaDB first, corpus fallback]
+  - get_summaries_hybrid(query, limit) -> List[Dict]  [n/4 recent + 3n/4 semantic]
+  - get_skills(query, limit) -> List[Dict]  [hybrid: 1/3 recent + 2/3 semantic, bumps times_retrieved]
+  - get_dreams(limit) -> List[Dict]
+  - search_by_type(type_name, query, limit) -> List[Dict]
+- Outputs:
+  - Standardized memory dicts with id, query, response, content, timestamp, source,
+    collection, relevance_score, metadata, tags, truth_score, importance_score
+- Key behaviors:
+  - Main pipeline: gather → combine → gate → rank → 3-stage threshold fallback → slice
+  - 3-stage threshold: primary → relaxed (70%) → top-N fallback (min 5 results)
+  - Meta-conversational routing: entity-aware retrieval with temporal window detection
+  - Dynamic config: gym/health queries get expanded semantic pool and bypass gating
+  - Topic pre-filtering with fallback to unfiltered when no matches
+  - Deduplication via _get_memory_key (id → timestamp+content → content hash)
+  - Optional strict top-up controlled by MEM_TOPUP_ENABLE env var
+- Dependencies:
+  - memory.storage.multi_collection_chroma_store (vector queries)
+  - processing.gate_system (multi-stage filtering: FAISS → cosine → cross-encoder)
+  - memory.memory_scorer (ranking with weight/graph overrides)
+  - memory.utils.format_recent_conversations (corpus formatting)
+  - utils.query_checker (is_meta_conversational, extract_temporal_window, _is_heavy_topic_heuristic)
+  - config.app_config (DEICTIC_THRESHOLD, NORMAL_THRESHOLD)
+- Side effects:
+  - Bumps times_retrieved metadata on returned skills (best-effort)
+  - Calls update_truth_scores_on_access on returned memories (currently no-op)
 """
 
 import os

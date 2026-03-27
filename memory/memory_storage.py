@@ -5,7 +5,9 @@ Memory storage module.
 Module Contract
 - Purpose: Implements the MemoryStorageProtocol contract for persisting memories. Handles storage of conversations, facts, and summaries to both corpus and ChromaDB.
 - Inputs:
-  - store_interaction(query, response, metadata) -> bool
+  - store_interaction(query, response, tags=?, session_id=?, provenance=?) -> Optional[str]
+    - session_id: optional session identifier for audit trail [NEW 2026-03-26]
+    - provenance: optional dict with response_mode, thinking_block (truncated to PROVENANCE_THINKING_MAX_CHARS), cited_ids, model_name, prompt_hash, agentic_summary [NEW 2026-03-26]
   - store_fact(fact_dict) -> bool
   - consolidate_if_needed() -> bool
 - Outputs:
@@ -186,10 +188,20 @@ class MemoryStorage:
         self,
         query: str,
         response: str,
-        tags: Optional[List[str]] = None
+        tags: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        provenance: Optional[Dict] = None,
     ) -> Optional[str]:
         """
         Persist a turn in both corpus & Chroma with computed metadata.
+
+        Args:
+            query: User input
+            response: Assistant response
+            tags: Optional list of tags
+            session_id: Optional session identifier for provenance tracking
+            provenance: Optional dict with audit-trail fields (response_mode,
+                        thinking_block, cited_ids, agentic_rounds, model_name, etc.)
 
         Returns:
             str: Database ID (UUID) of the stored memory, or None if storage failed
@@ -264,6 +276,39 @@ class MemoryStorage:
                 raw_metadata["thread_id"] = thread_info["thread_id"]
             if thread_info.get("depth") is not None:
                 raw_metadata["thread_depth"] = int(thread_info["depth"])
+
+            # Session ID for provenance tracking
+            if session_id:
+                raw_metadata["session_id"] = session_id
+
+            # Provenance metadata (audit trail)
+            if provenance and isinstance(provenance, dict):
+                try:
+                    from config.app_config import PROVENANCE_ENABLED, PROVENANCE_THINKING_MAX_CHARS
+                except ImportError:
+                    PROVENANCE_ENABLED = True
+                    PROVENANCE_THINKING_MAX_CHARS = 4000
+                if PROVENANCE_ENABLED:
+                    import json as _json
+                    if provenance.get("thinking_block"):
+                        tb = str(provenance["thinking_block"])
+                        raw_metadata["thinking_block"] = tb[:PROVENANCE_THINKING_MAX_CHARS]
+                        if len(tb) > PROVENANCE_THINKING_MAX_CHARS:
+                            raw_metadata["thinking_block_truncated"] = True
+                    if provenance.get("response_mode"):
+                        raw_metadata["response_mode"] = provenance["response_mode"]
+                    if provenance.get("model_name"):
+                        raw_metadata["model_name"] = provenance["model_name"]
+                    if provenance.get("cited_ids"):
+                        raw_metadata["cited_memory_ids"] = _json.dumps(provenance["cited_ids"])
+                    if provenance.get("final_prompt_hash"):
+                        raw_metadata["prompt_hash"] = provenance["final_prompt_hash"]
+                    if provenance.get("agentic_rounds"):
+                        compact = [
+                            {"r": r.get("round"), "a": r.get("action", "")[:60]}
+                            for r in provenance["agentic_rounds"]
+                        ]
+                        raw_metadata["agentic_summary"] = _json.dumps(compact)
 
             # Filter out None values and ensure correct types
             clean_metadata = {}

@@ -174,10 +174,20 @@ class MemoryStorageProtocol(Protocol):
         self,
         query: str,
         response: str,
-        tags: Optional[List[str]] = None
+        tags: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        provenance: Optional[Dict] = None,
     ) -> Optional[str]:
         """
         Store a conversation interaction.
+
+        Args:
+            query: User query text
+            response: Assistant response text
+            tags: Optional tags for categorization
+            session_id: Session identifier for provenance tracking
+            provenance: Dict with response_mode, model_name, thinking_block,
+                        cited_ids, prompt_hash, agentic_summary
 
         Returns:
             str: Database ID (UUID) of the stored memory, or None if storage failed

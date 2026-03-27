@@ -2,24 +2,36 @@
 # utils/file_processor.py
 
 Module Contract
-- Purpose: Normalize supported file uploads (txt/csv/py/docx/pdf/images) into text and structured data for prompt augmentation.
-- Inputs:
-  - process_files(user_input: str, files: List[IO]) → concatenated text (backward-compat)
-  - process_files_structured(user_input: str, files: List[IO]) → ProcessedFilesResult
-- Outputs:
-  - Merged text including user input and extracted file contents.
-  - ProcessedFilesResult with per-file metadata, images list, and documents list.
+- Purpose: Normalize supported file uploads (txt/csv/py/docx/pdf/images) into text and
+  structured data for prompt augmentation.
+- Data classes:
+  - ProcessedFile: per-file result (filename, extension, content_text, file_path, is_image,
+    media_type, base64_data, file_size, error)
+  - ProcessedFilesResult: aggregate result (text_content, documents list, images list,
+    errors list, total_size)
+- Class: FileProcessor()
+- Key methods:
+  - process_files(user_text, files) -> str  [async, backward-compat concatenated text]
+  - process_files_structured(user_text, files) -> ProcessedFilesResult  [async, structured output]
+  - get_supported_extensions() -> List[str]
+- Internal methods:
+  - _process_image_file(file, basename, ext) -> ProcessedFile  [base64 encode + persist to uploads/]
+  - _process_text_file(file) -> ProcessedFile  [txt/py/md plain text extraction]
+  - _process_single_file(file) -> tuple[str, int]  [legacy: docx/pdf/csv/txt routing]
+  - _read_file_bytes(file) -> bytes  [handles both file objects and paths]
+  - _sanitize_csv_cell(value) -> Any  [CSV formula injection protection]
+- Security features:
+  - Path traversal protection (validates filenames against traversal patterns)
+  - File size limits (FILE_UPLOAD_MAX_SIZE per file, FILE_UPLOAD_MAX_TOTAL_SIZE aggregate)
+  - CSV formula injection sanitization (strips =, +, -, @ prefixes)
+  - Temporary directory isolation for safe processing
+  - Extension allowlist validation (FILE_UPLOAD_ALLOWED_EXTENSIONS)
+- Dependencies:
+  - docx2txt (DOCX extraction), pandas (CSV), pathlib, base64, tempfile
+  - config.app_config (FILE_UPLOAD_* constants)
 - Side effects:
-  - Creates temporary files for safe processing (cleaned up automatically)
-  - Saves uploaded images to data/uploads/ for persistence
-  - Errors are captured and embedded as diagnostic text.
-
-Security Features (Added 2025-11-30):
-- Path traversal protection (validates filenames)
-- File size limits (10MB max per file)
-- CSV formula injection sanitization
-- Temporary directory isolation
-- Type validation
+  - Creates temporary files (cleaned up automatically)
+  - Persists uploaded images to data/uploads/ (FILE_UPLOAD_IMAGE_DIR)
 """
 import os
 import base64

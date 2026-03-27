@@ -1,16 +1,33 @@
 
 """
-utils/query_checker.py
-Utilities for quick query analysis and gating hints.
+# utils/query_checker.py
 
-This module began as a small deictic checker; it now provides a few
-lightweight heuristics that help the orchestrator and gate system make
-fast decisions without model calls.
-
-Now includes heavy topic classification for inline fact extraction.
-Heavy topics include: political violence, human rights crises, mental health
-emergencies (depression, anxiety, suicidal ideation), emotional distress
-(grief, trauma, relationship crises), and personal safety concerns.
+Module Contract
+- Purpose: Lightweight query analysis heuristics — deictic detection, meta-conversational
+  routing, temporal window extraction, heavy topic classification, thread continuity scoring,
+  and unified QueryAnalysis dataclass.
+- Data class: QueryAnalysis(is_deictic, is_question, is_command, is_meta_conversational,
+    is_heavy_topic, temporal_window_days, keywords, thread_keywords)
+- Key public functions:
+  - analyze_query(q, model_manager) -> QueryAnalysis  [sync, runs all heuristics]
+  - analyze_query_async(q, model_manager) -> QueryAnalysis  [async, adds LLM heavy-topic check]
+  - is_deictic(query) -> bool  [deictic hints: "explain", "that", "it", "this", etc.]
+  - is_deictic_followup(q) -> bool  [alias]
+  - is_question(q) -> bool  [starts with question word or ends with ?]
+  - is_command(q) -> bool  [starts with /, "please", "do", etc.]
+  - is_meta_conversational(q) -> bool  [memory/recall markers: "do you recall", "we talked about"]
+  - extract_temporal_window(q) -> int  [days from temporal markers: "yesterday"=1, "last week"=7]
+  - keyword_tokens(q, min_len) -> List[str]  [salient words for gating]
+  - _is_heavy_topic_heuristic(q) -> bool  [keyword-based heavy topic detection]
+  - _classify_heavy_topic_llm(q, model_manager) -> bool  [async LLM-based heavy topic check]
+  - extract_thread_keywords(text) -> Set[str]  [salient keywords for thread matching]
+  - has_thread_break_marker(query) -> bool  [explicit topic-change signals]
+  - calculate_thread_continuity_score(query, recent_context, ...) -> Dict  [thread coherence scoring]
+  - belongs_to_thread(query, thread_queries, ...) -> bool  [thread membership test]
+- Dependencies:
+  - models.model_manager (LLM for async heavy topic classification) [optional]
+- Side effects:
+  - LLM API call only in analyze_query_async for heavy topic edge cases
 """
 
 import os

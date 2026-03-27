@@ -30,6 +30,41 @@ class ResponseParser:
         re.IGNORECASE,
     )
 
+    # Opening think tags for streaming detection
+    _THINK_OPEN_TAGS = [("<thinking>", "</thinking>"), ("<think>", "</think>")]
+
+    @staticmethod
+    def has_incomplete_thinking_block(response: str) -> bool:
+        """Check if response has an opening think tag but no closing tag yet.
+
+        Used during streaming to detect that we're inside a thinking block
+        before the closing tag has arrived, so thinking content isn't leaked
+        as regular text.
+        """
+        if not response:
+            return False
+        lower = response.lower()
+        for open_tag, close_tag in ResponseParser._THINK_OPEN_TAGS:
+            if open_tag in lower and close_tag not in lower:
+                return True
+        return False
+
+    @staticmethod
+    def extract_incomplete_thinking(response: str) -> str:
+        """Extract content after opening think tag when closing tag hasn't arrived.
+
+        For streaming use: returns the thinking-in-progress text so it can be
+        shown as a thinking indicator rather than leaked as regular output.
+        """
+        if not response:
+            return ""
+        lower = response.lower()
+        for open_tag, _ in ResponseParser._THINK_OPEN_TAGS:
+            idx = lower.find(open_tag)
+            if idx >= 0:
+                return response[idx + len(open_tag):].strip()
+        return ""
+
     @staticmethod
     def strip_thinking_tag_leaks(text: str) -> str:
         """Remove leaked/partial thinking tags from model output.
@@ -44,13 +79,23 @@ class ResponseParser:
         # Collapse any leading whitespace left behind
         return cleaned.lstrip('\n').strip() if cleaned != text else text
 
+    # Pattern to detect <output>...</output> wrapper (used by some providers
+    # to separate thinking from answer when thinking is returned inline)
+    _OUTPUT_WRAPPER_RE = re.compile(
+        r'<\s*output\s*>([\s\S]*?)<\s*/\s*output\s*>',
+        re.IGNORECASE,
+    )
+
     @staticmethod
     def parse_thinking_block(response: str) -> Tuple[str, str]:
         """
         Parse response to extract thinking block and final answer.
 
-        Handles both <thinking>...</thinking> (Anthropic/OpenAI style) and
-        <think>...</think> (DeepSeek/Qwen/GLM style).
+        Handles:
+        - <thinking>...</thinking> (Anthropic/OpenAI style)
+        - <think>...</think> (DeepSeek/Qwen/GLM style)
+        - <output>...</output> wrapper (some OpenRouter providers wrap the
+          answer in <output> when thinking is returned inline)
 
         Args:
             response: Full LLM response potentially containing thinking blocks
@@ -79,6 +124,14 @@ class ResponseParser:
                     final_answer = ResponseParser.strip_thinking_tag_leaks(final_answer)
 
                     return thinking_content.strip(), final_answer
+
+        # Check for <output> wrapper — thinking before it, answer inside it
+        m = ResponseParser._OUTPUT_WRAPPER_RE.search(response)
+        if m:
+            answer = m.group(1).strip()
+            thinking = response[:m.start()].strip()
+            if answer:
+                return thinking, answer
 
         # No thinking block found — still strip any leaked partial tags
         cleaned = ResponseParser.strip_thinking_tag_leaks(response)
@@ -129,7 +182,7 @@ class ResponseParser:
         try:
             s = text.strip()
             # Unwrap common tags if they span the whole string
-            for tag in ("result", "answer", "final"):
+            for tag in ("result", "answer", "final", "output", "response"):
                 pattern = rf"^\s*<\s*{tag}[^>]*>([\s\S]*?)<\s*/\s*{tag}\s*>\s*$"
                 m = re.match(pattern, s, flags=re.IGNORECASE)
                 if m:

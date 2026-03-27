@@ -1,11 +1,27 @@
 """
-Loader to populate PROCEDURAL ChromaDB collection from git history.
+# knowledge/git_memory_loader.py
 
-Usage:
-    python main.py git-backfill [LIMIT]   # initial load (default: all commits)
-    python main.py git-update             # incremental since last sync
-    python main.py git-status             # show collection stats
-    python main.py git-clear              # wipe procedural collection
+Module Contract
+- Purpose: Populate and maintain the PROCEDURAL ChromaDB collection from git commit history.
+- Class: GitMemoryLoader(chroma_store, repo_path)
+- Key methods:
+  - backfill(limit, include_diffs) -> int  [initial population, returns count stored]
+  - incremental_update(include_diffs) -> int  [sync since last hash, returns count stored]
+  - clear() -> int  [wipe procedural collection, returns count deleted]
+- CLI usage (via main.py):
+  - python main.py git-backfill [LIMIT]   # initial load
+  - python main.py git-update             # incremental since last sync
+  - python main.py git-status             # show collection stats
+  - python main.py git-clear              # wipe procedural collection
+- State:
+  - Last synced hash persisted at data/git_memory_last_hash.txt
+- Dependencies:
+  - knowledge.git_memory.GitMemoryExtractor (commit extraction)
+  - memory.storage.multi_collection_chroma_store.MultiCollectionChromaStore (vector storage)
+  - config.app_config.CHROMA_PATH (default store path)
+- Side effects:
+  - ChromaDB writes to 'procedural' collection
+  - File I/O for last-hash tracking at data/git_memory_last_hash.txt
 """
 
 import os

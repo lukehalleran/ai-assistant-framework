@@ -2,28 +2,29 @@
 # core/prompt/summarizer.py
 
 Module Contract
-- Purpose: LLM-based summarization and reflection generation for prompt building.
-- Inputs:
-  - summarize_conversations(conversations: List[Dict], model_name: str) -> str
-  - generate_reflection(memories: List[Dict], query: str) -> str
-  - cache_summary(key: str, summary: str) -> None
+- Purpose: LLM-based summarization and on-demand reflection generation for prompt building.
+- Class: LLMSummarizer(model_manager, memory_coordinator)
+- Key methods:
+  - _llm_summarize_recent(conversations, topic, max_conversations) -> Optional[str]
+    Async LLM call to summarize recent conversations (with SUM_TIMEOUT).
+  - _reflect_on_demand(context, user_input, session_reflections) -> List[Dict]
+    Generates N reflections to top up session reflections to REFLECTIONS_MAX_TARGET.
+  - _persist_summary(summary_text, source_conversations, topic) -> None
+    Stores generated summary via memory_coordinator.add_summary().
+  - _fallback_micro_summary(conversations) -> str
+    Simple keyword-based fallback when LLM summarization fails.
 - Outputs:
-  - Generated summaries of conversation history
-  - Reflective insights from memory patterns
-  - Cached summaries for performance optimization
-- Behavior:
-  - Uses LLM models to create concise summaries of recent conversations
-  - Generates reflections by analyzing patterns in stored memories
-  - Implements caching to avoid redundant summarization requests
-  - Handles async operations with proper error handling and timeouts
+  - Summary text strings or None on failure
+  - Reflection dicts with content, timestamp, tags, source
 - Dependencies:
-  - models.model_manager (LLM access for summarization)
-  - utils.time_manager (temporal context)
-  - utils.logging_utils (operation logging)
+  - models.model_manager (LLM API access for summarization/reflection)
+  - memory.memory_coordinator (summary persistence via add_summary)
+  - config.app_config (memory config for reflection target count)
 - Side effects:
-  - LLM API calls for summarization
-  - Cache writes for performance optimization
-  - Logging of summarization activities
+  - LLM API calls with configurable timeouts (SUM_TIMEOUT=30s, reflection=15s)
+  - Summary persistence to memory coordinator
+- Config env vars:
+  - FORCE_LLM_SUMMARIES, SUM_TIMEOUT, REFLECTIONS_ON_DEMAND, REFLECTION_MAX_EXCERPTS
 """
 
 import os

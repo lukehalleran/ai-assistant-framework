@@ -100,7 +100,13 @@ The incomplete V2 `memory/coordinator.py` has been deleted.
   - Builds prompt via PromptBuilder
   - Generates response with thinking blocks
   - Parses thinking block and strips from final response
-  - Stores interaction back to memory
+  - Stores interaction back to memory (with provenance metadata)
+
+- `_build_system_prompt()` → Composes system prompt from file-based personality **[NEW 2026-03-26]**
+  - Loads `default_personality.txt` or `custom_personality.txt` via `load_personality_text()`
+  - Appends immutable `operating_principles.txt` via `load_operating_principles()`
+  - Performs placeholder substitution: `{USER_NAME}`, `{USER_PRONOUNS}`, `{PRONOUN_SUBJ}`, `{PRONOUN_OBJ}`, `{PRONOUN_POSS}`
+  - Falls back to monolithic `load_system_prompt()` if files fail
 
 - `build_context(user_input, files, use_raw_mode, personality)` → Context building **[NEW 2026-01-23]**
   - Uses ContextPipeline for clean separation of concerns
@@ -136,6 +142,12 @@ query → detect_crisis_level() → extract_topics()
 - `LIGHT_SUPPORT`: 2-4 sentences, brief acknowledgment
 - `CONVERSATIONAL`: Max 3 sentences, direct, no fluff
 
+**Personality System** **[NEW 2026-03-26]**: The old `PersonalityManager` class (JSON-based personality configs) has been deleted. System prompt is now composed from two separate text files:
+- `config/prompts/default_personality.txt` — editable personality (warm, grounded tone with examples)
+- `config/prompts/operating_principles.txt` — immutable behavioral rules (AI limitations, facts handling, claim grounding, response modes, knowledge source instructions)
+- Users can create `custom_personality.txt` via the GUI "Personality" tab (Set/Restore Default buttons)
+- Personality text truncated to `PERSONALITY_MAX_CHARS` (15000) to prevent prompt budget blowout
+
 **Dependencies**: MemoryCoordinator, PromptBuilder, ResponseGenerator, TopicManager, ToneDetector, QueryChecker, STMAnalyzer, ResponseParser
 
 ---
@@ -152,9 +164,11 @@ Side effects: None (pure functions)
 ```
 
 **Key Methods** (all static):
-- `parse_thinking_block(response)` → Tuple[str, str] - Extract thinking content and final answer
+- `parse_thinking_block(response)` → Tuple[str, str] - Extract thinking content and final answer. Also handles `<output>...</output>` wrappers (content before `<output>` = thinking, inside = answer) **[ENHANCED 2026-03-26]**
+- `has_incomplete_thinking_block(response)` → bool - Returns True if opening `<thinking>`/`<think>` tag present but closing tag not yet (for streaming suppression) **[NEW 2026-03-26]**
+- `extract_incomplete_thinking(response)` → str - Extracts content after opening think tag when close not yet arrived **[NEW 2026-03-26]**
 - `strip_reflection_blocks(response)` → str - Remove `<reflect>`, `[SYSTEM QUALITY REFLECTION]` blocks
-- `strip_xml_wrappers(text)` → str - Remove `<result>`, `<answer>`, `<final>` wrappers
+- `strip_xml_wrappers(text)` → str - Remove `<result>`, `<answer>`, `<final>`, `<output>`, `<response>` wrappers **[ENHANCED 2026-03-26]**
 - `strip_prompt_artifacts(text)` → str - Remove echoed prompt headers like `[TIME CONTEXT]`, `[FACTS]`
 
 **Usage**:
@@ -545,6 +559,7 @@ class DedupPlan(BaseModel):      # duplicate_pairs[], contradiction_clusters[], 
   5. Skip ephemeral predicates (from PROFILE_EPHEMERAL_RELATIONS config)
   6. If STALENESS_ENABLED and claim_index: cascade staleness for contradiction losers [NEW 2026-03-25]
   7. If not dry_run: execute deletions via collection.delete(ids=[...])
+     - Double-deletion guard: tracks `deleted_ids` set across phases; IDs deleted in duplicate phase skipped in contradiction phase [FIXED 2026-03-26]
   ```
 
 - `_find_cross_duplicates(docs, embeddings) -> List[DuplicatePair]` → Pairwise similarity scan
@@ -773,7 +788,7 @@ INTENT_STM_REFINEMENT_THRESHOLD = 0.50   # Below this confidence, STM can refine
 **Purpose**: Memory persistence operations extracted from coordinator
 
 **Key Methods** (implements MemoryStorageProtocol):
-- `async store_interaction(query, response, tags)` → Persist to corpus + Chroma
+- `async store_interaction(query, response, tags, session_id=None, provenance=None)` → Persist to corpus + Chroma. Provenance dict (response_mode, model_name, thinking_block, cited_ids, prompt_hash, agentic_summary) merged into ChromaDB metadata when PROVENANCE_ENABLED **[ENHANCED 2026-03-26]**
 - `async add_reflection(text, tags, source, timestamp)` → Store reflection memory
 - `async extract_and_store_facts(query, response, truth_score)` → Fact extraction and storage
 - `async consolidate_and_store_summary()` → Generate and store conversation summary
@@ -1287,6 +1302,7 @@ User input here
 - STOP_MARKERS for special token filtering: `<|user|>`, `<|assistant|>`, `<|system|>`, `<|end|>`, `<|eot_id|>`, `<｜end▁of▁sentence｜>` (DeepSeek)
 - Timeout protection (60s per chunk)
 - Critical fix: `buffer += delta_content` must execute for ALL non-empty chunks (not inside else block)
+- **Reasoning/thinking content detection** **[NEW 2026-03-26]**: Extracts `reasoning_content`/`reasoning` from streaming chunks (OpenAI-style delta). Emits synthetic `<thinking>`/`</thinking>` wrapper tags around reasoning blocks so `handlers.py` can detect and suppress them during streaming.
 
 **Dependencies**: ModelManager, CompetitiveScorer
 
@@ -1345,6 +1361,7 @@ else:
 - `ProgressEvent`: Status updates for UI (event_type, message)
 - `SEARCH_TOOL_DEFINITION`, `DONE_TOOL_DEFINITION`: OpenAI-style tool schemas
 - `MEMORY_SEARCH_TOOL_DEFINITION`: Tool schema for searching ChromaDB collections from ReAct loop **[NEW 2026-03-20]**
+- `FILE_READ_TOOL_DEFINITION`, `FILE_GREP_TOOL_DEFINITION`, `FILE_LIST_TOOL_DEFINITION`: File access tool schemas **[NEW 2026-03-26]**
 - `AGENTIC_SYSTEM_PROMPT_INJECTION`: Instructions for local models to use XML markers
 
 **core/agentic/protocols.py** - Protocol detection and parsing
@@ -1404,6 +1421,16 @@ agentic_search:
 - `skip_initial_search` parameter skips Round 1 web search for computation-only or memory-only queries
 - `search_memory` tool [NEW 2026-03-15]: Searches ChromaDB collections (facts, conversations, summaries, etc.) from within the ReAct loop
 - `expand_memory` tool [NEW 2026-03-26]: Expands a search hit to show surrounding context (temporal neighbors) or, for summaries, the original conversations that were compressed into it. Two strategies: `timestamp_window` (±N chronological neighbors) and `source_docs` (summary drill-down via `source_doc_ids` or `temporal_anchor` range). Session-gated at `EXPAND_MAX_PER_SESSION`.
+- `file_read` tool [NEW 2026-03-26]: Read a file from the user's filesystem (project work, code review)
+- `file_grep` tool [NEW 2026-03-26]: Search file contents by regex pattern across a directory tree
+- `file_list` tool [NEW 2026-03-26]: List directory contents
+
+**Provenance** **[NEW 2026-03-26]**:
+- `AgenticSearchSession.final_prompt_hash` — SHA-256[:16] of final assembled prompt
+- `AgenticSearchSession.get_provenance_summary()` → dict with total_rounds, protocol, per-round action classification, memory search counts, expand count, prompt hash
+- `_classify_round_action(query)` — classifies round by query prefix: memory_search, sandbox, file_read, file_grep, file_list, expand_memory, web_search
+- Citation markers: `[MEM_RECENT_N]` and `[MEM_SEMANTIC_N]` prefixed to recent/semantic memories in agentic prompts
+- `self._last_session` saved after `execute_search()` for provenance extraction by handlers.py
 
 **Dependencies**: WebSearchManager, WolframManager (optional), SandboxManager (optional), MemoryExpander (optional), ModelManager, TokenizerManager
 
@@ -1471,11 +1498,13 @@ agentic_search:
 **Streaming Flow**:
 ```
 response_generator.generate_streaming_response()
-    → yields word chunks
+    → yields word chunks (with synthetic <thinking> tags for reasoning content)
 handlers.py async for loop
     → accumulates in final_output
-    → parses thinking/answer
-    → strips tags
+    → detects incomplete thinking blocks via has_incomplete_thinking_block() [NEW 2026-03-26]
+    → shows "Thinking..." indicator during reasoning, suppresses raw thinking text
+    → parses completed thinking blocks via parse_thinking_block()
+    → strips wrapper tags (<result>, <reply>, <response>, <answer>, <output>)
     → yields {"role": "assistant", "content": display_output}
 launch.py async iteration
     → updates chat_history[-1]["content"]
@@ -1483,10 +1512,23 @@ launch.py async iteration
 Gradio renders updated chat_history
 ```
 
+**Provenance in handlers.py** **[NEW 2026-03-26]**:
+- All 5 response modes (agentic, enhanced, best-of, best-of-duel, fallback) build provenance dicts
+- `_background_store_interaction()` accepts `session_id`, `provenance`, `mode` params
+- API errors classified and shown as user-friendly messages: `[CREDITS EXHAUSTED]`, `[RATE LIMITED]`, `[AUTH ERROR]`, etc.
+- Empty response detection with explicit error messages
+
+**GUI Personality Tab** **[NEW 2026-03-26]**:
+- Textbox (25 lines) pre-loaded with current personality text
+- "Set" button: saves to `custom_personality.txt`, enforces `PERSONALITY_MAX_CHARS` limit
+- "Restore Default" button: deletes custom file, reloads default
+- Operating principles appended automatically (not editable from GUI)
+
 **Critical Fixes**:
 1. Added `<reply>` and `<response>` to tag stripping (was only `<result>`)
 2. Fixed regex to use backreference preventing content truncation
 3. Ensured chunks flow through all three stages (generator → handler → launch)
+4. Duel mode moved before agentic check, simplified streaming code (~370 lines removed) **[REFACTORED 2026-03-26]**
 
 **Dependencies**: Orchestrator, Gradio
 
@@ -1679,6 +1721,8 @@ from config.app_config import config
 
 **Key Methods**:
 - `generate(prompt, model_alias, stream)` → async response
+- `generate_once(prompt, model_name, system_prompt, max_tokens, temperature, top_p)` → single-shot generation. Handles list-of-content-blocks responses (e.g. Anthropic extended thinking) by extracting text blocks **[ENHANCED 2026-03-26]**
+- `supports_reasoning(model_name)` → bool - Returns True if model may return extended thinking content (Anthropic Claude, DeepSeek-R1) **[NEW 2026-03-26]**
 - `_get_client(provider)` → Provider-specific client
 - `_map_alias_to_model(alias)` → e.g., "sonnet-4.6" → "anthropic/claude-sonnet-4.6" **[NEW 2026-03-10]**
 
@@ -4025,6 +4069,16 @@ EXPAND_MAX_TOTAL_TOKENS = 2000          # Token budget for expanded context
 EXPAND_ANCHOR_CHAR_LIMIT = 600          # Char limit for anchor document
 EXPAND_CONTEXT_CHAR_LIMIT = 300         # Char limit for context documents
 
+# Citation & Provenance [NEW 2026-03-26]
+PROVENANCE_ENABLED = True            # Toggle provenance metadata on stored interactions
+PROVENANCE_THINKING_MAX_CHARS = 4000 # Max chars for thinking block storage in metadata
+
+# Personality / Operating Principles (file-based) [NEW 2026-03-26]
+PERSONALITY_DEFAULT_PATH = "config/prompts/default_personality.txt"
+PERSONALITY_CUSTOM_PATH = "config/prompts/custom_personality.txt"
+OPERATING_PRINCIPLES_PATH = "config/prompts/operating_principles.txt"
+PERSONALITY_MAX_CHARS = 15000        # Hard cap on personality text to prevent prompt budget blowout
+
 # Memory Citation System [NEW 2025-12-04]
 ENABLE_MEMORY_CITATIONS = False      # Feature flag for citation mode
 MAX_CITATIONS_DISPLAY = 10           # Max citations to show in UI
@@ -4276,7 +4330,11 @@ def _allocate_tokens(query, memories, facts, summaries, wiki, budget):
 daemon/
 ├── config/
 │   ├── app_config.py          # Central configuration loader
-│   └── config.yaml            # YAML config (optional)
+│   ├── config.yaml            # YAML config (optional)
+│   └── prompts/               # System prompt files (file-based personality) [NEW 2026-03-26]
+│       ├── default_personality.txt   # Default personality (warm, grounded, human)
+│       ├── custom_personality.txt    # User-editable personality override (created via GUI)
+│       └── operating_principles.txt  # Immutable behavioral rules + operating principles
 │
 ├── core/
 │   ├── orchestrator.py        # Main controller (tone, STM, coordinates subsystems)
@@ -5179,6 +5237,13 @@ This document compresses a ~50K line codebase by focusing on architecture, data 
 **Last Updated**: 2026-03-26
 
 **Recent Changes** (2026-03-26):
+- **File-based Personality System** — Replaced `PersonalityManager` (JSON configs) with text file composition: editable `default_personality.txt` + immutable `operating_principles.txt`. GUI "Personality" tab for live editing. Config: `PERSONALITY_*` constants.
+- **File Access Agentic Tools** (Section 2.8b) — New tools: `file_read`, `file_grep`, `file_list` for filesystem access during ReAct loop
+- **Streaming Thinking Detection** — ResponseGenerator emits synthetic `<thinking>` tags for reasoning content; ResponseParser adds `has_incomplete_thinking_block()` and `extract_incomplete_thinking()` for streaming suppression; `strip_xml_wrappers()` now handles `<output>` and `<response>` wrappers
+- **Cross-Dedup Double-Deletion Fix** — `execute_plan()` tracks `deleted_ids` set across phases to prevent attempting to delete the same document twice
+- **ModelManager Enhancements** — `supports_reasoning()` method, list-of-content-blocks handling in `generate_once()`
+- **handlers.py Simplification** — Duel mode moved before agentic check, ~370 lines of duplicated best-of/streaming code removed, API error classification with user-friendly messages
+- **Citation & Provenance System** — Per-interaction audit trail: session_id, response_mode, model_name, thinking_block, cited_memory_ids, prompt_hash, agentic_summary stored in ChromaDB metadata. GUI "Provenance" tab. Config: PROVENANCE_ENABLED, PROVENANCE_THINKING_MAX_CHARS.
 - **Memory Expansion / expand_memory** (Section 2.8b) — New agentic tool: temporal context expansion (±N chronological neighbors) and summary drill-down (original conversations via source_doc_ids or temporal_anchor range). Session-gated, cached, two strategies.
 - **get_by_id()** on MultiCollectionChromaStore (Section 2.5) — Direct document lookup by UUID
 - **Summary backlinks** — shutdown_processor captures source conversation doc IDs in summary metadata
