@@ -169,7 +169,7 @@ Examples:
     global TEST_MODE # Update global TEST_MODE variable
     TEST_MODE = os.environ.get("TEST_MODE") == "1"
 
-    os.environ["NUM_CONSUMER_THREADS"] = "1" # Or allow this to be an argument
+    os.environ.setdefault("NUM_CONSUMER_THREADS", "2")  # Override with env var before launch
 
     extracted_xml_path = EXTRACTED_PATH
 

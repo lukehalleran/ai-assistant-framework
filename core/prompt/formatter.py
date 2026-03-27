@@ -2,33 +2,32 @@
 # core/prompt/formatter.py
 
 Module Contract
-- Purpose: Text formatting and assembly for final prompt rendering. ENHANCED: Replaces [SEMANTIC FACTS] + [RECENT FACTS] with [USER PROFILE] using categorized hybrid retrieval.
-- Inputs:
-  - render_prompt_sections(context: Dict[str, Any]) -> str
-  - format_memories(memories: List[Dict]) -> str
-  - format_conversations(conversations: List[Dict]) -> str
-  - format_web_search_results(result: WebSearchResult) -> str [NEW]
-  - deduplicate_content(content: List[str]) -> List[str]
-- Outputs:
-  - Formatted prompt sections ready for model consumption
-  - Structured text with proper headers and spacing
-  - Deduplicated and truncated content within limits
-  - [WEB SEARCH RESULTS] section with real-time web content [NEW]
-  - UPDATED: [USER PROFILE] section with categorized facts (identity, fitness, preferences, etc.)
-- Behavior:
-  - Assembles context sections into readable prompt format
-  - Applies consistent formatting to memories, facts, conversations
-  - Handles time context and metadata display
-  - Deduplicates similar content and applies truncation
-  - Maintains prompt structure and readability
-  - Formats web search results with source URLs and content [NEW]
-  - UPDATED: Renders UserProfile string directly (no parsing needed - already formatted)
+- Purpose: Text formatting and final prompt assembly from context dict into LLM-ready string.
+- Class: PromptFormatter(token_manager, time_manager)
+- Key methods:
+  - _assemble_prompt(context, user_input, directives) -> str
+    Assembles all sections into final prompt string with emergency middle-out compression.
+    Section order: RECENT CONVERSATION → RELEVANT MEMORIES → SUMMARIES → REFLECTIONS →
+    BACKGROUND KNOWLEDGE → WEB SEARCH → RELEVANT INFORMATION → DREAMS → USER PROFILE →
+    TIME CONTEXT → CURRENT USER QUERY (with LAST EXCHANGE for coherence).
+  - _format_memory(mem) -> str  [single memory → "timestamp: User: Q / Daemon: A" with tags]
+  - _format_web_search_results(web_search_result, max_chars) -> str  [WebSearchResult → [WEB SEARCH RESULTS] section]
+  - _load_directives() -> str  [loads core/system_prompt.txt with header stripping]
+  - _get_time_context() -> str  [current time + time_manager deltas]
+- Module-level utilities (imported by other prompt modules):
+  - _parse_bool(s, default) -> bool
+  - _dedupe_keep_order(items, key_fn) -> List
+  - _truncate_list(items, limit) -> List
+  - _sanitize_embedded_headers(text) -> str  [escapes [] prompt headers in memory content to ()]
+  - _truncate_at_spurious_turns(text) -> str  [truncates at training data leakage markers]
+  - _strip_prompt_artifacts  [alias to ResponseParser.strip_prompt_artifacts]
 - Dependencies:
-  - utils.logging_utils (logging)
-  - datetime (time formatting)
-  - knowledge.web_search_manager (WebSearchResult type) [NEW]
+  - core.response_parser.ResponseParser (strip_prompt_artifacts)
+  - .token_manager.TokenManager (emergency middle-out compression)
+  - utils.time_manager.TimeManager (time deltas) [optional]
 - Side effects:
   - Logging of formatting actions and content statistics
+  - Emergency whole-prompt compression when over token budget (protects [CURRENT USER QUERY])
 """
 
 import os

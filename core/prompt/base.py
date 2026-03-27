@@ -2,23 +2,22 @@
 # core/prompt/base.py
 
 Module Contract
-- Purpose: Base utilities and fallback classes for prompt building system.
-- Inputs:
-  - Configuration helpers: _cfg_int(key, default), _parse_bool(value)
-  - Data utilities: sanitize_for_display(text), ensure_list(obj), deduplicate(items)
-- Outputs:
-  - Configuration values and parsed settings
-  - Sanitized text and normalized data structures
-  - Fallback classes for testing scenarios
-- Behavior:
-  - Provides consistent configuration loading with defaults
-  - Sanitizes text for safe display (truncation, newline handling)
-  - Normalizes data into expected formats (lists, deduplicated items)
-  - Offers fallback implementations when dependencies unavailable
+- Purpose: Base utilities and fallback classes for the prompt building system.
+- Utility functions:
+  - _cfg_int(key, default) -> int  [config value with fallback]
+  - _parse_bool(s, default) -> bool  [string to bool parsing]
+  - _as_summary_dict(text, tags, source, timestamp) -> dict  [standardized summary format]
+  - _dedupe_keep_order(items, key_fn) -> List  [dedup preserving insertion order]
+  - _truncate_list(items, limit) -> List  [keep most recent N items]
+  - _strip_prompt_artifacts(text) -> str  [remove bracketed prompt headers from echoed text]
+- Fallback classes (for testing when real dependencies unavailable):
+  - _FallbackCorpusManager: in-memory corpus with add_entry, get_recent_memories, get_summaries
+  - _FallbackMemoryCoordinator: wraps _FallbackCorpusManager with async store_interaction,
+    get_memories, retrieve_relevant_memories, get_summaries, get_dreams, get_facts
 - Dependencies:
-  - config.app_config (optional, graceful fallback)
+  - config.app_config (optional, graceful fallback to empty dict)
 - Side effects:
-  - None; pure utility functions
+  - None; pure utility functions and test stubs
 """
 
 import os

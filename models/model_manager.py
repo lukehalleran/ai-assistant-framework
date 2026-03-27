@@ -15,6 +15,8 @@ Module Contract
   - load_model(), load_openai_model(), switch_model(), get_active_model_name(), get_embedder()
   - truncate_prompt(): ensures local prompts fit context window
   - supports_tools(): checks if a model supports function/tool calling
+  - supports_reasoning(model_name): returns True if model may return extended thinking/reasoning content (Anthropic Claude, DeepSeek-R1) [NEW 2026-03-26]
+  - generate_once(): handles list-of-content-blocks responses (Anthropic extended thinking) by extracting text blocks [ENHANCED 2026-03-26]
 - Dependencies:
   - transformers, sentence-transformers, httpx, environment OPENAI_API_KEY
 - Side effects:
@@ -420,6 +422,23 @@ class ModelManager:
         """Check if a given model is an API-based model."""
         return model_name in self.api_models
 
+    def supports_reasoning(self, model_name: str) -> bool:
+        """Check if a model may return extended thinking / reasoning content.
+
+        When True, API calls should request reasoning separation via extra_body
+        so that thinking content doesn't leak into the visible response.
+        """
+        if model_name not in self.api_models:
+            return False
+        full = self.api_models[model_name]
+        # Claude Sonnet 4.5+ and Opus 4.5+ have extended thinking
+        if full.startswith("anthropic/claude"):
+            return True
+        # DeepSeek-R1 (reasoning model)
+        if "deepseek-r1" in full:
+            return True
+        return False
+
     def supports_prompt_caching(self, model_name):
         """Check if a given API model supports prompt caching."""
         if model_name not in self.api_models:
@@ -736,17 +755,33 @@ class ModelManager:
                         {"role": "user", "content": prompt}
                     ]
 
-                response = await self.async_client.chat.completions.create(
+                create_kwargs = dict(
                     model=self.api_models[target_model],
                     messages=messages,
                     max_tokens=(max_tokens if max_tokens is not None else self.default_max_tokens),
                     temperature=temperature if temperature is not None else self.default_temperature,
                     top_p=top_p if top_p is not None else DEFAULT_TOP_P,
                     stop=stop_sequences,
-                    stream=False  # Key change for non-streaming response
+                    stream=False,
                 )
 
-                content = response.choices[0].message.content
+                response = await self.async_client.chat.completions.create(**create_kwargs)
+
+                msg = response.choices[0].message
+                content = msg.content
+
+                # Handle content returned as list of content blocks
+                # (Anthropic extended thinking via some providers)
+                if isinstance(content, list):
+                    text_parts = []
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                        elif hasattr(block, "type") and block.type == "text":
+                            text_parts.append(getattr(block, "text", ""))
+                    content = "\n".join(text_parts) if text_parts else str(content)
+
                 return content.strip() if content else ""
 
             except Exception as e:
@@ -991,15 +1026,16 @@ class ModelManager:
                     "\n\nHuman:",
                 ]
 
-                stream = await self.async_client.chat.completions.create(
+                create_kwargs = dict(
                     model=self.api_models[target_model],
                     messages=messages,
                     max_tokens=kwargs.get('max_tokens', self.default_max_tokens),
                     temperature=kwargs.get('temperature', self.default_temperature),
                     top_p=kwargs.get('top_p', DEFAULT_TOP_P),
                     stop=stop_sequences,
-                    stream=True
+                    stream=True,
                 )
+                stream = await self.async_client.chat.completions.create(**create_kwargs)
                 return stream
             except Exception as e:
                 classified = _classify_api_error(e)

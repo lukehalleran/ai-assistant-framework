@@ -2,37 +2,38 @@
 # core/prompt/builder.py
 
 Module Contract
-- Purpose: Main UnifiedPromptBuilder orchestrating complete prompt assembly process.
-- Inputs:
-  - build_prompt(query: str, personality: str, mode: str) -> Tuple[str, Dict]
-  - gather_context_async(query: str, **kwargs) -> Dict[str, Any]
-  - apply_gating(context: Dict, query: str) -> Dict[str, Any]
+- Purpose: Main UnifiedPromptBuilder orchestrating complete prompt assembly with parallel
+  async retrieval, intent-driven overrides, graph-boosted scoring, and token budget management.
+- Key methods:
+  - build_prompt(user_input, config, context_result, user_input_for_search,
+      max_recent, max_mems, max_facts, is_meta_conversational, weight_overrides,
+      gate_threshold_overrides, session_files) -> Tuple[str, Dict]
+    Main entry point: parallel retrieval → hygiene → format → token budget → assemble.
+    Sets/clears intent weight overrides and graph refs on scorer around retrieval.
+  - build_prompt_from_context(user_input, config, context_result, ...) -> Tuple[str, Dict]
+    Lightweight path skipping full retrieval (uses pre-gathered context).
+  - _llm_compress_oversized(context) -> Dict
+    Pre-compresses items ≥3x over token limit via LLM before middle-out fallback.
+  - _build_feature_inventory(context) -> str
+    Generates [ACTIVE FEATURES] section from config flags and context counts.
+  - _hygiene_and_caps(context, stm_summary) -> Dict
+    Deduplication, caps, staleness prefixes, on-demand reflections.
 - Outputs:
-  - Complete formatted prompt ready for LLM consumption
-  - Context dictionary with all assembled data and metadata
-  - Performance metrics and debug information
-- Behavior:
-  - Coordinates all prompt building components (gatherer, formatter, summarizer, token manager)
-  - Manages async context collection with parallel data fetching (including personal notes and reference docs)
-  - Applies gating system for relevance filtering and content selection
-  - Enforces token budgets and applies priority-based trimming
-  - LLM-compresses heavily oversized items (≥3x over limit) before middle-out fallback [NEW 2026-03-26]
-  - Handles different prompt modes (enhanced, raw, specialized)
-  - Assembles [USER'S PERSONAL NOTES] section from Obsidian vault content
-  - Assembles [DAEMON DOCUMENTATION] section from reference docs (system self-knowledge)
-  - Assembles [TEMPORAL GROUNDING] section from cached narrative context [NEW 2026-01-17]
-  - Provides comprehensive error handling and graceful fallbacks
+  - Complete formatted prompt string ready for LLM consumption
+  - Context dictionary with all assembled data, metadata, and performance metrics
 - Dependencies:
-  - .context_gatherer.ContextGatherer (data collection)
-  - .formatter.PromptFormatter (text assembly)
-  - .summarizer.PromptSummarizer (LLM summarization)
-  - .token_manager (budget management)
+  - .context_gatherer.ContextGatherer (parallel async data retrieval)
+  - .formatter.PromptFormatter (section assembly via _assemble_prompt)
+  - .summarizer.LLMSummarizer (on-demand reflections and summaries)
+  - .token_manager.TokenManager (budget enforcement, middle-out compression)
+  - .base._FallbackMemoryCoordinator (testing fallback)
   - processing.gate_system (relevance filtering)
+  - memory.memory_scorer (intent weight overrides, graph refs set/cleared per call)
 - Side effects:
-  - Memory system queries and data retrieval
-  - LLM API calls for summarization and oversized item compression [UPDATED 2026-03-26]
-  - Cache operations for performance
-  - Comprehensive logging and metrics collection
+  - Memory system queries and parallel data retrieval
+  - LLM API calls for summarization, reflection, and oversized item compression
+  - Sets/clears _intent_weight_overrides and _graph_memory/_entity_resolver on scorer
+  - Comprehensive logging and performance metrics
 
 Prompt Section Order:
   [RECENT CONVERSATION] → [RELEVANT MEMORIES] → [USER PROFILE] → [SUMMARIES] →

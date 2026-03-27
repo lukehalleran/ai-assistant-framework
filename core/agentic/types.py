@@ -11,6 +11,9 @@ Public Types:
     - SearchProtocol (enum): NATIVE_TOOLS, XML_MARKERS
     - SearchRequest, SearchRound, SearchDecision (dataclasses)
     - AgenticSearchSession (session state container)
+      - final_prompt_hash: str — SHA-256[:16] of final assembled prompt for provenance [NEW 2026-03-26]
+      - get_provenance_summary() → dict — serializable audit trail with per-round action classification [NEW 2026-03-26]
+      - _classify_round_action(query) → str — classifies round by query prefix (memory_search, sandbox, file_read, etc.)
     - ProgressEvent (UI update events)
     - SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION, SANDBOX_TOOL_DEFINITION, MEMORY_SEARCH_TOOL_DEFINITION, EXPAND_MEMORY_TOOL_DEFINITION (tool schemas)
     - FILE_READ_TOOL_DEFINITION, FILE_GREP_TOOL_DEFINITION, FILE_LIST_TOOL_DEFINITION (file access tool schemas)
@@ -167,6 +170,9 @@ class AgenticSearchSession:
     expand_count: int = 0
     context_inventory: str = ""
 
+    # Provenance
+    final_prompt_hash: str = ""
+
     # Metadata
     start_time: datetime = field(default_factory=datetime.now)
     end_time: Optional[datetime] = None
@@ -195,6 +201,52 @@ class AgenticSearchSession:
     def total_search_duration_ms(self) -> float:
         """Get total time spent searching across all rounds."""
         return sum(r.duration_ms for r in self.rounds)
+
+    def get_provenance_summary(self) -> Dict[str, Any]:
+        """Return a serializable provenance dict for audit logging."""
+        agentic_rounds = []
+        for r in self.rounds:
+            rd: Dict[str, Any] = {
+                "round": r.round_number,
+                "duration_ms": r.duration_ms,
+            }
+            if r.request:
+                query = r.request.query or ""
+                rd["action"] = self._classify_round_action(query)
+                rd["query"] = query[:120]
+                rd["reason"] = r.request.reason[:120] if r.request.reason else ""
+            if r.error:
+                rd["error"] = str(r.error)[:200]
+            agentic_rounds.append(rd)
+        return {
+            "total_rounds": len(self.rounds),
+            "protocol": self.protocol.value if self.protocol else "",
+            "agentic_rounds": agentic_rounds,
+            "model_signaled_done": self.model_signaled_done,
+            "done_reason": self.done_reason or "",
+            "context_inventory": self.context_inventory[:500] if self.context_inventory else "",
+            "memory_search_counts": dict(self.memory_search_counts) if self.memory_search_counts else {},
+            "expand_count": self.expand_count,
+            "final_prompt_hash": self.final_prompt_hash,
+            "total_duration_ms": self.total_duration_ms,
+        }
+
+    @staticmethod
+    def _classify_round_action(query: str) -> str:
+        """Classify the action type from the SearchRequest query prefix."""
+        if query.startswith("[Memory:"):
+            return "memory_search"
+        if query.startswith("[Python:"):
+            return "sandbox"
+        if query.startswith("[File Read]"):
+            return "file_read"
+        if query.startswith("[File Grep]"):
+            return "file_grep"
+        if query.startswith("[File List]"):
+            return "file_list"
+        if query.startswith("[Expand Memory]"):
+            return "expand_memory"
+        return "web_search"
 
 
 @dataclass

@@ -1,28 +1,70 @@
-fix: Strip leaked <think> tags from GLM/DeepSeek, update system prompt, warn on placeholder API keys
+feat: File-based personality system, provenance audit trail, streaming thinking detection, file access tools
 
-## Think Tag Leak Fix
-- response_parser.py: parse_thinking_block() now handles <think>...</think>
-  (DeepSeek/Qwen/GLM) in addition to <thinking>...</thinking>
-- New strip_thinking_tag_leaks() catches partial/malformed remnants like
-  /think>, <|think|>, etc. that slip through into visible responses
-- All existing parse_thinking_block() call sites automatically benefit
+## Personality System Overhaul
+- Deleted PersonalityManager class and JSON configs (personality/)
+- New file-based system: editable default_personality.txt + immutable operating_principles.txt
+- config/app_config.py: load_personality_text(), load_default_personality(), load_operating_principles()
+- orchestrator._build_system_prompt() composes personality + principles with placeholder substitution
+- GUI "Personality" tab: live editing with Set/Restore Default buttons
+- PERSONALITY_MAX_CHARS (15000) hard cap prevents prompt budget blowout
 
-## System Prompt Update
-- New "Agentic Capabilities" section documenting all 9 tools (web_search,
-  wolfram_alpha, search_memory, expand_memory, file_read/grep/list,
-  sandbox, done) with usage guidelines
-- Expanded "Response Scope" with all current prompt sections organized
-  into 4 groups: core context, knowledge sources, project/system, query
-- Added: KNOWLEDGE GRAPH, UNRESOLVED THREADS, PROACTIVE INSIGHTS,
-  USER PROFILE, ADAPTIVE WORKFLOWS, PROPOSED FEATURES, ACTIVE FEATURES,
-  CODEBASE CHANGES, SHORT-TERM CONTEXT SUMMARY, TIME CONTEXT
-- Corrected scoring weights example to match actual values
+## Citation & Provenance Audit Trail
+- Every stored interaction carries provenance metadata in ChromaDB: session_id, response_mode,
+  model_name, thinking_block, cited_memory_ids, prompt_hash, agentic_summary
+- All 5 response modes (agentic, enhanced, best-of, best-of-duel, fallback) build provenance dicts
+- AgenticSearchSession.get_provenance_summary() with per-round action classification
+- Citation markers [MEM_RECENT_N] / [MEM_SEMANTIC_N] injected into agentic prompts
+- GUI "Provenance" tab (renamed from "Citations") displays per-turn audit data
+- Config: PROVENANCE_ENABLED, PROVENANCE_THINKING_MAX_CHARS (4000)
 
-## API Key Placeholder Warning
-- bootstrap.py: _validate_api_keys() runs after .env load on startup
-- Warns if any key contains "test-key", "your_", "placeholder", etc.
-- Covers TAVILY, OPENAI, OPENROUTER, ANTHROPIC, WOLFRAM, E2B keys
+## Streaming Thinking Detection
+- response_generator.py: Detects reasoning_content in streaming chunks, emits synthetic
+  <thinking>/<\/thinking> wrapper tags around reasoning blocks
+- response_parser.py: has_incomplete_thinking_block() and extract_incomplete_thinking() for
+  streaming suppression; parse_thinking_block() handles <output> wrappers; strip_xml_wrappers()
+  now removes <output> and <response> tags
+- handlers.py: Shows "Thinking..." indicator during reasoning, suppresses raw thinking text
 
-## Tests
-- 10 new tests for <think> tag handling and leak stripping
-- 3 existing tests updated for new stripping behavior
+## File Access Agentic Tools
+- New tools in ReAct loop: file_read, file_grep, file_list for filesystem access
+- Tool definitions in types.py, parsing in protocols.py, execution in controller.py
+- _classify_round_action() classifies rounds by query prefix
+
+## handlers.py Simplification
+- Duel mode moved before agentic check (dedicated block)
+- ~370 lines of duplicated best-of/streaming code removed
+- API errors classified with user-friendly messages ([CREDITS EXHAUSTED], [RATE LIMITED], etc.)
+- Empty response detection with explicit error messages
+
+## Other Changes
+- model_manager.py: supports_reasoning() method, list-of-content-blocks handling in generate_once()
+- cross_deduplicator.py: Double-deletion guard (deleted_ids set across phases)
+- memory_coordinator.py: session_id property, store_interaction() accepts session_id/provenance
+- memory_storage.py: Provenance metadata storage with thinking truncation and agentic summary
+- context_gatherer.py: Robustness fixes for empty content and missing metadata fields
+- semantic_search.py: Env var overrides for FAISS paths (WIKI_DATA_ROOT, FAISS_INDEX_PATH)
+- data/pipeline/run_pipeline.sh: Env var configuration, 3rd stage ChromaDB loading
+- Removed personality_manager references from main.py, gui_smoke.py, test_wizard_force_flag_override.py
+
+## Docs & Contracts
+- PROJECT_SKELETON.md: Updated for personality system, file access tools, streaming thinking,
+  provenance, response_parser/generator/model_manager enhancements, cross-dedup fix
+- QUICK_REFERENCE.md: Added personality system section, file access tools, response_parser
+  new methods, updated provenance defaults (4000 not 2000)
+- FORMAL_MODEL.md: Personality composition in prompt construction, file access in tool set,
+  fixed PROVENANCE_THINKING_MAX_CHARS default
+- Module contracts updated in 11 diff-changed files: orchestrator.py, handlers.py, launch.py,
+  app_config.py, controller.py, types.py, response_generator.py, memory_storage.py,
+  memory_coordinator.py, model_manager.py, cross_deduplicator.py
+- MemoryStorageProtocol (memory_interface.py): store_interaction() signature updated with
+  session_id and provenance parameters
+- Full codebase contract audit: fixed 16 additional outdated/missing module contracts:
+  - core/prompt/: builder.py, context_gatherer.py, formatter.py, summarizer.py, base.py
+    (phantom methods removed, actual public API documented)
+  - memory/: memory_scorer.py, memory_retriever.py (3-line stubs → full contracts),
+    shutdown_processor.py (added graph/claim/dedup/tracking phases),
+    proposal_store.py (added tracking/dedup methods),
+    multi_collection_chroma_store.py (added all CRUD/query/update methods)
+  - knowledge/: git_memory.py, git_memory_loader.py (informal → formal contracts)
+  - utils/: tone_detector.py (4-stage pipeline documented), topic_manager.py (missing → added),
+    file_processor.py (class-based API documented), query_checker.py (all functions documented)

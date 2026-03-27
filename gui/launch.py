@@ -24,11 +24,17 @@ Module Contract
     - Respects REFERENCE_DOCS_ENABLED and REFERENCE_DOCS_AUTO_SEED config flags
   - submit_chat(): async driver that streams tokens + timer updates
   - Tabs:
-    • Chat: chat UI, file upload, raw toggle, personality selector, Sync Notes button
+    • Chat: chat UI, file upload, raw toggle, Sync Notes button
     • Debug Trace: renders debug_state entries
     • Status: shows counters (summaries, corpus counts, logs)
     • Proposals: browse, filter, and generate code proposals from ChromaDB
+    • Provenance: per-turn audit trail (session_id, response_mode, model, thinking block, citations, agentic rounds) [RENAMED from Citations 2026-03-26]
     • Settings: slider to control summary cadence (every N exchanges)
+    • Personality: live personality text editor with Set/Restore Default buttons [NEW 2026-03-26]
+      - Loads current personality from custom_personality.txt or default_personality.txt
+      - Set button saves to custom_personality.txt, enforces PERSONALITY_MAX_CHARS limit
+      - Restore Default deletes custom file, reloads default
+      - Operating principles appended automatically (not editable from GUI)
   - Health endpoint: Lightweight checks (corpus, ChromaDB, API key) for Docker/K8s
 - Dependencies:
   - gui.handlers (handle_submit)
@@ -573,7 +579,6 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
         raise
 
 def launch_gui(orchestrator, force_wizard=False):
-    personality_manager = orchestrator.personality_manager
     conversation_logger = get_conversation_logger()
 
     # ------- Configurable networking (via env) -------
@@ -855,7 +860,6 @@ def launch_gui(orchestrator, force_wizard=False):
         import logging
         logger = logging.getLogger("gradio_gui")
         logger.warning(f"[SUBMIT_CHAT] ENTRY - fast_mode={fast_mode}, type={type(fast_mode)}")
-        personality_manager.switch_personality(personality)
 
         # Update orchestrator citation mode
         orchestrator.enable_citations = enable_citations_flag
@@ -1117,11 +1121,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     use_raw = gr.Checkbox(label="Bypass Memory (Raw GPT)", value=False)
                     enable_citations = gr.Checkbox(label="Enable Memory Citations", value=False, info="Show which memories Claude references")
                     fast_mode = gr.Checkbox(label="⚡ Fast Mode", value=False, info="Reduced context for mobile/slow connections (~2x faster)")
-                    personality = gr.Dropdown(
-                        label="Personality",
-                        choices=list(personality_manager.personalities.keys()),
-                        value=personality_manager.current_personality
-                    )
+                    personality = gr.State("default")
 
                 chat_state = gr.State([])
                 debug_state = gr.State([])
@@ -1324,21 +1324,38 @@ def launch_gui(orchestrator, force_wizard=False):
                 # Bind state change to view update
                 debug_state.change(fn=_render_debug, inputs=[debug_state], outputs=[debug_view])
 
-            with gr.TabItem("Citations"):
-                gr.Markdown("### 📚 Memory Citations")
-                gr.Markdown("Shows which memories Claude referenced in responses (when citation mode enabled)")
-                citations_view = gr.JSON(value=[], label="Citations")
+            with gr.TabItem("Provenance"):
+                gr.Markdown("### Provenance")
+                provenance_view = gr.JSON(value={}, label="Provenance")
 
-                def _format_citations(entries):
-                    """Extract and format citations from debug entries"""
+                def _format_provenance(entries):
+                    """Extract and format provenance from debug entries"""
                     if not entries:
-                        return []
-                    # Get latest entry's citations
+                        return {}
                     latest = entries[-1] if isinstance(entries, list) else entries
-                    return latest.get('citations', [])
+                    if not isinstance(latest, dict):
+                        return {}
+                    prov = dict(latest.get('provenance', {})) if latest.get('provenance') else {}
+                    # Always include basic fields from debug_record
+                    prov['mode'] = latest.get('mode', '')
+                    prov['model'] = latest.get('model', '')
+                    prov['citations_enabled'] = latest.get('citations_enabled', False)
+                    citations = latest.get('citations', [])
+                    if citations:
+                        prov['citations'] = citations
+                    if latest.get('prompt_tokens'):
+                        prov['prompt_tokens'] = latest['prompt_tokens']
+                    if latest.get('total_tokens'):
+                        prov['total_tokens'] = latest['total_tokens']
+                    # Truncate thinking_block for display (full version in ChromaDB)
+                    _GUI_THINKING_CAP = 500
+                    for _tb_key in ('thinking_block', 'thinking_a', 'thinking_b'):
+                        if _tb_key in prov and isinstance(prov[_tb_key], str) and len(prov[_tb_key]) > _GUI_THINKING_CAP:
+                            prov[_tb_key] = prov[_tb_key][:_GUI_THINKING_CAP] + " [truncated]"
+                    return prov
 
-                # Update citations view whenever debug_state changes
-                debug_state.change(fn=_format_citations, inputs=[debug_state], outputs=[citations_view])
+                # Update provenance view whenever debug_state changes
+                debug_state.change(fn=_format_provenance, inputs=[debug_state], outputs=[provenance_view])
 
             with gr.TabItem("Status"):
                 gr.Markdown("### 📊 Runtime Status")
@@ -2303,6 +2320,80 @@ def launch_gui(orchestrator, force_wizard=False):
                         return f"Failed to apply: {e}"
 
                 apply_btn.click(_apply_summary_n, inputs=[summary_n], outputs=[status_md])
+
+            # ===============================================================
+            # TAB: Personality
+            # ===============================================================
+            with gr.TabItem("Personality"):
+                gr.Markdown("### Personality Instructions")
+                gr.Markdown(
+                    "Edit the personality section of Daemon's system prompt. "
+                    "Operating principles (facts handling, memory integration, "
+                    "guardrails, etc.) are appended automatically and cannot be edited here."
+                )
+
+                def _load_current_personality():
+                    try:
+                        from config.app_config import load_personality_text
+                        return load_personality_text()
+                    except Exception:
+                        return ""
+
+                personality_textbox = gr.Textbox(
+                    label="Personality Prompt",
+                    value=_load_current_personality(),
+                    lines=25,
+                    max_lines=50,
+                    interactive=True,
+                )
+
+                with gr.Row():
+                    set_personality_btn = gr.Button("Set", variant="primary")
+                    restore_personality_btn = gr.Button("Restore Default", variant="secondary")
+
+                personality_status_md = gr.Markdown(value="")
+
+                def _set_personality(text):
+                    try:
+                        from config.app_config import PERSONALITY_CUSTOM_PATH, PERSONALITY_MAX_CHARS
+                        from pathlib import Path
+                        if len(text) > PERSONALITY_MAX_CHARS:
+                            logger.warning(f"[Personality] Rejected save: {len(text)} chars exceeds limit of {PERSONALITY_MAX_CHARS}")
+                            return f"Too long ({len(text)} chars). Max is {PERSONALITY_MAX_CHARS}. Trim and retry."
+                        Path(PERSONALITY_CUSTOM_PATH).parent.mkdir(parents=True, exist_ok=True)
+                        with open(PERSONALITY_CUSTOM_PATH, "w", encoding="utf-8") as f:
+                            f.write(text)
+                        logger.info(f"[Personality] Custom personality saved ({len(text)} chars) to {PERSONALITY_CUSTOM_PATH}")
+                        return f"Custom personality saved ({len(text)} chars). Takes effect on the next message."
+                    except Exception as e:
+                        logger.error(f"[Personality] Failed to save custom personality: {e}")
+                        return f"Failed to save: {e}"
+
+                def _restore_default_personality():
+                    try:
+                        from config.app_config import PERSONALITY_CUSTOM_PATH, load_default_personality
+                        from pathlib import Path
+                        custom = Path(PERSONALITY_CUSTOM_PATH)
+                        if custom.exists():
+                            custom.unlink()
+                            logger.info(f"[Personality] Deleted custom personality file: {PERSONALITY_CUSTOM_PATH}")
+                        default_text = load_default_personality()
+                        logger.info(f"[Personality] Restored default personality ({len(default_text)} chars)")
+                        return default_text, "Restored default personality. Takes effect on the next message."
+                    except Exception as e:
+                        logger.error(f"[Personality] Failed to restore default: {e}")
+                        return gr.update(), f"Failed to restore: {e}"
+
+                set_personality_btn.click(
+                    _set_personality,
+                    inputs=[personality_textbox],
+                    outputs=[personality_status_md],
+                )
+                restore_personality_btn.click(
+                    _restore_default_personality,
+                    inputs=[],
+                    outputs=[personality_textbox, personality_status_md],
+                )
 
         # --- Auto-load proposals on page open ---
         demo.load(

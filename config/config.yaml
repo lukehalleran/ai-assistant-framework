@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: glm-5
+  active: sonnet-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -112,8 +112,8 @@ features:
   best_of_max_tokens: 8816
   best_of_min_question: false
   best_of_generator_models:
-  - sonnet-4.5
-  - gpt-5
+  - claude-opus-4.6
+  - gemini-3-pro
   best_of_selector_models:
   - gpt-4o-mini
   - gpt-4.1
@@ -254,8 +254,8 @@ llm_compression:
   enabled: true
   model: gpt-4o-mini
   timeout_s: 3.0
-  ratio_threshold: 3.0    # Only LLM-compress items >= 3x over their token limit
-  max_batch: 8            # Max items to compress per request (cost guard)
+  ratio_threshold: 3.0
+  max_batch: 8
 thread_surfacing:
   enabled: true
   max_open: 50
@@ -280,6 +280,9 @@ implementation_tracking:
   git_depth: 50
   at_shutdown: true
   auto_complete: false
+provenance:
+  enabled: true
+  thinking_max_chars: 4000
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

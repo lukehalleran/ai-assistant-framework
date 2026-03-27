@@ -2,13 +2,14 @@
 # gui/handlers.py
 
 Module Contract
-- Purpose: Orchestrates a single chat submission in the GUI: preprocesses files, routes to raw/enhanced/agentic flows, streams the response to the UI, and persists interaction + debug trace.
+- Purpose: Orchestrates a single chat submission in the GUI: preprocesses files, routes to raw/duel/agentic/enhanced flows, streams the response to the UI, and persists interaction + provenance + debug trace.
 - Inputs:
   - handle_submit(user_text, files, history, use_raw_gpt, orchestrator, system_prompt=?, force_summarize=?, include_summaries=?, personality=?)
 - Outputs:
   - Yields streaming dicts {role, content, debug?, is_progress?} as Gradio updates.
 - Behavior:
   - RAW mode: send directly through orchestrator.process_user_query(use_raw_mode=True)
+  - DUEL mode: If BEST_OF_DUEL_MODE enabled, two models compete + judge picks winner. Builds provenance with response_mode="best-of-duel". Runs BEFORE agentic check.
   - AGENTIC: If agentic_search.enabled and query triggers search, computation, OR memory recall, route through AgenticSearchController
     - 3-tier agentic gate [ENHANCED 2026-03-15]:
       - Tier 1: Keyword heuristic (instant) — computation keywords OR memory keywords ("do you remember", "my notes", etc.)
@@ -16,10 +17,16 @@ Module Contract
       - Tier 3: LLM fallback — piggybacks on web search trigger LLM call; also returns needs_memory_search field
     - Casual skip filter only applies when no keyword/entity trigger fired
     - skip_initial_search=True for computation and memory queries (skips Round 1 web search)
+    - Streaming hides incomplete thinking blocks via has_incomplete_thinking_block()
+    - Citations extracted from memory_id_map via _extract_citations()
   - ENHANCED: orchestrator.prepare_prompt → extract note_images → response_generator.generate_streaming_response(images=...) → store interaction
   - IMAGE SUPPORT [NEW 2026-01-30]: Extracts note_images from raw_context and passes to streaming for multimodal models
+  - API error classification: [CREDITS EXHAUSTED], [RATE LIMITED], [AUTH ERROR], [MODEL NOT FOUND], [SERVER ERROR] with user-friendly messages
+- Provenance [NEW 2026-03-26]:
+  - All 5 response modes build provenance dicts (response_mode, model_name, thinking_block, cited_ids, prompt_hash, agentic_summary)
+  - _background_store_interaction() accepts session_id, provenance, mode params and forwards to memory system
 - Side effects:
-  - Writes to conversation logger; stores to memory_system; updates debug_state for Debug Trace tab.
+  - Writes to conversation logger; stores to memory_system (with provenance metadata); updates debug_state for Debug Trace tab.
 """
 import asyncio
 import logging
@@ -28,8 +35,7 @@ from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor, ProcessedFilesResult
 import json
-from config.app_config import load_system_prompt, ENABLE_BEST_OF, BEST_OF_N, BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_MIN_QUESTION, BEST_OF_MODEL, BEST_OF_MIN_TOKENS
-from utils.query_checker import analyze_query
+from config.app_config import load_system_prompt
 DEFAULT_SYSTEM_PROMPT = load_system_prompt()
 logger = logging.getLogger("gradio_gui")
 
@@ -49,7 +55,10 @@ async def _background_store_interaction(
     final_output: str,
     personality: str,
     file_names: list,
-    conversation_logger
+    conversation_logger,
+    session_id: str = None,
+    provenance: dict = None,
+    mode: str = "enhanced",
 ):
     """
     Store interaction in background to avoid blocking response delivery.
@@ -61,21 +70,26 @@ async def _background_store_interaction(
         memory_id = await orchestrator.memory_system.store_interaction(
             query=merged_input,
             response=response_to_store,
-            tags=tags
+            tags=tags,
+            session_id=session_id,
+            provenance=provenance,
         )
         logger.info(f"[HANDLE_SUBMIT] Background storage complete, ID: {memory_id}")
 
         # Log conversation with db_id
+        log_metadata = {
+            'mode': mode,
+            'files': file_names if file_names else None,
+            'personality': personality or "default",
+            'topic': getattr(orchestrator, 'current_topic', None),
+            'db_id': memory_id,
+        }
+        if provenance:
+            log_metadata['provenance'] = provenance
         conversation_logger.log_interaction(
             user_input=user_text,
             assistant_response=final_output,
-            metadata={
-                'mode': 'enhanced',
-                'files': file_names if file_names else None,
-                'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
-                'topic': getattr(orchestrator, 'current_topic', None),
-                'db_id': memory_id
-            }
+            metadata=log_metadata,
         )
     except Exception as e:
         logger.error(f"[HANDLE_SUBMIT] Background storage failed: {e}")
@@ -236,7 +250,7 @@ async def handle_submit(
             metadata={
                 'mode': 'raw',
                 'files': file_names if file_names else None,
-                'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
+                'personality': personality or "default",
             }
         )
 
@@ -358,6 +372,165 @@ async def handle_submit(
 
     logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
     logger.debug(f"[Handle Submit] Agentic pre-check: enabled={agentic_enabled}")
+
+    # ── DUEL MODE: Two models + judge, takes priority over agentic ──
+    _cfg_duel = getattr(orchestrator, 'config', {}) or {}
+    _features_duel = _cfg_duel.get('features', {}) if isinstance(_cfg_duel, dict) else {}
+    _DUEL_ON = bool(_features_duel.get('best_of_duel_mode', False))
+    _DUEL_GENS = list(_features_duel.get('best_of_generator_models', []))
+    _DUEL_SELS = list(_features_duel.get('best_of_selector_models', []))
+    duel_active = bool(_DUEL_ON and len(_DUEL_GENS) >= 2 and len(_DUEL_SELS) >= 1)
+    logger.info(f"[Handle Submit] Duel check: on={_DUEL_ON}, gens={_DUEL_GENS}, sels={_DUEL_SELS}, active={duel_active}")
+
+    if duel_active:
+        logger.warning(f"[Handle Submit] DUEL MODE — {_DUEL_GENS[0]} vs {_DUEL_GENS[1]}, judge={_DUEL_SELS[0]}")
+        yield {"role": "assistant", "content": "⚖️ Duel mode — generating two responses...", "is_progress": True}
+
+        try:
+            # Read temps from config
+            try:
+                from config.app_config import BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_SELECTOR_MAX_TOKENS
+                _duel_temps = tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7)
+                _duel_max_tok = int(BEST_OF_MAX_TOKENS)
+                _duel_judge_tok = int(BEST_OF_SELECTOR_MAX_TOKENS)
+            except (ImportError, TypeError, ValueError):
+                _duel_temps = (0.2, 0.7)
+                _duel_max_tok = 512
+                _duel_judge_tok = 64
+
+            # Read latency budget
+            try:
+                from config.app_config import BEST_OF_LATENCY_BUDGET_S
+                _duel_budget = float(_features_duel.get('best_of_latency_budget_s', BEST_OF_LATENCY_BUDGET_S))
+            except (ImportError, TypeError, ValueError):
+                _duel_budget = 0.0
+
+            m1, m2 = _DUEL_GENS[0], _DUEL_GENS[1]
+            judge = _DUEL_SELS[0]
+
+            duel_coro = orchestrator.response_generator.generate_duel_and_judge(
+                prompt=full_prompt,
+                model_a=m1,
+                model_b=m2,
+                judge_model=judge,
+                system_prompt=system_prompt,
+                question_text=user_text,
+                context_hint=full_prompt,
+                max_tokens=_duel_max_tok,
+                temperature_a=_duel_temps[0] if len(_duel_temps) > 0 else None,
+                temperature_b=_duel_temps[1] if len(_duel_temps) > 1 else None,
+                judge_max_tokens=_duel_judge_tok,
+            )
+
+            if _duel_budget > 0:
+                best = await asyncio.wait_for(duel_coro, timeout=_duel_budget)
+            else:
+                best = await duel_coro
+
+            # Unpack dict result from generate_duel_and_judge
+            if isinstance(best, dict) and 'answer' in best:
+                final_output = best['answer']
+                display_output = final_output
+
+                # Yield thinking data for GUI accordion
+                thinking_data = {
+                    'thinking_a': best.get('thinking_a', ''),
+                    'thinking_b': best.get('thinking_b', ''),
+                    'model_a': best.get('model_a', ''),
+                    'model_b': best.get('model_b', ''),
+                    'winner': best.get('winner', ''),
+                    'scores': best.get('scores', {}),
+                }
+                logger.info(f"[DUEL] Winner: Model {thinking_data['winner']}, scores={thinking_data['scores']}")
+                yield {"role": "assistant", "content": "", "thinking": thinking_data}
+            else:
+                final_output = str(best)
+                _, final_answer = ResponseParser.parse_thinking_block(final_output)
+                display_output = final_answer if final_answer else final_output
+
+            # Token counts
+            model_name = orchestrator.model_manager.get_active_model_name()
+            try:
+                tm = getattr(orchestrator, 'tokenizer_manager', None)
+                prompt_tokens = int(tm.count_tokens(full_prompt, model_name)) if tm else None
+                system_tokens = int(tm.count_tokens(system_prompt or '', model_name)) if tm else 0
+                total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
+            except (AttributeError, TypeError, ValueError):
+                prompt_tokens = len(full_prompt) // 4 if full_prompt else None
+                system_tokens = len(system_prompt or '') // 4
+                total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
+
+            # Citations
+            citations = []
+            if getattr(orchestrator, 'enable_citations', False):
+                try:
+                    memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
+                    if memory_id_map:
+                        _, citations = orchestrator._extract_citations(final_output, memory_id_map)
+                except (AttributeError, KeyError) as e:
+                    logger.warning(f"[DUEL] Failed to extract citations: {e}")
+
+            # Provenance
+            _duel_session_id = getattr(orchestrator.memory_system, 'session_id', None) if hasattr(orchestrator, 'memory_system') else None
+            _duel_prov = {
+                "response_mode": "best-of-duel",
+                "session_id": _duel_session_id or "",
+                "model_name": f"{m1} vs {m2}",
+                "cited_ids": [c['memory_id'] for c in citations] if citations else [],
+            }
+            if isinstance(best, dict):
+                _duel_prov["thinking_a"] = best.get('thinking_a', '')
+                _duel_prov["thinking_b"] = best.get('thinking_b', '')
+                _duel_prov["model_a"] = best.get('model_a', '')
+                _duel_prov["model_b"] = best.get('model_b', '')
+                _duel_prov["winner"] = best.get('winner', '')
+
+            debug_record = {
+                'mode': 'best-of-duel',
+                'query': user_text,
+                'prompt': full_prompt,
+                'system_prompt': system_prompt,
+                'response': final_output,
+                'model': f"{m1} vs {m2}",
+                'prompt_tokens': prompt_tokens,
+                'system_tokens': system_tokens,
+                'total_tokens': total_tokens,
+                'citations': citations,
+                'citations_enabled': getattr(orchestrator, 'enable_citations', False),
+                'provenance': _duel_prov,
+            }
+
+            # Yield the response
+            yield {"role": "assistant", "content": display_output, "debug": debug_record}
+
+            # Store interaction in background
+            tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
+            task = asyncio.create_task(_background_store_interaction(
+                orchestrator=orchestrator,
+                merged_input=merged_input,
+                response_to_store=final_output,
+                tags=tags,
+                user_text=user_text,
+                final_output=final_output,
+                personality=personality,
+                file_names=file_names,
+                conversation_logger=conversation_logger,
+                session_id=_duel_session_id,
+                provenance=_duel_prov,
+                mode='best-of-duel',
+            ))
+            _pending_storage_tasks.add(task)
+            task.add_done_callback(_pending_storage_tasks.discard)
+
+            return  # Done — duel mode complete
+
+        except asyncio.TimeoutError:
+            logger.warning(f"[DUEL] Timed out after {_duel_budget}s, falling back to streaming")
+        except Exception as e:
+            logger.error(f"[DUEL] Failed, falling back to standard: {e}")
+            import traceback
+            logger.debug(f"[DUEL] Traceback:\n{traceback.format_exc()}")
+        # Fall through to agentic/streaming on failure
 
     if agentic_enabled:
         _lower = user_text.lower().strip()
@@ -524,7 +697,13 @@ async def handle_submit(
                     else:
                         # Response chunk - accumulate and stream
                         agentic_response += item
-                        yield {"role": "assistant", "content": agentic_response}
+                        # Hide incomplete thinking blocks during streaming
+                        if ResponseParser.has_incomplete_thinking_block(agentic_response):
+                            yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
+                        else:
+                            # Strip any completed thinking block before display
+                            _, clean_answer = ResponseParser.parse_thinking_block(agentic_response)
+                            yield {"role": "assistant", "content": clean_answer or agentic_response}
 
                 # Final output from agentic search - strip thinking blocks
                 final_output = agentic_response
@@ -540,9 +719,40 @@ async def handle_submit(
                     total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
                 except (AttributeError, TypeError, ValueError) as e:
                     logger.debug(f"[Handlers] Token counting failed for agentic mode: {e}")
-                    prompt_tokens = None
-                    system_tokens = None
-                    total_tokens = None
+                    # Fallback: rough estimate (~4 chars per token)
+                    prompt_tokens = len(full_prompt) // 4 if full_prompt else None
+                    system_tokens = len(system_prompt or '') // 4
+                    total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
+
+                # Extract citations if enabled (instead of hardcoding [])
+                citations = []
+                if getattr(orchestrator, 'enable_citations', False):
+                    try:
+                        memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
+                        if memory_id_map:
+                            _, citations = orchestrator._extract_citations(final_output, memory_id_map)
+                    except (AttributeError, KeyError) as e:
+                        logger.warning(f"[CITATIONS] Failed to extract agentic citations: {e}")
+
+                # Build agentic provenance
+                _agentic_session_id = getattr(orchestrator.memory_system, 'session_id', None) if hasattr(orchestrator, 'memory_system') else None
+                _agentic_prov = {
+                    "response_mode": "agentic-search",
+                    "session_id": _agentic_session_id or "",
+                    "model_name": model_name,
+                    "thinking_block": thinking_part or "",
+                    "cited_ids": [c['memory_id'] for c in citations] if citations else [],
+                }
+                # Attach agentic session details if available
+                try:
+                    _ac = getattr(orchestrator, 'agentic_controller', None)
+                    _last = getattr(_ac, '_last_session', None) if _ac else None
+                    if _last and hasattr(_last, 'get_provenance_summary'):
+                        _ap = _last.get_provenance_summary()
+                        _agentic_prov["agentic_rounds"] = _ap.get("agentic_rounds", [])
+                        _agentic_prov["final_prompt_hash"] = _ap.get("final_prompt_hash", "")
+                except Exception as e:
+                    logger.debug(f"[Handlers] Could not get agentic provenance: {e}")
 
                 debug_record = {
                     'mode': 'agentic-search',
@@ -554,8 +764,9 @@ async def handle_submit(
                     'prompt_tokens': prompt_tokens,
                     'system_tokens': system_tokens,
                     'total_tokens': total_tokens,
-                    'citations': [],
+                    'citations': citations,
                     'citations_enabled': getattr(orchestrator, 'enable_citations', False),
+                    'provenance': _agentic_prov,
                 }
                 # Yield the clean response first (without debug, to ensure it displays)
                 logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
@@ -579,7 +790,9 @@ async def handle_submit(
                     memory_id = await orchestrator.memory_system.store_interaction(
                         query=merged_input,
                         response=final_output_sanitized,
-                        tags=tags
+                        tags=tags,
+                        session_id=_agentic_session_id,
+                        provenance=_agentic_prov,
                     )
                     logger.info(f"[Handle Submit] Agentic interaction stored with ID: {memory_id}")
 
@@ -590,9 +803,10 @@ async def handle_submit(
                         metadata={
                             'mode': 'agentic-search',
                             'files': file_names if file_names else None,
-                            'personality': personality or getattr(getattr(orchestrator, "personality_manager", None), "current_personality", None),
+                            'personality': personality or "default",
                             'topic': getattr(orchestrator, 'current_topic', None),
-                            'db_id': memory_id
+                            'db_id': memory_id,
+                            'provenance': _agentic_prov,
                         }
                     )
                 except Exception as e:
@@ -617,533 +831,161 @@ async def handle_submit(
             )
         )
 
-        # Respect runtime settings via orchestrator.config if available
-        _cfg = getattr(orchestrator, 'config', {}) or {}
-        _features = _cfg.get('features', {}) if isinstance(_cfg, dict) else {}
-        _enable_bestof = bool(_features.get('enable_best_of', ENABLE_BEST_OF))
-        # Force streaming in GUI unless explicitly disabled via env FORCE_STREAMING=0
-        try:
-            import os as _os
-            if str(_os.getenv('FORCE_STREAMING', '1')).strip().lower() in {'1','true','yes','on'}:
-                _enable_bestof = False
-        except (AttributeError, TypeError):
-            pass
-
-        # Policy: always stream, except DUEL mode. Single-model best-of is disabled for streaming UX.
-        use_bestof = False
-        try:
-            # Detect duel-mode configuration from runtime features
-            GEN_MODELS = list(_features.get('best_of_generator_models', []))
-            SEL_MODELS = list(_features.get('best_of_selector_models', []))
-            _DUEL_MODE = bool(_features.get('best_of_duel_mode', False))
-            duel_possible = bool(_DUEL_MODE and len(GEN_MODELS) >= 2 and len(SEL_MODELS) >= 1)
-            use_bestof = duel_possible  # only enable best-of path when duel is configured
-            logger.info(f"[GUI] Duel check: duel_mode={_DUEL_MODE}, gen={len(GEN_MODELS)}, sel={len(SEL_MODELS)}, use_bestof(duel-only)={use_bestof}")
-        except Exception as e:
-            use_bestof = False
-            logger.info(f"[GUI] Duel check failed: {e}; default to streaming")
-
+        # Duel mode is handled above (before agentic check). This path is streaming only.
         model_name = orchestrator.model_manager.get_active_model_name()
-        # Token counts for debug trace
-        try:
-            tm = getattr(orchestrator, 'tokenizer_manager', None)
-            prompt_tokens = int(tm.count_tokens(full_prompt, model_name)) if tm else None
-            system_tokens = int(tm.count_tokens(system_prompt or '', model_name)) if tm else 0
-            total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
-        except (AttributeError, TypeError, ValueError) as e:
-            logger.debug(f"[Handlers] Token counting failed for enhanced mode: {e}")
-            prompt_tokens = None
-            system_tokens = None
-            total_tokens = None
-        bestof_model = BEST_OF_MODEL or model_name
 
-        if use_bestof:
-            # Best-of with optional latency budget and streaming fallback
-            # If BEST_OF_TEMPS not explicitly configured, anchor around current runtime temperature
-            try:
-                _explicit_temps = tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else None
-            except (TypeError, ValueError) as e:
-                logger.debug(f"[Handlers] Could not parse BEST_OF_TEMPS: {e}")
-                _explicit_temps = None
+        # Streaming path (duel mode handled above, old best-of code removed)
+        logger.info(f"[Handle Submit] >>> Starting streaming with model={model_name}")
+        thinking_started = False
+        thinking_complete = False
+        chunk_count = 0
+        async for chunk in orchestrator.response_generator.generate_streaming_response(
+            prompt=full_prompt,
+            model_name=model_name,
+            system_prompt=system_prompt,
+            images=note_images if note_images else None  # Pass images for multimodal models
+        ):
+            chunk_count += 1
+            if chunk_count <= 3 or chunk_count % 20 == 0:
+                logger.info(f"[Handle Submit] Chunk #{chunk_count}: {str(chunk)[:50]}...")
+            final_output = smart_join(final_output, chunk)
 
-            if _explicit_temps and len(_explicit_temps) > 0:
-                _temps_to_use = _explicit_temps
-            else:
-                # Derive two temps around current default_temperature to reflect the Settings slider
+            # Detect incomplete thinking block (opening tag arrived, closing hasn't yet)
+            if ResponseParser.has_incomplete_thinking_block(final_output):
+                thinking_started = True
+                display_output = "💭 **Thinking...**"
+                yield {"role": "assistant", "content": display_output, "is_thinking": True}
+                continue
+
+            # Parse in real-time to separate thinking from answer
+            thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
+
+            # If we have thinking content and haven't shown the answer yet
+            if thinking_part and not final_answer:
+                # Still in thinking block — show indicator only (don't leak content)
+                thinking_started = True
+                display_output = "💭 **Thinking...**"
+                yield {"role": "assistant", "content": display_output, "is_thinking": True}
+            elif thinking_part and final_answer and not thinking_complete:
+                # Thinking is complete, answer is starting - switch to answer
+                thinking_complete = True
+                display_output = final_answer
+                yield {"role": "assistant", "content": display_output, "is_thinking": False}
+            elif final_answer:
+                # Continue streaming the answer
                 try:
-                    _t = float(getattr(orchestrator.model_manager, 'default_temperature', 0.7))
-                except (AttributeError, TypeError, ValueError) as e:
-                    logger.debug(f"[Handlers] Could not get default_temperature: {e}")
-                    _t = 0.7
-                # Slight spread while staying in [0.0, 1.5]
-                _low = max(0.0, min(1.5, round(0.6 * _t, 2)))
-                _hi = max(0.0, min(1.5, round(_t, 2)))
-                _temps_to_use = (_low, _hi)
-
-            # Read latency budget: runtime features override, else app_config default
-            try:
-                from config.app_config import BEST_OF_LATENCY_BUDGET_S as _DEF_BUDGET
-            except ImportError:
-                _DEF_BUDGET = 0.0
-            try:
-                _budget = float(_features.get('best_of_latency_budget_s', _DEF_BUDGET))
-            except (TypeError, ValueError) as e:
-                logger.debug(f"[Handlers] Could not parse latency budget: {e}")
-                _budget = float(_DEF_BUDGET) if _DEF_BUDGET else 0.0
-
-            # Check for duel mode configuration (two generators + one judge)
-            try:
-                from config.app_config import (
-                    BEST_OF_GENERATOR_MODELS as DEF_GEN_MODELS,
-                    BEST_OF_SELECTOR_MODELS as DEF_SEL_MODELS,
-                    BEST_OF_SELECTOR_MAX_TOKENS as DEF_SEL_MAXTOK,
-                    BEST_OF_DUEL_MODE as DEF_DUEL_MODE,
-                )
-            except ImportError:
-                DEF_GEN_MODELS = []
-                DEF_SEL_MODELS = []
-                DEF_SEL_MAXTOK = 64
-                DEF_DUEL_MODE = False
-
-            GEN_MODELS = list(_features.get('best_of_generator_models', DEF_GEN_MODELS))
-            SEL_MODELS = list(_features.get('best_of_selector_models', DEF_SEL_MODELS))
-            SEL_MAXTOK = int(_features.get('best_of_selector_max_tokens', DEF_SEL_MAXTOK))
-            _DUEL_MODE = bool(_features.get('best_of_duel_mode', DEF_DUEL_MODE))
-            use_duel = bool(_DUEL_MODE and len(GEN_MODELS) == 2 and len(SEL_MODELS) >= 1)
-
-            import asyncio as _a
-            try:
-                if _budget and _budget > 0:
-                    # With latency budget
-                    if use_duel:
-                        # DUEL MODE: Two models (Claude Opus + GPT-5) with judge (GPT-4o-mini)
-                        m1, m2 = list(GEN_MODELS)[:2]
-                        judge = list(SEL_MODELS)[0]
-                        logger.info(f"[GUI] DUEL MODE: {m1} vs {m2}, judge={judge}")
-                        best_task = _a.create_task(
-                            orchestrator.response_generator.generate_duel_and_judge(
-                                prompt=full_prompt,
-                                model_a=m1,
-                                model_b=m2,
-                                judge_model=judge,
-                                system_prompt=system_prompt,
-                                question_text=user_text,
-                                context_hint=full_prompt,
-                                max_tokens=BEST_OF_MAX_TOKENS,
-                                temperature_a=(_temps_to_use[0] if len(_temps_to_use) > 0 else None),
-                                temperature_b=(_temps_to_use[1] if len(_temps_to_use) > 1 else None),
-                                judge_max_tokens=int(SEL_MAXTOK),
-                            )
-                        )
-                    else:
-                        # Single-model best-of
-                        logger.info(f"[GUI] SINGLE-MODEL BEST-OF: {bestof_model}")
-                        best_task = _a.create_task(
-                            orchestrator.response_generator.generate_best_of(
-                                prompt=full_prompt,
-                                model_name=bestof_model,
-                                system_prompt=system_prompt,
-                                question_text=user_text,
-                                context_hint=full_prompt,
-                                n=BEST_OF_N,
-                                temps=_temps_to_use,
-                                max_tokens=BEST_OF_MAX_TOKENS,
-                            )
-                        )
-                    best = await _a.wait_for(best_task, timeout=float(_budget))
-                    logger.info(f"[GUI] Got best result: type={type(best)}, is_dict={isinstance(best, dict)}, keys={best.keys() if isinstance(best, dict) else 'N/A'}")
-                    # Handle dict return from duel mode (with thinking blocks) or string from best-of
-                    if isinstance(best, dict) and 'answer' in best:
-                        final_output = best['answer']
-                        display_output = final_output
-                        # Yield thinking blocks for duel mode
-                        thinking_data = {
-                            'thinking_a': best.get('thinking_a', ''),
-                            'thinking_b': best.get('thinking_b', ''),
-                            'model_a': best.get('model_a', ''),
-                            'model_b': best.get('model_b', ''),
-                            'winner': best.get('winner', ''),
-                            'scores': best.get('scores', {})
-                        }
-                        logger.info(f"[GUI] YIELDING THINKING DATA (with budget): models={thinking_data.get('model_a')}/{thinking_data.get('model_b')}, winner={thinking_data.get('winner')}")
-                        yield {"role": "assistant", "content": "", "thinking": thinking_data}
-                    else:
-                        final_output = best
-                        # Parse thinking block - only show final answer to user
-                        _, final_answer = ResponseParser.parse_thinking_block(final_output)
-                        display_output = final_answer if final_answer else final_output
-                    # Create debug record for best-of with latency budget
-                    try:
-                        tm = getattr(orchestrator, 'tokenizer_manager', None)
-                        model_for_tokens = bestof_model
-                        prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
-                        system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
-                        total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
-                    except (AttributeError, TypeError, ValueError) as e:
-                        logger.debug(f"[Handlers] Token counting failed for best-of with budget: {e}")
-                        prompt_tokens2 = None
-                        system_tokens2 = None
-                        total_tokens2 = None
-                    # Extract citations if enabled
-                    citations = []
-                    debug_output = final_output
-                    if getattr(orchestrator, 'enable_citations', False):
-                        try:
-                            memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
-                            if memory_id_map:
-                                debug_output, citations = orchestrator._extract_citations(final_output, memory_id_map)
-                        except (AttributeError, KeyError) as e:
-                            logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
-
-                    debug_record = {
-                        'mode': 'best-of-duel' if use_duel else 'best-of',
-                        'query': user_text,
-                        'prompt': full_prompt,
-                        'system_prompt': system_prompt,
-                        'response': debug_output,
-                        'model': bestof_model,
-                        'prompt_tokens': prompt_tokens2,
-                        'system_tokens': system_tokens2,
-                        'total_tokens': total_tokens2,
-                        'citations': citations,
-                        'citations_enabled': getattr(orchestrator, 'enable_citations', False),
-                    }
-                    yield {"role": "assistant", "content": display_output, "debug": debug_record}
-                    debug_emitted = True
-                else:
-                    # No budget: run to completion (non-streaming)
-                    if use_duel:
-                        # DUEL MODE: Two models (Claude Opus + GPT-5) with judge (GPT-4o-mini)
-                        m1, m2 = list(GEN_MODELS)[:2]
-                        judge = list(SEL_MODELS)[0]
-                        logger.info(f"[GUI] DUEL MODE: {m1} vs {m2}, judge={judge}")
-                        best = await orchestrator.response_generator.generate_duel_and_judge(
-                            prompt=full_prompt,
-                            model_a=m1,
-                            model_b=m2,
-                            judge_model=judge,
-                            system_prompt=system_prompt,
-                            question_text=user_text,
-                            context_hint=full_prompt,
-                            max_tokens=BEST_OF_MAX_TOKENS,
-                            temperature_a=(_temps_to_use[0] if len(_temps_to_use) > 0 else None),
-                            temperature_b=(_temps_to_use[1] if len(_temps_to_use) > 1 else None),
-                            judge_max_tokens=int(SEL_MAXTOK),
-                        )
-                    else:
-                        # Single-model best-of
-                        logger.info(f"[GUI] SINGLE-MODEL BEST-OF: {bestof_model}")
-                        best = await orchestrator.response_generator.generate_best_of(
-                            prompt=full_prompt,
-                            model_name=bestof_model,
-                            system_prompt=system_prompt,
-                            question_text=user_text,
-                            context_hint=full_prompt,
-                            n=BEST_OF_N,
-                            temps=_temps_to_use,
-                            max_tokens=BEST_OF_MAX_TOKENS,
-                        )
-                    # Handle dict return from duel mode (with thinking blocks) or string from best-of
-                    if isinstance(best, dict) and 'answer' in best:
-                        final_output = best['answer']
-                        display_output = final_output
-                        # Yield thinking blocks for duel mode
-                        thinking_data = {
-                            'thinking_a': best.get('thinking_a', ''),
-                            'thinking_b': best.get('thinking_b', ''),
-                            'model_a': best.get('model_a', ''),
-                            'model_b': best.get('model_b', ''),
-                            'winner': best.get('winner', ''),
-                            'scores': best.get('scores', {})
-                        }
-                        logger.info(f"[GUI] YIELDING THINKING DATA (no budget): models={thinking_data.get('model_a')}/{thinking_data.get('model_b')}, winner={thinking_data.get('winner')}")
-                        yield {"role": "assistant", "content": "", "thinking": thinking_data}
-                    else:
-                        final_output = best
-                        # Parse thinking block - only show final answer to user
-                        _, final_answer = ResponseParser.parse_thinking_block(final_output)
-                        display_output = final_answer if final_answer else final_output
-                    # Create debug record for best-of without latency budget
-                    try:
-                        tm = getattr(orchestrator, 'tokenizer_manager', None)
-                        model_for_tokens = bestof_model
-                        prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
-                        system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
-                        total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
-                    except (AttributeError, TypeError, ValueError) as e:
-                        logger.debug(f"[Handlers] Token counting failed for best-of (no budget): {e}")
-                        prompt_tokens2 = None
-                        system_tokens2 = None
-                        total_tokens2 = None
-                    # Extract citations if enabled
-                    citations = []
-                    debug_output = final_output
-                    if getattr(orchestrator, 'enable_citations', False):
-                        try:
-                            memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
-                            if memory_id_map:
-                                debug_output, citations = orchestrator._extract_citations(final_output, memory_id_map)
-                        except (AttributeError, KeyError) as e:
-                            logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
-
-                    debug_record = {
-                        'mode': 'best-of-duel' if use_duel else 'best-of',
-                        'query': user_text,
-                        'prompt': full_prompt,
-                        'system_prompt': system_prompt,
-                        'response': debug_output,
-                        'model': bestof_model,
-                        'prompt_tokens': prompt_tokens2,
-                        'system_tokens': system_tokens2,
-                        'total_tokens': total_tokens2,
-                        'citations': citations,
-                        'citations_enabled': getattr(orchestrator, 'enable_citations', False),
-                    }
-                    yield {"role": "assistant", "content": display_output, "debug": debug_record}
-                    debug_emitted = True
-            except Exception as e:
-                # Timeout or error: fall back to streaming
-                logger.warning(f"[GUI] Best-of/duel mode failed, falling back to streaming: {e}")
-                import traceback
-                logger.debug(f"[GUI] Exception traceback:\n{traceback.format_exc()}")
-                try:
-                    if 'best_task' in locals():
-                        best_task.cancel()
-                except (NameError, AttributeError) as e:
-                    logger.debug(f"[Handlers] Could not cancel best_task: {e}")
-                thinking_started = False
-                thinking_complete = False
-                async for chunk in orchestrator.response_generator.generate_streaming_response(
-                    prompt=full_prompt,
-                    model_name=model_name,
-                    system_prompt=system_prompt,
-                    images=note_images if note_images else None  # Pass images for multimodal models
-                ):
-                    final_output = smart_join(final_output, chunk)
-                    # Parse in real-time to separate thinking from answer
-                    thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
-
-                    # If we have thinking content and haven't shown the answer yet
-                    if thinking_part and not final_answer:
-                        # Stream thinking block with special marker
-                        thinking_started = True
-                        display_output = f"💭 **Thinking...**\n\n{thinking_part}"
-                        yield {"role": "assistant", "content": display_output, "is_thinking": True}
-                    elif thinking_part and final_answer and not thinking_complete:
-                        # Thinking is complete, answer is starting - switch to answer
-                        thinking_complete = True
-                        # Remove XML-like wrappers (e.g., <result> … </result>) for GUI display
-                        try:
-                            import re
-                            m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
-                            display_output = (m.group(1).strip() if m else final_answer)
-                        except (IndexError, AttributeError):
-                            display_output = final_answer
-                        yield {"role": "assistant", "content": display_output, "is_thinking": False}
-                    elif final_answer:
-                        # Continue streaming the answer
-                        try:
-                            import re
-                            m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
-                            display_output = (m.group(1).strip() if m else final_answer)
-                        except (IndexError, AttributeError):
-                            display_output = final_answer
-                        yield {"role": "assistant", "content": display_output}
-                    else:
-                        # No thinking block detected, stream normally
-                        try:
-                            import re
-                            m = re.match(r"^\s*<\s*result[^>]*>([\s\S]*?)<\s*/\s*result\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
-                            display_output = (m.group(1).strip() if m else final_output)
-                        except (IndexError, AttributeError):
-                            display_output = final_output
-                        yield {"role": "assistant", "content": display_output}
-                # After fallback streaming completes, emit debug record
-                thinking_part_fb, final_answer_fb = ResponseParser.parse_thinking_block(final_output)
-                if thinking_part_fb:
-                    final_output = final_answer_fb if final_answer_fb else final_output
-                try:
-                    tm = getattr(orchestrator, 'tokenizer_manager', None)
-                    model_for_tokens = model_name
-                    prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
-                    system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
-                    total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
-                except (AttributeError, TypeError, ValueError) as e:
-                    logger.debug(f"[Handlers] Token counting failed for fallback streaming: {e}")
-                    prompt_tokens2 = None
-                    system_tokens2 = None
-                    total_tokens2 = None
-                # Ensure we have content to log even if no chunk set display_output yet
-                _resp_for_debug = display_output or final_output
-
-                # Truncate at spurious turn markers (training data leakage) in fallback
-                try:
-                    from core.prompt import _truncate_at_spurious_turns
-                    _resp_for_debug = _truncate_at_spurious_turns(_resp_for_debug)
-                except Exception as e:
-                    logger.warning(f"[HANDLE_SUBMIT] Failed to truncate spurious turns in fallback: {e}")
-
-                # Extract citations if enabled
-                citations = []
-                if getattr(orchestrator, 'enable_citations', False):
-                    try:
-                        memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
-                        if memory_id_map:
-                            _resp_for_debug, citations = orchestrator._extract_citations(_resp_for_debug, memory_id_map)
-                    except Exception as e:
-                        logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
-
-                debug_record = {
-                    'mode': 'fallback-streaming',
-                    'query': user_text,
-                    'prompt': full_prompt,
-                    'system_prompt': system_prompt,
-                    'response': _resp_for_debug,
-                    'model': model_name,
-                    'prompt_tokens': prompt_tokens2,
-                    'system_tokens': system_tokens2,
-                    'total_tokens': total_tokens2,
-                    'citations': citations,
-                    'citations_enabled': getattr(orchestrator, 'enable_citations', False),
-                }
-                yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
-                debug_emitted = True
-        else:
-            # Default streaming path with thinking block visibility
-            logger.info(f"[Handle Submit] >>> Starting streaming with model={model_name}")
-            thinking_started = False
-            thinking_complete = False
-            chunk_count = 0
-            async for chunk in orchestrator.response_generator.generate_streaming_response(
-                prompt=full_prompt,
-                model_name=model_name,
-                system_prompt=system_prompt,
-                images=note_images if note_images else None  # Pass images for multimodal models
-            ):
-                chunk_count += 1
-                if chunk_count <= 3 or chunk_count % 20 == 0:
-                    logger.info(f"[Handle Submit] Chunk #{chunk_count}: {str(chunk)[:50]}...")
-                final_output = smart_join(final_output, chunk)
-                # Parse in real-time to separate thinking from answer
-                thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
-
-                # If we have thinking content and haven't shown the answer yet
-                if thinking_part and not final_answer:
-                    # Stream thinking block with special marker
-                    thinking_started = True
-                    display_output = f"💭 **Thinking...**\n\n{thinking_part}"
-                    yield {"role": "assistant", "content": display_output, "is_thinking": True}
-                elif thinking_part and final_answer and not thinking_complete:
-                    # Thinking is complete, answer is starting - switch to answer
-                    thinking_complete = True
+                    import re
+                    # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
+                    # Use non-greedy match and ensure we capture everything between outer tags
+                    m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
+                    display_output = (m.group(2).strip() if m else final_answer)
+                except (IndexError, AttributeError):
                     display_output = final_answer
-                    yield {"role": "assistant", "content": display_output, "is_thinking": False}
-                elif final_answer:
-                    # Continue streaming the answer
-                    try:
-                        import re
-                        # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
-                        # Use non-greedy match and ensure we capture everything between outer tags
-                        m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
-                        display_output = (m.group(2).strip() if m else final_answer)
-                    except (IndexError, AttributeError):
-                        display_output = final_answer
-                    yield {"role": "assistant", "content": display_output}
-                else:
-                    # No thinking block detected, stream normally
-                    try:
-                        import re
-                        # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
-                        m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
-                        display_output = (m.group(2).strip() if m else final_output)
-                    except (IndexError, AttributeError):
-                        display_output = final_output
-                    yield {"role": "assistant", "content": display_output}
+                yield {"role": "assistant", "content": display_output}
+            else:
+                # No thinking block detected, stream normally
+                try:
+                    import re
+                    # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
+                    m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
+                    display_output = (m.group(2).strip() if m else final_output)
+                except (IndexError, AttributeError):
+                    display_output = final_output
+                yield {"role": "assistant", "content": display_output}
 
-            # After streaming completes, parse thinking block for logging and storage
-            logger.info(f"[Handle Submit] <<< Streaming done, {chunk_count} chunks, output_len={len(final_output)}")
+        # After streaming completes, parse thinking block for logging and storage
+        logger.info(f"[Handle Submit] <<< Streaming done, {chunk_count} chunks, output_len={len(final_output)}")
 
-            # Handle empty response from API (model returned no content)
-            if chunk_count == 0 or not final_output.strip():
-                model_name_for_error = model_name or "unknown"
-                error_msg = f"⚠️ Model `{model_name_for_error}` returned an empty response. This can happen when:\n• The model is temporarily unavailable\n• Rate limiting or quota issues\n• The model failed to process the request\n\nTry switching to a different model or retry your message."
-                logger.warning(f"[Handle Submit] Empty response detected from {model_name_for_error}")
-                yield {"role": "assistant", "content": error_msg}
+        # Handle empty response from API (model returned no content)
+        if chunk_count == 0 or not final_output.strip():
+            model_name_for_error = model_name or "unknown"
+            error_msg = f"⚠️ Model `{model_name_for_error}` returned an empty response. This can happen when:\n• The model is temporarily unavailable\n• Rate limiting or quota issues\n• The model failed to process the request\n\nTry switching to a different model or retry your message."
+            logger.warning(f"[Handle Submit] Empty response detected from {model_name_for_error}")
+            yield {"role": "assistant", "content": error_msg}
+            return
+
+        # Detect classified API errors from model_manager
+        _stripped = final_output.strip()
+        _API_ERROR_PREFIXES = {
+            "[CREDITS EXHAUSTED]": "💳 **Out of API Credits**\n\n{msg}\n\nYou can add credits at your provider's billing page or switch models in the dropdown above.",
+            "[RATE LIMITED]": "⏳ **Rate Limited**\n\n{msg}",
+            "[AUTH ERROR]": "🔑 **Authentication Error**\n\n{msg}",
+            "[MODEL NOT FOUND]": "❓ **Model Not Found**\n\n{msg}",
+            "[SERVER ERROR]": "🔥 **Server Error**\n\n{msg}",
+            "[API Error]": "⚠️ **API Error**\n\n{msg}",
+            "[API unavailable]": "⚠️ **API Unavailable**\n\n{msg}",
+        }
+        for prefix, template in _API_ERROR_PREFIXES.items():
+            if _stripped.startswith(prefix):
+                friendly = template.format(msg=_stripped[len(prefix):].strip())
+                logger.warning(f"[Handle Submit] API error detected: {prefix}")
+                yield {"role": "assistant", "content": friendly}
                 return
 
-            # Detect classified API errors from model_manager
-            _stripped = final_output.strip()
-            _API_ERROR_PREFIXES = {
-                "[CREDITS EXHAUSTED]": "💳 **Out of API Credits**\n\n{msg}\n\nYou can add credits at your provider's billing page or switch models in the dropdown above.",
-                "[RATE LIMITED]": "⏳ **Rate Limited**\n\n{msg}",
-                "[AUTH ERROR]": "🔑 **Authentication Error**\n\n{msg}",
-                "[MODEL NOT FOUND]": "❓ **Model Not Found**\n\n{msg}",
-                "[SERVER ERROR]": "🔥 **Server Error**\n\n{msg}",
-                "[API Error]": "⚠️ **API Error**\n\n{msg}",
-                "[API unavailable]": "⚠️ **API Unavailable**\n\n{msg}",
-            }
-            for prefix, template in _API_ERROR_PREFIXES.items():
-                if _stripped.startswith(prefix):
-                    friendly = template.format(msg=_stripped[len(prefix):].strip())
-                    logger.warning(f"[Handle Submit] API error detected: {prefix}")
-                    yield {"role": "assistant", "content": friendly}
-                    return
+        thinking_part_stream, final_answer_stream = ResponseParser.parse_thinking_block(final_output)
+        if thinking_part_stream:
+            logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK FROM STREAM]\n{thinking_part_stream}")
+            # Update final_output to only include the final answer for storage
+            final_output = final_answer_stream if final_answer_stream else final_output
 
-            thinking_part_stream, final_answer_stream = ResponseParser.parse_thinking_block(final_output)
-            if thinking_part_stream:
-                logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK FROM STREAM]\n{thinking_part_stream}")
-                # Update final_output to only include the final answer for storage
-                final_output = final_answer_stream if final_answer_stream else final_output
+        # After streaming completes, emit a final debug record so the Debug Trace tab is populated
+        try:
+            tm = getattr(orchestrator, 'tokenizer_manager', None)
+            model_for_tokens = model_name
+            prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
+            system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
+            total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug(f"[Handlers] Token counting failed for streaming debug: {e}")
+            prompt_tokens2 = None
+            system_tokens2 = None
+            total_tokens2 = None
 
-            # After streaming completes, emit a final debug record so the Debug Trace tab is populated
+        # Ensure we have content to log even if no chunk set display_output yet
+        _resp_for_debug = display_output or final_output
+
+        # Truncate at spurious turn markers (training data leakage) for display
+        try:
+            from core.prompt import _truncate_at_spurious_turns
+            _resp_for_debug = _truncate_at_spurious_turns(_resp_for_debug)
+        except Exception as e:
+            logger.warning(f"[HANDLE_SUBMIT] Failed to truncate spurious turns in display: {e}")
+
+        # Extract citations if enabled
+        citations = []
+        if getattr(orchestrator, 'enable_citations', False):
             try:
-                tm = getattr(orchestrator, 'tokenizer_manager', None)
-                model_for_tokens = model_name
-                prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
-                system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
-                total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
-            except (AttributeError, TypeError, ValueError) as e:
-                logger.debug(f"[Handlers] Token counting failed for streaming debug: {e}")
-                prompt_tokens2 = None
-                system_tokens2 = None
-                total_tokens2 = None
-
-            # Ensure we have content to log even if no chunk set display_output yet
-            _resp_for_debug = display_output or final_output
-
-            # Truncate at spurious turn markers (training data leakage) for display
-            try:
-                from core.prompt import _truncate_at_spurious_turns
-                _resp_for_debug = _truncate_at_spurious_turns(_resp_for_debug)
+                # Get memory_id_map from orchestrator if available
+                memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
+                if memory_id_map:
+                    _resp_for_debug, citations = orchestrator._extract_citations(_resp_for_debug, memory_id_map)
             except Exception as e:
-                logger.warning(f"[HANDLE_SUBMIT] Failed to truncate spurious turns in display: {e}")
+                logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
 
-            # Extract citations if enabled
-            citations = []
-            if getattr(orchestrator, 'enable_citations', False):
-                try:
-                    # Get memory_id_map from orchestrator if available
-                    memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
-                    if memory_id_map:
-                        _resp_for_debug, citations = orchestrator._extract_citations(_resp_for_debug, memory_id_map)
-                except Exception as e:
-                    logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
-
-            debug_record = {
-                'mode': 'enhanced',
-                'query': user_text,
-                'prompt': full_prompt,
-                'system_prompt': system_prompt,
-                'response': _resp_for_debug,
-                'model': model_name,
-                'prompt_tokens': prompt_tokens2,
-                'system_tokens': system_tokens2,
-                'total_tokens': total_tokens2,
-                'citations': citations,
-                'citations_enabled': getattr(orchestrator, 'enable_citations', False),
-            }
-            yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
-            debug_emitted = True
+        _enh_session_id = getattr(orchestrator.memory_system, 'session_id', None) if hasattr(orchestrator, 'memory_system') else None
+        _enh_prov = {
+            "response_mode": "enhanced",
+            "session_id": _enh_session_id or "",
+            "model_name": model_name,
+            "thinking_block": thinking_part_stream or "",
+            "cited_ids": [c['memory_id'] for c in citations] if citations else [],
+        }
+        debug_record = {
+            'mode': 'enhanced',
+            'query': user_text,
+            'prompt': full_prompt,
+            'system_prompt': system_prompt,
+            'response': _resp_for_debug,
+            'model': model_name,
+            'prompt_tokens': prompt_tokens2,
+            'system_tokens': system_tokens2,
+            'total_tokens': total_tokens2,
+            'citations': citations,
+            'citations_enabled': getattr(orchestrator, 'enable_citations', False),
+            'provenance': _enh_prov,
+        }
+        yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
+        debug_emitted = True
 
     except Exception as e:
         logger.error(f"[HANDLE_SUBMIT] Streaming error: {e}")
@@ -1245,6 +1087,23 @@ async def handle_submit(
                 except (re.error, TypeError, AttributeError) as e:
                     logger.debug(f"[Handlers] Header sanitization failed: {e}")
 
+                # Build provenance from the debug_record emitted during streaming
+                _store_prov = None
+                _store_mode = "enhanced"
+                _store_session_id = getattr(orchestrator.memory_system, 'session_id', None) if hasattr(orchestrator, 'memory_system') else None
+                if debug_emitted and 'debug_record' in dir():
+                    try:
+                        _store_prov = debug_record.get('provenance') if isinstance(debug_record, dict) else None
+                        _store_mode = debug_record.get('mode', 'enhanced') if isinstance(debug_record, dict) else 'enhanced'
+                    except Exception:
+                        pass
+                if _store_prov is None:
+                    _store_prov = {
+                        "response_mode": _store_mode,
+                        "model_name": model_name if 'model_name' in dir() else "",
+                        "thinking_block": thinking_part or "" if 'thinking_part' in dir() else "",
+                    }
+
                 # Fire-and-forget background storage (saves ~1.7s of LLM calls)
                 # Topic extraction and fact extraction run in background
                 task = asyncio.create_task(_background_store_interaction(
@@ -1256,7 +1115,10 @@ async def handle_submit(
                     final_output=final_output,
                     personality=personality,
                     file_names=file_names,
-                    conversation_logger=conversation_logger
+                    conversation_logger=conversation_logger,
+                    session_id=_store_session_id,
+                    provenance=_store_prov,
+                    mode=_store_mode,
                 ))
                 # Track task for graceful shutdown
                 _pending_storage_tasks.add(task)

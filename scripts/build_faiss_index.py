@@ -11,10 +11,11 @@ from pathlib import Path
 
 # Paths — override with env vars for remote/cloud runs
 _DATA_ROOT        = os.environ.get("WIKI_DATA_ROOT", "/run/media/lukeh/T9")
+_WIKI_OUT         = os.path.join(_DATA_ROOT, "wiki_data")
 PARQUET_DIR       = os.environ.get("PARQUET_DIR", os.path.join(_DATA_ROOT, "embedded_parquet"))
-EMBED_MMAP_FILE   = os.path.join(_DATA_ROOT, "wiki_data", "embeddings_mmap.dat")
-METADATA_FILE     = os.path.join(_DATA_ROOT, "wiki_data", "metadata.parquet")
-FAISS_INDEX_FILE  = os.path.join(_DATA_ROOT, "wiki_data", "vector_index_ivf.faiss")
+EMBED_MMAP_FILE   = os.path.join(_WIKI_OUT, "embeddings_mmap.dat")
+METADATA_FILE     = os.path.join(_WIKI_OUT, "metadata.parquet")
+FAISS_INDEX_FILE  = os.path.join(_WIKI_OUT, "vector_index_ivf.faiss")
 MODEL_NAME        = "all-MiniLM-L6-v2"
 
 def load_merged_parquet_mmap(parquet_dir: str):

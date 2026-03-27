@@ -9,7 +9,7 @@ Let the following sets be given:
 - **Q** — the set of all natural-language query strings (user inputs)
 - **R** — the set of all natural-language response strings (agent outputs)
 - **D** — the set of all documents (memory entries), where each d in D is a tuple d = (content, metadata, embedding)
-- **T** — the set of all tool calls (web search, memory search, memory expansion, code execution, Wolfram Alpha)
+- **T** — the set of all tool calls (web search, memory search, memory expansion, code execution, Wolfram Alpha, file access)
 - **A = R U T** — the action space (the agent either responds or invokes a tool)
 
 ---
@@ -202,7 +202,9 @@ The final retrieval returns: rho(x, C) = top-K documents sorted by sigma descend
 beta : X x D* x iota x E -> P
 ```
 
-where P is the **prompt space** (system prompt + context + query, token-budgeted). The token budget is **model-aware**: computed as `min(context_window * 0.25, ceiling)` clamped to `[floor, ceiling]`, with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps.
+where P is the **prompt space** (system prompt + context + query, token-budgeted). The **system prompt** is composed from two text files: an editable personality file (`config/prompts/default_personality.txt` or user's `custom_personality.txt`) concatenated with immutable operating principles (`config/prompts/operating_principles.txt`), with placeholder substitution for `{USER_NAME}`, `{USER_PRONOUNS}`, etc. This replaces the former JSON-based `PersonalityManager`.
+
+The token budget is **model-aware**: computed as `min(context_window * 0.25, ceiling)` clamped to `[floor, ceiling]`, with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps.
 
 Assembly produces an ordered sequence of 26 conditional sections:
 
@@ -274,7 +276,7 @@ AGENT(q, s):
             thought_i <- LLM(p, observations, inventory)
             tool_i    <- extract_tool_call(thought_i)
             if tool_i = empty: break
-            obs_i     <- execute(tool_i)              // Tavily, Wolfram, E2B, memory_search, expand_memory
+            obs_i     <- execute(tool_i)              // Tavily, Wolfram, E2B, memory_search, expand_memory, file_read/grep/list
             observations <- observations + {obs_i}
         r <- LLM(p, observations)                     // final synthesis
     else:
@@ -547,7 +549,35 @@ else:                                            -> GP      // at/past threshold
 
 ---
 
-## 12. Summary: The Complete Agent
+## 12. Provenance Audit Trail
+
+Each stored interaction carries a **provenance record** Pi attached as ChromaDB metadata:
+
+```
+Pi : {session_id, response_mode, model_name, thinking_block,
+      cited_memory_ids, prompt_hash, agentic_summary}
+```
+
+**Fields**:
+- `session_id` — UUID generated once per `MemoryCoordinator` instance (i.e., per GUI session)
+- `response_mode` — one of `{agentic, enhanced, best_of, best_of_duel, fallback}`
+- `model_name` — the LLM alias that produced the response (or the duel winner)
+- `thinking_block` — captured `<thinking>...</thinking>` content from extended-thinking models (truncated to `PROVENANCE_THINKING_MAX_CHARS`)
+- `cited_memory_ids` — list of memory document IDs referenced by the response (via `[MEM_RECENT_N]` / `[MEM_SEMANTIC_N]` citation markers injected by the agentic controller)
+- `prompt_hash` — SHA-256 of the final assembled prompt, enabling prompt-to-response traceability
+- `agentic_summary` — one-line summary from `AgenticSearchSession.get_provenance_summary()`: tools used, round count, searches, memory expansions
+
+**Attachment point**: `memory_storage.py:store_interaction()` merges the provenance dict into the metadata of the stored conversation document. The GUI `handlers.py` builds the provenance dict for all 5 response modes before calling `store_interaction()`.
+
+**GUI**: The "Provenance" tab (renamed from "Citations") displays per-turn provenance in the chat interface.
+
+**Config**: `PROVENANCE_ENABLED` (default True), `PROVENANCE_THINKING_MAX_CHARS` (default 4000).
+
+**Code**: `memory/memory_storage.py`, `gui/handlers.py`, `core/agentic/controller.py`, `core/agentic/types.py`, `core/response_parser.py`
+
+---
+
+## 13. Summary: The Complete Agent
 
 Putting it all together:
 
@@ -559,11 +589,12 @@ Agent(q, s_t) =
     let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (18 parallel retrievals)
     let p       = beta(x, d*, iota, s_t.E)           in    // plan (26-section prompt assembly)
     let r       = generate_or_search(p)              in    // act (LLM + optional agentic loop)
-    let s_{t+1} = delta(s_t, q, r)                   in    // learn (store + truth + escalation)
+    let Pi      = provenance(r, p, session)           in    // audit (provenance metadata)
+    let s_{t+1} = delta(s_t, q, r, Pi)                in    // learn (store + truth + escalation + provenance)
     (r, s_{t+1})
 ```
 
-Seven operations. Perceive, interpret, expand, remember, plan, act, learn.
+Eight operations. Perceive, interpret, expand, remember, plan, act, audit, learn.
 
 ---
 
@@ -593,4 +624,5 @@ Seven operations. Perceive, interpret, expand, remember, plan, act, learn.
 | delta_shutdown | State transition (session-end) | `shutdown_processor.py` |
 | expand | Query expansion (graph-augmented) | `context_gatherer.py:_expand_query_with_graph()` + `graph_utils.py` |
 | mu | Memory expansion (temporal window / summary drill-down) | `memory/memory_expander.py` |
+| Pi | Provenance record (session_id, response_mode, prompt_hash, ...) | `memory_storage.py` + `gui/handlers.py` |
 | gate | Multi-stage gating | `processing/gate_system.py` |
