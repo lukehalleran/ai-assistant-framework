@@ -5,6 +5,11 @@ Cross-collection memory deduplication service.
 Detects near-duplicate documents across ChromaDB collections and
 resolves fact contradictions (same subject+predicate, different object).
 Runs as a maintenance pass on shutdown, on schedule, or via GUI.
+
+Double-deletion guard [NEW 2026-03-26]: execute_plan() tracks deleted_ids set
+across duplicate + contradiction phases to prevent attempting to delete the
+same ChromaDB document twice. _apply_contradiction_truth_penalties() also
+skips truth updates for already-deleted documents.
 """
 
 import re
@@ -518,6 +523,7 @@ class CrossCollectionDeduplicator:
             Number of successful deletions.
         """
         deleted = 0
+        deleted_ids: set = set()  # Track IDs deleted in any phase
 
         # Delete duplicate pairs
         for pair in plan.duplicate_pairs:
@@ -533,6 +539,7 @@ class CrossCollectionDeduplicator:
                 if coll:
                     coll.delete(ids=[pair.delete_id])
                     deleted += 1
+                    deleted_ids.add(pair.delete_id)
                     logger.debug(
                         "[CrossDedup] Deleted %s from %s (dup of %s in %s, sim=%.3f)",
                         pair.delete_id, coll_name, pair.keep_id,
@@ -546,15 +553,18 @@ class CrossCollectionDeduplicator:
 
         # Delete contradicting facts (keep most recent) + apply truth penalties
         for cluster in plan.contradiction_clusters:
-            # Apply truth score penalties for contradictions
-            self._apply_contradiction_truth_penalties(cluster)
+            # Apply truth score penalties (skip IDs already deleted in dup phase)
+            self._apply_contradiction_truth_penalties(cluster, deleted_ids)
 
             for del_id in cluster.delete_ids:
+                if del_id in deleted_ids:
+                    continue
                 try:
                     coll = self.chroma_store.collections.get("facts")
                     if coll:
                         coll.delete(ids=[del_id])
                         deleted += 1
+                        deleted_ids.add(del_id)
                         logger.debug(
                             "[CrossDedup] Deleted contradicting fact %s "
                             "(subject=%s, pred=%s, keeping %s)",
@@ -567,17 +577,22 @@ class CrossCollectionDeduplicator:
 
         return deleted
 
-    def _apply_contradiction_truth_penalties(self, cluster: ContradictionCluster) -> None:
+    def _apply_contradiction_truth_penalties(
+        self, cluster: ContradictionCluster, already_deleted: set = None,
+    ) -> None:
         """Apply truth score penalties when contradictions are resolved.
 
         The older (deleted) facts get a contradiction penalty; the kept
         (newest) fact gets a small boost for surviving.
         """
+        already_deleted = already_deleted or set()
         try:
             from memory.truth_scorer import TruthScorer
 
-            # Penalize older contradicting facts
+            # Penalize older contradicting facts (skip already-deleted)
             for del_id in cluster.delete_ids:
+                if del_id in already_deleted:
+                    continue
                 try:
                     self.chroma_store.update_metadata("facts", del_id, {
                         "truth_score": TruthScorer.apply_contradiction(0.7),
@@ -586,7 +601,7 @@ class CrossCollectionDeduplicator:
                     pass  # Best-effort; fact may be about to be deleted anyway
 
             # Small boost for the kept (most recent) fact
-            if cluster.keep_id:
+            if cluster.keep_id and cluster.keep_id not in already_deleted:
                 try:
                     coll = self.chroma_store.collections.get("facts")
                     if coll:

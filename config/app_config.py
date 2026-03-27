@@ -11,11 +11,16 @@ Module Contract
 - Key functions:
   - load_yaml_config(config_path) → dict: tolerant loader with variable resolution
   - ensure_config_defaults(config) → dict: fills missing critical defaults
-  - load_system_prompt(cfg) → str: resolves from core/system_prompt[.txt] (stripping header comments) or falls back to inline
+  - load_system_prompt(cfg) → str: resolves from core/system_prompt[.txt] (stripping header comments) or falls back to inline (legacy)
+  - load_personality_text() → str: loads custom_personality.txt if exists, else default_personality.txt; truncates to PERSONALITY_MAX_CHARS [NEW 2026-03-26]
+  - load_default_personality() → str: loads shipped default personality (for GUI Restore Default button) [NEW 2026-03-26]
+  - load_operating_principles() → str: loads immutable operating principles text [NEW 2026-03-26]
 - Important constants:
   - CORPUS_FILE, CHROMA_PATH, SYSTEM_PROMPT, DEFAULT_* model knobs, gating thresholds, CORPUS_MAX_ENTRIES
   - OBSIDIAN_ENABLED, OBSIDIAN_VAULT_PATH, OBSIDIAN_CHUNK_THRESHOLD, OBSIDIAN_MAX_NOTES_PROMPT [NEW]
   - LLM_COMPRESSION_ENABLED, LLM_COMPRESSION_MODEL, LLM_COMPRESSION_TIMEOUT, LLM_COMPRESSION_RATIO_THRESHOLD, LLM_COMPRESSION_MAX_BATCH [NEW 2026-03-26]
+  - PERSONALITY_DEFAULT_PATH, PERSONALITY_CUSTOM_PATH, OPERATING_PRINCIPLES_PATH, PERSONALITY_MAX_CHARS [NEW 2026-03-26]
+  - PROVENANCE_ENABLED, PROVENANCE_THINKING_MAX_CHARS [NEW 2026-03-26]
 - Side effects:
   - Creates data directories on import to ensure persistence paths exist.
 - Error handling:
@@ -831,6 +836,50 @@ def load_system_prompt(cfg: Optional[Dict] = None) -> str:
     return default
 
 # --------------------------------------------------------------------
+# Personality / Operating Principles (file-based, not YAML)
+# --------------------------------------------------------------------
+PERSONALITY_DEFAULT_PATH = str(Path(__file__).parent / "prompts" / "default_personality.txt")
+PERSONALITY_CUSTOM_PATH = str(Path(__file__).parent / "prompts" / "custom_personality.txt")
+OPERATING_PRINCIPLES_PATH = str(Path(__file__).parent / "prompts" / "operating_principles.txt")
+# Hard cap on personality text to prevent prompt budget blowout (~2x the default)
+PERSONALITY_MAX_CHARS = 15000
+
+def load_personality_text() -> str:
+    """Load custom personality if it exists, otherwise default. Truncates to PERSONALITY_MAX_CHARS."""
+    for path in (PERSONALITY_CUSTOM_PATH, PERSONALITY_DEFAULT_PATH):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read().strip()
+                if text:
+                    is_custom = (path == PERSONALITY_CUSTOM_PATH)
+                    source = "custom" if is_custom else "default"
+                    if len(text) > PERSONALITY_MAX_CHARS:
+                        logger.warning(f"[Personality] Truncated {source}: {len(text)} -> {PERSONALITY_MAX_CHARS} chars")
+                        text = text[:PERSONALITY_MAX_CHARS]
+                    logger.info(f"[Personality] Loaded {source} personality ({len(text)} chars) from {path}")
+                    return text
+        except (IOError, OSError):
+            continue
+    logger.warning("[Personality] No personality file found, returning empty")
+    return ""
+
+def load_default_personality() -> str:
+    """Load the default personality (for Restore Default button)."""
+    try:
+        with open(PERSONALITY_DEFAULT_PATH, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except (IOError, OSError):
+        return ""
+
+def load_operating_principles() -> str:
+    """Load the immutable operating principles."""
+    try:
+        with open(OPERATING_PRINCIPLES_PATH, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except (IOError, OSError):
+        return ""
+
+# --------------------------------------------------------------------
 # Intent Classifier Configuration
 # --------------------------------------------------------------------
 # Fast regex-first query intent classification (no LLM calls).
@@ -1047,6 +1096,13 @@ LLM_COMPRESSION_MAX_BATCH: int = int(LLM_COMPRESS_CFG.get("max_batch", 8))
 
 # Environment variable overrides for LLM Compression
 LLM_COMPRESSION_ENABLED = bool(int(os.getenv("LLM_COMPRESSION_ENABLED", "1" if LLM_COMPRESSION_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Provenance (audit trail for responses)
+# --------------------------------------------------------------------
+PROV_CFG = config.get("provenance", {})
+PROVENANCE_ENABLED = bool(PROV_CFG.get("enabled", True))
+PROVENANCE_THINKING_MAX_CHARS = int(PROV_CFG.get("thinking_max_chars", 4000))
 
 # --------------------------------------------------------------------
 # Final setup

@@ -20,6 +20,12 @@ Tool Support:
       - Expands a search result to show surrounding turns (timestamp window)
       - For summaries, retrieves original source conversations
       - Gated by EXPAND_MAX_PER_SESSION per session
+    - File access via file_read/file_grep/file_list tools (optional) [NEW 2026-03-26]
+
+Provenance [NEW 2026-03-26]:
+    - Computes final_prompt_hash (SHA-256[:16]) on the assembled prompt for audit trail
+    - Saves completed session to _last_session for handler access after execute_search()
+    - Formats memory citations with [MEM_RECENT_N] / [MEM_SEMANTIC_N] markers for citation extraction
 
 Key Parameters:
     - skip_initial_search: bool - Skip Round 1 web search for computation-only queries [NEW 2026-01-22]
@@ -38,6 +44,7 @@ Public Interface:
 """
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -830,6 +837,7 @@ class AgenticSearchController:
 
             session.state = AgentState.DONE
             session.end_time = datetime.now()
+            self._last_session = session
 
             yield ProgressEvent(
                 event_type="done",
@@ -1073,6 +1081,9 @@ Provide a focused summary with the most important information."""
             session=session,
             initial_context=initial_context
         )
+
+        # Hash prompt for provenance
+        session.final_prompt_hash = hashlib.sha256(final_prompt.encode()).hexdigest()[:16]
 
         # Stream the response
         try:
@@ -1339,7 +1350,7 @@ What would you like to do?""")
         return "\n\n".join(parts)
 
     def _format_recent_conversations(self, conversations: List[Dict]) -> str:
-        """Format recent conversations for the prompt."""
+        """Format recent conversations for the prompt with citation markers."""
         if not conversations:
             return ""
         lines = []
@@ -1348,13 +1359,13 @@ What would you like to do?""")
             user_msg = conv.get('query', conv.get('user', ''))
             assistant_msg = conv.get('response', conv.get('assistant', ''))
             if user_msg:
-                lines.append(f"{i}) {ts}: User: {user_msg[:500]}")
+                lines.append(f"[MEM_RECENT_{i}] {ts}: User: {user_msg[:500]}")
                 if assistant_msg:
                     lines.append(f"   Daemon: {assistant_msg[:500]}")
         return "\n".join(lines)
 
     def _format_memories(self, memories: List[Dict]) -> str:
-        """Format memories for the prompt."""
+        """Format memories for the prompt with citation markers."""
         if not memories:
             return ""
         lines = []
@@ -1363,7 +1374,7 @@ What would you like to do?""")
             content = mem.get('content', mem.get('query', ''))
             response = mem.get('response', '')
             if content:
-                lines.append(f"{i}) {ts}: {content[:400]}")
+                lines.append(f"[MEM_SEMANTIC_{i}] {ts}: {content[:400]}")
                 if response:
                     lines.append(f"   Response: {response[:400]}")
         return "\n".join(lines)

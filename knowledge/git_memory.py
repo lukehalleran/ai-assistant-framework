@@ -1,8 +1,24 @@
 """
-Git commit history extractor for PROCEDURAL memory population.
+# knowledge/git_memory.py
 
-Extracts commit messages, diffs (optional), and metadata to provide
-Daemon with visibility into project evolution and decision rationale.
+Module Contract
+- Purpose: Extract git commit history as structured dicts for PROCEDURAL memory population.
+- Class: GitMemoryExtractor(repo_path)
+- Key methods:
+  - extract_commits(limit, since, include_diffs, diff_max_lines) -> List[Dict]
+    Parses git log output into memory-ready dicts (hash, subject, body, author, timestamp,
+    tags, optional diff stats). Returns newest first.
+  - get_recent_since_hash(last_hash) -> List[Dict]
+    Returns commits newer than given hash (for incremental sync).
+  - _get_diff_summary(commit_hash, max_lines) -> str  [--stat diff summary]
+  - _extract_tags(subject) -> List[str]  [conventional commit prefixes: feat, fix, etc.]
+- Outputs:
+  - List of dicts with keys: hash, subject, body, author, timestamp, relative_time,
+    tags, diff_summary (optional), content (formatted for embedding)
+- Dependencies:
+  - git CLI (subprocess calls to git log / git diff)
+- Side effects:
+  - Subprocess calls to local git repo (read-only)
 """
 
 import subprocess

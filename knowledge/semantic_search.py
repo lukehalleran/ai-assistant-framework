@@ -39,12 +39,9 @@ logger = get_logger("knowledge.semantic_search")
 # ------------------------
 EMBED_MODEL = os.getenv("SEM_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-# HARDCODED PATHS - ignoring environment variables to avoid override issues
-INDEX_PATH = "/run/media/lukeh/T9/wiki_data/vector_index_ivf.faiss"
-META_PATH = "/run/media/lukeh/T9/wiki_data/metadata.parquet"
-
-print(f"[DEBUG semantic_search.py] Using hardcoded INDEX_PATH: {INDEX_PATH}")
-print(f"[DEBUG semantic_search.py] Using hardcoded META_PATH: {META_PATH}")
+_DATA_ROOT = os.getenv("WIKI_DATA_ROOT", "/run/media/lukeh/T9")
+INDEX_PATH = os.getenv("FAISS_INDEX_PATH", os.path.join(_DATA_ROOT, "wiki_data", "vector_index_ivf.faiss"))
+META_PATH = os.getenv("FAISS_META_PATH", os.path.join(_DATA_ROOT, "wiki_data", "metadata.parquet"))
 
 # Respect HF offline usage if you want to avoid network HEAD calls on boot
 HF_OFFLINE  = os.getenv("HF_HUB_OFFLINE", "1") == "1"

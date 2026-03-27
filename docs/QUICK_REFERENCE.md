@@ -410,9 +410,19 @@ class ResponseParser:
 
     @staticmethod
     def parse_thinking_block(response: str) -> Tuple[str, str]:
-        """Extract <thinking>...</thinking> and final answer"""
+        """Extract <thinking>...</thinking> and final answer.
+        Also handles <output>...</output> wrappers (pre-output = thinking, inner = answer)."""
         # Returns (thinking_content, final_answer)
         # If no thinking block: ("", full_response)
+
+    @staticmethod
+    def has_incomplete_thinking_block(response: str) -> bool:  # [NEW 2026-03-26]
+        """True if opening <thinking>/<think> tag present but closing tag not yet.
+        Used during streaming to suppress raw thinking text."""
+
+    @staticmethod
+    def extract_incomplete_thinking(response: str) -> str:  # [NEW 2026-03-26]
+        """Extracts content after opening think tag when close not yet arrived."""
 
     @staticmethod
     def strip_reflection_blocks(response: str) -> str:
@@ -420,7 +430,7 @@ class ResponseParser:
 
     @staticmethod
     def strip_xml_wrappers(text: str) -> str:
-        """Remove <result>...</result>, <answer>...</answer>, <final>...</final>"""
+        """Remove <result>, <answer>, <final>, <output>, <response> wrappers"""  # [ENHANCED 2026-03-26]
 
     @staticmethod
     def strip_prompt_artifacts(text: str) -> str:
@@ -435,7 +445,9 @@ class ResponseParser:
 # core/response_generator.py
 class ResponseGenerator:
     async def generate_response_stream(prompt: str, model: str = "gpt-4o-mini") -> AsyncIterator[str]:
-        """Stream LLM response chunks"""
+        """Stream LLM response chunks.
+        Detects reasoning/thinking content in streaming chunks and emits synthetic
+        <thinking>/<\/thinking> wrapper tags for downstream handling."""  # [ENHANCED 2026-03-26]
         async for chunk in self.model_manager.generate_stream(prompt, model):
             yield chunk
 
@@ -1217,6 +1229,16 @@ LLM_COMPRESSION_TIMEOUT = 3.0          # Per-item timeout (seconds)
 LLM_COMPRESSION_RATIO_THRESHOLD = 3.0  # Only compress items >= 3x over token limit
 LLM_COMPRESSION_MAX_BATCH = 8          # Max items to compress per request (cost guard)
 
+# Citation & Provenance [NEW 2026-03-26]
+PROVENANCE_ENABLED = True              # Toggle provenance metadata on interactions
+PROVENANCE_THINKING_MAX_CHARS = 4000   # Max chars for thinking block in metadata
+
+# Personality / Operating Principles (file-based) [NEW 2026-03-26]
+PERSONALITY_DEFAULT_PATH = "config/prompts/default_personality.txt"
+PERSONALITY_CUSTOM_PATH = "config/prompts/custom_personality.txt"
+OPERATING_PRINCIPLES_PATH = "config/prompts/operating_principles.txt"
+PERSONALITY_MAX_CHARS = 15000          # Hard cap on personality text
+
 # Summarization
 SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))
 SUMMARIZE_AT_SHUTDOWN_ONLY = True
@@ -1739,8 +1761,8 @@ class MemoryExpander:
 
 
 # Protocol handlers (core/agentic/protocols.py)
-# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <expand_memory>, <done>
-# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (6 tool definitions)
+# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <done>
+# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (9 tool definitions)
 ```
 
 ### Agentic Config Constants
@@ -1786,14 +1808,117 @@ Available Tools:
 3. <python purpose="...">code</python> - Execute Python code (NumPy, Pandas, SciPy, SymPy available)
 4. <memory collection="...">query</memory> - Search internal memory/knowledge base [NEW 2026-03-15]
 5. <expand_memory id="..." collection="..." window="3">reason</expand_memory> - Zoom in on a memory [NEW 2026-03-26]
-6. <done>reason</done> - Signal task complete
+6. <file_read path="...">reason</file_read> - Read a file from filesystem [NEW 2026-03-26]
+7. <file_grep pattern="..." path="...">reason</file_grep> - Search file contents by regex [NEW 2026-03-26]
+8. <file_list path="...">reason</file_list> - List directory contents [NEW 2026-03-26]
+9. <done>reason</done> - Signal task complete
 
 Use Python for: multi-step computation, data analysis, visualization, custom algorithms
 Use Wolfram for: single-expression calculations, unit conversions, scientific data, equations
 Use search for: current events, recent news, real-time data, general facts
 Use memory for: user facts, past conversations, personal notes, project history
 Use expand_memory for: see surrounding conversation turns or drill into summaries
+Use file_read/file_grep/file_list for: reading project files, searching code, listing directories
 """
+```
+
+---
+
+## Personality System (File-Based) **[NEW 2026-03-26]**
+
+```python
+# config/app_config.py — Replaces deleted PersonalityManager (JSON configs)
+# System prompt = personality text + operating principles, composed in orchestrator._build_system_prompt()
+
+def load_personality_text() -> str:
+    """Load custom_personality.txt if exists, else default_personality.txt.
+    Truncates to PERSONALITY_MAX_CHARS (15000). Returns empty string if no file found."""
+
+def load_default_personality() -> str:
+    """Load shipped default personality (for GUI Restore Default button)."""
+
+def load_operating_principles() -> str:
+    """Load immutable operating principles (AI limitations, behavioral rules, claim grounding, etc.)."""
+
+# Files:
+# config/prompts/default_personality.txt — 94 lines: tone, interaction style, response approach, examples
+# config/prompts/custom_personality.txt — created by GUI "Personality" tab Set button
+# config/prompts/operating_principles.txt — 255 lines: AI limitations, facts handling, claim grounding,
+#   response modes, knowledge source instructions, agentic tool docs, guardrails
+# Placeholder substitution: {USER_NAME}, {USER_PRONOUNS}, {PRONOUN_SUBJ}, {PRONOUN_OBJ}, {PRONOUN_POSS}
+
+# gui/launch.py — "Personality" tab:
+#   Textbox (25 lines) pre-loaded with current personality text
+#   "Set" button: saves to custom_personality.txt, enforces PERSONALITY_MAX_CHARS
+#   "Restore Default" button: deletes custom file, shows default
+#   Operating principles appended automatically, not editable
+```
+
+---
+
+## Citation & Provenance System **[NEW 2026-03-26]**
+
+```python
+# Every stored interaction includes provenance metadata for audit trail.
+
+# memory/memory_coordinator.py
+class MemoryCoordinator:
+    @property
+    def session_id(self) -> str:
+        """Unique session UUID, generated once per MemoryCoordinator instance."""
+
+# memory/memory_storage.py
+class MemoryStorage:
+    async def store_interaction(query, response, tags=None, session_id=None, provenance=None):
+        """
+        Accepts optional provenance dict merged into ChromaDB metadata:
+          session_id, response_mode, model_name, thinking_block,
+          cited_memory_ids, prompt_hash, agentic_summary
+        """
+
+# core/agentic/types.py
+@dataclass
+class AgenticSearchSession:
+    final_prompt_hash: str = ""           # SHA-256 of final assembled prompt
+    def get_provenance_summary() -> str:
+        """One-line summary: tools used, rounds, searches, memory expansions."""
+
+# core/agentic/controller.py
+class AgenticSearchController:
+    _last_session: AgenticSearchSession   # Accessible after execute_search()
+    # Hashes final prompt (SHA-256), adds [MEM_RECENT_N] / [MEM_SEMANTIC_N] citation markers
+
+# core/response_parser.py
+class ResponseParser:
+    @staticmethod
+    def parse_thinking_block(response) -> Tuple[str, str]:
+        """Extract <thinking>...</thinking> and visible answer. Truncated to PROVENANCE_THINKING_MAX_CHARS."""
+
+# gui/handlers.py — Builds provenance dict for all 5 response modes:
+#   agentic:     response_mode="agentic", agentic_summary, prompt_hash, cited_memory_ids
+#   enhanced:    response_mode="enhanced"
+#   best-of:     response_mode="best_of", model_name from best-of metadata
+#   best-of-duel: response_mode="best_of_duel", model_name = winner model
+#   fallback:    response_mode="fallback"
+# Thinking block captured for extended-thinking models (DeepSeek-R1, etc.)
+
+# gui/launch.py — "Provenance" tab (renamed from "Citations")
+# Displays per-turn provenance: session_id, response_mode, model, thinking block,
+# cited memory IDs, prompt hash, and agentic tool summary.
+
+# Config (app_config.py):
+PROVENANCE_ENABLED = True                # Toggle provenance metadata collection
+PROVENANCE_THINKING_MAX_CHARS = 4000     # Truncation limit for thinking block storage
+
+# YAML (config.yaml):
+# provenance:
+#   enabled: true
+#   thinking_max_chars: 4000
+
+# context_gatherer.py fix: recent conversations now build content from Q/A
+# when the content field is empty (robustness for older corpus entries).
+
+# Tests: 21 unit tests in tests/unit/test_provenance.py
 ```
 
 ---
@@ -1845,4 +1970,4 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-This document is ~1,800 lines → ~12K tokens, providing instant lookup for critical functions and patterns.
+This document is ~1,950 lines → ~13K tokens, providing instant lookup for critical functions and patterns.

@@ -4,7 +4,8 @@
 Module Contract
 - Purpose: Central coordinator for conversational memory. Persists each turn, retrieves relevant memories (recent + semantic), runs shutdown reflections, and synthesizes/stores block summaries at shutdown. ENHANCED: Now integrates UserProfile for structured fact storage with categorization.
 - Inputs:
-  - store_interaction(query, response, tags?): adds a turn to corpus + Chroma
+  - store_interaction(query, response, tags?, session_id=?, provenance=?): adds a turn to corpus + Chroma (with provenance metadata) [ENHANCED 2026-03-26]
+  - session_id (property): stable session identifier derived from session_start timestamp [NEW 2026-03-26]
   - get_memories(query, limit, topic_filter?): unified retrieval/gating/ranking
   - get_unresolved_threads(max_results): returns top-priority open threads for prompt surfacing
   - process_shutdown_memory(): summarize blocks (size N) and extract end‑of‑session facts and procedural skills → UPDATED: also populates UserProfile with categorized facts
@@ -262,7 +263,12 @@ class MemoryCoordinator:
             logger.debug(f"[MemoryCoordinator] TimeManager.current_iso() failed: {e}")
         return self._now().isoformat()
 
-
+    @property
+    def session_id(self) -> str:
+        """Stable session identifier derived from session_start timestamp."""
+        if isinstance(self.session_start, datetime):
+            return self.session_start.isoformat()
+        return str(self.session_start)
 
     # ---------------------------
     # Scoring helpers (delegated to MemoryScorer)
@@ -342,7 +348,14 @@ class MemoryCoordinator:
 
     # In memory_coordinator.py, update the store_interaction method
     # In memory_coordinator.py, update the store_interaction method with more debugging
-    async def store_interaction(self, query: str, response: str, tags: Optional[List[str]] = None) -> Optional[str]:
+    async def store_interaction(
+        self,
+        query: str,
+        response: str,
+        tags: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        provenance: Optional[dict] = None,
+    ) -> Optional[str]:
         """
         Persist a turn in both corpus & Chroma with computed metadata.
 
@@ -355,7 +368,11 @@ class MemoryCoordinator:
         self._storage.current_topic = self.current_topic
         self._storage.conversation_context = self.conversation_context
 
-        memory_id = await self._storage.store_interaction(query, response, tags)
+        memory_id = await self._storage.store_interaction(
+            query, response, tags,
+            session_id=session_id,
+            provenance=provenance,
+        )
 
         # Sync state back from storage
         self.conversation_context = self._storage.conversation_context

@@ -19,7 +19,6 @@ def test_force_wizard_launches_wizard():
     mock_orchestrator.user_profile = Mock()
     mock_orchestrator.user_profile.identity = Mock()
     mock_orchestrator.user_profile.identity.name = "Luke"
-    mock_orchestrator.personality_manager = Mock()
     mock_orchestrator.memory_system = Mock()
     mock_orchestrator.memory_system.corpus_manager = Mock()
     mock_orchestrator.memory_system.corpus_manager.corpus = []
@@ -42,7 +41,6 @@ def test_force_wizard_honored_when_no_identity(capsys):
     mock_orchestrator.user_profile = Mock()
     mock_orchestrator.user_profile.identity = Mock()
     mock_orchestrator.user_profile.identity.name = ""
-    mock_orchestrator.personality_manager = Mock()
     mock_orchestrator.memory_system = Mock()
     mock_orchestrator.memory_system.corpus_manager = Mock()
     mock_orchestrator.memory_system.corpus_manager.corpus = []
@@ -62,7 +60,6 @@ def test_force_wizard_honored_when_no_profile(capsys):
 
     mock_orchestrator = Mock()
     mock_orchestrator.user_profile = None
-    mock_orchestrator.personality_manager = Mock()
     mock_orchestrator.memory_system = Mock()
     mock_orchestrator.memory_system.corpus_manager = Mock()
     mock_orchestrator.memory_system.corpus_manager.corpus = []

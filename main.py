@@ -303,13 +303,11 @@ def build_orchestrator():
         logger.warning("Using simple fallback prompt builder")
         prompt_builder = _SimplePromptBuilder(memory_coordinator=coord)
 
-    from personality.personality_manager import PersonalityManager
     return DaemonOrchestrator(
         model_manager=model_manager,
         response_generator=response_generator,
         file_processor=file_processor,
         prompt_builder=prompt_builder,
-        personality_manager=PersonalityManager(),
         memory_system=coord,
         topic_manager=topic_manager,
         wiki_manager=wiki_manager,

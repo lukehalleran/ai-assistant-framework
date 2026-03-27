@@ -1,19 +1,42 @@
 # memory/shutdown_processor.py
 """
-Shutdown memory processing module.
-
-Handles end-of-session consolidation: block summaries, fact extraction,
-LLM-assisted fact extraction, user profile updates (user-only facts),
-procedural skill extraction, code proposal generation, open thread extraction
-and resolution detection, and session reflections.
-
-Note: Entity facts (non-user subjects) are stored in ChromaDB but NOT added
-to UserProfile. Only facts with subject="user" are passed to add_facts_batch().
-
-Summary backlinks: _store_summary() captures source conversation doc IDs from
-ChromaDB by matching the block's temporal_anchor_start/end range against the
-conversations collection. Stored as comma-separated ``source_doc_ids`` in
-summary metadata for expand_memory drill-down. [NEW 2026-03]
+Module Contract
+- Purpose: End-of-session memory consolidation: block summaries, fact extraction (rule + LLM),
+  user profile updates, procedural skills, code proposals, thread extraction/resolution,
+  implementation tracking, knowledge graph save, claim index save, cross-collection dedup
+  (dry-run preview only), and session reflections.
+- Class: ShutdownProcessor(corpus_manager, chroma_store, model_manager, user_profile,
+    thread_store, claim_index, fact_verifier)
+- Key methods:
+  - process_shutdown_memory(session_conversations, topic, **kwargs) -> Dict[str, Any]
+    Main entry: runs all consolidation phases and returns results summary.
+  - run_shutdown_reflection(session_conversations, topic, session_context) -> Optional[str]
+    Generates and persists session-end reflections.
+- Internal phases (called by process_shutdown_memory):
+  - _generate_block_summaries(entries, conversations, topic) — fixed-size block summaries
+  - _store_summary(summary_text, N, b, start, end, block) — persists with source_doc_ids backlinks,
+    claim extraction, staleness_ratio, and temporal anchors
+  - _extract_session_facts(session_conversations) — rule-based fact extraction with fact verification gate
+  - _extract_llm_facts(session_conversations) — LLM-assisted triple extraction with fact verification gate
+  - _extract_procedural_skills(session_conversations) — adaptive workflow extraction
+  - _generate_proposals(session_conversations) — goal-directed code change proposals
+  - _check_implementation_tracking() — lightweight proposal implementation detection
+  - _process_open_threads(session_conversations) — resolution detection → extraction → cap enforcement
+  - _save_knowledge_graph() — flush graph + aliases to disk
+  - _run_cross_collection_dedup() — dry-run preview only (never auto-deletes)
+- Note: Entity facts (non-user subjects) go to ChromaDB only, NOT to UserProfile.
+  Only facts with subject="user" are passed to add_facts_batch().
+- Summary backlinks: _store_summary() captures source conversation doc IDs for expand_memory drill-down.
+- Dependencies:
+  - memory.storage.multi_collection_chroma_store, memory.fact_extractor, memory.llm_fact_extractor,
+    memory.fact_verification, memory.claim_tracker, memory.thread_store, memory.thread_extractor,
+    knowledge.proposal_generator, knowledge.implementation_detector, memory.cross_deduplicator
+- Side effects:
+  - ChromaDB writes (summaries, facts, skills, proposals, reflections)
+  - User profile updates (user-only facts batch)
+  - Knowledge graph + alias + claim index JSON persistence
+  - LLM API calls for summarization, fact extraction, skill extraction, proposals, reflections
+  - Cross-collection dedup preview logging (dry-run only, never auto-deletes)
 """
 
 import os

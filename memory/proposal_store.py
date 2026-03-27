@@ -4,14 +4,18 @@ ChromaDB-backed storage and retrieval for code proposals.
 
 Module Contract
 - Purpose: Persists CodeProposal objects in the 'proposals' ChromaDB collection
-  with semantic search, status filtering, and deduplication.
-- Inputs:
-  - chroma_store: MultiCollectionChromaStore instance
-  - CodeProposal objects for storage/retrieval
-- Outputs:
-  - Stored proposals with document IDs
-  - Semantic query results as CodeProposal lists
-  - Deduplication checks against existing proposals
+  with semantic search, status filtering, deduplication, and implementation tracking metadata.
+- Class: ProposalStore(chroma_store)
+- Key methods:
+  - store_proposal(proposal) -> Optional[str]  [returns doc_id]
+  - query_proposals(query, limit, status_filter) -> List[CodeProposal]  [semantic search + status filter]
+  - get_proposal(proposal_id) -> Optional[CodeProposal]  [by ID lookup]
+  - get_pending() -> List[CodeProposal]  [status=pending_review]
+  - get_pending_and_approved() -> List[CodeProposal]  [pending_review + approved]
+  - update_status(proposal_id, new_status, notes) -> bool  [delete-and-re-add]
+  - check_similarity(proposal, threshold) -> Tuple[bool, float, Optional[str]]  [dedup check]
+  - update_tracking_metadata(proposal_id, detection_result) -> bool  [implementation tracking fields]
+  - get_for_dedup(limit) -> str  [serialized context string for dedup during proposal generation]
 - Key behaviors:
   - Embedding text is title + reasoning (problem match, not solution match)
   - Full proposal data stored in metadata via to_metadata()
@@ -19,7 +23,7 @@ Module Contract
   - Dedup uses cosine similarity from query_collection results
 - Dependencies:
   - memory.storage.multi_collection_chroma_store (vector storage)
-  - memory.code_proposal (data models)
+  - memory.code_proposal (CodeProposal, ProposalStatus data models)
   - config.app_config (thresholds, feature flag)
 """
 

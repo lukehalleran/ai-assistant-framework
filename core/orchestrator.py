@@ -5,17 +5,18 @@ Module Contract
 - Purpose: High‑level request orchestrator. Prepares prompts (topic detection, optional file processing, query rewrite), invokes the model, and persists the interaction to memory.
 - Inputs:
   - user_input: str; optional files; mode flags (raw/enhanced)
-  - Wired collaborators: model_manager, response_generator, file_processor, prompt_builder, memory_system, personality/topic/wiki/tokenizer managers
+  - Wired collaborators: model_manager, response_generator, file_processor, prompt_builder, memory_system, topic/wiki/tokenizer managers
 - Outputs:
   - process_user_query() → (assistant_text: str, debug_info: dict)
   - prepare_prompt() → (prompt_text: str, system_prompt: Optional[str])
 - Key methods:
   - handle_commands(): simple topic switching commands
   - prepare_prompt(): topic update, file processing, optional query rewrite, resolve system prompt, build prompt via prompt_builder
-  - process_user_query(): personality hook, deictic check, generate streamed response, store memory, schedule consolidation (now at shutdown)
+  - process_user_query(): deictic check, generate streamed response, store memory (with provenance), schedule consolidation (now at shutdown)
   - _check_narrative_freshness(): Startup check for stale narrative context (>24h) [NEW 2026-01-17]
 - System prompt flow:
-  - Resolved via config/app_config.load_system_prompt and/or path override; forwarded to response generation as system role message.
+  - Composed from file-based personality (config/prompts/default_personality.txt or custom_personality.txt) + immutable operating principles (config/prompts/operating_principles.txt) via _build_system_prompt(). Falls back to load_system_prompt() if files fail.
+  - Performs placeholder substitution: {USER_NAME}, {USER_PRONOUNS}, {PRONOUN_SUBJ}, {PRONOUN_OBJ}, {PRONOUN_POSS}. Forwarded to response generation as system role message.
   - Appends [THREAD CONTEXT] to system prompt for ongoing conversation threads (depth, topic, heavy-topic flag)
   - Proactive thread surfacing: on first message of session, appends instruction to naturally reference [UNRESOLVED THREADS] from prior sessions
 - Side effects:
@@ -40,6 +41,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List, Union
 from core.response_parser import ResponseParser
 from utils.logging_utils import get_logger
+logger = get_logger("orchestrator")
 from integrations.wikipedia_api import WikipediaAPI
 from utils.tone_detector import (
     detect_crisis_level,
@@ -103,7 +105,7 @@ class _FallbackMemoryCoordinator:
         self.corpus_manager = _InMemoryCorpus()
         self.gate_system = None
 
-    async def store_interaction(self, query: str, response: str, tags: Optional[List[str]] = None) -> None:
+    async def store_interaction(self, query: str, response: str, tags: Optional[List[str]] = None, **kwargs) -> None:
         self.corpus_manager.add_entry(query, response, tags)
 
     async def get_memories(self, _query: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -151,7 +153,6 @@ class DaemonOrchestrator:
         file_processor,
         prompt_builder,
         memory_system=None,
-        personality_manager=None,
         topic_manager=None,
         wiki_manager=None,
         tokenizer_manager=None,
@@ -165,7 +166,6 @@ class DaemonOrchestrator:
         self.file_processor = file_processor
         self.prompt_builder = prompt_builder
         self.memory_system = memory_system
-        self.personality_manager = personality_manager
         self.topic_manager = topic_manager
 
         # Extract time_manager from response_generator (shared instance)
@@ -1023,39 +1023,37 @@ The user is processing/analyzing, open to engagement.
         )
         system_prompt: str = SYSTEM_PROMPT_FALLBACK
 
-        # Load from config
+        # Load personality + operating principles (composed from separate files)
         try:
-            persona_cfg = self.personality_manager.get_current_config() if self.personality_manager else {}
-        except (AttributeError, TypeError) as e:
-            logger.debug(f"[Orchestrator] Could not get personality config: {e}")
-            persona_cfg = {}
-        base_cfg = getattr(self, "config", {}) or {}
-        merged_cfg = {**base_cfg, **(persona_cfg or {})}
-
-        try:
-            from config.app_config import load_system_prompt
-            loaded = load_system_prompt(merged_cfg)
-            if isinstance(loaded, str) and loaded.strip():
-                system_prompt = loaded
-        except (ImportError, AttributeError) as e:
-            logger.debug(f"[Orchestrator] Could not load system prompt from config: {e}")
-
-        # Override path from persona or orchestrator
-        override_path = (persona_cfg or {}).get("system_prompt_file")
-        if isinstance(override_path, dict):
-            override_path = override_path.get("system_prompt_file")
-        if not override_path:
-            override_path = getattr(self, "system_prompt_path", None)
-
-        if override_path and isinstance(override_path, str):
+            from config.app_config import load_personality_text, load_operating_principles, PERSONALITY_CUSTOM_PATH
+            from pathlib import Path as _Path
+            _personality = load_personality_text()
+            _principles = load_operating_principles()
+            _using_custom = _Path(PERSONALITY_CUSTOM_PATH).exists()
+            if _personality and _principles:
+                system_prompt = _personality + "\n\n" + _principles
+                logger.info(
+                    f"[Orchestrator] System prompt composed: "
+                    f"personality={'CUSTOM' if _using_custom else 'default'} ({len(_personality)} chars) "
+                    f"+ principles ({len(_principles)} chars) = {len(system_prompt)} chars"
+                )
+            elif _personality:
+                system_prompt = _personality
+                logger.warning("[Orchestrator] Operating principles missing, using personality only")
+            elif _principles:
+                system_prompt = _principles
+                logger.warning("[Orchestrator] Personality missing, using principles only")
+        except (ImportError, Exception) as e:
+            logger.warning(f"[Orchestrator] Personality/principles load failed: {e}")
+            # Fallback to monolithic system_prompt.txt
             try:
-                if os.path.exists(override_path):
-                    with open(override_path, "r", encoding="utf-8") as f:
-                        text = f.read()
-                    if text.strip():
-                        system_prompt = text
-            except (IOError, OSError) as e:
-                logger.warning(f"[Orchestrator] Could not read system prompt override file '{override_path}': {e}")
+                from config.app_config import load_system_prompt
+                loaded = load_system_prompt({})
+                if isinstance(loaded, str) and loaded.strip():
+                    system_prompt = loaded
+                    logger.info("[Orchestrator] Fell back to monolithic system_prompt.txt")
+            except (ImportError, AttributeError):
+                pass
 
         # --- Identity placeholder substitution ---
         if isinstance(system_prompt, str) and system_prompt.strip():
@@ -1397,16 +1395,6 @@ The user is processing/analyzing, open to engagement.
         }
 
         try:
-            # Personality hook: let GUI pass personality labels that flip the active config
-            if personality and self.personality_manager:
-                try:
-                    self.personality_manager.switch_personality(personality)
-                    if self.logger:
-                        self.logger.info(f"Personality set to: {personality}")
-                except Exception as e:
-                    logger.error(f"[Orchestrator] Personality switch failed for '{personality}': {e}, using default")
-
-
             # --- Commands: early exit ---
             cmd = self.handle_commands(user_input)
             if cmd:
@@ -1689,10 +1677,11 @@ The user is processing/analyzing, open to engagement.
                     await self.memory_system.store_interaction(
                         query=user_input,
                         response=answer_for_storage,
-                        tags=["conversation"]
+                        tags=["conversation"],
+                        session_id=getattr(self.memory_system, 'session_id', None),
                     )
                 except Exception as e:
-                    logger.error(f"[Orchestrator] CRITICAL: Failed to store interaction - data loss: {e}")
+                    self.logger.error(f"[Orchestrator] CRITICAL: Failed to store interaction - data loss: {e}")
             # Use instance logger
             if self.logger:
                 self.logger.debug("[orchestrator] Persisted exchange; considering consolidation")

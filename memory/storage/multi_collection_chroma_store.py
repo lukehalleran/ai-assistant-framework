@@ -2,21 +2,37 @@
 # memory/storage/multi_collection_chroma_store.py
 
 Module Contract
-- Purpose: Wrapper over ChromaDB with 11 separate collections (conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads). Provides add/query helpers with robust metadata flattening.
-- Inputs:
-  - add_conversation_memory(query, response, metadata)
-  - add_summary(summary, period, metadata) [back‑compat]
-  - add_wiki_chunk(chunk), add_fact(...), add_reflection(...)
-  - query_collection(name, query_text, n_results)
-  - get_by_id(collection_name, doc_id) -> dict|None [NEW 2026-03]
-- Outputs:
-  - Stored documents with consistent metadata; formatted search results.
-  - get_by_id returns {id, content, metadata} or None if not found.
+- Purpose: Wrapper over ChromaDB with 11 separate collections (conversations, summaries,
+  wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural,
+  procedural_skills, proposals, threads). Provides unified add/query/update helpers
+  with robust metadata flattening.
+- Class: MultiCollectionChromaStore(persist_directory)
+- Key methods:
+  - add_to_collection(name, text, metadata) -> str  [generic add, returns doc_id]
+  - add_conversation_memory(query, response, metadata) -> str
+  - add_summary(summary, period, metadata) -> str
+  - add_wiki_chunk(chunk) -> str
+  - add_fact(fact_text, source, confidence, extra_metadata) -> str  [with dedup check]
+  - add_reflection(reflection, source_ids, reflection_type) -> str
+  - query_collection(name, query_text, n_results, where_filter) -> List[Dict]
+    Returns flat list of {id, content, metadata, relevance_score, collection, rank}.
+  - query_multiple_collections(collection_names, query_text, n_results) -> Dict[str, List[Dict]]  [async]
+  - search_all(query, n_results_per_type) -> Dict[str, List[Dict]]  [sync across all collections]
+  - get_by_id(collection_name, doc_id) -> Optional[Dict]  [{id, content, metadata} or None]
+  - get_recent(collection_name, limit) -> List[Dict]  [sorted by timestamp desc]
+  - list_all(collection_name) -> List[Dict]  [all docs in collection]
+  - update_metadata(collection_name, doc_id, metadata_updates) -> bool  [merge updates into existing]
+  - delete_fact(fact_id) -> bool
+  - create_collection(name) -> None  [dynamic collection creation]
+  - get_collection_stats() -> Dict[str, Dict]  [count + sample per collection]
 - Key behaviors:
-  - Embedding function (SentenceTransformer) is configured once for all collections
-  - Metadata values are flattened to primitives/JSON strings for Chroma acceptance
+  - SentenceTransformer embedding function configured once, shared across all collections
+  - _flatten_for_chroma() ensures all metadata values are primitives or JSON strings
+  - Fact deduplication via cosine similarity check before insertion
+  - Results un-nested from ChromaDB's nested format into flat dicts
 - Side effects:
-  - Persists to CHROMA_PATH directory; can prune or list.
+  - Persists to CHROMA_PATH directory on disk
+  - Telemetry disabled via ANONYMIZED_TELEMETRY env var
 """
 import os
 import logging

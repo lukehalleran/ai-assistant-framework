@@ -10,6 +10,9 @@ Module Contract
 - Behavior:
   - Switches to the requested model via model_manager; wraps generate_async; yields words; logs first‑token latency + total duration.
   - Ensures a non‑empty system prompt is sent (falls back to config SYSTEM_PROMPT if blank/None).
+  - Reasoning/thinking detection [NEW 2026-03-26]: Extracts reasoning_content from streaming chunks
+    (OpenAI-style delta). Emits synthetic <thinking>/<\/thinking> wrapper tags around reasoning blocks
+    so handlers.py can detect and suppress them during streaming display.
 - Dependencies:
   - models.model_manager.ModelManager (generate_async/generate_once)
 - Side effects:
@@ -106,6 +109,7 @@ class ResponseGenerator:
             # Streaming path
             if hasattr(response_generator, "__aiter__"):
                 buffer = ""
+                _was_reasoning = False  # Track if we were in a reasoning phase
                 STOP_MARKERS = {"<|user|>", "<|assistant|>", "<|system|>", "<|end|>", "<|eot_id|>", "<｜end▁of▁sentence｜>"}
                 STREAM_TIMEOUT = 120.0  # 2 minute timeout for streaming (GLM/slower models)
 
@@ -151,17 +155,37 @@ class ResponseGenerator:
 
                             # Extract content from different possible streaming chunk shapes
                             delta_content = ""
+                            delta_reasoning = ""
                             # OpenAI-style ChatCompletionChunk
                             if hasattr(chunk, "choices") and len(getattr(chunk, "choices", [])) > 0:
                                 delta = chunk.choices[0].delta
                                 delta_content = getattr(delta, "content", "") or ""
+                                # Capture reasoning/thinking from OpenRouter/OpenAI reasoning models
+                                # (Claude Sonnet extended thinking, o1/o3 reasoning, etc.)
+                                delta_reasoning = getattr(delta, "reasoning_content", "") or ""
+                                if not delta_reasoning:
+                                    delta_reasoning = getattr(delta, "reasoning", "") or ""
                             # Plain string chunk (e.g., stub/local streams)
                             elif isinstance(chunk, str):
                                 delta_content = chunk
                             # Dict-like chunk with direct content
                             elif isinstance(chunk, dict):
                                 delta_content = (chunk.get("content") or chunk.get("text") or "")
+                                delta_reasoning = chunk.get("reasoning_content") or chunk.get("reasoning") or ""
                                 finish_reason = chunk.get("finish_reason")
+
+                            # If chunk has reasoning but no content, skip it (thinking phase)
+                            # Emit synthetic <thinking> tag so handlers.py can detect it
+                            if delta_reasoning and not delta_content:
+                                if not _was_reasoning:
+                                    _was_reasoning = True
+                                    yield "<thinking>"
+                                continue
+
+                            # Transition: first content chunk after reasoning → close thinking
+                            if _was_reasoning and delta_content:
+                                _was_reasoning = False
+                                yield "</thinking>"
 
                             if delta_content:
                                 self.logger.debug(f"[STREAMING] Chunk: '{delta_content[:50]}...' (len={len(delta_content)})")

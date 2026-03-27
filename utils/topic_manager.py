@@ -1,4 +1,34 @@
 # /knowledge/topic_manager.py
+"""
+# utils/topic_manager.py
+
+Module Contract
+- Purpose: Lightweight hybrid topic extraction — heuristics-first with optional
+  spaCy NER and LLM fallback for ambiguous inputs.
+- Data class: TopicSpan(text, start, end, score)
+- Class: TopicManager(model_manager, llm_model, enable_llm_fallback)
+- Key methods:
+  - update_from_user_input(text) -> None  [updates last_topic with primary extraction]
+  - get_primary_topic(text) -> Optional[str]  [extract + cache with TTL=10s]
+  - resolve_topic(text) -> Optional[str]  [alias for get_primary_topic]
+- Internal extraction pipeline:
+  - _extract_primary_from_text(text) -> Optional[str]  [main heuristic chain]
+    Stage 1: Regex noun-phrase extraction (quoted phrases, NP patterns, compound nouns)
+    Stage 2: spaCy NER entity extraction (_spacy_ner_extraction, _extract_best_noun_chunk)
+    Stage 3: LLM fallback for ambiguous/pronoun-heavy input (_llm_fallback)
+  - _simplify_topic(s) -> str  [truncate to 3 words, strip articles]
+  - _is_ambiguous(candidate, source_text) -> bool  [pronoun/stopword detection]
+- Config:
+  - Expanded stop-topic list (deictic, connectors, interjections, observed garbage)
+  - Short-lived topic cache (dict with 10s TTL)
+  - Optional model_manager dependency resolution via core.dependencies.deps
+- Dependencies:
+  - spaCy en_core_web_sm (lazy-loaded via _load_spacy(), optional)
+  - models.model_manager (LLM fallback, optional)
+- Side effects:
+  - Tracks last_topic state across calls
+  - LLM API call only on ambiguous inputs when enable_llm_fallback=True
+"""
 from __future__ import annotations
 
 import re

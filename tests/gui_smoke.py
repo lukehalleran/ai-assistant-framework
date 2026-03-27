@@ -14,16 +14,6 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 
-class DummyPersonalityManager:
-    def __init__(self) -> None:
-        self.personalities: Dict[str, str] = {"Default": "default"}
-        self.current_personality: str = "Default"
-
-    def switch_personality(self, name: str) -> None:
-        if name in self.personalities:
-            self.current_personality = name
-
-
 class DummyCorpusManager:
     def __init__(self) -> None:
         self.corpus: List[Dict[str, Any]] = []
@@ -73,7 +63,6 @@ class DummyPromptBuilder:
 
 class DummyOrchestrator:
     def __init__(self) -> None:
-        self.personality_manager = DummyPersonalityManager()
         self.memory_system = DummyMemorySystem()
         self.prompt_builder = DummyPromptBuilder()
 

@@ -2,27 +2,41 @@
 # core/prompt/context_gatherer.py
 
 Module Contract
-- Purpose: Data collection and retrieval for prompt building context assembly. ENHANCED: Replaces flat facts with categorized UserProfile using hybrid retrieval (2/3 semantic + 1/3 recent).
-- Inputs:
-  - gather_context(query: str, limit_memories: int, limit_facts: int) -> Dict[str, Any]
-  - get_recent_conversations(limit: int) -> List[Dict]
-  - retrieve_semantic_memories(query: str, limit: int) -> List[Dict]
-  - get_wiki_content(query: str, limit: int) -> List[Dict]
-  - get_web_search_results(query: str, crisis_level: str) -> WebSearchResult/MultiSearchResult [ENHANCED: multi-search with query decomposition]
-  - UPDATED: get_user_profile_context(query: str) -> str [NEW: replaces semantic_facts + fresh_facts]
-  - get_personal_notes(query: str, limit: int) -> List[Dict] [NEW: Obsidian vault retrieval via ObsidianManager]
-  - get_reference_docs(query: str, limit: int) -> List[Dict] [NEW: User uploaded docs retrieval via ReferenceDocsManager]
-  - get_unresolved_threads(max_results: int) -> List[Dict] [NEW: top-priority open threads for proactive surfacing]
-  - get_narrative_context() -> str [NEW 2026-01-17: Cached temporal grounding from corpus_manager]
+- Purpose: Parallel async data retrieval for prompt building. Gathers memories, facts,
+  summaries, reflections, wiki, web search, personal notes, reference docs, git commits,
+  procedural skills, proposals, graph context, threads, proactive insights, codebase changes,
+  and user profile — all as separate async methods called in parallel by builder.py.
+- Key public methods:
+  - get_user_profile_context(query, max_tokens) -> str  [categorized UserProfile, replaces flat facts]
+  - get_personal_notes(query, limit) -> List[Dict]  [Obsidian vault: 1/3 keyword + 2/3 semantic]
+  - get_reference_docs(query, limit) -> List[Dict]  [uploaded docs: 1/3 keyword + 2/3 semantic]
+  - get_user_uploads(query, limit) -> List[Dict]  [user_uploads collection]
+  - get_git_commits(query, limit) -> List[Dict]  [procedural collection git commits]
+  - get_proposed_features(query, limit) -> List[Dict]  [proposals collection]
+  - get_procedural_skills(query, limit) -> List[Dict]  [procedural_skills collection]
+  - get_graph_context(query, max_sentences) -> List[str]  [knowledge graph BFS traversal]
+  - get_unresolved_threads(max_results) -> List[Dict]  [open threads for proactive surfacing]
+  - get_proactive_insights(query, max_insights) -> List[str]  [cross-domain insights from graph]
+  - get_codebase_changes(since_datetime) -> Dict  [git diff since last session]
+  - get_narrative_context() -> str  [cached temporal grounding from corpus_manager]
+  - should_trigger_web_search(query, crisis_level) -> bool  [heuristic + LLM trigger detection]
+  - clear_memory_id_map() -> None  [reset citation tracking between turns]
+- Internal retrieval methods (called by builder.py via _hygiene_and_caps):
+  - _get_recent_conversations(limit) -> List[Dict]
+  - _get_semantic_memories(query, limit) -> List[Dict]  [with graph query expansion]
+  - _get_summaries_separated(query, limit) -> Dict[str, List]
+  - _get_reflections_separated(query, limit) -> Dict[str, List]
+  - _get_wiki_content(query, limit) -> List[Dict]
+  - _get_semantic_chunks(query, k) -> List[Dict]
+  - _get_web_search_results(query, crisis_level, ...) -> WebSearchResult/MultiSearchResult
+  - _get_dreams(limit) -> List[Dict]
+  - get_facts(query, limit) / get_recent_facts(limit) -> List[Dict]
+  - _expand_query_with_graph(query, max_terms) -> str  [appends graph neighbor names]
+  - _apply_gating(memories, query) -> List[Dict]  [multi-stage gate system]
+  - _deduplicate_memories(memories) -> List[Dict]
 - Outputs:
-  - Comprehensive context dictionary with all gathered data
-  - Recent conversation history within specified limits
-  - Semantically relevant memories and facts
-  - Wikipedia content and semantic chunks
-  - Web search results when triggered [ENHANCED: supports parallel sub-queries]
-  - UPDATED: 'user_profile' key with categorized facts (replaces 'semantic_facts' and 'fresh_facts')
-  - Personal notes from Obsidian vault (hybrid 1/3 keyword + 2/3 semantic retrieval) [NEW]
-  - Reference documents from uploaded docs (hybrid 1/3 keyword + 2/3 semantic retrieval) [NEW]
+  - Individual retrieval results returned to builder for parallel assembly
+  - memory_id_map: Dict tracking doc_id → content for citation provenance
   - Narrative context string (synthesized life state) [NEW 2026-01-17]
 - Behavior:
   - Retrieves data from multiple memory collections (episodic, semantic, procedural)
@@ -1060,12 +1074,21 @@ class ContextGatherer:
                 # Log first 3 and last 3
                 if idx < 3 or idx >= len(result_memories) - 3:
                     logger.warning(f"[DEBUG RECENT] Memory {idx}: ts={ts}, query={query}...")
+                _content = str(mem.get('content', '')) or ''
+                if not _content.strip():
+                    _q = str(mem.get('query', ''))[:200]
+                    _a = str(mem.get('response', ''))[:200]
+                    _content = f"Q: {_q} A: {_a}" if (_q or _a) else ''
+                # db_id: try id > memory_id > metadata.id
+                _recent_db_id = mem.get('id') or mem.get('memory_id')
+                if not _recent_db_id and isinstance(mem.get('metadata'), dict):
+                    _recent_db_id = mem['metadata'].get('id')
                 self.memory_id_map[mem_id] = {
                     'type': 'episodic_recent',
                     'timestamp': mem.get('timestamp', ''),
-                    'content': str(mem.get('content', ''))[:500],  # Truncate for citation display
+                    'content': _content[:500],
                     'relevance_score': 1.0,  # Recent memories always relevant
-                    'db_id': mem.get('id', None)  # Track database ID (UUID or generated ID)
+                    'db_id': _recent_db_id,
                 }
 
             return result_memories
@@ -1379,11 +1402,17 @@ class ContextGatherer:
             # Track memory IDs for citations
             for idx, mem in enumerate(result, start=1):
                 mem_id = f"MEM_SEMANTIC_{idx}"
+                # Score: prefer final_score (from scorer) > relevance_score > score
+                _sem_score = mem.get('final_score', mem.get('relevance_score', mem.get('score', 0.0)))
+                # Timestamp: top-level > metadata.timestamp
+                _sem_ts = mem.get('timestamp', '')
+                if not _sem_ts and isinstance(mem.get('metadata'), dict):
+                    _sem_ts = mem['metadata'].get('timestamp', '')
                 self.memory_id_map[mem_id] = {
                     'type': 'episodic_semantic',
-                    'timestamp': mem.get('timestamp', ''),
+                    'timestamp': _sem_ts,
                     'content': str(mem.get('content', ''))[:500],  # Truncate for citation display
-                    'relevance_score': mem.get('relevance_score', mem.get('score', 0.0)),
+                    'relevance_score': float(_sem_score) if _sem_score else 0.0,
                     'db_id': mem.get('id', None)  # Track database ID (UUID or generated ID)
                 }
 
