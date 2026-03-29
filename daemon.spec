@@ -14,6 +14,7 @@ Key decisions:
 - NO UPX: Disabled to avoid breaking torch/numpy DLLs
 - EXTERNAL DATA NOT BUNDLED: Wiki/FAISS data (100GB+) is optional
 
+Updated: 2026-03-27 (added personality prompts, docs/, networkx)
 Based on audit results (2025-12-12):
 - Total startup: ~12-17s (splash screen essential)
 - Heaviest imports: sentence_transformers (4.1s), torch (1.8s)
@@ -46,18 +47,20 @@ datas = [
     ('core/system_prompt.txt', 'core'),
     ('config/config.yaml', 'config'),
 
+    # Personality & prompt templates (file-based personality system)
+    ('config/prompts/default_personality.txt', 'config/prompts'),
+    ('config/prompts/operating_principles.txt', 'config/prompts'),
+    ('config/prompts/directives.txt', 'config/prompts'),
+    ('config/prompts/system_prompts.txt', 'config/prompts'),
+
+    # Reference docs (auto-seeded into ChromaDB on startup)
+    ('docs', 'docs'),
+
     # Assets
     ('assets/daemon_icon.ico', 'assets'),
     ('assets/daemon_icon.png', 'assets'),
     ('assets/splash.png', 'assets'),
-
-    # Personality configs (if directory exists)
 ]
-
-# Add personality directory if it exists
-personality_dir = os.path.join(spec_dir, 'personality')
-if os.path.isdir(personality_dir):
-    datas.append(('personality', 'personality'))
 
 # Collect package data files
 # spaCy model - this may not work if installed via spacy download
@@ -213,6 +216,13 @@ hiddenimports = [
     # Tavily web search
     'tavily',
 
+    # NetworkX (knowledge graph)
+    'networkx',
+    'networkx.algorithms',
+    'networkx.classes',
+    'networkx.readwrite',
+    'networkx.readwrite.json_graph',
+
     # NumPy internals
     'numpy.core._multiarray_umath',
     'numpy.core._dtype_ctypes',
@@ -255,6 +265,11 @@ except Exception:
 
 try:
     hiddenimports += collect_submodules('transformers')
+except Exception:
+    pass
+
+try:
+    hiddenimports += collect_submodules('networkx')
 except Exception:
     pass
 

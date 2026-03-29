@@ -3,8 +3,9 @@
 Module Contract
 - Purpose: End-of-session memory consolidation: block summaries, fact extraction (rule + LLM),
   user profile updates, procedural skills, code proposals, thread extraction/resolution,
-  implementation tracking, knowledge graph save, claim index save, cross-collection dedup
-  (dry-run preview only), and session reflections.
+  implementation tracking, synthesis dreaming (cross-domain candidate generation + filtering),
+  knowledge graph save, claim index save, cross-collection dedup (dry-run preview only),
+  and session reflections.
 - Class: ShutdownProcessor(corpus_manager, chroma_store, model_manager, user_profile,
     thread_store, claim_index, fact_verifier)
 - Key methods:
@@ -22,6 +23,7 @@ Module Contract
   - _generate_proposals(session_conversations) — goal-directed code change proposals
   - _check_implementation_tracking() — lightweight proposal implementation detection
   - _process_open_threads(session_conversations) — resolution detection → extraction → cap enforcement
+  - _run_synthesis_dreaming() — cross-domain candidate generation + filter pipeline [async]
   - _save_knowledge_graph() — flush graph + aliases to disk
   - _run_cross_collection_dedup() — dry-run preview only (never auto-deletes)
 - Note: Entity facts (non-user subjects) go to ChromaDB only, NOT to UserProfile.
@@ -229,6 +231,9 @@ class ShutdownProcessor:
 
             # 6.75) Extract open threads and detect resolutions
             await self._process_open_threads(session_conversations)
+
+            # 6.8) Synthesis dreaming — generate and filter cross-domain candidates
+            await self._run_synthesis_dreaming()
 
             # 7) Save knowledge graph and entity aliases
             self._save_knowledge_graph()
@@ -1169,6 +1174,61 @@ class ShutdownProcessor:
             self.thread_store.enforce_cap()
         except Exception as e:
             logger.debug(f"[Shutdown] Thread cap enforcement failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Synthesis dreaming (cross-domain candidate generation)
+    # ------------------------------------------------------------------
+
+    async def _run_synthesis_dreaming(self):
+        """Step 6.8: Generate and filter cross-domain synthesis candidates."""
+        try:
+            from config.app_config import (
+                SYNTHESIS_GENERATOR_ENABLED,
+                SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
+            )
+            if not SYNTHESIS_GENERATOR_ENABLED:
+                return
+
+            from knowledge.synthesis_generator import SynthesisGenerator
+            from knowledge.synthesis_filter import SynthesisFilter
+            from memory.synthesis_memory import SynthesisMemory
+
+            mc = self.memory_coordinator
+            graph_memory = getattr(mc, "graph_memory", None) if mc else None
+            entity_resolver = getattr(mc, "entity_resolver", None) if mc else None
+
+            generator = SynthesisGenerator(
+                chroma_store=self.chroma_store,
+                model_manager=self.model_manager,
+                graph_memory=graph_memory,
+                entity_resolver=entity_resolver,
+            )
+
+            candidates = await generator.generate_candidates(
+                count=SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
+            )
+
+            if not candidates:
+                logger.info("[Shutdown] Synthesis dreaming: no candidates generated")
+                return
+
+            synthesis_memory = SynthesisMemory(self.chroma_store)
+            filter_pipeline = SynthesisFilter(
+                chroma_store=self.chroma_store,
+                model_manager=self.model_manager,
+                synthesis_memory=synthesis_memory,
+            )
+            results = await filter_pipeline.process_batch(candidates)
+
+            logger.info(
+                "[Shutdown] Synthesis dreaming: generated=%d, accepted=%d, rejected=%d",
+                len(candidates),
+                results.get("accepted", 0),
+                results.get("rejected", 0),
+            )
+
+        except Exception as e:
+            logger.warning("[Shutdown] Synthesis dreaming failed (non-fatal): %s", e)
 
     # ------------------------------------------------------------------
     # Knowledge graph persistence

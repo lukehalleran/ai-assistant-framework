@@ -264,9 +264,14 @@ class WebSearchRateLimiter:
     ):
         self.daily_limit = daily_limit
         self.per_query_limit = per_query_limit
-        self.state_file = state_file or os.path.join(
-            os.path.dirname(__file__), "..", "data", "web_search_credits.json"
-        )
+        if state_file:
+            self.state_file = state_file
+        else:
+            try:
+                from config.app_config import WEB_SEARCH_CREDITS_PATH
+                self.state_file = WEB_SEARCH_CREDITS_PATH
+            except (ImportError, AttributeError):
+                self.state_file = os.path.join("data", "web_search_credits.json")
         self._credits_today = 0.0
         self._current_date = ""
         self._load_state()
