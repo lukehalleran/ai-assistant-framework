@@ -1957,6 +1957,8 @@ class SynthesisResult:
     coherence_level: Optional[CoherenceLevel]
     novelty_score_external: float    # 1 - nearest_wiki_similarity
     novelty_score_internal: float    # 1 - nearest_synthesis_similarity
+    cooccurrence_similarity: float   # how often A and B already co-occur in wiki
+    template_similarity: float       # how close claim is to generic bridge templates
     composite_score: float
     status: CandidateStatus
     unique_paths: Set[str]           # Convergence: independent walk paths
@@ -1974,25 +1976,39 @@ class SynthesisMemory:
     def get_stats() -> dict:               # {total_insights, converging_insights, collection}
 
 # knowledge/synthesis_filter.py — 8-stage async pipeline
+# Module-level helpers:
+#   _extract_similarity(results) -> float   — converts query_collection result to 0-1 similarity
+#   _compute_template_similarity(claim) -> float — regex-based generic bridge detection
+#   _GENERIC_TEMPLATES — compiled regex patterns for vacuous bridge claims
+#   _GENERIC_TOKENS — frozenset of generic buzzwords
 class SynthesisFilter:
     def __init__(self, chroma_store, model_manager, synthesis_memory=None,
                  wiki_collection="wiki_knowledge"): ...
     async def process_candidate(candidate) -> SynthesisResult:  # Full pipeline, auto-stores accepted
     async def process_batch(candidates) -> dict:
         # Returns: {total, accepted, rejected, rejection_breakdown, accepted_results, avg_stage_times_ms}
+    async def _factual_skeptic_pass(result, claim, a, b) -> bool:  # Pass 2 of Stage 5
+    @staticmethod
+    def _parse_coherence_level(response_text) -> CoherenceLevel:  # Extracted from inline parsing
 
 # Pipeline stages (cheap → expensive):
 # 0: text_sanity      — min tokens, verb check, repetition ratio (~0ms)
 # 1: domain_crossing   — min 2 distinct domains (~1ms)
 # 2: semantic_distance  — endpoint distance in [0.20, 0.90] (~5ms)
-# 3: novelty_external   — wiki corpus similarity < 0.80 (~10ms)
+# 3: novelty_external   — 3 sub-checks (~10ms):
+#      a) claim similarity: full claim vs wiki (hard gate at 0.80)
+#      b) co-occurrence: bare "concept_a concept_b" vs wiki (hard gate at 0.75)
+#      c) template specificity: regex generic bridge pattern detection
 # 4: novelty_internal   — synthesis memory; new paths pass as convergence (~10ms)
-# 5: coherence_judge    — LLM 4-tier rating, min MODERATE (~500ms-2s)
-# 6: composite_scoring  — weighted composite ≥ 0.40 threshold
+# 5: coherence_judge    — two-pass LLM: Pass 1 structural coherence (4-tier rating),
+#                          Pass 2 factual skeptic (MODERATE only, binary PASS/FAIL) (~500ms-2s)
+# 6: composite_scoring  — weighted 4-signal novelty composite ≥ 0.40 threshold
 # 7: storage            — accepted → synthesis_results collection
 
 # Composite: 0.30*coherence + 0.40*novelty + 0.15*distance + 0.15*structural
-# Novelty:   0.6*external + 0.4*internal
+# Novelty (4-signal):
+#   0.25*claim_novelty(1-claim_sim) + 0.30*cooccurrence_novelty(1-cooccurrence_sim)
+#   + 0.25*specificity(1-template_sim) + 0.20*internal_novelty(synthesis_memory)
 
 # Config (app_config.py):
 SYNTHESIS_ENABLED = True
@@ -2003,13 +2019,18 @@ SYNTHESIS_DISTANCE_MIN = 0.20
 SYNTHESIS_DISTANCE_MAX = 0.90
 SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.80
 SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.50
+SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.75  # Stage 3b: co-occurrence hard gate
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
-SYNTHESIS_COHERENCE_MODEL = "gpt-4o-mini"
+SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
 SYNTHESIS_WEIGHT_COHERENCE = 0.30
 SYNTHESIS_WEIGHT_NOVELTY = 0.40
 SYNTHESIS_WEIGHT_DISTANCE = 0.15
 SYNTHESIS_WEIGHT_STRUCTURAL = 0.15
+SYNTHESIS_NOVELTY_W_CLAIM = 0.25             # 4-signal novelty weights
+SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30
+SYNTHESIS_NOVELTY_W_SPECIFICITY = 0.25
+SYNTHESIS_NOVELTY_W_INTERNAL = 0.20
 SYNTHESIS_COMPOSITE_MIN_SCORE = 0.40
 SYNTHESIS_CONVERGENCE_STRONG_PATHS = 3
 SYNTHESIS_CONVERGENCE_STRONG_SOURCES = 2
@@ -2022,9 +2043,11 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 #   batch_size: 100
 #   distance_min: 0.20
 #   distance_max: 0.90
+#   cooccurrence_known_threshold: 0.75
 #   coherence_model: gpt-4o-mini
 #   coherence_min_level: MODERATE
 #   weights: {coherence: 0.30, novelty: 0.40, distance: 0.15, structural: 0.15}
+#   novelty_weights: {claim: 0.25, cooccurrence: 0.30, specificity: 0.25, internal: 0.20}
 #   composite_min_score: 0.40
 ```
 

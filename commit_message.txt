@@ -1,142 +1,108 @@
-feat: Synthesis pipeline, wizard dual-budget facts, context budget enforcement, frozen-exe data paths
+feat: Multi-signal novelty scoring, two-pass coherence judge, operational docs
 
---- NEW FILES ---
+Replaces single-signal novelty gate with 4-signal composite, rewrites the
+coherence judge prompt for structural isomorphism detection, adds factual
+skeptic second pass, and creates standalone operational guides for the
+synthesis filter and memory system.
 
-knowledge/synthesis_models.py (159 lines)
-  - Pydantic data models for synthesis pipeline: SynthesisCandidate, FilterResult,
-    CoherenceLevel enum, DomainTag, ConvergenceStatus
-
-knowledge/synthesis_filter.py (520 lines)
-  - 8-stage async filter pipeline for graph walk candidates:
-    Stage 0: Text sanity (min tokens, verb detection, repetition filter)
-    Stage 1: Domain crossing (require >=2 distinct domains)
-    Stage 2: Semantic distance (endpoint distance in [0.20, 0.90])
-    Stage 3: External novelty (wiki corpus search, reject if similarity > 0.80)
-    Stage 4: Internal novelty (synthesis memory dedup, convergence signal)
-    Stage 5: Coherence judge (LLM rates INVALID/WEAK/MODERATE/STRONG)
-    Stage 6: Composite score (weighted >=0.40: coherence+novelty+distance+structural)
-    Stage 7: Storage/convergence tracking
-
-knowledge/synthesis_generator.py (561 lines)
-  - Cross-store candidate generation for synthesis dreaming
-  - Samples entities from facts + wiki_knowledge ChromaDB collections
-  - LLM bridge articulation with semaphore-based concurrency control
-  - Graph shortest-path endpoint distance (falls back to 0.55 default)
-
-memory/synthesis_memory.py (201 lines)
-  - ChromaDB-backed persistence for synthesis results
-  - Convergence tracking: unique walk paths + concept pairs per insight
-  - Promotes to CONVERGING status at 3+ independent paths from 2+ source pairs
-  - Duplicate detection prevents redundant storage
-
-scripts/load_parquet_to_chromadb.py (218 lines)
-  - Utility script to load parquet files into ChromaDB collections
-
-tests/fixtures/calibration_candidates.json (570 lines)
-  - 54 labeled calibration candidates across 7 quality tiers
-
-tests/test_synthesis_calibration.py (540 lines)
-  - 6 calibration tests for synthesis filter threshold tuning
-
-tests/unit/test_synthesis_generator.py (380 lines)
-  - 18 unit tests for SynthesisGenerator
+Calibrated against 54 labeled candidates with live Sonnet 4.5 + GPT-4o-mini.
+Final metrics (Sonnet 4.5): Precision=90.9%, Recall=100%, F1=95.2%.
 
 --- MODIFIED FILES ---
 
-config/app_config.py (+64 lines)
-  - Added SYNTHESIS_* config block: filter thresholds, weights, composite scoring,
-    convergence detection, batch runner settings
-  - Added SYNTHESIS_GENERATOR_* config block: enabled flag, candidates per session,
-    LLM concurrency, min graph nodes guard
-  - Added WEB_SEARCH_CREDITS_PATH configurable path (env var override)
-  - Added env var overrides for KNOWLEDGE_GRAPH_PERSIST_PATH, KNOWLEDGE_GRAPH_ALIASES_PATH,
-    PROACTIVE_SURFACING_HISTORY_PATH, STALENESS_INDEX_PATH (frozen exe support)
+knowledge/synthesis_filter.py (+303/-73 lines)
+  Stage 3 (novelty_external) now has 3 sub-checks:
+  - Sub-check 1: Claim similarity (existing — full claim vs wiki)
+  - Sub-check 2: Co-occurrence (NEW — bare "concept_a concept_b" wiki query
+    catches "known connection, novel phrasing" failure mode)
+  - Sub-check 3: Template specificity (NEW — 9 compiled regexes + 14 generic
+    tokens detect vacuous bridge platitudes like "both involve feedback loops")
+  Stage 5 (coherence_judge) rewritten as two-pass:
+  - Pass 1: Structural coherence — rewritten prompt distinguishes structural
+    isomorphisms from loose analogies. Key change: MODERATE now explicitly
+    includes shared mathematical patterns across different substrates
+  - Pass 2: Factual skeptic — fires only on MODERATE results, binary PASS/FAIL,
+    catches debunked science (mirror neurons, Mozart effect, left-brain myth)
+    while passing legitimate simplifications
+  Stage 6 (composite_scoring) novelty is now a 4-signal composite:
+    claim(0.25) + cooccurrence(0.30) + specificity(0.25) + internal(0.20)
+  New helpers:
+  - _extract_similarity() — DRYs relevance_score→similarity conversion
+  - _compute_template_similarity() — regex-based generic bridge detection
+  - _factual_skeptic_pass() — second-pass factual accuracy check
+  - _parse_coherence_level() — extracted from inline parsing
 
-config/config.yaml (+32 lines)
-  - Added synthesis: section (filter thresholds, weights, coherence model, batch settings)
-  - Added synthesis_generator: section (disabled by default, waiting on wiki embed)
-  - Changed active model from sonnet-4.6 to claude-opus-4.6
+knowledge/synthesis_models.py (+7 lines)
+  - Added cooccurrence_similarity, template_similarity fields to SynthesisResult
+  - Updated to_metadata() / from_metadata() for round-trip persistence
 
-core/agentic/controller.py (+109 lines)
-  - Added _estimate_tokens(): token estimation using tokenizer or 4-char fallback
-  - Added _append_accumulated(): budget-enforced context accumulation, trims oldest
-    rounds when exceeding context_budget_tokens (default 8K)
-  - Replaced all 9 direct accumulated_context concatenations with _append_accumulated()
-  - Added budget-aware _build_final_prompt(): trims low-value sections (dreams,
-    reflections, docs, summaries) when total exceeds 5x context budget ceiling
+config/app_config.py (+12 lines)
+  - SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.75 (Stage 3b hard gate)
+  - SYNTHESIS_NOVELTY_W_CLAIM = 0.25
+  - SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30
+  - SYNTHESIS_NOVELTY_W_SPECIFICITY = 0.25
+  - SYNTHESIS_NOVELTY_W_INTERNAL = 0.20
+  - SYNTHESIS_COHERENCE_MODEL default changed: gpt-4o-mini → sonnet-4.5
 
-core/prompt/builder.py (+32 lines)
-  - Added PROMPT_MIN_RECENT_FLOOR=5: post-budget floor guarantees minimum recent
-    conversations survive token budget trimming
-  - Fetches from storage to restore recent conversations if budget dropped below floor
+tests/test_synthesis_calibration.py (+73 lines)
+  - Diagnostic output now shows cooccurrence_sim and template_sim per tier
+  - Boundary detail, misclassification, and composite boundary sections updated
 
-memory/shutdown_processor.py (+64 lines)
-  - Added Step 6.8: _run_synthesis_dreaming() — generates candidates via
-    SynthesisGenerator, filters through SynthesisFilter, stores accepted results
-  - Updated module contract docstring
+scripts/calibrate_coherence_live.py (rewritten, 278 lines)
+  - Full-pipeline live calibration (mock wiki store + real LLM coherence)
+  - Multi-model comparison with per-tier diagnostics
+  - Shows co-occurrence, template, and composite signals per candidate
 
-memory/storage/multi_collection_chroma_store.py (+3/-2)
-  - Added synthesis_results collection (12th collection)
-  - Updated module contract: 11 → 12 collections
+docs/FORMAL_MODEL.md
+  - Updated g_3 gate: 3 sub-checks with conditions
+  - Updated g_5 gate: 2-pass structure (structural + factual skeptic)
+  - Updated novelty formula: 4-signal composite with weights
+  - Updated verified date to 2026-03-29
 
-gui/wizard.py (+239 lines changed)
-  - Dual-budget fact storage: separates user facts from entity facts via fact_scope
-  - User facts stored to both UserProfile (JSON) AND ChromaDB (semantic retrieval)
-  - Entity facts stored to ChromaDB only (not UserProfile)
-  - Added _apply_personality_style(): generates custom_personality.txt for warm/direct
-    styles from default personality base + style modifier appendix
-  - Added _STYLE_MODIFIERS dict with warm/direct personality overrides
-  - FactVerifier intentionally skipped on first boot (no existing facts to conflict)
-  - Updated module contract docstring
+docs/PROJECT_SKELETON.md
+  - Updated Stage 3, Stage 5, Stage 6 descriptions
+  - Added new config constants
+  - Fixed SYNTHESIS_COHERENCE_MODEL: gpt-4o-mini → sonnet-4.5 (2 occurrences)
 
-knowledge/reference_docs_manager.py (+36 lines changed)
-  - Switched from mtime-based to content-hash (SHA-256) idempotency for file sync
-  - Added _compute_file_hash() static method
-  - Renamed _get_document_mtime() → _get_stored_content_hash()
-  - content_hash stored in chunk metadata alongside file_mtime
+docs/QUICK_REFERENCE.md
+  - Updated Stage 3, Stage 5, Stage 6 descriptions
+  - Added new helpers and config constants
+  - Fixed SYNTHESIS_COHERENCE_MODEL: gpt-4o-mini → sonnet-4.5
 
-knowledge/web_search_manager.py (+11 lines changed)
-  - WebSearchRateLimiter reads state_file path from WEB_SEARCH_CREDITS_PATH config
-    (supports frozen exe data path relocation)
+--- NEW FILES ---
 
-utils/bootstrap.py (+9 lines)
-  - Added JSON persistence path defaults for frozen executables: knowledge_graph.json,
-    entity_aliases.json, claim_index.json, surfacing_history.json, web_search_credits.json
-  - All routed to user_dir so frozen exe writes to writable location
-  - Added "test-key-12345" to placeholder API key patterns
+docs/SYNTHESIS_FILTER.md (620 lines)
+  Standalone operational guide for the synthesis filter pipeline:
+  - System purpose and when it runs (shutdown dreaming)
+  - File map (10 files)
+  - Full data models (SynthesisCandidate, SynthesisResult, CoherenceLevel)
+  - Candidate generation pipeline (cross-store sampling, bridge articulation)
+  - Data flow diagram (generator → 8 stages → memory)
+  - Stage-by-stage walkthrough with concrete rejection examples
+  - Verbatim prompt text for both coherence passes (structural + skeptic)
+  - All 9 template regex patterns and 14 generic tokens
+  - Concrete end-to-end traced example (bone remodeling ↔ index optimization,
+    composite=0.796, all stage scores shown)
+  - Calibration guide (7 tiers, mock vs live, reading output, adding ground truth)
+  - Tuning decision tables (precision too low / recall too low / convergence slow)
+  - Benchmark results with prompt iteration history (F1: 30.8% → 90.9% → 95.2%)
+  - Config reference (23 filter + 4 generator constants)
 
-daemon.spec (+29 lines)
-  - Added personality prompt files to bundled data (default_personality.txt,
-    operating_principles.txt, directives.txt, system_prompts.txt)
-  - Added docs/ directory to bundled data (auto-seeded into ChromaDB)
-  - Removed old conditional personality directory check
-  - Added networkx hidden imports (knowledge graph dependency)
-
-gui/launch.py (1 line)
-  - Updated docstring: mtime → content hash for reference docs seed
-
-README.md (+40 lines changed)
-  - Updated collection count: 11 → 12 throughout
-  - Added Synthesis tier to memory system table
-  - Added post-budget floors and budget-enforced context accumulation to architecture
-  - Replaced "Knowledge Synthesis Vision" section with implemented pipeline details
-    (filter stages table, convergence detection, synthesis memory description)
-  - Added synthesis_models.py and synthesis_filter.py to file tree
-
-docs/FORMAL_MODEL.md (+97 lines)
-  - Added synthesis pipeline formal specification
-
-docs/PROJECT_SKELETON.md (+203 lines)
-  - Added synthesis pipeline, generator, filter, and memory module descriptions
-
-docs/QUICK_REFERENCE.md (+155 lines)
-  - Added synthesis config reference, filter stages, convergence rules
-
-test_corpus.json (~4000 lines changed)
-  - Updated/regenerated test corpus data
-
-tests/test_multi_collection_chroma_store.py (+2/-2)
-  - Updated collection count assertions: 11 → 12
-
-tests/test_wizard.py (+6/-5)
-  - Added patch for write_tavily_key_to_env in Tavily key test
+docs/MEMORY_SYSTEM.md (550 lines)
+  Standalone operational guide for the hierarchical memory system:
+  - File map (20+ files by subsystem)
+  - 12 ChromaDB collections table (content, protection, dedup status)
+  - End-to-end lifecycle: one conversation turn through all 3 phases
+    (retrieval → storage → shutdown)
+  - 13-step scoring algorithm with default weights and concrete numeric example
+  - Intent-driven weight override table (5 intent types)
+  - Fact extraction pipeline with worked example ("my brother Auggie...")
+  - Fact verification decision tree (STORE/STORE_AND_FLAG/REJECT/SKIP)
+  - Graph ingestion with worthiness filter
+  - Truth score lifecycle (initial → confirmation → correction → decay)
+  - Staleness cascade example (correction → claim index → ratio → penalty)
+  - Multi-stage gating (5 stages with timing)
+  - Token budget priority ordering (10 levels) and compression hierarchy
+  - Prompt assembly order (18 sections)
+  - Tuning guide: 4 symptom tables for retrieval, facts, truth, budget issues
+  - Config reference (scoring, gating, facts/truth, budget, graph)

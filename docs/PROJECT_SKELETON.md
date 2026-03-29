@@ -3534,6 +3534,8 @@ class SynthesisResult:
     coherence_level: Optional[CoherenceLevel]
     novelty_score_external: float       # 1 - nearest_wiki_similarity
     novelty_score_internal: float       # 1 - nearest_synthesis_similarity
+    cooccurrence_similarity: float      # how often A and B already co-occur in wiki
+    template_similarity: float          # how close claim is to generic bridge templates
     composite_score: float
     status: CandidateStatus
     unique_paths: Set[str]              # Independent walk paths (convergence tracking)
@@ -3555,6 +3557,11 @@ class SynthesisResult:
 - `SynthesisFilter(chroma_store, model_manager, synthesis_memory=None, wiki_collection="wiki_knowledge")`
 - `async process_candidate(candidate)` → `SynthesisResult` (ACCEPTED or REJECTED)
 - `async process_batch(candidates)` → summary dict with stats and timing
+- Module-level helpers:
+  - `_extract_similarity(results)` — converts `query_collection` result to 0-1 similarity
+  - `_compute_template_similarity(claim)` — regex-based generic bridge detection (0-1 score)
+  - `_GENERIC_TEMPLATES` — compiled regex patterns for vacuous bridge claims
+  - `_GENERIC_TOKENS` — frozenset of generic buzzwords
 
 **8-Stage Pipeline** (cheap → expensive):
 
@@ -3563,16 +3570,22 @@ class SynthesisResult:
 | 0 | Text Sanity | ~0ms | Hard | Min tokens, verb presence, repetition ratio |
 | 1 | Domain Crossing | ~1ms | Hard | Min 2 distinct source domains |
 | 2 | Semantic Distance | ~5ms | Hard | Endpoint distance in [0.20, 0.90] range |
-| 3 | External Novelty | ~10ms | Hard | Wiki corpus similarity < 0.80 threshold |
+| 3 | External Novelty | ~10ms | Hard | 3 sub-checks: (a) claim similarity — full claim vs wiki, hard gate at 0.80; (b) co-occurrence — bare "concept_a concept_b" conjunction vs wiki, hard gate at 0.75 (catches known connection with novel phrasing); (c) template specificity — regex generic bridge pattern detection (catches novel connection with vacuous claim) |
 | 4 | Internal Novelty | ~10ms | Soft | Synthesis memory check; new paths pass (convergence signal) |
-| 5 | Coherence Judge | ~500ms-2s | Hard | LLM rates INVALID/WEAK/MODERATE/STRONG; min MODERATE |
-| 6 | Composite Scoring | ~0ms | Hard | Weighted composite ≥ 0.40 minimum |
+| 5 | Coherence Judge | ~500ms-2s | Hard | Two-pass LLM: Pass 1 structural coherence rates INVALID/WEAK/MODERATE/STRONG (min MODERATE); Pass 2 factual skeptic fires only on MODERATE results, checks for debunked science/fabricated mechanisms (binary PASS/FAIL, downgrades to WEAK on FAIL) |
+| 6 | Composite Scoring | ~0ms | Hard | 4-signal novelty composite ≥ 0.40 minimum |
 | 7 | Storage | ~10ms | — | Accepted results stored; convergence updated |
 
 **Composite Score Formula**:
 ```
 composite = 0.30 * coherence + 0.40 * novelty + 0.15 * distance + 0.15 * structural
-novelty = 0.6 * novelty_external + 0.4 * novelty_internal
+
+novelty (4-signal composite):
+  = 0.25 * claim_novelty       (1 - claim_sim)
+  + 0.30 * cooccurrence_novelty (1 - cooccurrence_sim)
+  + 0.25 * specificity          (1 - template_sim)
+  + 0.20 * internal_novelty     (from synthesis memory)
+
 distance_score peaks at midpoint of [DISTANCE_MIN, DISTANCE_MAX] range
 structural_score = min(domain_count / 4, 1.0)
 ```
@@ -3591,15 +3604,20 @@ SYNTHESIS_MAX_REPETITION_RATIO = 0.5     # Stage 0: reject if >50% repeated toke
 SYNTHESIS_MIN_DOMAINS = 2                # Stage 1: min domain boundaries crossed
 SYNTHESIS_DISTANCE_MIN = 0.20            # Stage 2: below = trivially close
 SYNTHESIS_DISTANCE_MAX = 0.90            # Stage 2: above = nonsensical
-SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.80 # Stage 3: wiki sim > this = already known
-SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.50  # Stage 3: between adjacent and known
+SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.80 # Stage 3a: claim wiki sim > this = already known
+SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.50  # Stage 3a: between adjacent and known
+SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.75 # Stage 3b: co-occurrence hard gate
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85 # Stage 4: above = same insight
-SYNTHESIS_COHERENCE_MODEL = "gpt-4o-mini"    # Stage 5: LLM for coherence judge
+SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"    # Stage 5: LLM for coherence judge
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"   # Stage 5: minimum to pass
 SYNTHESIS_WEIGHT_COHERENCE = 0.30        # Stage 6: composite weights
 SYNTHESIS_WEIGHT_NOVELTY = 0.40
 SYNTHESIS_WEIGHT_DISTANCE = 0.15
 SYNTHESIS_WEIGHT_STRUCTURAL = 0.15
+SYNTHESIS_NOVELTY_W_CLAIM = 0.25         # Stage 6: 4-signal novelty weights
+SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30
+SYNTHESIS_NOVELTY_W_SPECIFICITY = 0.25
+SYNTHESIS_NOVELTY_W_INTERNAL = 0.20
 SYNTHESIS_COMPOSITE_MIN_SCORE = 0.40     # Stage 6: minimum to store
 SYNTHESIS_CONVERGENCE_STRONG_PATHS = 3   # Convergence thresholds
 SYNTHESIS_CONVERGENCE_STRONG_SOURCES = 2
@@ -5000,7 +5018,7 @@ python main.py inspect-summaries
 | implementation_detector.py | Detect: 4-stage pipeline (file/code/git/LLM) for proposal implementation status [NEW 2026-03-25] |
 | synthesis_models.py | Data: SynthesisCandidate, SynthesisResult, CoherenceLevel, CandidateStatus models [NEW 2026-03-28] |
 | synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking [NEW 2026-03-28] |
-| synthesis_filter.py | Filter: 8-stage async pipeline (text/domain/distance/novelty/coherence/scoring) [NEW 2026-03-28] |
+| synthesis_filter.py | Filter: 8-stage async pipeline (text/domain/distance/novelty/two-pass coherence/scoring) [NEW 2026-03-28] |
 | synthesis_generator.py | Generate: Cross-store sampling (facts + wiki) + LLM bridge articulation for synthesis candidates [NEW 2026-03-28] |
 
 ---
@@ -5110,9 +5128,14 @@ SYNTHESIS_ENABLED = True
 SYNTHESIS_DISTANCE_MIN = 0.20
 SYNTHESIS_DISTANCE_MAX = 0.90
 SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.80
+SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.75
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
-SYNTHESIS_COHERENCE_MODEL = "gpt-4o-mini"
+SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
+SYNTHESIS_NOVELTY_W_CLAIM = 0.25
+SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30
+SYNTHESIS_NOVELTY_W_SPECIFICITY = 0.25
+SYNTHESIS_NOVELTY_W_INTERNAL = 0.20
 SYNTHESIS_COMPOSITE_MIN_SCORE = 0.40
 ```
 
@@ -5423,7 +5446,7 @@ This document compresses a ~50K line codebase by focusing on architecture, data 
 **Last Updated**: 2026-03-28
 
 **Recent Changes** (2026-03-28):
-- **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (wiki), internal novelty (synthesis memory with convergence tracking), LLM coherence judge, composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
+- **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
 - **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts + wiki_knowledge collections, LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 54 labeled candidates in 7 tiers.
 - **Context Management Fixes** (Sections 2.7, 2.8b) — Post-budget floor for recent conversations (`PROMPT_MIN_RECENT_FLOOR=5`), budget-enforced accumulated context in agentic controller (`_append_accumulated()` trims oldest rounds), budget-aware final prompt assembly (trims low-value sections to preserve conversation history + agentic results).
 

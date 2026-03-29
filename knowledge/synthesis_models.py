@@ -11,6 +11,7 @@ Module Contract
   - SynthesisCandidate: Raw candidate from a graph walk before filtering
   - StageResult: Result from a single pipeline stage
   - SynthesisResult: Fully evaluated candidate with all stage results + convergence tracking
+    - Includes multi-signal novelty fields: cooccurrence_similarity, template_similarity
 - Side effects: None (pure data models)
 """
 
@@ -77,6 +78,8 @@ class SynthesisResult:
     coherence_justification: str = ""
     novelty_score_external: float = 0.0
     novelty_score_internal: float = 0.0
+    cooccurrence_similarity: float = 0.0   # how often A and B already co-occur in wiki
+    template_similarity: float = 0.0        # how close claim is to generic bridge templates
     nearest_known_external: str = ""    # closest match in wiki corpus
     nearest_known_internal: str = ""    # closest match in synthesis memory
     composite_score: float = 0.0
@@ -112,6 +115,8 @@ class SynthesisResult:
             "coherence_score": self.coherence_level.value if self.coherence_level else 0.0,
             "novelty_external": self.novelty_score_external,
             "novelty_internal": self.novelty_score_internal,
+            "cooccurrence_similarity": self.cooccurrence_similarity,
+            "template_similarity": self.template_similarity,
             "nearest_known_external": self.nearest_known_external,
             "nearest_known_internal": self.nearest_known_internal,
             "composite_score": self.composite_score,
@@ -143,6 +148,8 @@ class SynthesisResult:
         result.coherence_justification = metadata.get("coherence_justification", "")
         result.novelty_score_external = float(metadata.get("novelty_external", 0.0))
         result.novelty_score_internal = float(metadata.get("novelty_internal", 0.0))
+        result.cooccurrence_similarity = float(metadata.get("cooccurrence_similarity", 0.0))
+        result.template_similarity = float(metadata.get("template_similarity", 0.0))
         result.nearest_known_external = metadata.get("nearest_known_external", "")
         result.nearest_known_internal = metadata.get("nearest_known_internal", "")
         result.composite_score = float(metadata.get("composite_score", 0.0))
