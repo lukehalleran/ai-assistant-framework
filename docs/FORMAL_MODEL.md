@@ -1,6 +1,6 @@
 # Formal Model: Daemon RAG Agent
 
-**Last verified against codebase**: 2026-03-28
+**Last verified against codebase**: 2026-03-29
 
 ## 1. Primitive Sets
 
@@ -607,9 +607,9 @@ The pipeline short-circuits: if any g_i.passed = false, subsequent stages do not
 | g_0 | Text sanity | \|tokens(claim)\| >= 10 AND repetition_ratio <= 0.5 AND has_verb(claim) | O(n) string ops |
 | g_1 | Domain crossing | \|domains\| >= 2 | O(1) |
 | g_2 | Semantic distance | 0.20 <= dist <= 0.90 | O(1) |
-| g_3 | External novelty | max_sim(claim, C_wiki) < 0.80 | O(log n) vector search |
+| g_3 | External novelty | 3 sub-checks: (a) max_sim(claim, C_wiki) < 0.80, (b) max_sim("a b", C_wiki) < 0.75 (co-occurrence), (c) template_sim(claim) via regex generic pattern detection | O(log n) vector search |
 | g_4 | Internal novelty | path_hash not in existing.unique_paths (convergence pass) OR no match | O(log m) vector search |
-| g_5 | Coherence judge | LLM_coherence(a, b, claim) >= MODERATE | O(1) LLM call |
+| g_5 | Coherence judge | Two-pass: Pass 1 LLM_structural_coherence(a, b, claim) >= MODERATE; Pass 2 (MODERATE only) LLM_factual_skeptic(claim) = PASS | O(1-2) LLM calls |
 | g_6 | Composite score | composite(c) >= 0.40 | O(1) arithmetic |
 
 ### 13.3 Composite Scoring
@@ -620,7 +620,11 @@ score(c) = w_coh * coh(c) + w_nov * nov(c) + w_dist * dist_score(c) + w_str * st
 where:
   w_coh = 0.30, w_nov = 0.40, w_dist = 0.15, w_str = 0.15
   coh(c) = CoherenceLevel.value in {0.0, 0.33, 0.66, 1.0}
-  nov(c) = 0.6 * (1 - max_sim_wiki) + 0.4 * (1 - max_sim_internal)
+  nov(c) = w_claim * (1 - claim_sim)           // claim novelty
+         + w_cooc * (1 - cooccurrence_sim)      // co-occurrence novelty
+         + w_spec * (1 - template_sim)          // specificity
+         + w_int  * (1 - max_sim_internal)      // internal novelty
+    where w_claim = 0.25, w_cooc = 0.30, w_spec = 0.25, w_int = 0.20
   dist_score(c) = 1 - |dist - mid| / half    (peaks at midpoint of [0.20, 0.90])
   str(c) = min(|domains| / 4, 1.0)
 ```
@@ -707,5 +711,5 @@ Eight operations. Perceive, interpret, expand, remember, plan, act, audit, learn
 | mu | Memory expansion (temporal window / summary drill-down) | `memory/memory_expander.py` |
 | Pi | Provenance record (session_id, response_mode, prompt_hash, ...) | `memory_storage.py` + `gui/handlers.py` |
 | Sigma | Synthesis memory (accepted SynthesisResult set) | `synthesis_memory.py` (ChromaDB `synthesis_results`) |
-| F | Synthesis filter (7-stage pipeline g_0 . ... . g_6) | `synthesis_filter.py` |
+| F | Synthesis filter (7-stage pipeline g_0 . ... . g_6; g_3 has 3 sub-checks; g_5 has 2-pass structure) | `synthesis_filter.py` |
 | gate | Multi-stage gating | `processing/gate_system.py` |

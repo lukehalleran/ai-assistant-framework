@@ -9,15 +9,38 @@ Module Contract
 - Key methods:
   - process_candidate(candidate) -> SynthesisResult  [async, full pipeline]
   - process_batch(candidates) -> dict  [async, batch summary with stats]
+  - _factual_skeptic_pass(result, claim, concept_a, concept_b) -> bool  [async, Pass 2 of Stage 5]
+  - _parse_coherence_level(response_text) -> CoherenceLevel  [static, extracted from inline parsing]
 - Stage ordering (cheap -> expensive):
   - Stage 0: Text Sanity Filter (~0ms, regex/heuristic)
   - Stage 1: Domain Crossing Gate (~1ms, metadata check)
   - Stage 2: Semantic Distance Gate (~5ms, embedding cosine)
-  - Stage 3: Novelty Gate -- External (~10ms, wiki vector search)
+  - Stage 3: Novelty Gate -- External (~15ms, wiki vector search)
+    - Sub-check 1: Claim similarity (full claim vs wiki)
+    - Sub-check 2: Co-occurrence (bare "A B" conjunction vs wiki)
+    - Sub-check 3: Template specificity (generic bridge pattern detection)
   - Stage 4: Novelty Gate -- Internal (~10ms, synthesis memory search)
-  - Stage 5: Coherence Judge (~500ms-2s, LLM call)
-  - Stage 6: Composite Scoring + Gates (computation only)
+  - Stage 5: Coherence Judge (~500ms-2s, two-pass LLM)
+    - Pass 1: Structural coherence -- distinguishes structural isomorphisms from
+      loose analogies. LLM rates INVALID/WEAK/MODERATE/STRONG. Prompt focuses on
+      shared structural patterns (feedback loops, optimization curves, threshold
+      dynamics). System prompt: "Focus on whether a shared structural pattern
+      genuinely exists". Response format: Mechanism/Against/For/Rating.
+      max_tokens=250.
+    - Pass 2: Factual skeptic -- fires ONLY on MODERATE results from Pass 1.
+      Checks for debunked science, fabricated mechanisms, false neural pathways.
+      Binary PASS/FAIL. On FAIL, downgrades coherence to WEAK (rejection).
+      Simplification is acceptable; only provably wrong claims fail.
+  - Stage 6: Composite Scoring + Gates (multi-signal novelty composite)
   - Stage 7: Synthesis Memory Storage (~10ms, ChromaDB write)
+- Multi-signal novelty composite (Stage 6):
+  - claim novelty (w=0.25): 1 - claim_sim
+  - co-occurrence novelty (w=0.30): 1 - cooccurrence_sim
+  - specificity (w=0.25): 1 - template_sim
+  - internal novelty (w=0.20): from synthesis memory
+- Helpers:
+  - _extract_similarity(results) -> float  [convert query_collection result to 0-1 sim]
+  - _compute_template_similarity(claim) -> float  [regex-based generic bridge detection]
 - Inputs: SynthesisCandidate from graph walk engine
 - Outputs: SynthesisResult with ACCEPTED or REJECTED status
 - Side effects: Stores accepted results in synthesis_results ChromaDB collection
@@ -30,6 +53,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from config.app_config import (
+    SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD,
     SYNTHESIS_COHERENCE_MIN_LEVEL,
     SYNTHESIS_COHERENCE_MODEL,
     SYNTHESIS_COMPOSITE_MIN_SCORE,
@@ -41,6 +65,10 @@ from config.app_config import (
     SYNTHESIS_MIN_TOKEN_LENGTH,
     SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD,
     SYNTHESIS_NOVELTY_KNOWN_THRESHOLD,
+    SYNTHESIS_NOVELTY_W_CLAIM,
+    SYNTHESIS_NOVELTY_W_COOCCURRENCE,
+    SYNTHESIS_NOVELTY_W_INTERNAL,
+    SYNTHESIS_NOVELTY_W_SPECIFICITY,
     SYNTHESIS_WEIGHT_COHERENCE,
     SYNTHESIS_WEIGHT_DISTANCE,
     SYNTHESIS_WEIGHT_NOVELTY,
@@ -57,6 +85,52 @@ from memory.synthesis_memory import SynthesisMemory
 from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+# -- Generic bridge templates (vacuous patterns that pass coherence but say nothing) --
+_GENERIC_TEMPLATES = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"both (?:involve|require|depend on|use|exhibit|demonstrate|rely on|need)",
+        r"share (?:structural|fundamental|deep|underlying|common|similar) (?:similarities|properties|features)",
+        r"(?:operates?|functions?|works?) (?:on|via|through) (?:similar|the same|analogous) principles?",
+        r"(?:is|are) (?:an?|the) (?:example|instance|case|form|type) of",
+        r"(?:mirrors?|echoes?|reflects?) (?:the|a) (?:same|similar|broader)",
+        r"both (?:are|represent) (?:forms?|types?|examples?|instances?) of",
+        r"(?:just as|much like|similar to) .{5,40},? (?:so too|similarly|likewise)",
+        r"(?:at its|at their) core,? (?:is|are) (?:really|essentially|fundamentally)",
+        r"can be (?:seen|viewed|understood|thought of) as (?:a form|an instance|a type) of",
+    ]
+]
+
+_GENERIC_TOKENS = frozenset({
+    "systems", "processes", "principles", "dynamics", "mechanisms",
+    "fundamental", "inherently", "essentially", "paradigm", "parallels",
+    "interconnected", "holistic", "synergy", "synergistic",
+})
+
+
+def _extract_similarity(results: list) -> float:
+    """Convert the top query_collection result to a 0-1 similarity score."""
+    if not results:
+        return 0.0
+    score = results[0].get("relevance_score")
+    if score is None or score <= 0:
+        return 0.0
+    distance = (1.0 / score) - 1.0
+    return max(1.0 - distance, 0.0)
+
+
+def _compute_template_similarity(claim: str) -> float:
+    """How close is this claim to a generic bridge platitude? 0=specific, 1=pure template."""
+    claim_lower = claim.lower()
+    matches = sum(1 for pat in _GENERIC_TEMPLATES if pat.search(claim_lower))
+    tokens = claim_lower.split()
+    generic_count = sum(1 for t in tokens if t in _GENERIC_TOKENS)
+
+    # Normalize: 2+ template matches or 4+ generic tokens → max penalty
+    template_score = min(matches / 2.0, 1.0)
+    generic_score = min(generic_count / 4.0, 1.0)
+    return max(template_score, generic_score * 0.7)
 
 
 class SynthesisFilter:
@@ -280,11 +354,20 @@ class SynthesisFilter:
         )
 
     async def _stage_3_novelty_external(self, result: SynthesisResult) -> StageResult:
-        """Check if connection is already known in wiki/reference corpus."""
-        claim = result.candidate.connection_claim
+        """Check if connection is already known in wiki/reference corpus.
 
+        Two sub-checks:
+        1. Claim similarity — does the full articulated claim match existing wiki text?
+        2. Co-occurrence — do concepts A and B already appear together in wiki?
+           High co-occurrence + high claim novelty = known connection, novel phrasing.
+        """
+        claim = result.candidate.connection_claim
+        concept_a = result.candidate.concept_a
+        concept_b = result.candidate.concept_b
+
+        # --- Sub-check 1: Claim similarity (existing logic) ---
         try:
-            search_results = self.store.query_collection(
+            claim_results = self.store.query_collection(
                 collection_name=self.wiki_collection,
                 query_text=claim,
                 n_results=3,
@@ -296,45 +379,64 @@ class SynthesisFilter:
                 reason="Wiki query failed -- passing by default",
             )
 
-        if not search_results:
-            result.novelty_score_external = 1.0
-            return StageResult(
-                stage_name="novelty_external", passed=True, score=1.0,
-                metadata={"nearest_similarity": 0.0},
-            )
+        claim_sim = _extract_similarity(claim_results)
+        result.novelty_score_external = 1.0 - claim_sim
 
-        # query_collection returns relevance_score = 1/(1+distance)
-        top = search_results[0]
-        score = top.get("relevance_score")
-        if score is None or score <= 0:
-            result.novelty_score_external = 1.0
-            return StageResult(
-                stage_name="novelty_external", passed=True, score=1.0,
-                metadata={"nearest_similarity": 0.0},
-            )
+        if claim_results:
+            result.nearest_known_external = claim_results[0].get("content", "")[:200]
 
-        distance = (1.0 / score) - 1.0
-        nearest_similarity = 1.0 - distance
-        nearest_doc = top.get("content", "")
-
-        result.nearest_known_external = nearest_doc[:200]
-        result.novelty_score_external = 1.0 - nearest_similarity
-
-        if nearest_similarity > SYNTHESIS_NOVELTY_KNOWN_THRESHOLD:
+        # Hard gate: direct claim rehash
+        if claim_sim > SYNTHESIS_NOVELTY_KNOWN_THRESHOLD:
             return StageResult(
                 stage_name="novelty_external",
                 passed=False,
-                reason=f"Already known (similarity={nearest_similarity:.3f} > {SYNTHESIS_NOVELTY_KNOWN_THRESHOLD})",
+                reason=f"Claim already known (similarity={claim_sim:.3f} > {SYNTHESIS_NOVELTY_KNOWN_THRESHOLD})",
                 score=result.novelty_score_external,
-                metadata={"nearest_similarity": nearest_similarity, "nearest_doc": nearest_doc[:100]},
+                metadata={"claim_similarity": claim_sim, "cooccurrence_similarity": 0.0},
             )
 
-        label = "novel" if nearest_similarity < SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD else "adjacent"
+        # --- Sub-check 2: Co-occurrence (bare concept conjunction) ---
+        bare_query = f"{concept_a} {concept_b}"
+        try:
+            cooccurrence_results = self.store.query_collection(
+                collection_name=self.wiki_collection,
+                query_text=bare_query,
+                n_results=3,
+            )
+        except Exception as e:
+            logger.debug(f"Co-occurrence check failed: {e}. Skipping.")
+            cooccurrence_results = []
+
+        cooccurrence_sim = _extract_similarity(cooccurrence_results)
+        result.cooccurrence_similarity = cooccurrence_sim
+
+        # Hard gate: concepts already co-occur heavily in literature
+        if cooccurrence_sim > SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD:
+            return StageResult(
+                stage_name="novelty_external",
+                passed=False,
+                reason=(
+                    f"Concepts already co-occur in literature "
+                    f"(cooccurrence={cooccurrence_sim:.3f} > {SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD})"
+                ),
+                score=result.novelty_score_external,
+                metadata={"claim_similarity": claim_sim, "cooccurrence_similarity": cooccurrence_sim},
+            )
+
+        # --- Sub-check 3: Template specificity ---
+        result.template_similarity = _compute_template_similarity(claim)
+
+        label = "novel" if claim_sim < SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD else "adjacent"
         return StageResult(
             stage_name="novelty_external",
             passed=True,
             score=result.novelty_score_external,
-            metadata={"nearest_similarity": nearest_similarity, "label": label},
+            metadata={
+                "claim_similarity": claim_sim,
+                "cooccurrence_similarity": cooccurrence_sim,
+                "template_similarity": result.template_similarity,
+                "label": label,
+            },
         )
 
     async def _stage_4_novelty_internal(self, result: SynthesisResult) -> StageResult:
@@ -389,31 +491,51 @@ class SynthesisFilter:
         )
 
     async def _stage_5_coherence_judge(self, result: SynthesisResult) -> StageResult:
-        """LLM-based coherence evaluation. Most expensive stage -- runs last before scoring."""
+        """LLM-based coherence evaluation with optional factual skeptic second pass.
+
+        Pass 1: Structural coherence — does a shared pattern genuinely exist?
+        Pass 2 (MODERATE only): Factual skeptic — are the domain-specific claims accurate?
+        """
         claim = result.candidate.connection_claim
         concept_a = result.candidate.concept_a
         concept_b = result.candidate.concept_b
 
-        prompt = (
-            f"Rate the coherence of this claimed connection between two concepts.\n\n"
+        # -- Pass 1: Structural coherence --
+        prompt_1 = (
+            f"Evaluate this claimed connection between two concepts.\n\n"
             f"Concept A: {concept_a}\n"
             f"Concept B: {concept_b}\n"
             f"Claimed connection: {claim}\n\n"
-            f"Choose exactly ONE rating:\n"
-            f"INVALID - The connection is nonsensical, factually wrong, or a non-sequitur\n"
-            f"WEAK - There is a superficial or very tenuous link\n"
-            f"MODERATE - A plausible connection that makes logical sense\n"
-            f"STRONG - A compelling, well-grounded connection\n\n"
-            f"Reply with ONLY the rating word (INVALID/WEAK/MODERATE/STRONG) "
-            f"followed by a one-sentence justification."
+            f"These concepts are from different domains — that is expected and desired. "
+            f"Your job is to evaluate the SPECIFIC MECHANISM or SHARED STRUCTURE described, "
+            f"not whether cross-domain connections are valid in general.\n\n"
+            f"Key distinction: A connection that identifies a shared mathematical pattern, "
+            f"feedback loop, optimization curve, threshold dynamic, or structural isomorphism "
+            f"across domains is MODERATE or STRONG — even if the two systems operate through "
+            f"different physical substrates. Only rate WEAK if the connection is pure metaphor "
+            f"with no identifiable shared process.\n\n"
+            f"First, identify the specific mechanism or structural pattern claimed "
+            f"(e.g., negative feedback, diminishing returns, threshold collapse, competitive selection).\n"
+            f"Then, write one sentence on the strongest reason it might be WRONG.\n"
+            f"Then, write one sentence on what makes it genuinely insightful.\n\n"
+            f"Finally, choose exactly ONE rating:\n"
+            f"INVALID - Factually wrong, or pure wordplay with no shared process at any level of abstraction\n"
+            f"WEAK - No specific shared mechanism identified; only a surface-level metaphor or vague gesture at similarity\n"
+            f"MODERATE - Identifies a real shared structural pattern (feedback loop, optimization curve, phase transition, etc.) that operates in both domains, even if through different substrates\n"
+            f"STRONG - A compelling, specific connection where understanding one system generates testable predictions about the other\n\n"
+            f"Format your response as:\n"
+            f"Mechanism: <the specific shared pattern or process claimed>\n"
+            f"Against: <strongest criticism>\n"
+            f"For: <what makes it insightful>\n"
+            f"Rating: <INVALID|WEAK|MODERATE|STRONG>"
         )
 
         try:
             response = await self.model_manager.generate_once(
-                prompt=prompt,
+                prompt=prompt_1,
                 model_name=SYNTHESIS_COHERENCE_MODEL,
-                system_prompt="You are a critical evaluator of cross-domain knowledge connections. Be skeptical but fair.",
-                max_tokens=100,
+                system_prompt="You evaluate cross-domain knowledge connections. Focus on whether a shared structural pattern genuinely exists, not on whether the domains seem related. Be skeptical of vague claims but generous toward specific structural parallels.",
+                max_tokens=250,
                 temperature=0.1,
             )
         except Exception as e:
@@ -425,24 +547,8 @@ class SynthesisFilter:
                 reason="LLM call failed -- passing with default",
             )
 
-        # Parse response
         response_text = response.strip()
-        coherence_level = None
-        for level in CoherenceLevel:
-            if response_text.upper().startswith(level.name):
-                coherence_level = level
-                break
-
-        if coherence_level is None:
-            # Fallback: look for keywords anywhere in response
-            for level in CoherenceLevel:
-                if level.name in response_text.upper():
-                    coherence_level = level
-                    break
-
-        if coherence_level is None:
-            coherence_level = CoherenceLevel.WEAK
-            logger.warning(f"Could not parse coherence level from: {response_text[:100]}")
+        coherence_level = self._parse_coherence_level(response_text)
 
         result.coherence_level = coherence_level
         result.coherence_justification = response_text
@@ -453,30 +559,150 @@ class SynthesisFilter:
             return StageResult(
                 stage_name="coherence_judge",
                 passed=False,
-                reason=f"Coherence {coherence_level.name} < minimum {min_level.name}",
+                reason=f"Coherence {coherence_level.name} < minimum {min_level.name}: {response_text[:150]}",
                 score=coherence_level.value,
-                metadata={"level": coherence_level.name, "justification": response_text[:200]},
+                metadata={"level": coherence_level.name, "pass": 1, "justification": response_text[:400]},
             )
+
+        # -- Pass 2: Factual skeptic (MODERATE only) --
+        # STRONG connections are confident enough to skip. MODERATE gets a second look
+        # to catch pseudoscience wrapped in structural language.
+        if coherence_level == CoherenceLevel.MODERATE:
+            downgraded = await self._factual_skeptic_pass(result, claim, concept_a, concept_b)
+            if downgraded:
+                return StageResult(
+                    stage_name="coherence_judge",
+                    passed=False,
+                    reason=f"Factual skeptic downgraded to {result.coherence_level.name}: {result.coherence_justification[:150]}",
+                    score=result.coherence_level.value,
+                    metadata={"level": result.coherence_level.name, "pass": 2, "justification": result.coherence_justification[:400]},
+                )
 
         return StageResult(
             stage_name="coherence_judge",
             passed=True,
-            score=coherence_level.value,
-            metadata={"level": coherence_level.name, "justification": response_text[:200]},
+            score=result.coherence_level.value,
+            metadata={"level": result.coherence_level.name, "pass": 1 if coherence_level != CoherenceLevel.MODERATE else 2, "justification": response_text[:200]},
         )
 
+    async def _factual_skeptic_pass(
+        self, result: SynthesisResult, claim: str, concept_a: str, concept_b: str
+    ) -> bool:
+        """Second-pass factual accuracy check for MODERATE-rated candidates.
+
+        Narrowly targets pseudoscience and fabricated mechanisms. Does NOT
+        penalize simplification — cross-domain connections are inherently
+        simplified. Only downgrades when domain-specific claims are provably
+        wrong or based on debunked science.
+
+        Returns True if the candidate should be downgraded (rejected).
+        """
+        prompt = (
+            f"A cross-domain connection claims: {claim}\n\n"
+            f"Check ONLY whether the domain-specific facts are wrong or based on debunked science.\n\n"
+            f"Examples of what FAILS this check:\n"
+            f"- 'Left-brain people are more logical' (debunked lateralization myth)\n"
+            f"- 'Mirror neurons cause empathy' (oversimplified; mirror neuron function is disputed)\n"
+            f"- 'Mozart effect improves intelligence' (debunked)\n"
+            f"- Claiming a specific neural pathway, enzyme, or mechanism that doesn't exist\n\n"
+            f"Examples of what PASSES this check:\n"
+            f"- Describing feedback loops that genuinely exist in both domains, even if simplified\n"
+            f"- Structural parallels where both sides are real phenomena, even if the connection is approximate\n"
+            f"- Using well-established concepts (Wolff's law, PID control, diminishing returns) correctly\n\n"
+            f"IMPORTANT: Simplification is expected and acceptable. Only flag claims where a domain "
+            f"expert would say 'that specific mechanism is wrong or doesn't exist,' NOT 'that's a "
+            f"simplification of how it actually works.'\n\n"
+            f"Respond:\n"
+            f"PASS - The domain facts are real (even if simplified)\n"
+            f"FAIL - A specific claim is factually wrong or based on debunked science (state which one)\n\n"
+            f"One sentence of reasoning, then PASS or FAIL on its own line."
+        )
+
+        try:
+            response = await self.model_manager.generate_once(
+                prompt=prompt,
+                model_name=SYNTHESIS_COHERENCE_MODEL,
+                system_prompt="You are a domain-accuracy fact-checker. Focus only on whether the specific scientific or technical claims are correct, not on whether the cross-domain analogy is interesting.",
+                max_tokens=150,
+                temperature=0.1,
+            )
+        except Exception as e:
+            logger.debug(f"Factual skeptic pass failed: {e}. Keeping MODERATE.")
+            return False
+
+        response_text = response.strip()
+        response_upper = response_text.upper()
+
+        # Look for FAIL verdict — downgrade to WEAK
+        # Check last line first (most reliable), then anywhere
+        last_line = response_text.strip().split("\n")[-1].strip().upper()
+        is_fail = last_line == "FAIL" or (
+            "FAIL" in response_upper and "PASS" not in response_upper
+        )
+
+        if is_fail:
+            result.coherence_level = CoherenceLevel.WEAK
+            result.coherence_justification += f"\n[FACTUAL SKEPTIC] {response_text}"
+            logger.info(f"[SYNTH SKEPTIC] Downgraded to WEAK: {concept_a}<->{concept_b}")
+            return True
+
+        # PASS or unparseable — keep MODERATE
+        return False
+
+    @staticmethod
+    def _parse_coherence_level(response_text: str) -> CoherenceLevel:
+        """Parse coherence level from LLM response text."""
+        # Primary: find "Rating: LEVEL" line
+        for line in response_text.split("\n"):
+            stripped = line.strip()
+            if stripped.upper().startswith("RATING:"):
+                rating_part = stripped[len("RATING:"):].strip().upper()
+                for level in CoherenceLevel:
+                    if rating_part.startswith(level.name):
+                        return level
+                break
+
+        # Fallback: response starts with level name
+        for level in CoherenceLevel:
+            if response_text.upper().startswith(level.name):
+                return level
+
+        # Fallback: keyword anywhere
+        for level in CoherenceLevel:
+            if level.name in response_text.upper():
+                return level
+
+        logger.warning(f"Could not parse coherence level from: {response_text[:100]}")
+        return CoherenceLevel.WEAK
+
     async def _stage_6_composite_scoring(self, result: SynthesisResult) -> StageResult:
-        """Compute composite score from all prior stage results and apply minimum threshold."""
+        """Compute composite score from all prior stage results and apply minimum threshold.
+
+        Novelty is itself a 4-signal composite:
+        - claim novelty (1 - claim_sim): does the articulated claim match wiki?
+        - co-occurrence novelty (1 - cooccurrence_sim): do A and B appear together?
+        - specificity (1 - template_sim): is the claim vacuous/generic?
+        - internal novelty: has the system seen this before?
+        """
         # Gather component scores
         scores = {sr.stage_name: sr.score for sr in result.stage_results if sr.score is not None}
 
         coherence_score = scores.get("coherence_judge", 0.5)
-        # Combine external and internal novelty
-        novelty_ext = result.novelty_score_external
-        novelty_int = result.novelty_score_internal
-        novelty_score = 0.6 * novelty_ext + 0.4 * novelty_int  # weight external more
         distance_score = scores.get("semantic_distance", 0.5)
         structural_score = scores.get("domain_crossing", 0.5)
+
+        # Multi-signal novelty composite
+        claim_novelty = result.novelty_score_external             # 1 - claim_sim
+        cooccurrence_novelty = 1.0 - result.cooccurrence_similarity
+        specificity = 1.0 - result.template_similarity
+        internal_novelty = result.novelty_score_internal
+
+        novelty_score = (
+            SYNTHESIS_NOVELTY_W_CLAIM * claim_novelty
+            + SYNTHESIS_NOVELTY_W_COOCCURRENCE * cooccurrence_novelty
+            + SYNTHESIS_NOVELTY_W_SPECIFICITY * specificity
+            + SYNTHESIS_NOVELTY_W_INTERNAL * internal_novelty
+        )
 
         composite = (
             SYNTHESIS_WEIGHT_COHERENCE * coherence_score
@@ -486,6 +712,14 @@ class SynthesisFilter:
         )
 
         result.composite_score = composite
+
+        novelty_detail = {
+            "claim_novelty": claim_novelty,
+            "cooccurrence_novelty": cooccurrence_novelty,
+            "specificity": specificity,
+            "internal_novelty": internal_novelty,
+            "novelty_composite": novelty_score,
+        }
 
         if composite < SYNTHESIS_COMPOSITE_MIN_SCORE:
             return StageResult(
@@ -498,12 +732,7 @@ class SynthesisFilter:
                     "novelty": novelty_score,
                     "distance": distance_score,
                     "structural": structural_score,
-                    "weights": {
-                        "coherence": SYNTHESIS_WEIGHT_COHERENCE,
-                        "novelty": SYNTHESIS_WEIGHT_NOVELTY,
-                        "distance": SYNTHESIS_WEIGHT_DISTANCE,
-                        "structural": SYNTHESIS_WEIGHT_STRUCTURAL,
-                    },
+                    **novelty_detail,
                 },
             )
 
@@ -516,5 +745,6 @@ class SynthesisFilter:
                 "novelty": novelty_score,
                 "distance": distance_score,
                 "structural": structural_score,
+                **novelty_detail,
             },
         )
