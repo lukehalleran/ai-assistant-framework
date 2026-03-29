@@ -1,0 +1,570 @@
+{
+  "_description": "Labeled calibration candidates for synthesis filter validation. Five tiers: SANITY_FAIL (should die at Stage 0 text sanity), TRIVIAL (obvious connections — should be rejected, tests novelty + distance gates), NOISE (forced/incoherent — should be rejected by coherence judge), NOISE_BORDERLINE (plausible-sounding but wrong — tests coherence boundary), INTERESTING_KNOWN (genuinely insightful but published — should be rejected by novelty), INTERESTING_NOVEL (non-obvious AND new — should be accepted), BOUNDARY (hard middle cases — diagnostic, expected outcome is a best guess).",
+  "candidates": [
+
+    {"_comment": "=== SANITY_FAIL TIER === Should die at Stage 0 (text sanity)"},
+
+    {
+      "tier": "sanity_fail",
+      "expected_outcome": "rejected",
+      "expected_rejection_stage": "text_sanity",
+      "concept_a": "trees",
+      "concept_b": "economics",
+      "connection_claim": "trees economics trees economics trees economics both important both systems both important both systems",
+      "source_domains": ["ecology", "economics"],
+      "endpoint_distance": 0.50,
+      "notes": "Pure repetition, should fail repetition ratio check"
+    },
+    {
+      "tier": "sanity_fail",
+      "expected_outcome": "rejected",
+      "expected_rejection_stage": "text_sanity",
+      "concept_a": "gravity",
+      "concept_b": "poetry",
+      "connection_claim": "yes no maybe",
+      "source_domains": ["science", "arts"],
+      "endpoint_distance": 0.65,
+      "notes": "Too short (3 tokens), should fail min token length"
+    },
+    {
+      "tier": "sanity_fail",
+      "expected_outcome": "rejected",
+      "expected_rejection_stage": "text_sanity",
+      "concept_a": "music",
+      "concept_b": "finance",
+      "connection_claim": "music finance connection bridge link concept domain parallel overlap intersection",
+      "source_domains": ["arts", "finance"],
+      "endpoint_distance": 0.55,
+      "notes": "No verbs, just noun soup — should fail verb detection"
+    },
+    {
+      "tier": "sanity_fail",
+      "expected_outcome": "rejected",
+      "expected_rejection_stage": "text_sanity",
+      "concept_a": "rain",
+      "concept_b": "databases",
+      "connection_claim": "the the the the the the the a a a a a a a connection between rain and databases",
+      "source_domains": ["ecology", "technology"],
+      "endpoint_distance": 0.60,
+      "notes": "Extreme repetition of articles, should fail repetition ratio"
+    },
+
+    {"_comment": "=== TRIVIAL TIER === Well-known connections, should be rejected. Now includes varied distances to test different rejection pathways."},
+
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "exercise",
+      "concept_b": "mental health",
+      "connection_claim": "Regular physical exercise reduces symptoms of anxiety and depression through the release of endorphins and improved neuroplasticity.",
+      "source_domains": ["fitness", "health"],
+      "endpoint_distance": 0.35,
+      "notes": "Well-known, close domains. Should fail novelty (Stage 3). Distance above floor."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "sleep deprivation",
+      "concept_b": "cognitive performance",
+      "connection_claim": "Lack of sleep impairs working memory, attention, and decision-making through disrupted prefrontal cortex function.",
+      "source_domains": ["health", "psychology"],
+      "endpoint_distance": 0.38,
+      "notes": "Textbook neuroscience, should fail novelty"
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "compound interest",
+      "concept_b": "retirement savings",
+      "connection_claim": "Compound interest allows small regular deposits to grow exponentially over decades, making early saving disproportionately valuable for retirement.",
+      "source_domains": ["finance", "goals"],
+      "endpoint_distance": 0.33,
+      "notes": "Standard financial literacy, should fail novelty"
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "learning a musical instrument",
+      "concept_b": "mathematical reasoning",
+      "connection_claim": "Musical training strengthens neural pathways for pattern recognition and spatial-temporal reasoning, which transfer to mathematical problem-solving ability, particularly in children.",
+      "source_domains": ["arts", "education"],
+      "endpoint_distance": 0.62,
+      "notes": "High distance, different domains, but every parent has heard this. Tests whether novelty catches well-known cross-domain claims that embedding distance alone wouldn't flag."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "bilingualism",
+      "concept_b": "dementia prevention",
+      "connection_claim": "Speaking multiple languages builds cognitive reserve by forcing constant executive function engagement, which delays the onset of Alzheimer's symptoms by an average of 4-5 years.",
+      "source_domains": ["education", "health"],
+      "endpoint_distance": 0.58,
+      "notes": "High distance, widely publicized finding. Tests novelty gate on distant-but-famous connections."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "dark chocolate",
+      "concept_b": "cardiovascular health",
+      "connection_claim": "Flavanols in dark chocolate improve endothelial function and reduce blood pressure by stimulating nitric oxide production in arterial walls.",
+      "source_domains": ["hobbies", "health"],
+      "endpoint_distance": 0.52,
+      "notes": "Every health magazine has published this. Different domains but zero novelty."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "pet ownership",
+      "concept_b": "blood pressure reduction",
+      "connection_claim": "Petting a dog triggers oxytocin release and parasympathetic activation, measurably lowering blood pressure and cortisol levels in the owner.",
+      "source_domains": ["hobbies", "health"],
+      "endpoint_distance": 0.48,
+      "notes": "Well-known wellness finding, different domains but heavily published"
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "nature exposure",
+      "concept_b": "creativity",
+      "connection_claim": "Time spent in natural environments restores directed attention capacity through soft fascination, freeing cognitive resources for creative associative thinking.",
+      "source_domains": ["ecology", "psychology"],
+      "endpoint_distance": 0.55,
+      "notes": "Attention Restoration Theory — published and popularized. High distance but not novel."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "gut microbiome",
+      "concept_b": "mood regulation",
+      "connection_claim": "The gut-brain axis allows intestinal bacteria to influence serotonin production and vagus nerve signaling, directly affecting emotional states.",
+      "source_domains": ["health", "psychology"],
+      "endpoint_distance": 0.45,
+      "notes": "Increasingly mainstream, well-articulated. Borderline distance — tests novelty not distance."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "cold exposure",
+      "concept_b": "immune function",
+      "connection_claim": "Regular cold water immersion increases norepinephrine levels and white blood cell counts, potentially strengthening innate immune response over time.",
+      "source_domains": ["fitness", "health"],
+      "endpoint_distance": 0.40,
+      "notes": "Wim Hof-popularized, all over wellness media. Should fail novelty."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "video games",
+      "concept_b": "surgical precision",
+      "connection_claim": "Laparoscopic surgeons who play video games regularly show faster completion times and fewer errors, because gaming trains fine motor control and spatial reasoning under time pressure.",
+      "source_domains": ["hobbies", "health"],
+      "endpoint_distance": 0.60,
+      "notes": "Famous study from 2007, widely cited. High distance, genuinely cross-domain, but thoroughly published."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "standing desk",
+      "concept_b": "back pain",
+      "connection_claim": "Alternating between sitting and standing reduces sustained spinal compression loads, decreasing chronic lower back pain incidence by redistributing mechanical stress.",
+      "source_domains": ["career", "health"],
+      "endpoint_distance": 0.42,
+      "notes": "Workplace wellness staple, every office blog has this"
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "gratitude journaling",
+      "concept_b": "sleep quality",
+      "connection_claim": "Writing gratitude entries before bed reduces pre-sleep cognitive arousal by shifting rumination toward positive content, reducing sleep onset latency.",
+      "source_domains": ["psychology", "health"],
+      "endpoint_distance": 0.43,
+      "notes": "Popular positive psychology finding, widely published"
+    },
+
+    {"_comment": "=== NOISE TIER === Clearly forced or incoherent connections. Tests coherence judge floor."},
+
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "Paczki the cat",
+      "concept_b": "Treaty of Westphalia",
+      "connection_claim": "Both Paczki the cat and the Treaty of Westphalia represent boundaries — one guards territorial borders of the living room, the other established the modern nation-state system.",
+      "source_domains": ["hobbies", "history"],
+      "endpoint_distance": 0.85,
+      "notes": "Forced metaphor with no real mechanism"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "bicycle gears",
+      "concept_b": "Kantian ethics",
+      "connection_claim": "Shifting bicycle gears is like applying the categorical imperative because both require selecting the universally optimal ratio for the current incline of moral terrain.",
+      "source_domains": ["technology", "philosophy"],
+      "endpoint_distance": 0.88,
+      "notes": "Tortured analogy, should fail coherence"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "pizza dough",
+      "concept_b": "quantum entanglement",
+      "connection_claim": "When you stretch pizza dough, the gluten network exhibits non-local correlations similar to quantum entanglement, where pulling one region affects distant areas instantaneously.",
+      "source_domains": ["hobbies", "science"],
+      "endpoint_distance": 0.90,
+      "notes": "False physics analogy, should fail coherence"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "dog walking",
+      "concept_b": "cryptocurrency mining",
+      "connection_claim": "Walking a dog and mining cryptocurrency both involve expending energy to validate something — one validates the dog's need for exercise, the other validates blockchain transactions.",
+      "source_domains": ["hobbies", "technology"],
+      "endpoint_distance": 0.87,
+      "notes": "Surface-level word play on 'validate', not a real mechanism"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "sourdough starter",
+      "concept_b": "constitutional law",
+      "connection_claim": "A sourdough starter is a living constitution — it evolves through amendments of flour and water, and like the US Constitution, it dies if not regularly fed and maintained.",
+      "source_domains": ["hobbies", "history"],
+      "endpoint_distance": 0.86,
+      "notes": "Cute metaphor but not falsifiable or mechanistic"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "shoelaces",
+      "concept_b": "game theory",
+      "connection_claim": "Tying shoelaces is a Nash equilibrium because both feet benefit from the cooperative strategy of being laced, and neither shoe has incentive to unilaterally defect.",
+      "source_domains": ["hobbies", "mathematics"],
+      "endpoint_distance": 0.89,
+      "notes": "Misapplied game theory concept"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "umbrella",
+      "concept_b": "Fourier transform",
+      "connection_claim": "An umbrella decomposes rainfall into components of wet and dry, just as a Fourier transform decomposes a signal into frequency components.",
+      "source_domains": ["hobbies", "mathematics"],
+      "endpoint_distance": 0.91,
+      "notes": "Umbrella doesn't decompose anything — factually wrong analogy"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "houseplants",
+      "concept_b": "relational databases",
+      "connection_claim": "Houseplants store water in their cells using a schema similar to relational databases, with root tables joining to leaf tables via stem foreign keys.",
+      "source_domains": ["hobbies", "technology"],
+      "endpoint_distance": 0.88,
+      "notes": "Completely fabricated structural analogy"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "making coffee",
+      "concept_b": "orbital mechanics",
+      "connection_claim": "The swirling motion of stirring coffee creates a vortex governed by the same Coriolis forces that determine satellite orbital trajectories.",
+      "source_domains": ["hobbies", "science"],
+      "endpoint_distance": 0.85,
+      "notes": "Coriolis effect is negligible at coffee-cup scale, factually wrong"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "socks",
+      "concept_b": "dark matter",
+      "connection_claim": "Missing socks in the dryer represent observable evidence of dark matter — they disappear without explanation, much like how dark matter's gravitational effects are felt but its substance never seen.",
+      "source_domains": ["hobbies", "science"],
+      "endpoint_distance": 0.92,
+      "notes": "Joke, not a real connection"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "parallel parking",
+      "concept_b": "Hegelian dialectics",
+      "connection_claim": "Parallel parking embodies the Hegelian dialectic: thesis (approaching the space), antithesis (turning the wheel the other way), and synthesis (being parked).",
+      "source_domains": ["hobbies", "philosophy"],
+      "endpoint_distance": 0.87,
+      "notes": "Superficial three-step mapping, not a real dialectical process"
+    },
+    {
+      "tier": "noise",
+      "expected_outcome": "rejected",
+      "concept_a": "napping",
+      "concept_b": "black holes",
+      "connection_claim": "Napping creates a temporal singularity in your day where time perception collapses, similar to how time dilation occurs near a black hole's event horizon.",
+      "source_domains": ["health", "science"],
+      "endpoint_distance": 0.90,
+      "notes": "Poetic but physically meaningless"
+    },
+
+    {"_comment": "=== NOISE_BORDERLINE TIER === Plausible-sounding but wrong. Tests coherence judge boundary."},
+
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "mirror neurons",
+      "concept_b": "cooking show viewership",
+      "connection_claim": "Mirror neurons fire both when performing an action and observing it, which explains why watching cooking shows activates hunger circuits — the motor simulation of food preparation triggers anticipatory digestive responses via the insular cortex.",
+      "source_domains": ["psychology", "hobbies"],
+      "endpoint_distance": 0.55,
+      "notes": "Sounds mechanistic but mirror neuron claims are vastly overstated. The hunger response to cooking shows is primarily olfactory/visual food cue processing, not motor simulation. Tests whether coherence judge passes plausible-sounding wrong mechanisms."
+    },
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "butterfly effect",
+      "concept_b": "stock market crashes",
+      "connection_claim": "Chaos theory's sensitivity to initial conditions directly explains stock market crashes — a single trade by a small investor can cascade through nonlinear feedback loops to trigger a market-wide selloff, exactly as Lorenz demonstrated with weather systems.",
+      "source_domains": ["mathematics", "economics"],
+      "endpoint_distance": 0.52,
+      "notes": "Uses real math vocabulary but the specific claim is wrong — market crashes involve herding and liquidity dynamics, not sensitivity to individual initial conditions. The analogy is popular but mechanistically incorrect."
+    },
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "left-brain dominance",
+      "concept_b": "programming aptitude",
+      "connection_claim": "Programming ability is strongest in left-brain dominant individuals because the left hemisphere handles sequential logical processing, which maps directly to writing code that executes line-by-line.",
+      "source_domains": ["psychology", "technology"],
+      "endpoint_distance": 0.45,
+      "notes": "Left-brain/right-brain lateralization is a debunked pop psychology myth. The claim sounds scientific but rests on false neuroscience. Tests whether coherence judge catches pseudoscientific mechanisms."
+    },
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "Mozart effect",
+      "concept_b": "plant growth",
+      "connection_claim": "Classical music's harmonic frequencies resonate with cellular structures in plants, stimulating growth through sympathetic vibration in the same way the Mozart Effect enhances human spatial reasoning through neural resonance.",
+      "source_domains": ["arts", "ecology"],
+      "endpoint_distance": 0.65,
+      "notes": "Double junk — the Mozart effect is largely debunked AND sympathetic vibration doesn't work this way in biology. But it sounds plausible and uses real terminology."
+    },
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "mercury retrograde",
+      "concept_b": "communication breakdowns",
+      "connection_claim": "Mercury's apparent retrograde motion disrupts electromagnetic fields in ways that interfere with electronic communication systems and human cognitive clarity, explaining the observed increase in misunderstandings during these periods.",
+      "source_domains": ["science", "psychology"],
+      "endpoint_distance": 0.70,
+      "notes": "Structured like a scientific claim with electromagnetic mechanism, but it's astrology. Good test of whether coherence judge detects pseudoscience wrapped in scientific language."
+    },
+
+    {"_comment": "=== INTERESTING_KNOWN TIER === Genuinely insightful connections that have been published. Should be rejected by novelty gate (Stage 3), not coherence."},
+
+    {
+      "tier": "interesting_known",
+      "expected_outcome": "rejected",
+      "concept_a": "ant colony foraging",
+      "concept_b": "TCP congestion control",
+      "connection_claim": "Ant colony optimization and TCP slow-start both use the same strategy: probe with increasing intensity until encountering resistance (food depletion / packet loss), then back off multiplicatively while maintaining additive growth on successful paths — both converge on efficient resource allocation without any node having global knowledge.",
+      "source_domains": ["ecology", "technology"],
+      "endpoint_distance": 0.60,
+      "notes": "Ant Colony Optimization is a real algorithm family (Dorigo 1992) explicitly inspired by this. Well-published in CS literature. Should fail novelty."
+    },
+    {
+      "tier": "interesting_known",
+      "expected_outcome": "rejected",
+      "concept_a": "immune system memory cells",
+      "concept_b": "caching in web architecture",
+      "connection_claim": "Memory B cells and CDN cache entries both store pre-computed responses to previously encountered inputs (antigens / requests), trading storage space for response latency. Both implement TTL-like expiration and both face the same staleness trade-off.",
+      "source_domains": ["science", "technology"],
+      "endpoint_distance": 0.56,
+      "notes": "Standard analogy in systems design textbooks and conference talks. Well-published."
+    },
+    {
+      "tier": "interesting_known",
+      "expected_outcome": "rejected",
+      "concept_a": "mycelial nutrient networks",
+      "concept_b": "content delivery networks",
+      "connection_claim": "Mycorrhizal networks distribute nutrients to trees based on need signals using the same topological strategy as CDNs that cache content at edge nodes closest to demand — both route resources through hub-and-spoke architectures where intermediary nodes make local forwarding decisions without central coordination.",
+      "source_domains": ["ecology", "technology"],
+      "endpoint_distance": 0.58,
+      "notes": "The 'Wood Wide Web' analogy to computer networks has been widely published (Simard, Suzanne). Should fail novelty."
+    },
+    {
+      "tier": "interesting_known",
+      "expected_outcome": "rejected",
+      "concept_a": "predator-prey population dynamics",
+      "concept_b": "microservice autoscaling",
+      "connection_claim": "Lotka-Volterra oscillations in predator-prey populations mirror the boom-bust cycles in naive autoscaling systems. Both require dampening mechanisms (carrying capacity / cooldown timers) to reach stable equilibria.",
+      "source_domains": ["ecology", "technology"],
+      "endpoint_distance": 0.65,
+      "notes": "Lotka-Volterra applied to cloud scaling is well-known in SRE/capacity planning literature."
+    },
+    {
+      "tier": "interesting_known",
+      "expected_outcome": "rejected",
+      "concept_a": "counterpoint in baroque music",
+      "concept_b": "adversarial training in machine learning",
+      "connection_claim": "Bach's counterpoint and GANs both generate structure through constrained opposition — independent voices must simultaneously satisfy harmonic constraints while maintaining independence, just as generator and discriminator satisfy opposing loss functions. Both produce emergent complexity from adversarial rules.",
+      "source_domains": ["arts", "technology"],
+      "endpoint_distance": 0.67,
+      "notes": "GAN/music analogy widely discussed in AI art circles and published papers."
+    },
+
+    {"_comment": "=== INTERESTING_NOVEL TIER === Non-obvious connections NOT widely published. Should be accepted."},
+
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "actuarial risk modeling",
+      "concept_b": "jazz improvisation",
+      "connection_claim": "Both actuaries and jazz musicians make real-time decisions under uncertainty by internalizing probability distributions — actuaries model tail risks in mortality tables while jazz musicians intuitively weight the probability of harmonic resolutions, and both fields reward practitioners who can sense when distributions shift.",
+      "source_domains": ["finance", "arts"],
+      "endpoint_distance": 0.72,
+      "notes": "Specific shared mechanism (probabilistic reasoning under uncertainty) with a falsifiable claim about practitioner expertise. Not a published comparison."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "sourdough fermentation",
+      "concept_b": "distributed systems consensus",
+      "connection_claim": "A sourdough starter achieves stable output from a diverse competing microbial population through the same mechanism as Byzantine fault-tolerant consensus — the majority of healthy organisms outvote and suppress deviant actors (spoilage bacteria), and the system self-heals as long as a supermajority remains viable.",
+      "source_domains": ["hobbies", "technology"],
+      "endpoint_distance": 0.68,
+      "notes": "Specific BFT framing of microbial ecology is novel. The general fermentation-as-system analogy exists but this specific consensus mechanism mapping hasn't been articulated."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "progressive overload in weightlifting",
+      "concept_b": "spaced repetition in learning",
+      "connection_claim": "Both progressive overload and spaced repetition exploit stress-recovery-adaptation cycles where the organism responds to slightly-above-threshold stimuli by building capacity, but only when rest intervals allow consolidation (muscle repair vs. memory reconsolidation).",
+      "source_domains": ["fitness", "education"],
+      "endpoint_distance": 0.52,
+      "notes": "Genuine shared biological mechanism (supercompensation). Individual concepts well-known, but the specific cross-domain mechanism mapping is not standard."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "tidal locking",
+      "concept_b": "vendor lock-in",
+      "connection_claim": "Tidal locking occurs when gravitational interaction energy dissipation causes a smaller body to permanently face a larger one, analogous to how switching costs and data gravity cause companies to permanently orient their infrastructure toward a dominant vendor — in both cases, the locked state is the lowest-energy configuration of the system.",
+      "source_domains": ["science", "technology"],
+      "endpoint_distance": 0.70,
+      "notes": "Energy-minimization framing of vendor lock-in is novel and falsifiable."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "mise en place in cooking",
+      "concept_b": "preflight checklists in aviation",
+      "connection_claim": "Both mise en place and preflight checklists convert a complex time-pressured sequential task into a verified-complete parallel setup phase, exploiting the principle that verification is cheaper than recovery — a missing ingredient mid-cooking or a missed check mid-flight both have disproportionate recovery costs.",
+      "source_domains": ["hobbies", "technology"],
+      "endpoint_distance": 0.55,
+      "notes": "Shared operational principle with specific cognitive cost mechanism."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "crop rotation",
+      "concept_b": "job rotation in management",
+      "connection_claim": "Crop rotation prevents soil nutrient depletion by alternating plants with different root depths and nitrogen-fixing properties. Job rotation prevents knowledge-silo depletion by rotating employees through roles that exercise different skill sets. Both sacrifice short-term specialization efficiency for long-term system resilience by preventing any single extraction pattern from degrading the substrate.",
+      "source_domains": ["ecology", "career"],
+      "endpoint_distance": 0.53,
+      "notes": "Substrate-degradation prevention framing is specific and not a standard comparison."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "river delta formation",
+      "concept_b": "A/B testing in product development",
+      "connection_claim": "River deltas form when flow encounters resistance and splits into channels, with successful channels widening while failed ones silt up. A/B testing splits user traffic into variants at a decision point, with winning variants capturing more allocation. Both are multi-armed bandit processes where the environment selects winning paths through differential resource allocation.",
+      "source_domains": ["ecology", "technology"],
+      "endpoint_distance": 0.71,
+      "notes": "Multi-armed bandit framing of geomorphology is novel."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "bone remodeling under stress",
+      "concept_b": "database index optimization",
+      "connection_claim": "Wolff's Law states that bone remodels along lines of mechanical stress, adding material where load is highest and resorbing where absent. Database query optimizers follow the same principle: frequently-accessed columns get indexes while unused indexes are removed. Both continuously reshape internal structure to match actual usage patterns rather than predicted ones.",
+      "source_domains": ["health", "technology"],
+      "endpoint_distance": 0.63,
+      "notes": "Wolff's Law applied to database indexing is novel and mechanistically specific."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "fermentation pH control",
+      "concept_b": "central bank interest rate policy",
+      "connection_claim": "Brewers adjust pH buffers to keep fermentation in the narrow range where desired yeast strains outcompete spoilage organisms. Central banks adjust interest rates to keep inflation in the range where productive investment outcompetes speculative behavior. Both are feedback controllers managing a single scalar variable to maintain conditions where beneficial actors dominate an ecosystem.",
+      "source_domains": ["hobbies", "economics"],
+      "endpoint_distance": 0.66,
+      "notes": "Scalar feedback control framing across brewing and monetary policy — specific and novel."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "coral bleaching",
+      "concept_b": "employee burnout",
+      "connection_claim": "Coral bleaching occurs when thermal stress causes corals to expel their symbiotic algae, losing their energy source. Employee burnout follows a parallel mechanism: sustained organizational stress causes workers to disengage from their motivating purpose. In both cases, the stressed organism survives briefly without its symbiont but cannot sustain function long-term, and recovery requires restoring the symbiotic relationship, not just removing the stressor.",
+      "source_domains": ["ecology", "career"],
+      "endpoint_distance": 0.64,
+      "notes": "Symbiosis-breakdown-under-stress framing is specific and falsifiable."
+    },
+
+    {"_comment": "=== BOUNDARY TIER === Hard middle cases. Expected outcomes are best guesses — these exist to reveal where decision boundaries fall."},
+
+    {
+      "tier": "boundary",
+      "expected_outcome": "accepted",
+      "concept_a": "sourdough crumb structure",
+      "concept_b": "Voronoi tessellation",
+      "connection_claim": "The gas cells in sourdough bread form a natural Voronoi tessellation — each cell expands until it meets resistance from neighbors, partitioning the dough into regions equidistant from nucleation points. This is the same space-filling algorithm used in computational geometry for nearest-neighbor partitioning.",
+      "source_domains": ["hobbies", "mathematics"],
+      "endpoint_distance": 0.58,
+      "notes": "Borderline — mathematically true (foam structures do follow Voronoi patterns) but fairly well-known in materials science. Tests whether novelty gate catches cross-disciplinary applications of known math."
+    },
+    {
+      "tier": "boundary",
+      "expected_outcome": "rejected",
+      "concept_a": "traffic flow",
+      "concept_b": "fluid dynamics",
+      "connection_claim": "Vehicle traffic on highways follows the same Navier-Stokes-like equations as fluid flow, with traffic jams forming as shockwaves propagate backward through the flow exactly as compression waves do in fluids.",
+      "source_domains": ["technology", "science"],
+      "endpoint_distance": 0.42,
+      "notes": "True and mechanistic, but traffic-as-fluid-dynamics is a well-established field (Lighthill-Whitham-Richards model, 1955). Should fail novelty but might pass if wiki corpus is sparse on traffic modeling."
+    },
+    {
+      "tier": "boundary",
+      "expected_outcome": "accepted",
+      "concept_a": "rock climbing route reading",
+      "concept_b": "chess middlegame evaluation",
+      "connection_claim": "Expert climbers and chess players both rely on chunking — they don't evaluate individual holds or pieces but recognize patterns of 4-7 elements as single units, which compresses the decision space. Both skills plateau at the same point: when the practitioner's chunk library saturates and gains become logarithmic.",
+      "source_domains": ["fitness", "hobbies"],
+      "endpoint_distance": 0.50,
+      "notes": "Chunking is a known cognitive concept, but applying it specifically to climbing+chess with the saturation claim is novel. Borderline — could go either way on novelty."
+    },
+    {
+      "tier": "boundary",
+      "expected_outcome": "rejected",
+      "concept_a": "garden companion planting",
+      "concept_b": "microservice architecture",
+      "connection_claim": "Companion planting places mutually beneficial species adjacent to each other (nitrogen-fixers near heavy feeders). Microservice architecture achieves similar benefits by co-locating services that share data locality, reducing network latency the way root proximity reduces nutrient transport distance.",
+      "source_domains": ["hobbies", "technology"],
+      "endpoint_distance": 0.56,
+      "notes": "The connection is real but thin — 'put related things close together' is so general it borders on tautology. Tests whether composite scoring catches low-specificity connections that pass coherence."
+    },
+    {
+      "tier": "boundary",
+      "expected_outcome": "accepted",
+      "concept_a": "whiskey aging in oak barrels",
+      "concept_b": "neural network training epochs",
+      "connection_claim": "Whiskey aging extracts flavor compounds from oak at a rate that follows diminishing returns — early years produce dramatic changes while later years add subtlety. Neural network training follows identical loss curves where early epochs capture coarse patterns and later epochs refine edge cases. Both processes have an optimal stopping point beyond which additional time degrades quality (over-oaking / overfitting).",
+      "source_domains": ["hobbies", "technology"],
+      "endpoint_distance": 0.62,
+      "notes": "Diminishing returns is a general concept, but the specific parallel between over-oaking and overfitting with the stopping-point claim is novel and falsifiable."
+    }
+  ]
+}

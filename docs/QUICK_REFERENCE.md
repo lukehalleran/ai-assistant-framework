@@ -166,6 +166,7 @@ class ShutdownProcessor:
         4) procedural skills, 5) code proposals, 6) cross-dedup (dry_run=True only),
         6.5a) open thread extraction + resolution detection [NEW 2026-03-23],
         6.5b) implementation tracking (lightweight file-existence check) [NEW 2026-03-24],
+        6.8) synthesis dreaming — cross-store candidate generation + filter pipeline [NEW 2026-03-28],
         7) user profile updates (user-only facts; entity facts stay in ChromaDB only).
         After summary storage: extract claims → register in ClaimIndex → add staleness metadata [NEW 2026-03-25]"""
 
@@ -1134,6 +1135,7 @@ PROMPT_TOKEN_BUDGET_DEFAULT = 40000   # API models fallback
 PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
 PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
 PROMPT_TOKEN_BUDGET_CEILING = 60000   # Maximum budget
+PROMPT_MIN_RECENT_FLOOR = 5           # Min recent conversations guaranteed post-budget [NEW 2026-03-28]
 PROMPT_MAX_MEMS = int(os.getenv("PROMPT_MAX_MEMS", "30"))
 
 # Decay & scoring
@@ -1633,6 +1635,14 @@ class AgenticSearchController:
                 yield AgenticEvent(type="done", response=final_response)
                 break
 
+    # Budget-enforced context accumulation [NEW 2026-03-28]
+    def _append_accumulated(session, new_context) -> None:
+        """Append to accumulated_context; trims oldest rounds if > context_budget_tokens."""
+    # Budget-aware final prompt assembly [NEW 2026-03-28]
+    def _build_final_prompt(query, session, initial_context) -> str:
+        """Assembles final prompt; trims low-value sections (dreams, reflections, docs,
+        summaries) if total exceeds ceiling, preserving recent_conversations + agentic results."""
+
 
 # core/agentic/types.py
 @dataclass
@@ -1923,6 +1933,149 @@ PROVENANCE_THINKING_MAX_CHARS = 4000     # Truncation limit for thinking block s
 
 ---
 
+## Knowledge Synthesis Filter Pipeline **[NEW 2026-03-28]**
+
+```python
+# knowledge/synthesis_models.py — Data models
+class CoherenceLevel(Enum):          # INVALID(0.0), WEAK(0.33), MODERATE(0.66), STRONG(1.0)
+class CandidateStatus(Enum):         # PENDING, REJECTED, ACCEPTED, CONVERGING
+
+@dataclass
+class SynthesisCandidate:
+    concept_a: str                   # First endpoint concept
+    concept_b: str                   # Second endpoint concept
+    connection_claim: str            # Articulated bridge statement
+    walk_path: List[str]             # Full random walk node sequence
+    source_domains: Set[str]         # Domain tags crossed
+    endpoint_distance: float         # Cosine distance between endpoints
+    path_hash: str                   # SHA-256[:16] of walk_path
+
+@dataclass
+class SynthesisResult:
+    candidate: SynthesisCandidate
+    stage_results: List[StageResult] # Per-stage pass/fail/score/timing
+    coherence_level: Optional[CoherenceLevel]
+    novelty_score_external: float    # 1 - nearest_wiki_similarity
+    novelty_score_internal: float    # 1 - nearest_synthesis_similarity
+    composite_score: float
+    status: CandidateStatus
+    unique_paths: Set[str]           # Convergence: independent walk paths
+    unique_sources: Set[str]         # Convergence: distinct concept pairs
+    convergence_strength: float      # |paths| * |sources|
+    # to_metadata() -> dict, from_metadata(dict, doc) -> SynthesisResult
+
+# memory/synthesis_memory.py — Persistence + convergence tracking
+class SynthesisMemory:
+    COLLECTION_NAME = "synthesis_results"  # 12th ChromaDB collection
+    def __init__(self, chroma_store, similarity_threshold=0.85): ...
+    def find_similar(claim, threshold=None, limit=5) -> List[Tuple[SynthesisResult, float]]: ...
+    def store_result(result) -> str:       # Deduplicates; updates convergence if similar exists
+    def get_recurring(min_paths=3, min_sources=2) -> List[SynthesisResult]: ...
+    def get_stats() -> dict:               # {total_insights, converging_insights, collection}
+
+# knowledge/synthesis_filter.py — 8-stage async pipeline
+class SynthesisFilter:
+    def __init__(self, chroma_store, model_manager, synthesis_memory=None,
+                 wiki_collection="wiki_knowledge"): ...
+    async def process_candidate(candidate) -> SynthesisResult:  # Full pipeline, auto-stores accepted
+    async def process_batch(candidates) -> dict:
+        # Returns: {total, accepted, rejected, rejection_breakdown, accepted_results, avg_stage_times_ms}
+
+# Pipeline stages (cheap → expensive):
+# 0: text_sanity      — min tokens, verb check, repetition ratio (~0ms)
+# 1: domain_crossing   — min 2 distinct domains (~1ms)
+# 2: semantic_distance  — endpoint distance in [0.20, 0.90] (~5ms)
+# 3: novelty_external   — wiki corpus similarity < 0.80 (~10ms)
+# 4: novelty_internal   — synthesis memory; new paths pass as convergence (~10ms)
+# 5: coherence_judge    — LLM 4-tier rating, min MODERATE (~500ms-2s)
+# 6: composite_scoring  — weighted composite ≥ 0.40 threshold
+# 7: storage            — accepted → synthesis_results collection
+
+# Composite: 0.30*coherence + 0.40*novelty + 0.15*distance + 0.15*structural
+# Novelty:   0.6*external + 0.4*internal
+
+# Config (app_config.py):
+SYNTHESIS_ENABLED = True
+SYNTHESIS_MIN_TOKEN_LENGTH = 10
+SYNTHESIS_MAX_REPETITION_RATIO = 0.5
+SYNTHESIS_MIN_DOMAINS = 2
+SYNTHESIS_DISTANCE_MIN = 0.20
+SYNTHESIS_DISTANCE_MAX = 0.90
+SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.80
+SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.50
+SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
+SYNTHESIS_COHERENCE_MODEL = "gpt-4o-mini"
+SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
+SYNTHESIS_WEIGHT_COHERENCE = 0.30
+SYNTHESIS_WEIGHT_NOVELTY = 0.40
+SYNTHESIS_WEIGHT_DISTANCE = 0.15
+SYNTHESIS_WEIGHT_STRUCTURAL = 0.15
+SYNTHESIS_COMPOSITE_MIN_SCORE = 0.40
+SYNTHESIS_CONVERGENCE_STRONG_PATHS = 3
+SYNTHESIS_CONVERGENCE_STRONG_SOURCES = 2
+SYNTHESIS_DEFAULT_BATCH_SIZE = 100
+SYNTHESIS_LOG_ALL_REJECTIONS = True
+
+# YAML (config.yaml):
+# synthesis:
+#   enabled: true
+#   batch_size: 100
+#   distance_min: 0.20
+#   distance_max: 0.90
+#   coherence_model: gpt-4o-mini
+#   coherence_min_level: MODERATE
+#   weights: {coherence: 0.30, novelty: 0.40, distance: 0.15, structural: 0.15}
+#   composite_min_score: 0.40
+```
+
+---
+
+## Synthesis Generator (Cross-Store Candidate Generation) **[NEW 2026-03-28]**
+
+```python
+# knowledge/synthesis_generator.py — Cross-store sampling + LLM bridge articulation
+class SynthesisGenerator:
+    def __init__(self, chroma_store, model_manager, graph_memory=None, entity_resolver=None): ...
+    async def generate_candidates(count=5) -> List[SynthesisCandidate]:
+        # 1. Sample personal entities from facts collection (broad query seeds)
+        # 2. Sample wiki articles from wiki_knowledge collection
+        # 3. Form cross-domain pairs (deduplicated, domain-classified)
+        # 4. Parallel LLM bridge articulation (semaphore-limited concurrency)
+        # 5. Package as SynthesisCandidate objects for filter pipeline
+    def _sample_personal_entities(n) -> List[Dict]:  # 12 query seeds, shuffled
+    def _sample_wiki_articles(n) -> List[Dict]:       # 12 query seeds, shuffled
+    def _classify_domain(item) -> str:                # categorize_relation() or keyword heuristics
+    async def _articulate_bridge(concept_a, concept_b, domain_a, domain_b, ctx_a, ctx_b) -> Optional[str]:
+        # LLM call; returns None on NO_CONNECTION or <5 words
+    def _compute_endpoint_distance(concept_a, concept_b) -> float:
+        # Graph shortest path (normalized to [0.15, 1.0]) or default 0.55
+    def get_sampling_stats() -> dict:                 # {facts_count, wiki_count, graph_nodes, graph_edges}
+
+# Integration:
+# - Shutdown: step 6.8 in process_shutdown_memory() — after threads, before graph save
+# - Pipeline: generate_candidates() → SynthesisFilter.process_batch() → SynthesisMemory
+# - Graph sparsity guard: skips if graph < SYNTHESIS_GENERATOR_MIN_GRAPH_NODES nodes
+
+# Config (app_config.py):
+SYNTHESIS_GENERATOR_ENABLED = True
+SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION = 5
+SYNTHESIS_GENERATOR_LLM_CONCURRENCY = 5
+SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20
+
+# YAML (config.yaml):
+# synthesis_generator:
+#   enabled: true
+#   candidates_per_session: 5
+#   llm_concurrency: 5
+#   min_graph_nodes: 20
+
+# Tests: 18 unit tests in tests/unit/test_synthesis_generator.py
+# Calibration: 6 tests in tests/test_synthesis_calibration.py
+# Fixtures: tests/fixtures/calibration_candidates.json (54 labeled candidates, 7 tiers)
+```
+
+---
+
 ## Retrieval Quality Benchmarks **[NEW 2026-02-17]**
 
 ```bash
@@ -1970,4 +2123,4 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-This document is ~1,950 lines → ~13K tokens, providing instant lookup for critical functions and patterns.
+This document is ~2,070 lines → ~14K tokens, providing instant lookup for critical functions and patterns.

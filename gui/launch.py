@@ -377,7 +377,7 @@ def _run_monthly_notes_catchup():
 def _run_reference_docs_seed():
     """
     Auto-seed docs/ directory into reference_docs ChromaDB collection on startup.
-    Uses file mtime for idempotency — unchanged files are skipped.
+    Uses content hash for idempotency — unchanged files are skipped.
     Non-blocking - runs in background daemon thread.
     """
     import threading

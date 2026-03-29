@@ -5,7 +5,7 @@ Conversational onboarding wizard for first-run setup.
 
 Module Contract
 - Purpose: Conversational wizard state machine for first-run onboarding. Collects API key,
-  style preferences, and user identity through chat interface. Bypasses RAG/memory pipeline entirely.
+  Tavily key, style preferences, and user identity through chat interface.
 - Inputs:
   - WizardState dataclass tracking current step and collected data
   - process_wizard_message(user_input, state, orchestrator) → (response, new_state, is_complete)
@@ -15,9 +15,13 @@ Module Contract
   - Updated WizardState after each step
   - is_complete=True when wizard finishes
 - Side effects:
-  - Writes API key to .env file (plaintext) AND sets os.environ at runtime
-  - Calls LLMFactExtractor on "anything else" input
+  - Writes API keys to .env file (OPENAI_API_KEY, TAVILY_API_KEY)
+  - Extracts user + entity facts via LLMFactExtractor (dual-budget, fact_scope aware)
+  - Stores user facts to both UserProfile (JSON) AND ChromaDB (semantic retrieval)
+  - Stores entity facts to ChromaDB only (not UserProfile)
+  - Generates custom_personality.txt for warm/direct styles (balanced uses default)
   - Saves completed profile via UserProfile.save()
+- Note: FactVerifier is intentionally skipped — no existing facts to conflict on first boot.
 """
 
 import os
@@ -534,6 +538,7 @@ async def _handle_background(
     Handle background information collection.
 
     Extracts facts from user's background text using LLMFactExtractor.
+    Separates user facts from entity facts via fact_scope field.
     """
     facts_summary = ""
 
@@ -546,11 +551,22 @@ async def _handle_background(
             facts = await extractor.extract_triples([user_input])
 
             if facts:
-                state.collected_data['initial_facts'] = facts
-                # Create a brief summary of extracted facts
-                fact_objects = [f.get('object', '') or f.get('value', '') for f in facts[:3]]
-                facts_summary = f" ({', '.join(fact_objects)}{'...' if len(facts) > 3 else ''})"
-                logger.info(f"[Wizard] Extracted {len(facts)} facts from background")
+                # Separate user facts from entity facts using fact_scope
+                user_facts = [f for f in facts if f.get('fact_scope', 'user') == 'user']
+                entity_facts = [f for f in facts if f.get('fact_scope') == 'entity']
+                state.collected_data['initial_facts'] = user_facts
+                state.collected_data['initial_entity_facts'] = entity_facts
+
+                # Summary shows user facts only (most relevant for onboarding display)
+                display_facts = user_facts[:3]
+                if display_facts:
+                    fact_objects = [f.get('object', '') or f.get('value', '') for f in display_facts]
+                    facts_summary = f" ({', '.join(fact_objects)}{'...' if len(user_facts) > 3 else ''})"
+
+                logger.info(
+                    f"[Wizard] Extracted {len(user_facts)} user facts + "
+                    f"{len(entity_facts)} entity facts from background"
+                )
             else:
                 logger.warning(f"[Wizard] No facts extracted from background text (check LLM Facts logs above)")
 
@@ -567,15 +583,12 @@ async def _finalize_wizard(
     facts_summary: str = ""
 ) -> Tuple[str, WizardState, bool]:
     """
-    Save profile and complete wizard.
+    Save profile, persist facts to ChromaDB, generate personality file, and complete wizard.
 
-    Args:
-        state: Current wizard state with collected data
-        orchestrator: DaemonOrchestrator instance
-        facts_summary: Brief summary of extracted facts for response
-
-    Returns:
-        Tuple of (completion_message, state, is_complete=True)
+    Stores user facts to both UserProfile (JSON) and ChromaDB (semantic retrieval).
+    Entity facts go to ChromaDB only (not UserProfile).
+    Generates custom_personality.txt if style != balanced.
+    Skips FactVerifier — no existing facts to conflict with on first boot.
     """
     try:
         from memory.user_profile import UserProfile
@@ -597,44 +610,105 @@ async def _finalize_wizard(
             style=state.collected_data.get('style', 'balanced')
         )
 
-        # Add initial facts if provided (but filter out identity facts that conflict with wizard-collected data)
-        if 'initial_facts' in state.collected_data:
-            wizard_name = state.collected_data.get('name', '').strip()
-            wizard_pronouns = state.collected_data.get('pronouns', '').strip()
+        # --- Store user facts to UserProfile + ChromaDB ---
+        wizard_name = state.collected_data.get('name', '').strip()
+        wizard_pronouns = state.collected_data.get('pronouns', '').strip()
+        chroma_store = None
+        if hasattr(orchestrator, 'memory_system') and orchestrator.memory_system:
+            chroma_store = getattr(orchestrator.memory_system, 'chroma_store', None)
 
-            added_count = 0
-            skipped_count = 0
-            for fact in state.collected_data['initial_facts']:
-                relation = fact.get('relation', '')
+        profile_added = 0
+        chroma_added = 0
+        skipped = 0
 
-                # Skip extracted name/pronouns if wizard already collected them
-                # This prevents LLM misinterpretations from overwriting correct data
-                if relation == 'name' and wizard_name:
-                    logger.info(f"[Wizard] Skipping extracted name='{fact.get('object')}' - wizard collected name='{wizard_name}'")
-                    skipped_count += 1
-                    continue
-                if relation == 'pronouns' and wizard_pronouns:
-                    logger.info(f"[Wizard] Skipping extracted pronouns - wizard collected pronouns='{wizard_pronouns}'")
-                    skipped_count += 1
-                    continue
+        for fact in state.collected_data.get('initial_facts', []):
+            relation = fact.get('relation', '')
+            obj = fact.get('value') or fact.get('object', '')
 
-                profile.add_fact(
-                    relation=relation,
-                    value=fact.get('value') or fact.get('object', ''),
-                    confidence=fact.get('confidence', 0.7),
-                    source_excerpt="Initial wizard background",
-                    category=None  # Will be auto-categorized
-                )
-                added_count += 1
-            logger.info(f"[Wizard] Added {added_count} initial facts to profile (skipped {skipped_count} conflicting identity facts)")
+            # Skip extracted name/pronouns if wizard already collected them
+            if relation == 'name' and wizard_name:
+                logger.info(f"[Wizard] Skipping extracted name='{obj}' — wizard collected name='{wizard_name}'")
+                skipped += 1
+                continue
+            if relation == 'pronouns' and wizard_pronouns:
+                logger.info(f"[Wizard] Skipping extracted pronouns — wizard collected pronouns='{wizard_pronouns}'")
+                skipped += 1
+                continue
 
-        # Ensure profile is saved (defensive - update methods should have saved already)
+            # UserProfile (identity/preferences JSON)
+            profile.add_fact(
+                relation=relation,
+                value=obj,
+                confidence=fact.get('confidence', 0.7),
+                source_excerpt="Initial wizard background",
+                category=None  # Auto-categorized
+            )
+            profile_added += 1
+
+            # ChromaDB (semantic retrieval)
+            if chroma_store:
+                subj = fact.get('subject', 'user')
+                fact_text = f"{subj} | {relation} | {obj}"
+                try:
+                    chroma_store.add_fact(
+                        fact=fact_text,
+                        source={
+                            "source": "onboarding_wizard",
+                            "confidence": fact.get('confidence', 0.7),
+                            "fact_scope": "user",
+                        },
+                    )
+                    chroma_added += 1
+                except Exception as e:
+                    logger.warning(f"[Wizard] ChromaDB add_fact failed: {e}")
+
+        # --- Store entity facts to ChromaDB only (not UserProfile) ---
+        entity_added = 0
+        for fact in state.collected_data.get('initial_entity_facts', []):
+            if not chroma_store:
+                break
+            subj = fact.get('subject', '')
+            relation = fact.get('relation', '')
+            obj = fact.get('value') or fact.get('object', '')
+            if not (subj and relation and obj):
+                continue
+
+            fact_text = f"{subj} | {relation} | {obj}"
+            source_dict = {
+                "source": "onboarding_wizard",
+                "confidence": fact.get('confidence', 0.55),
+                "fact_scope": "entity",
+            }
+            for key in ("entity_type", "user_connection"):
+                val = fact.get(key)
+                if val:
+                    source_dict[key] = val
+            try:
+                chroma_store.add_fact(fact=fact_text, source=source_dict)
+                entity_added += 1
+            except Exception as e:
+                logger.warning(f"[Wizard] ChromaDB entity add_fact failed: {e}")
+
+        logger.info(
+            f"[Wizard] Facts stored: {profile_added} to profile, "
+            f"{chroma_added} user + {entity_added} entity to ChromaDB "
+            f"(skipped {skipped} conflicting identity facts)"
+        )
+
+        # Ensure profile is saved
         profile.save()
-        logger.info(f"[Wizard] Profile saved successfully. Identity: name='{profile.identity.name}', pronouns='{profile.identity.pronouns}', style='{profile.preferences.style}'")
+        logger.info(
+            f"[Wizard] Profile saved. Identity: name='{profile.identity.name}', "
+            f"pronouns='{profile.identity.pronouns}', style='{profile.preferences.style}'"
+        )
 
         # Update orchestrator's profile reference
         if hasattr(orchestrator, 'user_profile'):
             orchestrator.user_profile = profile
+
+        # --- Generate personality file from style choice ---
+        style = state.collected_data.get('style', 'balanced')
+        _apply_personality_style(style)
 
         logger.info("[Wizard] Wizard complete, orchestrator profile updated")
 
@@ -650,3 +724,72 @@ async def _finalize_wizard(
         response = "Alright, we're all set! Feel free to start chatting whenever you're ready."
 
     return response, state, True
+
+
+# ---------------------------------------------------------------------------
+# Personality style helpers
+# ---------------------------------------------------------------------------
+
+_STYLE_MODIFIERS = {
+    'warm': """
+
+## Style Override — Warm & Supportive
+
+Lean into warmth and emotional attunement. When in doubt, choose the more supportive response.
+- Give longer, more reflective replies when the user shares something personal
+- Offer more affirmation and encouragement (but stay genuine — never hollow)
+- Ask follow-up questions that show real interest in how they're feeling
+- Default to empathetic framing before practical advice
+""",
+    'direct': """
+
+## Style Override — Direct & Concise
+
+Prioritize brevity and clarity. Trim anything that doesn't add information.
+- Lead with the answer, skip preambles
+- Keep replies short unless the topic genuinely requires depth
+- Minimize small talk and filler — get to the point
+- Default to practical advice before emotional framing
+- Still be warm when it matters (emotional support, bad news) — just be efficient about it
+""",
+}
+
+
+def _apply_personality_style(style: str) -> None:
+    """
+    Generate custom_personality.txt from default + style modifier.
+    For 'balanced', remove any existing custom file so default is used.
+    """
+    try:
+        from config.app_config import PERSONALITY_CUSTOM_PATH, PERSONALITY_DEFAULT_PATH
+
+        if style == 'balanced':
+            # Use default personality — remove custom if it exists
+            custom_path = Path(PERSONALITY_CUSTOM_PATH)
+            if custom_path.exists():
+                custom_path.unlink()
+                logger.info("[Wizard] Removed custom personality — using default (balanced)")
+            return
+
+        modifier = _STYLE_MODIFIERS.get(style)
+        if not modifier:
+            logger.warning(f"[Wizard] Unknown style '{style}', skipping personality generation")
+            return
+
+        # Read default personality as base
+        default_path = Path(PERSONALITY_DEFAULT_PATH)
+        if not default_path.exists():
+            logger.warning("[Wizard] Default personality file not found, skipping")
+            return
+
+        base_text = default_path.read_text(encoding='utf-8')
+        custom_text = base_text + modifier
+
+        # Write custom personality
+        custom_path = Path(PERSONALITY_CUSTOM_PATH)
+        custom_path.parent.mkdir(parents=True, exist_ok=True)
+        custom_path.write_text(custom_text, encoding='utf-8')
+        logger.info(f"[Wizard] Generated '{style}' personality ({len(custom_text)} chars)")
+
+    except Exception as e:
+        logger.warning(f"[Wizard] Personality generation failed (non-critical): {e}")

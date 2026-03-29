@@ -2,10 +2,10 @@
 # memory/storage/multi_collection_chroma_store.py
 
 Module Contract
-- Purpose: Wrapper over ChromaDB with 11 separate collections (conversations, summaries,
+- Purpose: Wrapper over ChromaDB with 12 separate collections (conversations, summaries,
   wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural,
-  procedural_skills, proposals, threads). Provides unified add/query/update helpers
-  with robust metadata flattening.
+  procedural_skills, proposals, threads, synthesis_results). Provides unified
+  add/query/update helpers with robust metadata flattening.
 - Class: MultiCollectionChromaStore(persist_directory)
 - Key methods:
   - add_to_collection(name, text, metadata) -> str  [generic add, returns doc_id]
@@ -109,6 +109,7 @@ class MultiCollectionChromaStore:
             'procedural_skills': None,  # Reusable problem-solving patterns
             'proposals': None,           # Goal-directed code change proposals
             'threads': None,             # Open threads (commitments, deadlines, questions)
+            'synthesis_results': None,   # Cross-domain synthesis insights from graph walks
         }
 
         self._initialize_collections()

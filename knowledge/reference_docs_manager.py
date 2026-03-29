@@ -15,7 +15,7 @@ Module Contract:
   - sync_directory(directory: str, file_patterns: List[str]) -> Dict: Batch sync directory with summary counts
 - Outputs:
   - Embedded document chunks in reference_docs ChromaDB collection
-  - Retrieved chunks with metadata (title, section, file_type, chunk_index, file_mtime)
+  - Retrieved chunks with metadata (title, section, file_type, chunk_index, file_mtime, content_hash)
   - Appears in prompt as [DAEMON DOCUMENTATION] section
 - Side effects:
   - Writes to reference_docs ChromaDB collection
@@ -29,7 +29,7 @@ Features:
 - Supports .md, .txt files (expandable to PDF, DOCX later)
 - Hybrid retrieval: 1/3 keyword + 2/3 semantic (like Obsidian notes)
 - Higher priority than wiki but lower than personal notes
-- Auto-seed on GUI startup: docs/ directory synced via mtime-based idempotency
+- Auto-seed on GUI startup: docs/ directory synced via content-hash idempotency
 """
 
 import os
@@ -219,6 +219,10 @@ class ReferenceDocsManager:
         # Chunk the content
         chunks = self._chunk_by_headers(content, result.title)
 
+        # Compute file metadata once (not per-chunk)
+        file_mtime = os.path.getmtime(str(path))
+        content_hash = self._compute_file_hash(str(path))
+
         # Add each chunk to ChromaDB
         for chunk in chunks:
             try:
@@ -233,7 +237,8 @@ class ReferenceDocsManager:
                     'total_chunks': chunk['total_chunks'],
                     'timestamp': datetime.now().isoformat(),
                     'truth_score': 0.85,  # High confidence for uploaded docs
-                    'file_mtime': os.path.getmtime(str(path)),
+                    'file_mtime': file_mtime,
+                    'content_hash': content_hash,
                 }
 
                 self.chroma_store.add_to_collection(
@@ -365,25 +370,34 @@ class ReferenceDocsManager:
             logger.warning(f"[RefDocs] Failed to get document chunks: {e}")
             return []
 
-    def _get_document_mtime(self, title: str) -> Optional[float]:
-        """Get stored file_mtime for a document by title. Returns None if not found."""
+    def _get_stored_content_hash(self, title: str) -> Optional[str]:
+        """Get stored content_hash for a document by title. Returns None if not found."""
         chunks = self._get_document_chunks(title)
         if chunks:
-            return chunks[0].get('metadata', {}).get('file_mtime')
+            return chunks[0].get('metadata', {}).get('content_hash')
         return None
+
+    @staticmethod
+    def _compute_file_hash(file_path: str) -> str:
+        """Compute SHA-256 hash of file contents."""
+        h = hashlib.sha256()
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
 
     def sync_file(self, file_path: str, title: str = None) -> str:
         """
         Sync a single file. Returns 'uploaded', 'skipped', or 'failed'.
-        Uses mtime comparison to skip unchanged files.
+        Uses content hash comparison to skip unchanged files.
         """
         path = Path(file_path).expanduser().resolve()
         if not path.exists() or not path.is_file():
             return 'failed'
         title = title or path.stem
-        current_mtime = os.path.getmtime(str(path))
-        stored_mtime = self._get_document_mtime(title)
-        if stored_mtime and current_mtime <= stored_mtime:
+        current_hash = self._compute_file_hash(str(path))
+        stored_hash = self._get_stored_content_hash(title)
+        if stored_hash and current_hash == stored_hash:
             return 'skipped'
         result = self.upload_document(str(path), title)
         return 'uploaded' if result.success else 'failed'
@@ -391,7 +405,7 @@ class ReferenceDocsManager:
     def sync_directory(self, directory: str, file_patterns: List[str] = None) -> Dict[str, Any]:
         """
         Sync all matching files from a directory into reference_docs.
-        Uses file mtime for idempotency — skips unchanged files.
+        Uses content hash for idempotency — skips unchanged files.
 
         Args:
             directory: Path to directory to scan

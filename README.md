@@ -41,7 +41,7 @@ When a query needs more than stored memory, Daemon enters a multi-round ReAct lo
 | **Web Search** | Tavily API with query decomposition, caching, and rate limiting |
 | **Wolfram Alpha** | Symbolic computation, unit conversions, scientific data |
 | **Code Sandbox** | Secure Python execution in ephemeral Firecracker microVMs (E2B) |
-| **Memory Search** | Targeted search across 11 ChromaDB collections from within the loop |
+| **Memory Search** | Targeted search across 12 ChromaDB collections from within the loop |
 | **Memory Expansion** | Drill into a search hit — retrieve chronological neighbors or decompress summaries back to original conversations |
 | **Done** | Signal synthesis complete |
 
@@ -122,7 +122,7 @@ User Query
     ├─ Knowledge Graph ───── Entity resolution (alias tables, trigram matching) +
     │                        BFS expansion (depth 2) + lateral connectivity ranking
     │
-    ├─ Parallel Retrieval ── 18 async tasks across 11 ChromaDB collections
+    ├─ Parallel Retrieval ── 18 async tasks across 12 ChromaDB collections
     │                        (conversations, facts, summaries, reflections, wiki,
     │                         obsidian notes, git commits, procedural skills, threads,
     │                         proposals, reference docs, proactive insights, ...)
@@ -137,6 +137,7 @@ User Query
     ├─ Prompt Assembly ───── 26 conditional sections, token-budgeted (40K default)
     │                        Two-tier compression: LLM summary (≥3x oversized) +
     │                        middle-out slicing (mildly oversized)
+    │                        Post-budget floors: min 5 recent conversations guaranteed
     │                        Attention-aware ordering (high-signal sections at end)
     │                        Codebase diff injection on session start
     │
@@ -144,6 +145,7 @@ User Query
     │                        Tools: Tavily + Wolfram Alpha + E2B sandbox +
     │                        memory search + memory expansion + done
     │                        Context inventory prevents redundant re-searches
+    │                        Budget-enforced context accumulation (oldest rounds trimmed)
     │
     ├─ Generation ─────────── Standard streaming | Best-of-N | Duel (A vs B + judge) |
     │                        Multi-model ensemble with voter selection
@@ -164,7 +166,7 @@ User Query
 
 ## Memory System
 
-Five memory tiers modeled on cognitive architecture, stored across 11 ChromaDB collections:
+Five memory tiers modeled on cognitive architecture, stored across 12 ChromaDB collections:
 
 | Tier | What It Stores | Retrieval Bias |
 |------|---------------|----------------|
@@ -173,6 +175,7 @@ Five memory tiers modeled on cognitive architecture, stored across 11 ChromaDB c
 | **Procedural** | Git commits + learned skill patterns | Pattern matching |
 | **Summary** | LLM-compressed conversation blocks (with source backlinks) | Relevance |
 | **Meta** | Session reflections + open threads + code proposals + proactive insights | Priority / urgency |
+| **Synthesis** | Accepted cross-domain connections with convergence tracking | Composite score + convergence |
 
 The scoring function for ranking retrieved memories:
 
@@ -235,7 +238,7 @@ The agentic system uses a ReAct (Reason + Act) pattern with dual protocol suppor
 | Web Search | Tavily API | Query decomposition for multi-entity queries, 72hr ChromaDB cache, daily credit tracking |
 | Wolfram Alpha | LLM API | Token bucket rate limiting, MD5-keyed result cache, assumption parsing |
 | Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across loop iterations), NumPy/Pandas/SciPy pre-installed |
-| Memory Search | ChromaDB (11 collections) | Per-collection search descriptions, diversity tracking prevents redundant queries |
+| Memory Search | ChromaDB (12 collections) | Per-collection search descriptions, diversity tracking prevents redundant queries |
 | Memory Expansion | Temporal + backlink strategies | For summaries: recovers original conversations via source_doc_ids or temporal anchors. For other collections: ±N chronological neighbors. Session-gated, cached. |
 
 ---
@@ -278,7 +281,7 @@ Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces ma
 
 ---
 
-## Knowledge Synthesis Vision
+## Knowledge Synthesis Pipeline
 
 > *This is the primary long-term goal. Everything else is infrastructure.*
 
@@ -286,11 +289,21 @@ The idea: use **Markov chain random walks** across large embedded knowledge base
 
 **Data sources** (planned): Wikipedia (embedded, query-retrieval working), arXiv abstracts, PubMed abstracts — unified embedding space.
 
-**Filtering pipeline** (the hard problem):
-1. **Bulk filter** — cosine similarity against known-good connections, kill ~80-90% of noise
-2. **Coherence judge** — smaller LLM: "is this logically sound and interesting?"
-3. **Pairwise reranking** — stronger LLM: relative novelty comparison across candidates
-4. **Novelty detection** — inverted retrieval: embed winners, search source literature. High similarity = known. Low similarity + high coherence = signal.
+**Filtering pipeline** (implemented — `knowledge/synthesis_filter.py`):
+
+| Stage | Gate | Cost | What It Does |
+|-------|------|------|-------------|
+| 0 | Text Sanity | ~0ms | Min tokens, verb detection, repetition filter |
+| 1 | Domain Crossing | ~1ms | Require ≥2 distinct domains |
+| 2 | Semantic Distance | ~5ms | Endpoint distance in [0.20, 0.90] — not too close, not nonsensical |
+| 3 | External Novelty | ~10ms | Wiki corpus search — reject if similarity > 0.80 (already known) |
+| 4 | Internal Novelty | ~10ms | Synthesis memory check — new paths to same insight pass (convergence signal) |
+| 5 | Coherence Judge | ~500ms | LLM rates INVALID/WEAK/MODERATE/STRONG — minimum MODERATE to pass |
+| 6 | Composite Score | ~0ms | Weighted composite ≥ 0.40: coherence(0.30) + novelty(0.40) + distance(0.15) + structural(0.15) |
+
+**Convergence detection**: The real signal isn't raw frequency — it's independent rediscovery. When different random walks find the same insight via different paths, that's evidence of a genuine connection. The pipeline tracks unique walk paths and concept pairs per insight, promoting to CONVERGING status at 3+ independent paths from 2+ distinct source pairs.
+
+**Synthesis memory**: Accepted insights are stored in a dedicated ChromaDB collection (`synthesis_results`) with full metadata — coherence rating, novelty scores, convergence tracking. Duplicate detection prevents redundant storage; instead, new paths to existing insights update convergence metadata.
 
 The personal assistant earns its keep as a daily testbed for every component in this pipeline — gating, scoring, reranking, truth scoring, deduplication — at conversational scale before batch synthesis workloads stress them at knowledge-base scale.
 
@@ -436,10 +449,11 @@ memory/                      # 5-tier memory system
 ├── cross_deduplicator.py    # Cross-collection dedup + contradiction detection
 ├── context_surfacer.py      # Proactive cross-domain insight generation
 ├── memory_expander.py       # Temporal expansion + summary drill-down
+├── synthesis_memory.py      # Synthesis results persistence + convergence tracking
 ├── thread_store.py          # ChromaDB-backed thread CRUD + priority ranking
 ├── thread_extractor.py      # LLM-based thread extraction + resolution detection
 └── storage/
-    └── multi_collection_chroma_store.py  # ChromaDB wrapper (11 collections)
+    └── multi_collection_chroma_store.py  # ChromaDB wrapper (12 collections)
 
 processing/
 └── gate_system.py           # FAISS → cosine → cross-encoder pipeline
@@ -456,7 +470,9 @@ knowledge/
 ├── obsidian_manager.py      # Obsidian vault sync + multimodal image support
 ├── reference_docs_manager.py # Auto-seeded docs/ knowledge
 ├── wiki_manager.py          # FAISS-indexed Wikipedia (6.5M articles)
-└── implementation_detector.py # 4-stage proposal implementation tracking
+├── implementation_detector.py # 4-stage proposal implementation tracking
+├── synthesis_models.py      # Synthesis pipeline data models + enums
+└── synthesis_filter.py      # 8-stage synthesis filter pipeline
 
 utils/
 ├── tone_detector.py         # 250+ weighted keywords, 4 crisis levels
