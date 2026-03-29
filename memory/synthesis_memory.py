@@ -129,8 +129,16 @@ class SynthesisMemory:
         existing.convergence_strength = len(existing.unique_paths) * len(existing.unique_sources)
 
         # Promote status if convergence is strong
+        was_converging = existing.status == CandidateStatus.CONVERGING
         if len(existing.unique_paths) >= 3 and len(existing.unique_sources) >= 2:
             existing.status = CandidateStatus.CONVERGING
+            if not was_converging:
+                logger.warning(
+                    f"[SYNTH CONVERGING] "
+                    f"concepts={existing.candidate.concept_a}<->{existing.candidate.concept_b} | "
+                    f"paths={len(existing.unique_paths)} sources={len(existing.unique_sources)} | "
+                    f"claim={existing.candidate.connection_claim[:120]}"
+                )
 
         # Find the existing doc ID and update metadata
         try:

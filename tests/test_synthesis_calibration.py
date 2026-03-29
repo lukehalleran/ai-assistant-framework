@@ -84,22 +84,34 @@ def _build_mock_store():
     store = MagicMock()
 
     # Topics that should trigger high novelty similarity (trivial)
+    # Includes both concept names and claim-text keywords for robust matching
     _trivial_topics = {
-        "exercise", "mental health", "sleep", "cognitive", "compound interest",
+        "physical exercise", "mental health", "sleep", "cognitive", "compound interest",
         "retirement", "musical instrument", "mathematical reasoning",
         "bilingualism", "dementia", "dark chocolate", "cardiovascular",
         "pet ownership", "blood pressure", "nature", "creativity",
         "gut microbiome", "mood", "cold exposure", "immune",
         "video games", "surgical", "standing desk", "back pain",
         "gratitude", "sleep quality",
+        # Claim-text keywords (concepts reworded in claims)
+        "musical training", "pattern recognition", "spatial-temporal",
+        "gut-brain", "serotonin", "vagus nerve", "endorphin",
+        "neuroplasticity", "oxytocin", "cortisol",
+        "flavanol", "nitric oxide", "endothelial",
+        "norepinephrine", "wim hof", "cold water immersion",
+        "laparoscopic", "fine motor", "spinal compression",
+        "prefrontal cortex", "cognitive arousal",
     }
 
     # Topics that should trigger moderate novelty similarity (known-interesting)
     _known_topics = {
-        "ant colony", "tcp", "congestion", "immune system", "caching",
+        "ant colony", "tcp", "congestion", "immune system", "caching", "cache",
         "mycelial", "content delivery", "mycorrhizal", "predator-prey",
         "autoscaling", "lotka-volterra", "counterpoint", "adversarial",
-        "gan", "bach",
+        "gans", "bach",
+        # Claim-text keywords
+        "memory b cells", "cdn", "wood wide web",
+        "dorigo", "slow-start",
     }
 
     def query_collection_side_effect(collection_name, query_text, n_results=3):
@@ -124,7 +136,7 @@ def _build_mock_store():
                     "id": "wiki_known_1",
                     "content": f"Published analysis of {query_text[:100]}",
                     "metadata": {"title": "Academic Survey"},
-                    "relevance_score": 0.83,  # dist~0.20 -> sim~0.80
+                    "relevance_score": 0.85,  # dist~0.18 -> sim~0.82 (above 0.80 threshold)
                     "collection": "wiki_knowledge",
                     "rank": 1,
                 }]
@@ -167,12 +179,19 @@ def _build_mock_model_manager():
         "living constitution", "nash equilibrium", "temporal singularity",
         "coriolis", "dark matter", "foreign keys", "hegelian",
         "categorical imperative", "just-in-time supply chain",
+        "instantaneously",  # false physics
+        "living room",  # domestic trivia
     ]
 
     # Soft noise markers (analogies that might fool naive checks)
     _soft_noise = [
-        "just as", "like a", "similar to how", "mirrors", "embodies",
-        "represents", "analogous to",
+        "just as", "like a", "similar to", "mirrors", "embodies",
+        "represent", "analogous to",
+    ]
+
+    # Overstatement markers (causal overclaims and lazy analogies)
+    _overstatement = [
+        "directly explains", "exactly as", "both involve",
     ]
 
     # Borderline noise markers (pseudoscience wrapped in science language)
@@ -192,32 +211,36 @@ def _build_mock_model_manager():
     ]
 
     async def coherence_judge(prompt, model_name=None, system_prompt="",
-                              max_tokens=100, temperature=0.1, **kwargs):
+                              max_tokens=200, temperature=0.1, **kwargs):
         prompt_lower = prompt.lower()
 
         # Pseudoscience check (borderline noise)
         if any(marker in prompt_lower for marker in _pseudoscience):
-            return "WEAK The claimed mechanism relies on debunked or oversimplified science."
+            return "Against: The claimed mechanism relies on debunked or oversimplified science.\nFor: Uses scientific vocabulary.\nRating: WEAK"
 
         # Hard noise check
         hard_count = sum(1 for phrase in _hard_noise if phrase in prompt_lower)
         if hard_count >= 1:
-            return "INVALID This is a forced analogy with no mechanistic basis."
+            return "Against: This is a forced analogy with no mechanistic basis.\nFor: None.\nRating: INVALID"
+
+        # Overstatement check (causal overclaims)
+        if any(marker in prompt_lower for marker in _overstatement):
+            return "Against: The claim overstates a causal relationship without mechanistic support.\nFor: Uses real domain vocabulary.\nRating: WEAK"
 
         # Soft noise check
         soft_count = sum(1 for phrase in _soft_noise if phrase in prompt_lower)
         if soft_count >= 2:
-            return "WEAK The connection relies on surface-level metaphor rather than mechanism."
+            return "Against: The connection relies on surface-level metaphor rather than mechanism.\nFor: Identifies a superficial parallel.\nRating: WEAK"
 
         # Mechanistic check
         mech_count = sum(1 for m in _mechanistic if m in prompt_lower)
         if mech_count >= 2:
-            return "STRONG A compelling, mechanistically grounded connection with falsifiable claims."
+            return "Against: Could be coincidental structural similarity.\nFor: Identifies a compelling, mechanistically grounded connection with falsifiable claims.\nRating: STRONG"
         if mech_count == 1:
-            return "MODERATE A plausible connection with some mechanistic basis."
+            return "Against: Only one mechanistic detail provided.\nFor: A plausible connection with some mechanistic basis.\nRating: MODERATE"
 
         # Default: moderate for anything that doesn't trigger specific heuristics
-        return "MODERATE A plausible connection with some logical basis."
+        return "Against: No obvious flaw but limited mechanistic detail.\nFor: A plausible connection with some logical basis.\nRating: MODERATE"
 
     mm.generate_once = AsyncMock(side_effect=coherence_judge)
     return mm
@@ -262,6 +285,8 @@ class TestSynthesisCalibration:
                 "coherence": result.coherence_level.name if result.coherence_level else "N/A",
                 "novelty_ext": result.novelty_score_external,
                 "novelty_int": result.novelty_score_internal,
+                "cooccurrence_sim": result.cooccurrence_similarity,
+                "template_sim": result.template_similarity,
                 "stage_scores": {
                     sr.stage_name: sr.score for sr in result.stage_results if sr.score is not None
                 },
@@ -350,6 +375,20 @@ class TestSynthesisCalibration:
                       f"max={max(novelties):.3f}, "
                       f"mean={sum(novelties)/len(novelties):.3f}")
 
+            # Co-occurrence similarity scores
+            cooccurrences = [r["cooccurrence_sim"] for r in tier_results]
+            if any(v > 0 for v in cooccurrences):
+                print(f"  Co-occurrence sim:  min={min(cooccurrences):.3f}, "
+                      f"max={max(cooccurrences):.3f}, "
+                      f"mean={sum(cooccurrences)/len(cooccurrences):.3f}")
+
+            # Template similarity scores
+            templates = [r["template_sim"] for r in tier_results]
+            if any(v > 0 for v in templates):
+                print(f"  Template sim:       min={min(templates):.3f}, "
+                      f"max={max(templates):.3f}, "
+                      f"mean={sum(templates)/len(templates):.3f}")
+
         # --- Boundary Cases (composite near threshold) ---
         threshold = 0.40
         boundary = [r for r in all_results if 0.30 <= r["composite_score"] <= 0.50]
@@ -360,6 +399,8 @@ class TestSynthesisCalibration:
                 print(f"  [{status}] {r['concept_a']} <-> {r['concept_b']}: "
                       f"composite={r['composite_score']:.3f}, "
                       f"coherence={r['coherence']}, "
+                      f"cooccur={r['cooccurrence_sim']:.2f}, "
+                      f"template={r['template_sim']:.2f}, "
                       f"tier={r['tier']}")
 
         # --- Misclassifications ---
@@ -371,6 +412,8 @@ class TestSynthesisCalibration:
                 print(f"  [{direction}] {r['concept_a']} <-> {r['concept_b']}: "
                       f"tier={r['tier']}, composite={r['composite_score']:.3f}, "
                       f"coherence={r['coherence']}, "
+                      f"cooccur={r['cooccurrence_sim']:.2f}, "
+                      f"template={r['template_sim']:.2f}, "
                       f"rejection_stage={r['rejection_stage']}")
                 print(f"         notes: {r['notes']}")
 
@@ -385,7 +428,9 @@ class TestSynthesisCalibration:
                 print(f"  [{match}] {r['concept_a']} <-> {r['concept_b']}: "
                       f"expected={guess}, actual={actual}, "
                       f"composite={r['composite_score']:.3f}, "
-                      f"coherence={r['coherence']}")
+                      f"coherence={r['coherence']}, "
+                      f"cooccur={r['cooccurrence_sim']:.2f}, "
+                      f"template={r['template_sim']:.2f}")
 
         print("\n" + "=" * 80)
         assert True  # diagnostic — always passes

@@ -1129,11 +1129,14 @@ SYNTHESIS_USE_PERCENTILE_THRESHOLDS: bool = bool(SYNTHESIS_CFG.get("use_percenti
 SYNTHESIS_NOVELTY_KNOWN_THRESHOLD: float = float(SYNTHESIS_CFG.get("novelty_known_threshold", 0.80))
 SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD: float = float(SYNTHESIS_CFG.get("novelty_adjacent_threshold", 0.50))
 
+# Stage 3b: Co-occurrence — reject if bare "A B" appears together in wiki
+SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD: float = float(SYNTHESIS_CFG.get("cooccurrence_known_threshold", 0.75))
+
 # Stage 4: Internal Novelty (synthesis memory)
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD: float = float(SYNTHESIS_CFG.get("memory_similarity_threshold", 0.85))
 
 # Stage 5: Coherence Judge
-SYNTHESIS_COHERENCE_MODEL: str = str(SYNTHESIS_CFG.get("coherence_model", "openai/gpt-4o-mini"))
+SYNTHESIS_COHERENCE_MODEL: str = str(SYNTHESIS_CFG.get("coherence_model", "sonnet-4.5"))
 SYNTHESIS_COHERENCE_MIN_LEVEL: str = str(SYNTHESIS_CFG.get("coherence_min_level", "MODERATE"))
 
 # Stage 6: Composite Scoring
@@ -1143,6 +1146,13 @@ SYNTHESIS_WEIGHT_NOVELTY: float = float(_SYNTH_WEIGHTS.get("novelty", 0.40))
 SYNTHESIS_WEIGHT_DISTANCE: float = float(_SYNTH_WEIGHTS.get("distance", 0.15))
 SYNTHESIS_WEIGHT_STRUCTURAL: float = float(_SYNTH_WEIGHTS.get("structural", 0.15))
 SYNTHESIS_COMPOSITE_MIN_SCORE: float = float(SYNTHESIS_CFG.get("composite_min_score", 0.40))
+
+# Novelty sub-weights (used inside the SYNTHESIS_WEIGHT_NOVELTY envelope)
+_SYNTH_NOVELTY_W = SYNTHESIS_CFG.get("novelty_weights", {})
+SYNTHESIS_NOVELTY_W_CLAIM: float = float(_SYNTH_NOVELTY_W.get("claim", 0.25))
+SYNTHESIS_NOVELTY_W_COOCCURRENCE: float = float(_SYNTH_NOVELTY_W.get("cooccurrence", 0.30))
+SYNTHESIS_NOVELTY_W_SPECIFICITY: float = float(_SYNTH_NOVELTY_W.get("specificity", 0.25))
+SYNTHESIS_NOVELTY_W_INTERNAL: float = float(_SYNTH_NOVELTY_W.get("internal", 0.20))
 
 # Stage 7: Storage / Convergence
 SYNTHESIS_CONVERGENCE_STRONG_PATHS: int = int(SYNTHESIS_CFG.get("convergence_strong_paths", 3))
