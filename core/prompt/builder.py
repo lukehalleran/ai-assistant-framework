@@ -18,6 +18,8 @@ Module Contract
     Generates [ACTIVE FEATURES] section from config flags and context counts.
   - _hygiene_and_caps(context, stm_summary) -> Dict
     Deduplication, caps, staleness prefixes, on-demand reflections.
+  - Post-budget floors (Step 7.1): Guarantees minimum recent_conversations (PROMPT_MIN_RECENT_FLOOR=5),
+    summaries (PROMPT_MAX_SUMMARIES), and reflections (PROMPT_MAX_REFLECTIONS) survive budget trimming.
 - Outputs:
   - Complete formatted prompt string ready for LLM consumption
   - Context dictionary with all assembled data, metadata, and performance metrics
@@ -179,6 +181,7 @@ PROMPT_MAX_SEMANTIC = _cfg_int("prompt_max_semantic", 8)
 PROMPT_MAX_WIKI = _cfg_int("prompt_max_wiki", 3)
 USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)
 PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
+PROMPT_MIN_RECENT_FLOOR = _cfg_int("prompt_min_recent_floor", 5)
 
 def _staleness_prefix(item) -> str:
     """Return a staleness prefix for highly stale summaries/reflections.
@@ -1074,9 +1077,34 @@ class UnifiedPromptBuilder:
             context = self.token_manager._manage_token_budget(context)
             logger.warning(f"AFTER TOKEN BUDGET: memories count = {len(context.get('memories', []))}")
 
-            # Step 7.1: Post-budget floors for summaries and reflections
-            # Ensure these sections are not dropped entirely by budget trimming.
+            # Step 7.1: Post-budget floors for critical sections
+            # Ensure recent conversations, summaries, and reflections are not
+            # dropped entirely by budget trimming.
             try:
+                # Recent conversations floor — guarantee session context survives
+                recent_convos = context.get("recent_conversations", []) or []
+                if len(recent_convos) < PROMPT_MIN_RECENT_FLOOR:
+                    needed_recent = PROMPT_MIN_RECENT_FLOOR - len(recent_convos)
+                    try:
+                        stored_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MIN_RECENT_FLOOR * 2)
+                    except Exception as e:
+                        logger.debug(f"Failed to fetch recent conversations for floor: {e}")
+                        stored_recent = []
+                    if stored_recent:
+                        def _recent_key(x):
+                            return (str(x.get("query", "")) + str(x.get("response", ""))).strip().lower()
+                        have_keys = {_recent_key(r) for r in recent_convos}
+                        add_recent = []
+                        for r in stored_recent:
+                            if isinstance(r, dict) and _recent_key(r) not in have_keys:
+                                add_recent.append(r)
+                                have_keys.add(_recent_key(r))
+                            if len(add_recent) >= needed_recent:
+                                break
+                        if add_recent:
+                            context['recent_conversations'] = (context.get('recent_conversations') or []) + add_recent
+                            logger.info(f"[POST-BUDGET FLOOR] Restored {len(add_recent)} recent conversations (had {len(recent_convos)}, floor={PROMPT_MIN_RECENT_FLOOR})")
+
                 # Summaries floor
                 if len(context.get("summaries", []) or []) < PROMPT_MAX_SUMMARIES:
                     needed = PROMPT_MAX_SUMMARIES - len(context.get("summaries", []))

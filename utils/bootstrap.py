@@ -259,7 +259,7 @@ def migrate_user_data() -> None:
 # API KEY VALIDATION
 # =============================================================================
 
-_PLACEHOLDER_PATTERNS = ("test-key", "your_", "your-", "placeholder", "xxx", "changeme", "TODO")
+_PLACEHOLDER_PATTERNS = ("test-key", "your_", "your-", "placeholder", "xxx", "changeme", "TODO", "test-key-12345")
 
 _API_KEY_CHECKS = {
     "TAVILY_API_KEY": "Web search will not work",
@@ -323,6 +323,13 @@ def setup_environment() -> str:
         os.environ.setdefault('USER_PROFILE_PATH', os.path.join(user_dir, 'user_profile.json'))
         os.environ.setdefault('LOG_DIR', os.path.join(user_dir, 'logs'))
         os.environ.setdefault('CONVERSATION_LOG_DIR', os.path.join(user_dir, 'conversation_logs'))
+
+        # JSON persistence paths (knowledge graph, aliases, staleness, surfacing, web credits)
+        os.environ.setdefault('KNOWLEDGE_GRAPH_PERSIST_PATH', os.path.join(user_dir, 'knowledge_graph.json'))
+        os.environ.setdefault('KNOWLEDGE_GRAPH_ALIASES_PATH', os.path.join(user_dir, 'entity_aliases.json'))
+        os.environ.setdefault('STALENESS_INDEX_PATH', os.path.join(user_dir, 'claim_index.json'))
+        os.environ.setdefault('SURFACING_HISTORY_PATH', os.path.join(user_dir, 'surfacing_history.json'))
+        os.environ.setdefault('WEB_SEARCH_CREDITS_PATH', os.path.join(user_dir, 'web_search_credits.json'))
 
         # Bundled resource paths
         os.environ.setdefault('SYSTEM_PROMPT_PATH', get_resource_path('core/system_prompt.txt'))

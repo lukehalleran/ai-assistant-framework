@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: sonnet-4.6
+  active: claude-opus-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -283,6 +283,36 @@ implementation_tracking:
 provenance:
   enabled: true
   thinking_max_chars: 4000
+synthesis:
+  enabled: true
+  batch_size: 100
+  log_rejections: true
+  min_token_length: 10
+  max_repetition_ratio: 0.5
+  min_domains: 2
+  distance_min: 0.20
+  distance_max: 0.90
+  use_percentile_thresholds: false
+  novelty_known_threshold: 0.80
+  novelty_adjacent_threshold: 0.50
+  memory_similarity_threshold: 0.85
+  coherence_model: gpt-4o-mini
+  coherence_min_level: MODERATE
+  weights:
+    coherence: 0.30
+    novelty: 0.40
+    distance: 0.15
+    structural: 0.15
+  composite_min_score: 0.40
+  convergence_strong_paths: 3
+  convergence_strong_sources: 2
+
+synthesis_generator:
+  enabled: false  # waiting on wiki_knowledge embed (~5M articles) to finish
+  candidates_per_session: 5
+  llm_concurrency: 5
+  min_graph_nodes: 20
+
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

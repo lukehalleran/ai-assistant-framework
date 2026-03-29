@@ -1,70 +1,142 @@
-feat: File-based personality system, provenance audit trail, streaming thinking detection, file access tools
+feat: Synthesis pipeline, wizard dual-budget facts, context budget enforcement, frozen-exe data paths
 
-## Personality System Overhaul
-- Deleted PersonalityManager class and JSON configs (personality/)
-- New file-based system: editable default_personality.txt + immutable operating_principles.txt
-- config/app_config.py: load_personality_text(), load_default_personality(), load_operating_principles()
-- orchestrator._build_system_prompt() composes personality + principles with placeholder substitution
-- GUI "Personality" tab: live editing with Set/Restore Default buttons
-- PERSONALITY_MAX_CHARS (15000) hard cap prevents prompt budget blowout
+--- NEW FILES ---
 
-## Citation & Provenance Audit Trail
-- Every stored interaction carries provenance metadata in ChromaDB: session_id, response_mode,
-  model_name, thinking_block, cited_memory_ids, prompt_hash, agentic_summary
-- All 5 response modes (agentic, enhanced, best-of, best-of-duel, fallback) build provenance dicts
-- AgenticSearchSession.get_provenance_summary() with per-round action classification
-- Citation markers [MEM_RECENT_N] / [MEM_SEMANTIC_N] injected into agentic prompts
-- GUI "Provenance" tab (renamed from "Citations") displays per-turn audit data
-- Config: PROVENANCE_ENABLED, PROVENANCE_THINKING_MAX_CHARS (4000)
+knowledge/synthesis_models.py (159 lines)
+  - Pydantic data models for synthesis pipeline: SynthesisCandidate, FilterResult,
+    CoherenceLevel enum, DomainTag, ConvergenceStatus
 
-## Streaming Thinking Detection
-- response_generator.py: Detects reasoning_content in streaming chunks, emits synthetic
-  <thinking>/<\/thinking> wrapper tags around reasoning blocks
-- response_parser.py: has_incomplete_thinking_block() and extract_incomplete_thinking() for
-  streaming suppression; parse_thinking_block() handles <output> wrappers; strip_xml_wrappers()
-  now removes <output> and <response> tags
-- handlers.py: Shows "Thinking..." indicator during reasoning, suppresses raw thinking text
+knowledge/synthesis_filter.py (520 lines)
+  - 8-stage async filter pipeline for graph walk candidates:
+    Stage 0: Text sanity (min tokens, verb detection, repetition filter)
+    Stage 1: Domain crossing (require >=2 distinct domains)
+    Stage 2: Semantic distance (endpoint distance in [0.20, 0.90])
+    Stage 3: External novelty (wiki corpus search, reject if similarity > 0.80)
+    Stage 4: Internal novelty (synthesis memory dedup, convergence signal)
+    Stage 5: Coherence judge (LLM rates INVALID/WEAK/MODERATE/STRONG)
+    Stage 6: Composite score (weighted >=0.40: coherence+novelty+distance+structural)
+    Stage 7: Storage/convergence tracking
 
-## File Access Agentic Tools
-- New tools in ReAct loop: file_read, file_grep, file_list for filesystem access
-- Tool definitions in types.py, parsing in protocols.py, execution in controller.py
-- _classify_round_action() classifies rounds by query prefix
+knowledge/synthesis_generator.py (561 lines)
+  - Cross-store candidate generation for synthesis dreaming
+  - Samples entities from facts + wiki_knowledge ChromaDB collections
+  - LLM bridge articulation with semaphore-based concurrency control
+  - Graph shortest-path endpoint distance (falls back to 0.55 default)
 
-## handlers.py Simplification
-- Duel mode moved before agentic check (dedicated block)
-- ~370 lines of duplicated best-of/streaming code removed
-- API errors classified with user-friendly messages ([CREDITS EXHAUSTED], [RATE LIMITED], etc.)
-- Empty response detection with explicit error messages
+memory/synthesis_memory.py (201 lines)
+  - ChromaDB-backed persistence for synthesis results
+  - Convergence tracking: unique walk paths + concept pairs per insight
+  - Promotes to CONVERGING status at 3+ independent paths from 2+ source pairs
+  - Duplicate detection prevents redundant storage
 
-## Other Changes
-- model_manager.py: supports_reasoning() method, list-of-content-blocks handling in generate_once()
-- cross_deduplicator.py: Double-deletion guard (deleted_ids set across phases)
-- memory_coordinator.py: session_id property, store_interaction() accepts session_id/provenance
-- memory_storage.py: Provenance metadata storage with thinking truncation and agentic summary
-- context_gatherer.py: Robustness fixes for empty content and missing metadata fields
-- semantic_search.py: Env var overrides for FAISS paths (WIKI_DATA_ROOT, FAISS_INDEX_PATH)
-- data/pipeline/run_pipeline.sh: Env var configuration, 3rd stage ChromaDB loading
-- Removed personality_manager references from main.py, gui_smoke.py, test_wizard_force_flag_override.py
+scripts/load_parquet_to_chromadb.py (218 lines)
+  - Utility script to load parquet files into ChromaDB collections
 
-## Docs & Contracts
-- PROJECT_SKELETON.md: Updated for personality system, file access tools, streaming thinking,
-  provenance, response_parser/generator/model_manager enhancements, cross-dedup fix
-- QUICK_REFERENCE.md: Added personality system section, file access tools, response_parser
-  new methods, updated provenance defaults (4000 not 2000)
-- FORMAL_MODEL.md: Personality composition in prompt construction, file access in tool set,
-  fixed PROVENANCE_THINKING_MAX_CHARS default
-- Module contracts updated in 11 diff-changed files: orchestrator.py, handlers.py, launch.py,
-  app_config.py, controller.py, types.py, response_generator.py, memory_storage.py,
-  memory_coordinator.py, model_manager.py, cross_deduplicator.py
-- MemoryStorageProtocol (memory_interface.py): store_interaction() signature updated with
-  session_id and provenance parameters
-- Full codebase contract audit: fixed 16 additional outdated/missing module contracts:
-  - core/prompt/: builder.py, context_gatherer.py, formatter.py, summarizer.py, base.py
-    (phantom methods removed, actual public API documented)
-  - memory/: memory_scorer.py, memory_retriever.py (3-line stubs → full contracts),
-    shutdown_processor.py (added graph/claim/dedup/tracking phases),
-    proposal_store.py (added tracking/dedup methods),
-    multi_collection_chroma_store.py (added all CRUD/query/update methods)
-  - knowledge/: git_memory.py, git_memory_loader.py (informal → formal contracts)
-  - utils/: tone_detector.py (4-stage pipeline documented), topic_manager.py (missing → added),
-    file_processor.py (class-based API documented), query_checker.py (all functions documented)
+tests/fixtures/calibration_candidates.json (570 lines)
+  - 54 labeled calibration candidates across 7 quality tiers
+
+tests/test_synthesis_calibration.py (540 lines)
+  - 6 calibration tests for synthesis filter threshold tuning
+
+tests/unit/test_synthesis_generator.py (380 lines)
+  - 18 unit tests for SynthesisGenerator
+
+--- MODIFIED FILES ---
+
+config/app_config.py (+64 lines)
+  - Added SYNTHESIS_* config block: filter thresholds, weights, composite scoring,
+    convergence detection, batch runner settings
+  - Added SYNTHESIS_GENERATOR_* config block: enabled flag, candidates per session,
+    LLM concurrency, min graph nodes guard
+  - Added WEB_SEARCH_CREDITS_PATH configurable path (env var override)
+  - Added env var overrides for KNOWLEDGE_GRAPH_PERSIST_PATH, KNOWLEDGE_GRAPH_ALIASES_PATH,
+    PROACTIVE_SURFACING_HISTORY_PATH, STALENESS_INDEX_PATH (frozen exe support)
+
+config/config.yaml (+32 lines)
+  - Added synthesis: section (filter thresholds, weights, coherence model, batch settings)
+  - Added synthesis_generator: section (disabled by default, waiting on wiki embed)
+  - Changed active model from sonnet-4.6 to claude-opus-4.6
+
+core/agentic/controller.py (+109 lines)
+  - Added _estimate_tokens(): token estimation using tokenizer or 4-char fallback
+  - Added _append_accumulated(): budget-enforced context accumulation, trims oldest
+    rounds when exceeding context_budget_tokens (default 8K)
+  - Replaced all 9 direct accumulated_context concatenations with _append_accumulated()
+  - Added budget-aware _build_final_prompt(): trims low-value sections (dreams,
+    reflections, docs, summaries) when total exceeds 5x context budget ceiling
+
+core/prompt/builder.py (+32 lines)
+  - Added PROMPT_MIN_RECENT_FLOOR=5: post-budget floor guarantees minimum recent
+    conversations survive token budget trimming
+  - Fetches from storage to restore recent conversations if budget dropped below floor
+
+memory/shutdown_processor.py (+64 lines)
+  - Added Step 6.8: _run_synthesis_dreaming() — generates candidates via
+    SynthesisGenerator, filters through SynthesisFilter, stores accepted results
+  - Updated module contract docstring
+
+memory/storage/multi_collection_chroma_store.py (+3/-2)
+  - Added synthesis_results collection (12th collection)
+  - Updated module contract: 11 → 12 collections
+
+gui/wizard.py (+239 lines changed)
+  - Dual-budget fact storage: separates user facts from entity facts via fact_scope
+  - User facts stored to both UserProfile (JSON) AND ChromaDB (semantic retrieval)
+  - Entity facts stored to ChromaDB only (not UserProfile)
+  - Added _apply_personality_style(): generates custom_personality.txt for warm/direct
+    styles from default personality base + style modifier appendix
+  - Added _STYLE_MODIFIERS dict with warm/direct personality overrides
+  - FactVerifier intentionally skipped on first boot (no existing facts to conflict)
+  - Updated module contract docstring
+
+knowledge/reference_docs_manager.py (+36 lines changed)
+  - Switched from mtime-based to content-hash (SHA-256) idempotency for file sync
+  - Added _compute_file_hash() static method
+  - Renamed _get_document_mtime() → _get_stored_content_hash()
+  - content_hash stored in chunk metadata alongside file_mtime
+
+knowledge/web_search_manager.py (+11 lines changed)
+  - WebSearchRateLimiter reads state_file path from WEB_SEARCH_CREDITS_PATH config
+    (supports frozen exe data path relocation)
+
+utils/bootstrap.py (+9 lines)
+  - Added JSON persistence path defaults for frozen executables: knowledge_graph.json,
+    entity_aliases.json, claim_index.json, surfacing_history.json, web_search_credits.json
+  - All routed to user_dir so frozen exe writes to writable location
+  - Added "test-key-12345" to placeholder API key patterns
+
+daemon.spec (+29 lines)
+  - Added personality prompt files to bundled data (default_personality.txt,
+    operating_principles.txt, directives.txt, system_prompts.txt)
+  - Added docs/ directory to bundled data (auto-seeded into ChromaDB)
+  - Removed old conditional personality directory check
+  - Added networkx hidden imports (knowledge graph dependency)
+
+gui/launch.py (1 line)
+  - Updated docstring: mtime → content hash for reference docs seed
+
+README.md (+40 lines changed)
+  - Updated collection count: 11 → 12 throughout
+  - Added Synthesis tier to memory system table
+  - Added post-budget floors and budget-enforced context accumulation to architecture
+  - Replaced "Knowledge Synthesis Vision" section with implemented pipeline details
+    (filter stages table, convergence detection, synthesis memory description)
+  - Added synthesis_models.py and synthesis_filter.py to file tree
+
+docs/FORMAL_MODEL.md (+97 lines)
+  - Added synthesis pipeline formal specification
+
+docs/PROJECT_SKELETON.md (+203 lines)
+  - Added synthesis pipeline, generator, filter, and memory module descriptions
+
+docs/QUICK_REFERENCE.md (+155 lines)
+  - Added synthesis config reference, filter stages, convergence rules
+
+test_corpus.json (~4000 lines changed)
+  - Updated/regenerated test corpus data
+
+tests/test_multi_collection_chroma_store.py (+2/-2)
+  - Updated collection count assertions: 11 → 12
+
+tests/test_wizard.py (+6/-5)
+  - Added patch for write_tavily_key_to_env in Tavily key test

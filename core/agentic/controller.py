@@ -7,6 +7,10 @@ Contract:
     - Emits ProgressEvent for UI updates
     - Enforces max_rounds limit (default 5)
     - Compresses search results to fit context budget
+    - Budget-enforced accumulated_context: _append_accumulated() trims oldest rounds
+      when accumulated context exceeds context_budget_tokens (default 8000) [NEW 2026-03-28]
+    - Budget-aware final prompt: _build_final_prompt() trims low-value sections
+      (dreams, reflections, docs, summaries) if total exceeds ceiling [NEW 2026-03-28]
     - Falls back gracefully on search/API failures
 
 Tool Support:
@@ -157,6 +161,43 @@ class AgenticSearchController:
                 self.memory_expander = MemoryExpander(chroma_store)
             except Exception as e:
                 logger.warning(f"[AgenticSearch] Could not init MemoryExpander: {e}")
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count for text, using tokenizer if available."""
+        if self.token_manager and hasattr(self.token_manager, 'get_token_count'):
+            try:
+                model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
+                return self.token_manager.get_token_count(text or "", model_name)
+            except Exception:
+                pass
+        # Fallback: ~4 chars per token
+        return len(text or "") // 4
+
+    def _append_accumulated(self, session: "AgenticSearchSession", new_context: str) -> None:
+        """Append to accumulated_context with budget enforcement.
+
+        If adding new_context would exceed context_budget_tokens, trim
+        the oldest accumulated content (from the front) to make room.
+        """
+        candidate = session.accumulated_context + "\n\n" + new_context if session.accumulated_context else new_context
+        total_tokens = self._estimate_tokens(candidate)
+
+        if total_tokens <= self.context_budget_tokens:
+            session.accumulated_context = candidate
+            return
+
+        # Over budget — trim from the front (oldest rounds) to make room
+        # Split into round blocks and drop from the front until under budget
+        blocks = candidate.split("\n\n---\n")
+        while len(blocks) > 1 and self._estimate_tokens("\n\n---\n".join(blocks)) > self.context_budget_tokens:
+            blocks.pop(0)
+
+        session.accumulated_context = "\n\n---\n".join(blocks)
+        logger.info(
+            f"[AgenticSearch] Trimmed accumulated_context to fit budget: "
+            f"{total_tokens} -> {self._estimate_tokens(session.accumulated_context)} tokens "
+            f"(budget={self.context_budget_tokens})"
+        )
 
     def detect_protocol(self, model_name: str) -> SearchProtocol:
         """
@@ -394,12 +435,12 @@ class AgenticSearchController:
                     round_data.summary = compressed
                     session.rounds.append(round_data)
 
-                    # Add to accumulated context
-                    session.accumulated_context += "\n\n" + self._format_search_context(
+                    # Add to accumulated context (budget-enforced)
+                    self._append_accumulated(session, self._format_search_context(
                         session.current_round - 1,  # Already incremented by rounds.append
                         decision.search_query,
                         compressed
-                    )
+                    ))
 
                     # Check result quality and update relaxation hint
                     is_low_quality, issue = self._is_low_quality_result(
@@ -470,12 +511,12 @@ class AgenticSearchController:
                     round_data.summary = wolfram_result
                     session.rounds.append(round_data)
 
-                    # Add to accumulated context
-                    session.accumulated_context += "\n\n" + self._format_wolfram_context(
+                    # Add to accumulated context (budget-enforced)
+                    self._append_accumulated(session, self._format_wolfram_context(
                         session.current_round - 1,
                         decision.wolfram_query,
                         wolfram_result
-                    )
+                    ))
 
                 elif decision.wants_sandbox and decision.sandbox_code:
                     # Model wants to execute Python code in sandbox
@@ -541,12 +582,12 @@ class AgenticSearchController:
                     round_data.summary = formatted_result
                     session.rounds.append(round_data)
 
-                    # Add to accumulated context
-                    session.accumulated_context += "\n\n" + self._format_sandbox_context(
+                    # Add to accumulated context (budget-enforced)
+                    self._append_accumulated(session, self._format_sandbox_context(
                         session.current_round - 1,
                         purpose,
                         formatted_result
-                    )
+                    ))
 
                 elif decision.wants_memory_search and decision.memory_query:
                     # Model wants to search internal memory/knowledge base
@@ -596,12 +637,12 @@ class AgenticSearchController:
                         session.memory_search_counts.get(collection, 0) + 1
                     )
 
-                    session.accumulated_context += "\n\n" + self._format_memory_context(
+                    self._append_accumulated(session, self._format_memory_context(
                         session.current_round - 1,
                         collection,
                         decision.memory_query,
                         memory_result
-                    )
+                    ))
 
                 elif decision.wants_memory_expand and decision.expand_memory_id:
                     # Model wants to expand a memory hit for surrounding context
@@ -666,9 +707,9 @@ class AgenticSearchController:
                     round_data.summary = formatted
                     session.rounds.append(round_data)
                     session.expand_count += 1
-                    session.accumulated_context += "\n\n" + self._format_expand_context(
+                    self._append_accumulated(session, self._format_expand_context(
                         session.current_round - 1, memory_id, formatted
-                    )
+                    ))
 
                 elif decision.wants_file_read and decision.file_read_path:
                     # Model wants to read a file from disk
@@ -709,11 +750,11 @@ class AgenticSearchController:
                     session.state = AgentState.OBSERVING
                     round_data.summary = file_result
                     session.rounds.append(round_data)
-                    session.accumulated_context += "\n\n" + self._format_file_context(
+                    self._append_accumulated(session, self._format_file_context(
                         session.current_round - 1,
                         f"file_read: {decision.file_read_path}",
                         file_result
-                    )
+                    ))
 
                 elif decision.wants_file_grep and decision.file_grep_pattern:
                     # Model wants to grep files on disk
@@ -754,11 +795,11 @@ class AgenticSearchController:
                     session.state = AgentState.OBSERVING
                     round_data.summary = grep_result
                     session.rounds.append(round_data)
-                    session.accumulated_context += "\n\n" + self._format_file_context(
+                    self._append_accumulated(session, self._format_file_context(
                         session.current_round - 1,
                         f"file_grep: {decision.file_grep_pattern}",
                         grep_result
-                    )
+                    ))
 
                 elif decision.wants_file_list and decision.file_list_path:
                     # Model wants to list a directory
@@ -798,11 +839,11 @@ class AgenticSearchController:
                     session.state = AgentState.OBSERVING
                     round_data.summary = list_result
                     session.rounds.append(round_data)
-                    session.accumulated_context += "\n\n" + self._format_file_context(
+                    self._append_accumulated(session, self._format_file_context(
                         session.current_round - 1,
                         f"file_list: {decision.file_list_path}",
                         list_result
-                    )
+                    ))
 
                 elif decision.is_done:
                     # Model signals it has enough info
@@ -1346,6 +1387,36 @@ What would you like to do?""")
 - Cite web sources when stating facts from search results
 - Note any uncertainties or conflicting information
 - Focus on answering the user's specific question""")
+
+        # Budget enforcement: if assembled prompt is too large, trim low-value sections
+        # while preserving recent conversations and agentic search results.
+        # Use 2x the context_budget_tokens as the ceiling for the full final prompt
+        # (context_budget_tokens governs just the agentic results; full prompt gets more room).
+        prompt_ceiling = self.context_budget_tokens * 5  # ~40K tokens for default 8K budget
+        assembled = "\n\n".join(parts)
+        total_tokens = self._estimate_tokens(assembled)
+        if total_tokens > prompt_ceiling:
+            # Trim sections in priority order: dreams, reflections, reference docs, summaries
+            # These are the sections least critical for answering the immediate query
+            trimmable_prefixes = [
+                "[RECENT DREAMS]",
+                "[RECENT REFLECTIONS]",
+                "[DAEMON DOCUMENTATION]",
+                "[SEMANTIC SUMMARIES]",
+                "[RECENT SUMMARIES]",
+                "[USER'S PERSONAL NOTES]",
+            ]
+            for prefix in trimmable_prefixes:
+                parts = [p for p in parts if not p.startswith(prefix)]
+                assembled = "\n\n".join(parts)
+                total_tokens = self._estimate_tokens(assembled)
+                if total_tokens <= prompt_ceiling:
+                    break
+            if total_tokens > prompt_ceiling:
+                logger.warning(
+                    f"[AgenticSearch] Final prompt still over ceiling after trimming: "
+                    f"{total_tokens}/{prompt_ceiling} tokens"
+                )
 
         return "\n\n".join(parts)
 

@@ -97,7 +97,7 @@ def test_chroma_store_init(temp_chroma_dir):
     assert store.persist_directory == temp_chroma_dir
     assert store.client is not None
     assert store.embedding_fn is not None
-    assert len(store.collections) == 11
+    assert len(store.collections) == 12
 
 
 def test_chroma_store_collections_initialized(chroma_store):
@@ -295,7 +295,7 @@ def test_get_collection_stats(chroma_store):
     stats = chroma_store.get_collection_stats()
 
     assert isinstance(stats, dict)
-    assert len(stats) == 11
+    assert len(stats) == 12
 
     for name in ['conversations', 'summaries', 'wiki_knowledge', 'facts', 'reflections']:
         assert name in stats

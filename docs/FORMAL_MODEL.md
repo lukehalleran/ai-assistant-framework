@@ -1,6 +1,6 @@
 # Formal Model: Daemon RAG Agent
 
-**Last verified against codebase**: 2026-03-26
+**Last verified against codebase**: 2026-03-28
 
 ## 1. Primitive Sets
 
@@ -19,22 +19,23 @@ Let the following sets be given:
 The agent state at time t is:
 
 ```
-s_t = (C_t, G_t, H_t, Theta_t, Lambda_t, U_t, E_t)
+s_t = (C_t, G_t, H_t, Theta_t, Lambda_t, U_t, E_t, Sigma_t)
 ```
 
 where:
 
 | Symbol | Name | Type | Code |
 |--------|------|------|------|
-| C_t | Corpus | P(D) — typed multiset of documents | ChromaDB (11 collections) + JSON corpus |
+| C_t | Corpus | P(D) — typed multiset of documents | ChromaDB (12 collections) + JSON corpus |
 | G_t | Knowledge Graph | (V, E) — directed labeled graph | `graph_memory.py` (NetworkX DiGraph) + `entity_resolver.py` (alias table) |
 | H_t | Conversation History | (Q x R)* — ordered sequence of past turns | Recent corpus entries + STM window |
 | Theta_t | Conversation Thread | {thread_id, depth, topic, is_heavy} | `thread_manager.py` |
 | Lambda_t | Open Threads | set of (topic, type, urgency, deadline) tuples | `thread_store.py` (ChromaDB `threads` collection) |
 | U_t | User Model | key-value map of user facts/profile | `user_profile.py` |
 | E_t | Escalation State | FSM state (see Section 11) | `escalation_tracker.py` |
+| Sigma_t | Synthesis Memory | set of accepted SynthesisResult records with convergence metadata | `synthesis_memory.py` (ChromaDB `synthesis_results` collection) |
 
-**Initial state** s_0: C loaded from persistent storage, G loaded from `data/knowledge_graph.json`, Lambda loaded from ChromaDB `threads` collection, H = empty (new session), E = VALIDATE_AND_SUGGEST.
+**Initial state** s_0: C loaded from persistent storage, G loaded from `data/knowledge_graph.json`, Lambda loaded from ChromaDB `threads` collection, Sigma loaded from ChromaDB `synthesis_results` collection, H = empty (new session), E = VALIDATE_AND_SUGGEST.
 
 ---
 
@@ -204,7 +205,7 @@ beta : X x D* x iota x E -> P
 
 where P is the **prompt space** (system prompt + context + query, token-budgeted). The **system prompt** is composed from two text files: an editable personality file (`config/prompts/default_personality.txt` or user's `custom_personality.txt`) concatenated with immutable operating principles (`config/prompts/operating_principles.txt`), with placeholder substitution for `{USER_NAME}`, `{USER_PRONOUNS}`, etc. This replaces the former JSON-based `PersonalityManager`.
 
-The token budget is **model-aware**: computed as `min(context_window * 0.25, ceiling)` clamped to `[floor, ceiling]`, with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps.
+The token budget is **model-aware**: computed as `min(context_window * 0.25, ceiling)` clamped to `[floor, ceiling]`, with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps. Post-budget **floor guarantees** ensure critical sections survive trimming: recent conversations (min 5), summaries (min 10), reflections (min 10). The agentic controller enforces its own budget on accumulated search context (`context_budget_tokens` default 8000) and trims low-value sections from the final prompt if total exceeds ceiling.
 
 Assembly produces an ordered sequence of 26 conditional sections:
 
@@ -577,7 +578,87 @@ Pi : {session_id, response_mode, model_name, thinking_block,
 
 ---
 
-## 13. Summary: The Complete Agent
+## 13. Synthesis Filter Pipeline
+
+The synthesis pipeline transforms raw graph walk candidates into validated cross-domain insights. It operates on the synthesis memory Sigma_t, independent of the conversational agent loop.
+
+### 13.1 Candidate Space
+
+A synthesis candidate c is produced by a random walk over the knowledge graph G:
+
+```
+c = (a, b, claim, path, domains, dist)
+```
+
+where a, b in V (graph nodes), claim in Q (natural language), path = [v_1, ..., v_k] is the walk sequence, domains subset of {family, health, work, hobby, ...}, dist = cosine_distance(embed(a), embed(b)).
+
+### 13.2 Filter Function
+
+The filter is a composition of 7 stages, each a gate g_i : SynthesisResult -> StageResult:
+
+```
+F(c) = g_6 . g_5 . g_4 . g_3 . g_2 . g_1 . g_0 (c)
+```
+
+The pipeline short-circuits: if any g_i.passed = false, subsequent stages do not execute.
+
+| Stage | Gate | Condition | Cost |
+|-------|------|-----------|------|
+| g_0 | Text sanity | \|tokens(claim)\| >= 10 AND repetition_ratio <= 0.5 AND has_verb(claim) | O(n) string ops |
+| g_1 | Domain crossing | \|domains\| >= 2 | O(1) |
+| g_2 | Semantic distance | 0.20 <= dist <= 0.90 | O(1) |
+| g_3 | External novelty | max_sim(claim, C_wiki) < 0.80 | O(log n) vector search |
+| g_4 | Internal novelty | path_hash not in existing.unique_paths (convergence pass) OR no match | O(log m) vector search |
+| g_5 | Coherence judge | LLM_coherence(a, b, claim) >= MODERATE | O(1) LLM call |
+| g_6 | Composite score | composite(c) >= 0.40 | O(1) arithmetic |
+
+### 13.3 Composite Scoring
+
+```
+score(c) = w_coh * coh(c) + w_nov * nov(c) + w_dist * dist_score(c) + w_str * str(c)
+
+where:
+  w_coh = 0.30, w_nov = 0.40, w_dist = 0.15, w_str = 0.15
+  coh(c) = CoherenceLevel.value in {0.0, 0.33, 0.66, 1.0}
+  nov(c) = 0.6 * (1 - max_sim_wiki) + 0.4 * (1 - max_sim_internal)
+  dist_score(c) = 1 - |dist - mid| / half    (peaks at midpoint of [0.20, 0.90])
+  str(c) = min(|domains| / 4, 1.0)
+```
+
+### 13.4 Convergence Detection
+
+Independent rediscovery from different paths is the key signal. For a result r in Sigma:
+
+```
+convergence_strength(r) = |unique_paths(r)| * |unique_sources(r)|
+```
+
+A result is promoted to CONVERGING status when:
+```
+|unique_paths(r)| >= 3  AND  |unique_sources(r)| >= 2
+```
+
+When Stage 4 finds an existing match with a new path_hash, it passes (score 0.5) rather than rejecting. At storage time (Stage 7), the existing result's convergence metadata is updated.
+
+### 13.5 State Transition
+
+After filtering:
+
+```
+Sigma_{t+1} = Sigma_t  U  {r}      if F(c).status = ACCEPTED
+            = Sigma_t               if F(c).status = REJECTED
+
+For convergence updates (existing result r' matched by new path):
+  r'.unique_paths   = r'.unique_paths   U  {c.path_hash}
+  r'.unique_sources = r'.unique_sources U  {a|b}
+  r'.convergence_strength = |r'.unique_paths| * |r'.unique_sources|
+```
+
+**Code**: `knowledge/synthesis_models.py`, `knowledge/synthesis_filter.py`, `memory/synthesis_memory.py`
+
+---
+
+## 14. Summary: The Complete Agent
 
 Putting it all together:
 
@@ -605,7 +686,7 @@ Eight operations. Perceive, interpret, expand, remember, plan, act, audit, learn
 | Q | Query space | User input strings |
 | R | Response space | Agent output strings |
 | S | State space | Distributed across all persistence |
-| C | Corpus (typed multiset, 11 collections) | ChromaDB + corpus JSON |
+| C | Corpus (typed multiset, 12 collections) | ChromaDB + corpus JSON |
 | G | Knowledge graph | `graph_memory.py` + `entity_resolver.py` |
 | H | Conversation history | Recent corpus + STM |
 | Theta | Conversation thread state | `thread_manager.py` |
@@ -625,4 +706,6 @@ Eight operations. Perceive, interpret, expand, remember, plan, act, audit, learn
 | expand | Query expansion (graph-augmented) | `context_gatherer.py:_expand_query_with_graph()` + `graph_utils.py` |
 | mu | Memory expansion (temporal window / summary drill-down) | `memory/memory_expander.py` |
 | Pi | Provenance record (session_id, response_mode, prompt_hash, ...) | `memory_storage.py` + `gui/handlers.py` |
+| Sigma | Synthesis memory (accepted SynthesisResult set) | `synthesis_memory.py` (ChromaDB `synthesis_results`) |
+| F | Synthesis filter (7-stage pipeline g_0 . ... . g_6) | `synthesis_filter.py` |
 | gate | Multi-stage gating | `processing/gate_system.py` |

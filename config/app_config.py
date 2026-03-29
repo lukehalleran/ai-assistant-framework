@@ -302,6 +302,7 @@ WEB_SEARCH_LINK_SELECTOR_MODEL: str = WEB_SEARCH_CFG.get("link_selector_model", 
 WEB_SEARCH_ENABLED = bool(int(os.getenv("WEB_SEARCH_ENABLED", "1" if WEB_SEARCH_ENABLED else "0")))
 WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", str(WEB_SEARCH_TIMEOUT)))
 WEB_SEARCH_DAILY_CREDIT_LIMIT = int(os.getenv("WEB_SEARCH_DAILY_CREDIT_LIMIT", str(WEB_SEARCH_DAILY_CREDIT_LIMIT)))
+WEB_SEARCH_CREDITS_PATH: str = os.getenv("WEB_SEARCH_CREDITS_PATH", str(WEB_SEARCH_CFG.get("credits_path", os.path.join("data", "web_search_credits.json"))))
 
 # --------------------------------------------------------------------
 # Wolfram Alpha Configuration
@@ -935,12 +936,12 @@ FACT_VERIFICATION_LLM_ENABLED = bool(int(os.getenv("FACT_VERIFICATION_LLM_ENABLE
 # traversal.  Persisted as JSON, complementary to ChromaDB vector search.
 KNOWLEDGE_GRAPH_CFG = config.get("knowledge_graph", {})
 KNOWLEDGE_GRAPH_ENABLED: bool = bool(KNOWLEDGE_GRAPH_CFG.get("enabled", True))
-KNOWLEDGE_GRAPH_PERSIST_PATH: str = str(KNOWLEDGE_GRAPH_CFG.get("persist_path", os.path.join("data", "knowledge_graph.json")))
+KNOWLEDGE_GRAPH_PERSIST_PATH: str = os.getenv("KNOWLEDGE_GRAPH_PERSIST_PATH", str(KNOWLEDGE_GRAPH_CFG.get("persist_path", os.path.join("data", "knowledge_graph.json"))))
 KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH: int = int(KNOWLEDGE_GRAPH_CFG.get("retrieval_depth", 2))
 KNOWLEDGE_GRAPH_MAX_SENTENCES: int = int(KNOWLEDGE_GRAPH_CFG.get("max_sentences", 15))
 KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD: int = int(KNOWLEDGE_GRAPH_CFG.get("auto_save_threshold", 50))
 KNOWLEDGE_GRAPH_MIN_CONFIDENCE: float = float(KNOWLEDGE_GRAPH_CFG.get("min_confidence", 0.50))
-KNOWLEDGE_GRAPH_ALIASES_PATH: str = str(KNOWLEDGE_GRAPH_CFG.get("aliases_path", os.path.join("data", "entity_aliases.json")))
+KNOWLEDGE_GRAPH_ALIASES_PATH: str = os.getenv("KNOWLEDGE_GRAPH_ALIASES_PATH", str(KNOWLEDGE_GRAPH_CFG.get("aliases_path", os.path.join("data", "entity_aliases.json"))))
 PROMPT_MAX_GRAPH_SENTENCES: int = int(KNOWLEDGE_GRAPH_CFG.get("max_prompt_sentences", 12))
 
 # Graph-boosted scoring: memories mentioning graph-connected entities get a bonus
@@ -981,7 +982,7 @@ PROACTIVE_SURFACING_MIN_GRAPH_EDGES: int = int(PROACTIVE_SURFACING_CFG.get("min_
 PROACTIVE_SURFACING_MAX_INSIGHTS: int = int(PROACTIVE_SURFACING_CFG.get("max_insights", 2))
 PROACTIVE_SURFACING_COOLDOWN_HOURS: int = int(PROACTIVE_SURFACING_CFG.get("cooldown_hours", 72))
 PROACTIVE_SURFACING_MODEL: str = str(PROACTIVE_SURFACING_CFG.get("model", ""))
-PROACTIVE_SURFACING_HISTORY_PATH: str = str(PROACTIVE_SURFACING_CFG.get("history_path", os.path.join("data", "surfacing_history.json")))
+PROACTIVE_SURFACING_HISTORY_PATH: str = os.getenv("SURFACING_HISTORY_PATH", str(PROACTIVE_SURFACING_CFG.get("history_path", os.path.join("data", "surfacing_history.json"))))
 PROMPT_MAX_PROACTIVE_INSIGHTS: int = int(PROACTIVE_SURFACING_CFG.get("max_prompt_insights", 2))
 
 # Environment variable overrides for Proactive Surfacing
@@ -1009,7 +1010,7 @@ STALENESS_HISTORICAL_THRESHOLD: float = float(STALENESS_CFG.get("historical_thre
 # Reflections get reduced penalty (behavioral patterns are more durable)
 STALENESS_REFLECTION_WEIGHT_FACTOR: float = float(STALENESS_CFG.get("reflection_weight_factor", 0.6))
 # Persistence path for the claim reverse-index
-STALENESS_INDEX_PATH: str = str(STALENESS_CFG.get("index_path", os.path.join("data", "claim_index.json")))
+STALENESS_INDEX_PATH: str = os.getenv("STALENESS_INDEX_PATH", str(STALENESS_CFG.get("index_path", os.path.join("data", "claim_index.json"))))
 
 # Environment variable overrides for Staleness
 STALENESS_ENABLED = bool(int(os.getenv("STALENESS_ENABLED", "1" if STALENESS_ENABLED else "0")))
@@ -1103,6 +1104,70 @@ LLM_COMPRESSION_ENABLED = bool(int(os.getenv("LLM_COMPRESSION_ENABLED", "1" if L
 PROV_CFG = config.get("provenance", {})
 PROVENANCE_ENABLED = bool(PROV_CFG.get("enabled", True))
 PROVENANCE_THINKING_MAX_CHARS = int(PROV_CFG.get("thinking_max_chars", 4000))
+
+# --------------------------------------------------------------------
+# Synthesis Pipeline Configuration
+# --------------------------------------------------------------------
+# Filters candidates from knowledge graph random walks to find genuinely
+# novel, coherent cross-domain connections. Cheap stages first, LLM last.
+SYNTHESIS_CFG = config.get("synthesis", {})
+SYNTHESIS_ENABLED: bool = bool(SYNTHESIS_CFG.get("enabled", True))
+
+# Stage 0: Text Sanity
+SYNTHESIS_MIN_TOKEN_LENGTH: int = int(SYNTHESIS_CFG.get("min_token_length", 10))
+SYNTHESIS_MAX_REPETITION_RATIO: float = float(SYNTHESIS_CFG.get("max_repetition_ratio", 0.5))
+
+# Stage 1: Domain Crossing
+SYNTHESIS_MIN_DOMAINS: int = int(SYNTHESIS_CFG.get("min_domains", 2))
+
+# Stage 2: Semantic Distance
+SYNTHESIS_DISTANCE_MIN: float = float(SYNTHESIS_CFG.get("distance_min", 0.20))
+SYNTHESIS_DISTANCE_MAX: float = float(SYNTHESIS_CFG.get("distance_max", 0.90))
+SYNTHESIS_USE_PERCENTILE_THRESHOLDS: bool = bool(SYNTHESIS_CFG.get("use_percentile_thresholds", False))
+
+# Stage 3: External Novelty (wiki corpus)
+SYNTHESIS_NOVELTY_KNOWN_THRESHOLD: float = float(SYNTHESIS_CFG.get("novelty_known_threshold", 0.80))
+SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD: float = float(SYNTHESIS_CFG.get("novelty_adjacent_threshold", 0.50))
+
+# Stage 4: Internal Novelty (synthesis memory)
+SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD: float = float(SYNTHESIS_CFG.get("memory_similarity_threshold", 0.85))
+
+# Stage 5: Coherence Judge
+SYNTHESIS_COHERENCE_MODEL: str = str(SYNTHESIS_CFG.get("coherence_model", "openai/gpt-4o-mini"))
+SYNTHESIS_COHERENCE_MIN_LEVEL: str = str(SYNTHESIS_CFG.get("coherence_min_level", "MODERATE"))
+
+# Stage 6: Composite Scoring
+_SYNTH_WEIGHTS = SYNTHESIS_CFG.get("weights", {})
+SYNTHESIS_WEIGHT_COHERENCE: float = float(_SYNTH_WEIGHTS.get("coherence", 0.30))
+SYNTHESIS_WEIGHT_NOVELTY: float = float(_SYNTH_WEIGHTS.get("novelty", 0.40))
+SYNTHESIS_WEIGHT_DISTANCE: float = float(_SYNTH_WEIGHTS.get("distance", 0.15))
+SYNTHESIS_WEIGHT_STRUCTURAL: float = float(_SYNTH_WEIGHTS.get("structural", 0.15))
+SYNTHESIS_COMPOSITE_MIN_SCORE: float = float(SYNTHESIS_CFG.get("composite_min_score", 0.40))
+
+# Stage 7: Storage / Convergence
+SYNTHESIS_CONVERGENCE_STRONG_PATHS: int = int(SYNTHESIS_CFG.get("convergence_strong_paths", 3))
+SYNTHESIS_CONVERGENCE_STRONG_SOURCES: int = int(SYNTHESIS_CFG.get("convergence_strong_sources", 2))
+
+# Batch runner
+SYNTHESIS_DEFAULT_BATCH_SIZE: int = int(SYNTHESIS_CFG.get("batch_size", 100))
+SYNTHESIS_LOG_ALL_REJECTIONS: bool = bool(SYNTHESIS_CFG.get("log_rejections", True))
+
+# Environment variable overrides for Synthesis Pipeline
+SYNTHESIS_ENABLED = bool(int(os.getenv("SYNTHESIS_ENABLED", "1" if SYNTHESIS_ENABLED else "0")))
+
+# ── Synthesis Generator (cross-store candidate generation) ────────────
+# Samples entities from personal stores + Wikipedia and uses LLM to
+# articulate cross-domain connections.  Runs at shutdown as a "dreaming" step.
+SYNTHESIS_GEN_CFG = config.get("synthesis_generator", {})
+SYNTHESIS_GENERATOR_ENABLED: bool = bool(SYNTHESIS_GEN_CFG.get("enabled", True))
+SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION: int = int(SYNTHESIS_GEN_CFG.get("candidates_per_session", 5))
+SYNTHESIS_GENERATOR_LLM_CONCURRENCY: int = int(SYNTHESIS_GEN_CFG.get("llm_concurrency", 5))
+SYNTHESIS_GENERATOR_MIN_GRAPH_NODES: int = int(SYNTHESIS_GEN_CFG.get("min_graph_nodes", 20))
+
+# Environment variable overrides for Synthesis Generator
+SYNTHESIS_GENERATOR_ENABLED = bool(int(os.getenv(
+    "SYNTHESIS_GENERATOR_ENABLED", "1" if SYNTHESIS_GENERATOR_ENABLED else "0"
+)))
 
 # --------------------------------------------------------------------
 # Final setup

@@ -81,6 +81,8 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/surfacing_history.py` - JSON-backed novelty tracking for surfacing cooldowns **[NEW 2026-03-25]**
 - `knowledge/implementation_detector.py` - 4-stage proposal implementation tracking **[NEW 2026-03-25]**
 - `memory/memory_expander.py` - Temporal context expansion + summary drill-down for agentic tool **[NEW 2026-03-26]**
+- `memory/synthesis_memory.py` - Synthesis results persistence + convergence tracking **[NEW 2026-03-28]**
+- `knowledge/synthesis_generator.py` - Cross-store sampling + LLM bridge articulation for synthesis candidates **[NEW 2026-03-28]**
 - `memory/memory_interface.py` - Protocol contracts
 
 The incomplete V2 `memory/coordinator.py` has been deleted.
@@ -478,6 +480,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
   6.5. Lightweight implementation tracking — file existence only, ~50ms/proposal (ImplementationDetector) [NEW 2026-03-25]
   6.75. Extract open threads via LLM + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
+  6.8. Synthesis dreaming — generate cross-domain candidates via SynthesisGenerator + filter via SynthesisFilter [NEW 2026-03-28]
   7. Save knowledge graph + entity aliases + claim index to disk [ENHANCED 2026-03-25]
   8. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
   9. Update UserProfile with user-only facts (entity facts stored in ChromaDB only) [ENHANCED 2026-03]
@@ -1032,9 +1035,9 @@ PROFILE_EPHEMERAL_RELATIONS = [          # Relations whose history gets pruned
 ---
 
 ### 2.5 memory/storage/multi_collection_chroma_store.py (Vector Store)
-**Purpose**: Semantic search across 11 ChromaDB collections
+**Purpose**: Semantic search across 12 ChromaDB collections
 
-**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads
+**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results
 
 **Key Methods**:
 - `add_memory(text, metadata, collection)` → Embed and store
@@ -1127,6 +1130,11 @@ Compression strategy (two-tier):
 - Items >= 3x over max_tokens: LLM summary via _llm_compress_oversized() (async, parallel batch)
 - Items 1x-3x over max_tokens: middle-out character slicing in token_manager
 - Config: LLM_COMPRESSION_ENABLED, LLM_COMPRESSION_MODEL, LLM_COMPRESSION_RATIO_THRESHOLD
+
+Post-budget floors (Step 7.1) [ENHANCED 2026-03-28]:
+- recent_conversations: PROMPT_MIN_RECENT_FLOOR (5) — guarantees session context survives
+- summaries: PROMPT_MAX_SUMMARIES (10) — restored from storage if budget-trimmed
+- reflections: PROMPT_MAX_REFLECTIONS (10) — restored from storage if budget-trimmed
 ```
 
 **Context Dict Structure**:
@@ -1377,6 +1385,8 @@ else:
   - Yields `ProgressEvent` for status updates, `str` for response chunks
   - Max 5 rounds of search before forcing synthesis
   - Compresses accumulated context to fit token budget
+  - Budget-enforced accumulated context: `_append_accumulated()` trims oldest rounds when `accumulated_context` exceeds `context_budget_tokens` (default 8000) **[NEW 2026-03-28]**
+  - Budget-aware final prompt: `_build_final_prompt()` trims low-value sections (dreams, reflections, docs, summaries) if total exceeds ceiling, preserving recent conversations and agentic results **[NEW 2026-03-28]**
   - Falls back gracefully on errors
   - `_compute_context_inventory(initial_context)` → Summarizes available context (collections, user profile, graph entities) for LLM awareness **[NEW 2026-03-20]**
   - Memory search diversity tracking: per-collection search counts prevent redundant queries **[NEW 2026-03-20]**
@@ -3490,6 +3500,164 @@ SESSION_DIFF_EXTENSIONS = [".py", ".yaml", ".yml", ".json", ".md", ".txt", ".tom
 
 ---
 
+### 2.15h Knowledge Synthesis Filter Pipeline **[NEW 2026-03-28]**
+**Purpose**: Multi-stage filter that processes candidates from knowledge graph random walks and identifies genuinely novel, coherent cross-domain connections. Cheap stages run first, expensive stages (LLM) run last.
+
+**Data Models** (`knowledge/synthesis_models.py`):
+```python
+class CoherenceLevel(Enum):     # 4-tier forced-choice: INVALID(0.0), WEAK(0.33), MODERATE(0.66), STRONG(1.0)
+class CandidateStatus(Enum):    # PENDING, REJECTED, ACCEPTED, CONVERGING
+
+@dataclass
+class SynthesisCandidate:
+    concept_a: str              # First endpoint concept
+    concept_b: str              # Second endpoint concept
+    connection_claim: str       # Articulated bridge statement
+    walk_path: List[str]        # Full random walk node sequence
+    source_domains: Set[str]    # Cluster/category tags for crossed domains
+    endpoint_distance: float    # Cosine distance between concept embeddings
+    path_hash: str              # SHA-256[:16] of walk_path for dedup
+
+@dataclass
+class StageResult:
+    stage_name: str
+    passed: bool
+    score: Optional[float]
+    reason: str
+    metadata: Dict[str, Any]
+    elapsed_ms: float
+
+@dataclass
+class SynthesisResult:
+    candidate: SynthesisCandidate
+    stage_results: List[StageResult]
+    coherence_level: Optional[CoherenceLevel]
+    novelty_score_external: float       # 1 - nearest_wiki_similarity
+    novelty_score_internal: float       # 1 - nearest_synthesis_similarity
+    composite_score: float
+    status: CandidateStatus
+    unique_paths: Set[str]              # Independent walk paths (convergence tracking)
+    unique_sources: Set[str]            # Distinct concept pairs
+    convergence_strength: float         # |unique_paths| * |unique_sources|
+    # Methods: reject(), to_metadata(), from_metadata(), passed_all_gates
+```
+
+**Synthesis Memory** (`memory/synthesis_memory.py`):
+- `SynthesisMemory(chroma_store, similarity_threshold=0.85)`
+- Uses `synthesis_results` ChromaDB collection (12th collection)
+- `find_similar(claim, threshold, limit)` → `List[Tuple[SynthesisResult, float]]`
+- `store_result(result)` → doc_id. Checks for existing similar; if found, updates convergence instead of duplicating
+- `_update_convergence(existing, new)` → merges unique_paths/unique_sources, promotes to CONVERGING at 3+ paths / 2+ sources
+- `get_recurring(min_paths=3, min_sources=2)` → strongly-converging results
+- `get_stats()` → `{total_insights, converging_insights, collection}`
+
+**Filter Pipeline** (`knowledge/synthesis_filter.py`):
+- `SynthesisFilter(chroma_store, model_manager, synthesis_memory=None, wiki_collection="wiki_knowledge")`
+- `async process_candidate(candidate)` → `SynthesisResult` (ACCEPTED or REJECTED)
+- `async process_batch(candidates)` → summary dict with stats and timing
+
+**8-Stage Pipeline** (cheap → expensive):
+
+| Stage | Name | Cost | Gate Type | What It Checks |
+|-------|------|------|-----------|----------------|
+| 0 | Text Sanity | ~0ms | Hard | Min tokens, verb presence, repetition ratio |
+| 1 | Domain Crossing | ~1ms | Hard | Min 2 distinct source domains |
+| 2 | Semantic Distance | ~5ms | Hard | Endpoint distance in [0.20, 0.90] range |
+| 3 | External Novelty | ~10ms | Hard | Wiki corpus similarity < 0.80 threshold |
+| 4 | Internal Novelty | ~10ms | Soft | Synthesis memory check; new paths pass (convergence signal) |
+| 5 | Coherence Judge | ~500ms-2s | Hard | LLM rates INVALID/WEAK/MODERATE/STRONG; min MODERATE |
+| 6 | Composite Scoring | ~0ms | Hard | Weighted composite ≥ 0.40 minimum |
+| 7 | Storage | ~10ms | — | Accepted results stored; convergence updated |
+
+**Composite Score Formula**:
+```
+composite = 0.30 * coherence + 0.40 * novelty + 0.15 * distance + 0.15 * structural
+novelty = 0.6 * novelty_external + 0.4 * novelty_internal
+distance_score peaks at midpoint of [DISTANCE_MIN, DISTANCE_MAX] range
+structural_score = min(domain_count / 4, 1.0)
+```
+
+**Convergence Logic** (Stage 4 + Stage 7):
+- If insight already exists in synthesis memory but was found via a DIFFERENT walk path → pass Stage 4 (score 0.5)
+- At storage time (Stage 7), merge new path_hash into existing result's unique_paths
+- Promote to CONVERGING status when `|unique_paths| >= 3` AND `|unique_sources| >= 2`
+- Same path_hash → reject as true duplicate
+
+**Configuration** (`config/app_config.py`, YAML section `synthesis`):
+```python
+SYNTHESIS_ENABLED = True
+SYNTHESIS_MIN_TOKEN_LENGTH = 10          # Stage 0: min word count
+SYNTHESIS_MAX_REPETITION_RATIO = 0.5     # Stage 0: reject if >50% repeated tokens
+SYNTHESIS_MIN_DOMAINS = 2                # Stage 1: min domain boundaries crossed
+SYNTHESIS_DISTANCE_MIN = 0.20            # Stage 2: below = trivially close
+SYNTHESIS_DISTANCE_MAX = 0.90            # Stage 2: above = nonsensical
+SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.80 # Stage 3: wiki sim > this = already known
+SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.50  # Stage 3: between adjacent and known
+SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85 # Stage 4: above = same insight
+SYNTHESIS_COHERENCE_MODEL = "gpt-4o-mini"    # Stage 5: LLM for coherence judge
+SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"   # Stage 5: minimum to pass
+SYNTHESIS_WEIGHT_COHERENCE = 0.30        # Stage 6: composite weights
+SYNTHESIS_WEIGHT_NOVELTY = 0.40
+SYNTHESIS_WEIGHT_DISTANCE = 0.15
+SYNTHESIS_WEIGHT_STRUCTURAL = 0.15
+SYNTHESIS_COMPOSITE_MIN_SCORE = 0.40     # Stage 6: minimum to store
+SYNTHESIS_CONVERGENCE_STRONG_PATHS = 3   # Convergence thresholds
+SYNTHESIS_CONVERGENCE_STRONG_SOURCES = 2
+SYNTHESIS_DEFAULT_BATCH_SIZE = 100
+SYNTHESIS_LOG_ALL_REJECTIONS = True
+```
+
+**File References**:
+- `knowledge/synthesis_models.py` — Data models (SynthesisCandidate, StageResult, SynthesisResult, enums)
+- `memory/synthesis_memory.py` — ChromaDB persistence + convergence tracking
+- `knowledge/synthesis_filter.py` — 8-stage async filter pipeline
+- `knowledge/synthesis_generator.py` — Cross-store candidate generation
+- `config/app_config.py` — `SYNTHESIS_*` and `SYNTHESIS_GENERATOR_*` constants
+- `config/config.yaml` — `synthesis:` and `synthesis_generator:` sections
+
+---
+
+### 2.15i Synthesis Generator (knowledge/synthesis_generator.py) **[NEW 2026-03-28]**
+**Purpose**: Cross-store candidate generator for the knowledge synthesis pipeline. Samples entities from personal ChromaDB stores (facts) and Wikipedia (wiki_knowledge), uses an LLM to articulate cross-domain connections, and packages results as SynthesisCandidate objects for the filter pipeline.
+
+**Class**: `SynthesisGenerator(chroma_store, model_manager, graph_memory=None, entity_resolver=None)`
+
+**Key Methods**:
+- `async generate_candidates(count=5)` → `List[SynthesisCandidate]` — main entry point
+- `_sample_personal_entities(n)` → `List[Dict]` — broad query seeds against facts collection
+- `_sample_wiki_articles(n)` → `List[Dict]` — broad query seeds against wiki_knowledge collection
+- `_form_pairs(personal, wiki, max_pairs)` → `List[Tuple]` — cross-domain pairing with dedup
+- `_classify_domain(item)` → `str` — reuses `categorize_relation()` for facts, keyword heuristics for wiki
+- `async _articulate_bridge(...)` → `Optional[str]` — LLM bridge call, returns None on NO_CONNECTION
+- `_compute_endpoint_distance(concept_a, concept_b)` → `float` — graph shortest path or default 0.55
+- `get_sampling_stats()` → `dict` — sampling pool sizes and graph stats
+
+**Pipeline Flow**:
+```
+1. Over-sample entities from facts + wiki_knowledge (count * 3)
+2. Form cross-domain pairs (deduplicated by concept name, skip same-domain)
+3. Parallel LLM bridge articulation (semaphore = SYNTHESIS_GENERATOR_LLM_CONCURRENCY)
+4. Package valid bridges as SynthesisCandidate objects
+5. Cap at requested count
+```
+
+**Integration Points**:
+1. **Shutdown**: Step 6.8 in `shutdown_processor.py:_run_synthesis_dreaming()` — after thread extraction, before graph save
+2. **Filter Pipeline**: Generated candidates fed to `SynthesisFilter.process_batch()` then stored via `SynthesisMemory`
+3. **Graph Sparsity Guard**: Skips if graph has fewer than `SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` nodes
+
+**Configuration** (`config/app_config.py`, YAML section `synthesis_generator`):
+```python
+SYNTHESIS_GENERATOR_ENABLED = True                # Enable synthesis dreaming at shutdown
+SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION = 5    # Target candidates per session
+SYNTHESIS_GENERATOR_LLM_CONCURRENCY = 5           # Max parallel LLM bridge calls
+SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20          # Graph sparsity guard
+```
+
+**Tests**: 18 unit tests in `tests/unit/test_synthesis_generator.py`, 6 calibration tests in `tests/test_synthesis_calibration.py`. Calibration fixtures: `tests/fixtures/calibration_candidates.json` (54 labeled candidates in 7 tiers).
+
+---
+
 ### 2.16 utils/tone_detector.py (Crisis Detection)
 **Purpose**: Detect distress/crisis language to adjust response tone
 
@@ -4382,6 +4550,7 @@ daemon/
 │   ├── context_surfacer.py        # Cross-domain insight generation from knowledge graph [NEW 2026-03-25]
 │   ├── surfacing_models.py        # Pydantic models: DomainEntity, DomainCluster, ProactiveInsight [NEW 2026-03-25]
 │   ├── surfacing_history.py       # JSON-backed novelty tracking for proactive surfacing [NEW 2026-03-25]
+│   ├── synthesis_memory.py        # Synthesis results persistence + convergence tracking [NEW 2026-03-28]
 │   ├── hybrid_retriever.py        # Query rewrite + semantic + keyword
 │   └── storage/
 │       └── multi_collection_chroma_store.py  # Vector DB
@@ -4432,7 +4601,10 @@ daemon/
 │   ├── proposal_generator.py  # LLM-based code proposal generation [ENHANCED 2026-02-10]
 │   ├── git_memory.py          # Git commit extractor [NEW 2026-01-27]
 │   ├── git_memory_loader.py   # Git → PROCEDURAL ChromaDB loader [NEW 2026-01-27]
-│   └── implementation_detector.py  # 4-stage proposal implementation detection [NEW 2026-03-25]
+│   ├── implementation_detector.py  # 4-stage proposal implementation detection [NEW 2026-03-25]
+│   ├── synthesis_models.py    # Synthesis pipeline data models [NEW 2026-03-28]
+│   ├── synthesis_filter.py    # 8-stage synthesis filter pipeline [NEW 2026-03-28]
+│   └── synthesis_generator.py # Cross-store sampling + LLM bridge articulation [NEW 2026-03-28]
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)
@@ -4788,7 +4960,7 @@ python main.py inspect-summaries
 | thread_manager.py | Threads: conversation continuity tracking [NEW - REFACTORED] |
 | memory_interface.py | Protocols: type contracts for memory components [NEW - REFACTORED] |
 | corpus_manager.py | JSON CRUD: load/save/query short-term memories |
-| multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 11 collections |
+| multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 12 collections |
 | gate_system.py | Filter: FAISS → cosine → cross-encoder → top K |
 | prompt/builder.py | Assemble: system + separated context sections + STM within 15K tokens |
 | response_generator.py | Stream: async LLM + Best-of-N + Duel modes (buffer fix + DeepSeek EOS) [FIXED] |
@@ -4826,6 +4998,10 @@ python main.py inspect-summaries
 | surfacing_models.py | Data: DomainEntity, DomainCluster, CrossDomainCandidate, ProactiveInsight Pydantic models [NEW 2026-03-25] |
 | surfacing_history.py | History: JSON-backed novelty tracking for proactive context surfacing [NEW 2026-03-25] |
 | implementation_detector.py | Detect: 4-stage pipeline (file/code/git/LLM) for proposal implementation status [NEW 2026-03-25] |
+| synthesis_models.py | Data: SynthesisCandidate, SynthesisResult, CoherenceLevel, CandidateStatus models [NEW 2026-03-28] |
+| synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking [NEW 2026-03-28] |
+| synthesis_filter.py | Filter: 8-stage async pipeline (text/domain/distance/novelty/coherence/scoring) [NEW 2026-03-28] |
+| synthesis_generator.py | Generate: Cross-store sampling (facts + wiki) + LLM bridge articulation for synthesis candidates [NEW 2026-03-28] |
 
 ---
 
@@ -4928,6 +5104,16 @@ IMPL_TRACKING_CONFIDENCE_CONFIRMED = 0.85
 
 # Deduplication
 SIMILARITY_THRESHOLD = 0.90  # Semantic similarity for duplicates
+
+# Synthesis Pipeline [NEW 2026-03-28]
+SYNTHESIS_ENABLED = True
+SYNTHESIS_DISTANCE_MIN = 0.20
+SYNTHESIS_DISTANCE_MAX = 0.90
+SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.80
+SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
+SYNTHESIS_COHERENCE_MODEL = "gpt-4o-mini"
+SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
+SYNTHESIS_COMPOSITE_MIN_SCORE = 0.40
 ```
 
 ---
@@ -5234,9 +5420,14 @@ if IS_FROZEN:
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2026-03-26
+**Last Updated**: 2026-03-28
 
-**Recent Changes** (2026-03-26):
+**Recent Changes** (2026-03-28):
+- **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (wiki), internal novelty (synthesis memory with convergence tracking), LLM coherence judge, composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
+- **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts + wiki_knowledge collections, LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 54 labeled candidates in 7 tiers.
+- **Context Management Fixes** (Sections 2.7, 2.8b) — Post-budget floor for recent conversations (`PROMPT_MIN_RECENT_FLOOR=5`), budget-enforced accumulated context in agentic controller (`_append_accumulated()` trims oldest rounds), budget-aware final prompt assembly (trims low-value sections to preserve conversation history + agentic results).
+
+**Previous Changes** (2026-03-26):
 - **File-based Personality System** — Replaced `PersonalityManager` (JSON configs) with text file composition: editable `default_personality.txt` + immutable `operating_principles.txt`. GUI "Personality" tab for live editing. Config: `PERSONALITY_*` constants.
 - **File Access Agentic Tools** (Section 2.8b) — New tools: `file_read`, `file_grep`, `file_list` for filesystem access during ReAct loop
 - **Streaming Thinking Detection** — ResponseGenerator emits synthetic `<thinking>` tags for reasoning content; ResponseParser adds `has_incomplete_thinking_block()` and `extract_incomplete_thinking()` for streaming suppression; `strip_xml_wrappers()` now handles `<output>` and `<response>` wrappers

@@ -287,11 +287,12 @@ class TestWizardFlow:
     async def test_wizard_tavily_key_valid_advances_to_style(self, mock_orchestrator):
         """Valid Tavily key should advance to STYLE."""
         state = WizardState(step=WizardStep.TAVILY_KEY)
-        response, new_state, complete = await process_wizard_message(
-            "tvly-test-key-12345678901234567890",
-            state,
-            mock_orchestrator
-        )
+        with patch('gui.wizard.write_tavily_key_to_env', return_value=True):
+            response, new_state, complete = await process_wizard_message(
+                "tvly-test-key-12345678901234567890",
+                state,
+                mock_orchestrator
+            )
 
         assert new_state.step == WizardStep.STYLE
         assert "style" in response.lower() or "talk" in response.lower()
