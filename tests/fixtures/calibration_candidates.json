@@ -514,6 +514,198 @@
       "notes": "Symbiosis-breakdown-under-stress framing is specific and falsifiable."
     },
 
+    {"_comment": "=== ADDITIONAL TRIVIAL (approach 1 — verified well-known, real wiki topics) ==="},
+
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "velcro",
+      "concept_b": "burdock burrs",
+      "connection_claim": "Velcro was invented by George de Mestral after observing how burdock burrs attached to his dog's fur via tiny hooks — a direct biomimetic transfer of a natural attachment mechanism to synthetic materials.",
+      "source_domains": ["technology", "ecology"],
+      "endpoint_distance": 0.45,
+      "notes": "Textbook biomimicry example, literally in every design thinking book."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "PageRank algorithm",
+      "concept_b": "academic citation analysis",
+      "connection_claim": "Google's PageRank directly adapted the academic citation graph structure — a page linked by many authoritative pages is important, exactly as a paper cited by many influential papers has high impact factor.",
+      "source_domains": ["technology", "education"],
+      "endpoint_distance": 0.40,
+      "notes": "Foundational CS history — literally in the original Brin & Page paper."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "natural selection",
+      "concept_b": "genetic algorithms",
+      "connection_claim": "Genetic algorithms directly simulate natural selection — populations of candidate solutions undergo mutation, crossover, and fitness-based selection over generations to evolve toward optimal solutions.",
+      "source_domains": ["science", "technology"],
+      "endpoint_distance": 0.38,
+      "notes": "Genetic algorithms are explicitly named after the biological process. Zero novelty."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "supply and demand",
+      "concept_b": "price equilibrium",
+      "connection_claim": "When supply exceeds demand prices fall, when demand exceeds supply prices rise, and the market converges on an equilibrium price where the quantity supplied equals the quantity demanded.",
+      "source_domains": ["economics", "economics"],
+      "endpoint_distance": 0.25,
+      "notes": "Econ 101, same domain, zero distance."
+    },
+    {
+      "tier": "trivial",
+      "expected_outcome": "rejected",
+      "concept_a": "Shinkansen bullet train nose",
+      "concept_b": "kingfisher beak hydrodynamics",
+      "connection_claim": "The Shinkansen 500 series was redesigned with a nose cone modeled on the kingfisher's beak to eliminate the sonic boom when exiting tunnels — both shapes minimize pressure wave formation during high-speed transition between media of different densities.",
+      "source_domains": ["technology", "ecology"],
+      "endpoint_distance": 0.55,
+      "notes": "Second most famous biomimicry example after velcro. Published everywhere."
+    },
+
+    {"_comment": "=== ADDITIONAL NOISE_BORDERLINE (approach 2 — debunked pseudoscience, plausible-sounding) ==="},
+
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "mercury retrograde",
+      "concept_b": "communication system failures",
+      "connection_claim": "Mercury retrograde correlates with increased communication failures because the apparent backward motion of Mercury disrupts electromagnetic field patterns in Earth's ionosphere, subtly degrading radio propagation and digital signal integrity.",
+      "source_domains": ["science", "technology"],
+      "endpoint_distance": 0.60,
+      "notes": "Astrology dressed in technical language. Mercury's apparent motion has no measurable effect on Earth's ionosphere."
+    },
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "crystal structure geometry",
+      "concept_b": "emotional healing",
+      "connection_claim": "Crystals with hexagonal lattice structures resonate at frequencies matching the human body's bioelectric field, allowing them to rebalance disrupted energy patterns and promote cellular repair through piezoelectric stress response.",
+      "source_domains": ["science", "health"],
+      "endpoint_distance": 0.65,
+      "notes": "Mixes real physics (piezoelectricity, crystal lattices) with unsupported healing claims. Tests coherence judge on sophisticated pseudoscience."
+    },
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "lunar gravitational cycles",
+      "concept_b": "human sleep quality",
+      "connection_claim": "The Moon's gravitational pull, which moves ocean tides, also affects the fluid dynamics in human cerebrospinal fluid, causing measurable sleep disruption during full moon phases due to increased intracranial pressure.",
+      "source_domains": ["science", "health"],
+      "endpoint_distance": 0.50,
+      "notes": "Sounds mechanistic but the gravitational force on CSF is negligibly small (~10^-12 N). Lunar sleep effects in studies are attributed to light, not gravity."
+    },
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "quantum observer effect",
+      "concept_b": "manifestation and intention setting",
+      "connection_claim": "The quantum observer effect demonstrates that consciousness directly collapses probability waves into definite states, suggesting that focused human intention can similarly collapse uncertain future outcomes into desired realities through the same wave function mechanism.",
+      "source_domains": ["science", "psychology"],
+      "endpoint_distance": 0.70,
+      "notes": "Classic quantum mysticism. The observer effect involves measurement apparatus, not human consciousness. Tests coherence on the most common pseudoscience bridge."
+    },
+    {
+      "tier": "noise_borderline",
+      "expected_outcome": "rejected",
+      "concept_a": "fibonacci sequence in sunflowers",
+      "concept_b": "stock market price patterns",
+      "connection_claim": "Fibonacci spirals appear in sunflower seed heads because they optimize packing density. Financial markets follow Fibonacci retracement levels because traders collectively optimize price discovery using the same mathematical ratio that governs efficient spatial packing.",
+      "source_domains": ["mathematics", "economics"],
+      "endpoint_distance": 0.55,
+      "notes": "Sunflower Fibonacci is real biology. Fibonacci trading is popular but empirically unfounded — no causal mechanism links biological packing to price movement. Tests whether the filter catches one-valid-one-invalid bridge."
+    },
+
+    {"_comment": "=== ADDITIONAL INTERESTING_KNOWN (approach 1 — genuinely insightful but published) ==="},
+
+    {
+      "tier": "interesting_known",
+      "expected_outcome": "rejected",
+      "concept_a": "simulated annealing algorithm",
+      "concept_b": "metallurgical annealing",
+      "connection_claim": "Simulated annealing directly borrows the metallurgical process: just as heating and slowly cooling metal allows atoms to find low-energy crystal configurations by escaping local minima, the algorithm accepts worse solutions with decreasing probability to escape local optima in optimization landscapes.",
+      "source_domains": ["technology", "science"],
+      "endpoint_distance": 0.55,
+      "notes": "Named after the physical process. Kirkpatrick et al. 1983 paper explicitly cites the analogy."
+    },
+    {
+      "tier": "interesting_known",
+      "expected_outcome": "rejected",
+      "concept_a": "predator-prey population dynamics",
+      "concept_b": "market competition cycles",
+      "connection_claim": "Lotka-Volterra equations that model predator-prey oscillations also describe market competition cycles — when a dominant company (predator) drives competitors (prey) to extinction, it loses its competitive stimulus and becomes vulnerable to disruption, restarting the cycle.",
+      "source_domains": ["ecology", "economics"],
+      "endpoint_distance": 0.58,
+      "notes": "Lotka-Volterra applied to economics is published in mathematical economics textbooks."
+    },
+    {
+      "tier": "interesting_known",
+      "expected_outcome": "rejected",
+      "concept_a": "neural network architecture",
+      "concept_b": "biological neuron connectivity",
+      "connection_claim": "Artificial neural networks were originally modeled on biological neurons — McCulloch-Pitts neurons (1943) formalized the all-or-nothing firing of biological neurons as threshold logic, and modern deep learning layers parallel the hierarchical feature extraction in the visual cortex discovered by Hubel and Wiesel.",
+      "source_domains": ["technology", "science"],
+      "endpoint_distance": 0.42,
+      "notes": "Foundational AI history — literally the origin story of the field."
+    },
+
+    {"_comment": "=== ADDITIONAL INTERESTING_NOVEL (approach 1 — real structural isomorphisms, not well-published) ==="},
+
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "mycorrhizal nutrient networks in forests",
+      "concept_b": "content delivery network architecture",
+      "connection_claim": "Mycorrhizal networks redistribute nutrients from resource-rich trees to resource-poor seedlings via fungal intermediaries that take a commission (carbon). CDNs redistribute content from origin servers to edge caches via intermediary nodes that take a commission (bandwidth cost). Both solve the same problem: expensive point-to-point transfer replaced by a mesh of brokers that amortize transport costs across many consumers.",
+      "source_domains": ["ecology", "technology"],
+      "endpoint_distance": 0.65,
+      "notes": "The 'wood wide web' is known, but the specific CDN broker-commission framing is novel and mechanistically precise."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "earthquake aftershock sequences",
+      "concept_b": "post-crisis market volatility",
+      "connection_claim": "Earthquake aftershocks follow Omori's Law: frequency decays as 1/t after the main shock. Post-crisis market volatility follows the same power-law decay — the VIX spike after a crash decays as roughly 1/t over subsequent weeks. Both reflect the same statistical process: a system driven far from equilibrium relaxing back through a series of cascading smaller adjustments.",
+      "source_domains": ["science", "economics"],
+      "endpoint_distance": 0.62,
+      "notes": "The power-law relaxation parallel is real and quantitative (both follow Omori-type decay), but not commonly articulated across these specific domains."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "triage protocol in emergency medicine",
+      "concept_b": "process scheduling in operating systems",
+      "connection_claim": "Emergency triage and OS process scheduling both solve the same constrained optimization: allocate a scarce resource (surgeon time / CPU cycles) across competing demands with heterogeneous urgency and unknown arrival rates. Both use priority queues with preemption — a critical patient bumps a stable one, just as a real-time interrupt preempts a background process. Both accept that some low-priority items may starve.",
+      "source_domains": ["health", "technology"],
+      "endpoint_distance": 0.68,
+      "notes": "Priority-queue-with-preemption-and-starvation framing across medicine and CS is specific and novel."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "lichen symbiosis",
+      "concept_b": "containerized microservice deployment",
+      "connection_claim": "A lichen is not one organism but a fungus hosting photosynthetic algae in a mutualistic container — the fungus provides structure and water retention while the algae provides energy. Containerized microservices follow the same pattern: the container runtime (fungus) provides isolation, networking, and resource management while the application (algae) provides the actual function. Both achieve capabilities neither partner could sustain alone.",
+      "source_domains": ["ecology", "technology"],
+      "endpoint_distance": 0.70,
+      "notes": "Lichen-as-container is a novel and precise structural mapping. The biological mutualism-as-infrastructure pattern isn't a standard analogy."
+    },
+    {
+      "tier": "interesting_novel",
+      "expected_outcome": "accepted",
+      "concept_a": "sedimentary rock stratification",
+      "concept_b": "event sourcing in software architecture",
+      "connection_claim": "Sedimentary rock preserves a chronological record of environmental conditions — each layer is an immutable append-only record of what happened during that period, and the current landscape is derived by reading the stack. Event sourcing stores application state as an immutable append-only log of events, and the current state is derived by replaying the sequence. Both sacrifice storage efficiency for perfect auditability and the ability to reconstruct any historical state.",
+      "source_domains": ["science", "technology"],
+      "endpoint_distance": 0.72,
+      "notes": "Append-only-log-as-geological-record is a precise structural match with a specific tradeoff claim (storage vs auditability). Not a standard comparison."
+    },
+
     {"_comment": "=== BOUNDARY TIER === Hard middle cases. Expected outcomes are best guesses — these exist to reveal where decision boundaries fall."},
 
     {

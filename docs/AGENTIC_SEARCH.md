@@ -121,7 +121,8 @@ Search Daemon's own memory and knowledge base.
 ```
 Parameters: query (required), collection (required), reason (optional)
 Valid collections: reference_docs, facts, conversations, summaries,
-                   reflections, obsidian_notes, procedural, procedural_skills
+                   reflections, obsidian_notes, wiki_knowledge,
+                   procedural, procedural_skills
 Diversity: Per-collection search counts tracked; hints injected after 2+ searches
 ```
 

@@ -389,7 +389,7 @@ class UnifiedPromptBuilder:
         sections.append(self._format_memories(semantic, budget * 0.15))
         sections.append(self._format_memories(summaries, budget * 0.10))
 
-        # Wiki context if relevant
+        # Wiki context if relevant (ChromaDB wiki_knowledge first, live API fallback)
         if self._should_use_wiki(query, topics):
             wiki_ctx = self.wiki_manager.search(query, k=3)
             sections.append(self._format_wiki(wiki_ctx, budget * 0.10))

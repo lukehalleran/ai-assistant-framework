@@ -1,93 +1,95 @@
-feat: Document retrieval pipeline — table extraction, full-doc tool, batch embedding
+feat: Document retrieval pipeline, wiki_knowledge integration, synthesis calibration
 
-Uploaded PDFs and DOCX files with tables (schedules, grade rubrics, etc.)
-were silently losing tabular data. Now tables are extracted as markdown
-pipe tables, a new agentic tool retrieves complete documents by title,
-and bulk embedding uses batched ChromaDB writes.
+Three areas: (1) uploaded PDF/DOCX table extraction + full-document agentic
+tool + batch embedding, (2) wiki_knowledge wired into prompt builder and
+agentic search, (3) expanded synthesis calibration with verification scripts.
 
---- MODIFIED FILES ---
+--- (1) DOCUMENT RETRIEVAL PIPELINE ---
 
 utils/file_processor.py
-  - PDF: new _extract_pdf_with_tables() using pdfplumber.extract_tables()
-    renders tables as markdown; text outside tables extracted via outside_bbox()
-  - DOCX: new _extract_docx_with_tables() using python-docx walks document
-    body in order, renders tables as markdown (replaces docx2txt which dropped
-    table content entirely)
-  - Module contract updated with new methods and dependencies
+  - PDF: _extract_pdf_with_tables() — pdfplumber.extract_tables() renders
+    tables as markdown; text outside tables via outside_bbox()
+  - DOCX: _extract_docx_with_tables() — python-docx walks body in order,
+    renders tables as markdown (replaces docx2txt which dropped tables)
 
 utils/text_chunking.py
-  - New chunk_by_size() function: fixed-size paragraph-boundary chunking with
-    overlap, used as fallback for large documents with no ## headers
-  - chunk_by_headers() now falls back to chunk_by_size() when content exceeds
-    threshold but has no ## headers (e.g. plain-text PDFs)
-  - Module contract rewritten
+  - New chunk_by_size(): fixed-size paragraph-boundary chunking with overlap
+  - chunk_by_headers() falls back to chunk_by_size() for large headerless docs
+  - Removed synthetic ## Page N headers from PDF extraction
 
 knowledge/reference_docs_manager.py
-  - New get_full_document(title): fetches all chunks by title, reassembles in
-    chunk_index order. Fuzzy title matching via _fuzzy_resolve_title() when
-    exact match fails (case-insensitive word overlap scoring)
-  - New list_document_titles(): sorted distinct titles for discoverability
+  - get_full_document(title): fetches all chunks, reassembles in order
+  - _fuzzy_resolve_title(): case-insensitive word overlap when exact match fails
+  - list_document_titles(): sorted distinct titles
   - upload_document() and upload_text() now use add_batch_to_collection()
-    for single embedding pass + disk write per document
   - DEFAULT_MAX_DOCS_PROMPT: 5 → 15
-  - Module contract updated
 
-core/agentic/types.py
-  - GET_FULL_DOCUMENT_TOOL_DEFINITION: new tool schema
-  - SearchDecision: added wants_full_document, full_document_title,
-    full_document_reason fields
-  - _classify_round_action(): handles "[Full Document]" prefix
-  - AGENTIC_SYSTEM_PROMPT_INJECTION: tool 11 (get_full_document) + table row
+core/agentic/{types,protocols,controller}.py + __init__.py
+  - get_full_document agentic tool: definition, native + XML parsing, dispatch
+  - 60k char hard cap, fuzzy title matching, lists titles on miss
 
-core/agentic/protocols.py
-  - NativeToolsHandler: imports + stores GET_FULL_DOCUMENT_TOOL_DEFINITION,
-    parse branch for "get_full_document", added to get_tools() and
-    augment_system_prompt() tool list
-  - XMLMarkerHandler: GET_FULL_DOCUMENT_PATTERN regex, parse branch
-
-core/agentic/controller.py
-  - Dispatch branch for wants_full_document with ProgressEvent lifecycle
-  - _execute_full_document_retrieval(): instantiates ReferenceDocsManager,
-    calls get_full_document() with 60k char hard cap, lists titles on miss
-  - _format_full_document_context(): accumulated context formatter
-
-core/agentic/__init__.py
-  - Exports GET_FULL_DOCUMENT_TOOL_DEFINITION
-
-core/system_prompt.txt
-  - Added get_full_document to Agentic Capabilities with usage guidance
-
-core/prompt/builder.py
-  - PROMPT_MAX_REFERENCE_DOCS: 5 → 15
-
-config/app_config.py
-  - REFERENCE_DOCS_MAX_PROMPT: 5 → 15
+core/prompt/builder.py + config/app_config.py
+  - PROMPT_MAX_REFERENCE_DOCS / REFERENCE_DOCS_MAX_PROMPT: 5 → 15
 
 memory/storage/multi_collection_chroma_store.py
-  - New add_batch_to_collection(name, texts, metadatas): single ChromaDB
-    .add() call for batch embedding + disk write
+  - add_batch_to_collection(): single .add() call for batch embedding + write
 
 knowledge/obsidian_manager.py
-  - Bulk note embedding now uses add_batch_to_collection() per note
-    (falls back to individual adds if method unavailable)
+  - Bulk note embedding uses add_batch_to_collection() per note
 
 knowledge/git_memory_loader.py
-  - backfill() and incremental_update() now use add_batch_to_collection()
-    with fallback to individual adds on failure
+  - backfill() and incremental_update() use add_batch_to_collection()
 
-docs/AGENTIC_SEARCH.md
-  - New get_full_document tool section
+core/system_prompt.txt
+  - get_full_document added to Agentic Capabilities
 
-docs/ARCHITECTURE_GUIDE.md
-  - 7 Tools → 8 Tools table, added Full Document row
+--- (2) WIKI_KNOWLEDGE INTEGRATION ---
 
-docs/PROJECT_SKELETON.md
-  - Updated chunking description (chunk_by_size fallback)
-  - REFERENCE_DOCS_MAX_PROMPT: 5 → 15
-  - Added get_full_document() and list_document_titles() to method list
+core/prompt/context_gatherer.py
+  - _get_wiki_content() queries wiki_knowledge ChromaDB first (semantic search),
+    falls back to live Wikipedia API only if collection is empty/unavailable
 
-docs/QUICK_REFERENCE.md
-  - Updated FileProcessor description with PDF/DOCX table extraction
+core/agentic/controller.py
+  - wiki_knowledge added to VALID_MEMORY_COLLECTIONS
 
-CLAUDE.md
-  - Updated module tree, component table, current development section
+core/agentic/types.py
+  - wiki_knowledge in search_memory enum, description, XML instructions, table
+
+core/agentic/protocols.py
+  - wiki_knowledge mentioned in native tool guidance
+
+--- (3) SYNTHESIS CALIBRATION ---
+
+tests/fixtures/calibration_candidates.json (54 → 72 candidates)
+  - +5 trivial: biomimicry classics, algorithm origins, supply/demand
+  - +5 noise_borderline: mercury retrograde, crystal healing, quantum
+    manifestation, lunar gravity/sleep, fibonacci trading
+  - +3 interesting_known: simulated annealing, Lotka-Volterra, neural nets
+  - +5 interesting_novel: mycorrhizal/CDN, aftershock/volatility, triage/
+    scheduling, lichen/containers, sedimentary/event sourcing
+
+scripts/verify_synthesis_pipeline.py (NEW)
+  - 18 Wikipedia article pairs: 7 true, 7 false, 4 coverage-asymmetry
+  - Pathway-aware scoring: checks WHICH gate rejected, not just pass/fail
+  - Coverage-asymmetry pairs probe novelty gate overfitting on wiki coverage
+  - Relaxed pass handling: pass_reviewable pairs flagged for review not failure
+  - Confidence margin analysis: flags tight decisions (|margin| < 0.10)
+  - Quality scoring fields: originality, explanatory power, non-triviality
+  - Modes: --filter-only (pre-written claims) or full pipeline (LLM generation)
+
+scripts/generate_calibration_candidates.py (NEW)
+  - Runs real SynthesisGenerator against wiki_knowledge + facts
+  - Outputs JSON with labeling guide for manual tier/outcome assignment
+
+--- DOCS ---
+
+CLAUDE.md, AGENTIC_SEARCH.md, ARCHITECTURE_GUIDE.md, PROJECT_SKELETON.md,
+QUICK_REFERENCE.md — updated for all three areas above.
+Module contracts updated in file_processor.py, reference_docs_manager.py,
+text_chunking.py, context_gatherer.py.
+
+--- OTHER ---
+
+core/git_stats_manager.py (NEW) — read-only git repo stats agentic tool
+tests/unit/test_git_stats.py (NEW) — 51 unit tests
+core/orchestrator.py — git_stats_manager init + wiring
