@@ -25,6 +25,8 @@ Supported Tools:
     - file_read / <file_read>: Read file contents from approved directories
     - file_grep / <file_grep>: Search for patterns across files
     - file_list / <file_list>: List directory contents
+    - git_stats / <git_stats>: Git repository activity stats
+    - get_full_document / <get_full_document>: Retrieve complete uploaded document by title
     - signal_done / <done>: Signal task completion
 
 Dependencies:
@@ -130,7 +132,7 @@ class NativeToolsHandler(BaseProtocolHandler):
     Parses tool_calls from LLM response to detect search, Wolfram, and sandbox requests.
     """
 
-    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False):
+    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False):
         from core.agentic.types import (
             SEARCH_TOOL_DEFINITION,
             DONE_TOOL_DEFINITION,
@@ -141,6 +143,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             FILE_READ_TOOL_DEFINITION,
             FILE_GREP_TOOL_DEFINITION,
             FILE_LIST_TOOL_DEFINITION,
+            GIT_STATS_TOOL_DEFINITION,
+            GET_FULL_DOCUMENT_TOOL_DEFINITION,
         )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
@@ -151,10 +155,13 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.file_read_tool = FILE_READ_TOOL_DEFINITION
         self.file_grep_tool = FILE_GREP_TOOL_DEFINITION
         self.file_list_tool = FILE_LIST_TOOL_DEFINITION
+        self.git_stats_tool = GIT_STATS_TOOL_DEFINITION
+        self.full_document_tool = GET_FULL_DOCUMENT_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
         self.memory_available = memory_available
         self.file_access_available = file_access_available
+        self.git_stats_available = git_stats_available
 
     def parse_response(self, response: Any) -> SearchDecision:
         """
@@ -337,6 +344,34 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] file_list called without dirpath")
                 return SearchDecision(wants_answer=True)
 
+        elif func_name == "git_stats":
+            query = args.get("query", "")
+            reason = args.get("reason")
+            if query:
+                logger.debug(f"[AgenticProtocol] Native tool git_stats: {query}")
+                return SearchDecision(
+                    wants_git_stats=True,
+                    git_stats_query=query,
+                    git_stats_reason=reason,
+                )
+            else:
+                logger.warning("[AgenticProtocol] git_stats called without query")
+                return SearchDecision(wants_answer=True)
+
+        elif func_name == "get_full_document":
+            title = args.get("title", "")
+            reason = args.get("reason")
+            if title:
+                logger.debug(f"[AgenticProtocol] Native tool get_full_document: {title}")
+                return SearchDecision(
+                    wants_full_document=True,
+                    full_document_title=title,
+                    full_document_reason=reason,
+                )
+            else:
+                logger.warning("[AgenticProtocol] get_full_document called without title")
+                return SearchDecision(wants_answer=True)
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return SearchDecision(wants_answer=True)
@@ -361,8 +396,11 @@ class NativeToolsHandler(BaseProtocolHandler):
         if self.memory_available:
             tools.append(self.memory_tool)
             tools.append(self.expand_memory_tool)
+            tools.append(self.full_document_tool)
         if self.file_access_available:
             tools.extend([self.file_read_tool, self.file_grep_tool, self.file_list_tool])
+        if self.git_stats_available:
+            tools.append(self.git_stats_tool)
         return tools
 
     def augment_system_prompt(self, system_prompt: str, max_rounds: int) -> str:
@@ -379,8 +417,11 @@ class NativeToolsHandler(BaseProtocolHandler):
         if self.memory_available:
             tool_list.append("search_memory")
             tool_list.append("expand_memory")
+            tool_list.append("get_full_document")
         if self.file_access_available:
             tool_list.extend(["file_read", "file_grep", "file_list"])
+        if self.git_stats_available:
+            tool_list.append("git_stats")
         tool_list.append("done_searching")
 
         tools_str = ", ".join(tool_list)
@@ -441,6 +482,16 @@ class XMLMarkerHandler(BaseProtocolHandler):
     FILE_LIST_PATTERN = re.compile(
         r'<file_list\s+path=["\']([^"\']+)["\'](?:\s+recursive=["\']([^"\']*)["\'])?\s*/?>',
         re.IGNORECASE
+    )
+    # Git stats pattern: <git_stats>query</git_stats>
+    GIT_STATS_PATTERN = re.compile(
+        r'<git_stats>(.*?)</git_stats>',
+        re.DOTALL | re.IGNORECASE
+    )
+    # Get full document pattern: <get_full_document title="doc title">reason</get_full_document>
+    GET_FULL_DOCUMENT_PATTERN = re.compile(
+        r'<get_full_document\s+title=["\']([^"\']+)["\']\s*>(.*?)</get_full_document>',
+        re.DOTALL | re.IGNORECASE
     )
     # Expand memory pattern: <expand_memory id="abc12345" collection="conversations" window="3">reason</expand_memory>
     EXPAND_MEMORY_PATTERN = re.compile(
@@ -518,6 +569,19 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     expand_collection=collection,
                 )
 
+        # Check for get_full_document marker
+        full_doc_match = self.GET_FULL_DOCUMENT_PATTERN.search(text)
+        if full_doc_match:
+            title = full_doc_match.group(1).strip()
+            reason = full_doc_match.group(2).strip() or None
+            if title:
+                logger.debug(f"[AgenticProtocol] XML get_full_document marker found: {title}")
+                return SearchDecision(
+                    wants_full_document=True,
+                    full_document_title=title,
+                    full_document_reason=reason,
+                )
+
         # Check for file read marker
         file_read_match = self.FILE_READ_PATTERN.search(text)
         if file_read_match:
@@ -546,6 +610,17 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     file_grep_pattern=pattern,
                     file_grep_folder=folder if folder else None,
                     file_grep_glob=glob if glob else None,
+                )
+
+        # Check for git stats marker
+        git_stats_match = self.GIT_STATS_PATTERN.search(text)
+        if git_stats_match:
+            query = git_stats_match.group(1).strip()
+            if query:
+                logger.debug(f"[AgenticProtocol] XML git_stats marker found: {query}")
+                return SearchDecision(
+                    wants_git_stats=True,
+                    git_stats_query=query,
                 )
 
         # Check for file list marker
@@ -613,6 +688,7 @@ def get_protocol_handler(
     sandbox_available: bool = False,
     memory_available: bool = False,
     file_access_available: bool = False,
+    git_stats_available: bool = False,
 ) -> BaseProtocolHandler:
     """
     Factory function to get appropriate protocol handler.
@@ -623,6 +699,7 @@ def get_protocol_handler(
         sandbox_available: Whether E2B sandbox is configured
         memory_available: Whether ChromaDB memory search is available
         file_access_available: Whether file access manager is configured
+        git_stats_available: Whether git stats manager is configured
 
     Returns:
         Protocol handler instance
@@ -633,6 +710,7 @@ def get_protocol_handler(
             sandbox_available=sandbox_available,
             memory_available=memory_available,
             file_access_available=file_access_available,
+            git_stats_available=git_stats_available,
         )
     else:
         return XMLMarkerHandler()

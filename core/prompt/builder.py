@@ -204,7 +204,7 @@ def _staleness_prefix(item) -> str:
     except Exception:
         pass
     return ""
-PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 5)
+PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 15)
 PROMPT_MAX_GIT_COMMITS = _cfg_int("prompt_max_git_commits", 10)
 PROMPT_MAX_SKILLS = _cfg_int("prompt_max_skills", 5)
 PROMPT_MAX_PROPOSALS = _cfg_int("prompt_max_proposals", 3)

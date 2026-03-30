@@ -232,6 +232,25 @@ class MultiCollectionChromaStore:
         coll.add(ids=[doc_id], documents=[text or ""], metadatas=[clean_md])
         return doc_id
 
+    def add_batch_to_collection(
+        self, name: str, texts: List[str], metadatas: List[Dict[str, Any]]
+    ) -> List[str]:
+        """Add multiple items in a single batch (one embedding pass + one disk write)."""
+        if not texts:
+            return []
+        if name not in self.collections or self.collections[name] is None:
+            self.create_collection(name)
+        coll = self.collections[name]
+        doc_ids = [str(uuid.uuid4()) for _ in texts]
+        clean_mds = []
+        for md in metadatas:
+            cleaned = _flatten_for_chroma(dict(md or {}))
+            if not cleaned:
+                cleaned["timestamp"] = datetime.now().isoformat()
+            clean_mds.append(cleaned)
+        coll.add(ids=doc_ids, documents=[t or "" for t in texts], metadatas=clean_mds)
+        return doc_ids
+
     def get_recent(self, collection_name: str, limit: int = 8) -> List[Dict]:
         all_items = self.list_all(collection_name)
 

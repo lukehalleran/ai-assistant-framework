@@ -1,108 +1,93 @@
-feat: Multi-signal novelty scoring, two-pass coherence judge, operational docs
+feat: Document retrieval pipeline — table extraction, full-doc tool, batch embedding
 
-Replaces single-signal novelty gate with 4-signal composite, rewrites the
-coherence judge prompt for structural isomorphism detection, adds factual
-skeptic second pass, and creates standalone operational guides for the
-synthesis filter and memory system.
-
-Calibrated against 54 labeled candidates with live Sonnet 4.5 + GPT-4o-mini.
-Final metrics (Sonnet 4.5): Precision=90.9%, Recall=100%, F1=95.2%.
+Uploaded PDFs and DOCX files with tables (schedules, grade rubrics, etc.)
+were silently losing tabular data. Now tables are extracted as markdown
+pipe tables, a new agentic tool retrieves complete documents by title,
+and bulk embedding uses batched ChromaDB writes.
 
 --- MODIFIED FILES ---
 
-knowledge/synthesis_filter.py (+303/-73 lines)
-  Stage 3 (novelty_external) now has 3 sub-checks:
-  - Sub-check 1: Claim similarity (existing — full claim vs wiki)
-  - Sub-check 2: Co-occurrence (NEW — bare "concept_a concept_b" wiki query
-    catches "known connection, novel phrasing" failure mode)
-  - Sub-check 3: Template specificity (NEW — 9 compiled regexes + 14 generic
-    tokens detect vacuous bridge platitudes like "both involve feedback loops")
-  Stage 5 (coherence_judge) rewritten as two-pass:
-  - Pass 1: Structural coherence — rewritten prompt distinguishes structural
-    isomorphisms from loose analogies. Key change: MODERATE now explicitly
-    includes shared mathematical patterns across different substrates
-  - Pass 2: Factual skeptic — fires only on MODERATE results, binary PASS/FAIL,
-    catches debunked science (mirror neurons, Mozart effect, left-brain myth)
-    while passing legitimate simplifications
-  Stage 6 (composite_scoring) novelty is now a 4-signal composite:
-    claim(0.25) + cooccurrence(0.30) + specificity(0.25) + internal(0.20)
-  New helpers:
-  - _extract_similarity() — DRYs relevance_score→similarity conversion
-  - _compute_template_similarity() — regex-based generic bridge detection
-  - _factual_skeptic_pass() — second-pass factual accuracy check
-  - _parse_coherence_level() — extracted from inline parsing
+utils/file_processor.py
+  - PDF: new _extract_pdf_with_tables() using pdfplumber.extract_tables()
+    renders tables as markdown; text outside tables extracted via outside_bbox()
+  - DOCX: new _extract_docx_with_tables() using python-docx walks document
+    body in order, renders tables as markdown (replaces docx2txt which dropped
+    table content entirely)
+  - Module contract updated with new methods and dependencies
 
-knowledge/synthesis_models.py (+7 lines)
-  - Added cooccurrence_similarity, template_similarity fields to SynthesisResult
-  - Updated to_metadata() / from_metadata() for round-trip persistence
+utils/text_chunking.py
+  - New chunk_by_size() function: fixed-size paragraph-boundary chunking with
+    overlap, used as fallback for large documents with no ## headers
+  - chunk_by_headers() now falls back to chunk_by_size() when content exceeds
+    threshold but has no ## headers (e.g. plain-text PDFs)
+  - Module contract rewritten
 
-config/app_config.py (+12 lines)
-  - SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.75 (Stage 3b hard gate)
-  - SYNTHESIS_NOVELTY_W_CLAIM = 0.25
-  - SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30
-  - SYNTHESIS_NOVELTY_W_SPECIFICITY = 0.25
-  - SYNTHESIS_NOVELTY_W_INTERNAL = 0.20
-  - SYNTHESIS_COHERENCE_MODEL default changed: gpt-4o-mini → sonnet-4.5
+knowledge/reference_docs_manager.py
+  - New get_full_document(title): fetches all chunks by title, reassembles in
+    chunk_index order. Fuzzy title matching via _fuzzy_resolve_title() when
+    exact match fails (case-insensitive word overlap scoring)
+  - New list_document_titles(): sorted distinct titles for discoverability
+  - upload_document() and upload_text() now use add_batch_to_collection()
+    for single embedding pass + disk write per document
+  - DEFAULT_MAX_DOCS_PROMPT: 5 → 15
+  - Module contract updated
 
-tests/test_synthesis_calibration.py (+73 lines)
-  - Diagnostic output now shows cooccurrence_sim and template_sim per tier
-  - Boundary detail, misclassification, and composite boundary sections updated
+core/agentic/types.py
+  - GET_FULL_DOCUMENT_TOOL_DEFINITION: new tool schema
+  - SearchDecision: added wants_full_document, full_document_title,
+    full_document_reason fields
+  - _classify_round_action(): handles "[Full Document]" prefix
+  - AGENTIC_SYSTEM_PROMPT_INJECTION: tool 11 (get_full_document) + table row
 
-scripts/calibrate_coherence_live.py (rewritten, 278 lines)
-  - Full-pipeline live calibration (mock wiki store + real LLM coherence)
-  - Multi-model comparison with per-tier diagnostics
-  - Shows co-occurrence, template, and composite signals per candidate
+core/agentic/protocols.py
+  - NativeToolsHandler: imports + stores GET_FULL_DOCUMENT_TOOL_DEFINITION,
+    parse branch for "get_full_document", added to get_tools() and
+    augment_system_prompt() tool list
+  - XMLMarkerHandler: GET_FULL_DOCUMENT_PATTERN regex, parse branch
 
-docs/FORMAL_MODEL.md
-  - Updated g_3 gate: 3 sub-checks with conditions
-  - Updated g_5 gate: 2-pass structure (structural + factual skeptic)
-  - Updated novelty formula: 4-signal composite with weights
-  - Updated verified date to 2026-03-29
+core/agentic/controller.py
+  - Dispatch branch for wants_full_document with ProgressEvent lifecycle
+  - _execute_full_document_retrieval(): instantiates ReferenceDocsManager,
+    calls get_full_document() with 60k char hard cap, lists titles on miss
+  - _format_full_document_context(): accumulated context formatter
+
+core/agentic/__init__.py
+  - Exports GET_FULL_DOCUMENT_TOOL_DEFINITION
+
+core/system_prompt.txt
+  - Added get_full_document to Agentic Capabilities with usage guidance
+
+core/prompt/builder.py
+  - PROMPT_MAX_REFERENCE_DOCS: 5 → 15
+
+config/app_config.py
+  - REFERENCE_DOCS_MAX_PROMPT: 5 → 15
+
+memory/storage/multi_collection_chroma_store.py
+  - New add_batch_to_collection(name, texts, metadatas): single ChromaDB
+    .add() call for batch embedding + disk write
+
+knowledge/obsidian_manager.py
+  - Bulk note embedding now uses add_batch_to_collection() per note
+    (falls back to individual adds if method unavailable)
+
+knowledge/git_memory_loader.py
+  - backfill() and incremental_update() now use add_batch_to_collection()
+    with fallback to individual adds on failure
+
+docs/AGENTIC_SEARCH.md
+  - New get_full_document tool section
+
+docs/ARCHITECTURE_GUIDE.md
+  - 7 Tools → 8 Tools table, added Full Document row
 
 docs/PROJECT_SKELETON.md
-  - Updated Stage 3, Stage 5, Stage 6 descriptions
-  - Added new config constants
-  - Fixed SYNTHESIS_COHERENCE_MODEL: gpt-4o-mini → sonnet-4.5 (2 occurrences)
+  - Updated chunking description (chunk_by_size fallback)
+  - REFERENCE_DOCS_MAX_PROMPT: 5 → 15
+  - Added get_full_document() and list_document_titles() to method list
 
 docs/QUICK_REFERENCE.md
-  - Updated Stage 3, Stage 5, Stage 6 descriptions
-  - Added new helpers and config constants
-  - Fixed SYNTHESIS_COHERENCE_MODEL: gpt-4o-mini → sonnet-4.5
+  - Updated FileProcessor description with PDF/DOCX table extraction
 
---- NEW FILES ---
-
-docs/SYNTHESIS_FILTER.md (620 lines)
-  Standalone operational guide for the synthesis filter pipeline:
-  - System purpose and when it runs (shutdown dreaming)
-  - File map (10 files)
-  - Full data models (SynthesisCandidate, SynthesisResult, CoherenceLevel)
-  - Candidate generation pipeline (cross-store sampling, bridge articulation)
-  - Data flow diagram (generator → 8 stages → memory)
-  - Stage-by-stage walkthrough with concrete rejection examples
-  - Verbatim prompt text for both coherence passes (structural + skeptic)
-  - All 9 template regex patterns and 14 generic tokens
-  - Concrete end-to-end traced example (bone remodeling ↔ index optimization,
-    composite=0.796, all stage scores shown)
-  - Calibration guide (7 tiers, mock vs live, reading output, adding ground truth)
-  - Tuning decision tables (precision too low / recall too low / convergence slow)
-  - Benchmark results with prompt iteration history (F1: 30.8% → 90.9% → 95.2%)
-  - Config reference (23 filter + 4 generator constants)
-
-docs/MEMORY_SYSTEM.md (550 lines)
-  Standalone operational guide for the hierarchical memory system:
-  - File map (20+ files by subsystem)
-  - 12 ChromaDB collections table (content, protection, dedup status)
-  - End-to-end lifecycle: one conversation turn through all 3 phases
-    (retrieval → storage → shutdown)
-  - 13-step scoring algorithm with default weights and concrete numeric example
-  - Intent-driven weight override table (5 intent types)
-  - Fact extraction pipeline with worked example ("my brother Auggie...")
-  - Fact verification decision tree (STORE/STORE_AND_FLAG/REJECT/SKIP)
-  - Graph ingestion with worthiness filter
-  - Truth score lifecycle (initial → confirmation → correction → decay)
-  - Staleness cascade example (correction → claim index → ratio → penalty)
-  - Multi-stage gating (5 stages with timing)
-  - Token budget priority ordering (10 levels) and compression hierarchy
-  - Prompt assembly order (18 sections)
-  - Tuning guide: 4 symptom tables for retrieval, facts, truth, budget issues
-  - Config reference (scoring, gating, facts/truth, budget, graph)
+CLAUDE.md
+  - Updated module tree, component table, current development section

@@ -43,9 +43,10 @@ When a query needs more than stored memory, Daemon enters a multi-round ReAct lo
 | **Code Sandbox** | Secure Python execution in ephemeral Firecracker microVMs (E2B) |
 | **Memory Search** | Targeted search across 12 ChromaDB collections from within the loop |
 | **Memory Expansion** | Drill into a search hit — retrieve chronological neighbors or decompress summaries back to original conversations |
+| **Git Stats** | Read-only local git commands: commit counts, contributors, files changed, diff stats with temporal windows |
 | **Done** | Signal synthesis complete |
 
-The agent receives a **context inventory** summarizing what RAG already gathered, preventing redundant searches. A 3-tier agentic gate (keyword heuristic → knowledge graph entity match → LLM fallback) decides when to enter the loop at all. The loop runs up to 5 rounds with token-budgeted context compression between iterations.
+The agent receives a **context inventory** summarizing what RAG already gathered, preventing redundant searches. A 3-tier agentic gate (keyword heuristic → knowledge graph entity match → LLM fallback) decides when to enter the loop at all. The loop runs up to 5 rounds with token-budgeted context compression between iterations. A git stats tool handles temporal repository questions (commit counts, contributors, diff stats) via safe, read-only subprocess calls — no LLM needed for intent parsing.
 
 ### Intent-Parameterized Retrieval
 
@@ -143,7 +144,7 @@ User Query
     │
     ├─ Agentic Tool Loop ─── ReAct pattern: Think → Tool → Observe → Repeat (max 5 rounds)
     │                        Tools: Tavily + Wolfram Alpha + E2B sandbox +
-    │                        memory search + memory expansion + done
+    │                        memory search + memory expansion + git stats + done
     │                        Context inventory prevents redundant re-searches
     │                        Budget-enforced context accumulation (oldest rounds trimmed)
     │
@@ -240,6 +241,7 @@ The agentic system uses a ReAct (Reason + Act) pattern with dual protocol suppor
 | Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across loop iterations), NumPy/Pandas/SciPy pre-installed |
 | Memory Search | ChromaDB (12 collections) | Per-collection search descriptions, diversity tracking prevents redundant queries |
 | Memory Expansion | Temporal + backlink strategies | For summaries: recovers original conversations via source_doc_ids or temporal anchors. For other collections: ±N chronological neighbors. Session-gated, cached. |
+| Git Stats | GitStatsManager | Keyword-based intent parsing → safe git subprocess calls. Temporal windows ("this week", "today"). Read-only subcommand allowlist. |
 
 ---
 
@@ -400,12 +402,12 @@ Lines of Python:        ~102,000
 Python files:           284
 Test files:             137
 Test functions:         2,800+
-ChromaDB collections:   11
+ChromaDB collections:   12
 Prompt sections:        26 (conditional)
 Intent types:           9
 Retrieval tasks:        18 (parallel)
 Memory tiers:           5
-Agentic tools:          6
+Agentic tools:          7
 Gating latency:         ~200ms
 Config options:         180+
 ```
@@ -422,6 +424,7 @@ core/                        # Request orchestration
 ├── intent_classifier.py     # Regex-first intent classification (9 types)
 ├── escalation_tracker.py    # Crisis cooldown FSM (4 states)
 ├── correction_detector.py   # User correction/confirmation detection
+├── git_stats_manager.py     # Read-only git repo stats for agentic loop
 ├── response_parser.py       # Thinking block + tag stripping utilities
 ├── agentic/                 # ReAct agentic tool loop
 │   ├── controller.py        # ReAct loop orchestration (5-round max)
@@ -590,8 +593,12 @@ python main.py
 
 | Document | Purpose |
 |----------|---------|
+| [ARCHITECTURE_GUIDE.md](docs/ARCHITECTURE_GUIDE.md) | Narrative architectural walkthrough — how every subsystem works and connects |
 | [FORMAL_MODEL.md](docs/FORMAL_MODEL.md) | Mathematical specification of the complete agent |
-| [PROJECT_SKELETON.md](docs/PROJECT_SKELETON.md) | Compressed architectural walkthrough for LLM context |
+| [PROJECT_SKELETON.md](docs/PROJECT_SKELETON.md) | Compressed code-level walkthrough for LLM context |
+| [QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) | Ultra-compressed API reference — function signatures and core logic |
+| [MEMORY_SYSTEM.md](docs/MEMORY_SYSTEM.md) | Memory lifecycle, scoring algorithm, fact pipeline, tuning guide |
+| [SYNTHESIS_FILTER.md](docs/SYNTHESIS_FILTER.md) | Synthesis pipeline stages, calibration, benchmark results |
 | [GOALS.md](docs/GOALS.md) | Active goals, principles, and recent completions |
 | [TAG_GENERATION.md](docs/TAG_GENERATION.md) | Tag generation system documentation |
 | [BUILD_GUIDE.md](docs/BUILD_GUIDE.md) | Desktop executable build guide |

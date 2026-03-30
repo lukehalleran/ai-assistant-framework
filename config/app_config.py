@@ -589,7 +589,7 @@ REFERENCE_DOCS_ENABLED: bool = bool(REFERENCE_DOCS_CFG.get("enabled", True))
 # Character threshold for chunking (docs < threshold = whole, >= threshold = chunk by headers)
 REFERENCE_DOCS_CHUNK_THRESHOLD: int = int(REFERENCE_DOCS_CFG.get("chunk_threshold", 2000))
 # Maximum document chunks to include in prompt
-REFERENCE_DOCS_MAX_PROMPT: int = int(REFERENCE_DOCS_CFG.get("max_prompt", 5))
+REFERENCE_DOCS_MAX_PROMPT: int = int(REFERENCE_DOCS_CFG.get("max_prompt", 15))
 
 # Auto-seed docs/ directory on GUI startup (uses mtime for idempotency)
 REFERENCE_DOCS_AUTO_SEED: bool = bool(REFERENCE_DOCS_CFG.get("auto_seed", True))
@@ -1069,6 +1069,17 @@ SESSION_DIFF_EXTENSIONS = SESSION_DIFF_CFG.get("include_extensions",
 
 # Environment variable overrides for Session Diff
 SESSION_DIFF_ENABLED = bool(int(os.getenv("SESSION_DIFF_ENABLED", "1" if SESSION_DIFF_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Git Stats (agentic tool for repository activity queries)
+# --------------------------------------------------------------------
+GIT_STATS_CFG = config.get("git_stats", {})
+GIT_STATS_ENABLED: bool = bool(GIT_STATS_CFG.get("enabled", True))
+GIT_STATS_TIMEOUT: int = int(GIT_STATS_CFG.get("timeout_s", 10))
+GIT_STATS_MAX_OUTPUT_LINES: int = int(GIT_STATS_CFG.get("max_output_lines", 50))
+
+# Environment variable override
+GIT_STATS_ENABLED = bool(int(os.getenv("GIT_STATS_ENABLED", "1" if GIT_STATS_ENABLED else "0")))
 
 # --------------------------------------------------------------------
 # Token Budget (model-aware prompt budget)
