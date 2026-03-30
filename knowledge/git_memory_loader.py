@@ -69,17 +69,36 @@ class GitMemoryLoader:
             include_diffs=include_diffs,
         )
 
-        stored = 0
-        for commit in commits:
-            try:
-                self.chroma_store.add_to_collection(
-                    name=_COLLECTION,
-                    text=commit["content"],
-                    metadata=commit["metadata"],
-                )
-                stored += 1
-            except Exception as e:
-                logger.error(f"Failed to store commit {commit['id']}: {e}")
+        # Batch add commits (single embedding pass + disk write)
+        texts = [c["content"] for c in commits]
+        metas = [c["metadata"] for c in commits]
+        try:
+            if hasattr(self.chroma_store, 'add_batch_to_collection') and texts:
+                self.chroma_store.add_batch_to_collection(_COLLECTION, texts, metas)
+                stored = len(commits)
+            else:
+                stored = 0
+                for commit in commits:
+                    try:
+                        self.chroma_store.add_to_collection(
+                            name=_COLLECTION,
+                            text=commit["content"],
+                            metadata=commit["metadata"],
+                        )
+                        stored += 1
+                    except Exception as e:
+                        logger.error(f"Failed to store commit {commit['id']}: {e}")
+        except Exception as e:
+            logger.error(f"Batch backfill failed, falling back to individual: {e}")
+            stored = 0
+            for commit in commits:
+                try:
+                    self.chroma_store.add_to_collection(
+                        name=_COLLECTION, text=commit["content"], metadata=commit["metadata"],
+                    )
+                    stored += 1
+                except Exception as exc:
+                    logger.error(f"Failed to store commit {commit['id']}: {exc}")
 
         # Save last hash for incremental updates (first = newest)
         if commits:
@@ -113,17 +132,34 @@ class GitMemoryLoader:
                 include_diffs=True,
             )
 
-        stored = 0
-        for commit in commits:
-            try:
-                self.chroma_store.add_to_collection(
-                    name=_COLLECTION,
-                    text=commit["content"],
-                    metadata=commit["metadata"],
-                )
-                stored += 1
-            except Exception as e:
-                logger.error(f"Failed to store commit {commit['id']}: {e}")
+        # Batch add new commits
+        texts = [c["content"] for c in commits]
+        metas = [c["metadata"] for c in commits]
+        try:
+            if hasattr(self.chroma_store, 'add_batch_to_collection') and texts:
+                self.chroma_store.add_batch_to_collection(_COLLECTION, texts, metas)
+                stored = len(commits)
+            else:
+                stored = 0
+                for commit in commits:
+                    try:
+                        self.chroma_store.add_to_collection(
+                            name=_COLLECTION, text=commit["content"], metadata=commit["metadata"],
+                        )
+                        stored += 1
+                    except Exception as exc:
+                        logger.error(f"Failed to store commit {commit['id']}: {exc}")
+        except Exception as e:
+            logger.error(f"Batch incremental failed: {e}")
+            stored = 0
+            for commit in commits:
+                try:
+                    self.chroma_store.add_to_collection(
+                        name=_COLLECTION, text=commit["content"], metadata=commit["metadata"],
+                    )
+                    stored += 1
+                except Exception as exc:
+                    logger.error(f"Failed to store commit {commit['id']}: {exc}")
 
         if commits:
             self._save_last_hash(commits[0]["metadata"]["full_hash"])

@@ -119,6 +119,12 @@ These systems are complete and working. Listed here for context, not as active w
 
 ## Recent Completions
 
+### Git Stats Agentic Tool (2026-03-29)
+- New `git_stats` tool for agentic loop — answers temporal git questions (commit counts, files changed, contributors)
+- Keyword-based intent parsing with temporal phrase extraction, no LLM calls
+- Read-only safety: only allowlisted git subcommands
+- 51 unit tests
+
 ### Thread Surfacing System (2026-03-23)
 - Proactive open-thread detection: LLM extracts unresolved commitments, deadlines, unanswered questions, and unfinished topics at shutdown
 - `ThreadStore` (ChromaDB-backed) stores threads with urgency scoring and deadline tracking
