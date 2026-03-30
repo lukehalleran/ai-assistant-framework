@@ -404,6 +404,7 @@ MEMORY_SEARCH_TOOL_DEFINITION = {
             "- reflections: End-of-session reflections and insights\n"
             "- reference_docs: Your own architecture/documentation\n"
             "- obsidian_notes: User's personal Obsidian vault notes\n"
+            "- wiki_knowledge: Pre-embedded Wikipedia articles — best for factual/encyclopedic questions about real-world topics\n"
             "- procedural: Git commit history and how-to knowledge\n"
             "- procedural_skills: Learned reusable problem-solving patterns\n"
             "IMPORTANT: Diversify across collections — avoid searching the same collection repeatedly. "
@@ -422,7 +423,7 @@ MEMORY_SEARCH_TOOL_DEFINITION = {
                     "enum": [
                         "reference_docs", "facts", "conversations",
                         "summaries", "reflections", "obsidian_notes",
-                        "procedural", "procedural_skills"
+                        "wiki_knowledge", "procedural", "procedural_skills"
                     ]
                 },
                 "reason": {
@@ -675,7 +676,7 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 5. **Memory Search**: <memory collection="collection_name">your query</memory>
    Use for: your own docs (reference_docs), user facts (facts), past conversations (conversations),
    summaries (summaries), reflections (reflections), Obsidian notes (obsidian_notes),
-   git history (procedural), learned skills (procedural_skills).
+   Wikipedia articles (wiki_knowledge), git history (procedural), learned skills (procedural_skills).
    Prefer this over web search when the answer is likely already in your memory.
 
 6. **File Read**: <file_read path="filepath">optional reason</file_read>
@@ -720,6 +721,7 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | Individual facts (name, age, specific detail) | Memory (facts) |
 | Past conversations, "did we discuss" | Memory (conversations, summaries) |
 | User's personal notes | Memory (obsidian_notes) |
+| Encyclopedic/factual knowledge (history, science, etc.) | Memory (wiki_knowledge) |
 | View source code, configs, logs | File Read |
 | Find where something is defined/used | File Grep |
 | Explore directory structure | File List |

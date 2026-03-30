@@ -26,7 +26,7 @@ Module Contract
   - _get_semantic_memories(query, limit) -> List[Dict]  [with graph query expansion]
   - _get_summaries_separated(query, limit) -> Dict[str, List]
   - _get_reflections_separated(query, limit) -> Dict[str, List]
-  - _get_wiki_content(query, limit) -> List[Dict]
+  - _get_wiki_content(query, limit) -> List[Dict]  [ChromaDB wiki_knowledge first, API fallback]
   - _get_semantic_chunks(query, k) -> List[Dict]
   - _get_web_search_results(query, crisis_level, ...) -> WebSearchResult/MultiSearchResult
   - _get_dreams(limit) -> List[Dict]
@@ -1769,7 +1769,12 @@ class ContextGatherer:
         return False
 
     async def _get_wiki_content(self, query: str, limit: int = PROMPT_MAX_WIKI) -> List[Dict[str, Any]]:
-        """Get wiki content for query."""
+        """Get wiki content for query.
+
+        Prefers the local wiki_knowledge ChromaDB collection (pre-embedded
+        Wikipedia corpus) for fast, relevant semantic retrieval.  Falls back
+        to live Wikipedia API if the collection is empty or unavailable.
+        """
         if not query:
             return []
 
@@ -1777,17 +1782,36 @@ class ContextGatherer:
         if self._should_skip_wikipedia(query):
             return []
 
-        try:
-            # Extract key terms for wiki search
-            search_terms = []
+        # --- Try local ChromaDB wiki_knowledge first ---
+        chroma = getattr(self.memory_coordinator, 'chroma_store', None)
+        if chroma:
+            try:
+                coll = chroma.collections.get('wiki_knowledge')
+                if coll and coll.count() > 0:
+                    results = chroma.query_collection(
+                        'wiki_knowledge', query, n_results=limit
+                    )
+                    if results:
+                        return [
+                            {
+                                'content': r.get('content', ''),
+                                'metadata': r.get('metadata', {}),
+                                'relevance_score': r.get('relevance_score', 0.0),
+                                'source': 'wiki_knowledge',
+                            }
+                            for r in results
+                        ]
+            except Exception as e:
+                logger.debug(f"[ContextGatherer] wiki_knowledge query failed, falling back to API: {e}")
 
-            # Simple term extraction
+        # --- Fallback: live Wikipedia API ---
+        try:
+            search_terms = []
             words = query.lower().split()
             for word in words:
                 if len(word) > 3 and word.isalpha():
                     search_terms.append(word)
 
-            # Get wiki snippets for top terms
             wiki_results = []
             for term in search_terms[:limit]:
                 snippet = await self._get_wiki_snippet_cached(term)

@@ -1446,6 +1446,8 @@ agentic_search:
 - `file_grep` tool [NEW 2026-03-26]: Search file contents by regex pattern across a directory tree
 - `file_list` tool [NEW 2026-03-26]: List directory contents
 - `git_stats` tool [NEW 2026-03-29]: Read-only git repo stats (commit counts, files changed, contributors, branch activity) via keyword intent parsing + temporal windows, no LLM calls
+- `get_full_document` tool [NEW 2026-03-30]: Retrieve complete uploaded document by title with fuzzy matching. Reassembles all chunks in order, 60k char cap.
+- `wiki_knowledge` added to `search_memory` valid collections [NEW 2026-03-30]: enables agentic search of pre-embedded Wikipedia corpus
 
 **Provenance** **[NEW 2026-03-26]**:
 - `AgenticSearchSession.final_prompt_hash` — SHA-256[:16] of final assembled prompt

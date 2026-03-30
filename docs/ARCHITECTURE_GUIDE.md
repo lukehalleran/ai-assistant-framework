@@ -866,7 +866,7 @@ when a `GitStatsManager` is available.
 | Web Search | Tavily API | Query decomposition, 72hr cache, daily credit tracking |
 | Wolfram Alpha | LLM API | Token bucket rate limiting, MD5 result cache |
 | Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across rounds) |
-| Memory Search | ChromaDB (12 collections) | Per-collection descriptions, diversity tracking |
+| Memory Search | ChromaDB (12 collections, incl. wiki_knowledge) | Per-collection descriptions, diversity tracking |
 | Memory Expansion | MemoryExpander | Summary drill-down via source_doc_ids, temporal neighbors |
 | Full Document | ReferenceDocsManager | Reassemble all chunks of an uploaded doc by title; fuzzy title matching |
 | File Operations | Local filesystem | Read, grep, list (sandboxed to project directory) |

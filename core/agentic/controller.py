@@ -115,6 +115,7 @@ class AgenticSearchController:
     VALID_MEMORY_COLLECTIONS = frozenset({
         "reference_docs", "facts", "conversations", "summaries",
         "reflections", "obsidian_notes", "procedural", "procedural_skills",
+        "wiki_knowledge",
     })
 
     def __init__(
