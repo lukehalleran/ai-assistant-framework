@@ -427,7 +427,8 @@ class NativeToolsHandler(BaseProtocolHandler):
         tools_str = ", ".join(tool_list)
         memory_guidance = (
             " Use search_memory for internal/personal questions "
-            "(your own docs, user facts, past conversations). "
+            "(your own docs, user facts, past conversations) and wiki_knowledge "
+            "for encyclopedic/factual questions (history, science, geography, etc.). "
             "For user profile/biographical questions, prefer summaries and conversations "
             "over facts — summaries contain rich narrative context while facts stores "
             "individual triples (name=X, age=33). Diversify across collections. "
