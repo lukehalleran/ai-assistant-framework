@@ -1370,6 +1370,7 @@ else:
 - `SEARCH_TOOL_DEFINITION`, `DONE_TOOL_DEFINITION`: OpenAI-style tool schemas
 - `MEMORY_SEARCH_TOOL_DEFINITION`: Tool schema for searching ChromaDB collections from ReAct loop **[NEW 2026-03-20]**
 - `FILE_READ_TOOL_DEFINITION`, `FILE_GREP_TOOL_DEFINITION`, `FILE_LIST_TOOL_DEFINITION`: File access tool schemas **[NEW 2026-03-26]**
+- `GIT_STATS_TOOL_DEFINITION`: Git repository stats tool schema **[NEW 2026-03-29]**
 - `AGENTIC_SYSTEM_PROMPT_INJECTION`: Instructions for local models to use XML markers
 
 **core/agentic/protocols.py** - Protocol detection and parsing
@@ -1412,6 +1413,15 @@ agentic_search:
   prefer_native_tools: true
 ```
 
+**Git Stats Integration** [NEW 2026-03-29]:
+- `GitStatsManager` in `core/git_stats_manager.py` — keyword-based intent parsing, temporal phrase extraction, safe subprocess
+- `GIT_STATS_TOOL_DEFINITION` in types.py — tool schema for native protocol
+- `<git_stats>query</git_stats>` XML marker for local models
+- `SearchDecision` extended with `wants_git_stats`, `git_stats_query`, `git_stats_reason`
+- Read-only safety: only allowlisted git subcommands (`log`, `shortlog`, `diff --stat`, `rev-list`)
+- Progress events: `checking_git` → `git_stats_result`
+- Config: `GIT_STATS_ENABLED`, `GIT_STATS_TIMEOUT` (10s), `GIT_STATS_MAX_OUTPUT_LINES` (50); YAML section `git_stats`
+
 **Wolfram Alpha Integration** [NEW 2026-01-22]:
 - `wolfram_manager` parameter added to `AgenticSearchController.__init__()`
 - `WOLFRAM_TOOL_DEFINITION` in types.py - tool schema for native protocol
@@ -1425,6 +1435,7 @@ agentic_search:
 - `SANDBOX_TOOL_DEFINITION` in types.py - tool schema for native protocol
 - `<python purpose="...">code</python>` XML marker for local models
 - `SearchDecision` extended with `wants_sandbox`, `sandbox_code`, `sandbox_purpose`
+- `SearchDecision` extended with `wants_git_stats`, `git_stats_query`, `git_stats_reason` **[NEW 2026-03-29]**
 - Persistent session created at loop start (variables survive across turns)
 - Session cleanup in finally block
 - Progress events: `executing_code` → `code_executed` / `code_error`
@@ -1434,6 +1445,7 @@ agentic_search:
 - `file_read` tool [NEW 2026-03-26]: Read a file from the user's filesystem (project work, code review)
 - `file_grep` tool [NEW 2026-03-26]: Search file contents by regex pattern across a directory tree
 - `file_list` tool [NEW 2026-03-26]: List directory contents
+- `git_stats` tool [NEW 2026-03-29]: Read-only git repo stats (commit counts, files changed, contributors, branch activity) via keyword intent parsing + temporal windows, no LLM calls
 
 **Provenance** **[NEW 2026-03-26]**:
 - `AgenticSearchSession.final_prompt_hash` — SHA-256[:16] of final assembled prompt
@@ -2184,13 +2196,16 @@ MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gpt-4-vision",
 - `delete_document(title)` → `bool`: Remove document from index
 - `sync_file(file_path, title)` → `str`: Sync single file using mtime comparison ('uploaded'/'skipped'/'failed')
 - `sync_directory(directory, file_patterns)` → `Dict`: Batch sync all matching files from directory (default `*.md`). Returns `{uploaded, skipped, failed, details}` counts
+- `get_full_document(title)` → `Optional[str]`: Fetch all chunks by title (fuzzy match), reassemble in order
+- `list_document_titles()` → `List[str]`: Sorted list of distinct document titles
 - `get_stats()` → `Dict`: Collection statistics
 - `clear_all()` → `bool`: Clear entire collection
 
-**Smart Chunking**:
+**Smart Chunking** (shared via `utils/text_chunking.py`):
 ```
 Document < 2000 chars → Embed whole document
 Document >= 2000 chars → Split by ## headers
+  └── No ## headers found → chunk_by_size() fallback (paragraph-boundary, ~2000 char chunks with 200 char overlap)
 ```
 
 **Supported File Types**:
@@ -2209,7 +2224,7 @@ Query → _keyword_search() → 1/3 results (title/section match priority)
 ```python
 REFERENCE_DOCS_ENABLED = True
 REFERENCE_DOCS_CHUNK_THRESHOLD = 2000
-REFERENCE_DOCS_MAX_PROMPT = 5
+REFERENCE_DOCS_MAX_PROMPT = 15
 REFERENCE_DOCS_AUTO_SEED = True           # Auto-seed docs/ on GUI startup
 REFERENCE_DOCS_SEED_PATHS = ["docs"]      # Directories/files to auto-seed
 ```
@@ -4529,6 +4544,7 @@ daemon/
 │   ├── intent_classifier.py   # Regex-first query intent classifier (9 types) [NEW 2026-02-15]
 │   ├── response_generator.py  # LLM streaming + Best-of-N/Duel (FIXED)
 │   ├── best_of_handler.py     # Best-of orchestration (duel/ensemble/single) [NEW]
+│   ├── git_stats_manager.py   # GitStatsManager — read-only git repo stats for agentic loop [NEW 2026-03-29]
 │   ├── competitive_scorer.py  # Judge-based response selection
 │   ├── dependencies.py        # Dependency injection setup
 │   ├── wiki_util.py          # Wikipedia utility functions

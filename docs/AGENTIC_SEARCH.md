@@ -14,7 +14,7 @@ details see `PROMPT_BUILDING_PIPELINE.md`.
 When a user query needs external information, Daemon can enter a
 multi-round ReAct (Reasoning + Acting) loop where the LLM iteratively
 decides which tools to call — web search, memory search, Wolfram Alpha,
-Python sandbox, file access, or memory expansion — until it has enough
+Python sandbox, file access, memory expansion, or git stats — until it has enough
 context to answer. The loop is budget-enforced and streams progress
 events to the UI in real time.
 
@@ -27,6 +27,7 @@ events to the UI in real time.
 | `core/agentic/controller.py` | Main loop: session management, tool dispatch, budget, final generation |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing |
+| `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
 | `core/orchestrator.py` | Trigger logic and lazy initialization of controller |
 
 ---
@@ -145,6 +146,35 @@ file_grep:  pattern (required), folder/file_glob/case_sensitive (optional)
 file_list:  dirpath (required), recursive (optional)
 ```
 
+### git_stats
+
+Query the local git repository for activity statistics.
+
+```
+Parameters: query (required), reason (optional)
+Intent parsing: Keyword-based — no LLM call needed
+Time windows: "today", "this week", "last N days", "this month", etc.
+Safety: Read-only git subcommands only (log, shortlog, diff, status,
+        branch, rev-list, rev-parse, show, describe, tag, stash)
+Output: Formatted summary + raw git output, capped at 50 lines
+Config: GIT_STATS_ENABLED, GIT_STATS_TIMEOUT, GIT_STATS_MAX_OUTPUT_LINES
+```
+
+### get_full_document
+
+Retrieve the complete text of an uploaded document by title.
+
+```
+Parameters: title (required), reason (optional)
+Fuzzy matching: Exact match first, then case-insensitive word overlap
+Execution: ReferenceDocsManager.get_full_document(title) — fetches all
+           chunks, sorts by chunk_index, reassembles into single text
+Truncation: Hard cap at 60k chars (budget enforcement handles the rest)
+On miss: Returns list of available document titles for self-correction
+Use case: User asks to "pull up" or "check" an uploaded PDF/DOCX/syllabus
+          and search_memory only returned fragments
+```
+
 ### done_searching
 
 Signal that enough information has been gathered.
@@ -184,12 +214,13 @@ For models without native tool support. Markers embedded in text:
 <file_read path="/path/to/file" start="1" end="50"/>
 <file_grep pattern="regex" folder="src/" glob="*.py"/>
 <file_list path="/path/to/dir" recursive="true"/>
+<git_stats>commits this week</git_stats>
 <done/>
 ```
 
 Parsed by `XMLMarkerHandler` using regex. Checked in order:
 python → wolfram → memory → expand → file_read → file_grep →
-file_list → web_search → done → implicit answer.
+file_list → git_stats → web_search → done → implicit answer.
 
 ### System Prompt Augmentation
 
@@ -291,6 +322,7 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `reading_file` / `file_read` | File read |
 | `searching_files` / `files_searched` | File grep |
 | `listing_files` / `files_listed` | File list |
+| `querying_git` / `git_queried` | Git stats |
 | `synthesizing` | Starting final generation |
 | `done` | Session complete |
 | `error` | Error occurred |
@@ -320,7 +352,7 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 ```
 
 Round actions classified by prefix: `[Memory:` → memory_search,
-`[Python:` → sandbox, `[File Read]` → file_read, etc.
+`[Python:` → sandbox, `[File Read]` → file_read, `[Git:` → git_stats, etc.
 
 ---
 
@@ -360,4 +392,9 @@ AGENTIC_MEMORY_SEARCH_LIMIT         # Results per memory search
 EXPAND_MEMORY_ENABLED               # Feature gate
 EXPAND_MAX_PER_SESSION              # Max expansions per session
 EXPAND_MAX_WINDOW                   # Max neighbors to retrieve
+
+# Git stats tool
+GIT_STATS_ENABLED                   # Feature gate (default True)
+GIT_STATS_TIMEOUT                   # Subprocess timeout in seconds
+GIT_STATS_MAX_OUTPUT_LINES          # Cap raw output (default 50)
 ```

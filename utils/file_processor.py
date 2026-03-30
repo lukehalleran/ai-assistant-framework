@@ -19,6 +19,8 @@ Module Contract
   - _process_text_file(file) -> ProcessedFile  [txt/py/md plain text extraction]
   - _process_single_file(file) -> tuple[str, int]  [legacy: docx/pdf/csv/txt routing]
   - _read_file_bytes(file) -> bytes  [handles both file objects and paths]
+  - _extract_pdf_with_tables(path) -> str  [pdfplumber table extraction as markdown]
+  - _extract_docx_with_tables(path) -> str  [python-docx table extraction as markdown]
   - _sanitize_csv_cell(value) -> Any  [CSV formula injection protection]
 - Security features:
   - Path traversal protection (validates filenames against traversal patterns)
@@ -27,7 +29,8 @@ Module Contract
   - Temporary directory isolation for safe processing
   - Extension allowlist validation (FILE_UPLOAD_ALLOWED_EXTENSIONS)
 - Dependencies:
-  - docx2txt (DOCX extraction), pandas (CSV), pathlib, base64, tempfile
+  - python-docx (DOCX extraction with tables), docx2txt (fallback), pdfplumber (PDF + tables)
+  - pandas (CSV), pathlib, base64, tempfile
   - config.app_config (FILE_UPLOAD_* constants)
 - Side effects:
   - Creates temporary files (cleaned up automatically)
@@ -419,7 +422,7 @@ class FileProcessor:
                     result = f"```python\n{content}\n```"
 
                 elif file_ext == '.docx':
-                    result = docx2txt.process(str(safe_path))
+                    result = self._extract_docx_with_tables(safe_path)
                     if not result or not result.strip():
                         result = f"[No text content extracted from {basename}]"
 
@@ -435,20 +438,7 @@ class FileProcessor:
                     result = df.to_string()
 
                 elif file_ext == '.pdf':
-                    import pdfplumber
-                    pages = []
-                    with pdfplumber.open(safe_path) as pdf:
-                        for i, page in enumerate(pdf.pages, 1):
-                            text = page.extract_text() or ''
-                            if text.strip():
-                                pages.append((i, text))
-                    if not pages:
-                        result = f"[No text content extracted from {basename}]"
-                    elif len(pages) == 1:
-                        result = pages[0][1]
-                    else:
-                        # Page headers let chunk_by_headers() split on page boundaries
-                        result = '\n\n'.join(f'## Page {num}\n\n{text}' for num, text in pages)
+                    result = self._extract_pdf_with_tables(safe_path, basename)
 
                 else:
                     result = f"[Unsupported file type: {basename}]"
@@ -458,6 +448,112 @@ class FileProcessor:
                 raise ValueError(f"Failed to process {file_ext} file: {e}")
 
         return result, file_size
+
+    @staticmethod
+    def _extract_pdf_with_tables(path: Path, basename: str = "document") -> str:
+        """Extract text from PDF preserving table content as markdown tables.
+
+        For each page: extracts tables via pdfplumber.extract_tables(), then
+        extracts remaining text. Tables are rendered as pipe-delimited markdown.
+        """
+        import pdfplumber
+
+        pages = []
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                page_parts = []
+
+                # Extract tables first
+                tables = page.extract_tables() or []
+                table_regions = []
+
+                for table_data in tables:
+                    if not table_data or not any(table_data):
+                        continue
+                    # Render as markdown table
+                    rows = []
+                    for row in table_data:
+                        cells = [(c or '').strip().replace('\n', ' ') for c in row]
+                        rows.append('| ' + ' | '.join(cells) + ' |')
+                    if rows:
+                        header_sep = '| ' + ' | '.join('---' for _ in table_data[0]) + ' |'
+                        rows.insert(1, header_sep)
+                        page_parts.append('\n'.join(rows))
+
+                # Extract non-table text
+                # If tables were found, extract text outside table bounding boxes
+                if tables:
+                    try:
+                        # Get table bounding boxes to exclude from text
+                        table_bboxes = [t.bbox for t in page.find_tables()]
+                        filtered_page = page
+                        for bbox in table_bboxes:
+                            filtered_page = filtered_page.outside_bbox(bbox)
+                        text = filtered_page.extract_text() or ''
+                    except Exception:
+                        # Fallback: just get all text (may duplicate table content)
+                        text = page.extract_text() or ''
+                else:
+                    text = page.extract_text() or ''
+
+                if text.strip():
+                    # Put text before tables (prose usually comes first)
+                    page_parts.insert(0, text)
+
+                if page_parts:
+                    pages.append('\n\n'.join(page_parts))
+
+        if not pages:
+            return f"[No text content extracted from {basename}]"
+        return '\n\n'.join(pages)
+
+    @staticmethod
+    def _extract_docx_with_tables(path: Path) -> str:
+        """Extract text from DOCX preserving table content as markdown tables.
+
+        Uses python-docx to iterate the document body in order, rendering
+        paragraphs as text and tables as pipe-delimited markdown.
+        Falls back to docx2txt if python-docx fails.
+        """
+        try:
+            from docx import Document as DocxDocument
+            doc = DocxDocument(str(path))
+        except Exception:
+            # Fallback to legacy extractor
+            return docx2txt.process(str(path))
+
+        parts = []
+        for element in doc.element.body:
+            tag = element.tag.split('}')[-1]  # strip namespace
+            if tag == 'p':
+                # Paragraph
+                text = element.text or ''
+                # python-docx element.text only gets direct text; use full runs
+                for node in element.iter():
+                    pass  # element.text already captured by Document API
+                # Use the Document-level paragraph for clean text
+                for para in doc.paragraphs:
+                    if para._element is element:
+                        text = para.text
+                        break
+                if text.strip():
+                    parts.append(text)
+            elif tag == 'tbl':
+                # Table — render as markdown
+                for table in doc.tables:
+                    if table._element is element:
+                        rows = []
+                        for row in table.rows:
+                            cells = [cell.text.strip().replace('\n', ' ') for cell in row.cells]
+                            rows.append('| ' + ' | '.join(cells) + ' |')
+                        if rows:
+                            # Add header separator after first row
+                            header_sep = '| ' + ' | '.join('---' for _ in table.rows[0].cells) + ' |'
+                            rows.insert(1, header_sep)
+                            parts.append('\n'.join(rows))
+                        break
+
+        return '\n\n'.join(parts)
 
     def _sanitize_csv_cell(self, value: Any) -> Any:
         """

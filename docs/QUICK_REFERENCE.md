@@ -717,6 +717,8 @@ class FileProcessor:
         """New API — returns structured result with separate image/document handling.
         Images: base64 encoded, saved to data/uploads/<timestamp>_<filename>
         Documents: text extracted, security validated (path traversal, size limits, CSV sanitization)
+        PDF: pdfplumber with table extraction — tables rendered as markdown pipe tables
+        DOCX: python-docx with table extraction — tables rendered as markdown pipe tables
         """
 
 # gui/handlers.py — Upload persistence (fire-and-forget background task)
@@ -1600,7 +1602,7 @@ class AgenticSearchController:
         Main loop:
         1. Build prompt with gathered context + tool instructions
         1b. Compute context inventory (summarize RAG-gathered sections) [ENHANCED 2026-03-23]
-        2. Call LLM for decision (search/wolfram/memory/done)
+        2. Call LLM for decision (search/wolfram/memory/git_stats/done)
         3. Execute tool if requested, add result to context
         3b. Track memory_search_counts per collection (diversity enforcement) [ENHANCED 2026-03-23]
         4. Repeat until done or max_turns reached
@@ -1665,6 +1667,9 @@ class SearchDecision:
     expand_window: int = 3
     expand_collection: Optional[str] = None
     expand_reason: Optional[str] = None
+    wants_git_stats: bool = False       # Git repository stats [NEW 2026-03-29]
+    git_stats_query: Optional[str] = None
+    git_stats_reason: Optional[str] = None
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False
@@ -1690,6 +1695,27 @@ class AgenticSearchSession:
 #   procedural → git commits, how-to knowledge
 #   procedural_skills → learned problem-solving patterns
 # Diversity enforcement: "avoid searching the same collection repeatedly"
+
+# GIT_STATS_TOOL_DEFINITION — Git repository activity stats [NEW 2026-03-29]
+# Function name: "git_stats", single param: query (str, required)
+# Natural-language intent parsing → safe git subcommands (log, shortlog, diff, status, etc.)
+
+# core/git_stats_manager.py [NEW 2026-03-29]
+class GitStatsManager:
+    """Read-only git repository stats for the agentic loop"""
+
+    def is_available() -> bool:
+        """True if cwd is inside a git repo"""
+
+    def execute_query(query: str) -> Dict[str, Any]:
+        """Parse natural-language query → safe git subcommand → structured result dict"""
+
+    def format_for_prompt(result: Dict) -> str:
+        """Format result dict for LLM context injection"""
+
+# Safety: only ALLOWED_SUBCOMMANDS may execute (log, shortlog, diff, status, branch, etc.)
+# Keyword-based intent parsing maps queries to git commands
+# Temporal phrase extraction: "this week", "today", "last 30 days" → --since dates
 
 
 # knowledge/wolfram_manager.py [NEW]
@@ -1771,8 +1797,8 @@ class MemoryExpander:
 
 
 # Protocol handlers (core/agentic/protocols.py)
-# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <done>
-# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (9 tool definitions)
+# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <done>
+# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (10 tool definitions)
 ```
 
 ### Agentic Config Constants
@@ -1805,6 +1831,11 @@ SANDBOX_SESSION_TIMEOUT_MINUTES = 30
 SANDBOX_MAX_OUTPUT_CHARS = 4000
 SANDBOX_CACHE_TTL_SECONDS = 3600
 SANDBOX_RATE_LIMIT_PER_MINUTE = 30
+
+# Git Stats [NEW 2026-03-29]
+GIT_STATS_ENABLED = True
+GIT_STATS_TIMEOUT = 10                 # subprocess timeout (seconds)
+GIT_STATS_MAX_OUTPUT_LINES = 50        # cap git command output
 ```
 
 ### Tool Invocation (Prompt Injection)
@@ -1821,7 +1852,8 @@ Available Tools:
 6. <file_read path="...">reason</file_read> - Read a file from filesystem [NEW 2026-03-26]
 7. <file_grep pattern="..." path="...">reason</file_grep> - Search file contents by regex [NEW 2026-03-26]
 8. <file_list path="...">reason</file_list> - List directory contents [NEW 2026-03-26]
-9. <done>reason</done> - Signal task complete
+9. <git_stats>query</git_stats> - Git repository activity stats [NEW 2026-03-29]
+10. <done>reason</done> - Signal task complete
 
 Use Python for: multi-step computation, data analysis, visualization, custom algorithms
 Use Wolfram for: single-expression calculations, unit conversions, scientific data, equations
@@ -1829,6 +1861,7 @@ Use search for: current events, recent news, real-time data, general facts
 Use memory for: user facts, past conversations, personal notes, project history
 Use expand_memory for: see surrounding conversation turns or drill into summaries
 Use file_read/file_grep/file_list for: reading project files, searching code, listing directories
+Use git_stats for: commit counts, recent commits, contributors, files changed, branch activity
 """
 ```
 

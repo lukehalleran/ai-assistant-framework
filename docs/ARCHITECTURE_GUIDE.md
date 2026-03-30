@@ -73,7 +73,7 @@ Prompt sections:        26 (conditional)
 Intent types:           9
 Parallel retrieval:     18 async tasks
 Memory tiers:           5
-Agentic tools:          6
+Agentic tools:          7
 Gating latency:         ~200ms
 Config options:         180+
 ```
@@ -855,9 +855,11 @@ The agentic gate in `gui/handlers.py` decides whether to enter the loop:
 
 If any tier triggers, the request routes through the agentic controller.
 Memory-only queries set `skip_initial_search=True` to skip the initial
-web search and go straight to `search_memory`.
+web search and go straight to `search_memory`. Git-related queries
+("commits", "contributors", "recent changes") route through `git_stats`
+when a `GitStatsManager` is available.
 
-### 6 Tools
+### 8 Tools
 
 | Tool | Implementation | Key Feature |
 |------|---------------|-------------|
@@ -866,7 +868,9 @@ web search and go straight to `search_memory`.
 | Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across rounds) |
 | Memory Search | ChromaDB (12 collections) | Per-collection descriptions, diversity tracking |
 | Memory Expansion | MemoryExpander | Summary drill-down via source_doc_ids, temporal neighbors |
+| Full Document | ReferenceDocsManager | Reassemble all chunks of an uploaded doc by title; fuzzy title matching |
 | File Operations | Local filesystem | Read, grep, list (sandboxed to project directory) |
+| Git Stats | GitStatsManager | Read-only local git commands: commit counts, contributors, files changed, diff stats. Keyword-based intent parsing with temporal phrase extraction. |
 
 ### ReAct Loop Structure
 
@@ -914,6 +918,12 @@ The controller supports multiple LLM calling conventions:
 - **Legacy** — Fallback text parsing
 
 Protocol is auto-detected from model name via `detect_protocol()`.
+
+Supported tool names (native / XML marker):
+`web_search` / `<web_search>`, `wolfram` / `<wolfram>`,
+`code_sandbox` / `<code_sandbox>`, `search_memory` / `<search_memory>`,
+`expand_memory` / `<expand_memory>`, `file_operation` / `<file_operation>`,
+`git_stats` / `<git_stats>`.
 
 ### Budget Enforcement
 
@@ -1686,6 +1696,7 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `synthesis` | Filter pipeline | `SYNTHESIS_ENABLED`, `SYNTHESIS_COHERENCE_MODEL` |
 | `synthesis_generator` | Candidate generation | `SYNTHESIS_GENERATOR_ENABLED` |
 | `provenance` | Audit trail | `PROVENANCE_ENABLED` |
+| `git_stats` | Git activity queries | `GIT_STATS_ENABLED`, `GIT_STATS_TIMEOUT`, `GIT_STATS_MAX_OUTPUT_LINES` |
 
 ### Environment Variable Overrides
 

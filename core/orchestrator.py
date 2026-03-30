@@ -828,6 +828,31 @@ The user is processing/analyzing, open to engagement.
                 if self.logger:
                     self.logger.debug(f"[Orchestrator] File access manager not available: {e}")
 
+            # Initialize git stats manager if configured
+            git_stats_manager = None
+            try:
+                from config.app_config import (
+                    GIT_STATS_ENABLED,
+                    GIT_STATS_TIMEOUT,
+                    GIT_STATS_MAX_OUTPUT_LINES,
+                )
+                if GIT_STATS_ENABLED:
+                    from core.git_stats_manager import GitStatsManager
+                    git_stats_manager = GitStatsManager(
+                        timeout=GIT_STATS_TIMEOUT,
+                        max_output_lines=GIT_STATS_MAX_OUTPUT_LINES,
+                    )
+                    if git_stats_manager.is_available():
+                        if self.logger:
+                            self.logger.info("[Orchestrator] Git stats manager initialized")
+                    else:
+                        git_stats_manager = None
+                        if self.logger:
+                            self.logger.debug("[Orchestrator] Git stats: not in a git repository")
+            except ImportError as e:
+                if self.logger:
+                    self.logger.debug(f"[Orchestrator] Git stats manager not available: {e}")
+
             self._agentic_controller = AgenticSearchController(
                 model_manager=self.model_manager,
                 web_search_manager=web_search_manager,
@@ -835,6 +860,7 @@ The user is processing/analyzing, open to engagement.
                 wolfram_manager=wolfram_manager,
                 sandbox_manager=sandbox_manager,
                 file_access_manager=file_access_manager,
+                git_stats_manager=git_stats_manager,
                 token_manager=token_manager,
                 max_rounds=self._agentic_config.get("max_rounds", 5),
                 context_budget_tokens=self._agentic_config.get("context_budget_tokens", 8000),

@@ -9,7 +9,7 @@ Let the following sets be given:
 - **Q** — the set of all natural-language query strings (user inputs)
 - **R** — the set of all natural-language response strings (agent outputs)
 - **D** — the set of all documents (memory entries), where each d in D is a tuple d = (content, metadata, embedding)
-- **T** — the set of all tool calls (web search, memory search, memory expansion, code execution, Wolfram Alpha, file access)
+- **T** — the set of all tool calls (web search, memory search, memory expansion, code execution, Wolfram Alpha, file access, git stats)
 - **A = R U T** — the action space (the agent either responds or invokes a tool)
 
 ---
@@ -277,7 +277,7 @@ AGENT(q, s):
             thought_i <- LLM(p, observations, inventory)
             tool_i    <- extract_tool_call(thought_i)
             if tool_i = empty: break
-            obs_i     <- execute(tool_i)              // Tavily, Wolfram, E2B, memory_search, expand_memory, file_read/grep/list
+            obs_i     <- execute(tool_i)              // Tavily, Wolfram, E2B, memory_search, expand_memory, file_read/grep/list, git_stats
             observations <- observations + {obs_i}
         r <- LLM(p, observations)                     // final synthesis
     else:
@@ -321,6 +321,29 @@ Session-gated: `expand_count <= EXPAND_MAX_PER_SESSION` (default 3). Cached per 
 **Code**: `memory/memory_expander.py` -> `MemoryExpander.expand()`
 
 **Code**: `orchestrator.py` -> `process_user_query()` and `core/agentic/controller.py`
+
+### 6.2 Git Stats (git_stats)
+
+Within the agent loop, the LLM may invoke `git_stats` to query repository history:
+
+```
+git_stats : Q_nl -> {success, summary, output, commands_run}
+
+git_stats(q_nl):
+    intent  <- keyword_match(q_nl)                     // commit_count | recent_commits |
+                                                       // files_changed | contributors |
+                                                       // branches | status | diff_stat
+    window  <- extract_temporal(q_nl)                  // "this week" -> --since=<ISO date>
+    cmd     <- build_command(intent, window)
+    assert cmd.subcommand in {log, shortlog, diff,     // safety: allowlist only
+              status, branch, rev-list, rev-parse,
+              show, describe, tag, stash}
+    output  <- subprocess.run(cmd)
+    summary <- truncate_and_summarize(output)
+    return {success, summary, output, commands_run}
+```
+
+**Code**: `core/agentic/controller.py` -> `_execute_git_stats()`
 
 ---
 

@@ -508,33 +508,35 @@ class ObsidianManager:
                 # Chunk the cleaned content
                 chunks = self._chunk_by_headers(clean_content, note_title)
 
-                # Add each chunk to ChromaDB
+                # Batch add all chunks to ChromaDB (single embedding pass + disk write per note)
+                now = datetime.now().isoformat()
+                batch_texts = []
+                batch_metas = []
                 for chunk in chunks:
-                    # Extract images specific to THIS chunk
                     chunk_images = self._extract_images(chunk['text'])
-
-                    metadata = {
+                    batch_texts.append(chunk['text'])
+                    batch_metas.append({
                         'type': 'obsidian_note',
                         'title': note_title,
                         'file_path': rel_path,
                         'file_mtime': current_mtime,
                         'tags': ','.join(tags) if tags else '',
                         'related_notes': ','.join(wiki_links) if wiki_links else '',
-                        'images': ','.join(chunk_images) if chunk_images else '',  # Images in THIS chunk
-                        'note_image_count': len(all_images),  # Total images in the full note
+                        'images': ','.join(chunk_images) if chunk_images else '',
+                        'note_image_count': len(all_images),
                         'section': chunk.get('section') or '',
                         'chunk_index': chunk['chunk_index'],
                         'total_chunks': chunk['total_chunks'],
-                        'timestamp': datetime.now().isoformat(),
-                        'truth_score': 0.9,  # High confidence for personal notes
-                    }
+                        'timestamp': now,
+                        'truth_score': 0.9,
+                    })
 
-                    self.chroma_store.add_to_collection(
-                        'obsidian_notes',
-                        chunk['text'],
-                        metadata
-                    )
-                    result.total_chunks += 1
+                if hasattr(self.chroma_store, 'add_batch_to_collection'):
+                    self.chroma_store.add_batch_to_collection('obsidian_notes', batch_texts, batch_metas)
+                else:
+                    for t, m in zip(batch_texts, batch_metas):
+                        self.chroma_store.add_to_collection('obsidian_notes', t, m)
+                result.total_chunks += len(chunks)
 
                 if is_update:
                     result.updated_files += 1

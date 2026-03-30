@@ -9,6 +9,8 @@ Module Contract:
 - Inputs:
   - upload_document(file_path: str, title: str) -> UploadResult: Index document to ChromaDB
   - get_documents(query: str, limit: int) -> List[Dict]: Retrieve relevant document chunks
+  - get_full_document(title: str) -> Optional[str]: Fetch all chunks by title (fuzzy match), reassemble in order
+  - list_document_titles() -> List[str]: Sorted list of distinct document titles
   - list_documents() -> List[Dict]: List all uploaded documents
   - delete_document(title: str) -> bool: Remove a document from the index
   - sync_file(file_path: str, title: str) -> str: Sync single file using mtime ('uploaded'/'skipped'/'failed')
@@ -25,7 +27,8 @@ Module Contract:
   - Per-chunk error handling (one bad chunk doesn't stop indexing)
 
 Features:
-- Smart hybrid chunking: whole document if <2000 chars, else chunk by ## headers
+- Smart hybrid chunking: whole document if <2000 chars, else chunk by ## headers, else chunk_by_size fallback
+- Full-document retrieval: get_full_document() with fuzzy title matching (word overlap)
 - Supports .md, .txt files (expandable to PDF, DOCX later)
 - Hybrid retrieval: 1/3 keyword + 2/3 semantic (like Obsidian notes)
 - Higher priority than wiki but lower than personal notes
@@ -49,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration defaults (can be overridden via app_config)
 DEFAULT_CHUNK_THRESHOLD = 2000  # Slightly larger than Obsidian notes
-DEFAULT_MAX_DOCS_PROMPT = 5
+DEFAULT_MAX_DOCS_PROMPT = 15
 
 
 @dataclass
@@ -223,35 +226,34 @@ class ReferenceDocsManager:
         file_mtime = os.path.getmtime(str(path))
         content_hash = self._compute_file_hash(str(path))
 
-        # Add each chunk to ChromaDB
+        # Batch add all chunks to ChromaDB (single embedding pass + disk write)
+        now = datetime.now().isoformat()
+        texts = []
+        metas = []
         for chunk in chunks:
-            try:
-                metadata = {
-                    'type': 'reference_doc',
-                    'title': result.title,
-                    'file_path': str(path),
-                    'file_type': result.file_type,
-                    'section': chunk.get('section') or '',
-                    'sections_overview': ','.join(sections[:5]) if sections else '',
-                    'chunk_index': chunk['chunk_index'],
-                    'total_chunks': chunk['total_chunks'],
-                    'timestamp': datetime.now().isoformat(),
-                    'truth_score': 0.85,  # High confidence for uploaded docs
-                    'file_mtime': file_mtime,
-                    'content_hash': content_hash,
-                }
+            texts.append(chunk['text'])
+            metas.append({
+                'type': 'reference_doc',
+                'title': result.title,
+                'file_path': str(path),
+                'file_type': result.file_type,
+                'section': chunk.get('section') or '',
+                'sections_overview': ','.join(sections[:5]) if sections else '',
+                'chunk_index': chunk['chunk_index'],
+                'total_chunks': chunk['total_chunks'],
+                'timestamp': now,
+                'truth_score': 0.85,  # High confidence for uploaded docs
+                'file_mtime': file_mtime,
+                'content_hash': content_hash,
+            })
 
-                self.chroma_store.add_to_collection(
-                    'reference_docs',
-                    chunk['text'],
-                    metadata
-                )
-                result.total_chunks += 1
-
-            except Exception as e:
-                error_msg = f"Error adding chunk {chunk['chunk_index']}: {str(e)}"
-                result.errors.append(error_msg)
-                logger.warning(f"[RefDocs] {error_msg}")
+        try:
+            self.chroma_store.add_batch_to_collection('reference_docs', texts, metas)
+            result.total_chunks = len(chunks)
+        except Exception as e:
+            error_msg = f"Batch add failed: {str(e)}"
+            result.errors.append(error_msg)
+            logger.warning(f"[RefDocs] {error_msg}")
 
         result.success = result.total_chunks > 0
         result.duration_seconds = time.time() - start_time
@@ -300,37 +302,35 @@ class ReferenceDocsManager:
         # Chunk the content
         chunks = self._chunk_by_headers(content, title)
 
-        # Add each chunk to ChromaDB
+        # Batch add all chunks to ChromaDB (single embedding pass + disk write)
+        now = datetime.now().isoformat()
+        texts = []
+        metas = []
         for chunk in chunks:
-            try:
-                metadata = {
-                    'type': 'reference_doc',
-                    'title': title,
-                    'file_path': '',  # No file for text upload
-                    'file_type': 'text',
-                    'section': chunk.get('section') or '',
-                    'sections_overview': ','.join(sections[:5]) if sections else '',
-                    'chunk_index': chunk['chunk_index'],
-                    'total_chunks': chunk['total_chunks'],
-                    'timestamp': datetime.now().isoformat(),
-                    'truth_score': 0.85,
-                }
+            md = {
+                'type': 'reference_doc',
+                'title': title,
+                'file_path': '',  # No file for text upload
+                'file_type': 'text',
+                'section': chunk.get('section') or '',
+                'sections_overview': ','.join(sections[:5]) if sections else '',
+                'chunk_index': chunk['chunk_index'],
+                'total_chunks': chunk['total_chunks'],
+                'timestamp': now,
+                'truth_score': 0.85,
+            }
+            if metadata_overrides:
+                md.update(metadata_overrides)
+            texts.append(chunk['text'])
+            metas.append(md)
 
-                # Apply caller-provided metadata overrides (e.g., type='user_upload')
-                if metadata_overrides:
-                    metadata.update(metadata_overrides)
-
-                self.chroma_store.add_to_collection(
-                    'reference_docs',
-                    chunk['text'],
-                    metadata
-                )
-                result.total_chunks += 1
-
-            except Exception as e:
-                error_msg = f"Error adding chunk {chunk['chunk_index']}: {str(e)}"
-                result.errors.append(error_msg)
-                logger.warning(f"[RefDocs] {error_msg}")
+        try:
+            self.chroma_store.add_batch_to_collection('reference_docs', texts, metas)
+            result.total_chunks = len(chunks)
+        except Exception as e:
+            error_msg = f"Batch add failed: {str(e)}"
+            result.errors.append(error_msg)
+            logger.warning(f"[RefDocs] {error_msg}")
 
         result.success = result.total_chunks > 0
         result.duration_seconds = time.time() - start_time
@@ -369,6 +369,60 @@ class ReferenceDocsManager:
         except Exception as e:
             logger.warning(f"[RefDocs] Failed to get document chunks: {e}")
             return []
+
+    def get_full_document(self, title: str) -> Optional[str]:
+        """Fetch all chunks for a document by title, reassemble in order.
+
+        Uses fuzzy matching: tries exact match first, then case-insensitive
+        substring match against all stored titles.
+        """
+        chunks = self._get_document_chunks(title)
+        if not chunks:
+            # Fuzzy fallback: case-insensitive substring match
+            resolved = self._fuzzy_resolve_title(title)
+            if resolved:
+                chunks = self._get_document_chunks(resolved)
+        if not chunks:
+            return None
+        chunks.sort(key=lambda c: c.get('metadata', {}).get('chunk_index', 0))
+        return '\n\n'.join(c.get('content', '') for c in chunks)
+
+    def _fuzzy_resolve_title(self, query: str) -> Optional[str]:
+        """Find the best matching document title for a fuzzy query.
+
+        Strategy: score each stored title by how many query words appear in it
+        (case-insensitive). Returns the best match if any query words hit.
+        """
+        titles = self.list_document_titles()
+        if not titles:
+            return None
+
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
+        # Remove noise words
+        query_words -= {'the', 'a', 'my', 'for', 'of', 'and', 'in', 'upload', 'upload:'}
+
+        best_title = None
+        best_score = 0
+
+        for t in titles:
+            t_lower = t.lower()
+            # Exact substring match is strongest
+            if query_lower in t_lower or t_lower in query_lower:
+                return t
+            # Score by word overlap
+            score = sum(1 for w in query_words if w in t_lower)
+            if score > best_score:
+                best_score = score
+                best_title = t
+
+        # Require at least 1 meaningful word match
+        return best_title if best_score >= 1 else None
+
+    def list_document_titles(self) -> List[str]:
+        """Return sorted list of distinct document titles in reference_docs."""
+        docs = self.list_documents()
+        return sorted(d['title'] for d in docs)
 
     def _get_stored_content_hash(self, title: str) -> Optional[str]:
         """Get stored content_hash for a document by title. Returns None if not found."""

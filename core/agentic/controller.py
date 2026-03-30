@@ -25,6 +25,8 @@ Tool Support:
       - For summaries, retrieves original source conversations
       - Gated by EXPAND_MAX_PER_SESSION per session
     - File access via file_read/file_grep/file_list tools (optional) [NEW 2026-03-26]
+    - Git stats via git_stats tool (optional) [NEW 2026-03-29]
+    - Full document retrieval via get_full_document tool [NEW 2026-03-30]
 
 Provenance [NEW 2026-03-26]:
     - Computes final_prompt_hash (SHA-256[:16]) on the assembled prompt for audit trail
@@ -79,6 +81,7 @@ if TYPE_CHECKING:
     from knowledge.sandbox_manager import SandboxManager, PersistentSession, SandboxResult
     from core.prompt.token_manager import TokenManager
     from core.file_access_manager import FileAccessManager
+    from core.git_stats_manager import GitStatsManager
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +125,7 @@ class AgenticSearchController:
         wolfram_manager: Optional["WolframManager"] = None,
         sandbox_manager: Optional["SandboxManager"] = None,
         file_access_manager: Optional["FileAccessManager"] = None,
+        git_stats_manager: Optional["GitStatsManager"] = None,
         token_manager: Optional["TokenManager"] = None,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         context_budget_tokens: int = DEFAULT_CONTEXT_BUDGET_TOKENS,
@@ -137,6 +141,7 @@ class AgenticSearchController:
             wolfram_manager: Optional Wolfram Alpha manager for computations
             sandbox_manager: Optional E2B sandbox manager for code execution
             file_access_manager: Optional file access manager for read/grep/list
+            git_stats_manager: Optional git stats manager for repo activity queries
             token_manager: Optional token counter for budget enforcement
             max_rounds: Maximum search rounds allowed (default 5)
             context_budget_tokens: Token budget for accumulated context
@@ -148,6 +153,7 @@ class AgenticSearchController:
         self.wolfram_manager = wolfram_manager
         self.sandbox_manager = sandbox_manager
         self.file_access_manager = file_access_manager
+        self.git_stats_manager = git_stats_manager
         self.token_manager = token_manager
         self.max_rounds = max_rounds
         self.context_budget_tokens = context_budget_tokens
@@ -258,12 +264,14 @@ class AgenticSearchController:
         sandbox_available = self.sandbox_manager is not None and self.sandbox_manager.is_available()
         memory_available = self.chroma_store is not None
         file_access_available = self.file_access_manager is not None and self.file_access_manager.is_available()
+        git_stats_available = self.git_stats_manager is not None and self.git_stats_manager.is_available()
         handler = get_protocol_handler(
             protocol,
             wolfram_available=wolfram_available,
             sandbox_available=sandbox_available,
             memory_available=memory_available,
             file_access_available=file_access_available,
+            git_stats_available=git_stats_available,
         )
 
         # Augment system prompt for agentic mode
@@ -843,6 +851,87 @@ class AgenticSearchController:
                         session.current_round - 1,
                         f"file_list: {decision.file_list_path}",
                         list_result
+                    ))
+
+                elif decision.wants_full_document and decision.full_document_title:
+                    # Model wants the complete text of an uploaded document
+                    title = decision.full_document_title
+                    yield ProgressEvent(
+                        event_type="retrieving_document",
+                        message=f"Retrieving full document: {title}",
+                        round_number=session.current_round,
+                        metadata={"title": title, "reason": decision.full_document_reason}
+                    )
+
+                    session.state = AgentState.SEARCHING
+                    start_time = time.time()
+                    doc_result = await self._execute_full_document_retrieval(title)
+                    duration = (time.time() - start_time) * 1000
+
+                    round_data = SearchRound(
+                        round_number=session.current_round,
+                        request=SearchRequest(
+                            query=f"[Full Document] {title}",
+                            reason=decision.full_document_reason,
+                            round_number=session.current_round
+                        ),
+                        results=None,
+                        duration_ms=duration
+                    )
+
+                    yield ProgressEvent(
+                        event_type="document_retrieved",
+                        message=f"Retrieved full document: {title}",
+                        round_number=session.current_round,
+                        metadata={"duration_ms": duration}
+                    )
+
+                    session.state = AgentState.OBSERVING
+                    round_data.summary = doc_result
+                    session.rounds.append(round_data)
+                    self._append_accumulated(session, self._format_full_document_context(
+                        session.current_round - 1, title, doc_result
+                    ))
+
+                elif decision.wants_git_stats and decision.git_stats_query:
+                    # Model wants to query git repository stats
+                    yield ProgressEvent(
+                        event_type="querying_git",
+                        message=f"Git stats: {decision.git_stats_query}",
+                        round_number=session.current_round,
+                        metadata={"query": decision.git_stats_query, "reason": decision.git_stats_reason}
+                    )
+
+                    session.state = AgentState.SEARCHING
+                    start_time = time.time()
+                    git_result = await self._execute_git_stats(decision.git_stats_query)
+                    duration = (time.time() - start_time) * 1000
+
+                    round_data = SearchRound(
+                        round_number=session.current_round,
+                        request=SearchRequest(
+                            query=f"[Git Stats] {decision.git_stats_query}",
+                            reason=decision.git_stats_reason,
+                            round_number=session.current_round
+                        ),
+                        results=None,
+                        duration_ms=duration
+                    )
+
+                    yield ProgressEvent(
+                        event_type="git_stats_done",
+                        message="Git stats retrieved",
+                        round_number=session.current_round,
+                        metadata={"duration_ms": duration}
+                    )
+
+                    session.state = AgentState.OBSERVING
+                    round_data.summary = git_result
+                    session.rounds.append(round_data)
+                    self._append_accumulated(session, self._format_git_stats_context(
+                        session.current_round - 1,
+                        decision.git_stats_query,
+                        git_result
                     ))
 
                 elif decision.is_done:
@@ -1721,6 +1810,64 @@ What would you like to do?""")
         return (
             f"[FILE ACCESS — Round {round_num}]\n"
             f"Operation: {operation}\n"
+            f"Result:\n{content}"
+        )
+
+    async def _execute_full_document_retrieval(self, title: str) -> str:
+        """Retrieve all chunks of a document by title, reassembled in order."""
+        if not self.chroma_store:
+            return "[Full document retrieval unavailable — no memory store]"
+        try:
+            from knowledge.reference_docs_manager import ReferenceDocsManager
+            manager = ReferenceDocsManager(chroma_store=self.chroma_store)
+            content = manager.get_full_document(title)
+            if content:
+                # Let _append_accumulated() handle budget trimming;
+                # only hard-cap truly massive documents (e.g. full textbooks)
+                max_chars = 60000
+                if len(content) > max_chars:
+                    content = content[:max_chars] + f"\n\n[... truncated at {max_chars} chars — document continues ...]"
+                # Check if fuzzy matching resolved to a different title
+                resolved = manager._fuzzy_resolve_title(title)
+                actual_title = resolved if resolved else title
+                return f"[Full Document: {actual_title}]\n{content}"
+            else:
+                titles = manager.list_document_titles()
+                if titles:
+                    return f"[No document found matching '{title}'. Available titles: {', '.join(titles[:20])}]"
+                return f"[No document found matching '{title}'. No documents in reference_docs collection.]"
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] Full document retrieval failed: {e}")
+            return f"[Full document retrieval error: {e}]"
+
+    def _format_full_document_context(
+        self, round_num: int, title: str, content: str
+    ) -> str:
+        """Format full document retrieval for accumulated context."""
+        return (
+            f"[FULL DOCUMENT — Round {round_num}]\n"
+            f"Title: {title}\n"
+            f"Content:\n{content}"
+        )
+
+    async def _execute_git_stats(self, query: str) -> str:
+        """Execute a git stats query via GitStatsManager."""
+        if not self.git_stats_manager:
+            return "[Git stats not configured]"
+        try:
+            result = await self.git_stats_manager.execute_query(query)
+            return self.git_stats_manager.format_for_prompt(result)
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] Git stats failed: {e}")
+            return f"[Git stats error: {e}]"
+
+    def _format_git_stats_context(
+        self, round_num: int, query: str, content: str
+    ) -> str:
+        """Format git stats results for accumulated context."""
+        return (
+            f"[GIT STATS — Round {round_num}]\n"
+            f"Query: {query}\n"
             f"Result:\n{content}"
         )
 

@@ -17,6 +17,8 @@ Public Types:
     - ProgressEvent (UI update events)
     - SEARCH_TOOL_DEFINITION, DONE_TOOL_DEFINITION, WOLFRAM_TOOL_DEFINITION, SANDBOX_TOOL_DEFINITION, MEMORY_SEARCH_TOOL_DEFINITION, EXPAND_MEMORY_TOOL_DEFINITION (tool schemas)
     - FILE_READ_TOOL_DEFINITION, FILE_GREP_TOOL_DEFINITION, FILE_LIST_TOOL_DEFINITION (file access tool schemas)
+    - GET_FULL_DOCUMENT_TOOL_DEFINITION (full document retrieval tool schema)
+    - GIT_STATS_TOOL_DEFINITION (git repository stats tool schema)
 
 SearchDecision Fields (extended for multi-tool support):
     - wants_search, search_query, search_reason (web search)
@@ -27,6 +29,8 @@ SearchDecision Fields (extended for multi-tool support):
     - wants_file_read, file_read_path, file_read_start_line, file_read_end_line, file_read_reason (file read)
     - wants_file_grep, file_grep_pattern, file_grep_folder, file_grep_glob, file_grep_reason (file grep)
     - wants_file_list, file_list_path, file_list_recursive, file_list_reason (file list)
+    - wants_git_stats, git_stats_query, git_stats_reason (git repository stats)
+    - wants_full_document, full_document_title, full_document_reason (full document retrieval)
     - is_done, done_reason, wants_answer, partial_response
 
 Dependencies:
@@ -131,6 +135,14 @@ class SearchDecision:
     file_list_path: Optional[str] = None
     file_list_recursive: bool = False
     file_list_reason: Optional[str] = None
+    # Git stats (local repo activity queries)
+    wants_git_stats: bool = False
+    git_stats_query: Optional[str] = None
+    git_stats_reason: Optional[str] = None
+    # Full document retrieval (all chunks of an uploaded document)
+    wants_full_document: bool = False
+    full_document_title: Optional[str] = None
+    full_document_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -246,6 +258,10 @@ class AgenticSearchSession:
             return "file_list"
         if query.startswith("[Expand Memory]"):
             return "expand_memory"
+        if query.startswith("[Git Stats]"):
+            return "git_stats"
+        if query.startswith("[Full Document]"):
+            return "full_document"
         return "web_search"
 
 
@@ -563,6 +579,64 @@ FILE_LIST_TOOL_DEFINITION = {
     }
 }
 
+GET_FULL_DOCUMENT_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "get_full_document",
+        "description": (
+            "Retrieve the COMPLETE text of a previously uploaded document by its title. "
+            "Use when a search_memory hit from reference_docs shows a document is relevant "
+            "but you only see a fragment. This fetches ALL chunks reassembled in order. "
+            "The title must match exactly (use the title shown in search results metadata)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Exact document title (as shown in search result metadata)"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why the full document is needed."
+                }
+            },
+            "required": ["title"]
+        }
+    }
+}
+
+GIT_STATS_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "git_stats",
+        "description": (
+            "Query the local git repository for activity statistics. "
+            "Use for: commit counts, recent commits, contributors, files changed, "
+            "branch info, diff stats, and other temporal git questions. "
+            "Read-only — never modifies the repository."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Natural language description of what git stats to look up, "
+                        "e.g. 'commits this week', 'files changed today', "
+                        "'top contributors this month'"
+                    )
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this git query is needed."
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+
 # System prompt injection for local models
 AGENTIC_SYSTEM_PROMPT_INJECTION = """
 [AGENTIC TOOLS ENABLED]
@@ -621,6 +695,16 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
    Copy the FULL doc ID from search results. Do NOT loop — one expand per memory is enough.
    Example: <expand_memory id="a1b2c3d4-e5f6-7890-abcd-ef1234567890" collection="conversations" window="3">need full conversation context</expand_memory>
 
+10. **Git Stats**: <git_stats>your query</git_stats>
+   Use for: commit counts, recent commits, contributors, files changed, branch activity, diff stats.
+   Supports time ranges: "this week", "today", "last 30 days", "this month", etc.
+   Example: <git_stats>how many commits this week</git_stats>
+
+11. **Get Full Document**: <get_full_document title="exact document title">reason</get_full_document>
+    Retrieve the complete text of an uploaded document by its exact title.
+    Use after search_memory returns a fragment from reference_docs and you need the whole document.
+    Example: <get_full_document title="upload:ISYE_6501_Syllabus.pdf">need full assignment schedule</get_full_document>
+
 **Tool Selection Guidelines:**
 | Task Type | Best Tool |
 |-----------|-----------|
@@ -640,6 +724,8 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | Find where something is defined/used | File Grep |
 | Explore directory structure | File List |
 | See context around a memory hit | Expand Memory |
+| Git repository activity, commit counts | Git Stats |
+| Full uploaded document (syllabus, PDF, etc.) | Get Full Document |
 
 You can use tools up to {max_rounds} times total. Be specific with queries.
 
