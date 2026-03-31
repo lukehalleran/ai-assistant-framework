@@ -235,6 +235,9 @@ class ShutdownProcessor:
             # 6.8) Synthesis dreaming — generate and filter cross-domain candidates
             await self._run_synthesis_dreaming()
 
+            # 6.9) Wiki-to-graph enrichment — add session's wiki articles to graph
+            await self._run_wiki_enrichment()
+
             # 7) Save knowledge graph and entity aliases
             self._save_knowledge_graph()
 
@@ -1180,11 +1183,19 @@ class ShutdownProcessor:
     # ------------------------------------------------------------------
 
     async def _run_synthesis_dreaming(self):
-        """Step 6.8: Generate and filter cross-domain synthesis candidates."""
+        """Step 6.8: Generate and filter cross-domain synthesis candidates.
+
+        Uses GraphWalkGenerator (if graph has enough bridge edges) with
+        SynthesisGenerator as fallback.  Both produce SynthesisCandidate
+        objects for the same filter pipeline.
+        """
         try:
             from config.app_config import (
                 SYNTHESIS_GENERATOR_ENABLED,
                 SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
+                GRAPH_WALK_ENABLED,
+                GRAPH_WALK_MAX_CANDIDATES,
+                GRAPH_WALK_MIN_BRIDGE_EDGES,
             )
             if not SYNTHESIS_GENERATOR_ENABLED:
                 return
@@ -1197,16 +1208,43 @@ class ShutdownProcessor:
             graph_memory = getattr(mc, "graph_memory", None) if mc else None
             entity_resolver = getattr(mc, "entity_resolver", None) if mc else None
 
-            generator = SynthesisGenerator(
-                chroma_store=self.chroma_store,
-                model_manager=self.model_manager,
-                graph_memory=graph_memory,
-                entity_resolver=entity_resolver,
-            )
+            candidates = []
 
-            candidates = await generator.generate_candidates(
-                count=SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
-            )
+            # Try graph walk generator first (needs bridge edges)
+            if GRAPH_WALK_ENABLED and graph_memory and entity_resolver:
+                bridge_count = graph_memory.count_bridge_edges()
+                if bridge_count >= GRAPH_WALK_MIN_BRIDGE_EDGES:
+                    from knowledge.graph_walk_generator import GraphWalkGenerator
+                    walk_gen = GraphWalkGenerator(
+                        graph_memory=graph_memory,
+                        entity_resolver=entity_resolver,
+                        model_manager=self.model_manager,
+                    )
+                    walk_candidates = await walk_gen.generate_candidates(
+                        count=GRAPH_WALK_MAX_CANDIDATES,
+                    )
+                    candidates.extend(walk_candidates)
+                    logger.info(
+                        "[Shutdown] Graph walk generator: %d candidates (bridges=%d)",
+                        len(walk_candidates), bridge_count,
+                    )
+                else:
+                    logger.info(
+                        "[Shutdown] Graph walk skipped: %d bridges < %d threshold",
+                        bridge_count, GRAPH_WALK_MIN_BRIDGE_EDGES,
+                    )
+
+            # Fill remaining quota with existing SynthesisGenerator
+            remaining = SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION - len(candidates)
+            if remaining > 0:
+                generator = SynthesisGenerator(
+                    chroma_store=self.chroma_store,
+                    model_manager=self.model_manager,
+                    graph_memory=graph_memory,
+                    entity_resolver=entity_resolver,
+                )
+                fallback_candidates = await generator.generate_candidates(count=remaining)
+                candidates.extend(fallback_candidates)
 
             if not candidates:
                 logger.info("[Shutdown] Synthesis dreaming: no candidates generated")
@@ -1229,6 +1267,40 @@ class ShutdownProcessor:
 
         except Exception as e:
             logger.warning("[Shutdown] Synthesis dreaming failed (non-fatal): %s", e)
+
+    async def _run_wiki_enrichment(self):
+        """Step 6.9: Enrich knowledge graph with Wikipedia articles accessed this session."""
+        try:
+            from config.app_config import WIKI_ENRICHMENT_ENABLED, WIKI_ENRICHMENT_TIMEOUT_S
+            if not WIKI_ENRICHMENT_ENABLED:
+                return
+
+            mc = self.memory_coordinator
+            graph_memory = getattr(mc, "graph_memory", None) if mc else None
+            entity_resolver = getattr(mc, "entity_resolver", None) if mc else None
+
+            if not graph_memory or not entity_resolver:
+                return
+
+            import asyncio
+            from knowledge.wiki_enrichment import WikiGraphEnricher
+            enricher = WikiGraphEnricher(graph_memory, entity_resolver)
+
+            result = await asyncio.wait_for(
+                enricher.enrich_from_session(),
+                timeout=WIKI_ENRICHMENT_TIMEOUT_S,
+            )
+
+            if result.get("articles_added", 0) > 0:
+                logger.info(
+                    "[Shutdown] Wiki enrichment: %d articles added, %d relations created",
+                    result.get("articles_added", 0),
+                    result.get("relations_added", 0),
+                )
+        except TimeoutError:
+            logger.warning("[Shutdown] Wiki enrichment timed out (non-fatal)")
+        except Exception as e:
+            logger.warning("[Shutdown] Wiki enrichment failed (non-fatal): %s", e)
 
     # ------------------------------------------------------------------
     # Knowledge graph persistence

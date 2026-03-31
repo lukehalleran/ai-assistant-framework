@@ -1,58 +1,33 @@
-feat: Synthesis pipeline calibration, IVFPQ threshold tuning, e2e test infrastructure
+feat: Wikidata subgraph import, graph walk generator, wiki-to-graph enrichment
 
-Threshold calibration for FAISS IVFPQ backend (config/app_config.py, config.yaml):
-- SYNTHESIS_NOVELTY_KNOWN_THRESHOLD: 0.80 → 0.60 (IVFPQ compresses
-  cosine similarities ~0.15-0.20 lower than exact search)
-- SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD: 0.75 → 0.60
-- SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD: 0.50 → 0.35
-- SYNTHESIS_COMPOSITE_MIN_SCORE: 0.40 → 0.65 (Jazz↔Tectonics false
-  pair leaked at 0.624 with vacuous "emergent complexity" claim)
-- synthesis_generator.enabled: false → true
+Wiki Enrichment (Feature 2):
+- WikiArticleTracker: session-level singleton tracking wiki titles from FAISS/ChromaDB
+- WikiGraphEnricher: shutdown step 6.9 creates graph nodes (source=wiki_retrieved)
+  with "mentioned_alongside" edges at weight 0.5 (distinct from fact-extracted 1.0)
+- Integration: 2-3 line tracker calls in context_gatherer.py and controller.py
 
-Factual skeptic prompt hardening (synthesis_filter.py):
-- Added explicit mirror neuron rule: any claim that mirror neurons
-  cause specific behavioral responses fails (function not established)
-- Added chaos theory misapplication rule: deterministic chaos
-  (butterfly effect) applied to stochastic systems (stock markets) fails
-- Result: noise_borderline rejection 8/10 → 10/10
+Wikidata Import (Feature 1):
+- extract_wikidata.py: SPARQL extraction with alias expansion + descriptions
+  across 10 domain categories (30K entities, 39K aliases, 7K relations)
+- import_wikidata_to_graph.py: imports cache into NetworkX graph with bulk_import()
+- WikidataEntityMapper: 3-strategy entity resolution — exact alias, description-
+  enriched embedding (threshold 0.60 IVFPQ-corrected), category-aware filtering
+- Bridge confidence scoring (1.0 exact, 0.9 high-sim, 0.7 low-sim)
 
-Generator sampling fixes (synthesis_generator.py):
-- _extract_concept_name: parses pipe-delimited content when metadata
-  lacks structured subject/predicate/object fields
-- _classify_domain: keyword-based fallback classifier for personal
-  facts when categorize_relation() returns unknown. 9 domain categories
-  (fitness, health, career, relationships, education, hobbies, projects,
-  geography, food). Falls back to "personal" (not "unknown") to enable
-  cross-domain pairing with wiki articles.
+Graph Walk Generator:
+- GraphWalkGenerator: biased Markov walks across personal→wikidata boundary
+- Node2Vec-style return bias (2.0x toward personal nodes in wikidata territory)
+- Walk narration prompt gives LLM the full path to interpret, not just endpoints
+- Shutdown: tries walks first (bridges >= 40), fills with SynthesisGenerator fallback
 
-Verification script fixes (verify_synthesis_pipeline.py):
-- Article existence check rerouted: ChromaDB → FAISS
-- Startup check: wiki_knowledge collection count → FAISS index load
-- source_domains: hardcoded {"knowledge"} → connection_type domain map
-- Pre-existing bug: filter_pipeline.evaluate() → process_candidate()
-- Added 4 novelty-resistant FALSE pairs (Pysanka↔Erlang, Bagpipe↔Tidal
-  locking, Campanology↔Splay tree, Kintsugi↔Reed-Solomon)
-- Full diagnostic dump on unexpected outcomes (stage chain + coherence
-  justification + factual skeptic response)
-- acceptance_threshold margin display: 0.60 → 0.65
+Infrastructure:
+- GraphNode: source, is_wikidata, wikidata_qid properties
+- GraphMemory: count_by_source(), count_bridge_edges(), bulk_import() context manager
+- orjson serialization with stdlib json fallback
+- WikidataEntity/Relation/ImportResult Pydantic models
+- ~35 config constants across wikidata_import, graph_walk, wiki_enrichment YAML sections
 
-Live calibration script fixes (calibrate_coherence_live.py):
-- Mock store: removed dead wiki_knowledge branch from query_collection
-- Added _mock_faiss_wiki_search() + patch() wrapper for Stage 3
-
-New scripts:
-- scripts/generate_test_facts.py: 57 synthetic facts (45 clean + 12
-  noisy) across 10 domains. Includes entity resolver stress tests
-  (Auggie vs August), sub-threshold gating, near-duplicates.
-- scripts/test_end_to_end_synthesis.py: full generator → filter →
-  storage pipeline against real FAISS + ChromaDB data
-
-Doc updates: SYNTHESIS_CALIBRATION_PLAN (IVFPQ offset table, novelty
-gate dominance finding, reviewer feedback, revised success criteria),
-SYNTHESIS_FILTER, QUICK_REFERENCE, PROJECT_SKELETON (threshold values)
-
-Calibration results (Sonnet 4.5, 72 candidates):
-- Adjusted F1: 96.6% (excluding mock-artifact FPs)
-- Noise: 12/12 rejected, noise_borderline: 10/10 rejected
-- Novel: 14/15 accepted (93% recall)
-- Verification: 22/22 rejected, 0 hard failures
+Validation:
+- Walk prompt scored MODERATE+ 7/8 vs random pairing 5/8 on coherence
+- 30K nodes, 7K edges, 41 bridge edges in production graph
+- 94 new tests (10 tracker + 18 enrichment + 38 walk generator + 28 prior), all passing
