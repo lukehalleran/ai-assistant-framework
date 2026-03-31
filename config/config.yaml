@@ -312,6 +312,30 @@ synthesis_generator:
   candidates_per_session: 5
   llm_concurrency: 5
   min_graph_nodes: 20
+wikidata_import:
+  enabled: true
+  persist_path: data/wikidata_cache.json
+  entities_per_domain: 5000
+  max_total_entities: 50000
+  sparql_batch_size: 500
+  embedding_match_threshold: 0.60
+graph_walk:
+  enabled: true
+  max_walk_length: 8
+  walks_per_seed: 20
+  restart_probability: 0.15
+  min_path_length: 3
+  max_candidates_per_session: 10
+  boundary_crossing_required: true
+  min_bridge_edges: 40
+  personal_return_bias: 2.0
+wiki_enrichment:
+  enabled: true
+  max_articles_per_session: 15
+  min_text_length: 200
+  shutdown_step_timeout_s: 30
+  edge_relation_type: mentioned_alongside
+  edge_default_weight: 0.5
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

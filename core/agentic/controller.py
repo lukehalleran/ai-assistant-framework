@@ -1644,6 +1644,13 @@ What would you like to do?""")
             if collection == "wiki_knowledge":
                 faiss_results = self._search_wiki_faiss(query, k=AGENTIC_MEMORY_SEARCH_LIMIT)
                 if faiss_results:
+                    # Track wiki titles for session enrichment
+                    from knowledge.wiki_tracker import WikiArticleTracker
+                    tracker = WikiArticleTracker.get_instance()
+                    for r in faiss_results:
+                        t = r.get("title", "")
+                        if t:
+                            tracker.track(t, r.get("text", "")[:500])
                     logger.info(f"[AgenticSearch] wiki_knowledge using FAISS index "
                                 f"({len(faiss_results)} results)")
                     return self._format_wiki_faiss_results(faiss_results)
