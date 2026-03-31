@@ -121,7 +121,7 @@ UnifiedPromptBuilder.build_prompt()
   │     ├── procedural_skills (5)         ← ChromaDB procedural_skills
   │     ├── unresolved_threads (3)        ← ThreadStore
   │     ├── proactive_insights (2)        ← ContextSurfacer
-  │     ├── wiki_content (3)              ← ChromaDB wiki_knowledge
+  │     ├── wiki_content (3)              ← FAISS (40M wiki vectors; ChromaDB fallback)
   │     ├── reference_docs (5)            ← ChromaDB reference_docs
   │     ├── personal_notes (5)            ← Obsidian vault
   │     ├── git_commits (10)              ← ChromaDB procedural
@@ -199,7 +199,7 @@ ShutdownProcessor.process_shutdown_memory()
   │     Detect resolutions → extract new → enforce cap
   │
   ├─ Step 8: Synthesis dreaming
-  │     SynthesisGenerator → SynthesisFilter → SynthesisMemory
+  │     SynthesisGenerator (FAISS wiki search) → SynthesisFilter → SynthesisMemory
   │
   ├─ Step 9: Knowledge graph save (JSON flush)
   └─ Step 10: Cross-collection dedup (dry-run preview only)

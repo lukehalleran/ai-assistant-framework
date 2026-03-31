@@ -27,7 +27,7 @@ import os
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -75,82 +75,11 @@ def _to_synthesis_candidate(entry: Dict[str, Any]) -> SynthesisCandidate:
 
 
 def _build_mock_store():
-    """Build a mock store with tier-aware novelty responses.
-
-    Trivial topics return high-similarity wiki matches (should fail novelty).
-    Known-interesting topics also return moderate-similarity matches.
-    Everything else returns distant matches (passes novelty).
-    """
+    """Build a mock store for synthesis memory (ChromaDB) — wiki queries use FAISS."""
     store = MagicMock()
 
-    # Topics that should trigger high novelty similarity (trivial)
-    # Includes both concept names and claim-text keywords for robust matching
-    _trivial_topics = {
-        "physical exercise", "mental health", "sleep", "cognitive", "compound interest",
-        "retirement", "musical instrument", "mathematical reasoning",
-        "bilingualism", "dementia", "dark chocolate", "cardiovascular",
-        "pet ownership", "blood pressure", "nature", "creativity",
-        "gut microbiome", "mood", "cold exposure", "immune",
-        "video games", "surgical", "standing desk", "back pain",
-        "gratitude", "sleep quality",
-        # Claim-text keywords (concepts reworded in claims)
-        "musical training", "pattern recognition", "spatial-temporal",
-        "gut-brain", "serotonin", "vagus nerve", "endorphin",
-        "neuroplasticity", "oxytocin", "cortisol",
-        "flavanol", "nitric oxide", "endothelial",
-        "norepinephrine", "wim hof", "cold water immersion",
-        "laparoscopic", "fine motor", "spinal compression",
-        "prefrontal cortex", "cognitive arousal",
-    }
-
-    # Topics that should trigger moderate novelty similarity (known-interesting)
-    _known_topics = {
-        "ant colony", "tcp", "congestion", "immune system", "caching", "cache",
-        "mycelial", "content delivery", "mycorrhizal", "predator-prey",
-        "autoscaling", "lotka-volterra", "counterpoint", "adversarial",
-        "gans", "bach",
-        # Claim-text keywords
-        "memory b cells", "cdn", "wood wide web",
-        "dorigo", "slow-start",
-    }
-
     def query_collection_side_effect(collection_name, query_text, n_results=3):
-        if collection_name == "wiki_knowledge":
-            query_lower = query_text.lower()
-            is_trivial = any(topic in query_lower for topic in _trivial_topics)
-            is_known = any(topic in query_lower for topic in _known_topics)
-
-            if is_trivial:
-                # Very close match -- should trigger novelty rejection
-                return [{
-                    "id": "wiki_trivial_1",
-                    "content": query_text[:200],
-                    "metadata": {"title": "Wikipedia: Well-Known Connection"},
-                    "relevance_score": 0.91,  # dist~0.10 -> sim~0.90
-                    "collection": "wiki_knowledge",
-                    "rank": 1,
-                }]
-            elif is_known:
-                # Moderately close -- published but not trivial
-                return [{
-                    "id": "wiki_known_1",
-                    "content": f"Published analysis of {query_text[:100]}",
-                    "metadata": {"title": "Academic Survey"},
-                    "relevance_score": 0.85,  # dist~0.18 -> sim~0.82 (above 0.80 threshold)
-                    "collection": "wiki_knowledge",
-                    "rank": 1,
-                }]
-            else:
-                # Distant -- novel territory
-                return [{
-                    "id": "wiki_distant_1",
-                    "content": "Unrelated article about ancient pottery techniques.",
-                    "metadata": {"title": "Pottery"},
-                    "relevance_score": 0.40,  # dist~1.5 -> sim negative (clamped)
-                    "collection": "wiki_knowledge",
-                    "rank": 1,
-                }]
-        elif collection_name == "synthesis_results":
+        if collection_name == "synthesis_results":
             return []
         return []
 
@@ -161,6 +90,76 @@ def _build_mock_store():
         "synthesis_results": {"count": 0},
     })
     return store
+
+
+# Topics that should trigger high novelty similarity (trivial)
+_TRIVIAL_TOPICS = {
+    "physical exercise", "mental health", "sleep", "cognitive", "compound interest",
+    "retirement", "musical instrument", "mathematical reasoning",
+    "bilingualism", "dementia", "dark chocolate", "cardiovascular",
+    "pet ownership", "blood pressure", "nature", "creativity",
+    "gut microbiome", "mood", "cold exposure", "immune",
+    "video games", "surgical", "standing desk", "back pain",
+    "gratitude", "sleep quality",
+    # Claim-text keywords (concepts reworded in claims)
+    "musical training", "pattern recognition", "spatial-temporal",
+    "gut-brain", "serotonin", "vagus nerve", "endorphin",
+    "neuroplasticity", "oxytocin", "cortisol",
+    "flavanol", "nitric oxide", "endothelial",
+    "norepinephrine", "wim hof", "cold water immersion",
+    "laparoscopic", "fine motor", "spinal compression",
+    "prefrontal cortex", "cognitive arousal",
+}
+
+# Topics that should trigger moderate novelty similarity (known-interesting)
+_KNOWN_TOPICS = {
+    "ant colony", "tcp", "congestion", "immune system", "caching", "cache",
+    "mycelial", "content delivery", "mycorrhizal", "predator-prey",
+    "autoscaling", "lotka-volterra", "counterpoint", "adversarial",
+    "gans", "bach",
+    # Claim-text keywords
+    "memory b cells", "cdn", "wood wide web",
+    "dorigo", "slow-start",
+}
+
+
+def _mock_faiss_wiki_search(query, k=3):
+    """Tier-aware FAISS mock for novelty checks in calibration tests.
+
+    Returns FAISS-format results with similarity scores calibrated to match
+    the old ChromaDB relevance_score → cosine similarity conversion:
+    - Trivial: similarity=0.90 (was relevance_score=0.91)
+    - Known: similarity=0.82 (was relevance_score=0.85)
+    - Novel: similarity=0.05 (was relevance_score=0.40 → clamped to ~0)
+    """
+    query_lower = query.lower()
+    is_trivial = any(topic in query_lower for topic in _TRIVIAL_TOPICS)
+    is_known = any(topic in query_lower for topic in _KNOWN_TOPICS)
+
+    if is_trivial:
+        return [{
+            "text": query[:200],
+            "content": query[:200],
+            "title": "Wikipedia: Well-Known Connection",
+            "source": "wikipedia",
+            "similarity": 0.90,
+        }]
+    elif is_known:
+        return [{
+            "text": f"Published analysis of {query[:100]}",
+            "content": f"Published analysis of {query[:100]}",
+            "title": "Academic Survey",
+            "source": "wikipedia",
+            "similarity": 0.82,
+        }]
+    else:
+        return [{
+            "text": "Unrelated article about ancient pottery techniques.",
+            "content": "Unrelated article about ancient pottery techniques.",
+            "title": "Pottery",
+            "source": "wikipedia",
+            "similarity": 0.05,
+        }]
 
 
 def _build_mock_model_manager():
@@ -246,11 +245,12 @@ def _build_mock_model_manager():
     return mm
 
 
+@patch("knowledge.semantic_search.semantic_search_with_neighbors", side_effect=_mock_faiss_wiki_search)
 class TestSynthesisCalibration:
     """Diagnostic calibration suite."""
 
     @pytest.mark.asyncio
-    async def test_filter_calibration_report(self):
+    async def test_filter_calibration_report(self, mock_faiss):
         """Run all labeled candidates through filter and print diagnostic report.
 
         This test always passes. The output is the diagnostic.
@@ -436,7 +436,7 @@ class TestSynthesisCalibration:
         assert True  # diagnostic — always passes
 
     @pytest.mark.asyncio
-    async def test_fixture_structure_valid(self):
+    async def test_fixture_structure_valid(self, mock_faiss):
         """Verify the calibration fixture has correct structure and tier counts."""
         candidates = _load_calibration_candidates()
 
@@ -470,7 +470,7 @@ class TestSynthesisCalibration:
             f"Trivial tier needs low-distance candidates (min={min(distances):.2f})"
 
     @pytest.mark.asyncio
-    async def test_sanity_fail_all_rejected_at_stage_0(self):
+    async def test_sanity_fail_all_rejected_at_stage_0(self, mock_faiss):
         """Sanity fail candidates should all die at text_sanity stage."""
         candidates_data = _load_calibration_candidates()
         store = _build_mock_store()
@@ -493,7 +493,7 @@ class TestSynthesisCalibration:
                 f"{entry['concept_a']} <-> {entry['concept_b']}"
 
     @pytest.mark.asyncio
-    async def test_trivial_rejection_rate(self):
+    async def test_trivial_rejection_rate(self, mock_faiss):
         """Diagnostic: report trivial tier rejection rate and pathways."""
         candidates_data = _load_calibration_candidates()
         store = _build_mock_store()
@@ -522,7 +522,7 @@ class TestSynthesisCalibration:
         print(f"  By stage: {dict(rejected_by_stage)}")
 
     @pytest.mark.asyncio
-    async def test_noise_rejection_rate(self):
+    async def test_noise_rejection_rate(self, mock_faiss):
         """Diagnostic: report noise tier rejection rate."""
         candidates_data = _load_calibration_candidates()
         store = _build_mock_store()
@@ -553,7 +553,7 @@ class TestSynthesisCalibration:
         print(f"  By stage: {dict(rejected_by_stage)}")
 
     @pytest.mark.asyncio
-    async def test_novel_acceptance_rate(self):
+    async def test_novel_acceptance_rate(self, mock_faiss):
         """Diagnostic: report interesting_novel tier acceptance rate."""
         candidates_data = _load_calibration_candidates()
         store = _build_mock_store()
