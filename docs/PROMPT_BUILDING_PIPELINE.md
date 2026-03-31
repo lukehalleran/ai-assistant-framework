@@ -11,7 +11,7 @@ For formal notation see `FORMAL_MODEL.md`. For config constants see
 
 ## What the Pipeline Does
 
-Every user query triggers a full prompt build: 18+ parallel async
+Every user query triggers a full prompt build: 18 parallel async
 retrievals across memory, knowledge graph, web search, files, and
 profile data. Results are filtered, deduplicated, scored, compressed
 to fit a token budget, and assembled into a final prompt string with
@@ -27,7 +27,7 @@ The pipeline lives in `core/prompt/` and is orchestrated by
 | File | Purpose |
 |------|---------|
 | `core/prompt/builder.py` | Main orchestrator: parallel task dispatch, hygiene, budget, assembly |
-| `core/prompt/context_gatherer.py` | 18+ retrieval methods (memory, graph, web, files, profile, threads) |
+| `core/prompt/context_gatherer.py` | 18 retrieval methods (memory, graph, web, files, profile, threads) |
 | `core/prompt/formatter.py` | Section formatting, web search results, time context |
 | `core/prompt/token_manager.py` | Budget computation, priority trimming, middle-out compression |
 
@@ -177,15 +177,28 @@ high-attention items (user profile, time, query) placed last:
 2. `[RELEVANT MEMORIES]` — semantic hits (1-15 items)
 3. `[RECENT SUMMARIES]` — compressed recent history (1-5)
 4. `[SEMANTIC SUMMARIES]` — query-relevant compressed history (1-5)
-5. `[BACKGROUND KNOWLEDGE]` — wiki snippets (1-3)
-6. `[WEB SEARCH RESULTS]` — real-time web (if triggered, up to 5)
-7. `[RELEVANT INFORMATION]` — semantic chunks (1-8)
-8. `[RECENT REFLECTIONS]` — meta insights, recent (1-5)
-9. `[SEMANTIC REFLECTIONS]` — meta insights, query-relevant (1-5)
-10. `[DREAMS]` — if enabled (up to 3)
-11. `[USER PROFILE]` — categorized facts (high-attention zone)
-12. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
-13. `[CURRENT USER QUERY]` — always last, protected from compression
+5. `[RECENT REFLECTIONS]` — meta insights, recent (1-5)
+6. `[SEMANTIC REFLECTIONS]` — meta insights, query-relevant (1-5)
+7. `[BACKGROUND KNOWLEDGE]` — wiki snippets (1-3)
+8. `[WEB SEARCH RESULTS]` — real-time web (if triggered, up to 5)
+9. `[RELEVANT INFORMATION]` — semantic chunks (1-8)
+10. `[DREAMS]` — synthesis insights, if enabled (up to 3)
+11. `[USER'S PERSONAL NOTES]` — Obsidian vault (1-5)
+12. `[USER UPLOADED ITEMS]` — uploaded documents (1-5)
+13. `[DAEMON DOCUMENTATION]` — reference docs (1-5)
+14. `[PROJECT COMMIT HISTORY]` — git commits (varies)
+15. `[ADAPTIVE WORKFLOWS]` — procedural skills (1-5)
+16. `[PROPOSED FEATURES]` — code proposals (1-3)
+17. `[KNOWLEDGE GRAPH]` — entity relationships, natural language (up to 12 sentences)
+18. `[UNRESOLVED THREADS]` — open commitments/deadlines (1-3)
+19. `[PROACTIVE INSIGHTS]` — cross-domain connections (1-2)
+20. `[USER PROFILE]` — categorized facts (high-attention zone)
+21. `[ACTIVE FEATURES]` — feature inventory (always)
+22. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
+23. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
+24. `[TEMPORAL GROUNDING]` — narrative context (if available)
+25. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available)
+26. `[CURRENT USER QUERY]` — always last, protected from compression
 
 Items with `staleness_ratio >= 0.6` get `[HISTORICAL — PARTIALLY OUTDATED]` prefix.
 

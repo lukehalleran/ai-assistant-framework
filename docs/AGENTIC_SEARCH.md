@@ -14,7 +14,8 @@ details see `PROMPT_BUILDING_PIPELINE.md`.
 When a user query needs external information, Daemon can enter a
 multi-round ReAct (Reasoning + Acting) loop where the LLM iteratively
 decides which tools to call — web search, memory search, Wolfram Alpha,
-Python sandbox, file access, memory expansion, or git stats — until it has enough
+Python sandbox, file access, memory expansion, git stats, or full-document
+retrieval — until it has enough
 context to answer. The loop is budget-enforced and streams progress
 events to the UI in real time.
 
