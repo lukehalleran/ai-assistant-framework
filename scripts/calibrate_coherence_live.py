@@ -2,10 +2,10 @@
 """
 Live LLM calibration for synthesis filter pipeline.
 
-Runs the 54 fixture candidates through the FULL pipeline with real LLM
-coherence judging (Stage 5) and mock wiki store (Stages 3/3b). Reports
-per-tier diagnostics including co-occurrence, template specificity, and
-composite novelty signals.
+Runs the fixture candidates through the FULL pipeline with real LLM
+coherence judging (Stage 5) and mock FAISS wiki search (Stages 3/3b).
+Reports per-tier diagnostics including co-occurrence, template specificity,
+and composite novelty signals.
 
 Usage:
     python scripts/calibrate_coherence_live.py                      # default model
@@ -19,7 +19,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -45,69 +45,11 @@ _DIAGNOSTIC_TIERS = {"boundary"}
 
 
 def _build_mock_store():
-    """Mock wiki store with tier-aware novelty responses (same as calibration tests)."""
+    """Mock ChromaDB store for synthesis_results. Wiki queries go through FAISS mock."""
     store = MagicMock()
 
-    _trivial_topics = {
-        "physical exercise", "mental health", "sleep", "cognitive", "compound interest",
-        "retirement", "musical instrument", "mathematical reasoning",
-        "bilingualism", "dementia", "dark chocolate", "cardiovascular",
-        "pet ownership", "blood pressure", "nature", "creativity",
-        "gut microbiome", "mood", "cold exposure", "immune",
-        "video games", "surgical", "standing desk", "back pain",
-        "gratitude", "sleep quality",
-        "musical training", "pattern recognition", "spatial-temporal",
-        "gut-brain", "serotonin", "vagus nerve", "endorphin",
-        "neuroplasticity", "oxytocin", "cortisol",
-        "flavanol", "nitric oxide", "endothelial",
-        "norepinephrine", "wim hof", "cold water immersion",
-        "laparoscopic", "fine motor", "spinal compression",
-        "prefrontal cortex", "cognitive arousal",
-    }
-
-    _known_topics = {
-        "ant colony", "tcp", "congestion", "immune system", "caching", "cache",
-        "mycelial", "content delivery", "mycorrhizal", "predator-prey",
-        "autoscaling", "lotka-volterra", "counterpoint", "adversarial",
-        "gans", "bach",
-        "memory b cells", "cdn", "wood wide web",
-        "dorigo", "slow-start",
-    }
-
     def query_collection_side_effect(collection_name, query_text, n_results=3):
-        if collection_name == "wiki_knowledge":
-            query_lower = query_text.lower()
-            is_trivial = any(topic in query_lower for topic in _trivial_topics)
-            is_known = any(topic in query_lower for topic in _known_topics)
-
-            if is_trivial:
-                return [{
-                    "id": "wiki_trivial_1",
-                    "content": query_text[:200],
-                    "metadata": {"title": "Wikipedia: Well-Known Connection"},
-                    "relevance_score": 0.91,
-                    "collection": "wiki_knowledge",
-                    "rank": 1,
-                }]
-            elif is_known:
-                return [{
-                    "id": "wiki_known_1",
-                    "content": f"Published analysis of {query_text[:100]}",
-                    "metadata": {"title": "Academic Survey"},
-                    "relevance_score": 0.85,
-                    "collection": "wiki_knowledge",
-                    "rank": 1,
-                }]
-            else:
-                return [{
-                    "id": "wiki_distant_1",
-                    "content": "Unrelated article about ancient pottery techniques.",
-                    "metadata": {"title": "Pottery"},
-                    "relevance_score": 0.40,
-                    "collection": "wiki_knowledge",
-                    "rank": 1,
-                }]
-        elif collection_name == "synthesis_results":
+        if collection_name == "synthesis_results":
             return []
         return []
 
@@ -118,6 +60,56 @@ def _build_mock_store():
         "synthesis_results": {"count": 0},
     })
     return store
+
+
+# Tier-aware FAISS mock for novelty checks (Stage 3)
+_TRIVIAL_TOPICS = {
+    "physical exercise", "mental health", "sleep", "cognitive", "compound interest",
+    "retirement", "musical instrument", "mathematical reasoning",
+    "bilingualism", "dementia", "dark chocolate", "cardiovascular",
+    "pet ownership", "blood pressure", "nature", "creativity",
+    "gut microbiome", "mood", "cold exposure", "immune",
+    "video games", "surgical", "standing desk", "back pain",
+    "gratitude", "sleep quality",
+    "musical training", "pattern recognition", "spatial-temporal",
+    "gut-brain", "serotonin", "vagus nerve", "endorphin",
+    "neuroplasticity", "oxytocin", "cortisol",
+    "flavanol", "nitric oxide", "endothelial",
+    "norepinephrine", "wim hof", "cold water immersion",
+    "laparoscopic", "fine motor", "spinal compression",
+    "prefrontal cortex", "cognitive arousal",
+}
+
+_KNOWN_TOPICS = {
+    "ant colony", "tcp", "congestion", "immune system", "caching", "cache",
+    "mycelial", "content delivery", "mycorrhizal", "predator-prey",
+    "autoscaling", "lotka-volterra", "counterpoint", "adversarial",
+    "gans", "bach",
+    "memory b cells", "cdn", "wood wide web",
+    "dorigo", "slow-start",
+}
+
+
+def _mock_faiss_wiki_search(query, k=3):
+    """Tier-aware FAISS mock with calibrated similarity scores."""
+    query_lower = query.lower()
+    is_trivial = any(topic in query_lower for topic in _TRIVIAL_TOPICS)
+    is_known = any(topic in query_lower for topic in _KNOWN_TOPICS)
+
+    if is_trivial:
+        return [{"text": query[:200], "content": query[:200],
+                 "title": "Wikipedia: Well-Known Connection",
+                 "source": "wikipedia", "similarity": 0.90}]
+    elif is_known:
+        return [{"text": f"Published analysis of {query[:100]}",
+                 "content": f"Published analysis of {query[:100]}",
+                 "title": "Academic Survey",
+                 "source": "wikipedia", "similarity": 0.82}]
+    else:
+        return [{"text": "Unrelated article about ancient pottery techniques.",
+                 "content": "Unrelated article about ancient pottery techniques.",
+                 "title": "Pottery",
+                 "source": "wikipedia", "similarity": 0.05}]
 
 
 def _to_candidate(entry):
@@ -296,7 +288,7 @@ async def main():
 
     print(f"Candidates: {len(candidates_data)}")
     print(f"Models: {models_to_test}")
-    print(f"Pipeline: FULL (mock wiki store + real LLM coherence)")
+    print(f"Pipeline: FULL (mock FAISS wiki + real LLM coherence)")
 
     all_summaries = []
 
@@ -305,7 +297,9 @@ async def main():
         print(f"MODEL: {model}")
         print("=" * 80)
 
-        results = await run_full_pipeline(model, candidates_data, store, mm)
+        with patch("knowledge.semantic_search.semantic_search_with_neighbors",
+                    side_effect=_mock_faiss_wiki_search):
+            results = await run_full_pipeline(model, candidates_data, store, mm)
         summary = print_report(model, results)
         all_summaries.append(summary)
 

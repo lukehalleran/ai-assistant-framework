@@ -207,13 +207,16 @@ class SynthesisGenerator:
         """Sample diverse personal entities from the facts collection.
 
         Uses multiple broad query seeds to get varied results, then
-        shuffles and deduplicates.
+        shuffles and deduplicates. Filters out low-quality facts with
+        short or meaningless concept names.
         """
         seen_ids: Set[str] = set()
+        seen_concepts: Set[str] = set()
         entities: List[Dict[str, Any]] = []
         seeds = random.sample(_PERSONAL_QUERY_SEEDS, min(len(_PERSONAL_QUERY_SEEDS), 6))
 
-        per_seed = max(n // len(seeds), 3)
+        # Over-fetch to have room after quality filtering
+        per_seed = max((n * 3) // len(seeds), 5)
         for seed in seeds:
             try:
                 results = self.store.query_collection(
@@ -223,9 +226,28 @@ class SynthesisGenerator:
                 )
                 for item in results:
                     doc_id = item.get("id", "")
-                    if doc_id and doc_id not in seen_ids:
-                        seen_ids.add(doc_id)
-                        entities.append(item)
+                    if not doc_id or doc_id in seen_ids:
+                        continue
+                    seen_ids.add(doc_id)
+
+                    # Quality filter: concept name must be meaningful
+                    name = self._extract_concept_name(item, source="personal")
+                    if not name or len(name) < 3:
+                        continue
+                    # Skip numeric-only, single common words, timestamps
+                    if name.isdigit() or name.lower() in (
+                        "user", "yes", "no", "true", "false", "none",
+                        "today", "yesterday", "home", "good", "bad",
+                    ):
+                        continue
+
+                    # Deduplicate by concept name (not just ID)
+                    name_key = name.lower().strip()
+                    if name_key in seen_concepts:
+                        continue
+                    seen_concepts.add(name_key)
+
+                    entities.append(item)
             except Exception as e:
                 logger.debug(f"[SynthesisGenerator] Facts query failed for '{seed}': {e}")
 
@@ -277,12 +299,13 @@ class SynthesisGenerator:
         wiki: List[Dict[str, Any]],
         max_pairs: int,
     ) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
-        """Form cross-domain pairs, deduplicated by concept names.
+        """Form cross-domain pairs via round-robin, deduplicated by concept names.
 
-        Extracts concept names from each item and ensures no duplicate
-        (concept_a, concept_b) pairs are generated.
+        Round-robin ensures diverse personal concepts — each personal entity
+        gets at most one wiki partner before cycling to the next entity.
         """
         seen_pair_keys: Set[frozenset] = set()
+        seen_personal: Set[str] = set()
         pairs = []
 
         # Shuffle to randomize pairings
@@ -291,31 +314,58 @@ class SynthesisGenerator:
         random.shuffle(personal_shuffled)
         random.shuffle(wiki_shuffled)
 
-        for p_item in personal_shuffled:
-            if len(pairs) >= max_pairs:
-                break
-            for w_item in wiki_shuffled:
+        # Round-robin: cycle through personal entities, assign one wiki each
+        wiki_idx = 0
+        passes = 0
+        max_passes = 3  # allow up to 3 passes through personal list
+
+        while len(pairs) < max_pairs and passes < max_passes:
+            made_progress = False
+            for p_item in personal_shuffled:
                 if len(pairs) >= max_pairs:
                     break
 
                 p_name = self._extract_concept_name(p_item, source="personal")
-                w_name = self._extract_concept_name(w_item, source="wiki")
-
-                if not p_name or not w_name:
+                if not p_name:
                     continue
 
-                pair_key = frozenset([p_name.lower(), w_name.lower()])
-                if pair_key in seen_pair_keys:
-                    continue
-                seen_pair_keys.add(pair_key)
+                p_key = p_name.lower().strip()
 
-                # Classify domains — skip if same domain
-                p_domain = self._classify_domain(p_item)
-                w_domain = self._classify_domain(w_item)
-                if p_domain == w_domain and p_domain != "unknown":
+                # On first pass, each personal concept gets exactly one pair.
+                # On subsequent passes, allow repeats with different wiki articles.
+                if passes == 0 and p_key in seen_personal:
                     continue
 
-                pairs.append((p_item, w_item))
+                # Try wiki articles until we find a cross-domain match
+                attempts = 0
+                while attempts < len(wiki_shuffled) and wiki_idx < len(wiki_shuffled) * (passes + 1):
+                    w_item = wiki_shuffled[wiki_idx % len(wiki_shuffled)]
+                    wiki_idx += 1
+                    attempts += 1
+
+                    w_name = self._extract_concept_name(w_item, source="wiki")
+                    if not w_name:
+                        continue
+
+                    pair_key = frozenset([p_name.lower(), w_name.lower()])
+                    if pair_key in seen_pair_keys:
+                        continue
+
+                    # Classify domains — skip if same domain
+                    p_domain = self._classify_domain(p_item)
+                    w_domain = self._classify_domain(w_item)
+                    if p_domain == w_domain and p_domain != "unknown":
+                        continue
+
+                    seen_pair_keys.add(pair_key)
+                    seen_personal.add(p_key)
+                    pairs.append((p_item, w_item))
+                    made_progress = True
+                    break  # move to next personal entity
+
+            passes += 1
+            if not made_progress:
+                break
 
         return pairs
 
@@ -335,8 +385,14 @@ class SynthesisGenerator:
                 return obj.strip()
             if subject and subject.lower() != "user":
                 return subject.strip()
-            # Fall back to content snippet
+            # Fall back: parse pipe-delimited content (e.g. "user | hobby | sourdough baking")
             content = item.get("content", "")
+            if "|" in content:
+                parts = [p.strip() for p in content.split("|")]
+                # Return the object (last part) unless it's "user"
+                for part in reversed(parts):
+                    if part.lower() not in ("user", "your", ""):
+                        return part[:60]
             return content[:60].strip() if content else ""
         else:
             # Wiki articles: use title from metadata or first line of content
@@ -348,11 +404,40 @@ class SynthesisGenerator:
             first_line = content.split(".")[0] if content else ""
             return first_line[:80].strip()
 
+    # Keyword map for personal fact domain classification fallback
+    _PERSONAL_DOMAIN_KEYWORDS = {
+        "fitness": ["workout", "gym", "bench", "squat", "deadlift", "running",
+                    "marathon", "lifting", "training", "exercise", "muscle",
+                    "weight", "cardio", "reps", "sets", "sweat", "jog"],
+        "health": ["medication", "adhd", "allergy", "sleep", "diet", "doctor",
+                   "symptom", "pain", "anxiety", "therapy", "vitamin",
+                   "prescription", "diagnosis", "illness"],
+        "career": ["work", "job", "brewery", "brewer", "salary", "commute",
+                   "office", "project", "client", "boss", "coworker",
+                   "promotion", "career", "meeting", "deadline"],
+        "relationships": ["brother", "sister", "mom", "dad", "parent", "friend",
+                         "dating", "partner", "wife", "husband", "cat", "dog",
+                         "pet", "family", "auggie", "sarah", "paczki"],
+        "education": ["study", "learn", "course", "class", "statistics",
+                     "math", "algebra", "exam", "grade", "actuarial",
+                     "university", "degree", "textbook"],
+        "hobbies": ["game", "board", "baking", "sourdough", "cooking",
+                   "reading", "book", "movie", "music", "guitar",
+                   "dungeons", "dragons", "hobby", "craft"],
+        "projects": ["daemon", "code", "python", "programming", "software",
+                    "chromadb", "faiss", "github", "build", "deploy"],
+        "geography": ["portland", "eugene", "oregon", "japan", "city",
+                     "neighborhood", "travel", "move", "live"],
+        "food": ["beer", "coffee", "ramen", "restaurant", "recipe",
+                "tripel", "brew", "ferment", "donut"],
+    }
+
     def _classify_domain(self, item: Dict[str, Any]) -> str:
         """Classify a ChromaDB result into a life domain.
 
         Reuses categorize_relation() from user_profile_schema.py for
-        personal facts, and keyword heuristics for wiki articles.
+        personal facts, falls back to keyword heuristics on content.
+        Wiki articles use a separate keyword classifier.
         """
         metadata = item.get("metadata", {})
         collection = item.get("collection", "")
@@ -360,17 +445,33 @@ class SynthesisGenerator:
         if collection == "wiki_knowledge" or metadata.get("source") == "wikipedia":
             return self._classify_wiki_domain(item)
 
-        # Personal fact — use relation to classify
+        # Personal fact — try structured relation first
         relation = metadata.get("predicate", metadata.get("relation", ""))
         if relation:
             try:
                 from memory.user_profile_schema import categorize_relation
                 category = categorize_relation(relation)
-                return category.value
+                if category.value != "other":
+                    return category.value
             except Exception:
                 pass
 
-        return "unknown"
+        # Check domain_hint in metadata (from test facts)
+        domain_hint = metadata.get("domain_hint", "")
+        if domain_hint:
+            return domain_hint
+
+        # Fallback: keyword heuristics on content + relation
+        text = (item.get("content", "") + " " + relation).lower()
+        best_domain = "personal"  # generic fallback (not "unknown" — enables cross-domain pairing)
+        best_count = 0
+        for domain, keywords in self._PERSONAL_DOMAIN_KEYWORDS.items():
+            count = sum(1 for kw in keywords if kw in text)
+            if count > best_count:
+                best_count = count
+                best_domain = domain
+
+        return best_domain
 
     def _classify_wiki_domain(self, item: Dict[str, Any]) -> str:
         """Classify a wiki article into a broad domain via keywords."""

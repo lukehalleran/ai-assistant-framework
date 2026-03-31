@@ -9,12 +9,12 @@ Usage:
 
 Defines pairs of Wikipedia articles with known true/false connections.
 For each pair:
-  1. Searches wiki_knowledge to verify articles are present
+  1. Searches FAISS wiki index (40M vectors) to verify articles are findable
   2. Generates a bridge claim via LLM (or uses pre-written claim in --filter-only mode)
   3. Runs the claim through the 8-stage synthesis filter
   4. Checks the outcome matches expectation
 
-Requires: wiki_knowledge collection populated, LLM API key configured.
+Requires: FAISS index on T9 drive, LLM API key configured.
 """
 
 import argparse
@@ -336,15 +336,83 @@ FALSE_PAIRS = [
     ),
 ]
 
+# ── Novelty-resistant FALSE pairs (designed to reach coherence judge) ──────────
+# These use obscure topics and novel claim phrasing so FAISS novelty gate
+# won't catch them. They MUST reach Stage 5 (coherence) to be rejected.
+
+NOVELTY_RESISTANT_FALSE_PAIRS = [
+    WikiPair(
+        article_a="Pysanka",  # Ukrainian egg decoration
+        article_b="Erlang (programming language)",
+        has_connection=False,
+        connection_type="none",
+        expected_rejection_via="coherence",
+        pre_written_claim=(
+            "The traditional pysanka egg decoration process, where wax resist is "
+            "applied in sequential layers to control dye absorption, mirrors "
+            "Erlang's process isolation model — both systems achieve complex "
+            "outcomes through strict sequential state transitions where each "
+            "stage's output irreversibly constrains subsequent stages."
+        ),
+        notes="Sounds structural but the mechanism is fabricated. Wax resist is subtractive; Erlang processes are concurrent, not sequential.",
+    ),
+    WikiPair(
+        article_a="Bagpipe",
+        article_b="Tidal locking",
+        has_connection=False,
+        connection_type="none",
+        expected_rejection_via="coherence",
+        pre_written_claim=(
+            "The constant-pressure reservoir of a bagpipe bag, which decouples "
+            "the player's intermittent breath from the continuous drone output, "
+            "structurally mirrors tidal locking in celestial mechanics — both "
+            "systems achieve temporal smoothing by interposing an inertial buffer "
+            "between an irregular driving force and a steady-state output."
+        ),
+        notes="'Inertial buffer between irregular input and steady output' is superficially structural but the physics is completely different. Tidal locking is gravitational torque equilibrium, not buffering.",
+    ),
+    WikiPair(
+        article_a="Campanology",  # bell-ringing
+        article_b="Splay tree",
+        has_connection=False,
+        connection_type="none",
+        expected_rejection_via="coherence",
+        pre_written_claim=(
+            "Change ringing in campanology systematically permutes bell sequences "
+            "to visit every possible ordering exactly once, analogous to how splay "
+            "trees restructure themselves after each access to move frequently "
+            "accessed nodes to the root — both exploit sequential permutation to "
+            "optimize access patterns over time."
+        ),
+        notes="Change ringing IS about permutations, but splay trees do rotations for amortized access, not sequential permutation. The shared 'permutation' label masks completely different mechanisms.",
+    ),
+    WikiPair(
+        article_a="Kintsugi",  # Japanese gold repair
+        article_b="Reed-Solomon error correction",
+        has_connection=False,
+        connection_type="none",
+        expected_rejection_via="coherence",
+        pre_written_claim=(
+            "Kintsugi repairs broken pottery by filling cracks with gold lacquer, "
+            "making the repair visible and valued rather than hidden. Reed-Solomon "
+            "codes similarly add redundant symbols that make data corruption "
+            "detectable and correctable — both systems transform damage into "
+            "explicit structural information rather than concealing it."
+        ),
+        notes="Kintsugi is aesthetic philosophy about embracing imperfection. Reed-Solomon is mathematical redundancy for error correction. 'Making damage visible' is metaphor, not mechanism.",
+    ),
+]
+
 
 async def verify_article_exists(store, article: str) -> Optional[str]:
-    """Search wiki_knowledge for an article. Returns best match content or None."""
-    results = store.query_collection("wiki_knowledge", article, n_results=1)
+    """Search FAISS wiki index for an article. Returns best match content or None."""
+    from knowledge.semantic_search import semantic_search_with_neighbors
+    results = semantic_search_with_neighbors(article, k=1)
     if results:
-        title = results[0].get("metadata", {}).get("title", "")
-        score = results[0].get("relevance_score", 0)
-        content = results[0].get("content", "")[:200]
-        return f"{title} (score={score:.3f}): {content}..."
+        title = results[0].get("title", "")
+        score = results[0].get("similarity", 0)
+        content = results[0].get("content", results[0].get("text", ""))[:200]
+        return f"{title} (sim={score:.3f}): {content}..."
     return None
 
 
@@ -366,7 +434,7 @@ async def run_filter_on_claim(
         timestamp=datetime.now(),
     )
 
-    result = await filter_pipeline.evaluate(candidate)
+    result = await filter_pipeline.process_candidate(candidate)
     return result
 
 
@@ -378,19 +446,22 @@ async def run_verification(verbose: bool = False, filter_only: bool = False):
     print("SYNTHESIS PIPELINE VERIFICATION")
     print("=" * 70)
 
-    # Init store
-    print("\nInitializing ChromaDB...")
+    # Init store (ChromaDB for synthesis_results; FAISS for wiki)
+    print("\nInitializing ChromaDB + FAISS...")
     store = MultiCollectionChromaStore()
 
-    coll = store.collections.get("wiki_knowledge")
-    if not coll or coll.count() == 0:
-        print("ERROR: wiki_knowledge is empty. Load Wikipedia embeddings first.")
+    # Verify FAISS wiki index is available
+    from knowledge.semantic_search import get_index
+    faiss_idx = get_index()
+    faiss_idx.load()
+    if not faiss_idx.loaded:
+        print("ERROR: FAISS wiki index not available. Check T9 drive is mounted.")
         sys.exit(1)
-    print(f"  wiki_knowledge: {coll.count():,} documents")
+    print(f"  FAISS wiki index: {faiss_idx._total_rows:,} vectors")
 
     # Check article availability
     print("\nChecking article availability...")
-    all_pairs = TRUE_PAIRS + FALSE_PAIRS + COVERAGE_ASYMMETRY_PAIRS
+    all_pairs = TRUE_PAIRS + FALSE_PAIRS + NOVELTY_RESISTANT_FALSE_PAIRS + COVERAGE_ASYMMETRY_PAIRS
     missing = []
     for pair in all_pairs:
         for article in [pair.article_a, pair.article_b]:
@@ -430,7 +501,7 @@ async def run_verification(verbose: bool = False, filter_only: bool = False):
     print(f"\n{'='*70}")
     print(f"RUNNING {'FILTER-ONLY' if filter_only else 'FULL PIPELINE'} VERIFICATION")
     print(f"  True connections:        {len(TRUE_PAIRS)}")
-    print(f"  False connections:       {len(FALSE_PAIRS)}")
+    print(f"  False connections:       {len(FALSE_PAIRS)} + {len(NOVELTY_RESISTANT_FALSE_PAIRS)} novelty-resistant")
     print(f"  Coverage asymmetry:      {len(COVERAGE_ASYMMETRY_PAIRS)}")
     print(f"{'='*70}\n")
 
@@ -490,11 +561,25 @@ async def run_verification(verbose: bool = False, filter_only: bool = False):
 
             # Run through filter
             t0 = time.time()
+            # Use connection_type to infer plausible domain pair.
+            # These are wiki-vs-wiki so we assign two distinct domains
+            # to get past the domain crossing gate (Stage 1).
+            _DOMAIN_MAP = {
+                "biomimicry": {"biology", "engineering"},
+                "algorithm_origin": {"mathematics", "computer_science"},
+                "cross_discipline_foundation": {"physics", "information_science"},
+                "mathematical_model": {"mathematics", "ecology"},
+                "well_known_analogy": {"biology", "technology"},
+                "structural_isomorphism": {"biology", "computer_science"},
+                "none": {"science", "humanities"},  # false pairs get generic distinct domains
+            }
+            domains = _DOMAIN_MAP.get(pair.connection_type, {"domain_a", "domain_b"})
+
             result = await run_filter_on_claim(
                 filter_pipeline, store,
                 pair.article_a, pair.article_b,
                 claim,
-                source_domains={"knowledge"},
+                source_domains=domains,
                 endpoint_distance=0.55,  # mid-range default
             )
             elapsed = (time.time() - t0) * 1000
@@ -516,7 +601,7 @@ async def run_verification(verbose: bool = False, filter_only: bool = False):
 
             # Confidence margin: how far the composite score is from the
             # acceptance threshold (default 0.60). Positive = above, negative = below.
-            acceptance_threshold = 0.60
+            acceptance_threshold = 0.65
             confidence_margin = round(score - acceptance_threshold, 3)
 
             detail = {
@@ -533,11 +618,26 @@ async def run_verification(verbose: bool = False, filter_only: bool = False):
                 "claim": claim[:200] if claim else "",
                 "claim_source": claim_source,
                 "elapsed_ms": round(elapsed, 1),
+                # Full stage chain for diagnostics
+                "stage_chain": [
+                    {
+                        "stage": sr.stage_name,
+                        "passed": sr.passed,
+                        "score": round(sr.score, 4) if sr.score is not None else None,
+                        "reason": sr.reason[:200] if sr.reason else None,
+                        "metadata": sr.metadata,
+                    }
+                    for sr in result.stage_results
+                ],
+                "coherence_justification": result.coherence_justification[:400] if result.coherence_justification else None,
                 # Quality fields — filled manually after review for accepted candidates
                 "quality_originality": None,       # 1-5, manual
                 "quality_explanatory_power": None,  # 1-5, manual
                 "quality_non_triviality": None,     # 1-5, manual
             }
+
+            # Determine if this is an unexpected outcome worth full diagnostic
+            unexpected = False
 
             if accepted:
                 if pair.pass_reviewable:
@@ -550,20 +650,38 @@ async def run_verification(verbose: bool = False, filter_only: bool = False):
                     # False pair accepted — real failure
                     results["accepted_wrongly"] += 1
                     print(f"  ✗ ACCEPTED (score={score:.3f}) — FALSE pair should have been rejected")
+                    unexpected = True
                 else:
                     # True-known pair accepted without pass_reviewable — unexpected
                     results["accepted_review"] += 1
                     detail["pathway_correct"] = "review"
                     print(f"  ? ACCEPTED (score={score:.3f}, margin=+{confidence_margin:.3f}) — unexpected pass, review framing novelty")
+                    unexpected = True
             elif pathway_correct:
                 results["rejected_correctly"] += 1
                 print(f"  ✓ REJECTED@{stage} (score={score:.3f}, margin={confidence_margin:+.3f}, {elapsed:.0f}ms)")
             else:
                 results["rejected_wrong_pathway"] += 1
                 print(f"  ~ REJECTED@{stage} (score={score:.3f}, margin={confidence_margin:+.3f}) — expected via {expected_via}")
+                unexpected = True
 
             if verbose and result.rejection_reason:
                 print(f"  Reason: {result.rejection_reason[:100]}")
+
+            # Full diagnostic dump for unexpected outcomes
+            if unexpected:
+                print(f"  --- DIAGNOSTIC DUMP ---")
+                for sr in result.stage_results:
+                    status = "PASS" if sr.passed else "FAIL"
+                    score_str = f"{sr.score:.3f}" if sr.score is not None else "N/A"
+                    print(f"    {sr.stage_name}: {status} (score={score_str}, {sr.elapsed_ms:.0f}ms)")
+                    if sr.metadata:
+                        print(f"      {sr.metadata}")
+                    if sr.reason:
+                        print(f"      reason: {sr.reason[:150]}")
+                if result.coherence_justification:
+                    print(f"    coherence_justification: {result.coherence_justification[:300]}")
+                print(f"  --- END DUMP ---")
 
             results["details"].append(detail)
 

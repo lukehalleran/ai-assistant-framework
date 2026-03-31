@@ -631,10 +631,10 @@ The pipeline short-circuits: if any g_i.passed = false, subsequent stages do not
 | g_0 | Text sanity | \|tokens(claim)\| >= 10 AND repetition_ratio <= 0.5 AND has_verb(claim) | O(n) string ops |
 | g_1 | Domain crossing | \|domains\| >= 2 | O(1) |
 | g_2 | Semantic distance | 0.20 <= dist <= 0.90 | O(1) |
-| g_3 | External novelty | 3 sub-checks: (a) max_sim(claim, C_wiki) < 0.80, (b) max_sim("a b", C_wiki) < 0.75 (co-occurrence), (c) template_sim(claim) via regex generic pattern detection | O(log n) vector search |
+| g_3 | External novelty | 3 sub-checks: (a) max_sim(claim, C_wiki) < 0.60 (IVFPQ-calibrated), (b) max_sim("a b", C_wiki) < 0.60 (co-occurrence, IVFPQ-calibrated), (c) template_sim(claim) via regex generic pattern detection | O(log n) vector search |
 | g_4 | Internal novelty | path_hash not in existing.unique_paths (convergence pass) OR no match | O(log m) vector search |
 | g_5 | Coherence judge | Two-pass: Pass 1 LLM_structural_coherence(a, b, claim) >= MODERATE; Pass 2 (MODERATE only) LLM_factual_skeptic(claim) = PASS | O(1-2) LLM calls |
-| g_6 | Composite score | composite(c) >= 0.40 | O(1) arithmetic |
+| g_6 | Composite score | composite(c) >= 0.65 | O(1) arithmetic |
 
 ### 13.3 Composite Scoring
 

@@ -1365,7 +1365,7 @@ failure immediately rejects the candidate (short-circuit):
 | 3 | External Novelty | ~15ms | 3 sub-checks: claim sim vs wiki, concept co-occurrence vs wiki, template specificity vs generic patterns |
 | 4 | Internal Novelty | ~10ms | Check synthesis memory — new paths to same insight pass (convergence) |
 | 5 | Coherence Judge | ~1-4s | Two-pass LLM: structural coherence (Pass 1), factual skeptic (Pass 2, MODERATE only) |
-| 6 | Composite Score | ~0ms | Weighted: coherence(0.30) + novelty(0.40) + distance(0.15) + structural(0.15) ≥ 0.40 |
+| 6 | Composite Score | ~0ms | Weighted: coherence(0.30) + novelty(0.40) + distance(0.15) + structural(0.15) ≥ 0.65 |
 | 7 | Storage | ~10ms | ChromaDB write to `synthesis_results` |
 
 ### Stage 3: External Novelty (Three Sub-Checks)
@@ -1373,10 +1373,10 @@ failure immediately rejects the candidate (short-circuit):
 This stage catches three distinct failure modes:
 
 - **Claim similarity**: Full articulated claim searched against wiki
-  via FAISS semantic search. Catches direct rehashes. Hard gate: sim > 0.80 → reject.
+  via FAISS semantic search. Catches direct rehashes. Hard gate: sim > 0.60 → reject (IVFPQ-calibrated, was 0.80).
 - **Co-occurrence**: Bare concept conjunction ("concept_a concept_b")
   searched against wiki via FAISS. Catches "known connection, novel phrasing."
-  Hard gate: sim > 0.75 → reject.
+  Hard gate: sim > 0.60 → reject (IVFPQ-calibrated, was 0.75).
 - **Template specificity**: Regex detection of vacuous bridge language
   ("both involve", "share structural similarities", "operates on
   similar principles"). No hard gate — feeds into composite score.
@@ -1687,7 +1687,7 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `memory` | Retrieval limits, corpus size | `CORPUS_MAX_ENTRIES`, `PROMPT_MAX_*` |
 | `models` | Default model, max tokens | `DEFAULT_MODEL`, `DEFAULT_MAX_TOKENS` |
 | `gating` | Similarity thresholds, weights | `COSINE_SIMILARITY_THRESHOLD`, `SCORE_WEIGHTS` |
-| `features` | Feature toggles | `USE_STM_PASS`, `ENABLE_TONE_DETECTION` |
+| `features` | Feature toggles | `USE_STM_PASS`, `ENABLE_QUERY_REWRITE`, `ENABLE_BEST_OF` |
 | `web_search` | Tavily config, caching | `WEB_SEARCH_ENABLED`, `WEB_SEARCH_DAILY_CREDIT_LIMIT` |
 | `knowledge_graph` | Graph behavior | `KNOWLEDGE_GRAPH_ENABLED`, `GRAPH_SCORING_BOOST_CAP` |
 | `intent_classifier` | Intent thresholds | `INTENT_ENABLED`, `INTENT_STM_REFINEMENT_THRESHOLD` |
