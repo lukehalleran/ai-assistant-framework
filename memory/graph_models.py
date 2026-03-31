@@ -7,6 +7,9 @@ GraphEdge represents a directed relationship between two entities.
 
 These models are used by GraphMemory for JSON serialization and by
 EntityResolver for alias management.
+
+GraphNode.source property returns provenance ('personal', 'wikidata',
+or 'wiki_retrieved') from metadata, defaulting to 'personal'.
 """
 
 from datetime import datetime
@@ -38,6 +41,20 @@ class GraphNode(BaseModel):
     last_seen: Optional[datetime] = Field(default=None)
     mention_count: int = Field(default=0, ge=0)
     metadata: dict = Field(default_factory=dict)
+
+    @property
+    def source(self) -> str:
+        """Node provenance: 'personal', 'wikidata', or 'wiki_retrieved'."""
+        return self.metadata.get("source", "personal")
+
+    @property
+    def is_wikidata(self) -> bool:
+        return self.source == "wikidata"
+
+    @property
+    def wikidata_qid(self) -> str | None:
+        """Wikidata Q-ID (e.g. 'Q44') if this is a Wikidata-sourced node."""
+        return self.metadata.get("wikidata_qid")
 
     def to_dict(self) -> dict:
         """Serialize for JSON persistence."""

@@ -1198,6 +1198,63 @@ SYNTHESIS_GENERATOR_ENABLED = bool(int(os.getenv(
 )))
 
 # --------------------------------------------------------------------
+# Wikidata Import Configuration
+# Import a Wikidata subgraph (~50K entities) into the knowledge graph
+# for structured graph walks in synthesis candidate generation.
+# --------------------------------------------------------------------
+WIKIDATA_CFG = config.get("wikidata_import", {})
+WIKIDATA_IMPORT_ENABLED: bool = bool(WIKIDATA_CFG.get("enabled", True))
+WIKIDATA_PERSIST_PATH: str = str(WIKIDATA_CFG.get("persist_path", "data/wikidata_cache.json"))
+WIKIDATA_ENTITIES_PER_DOMAIN: int = int(WIKIDATA_CFG.get("entities_per_domain", 5000))
+WIKIDATA_MAX_TOTAL: int = int(WIKIDATA_CFG.get("max_total_entities", 50000))
+WIKIDATA_SPARQL_BATCH_SIZE: int = int(WIKIDATA_CFG.get("sparql_batch_size", 500))
+WIKIDATA_EMBEDDING_MATCH_THRESHOLD: float = float(WIKIDATA_CFG.get("embedding_match_threshold", 0.60))
+
+# Environment variable overrides
+WIKIDATA_IMPORT_ENABLED = bool(int(os.getenv(
+    "WIKIDATA_IMPORT_ENABLED", "1" if WIKIDATA_IMPORT_ENABLED else "0"
+)))
+
+# --------------------------------------------------------------------
+# Graph Walk Configuration
+# Biased Markov walks across the personal→wikidata boundary for
+# synthesis candidate generation.
+# --------------------------------------------------------------------
+GRAPH_WALK_CFG = config.get("graph_walk", {})
+GRAPH_WALK_ENABLED: bool = bool(GRAPH_WALK_CFG.get("enabled", True))
+GRAPH_WALK_MAX_LENGTH: int = int(GRAPH_WALK_CFG.get("max_walk_length", 8))
+GRAPH_WALK_WALKS_PER_SEED: int = int(GRAPH_WALK_CFG.get("walks_per_seed", 20))
+GRAPH_WALK_RESTART_PROB: float = float(GRAPH_WALK_CFG.get("restart_probability", 0.15))
+GRAPH_WALK_MIN_PATH: int = int(GRAPH_WALK_CFG.get("min_path_length", 3))
+GRAPH_WALK_MAX_CANDIDATES: int = int(GRAPH_WALK_CFG.get("max_candidates_per_session", 10))
+GRAPH_WALK_BOUNDARY_REQUIRED: bool = bool(GRAPH_WALK_CFG.get("boundary_crossing_required", True))
+GRAPH_WALK_MIN_BRIDGE_EDGES: int = int(GRAPH_WALK_CFG.get("min_bridge_edges", 40))
+GRAPH_WALK_PERSONAL_RETURN_BIAS: float = float(GRAPH_WALK_CFG.get("personal_return_bias", 2.0))
+
+# Environment variable overrides
+GRAPH_WALK_ENABLED = bool(int(os.getenv(
+    "GRAPH_WALK_ENABLED", "1" if GRAPH_WALK_ENABLED else "0"
+)))
+
+# --------------------------------------------------------------------
+# Wiki Enrichment Configuration
+# Track Wikipedia articles accessed during a session and add them
+# to the knowledge graph at shutdown.
+# --------------------------------------------------------------------
+WIKI_ENRICH_CFG = config.get("wiki_enrichment", {})
+WIKI_ENRICHMENT_ENABLED: bool = bool(WIKI_ENRICH_CFG.get("enabled", True))
+WIKI_ENRICHMENT_MAX_PER_SESSION: int = int(WIKI_ENRICH_CFG.get("max_articles_per_session", 15))
+WIKI_ENRICHMENT_MIN_TEXT: int = int(WIKI_ENRICH_CFG.get("min_text_length", 200))
+WIKI_ENRICHMENT_TIMEOUT_S: int = int(WIKI_ENRICH_CFG.get("shutdown_step_timeout_s", 30))
+WIKI_ENRICHMENT_EDGE_RELATION: str = str(WIKI_ENRICH_CFG.get("edge_relation_type", "mentioned_alongside"))
+WIKI_ENRICHMENT_EDGE_WEIGHT: float = float(WIKI_ENRICH_CFG.get("edge_default_weight", 0.5))
+
+# Environment variable overrides
+WIKI_ENRICHMENT_ENABLED = bool(int(os.getenv(
+    "WIKI_ENRICHMENT_ENABLED", "1" if WIKI_ENRICHMENT_ENABLED else "0"
+)))
+
+# --------------------------------------------------------------------
 # Final setup
 # --------------------------------------------------------------------
 

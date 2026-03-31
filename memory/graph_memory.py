@@ -8,14 +8,34 @@ source+relation+target pair) with weight strengthening on repeated
 mentions.
 
 Persistence uses a dirty-flag so saves only happen when the graph
-has actually changed (not on every insertion).
+has actually changed (not on every insertion).  Uses orjson for
+fast serialization (falls back to stdlib json if unavailable).
+
+Stats helpers: count_by_source() for provenance counts,
+count_bridge_edges() for cross-provenance edge counts.
 """
 
-import json
 import os
 from collections import deque
 from datetime import datetime
 from typing import Optional
+
+try:
+    import orjson
+
+    def _json_load(f):
+        return orjson.loads(f.read())
+
+    def _json_dump(payload, f):
+        f.write(orjson.dumps(payload, option=orjson.OPT_INDENT_2).decode("utf-8"))
+except ImportError:
+    import json
+
+    def _json_load(f):
+        return json.load(f)
+
+    def _json_dump(payload, f):
+        json.dump(payload, f, indent=2, ensure_ascii=False)
 
 import networkx as nx
 
@@ -40,6 +60,7 @@ class GraphMemory:
         self._edge_index: dict[str, GraphEdge] = {}
         self._dirty = False
         self._modification_count = 0
+        self._bulk_mode = False
         # Auto-save threshold: save after this many modifications
         self._auto_save_threshold = 50
         self.load()
@@ -320,7 +341,7 @@ class GraphMemory:
 
         try:
             with open(self.persist_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
+                _json_dump(payload, f)
             self._dirty = False
             self._modification_count = 0
             logger.info(f"[GraphMemory] Saved {len(nodes)} nodes, {len(edges)} edges to {self.persist_path}")
@@ -335,8 +356,8 @@ class GraphMemory:
 
         try:
             with open(self.persist_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+                payload = _json_load(f)
+        except (ValueError, OSError) as e:
             logger.error(f"[GraphMemory] Failed to load {self.persist_path}: {e}")
             return
 
@@ -382,6 +403,26 @@ class GraphMemory:
     def edge_count(self) -> int:
         return len(self._edge_index)
 
+    def count_by_source(self, source: str) -> int:
+        """Count nodes with a given metadata source value (e.g. 'wikidata', 'wiki_retrieved')."""
+        count = 0
+        for _nid, data in self.graph.nodes(data=True):
+            if data.get("metadata", {}).get("source") == source:
+                count += 1
+        return count
+
+    def count_bridge_edges(self) -> int:
+        """Count edges where source and target nodes have different provenance."""
+        count = 0
+        for edge in self._edge_index.values():
+            src_data = self.graph.nodes.get(edge.source_id, {})
+            tgt_data = self.graph.nodes.get(edge.target_id, {})
+            src_source = src_data.get("metadata", {}).get("source", "personal")
+            tgt_source = tgt_data.get("metadata", {}).get("source", "personal")
+            if src_source != tgt_source:
+                count += 1
+        return count
+
     def most_connected(self, n: int = 10) -> list[tuple[str, int]]:
         """Top N entities by total degree (in + out edges)."""
         degrees = [(nid, self.graph.degree(nid)) for nid in self.graph.nodes()]
@@ -395,5 +436,30 @@ class GraphMemory:
     def _mark_dirty(self) -> None:
         self._dirty = True
         self._modification_count += 1
-        if self._modification_count >= self._auto_save_threshold:
+        if not self._bulk_mode and self._modification_count >= self._auto_save_threshold:
             self.save()
+
+    def bulk_import(self):
+        """Context manager to suppress auto-saves during large imports.
+
+        Usage:
+            with graph_memory.bulk_import():
+                for entity in entities:
+                    graph_memory.add_entity(entity)
+            # save() called once on exit
+        """
+        return _BulkImportContext(self)
+
+
+class _BulkImportContext:
+    def __init__(self, graph_memory: GraphMemory):
+        self._gm = graph_memory
+
+    def __enter__(self):
+        self._gm._bulk_mode = True
+        return self._gm
+
+    def __exit__(self, *exc):
+        self._gm._bulk_mode = False
+        if self._gm._dirty:
+            self._gm.save()

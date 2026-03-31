@@ -1792,6 +1792,12 @@ class ContextGatherer:
                         'wiki_knowledge', query, n_results=limit
                     )
                     if results:
+                        # Track wiki titles for session enrichment
+                        from knowledge.wiki_tracker import WikiArticleTracker
+                        for r in results:
+                            t = r.get('metadata', {}).get('title', '')
+                            if t:
+                                WikiArticleTracker.get_instance().track(t, r.get('content', '')[:500])
                         return [
                             {
                                 'content': r.get('content', ''),
@@ -1844,6 +1850,14 @@ class ContextGatherer:
 
             if not results:
                 return []
+
+            # Track wiki titles for session enrichment
+            from knowledge.wiki_tracker import WikiArticleTracker
+            tracker = WikiArticleTracker.get_instance()
+            for r in results:
+                t = r.get("title", "")
+                if t:
+                    tracker.track(t, r.get("content", "")[:500])
 
             # Process and stitch results by title
             chunks_by_title = {}

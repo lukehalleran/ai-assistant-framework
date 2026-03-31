@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-03-30
+**Last Updated**: 2026-03-31
 
 ---
 
@@ -16,11 +16,17 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 
 ---
 
+## Phase: Feature-Complete — Consolidate, Populate, Ship
+
+All major feature systems are built. The focus now shifts to: making what exists robust and shippable, populating the knowledge graph with real data, rebuilding the desktop executable, and splitting the onboarding wizard into user vs dev channels.
+
+---
+
 ## Active Goals (Current Sprint)
 
-### 1. Infrastructure Consolidation
-- **Status**: Starting — retrieval benchmarks now provide safety net for subtractive changes
-- **Why**: Codebase at ~116K lines (incl. tests) past solo maintainability ceiling (~100-120K). Must be lean and reliable before scaling to batch synthesis workloads.
+### 1. Consolidation & Stabilization
+- **Status**: Primary focus — all features built, now harden
+- **Why**: Codebase at ~116K lines (incl. tests). Must be lean and reliable before scaling to batch synthesis workloads or shipping to users.
 - Use retrieval benchmark suite to ablate prompt sections — measure recall impact of removing each
 - Audit ChromaDB collections: do all 12 justify separate indexes? Can any be merged without retrieval regression?
 - Reduce prompt context sections (currently 14+) to minimum set that maintains quality
@@ -30,33 +36,46 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 - Target: orchestrator.py under 400 lines (extract remaining truth/escalation/correction logic)
 - Eliminate remaining calls to deprecated `prepare_prompt`
 
-### 2. Proposal System Quality
-- **Status**: Functional, needs filtering improvements
-- Hundreds of unread proposals — retrieval bias surfaces additive proposals matching current work context
-- Add type-weighted retrieval: boost `refactor` and `deletion` proposals in default views
-- Add dedicated consolidation query mode to surface subtractive proposals
-- Periodic proposal pruning: expire or archive low-scored proposals older than N days
-- Improve generation prompt to explicitly produce subtractive proposals (merges, deletions, simplifications)
+### 2. Rebuild Desktop Executable
+- **Status**: Stale — many features added since last working build
+- **Why**: PyInstaller spec (`daemon.spec`) hasn't been updated for new modules (wiki_enrichment, wiki_tracker, wikidata_models, synthesis_filter, claim_tracker, context_surfacer, implementation_detector, etc.). Hidden imports, data files, and bundled assets likely out of date.
+- Audit `daemon.spec` for missing hidden imports and data files
+- Test frozen build end-to-end: startup → wizard → chat → shutdown
+- Verify FAISS index + parquet files are handled correctly (large external data, not bundled)
+- Ensure `orjson` optional import fallback works in frozen context
+- Target: clean `pyinstaller daemon.spec --clean --noconfirm` producing a working `dist/Daemon/Daemon`
 
-### 3. Agentic Search Reliability
-- **Status**: Stabilizing — context inventory + diversity tracking added
-- ~~Improve loop termination, reduce unnecessary search triggers~~ — context inventory prevents redundant re-searches; collection diversity hints steer away from over-searched collections
-- ~~Query relaxation for failed searches~~ — implemented
-- Remaining: evaluate real-world loop round counts and tune max_rounds / termination heuristics
+### 3. Wizard Dual-Channel (User vs Dev)
+- **Status**: Not started
+- **Why**: Current wizard (`gui/wizard.py`) is a single onboarding flow. Users and developers need different setup paths — users care about API keys, data paths, and persona; devs need repo config, model selection, debug toggles, and feature flags.
+- Split wizard into two channels selectable at launch: "I'm a user" vs "I'm a developer"
+- **User channel**: API key setup, data directory, persona/name, privacy overview, optional Obsidian vault path
+- **Dev channel**: All user steps plus: model provider selection, feature flag toggles (synthesis, graph walks, wiki enrichment, etc.), debug/logging level, benchmark suite intro, config.yaml deep-edit
+- Shared: both channels write to the same `config.yaml` — dev channel just exposes more knobs
+- Consider making dev channel accessible from GUI settings tab post-wizard (not just first-run)
+
+### 4. Knowledge Graph Data Population
+- **Status**: Graph infrastructure complete, data sparse
+- **Why**: Graph-boosted scoring, query expansion, synthesis walks, and proactive surfacing all scale with graph density. Current graph has real structure but needs volume.
+- Run `scripts/migrate_facts_to_graph.py` against full ChromaDB fact corpus to backfill
+- Run wiki enrichment across broader article set (not just session-tracked articles)
+- Evaluate batch Wikidata subgraph import (`scripts/import_wikidata_to_graph.py`) for entity linking
+- Monitor `count_by_source()` and `count_bridge_edges()` to track density milestones
+- Target: 500+ nodes, 200+ bridge edges before enabling graph walk synthesis
 
 ---
 
 ## Medium-Term Goals (Next 1-3 Months)
 
-### 4. Knowledge Synthesis Pipeline (Core Vision)
-- **Status**: Infrastructure built, first real run pending
+### 5. Knowledge Synthesis Pipeline (Core Vision)
+- **Status**: Infrastructure built, calibration in progress, first real run pending
 - **This is the primary goal. Everything else supports this.**
+- Blocked on: graph density (Goal 4) and consolidation (Goal 1)
 
 **Data Ingestion**:
-- Wikipedia embedded via FAISS IVFPQ index (40M vectors, ~2 GB RAM) — **done**. All wiki queries (prompt retrieval, agentic search, synthesis pipeline) now route through FAISS. ChromaDB `wiki_knowledge` collection retained as fallback only.
+- Wikipedia embedded via FAISS IVFPQ index (40M vectors, ~2 GB RAM) — **done**
 - arXiv paper abstracts/full text — planned
 - PubMed abstracts — planned
-- Unified embedding space across all sources
 
 **Connection Generation**:
 - Markov chain random walks across embedded knowledge graph
@@ -64,19 +83,17 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 - High volume — most output will be nonsense or trivially true
 
 **Multi-Stage Filtering** (the hard problem):
-- Stage 1: Cheap bulk filter — cosine similarity against baseline of known good connections, kill ~80-90% of incoherent noise
-- Stage 2: LLM coherence judge (smaller model) — "is this connection logically sound and interesting?" (not "is this true")
-- Stage 3: LLM pairwise reranking (stronger model) — relative novelty comparison across candidates
-- Stage 4: Novelty detection — embed winners, search against source literature. High similarity = known connection. Low similarity + high coherence = signal. (Inverted retrieval: confirm nothing similar exists)
+- 8-stage filter pipeline built (`synthesis_filter.py`), calibration fixture with 72 labeled candidates
+- IVFPQ threshold recalibration done (novelty, co-occurrence, composite thresholds adjusted for quantized distances)
+- Remaining: end-to-end validation at scale, pairwise reranking stage
 
 **Open Questions**:
 - How to distinguish "interesting but known" from "actually novel"
 - Optimal Markov walk parameters (step count, restart probability, domain crossing frequency)
-- Whether coherence and novelty should be separate stages or combined
 - Calibration: what does the score distribution look like for known good cross-domain papers?
 
-### 5. Dreaming Engine (Batch Generation Infrastructure)
-- **Status**: Pending — blocked on consolidation (Goal 1) and first manual synthesis run
+### 6. Dreaming Engine (Batch Generation Infrastructure)
+- **Status**: Pending — blocked on consolidation (Goal 1) and graph density (Goal 4)
 - Background thread/async task runs during idle periods
 - Iterates over knowledge bases with Markov walks, generates connection candidates in batches
 - Full pipeline scoring: cosine → cross-encoder → LLM pairwise → novelty check
@@ -84,7 +101,7 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 - Scheduler: activates after N minutes inactivity, pauses on user input
 - **Prerequisite**: Infrastructure must be lean and hardened first — batch workloads will stress every pipeline component at scale
 
-### 6. Memory Quality Maintenance
+### 7. Memory Quality Maintenance
 - Prune low-value entries over time (decay + consolidation)
 - Improve fact extraction precision (reduce false triples)
 - Monitor retrieval benchmark scores for regression after any scoring/weight changes
@@ -95,29 +112,48 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 
 These systems are complete and working. Listed here for context, not as active work items. Changes should be consolidation-oriented (simplify, merge, delete) rather than additive.
 
-- **Memory system**: 6 types (episodic, semantic, procedural, summary, meta, fact), 12 ChromaDB collections, modular components with Protocol contracts, ~632 line thin coordinator
+- **Memory system**: 6 types (episodic, semantic, procedural, summary, meta, fact), 12 ChromaDB collections, modular components with Protocol contracts, thin coordinator
 - **Multi-stage gating**: FAISS → Cosine → Cross-Encoder reranking
 - **Intent classification**: 9 types, regex-first, per-intent weight/retrieval/gate overrides, STM refinement
 - **Truth scoring**: Evidence-based (TruthScorer + CorrectionDetector), replaces access-count system
+- **Fact verification**: 4-stage gate (ephemeral → candidate → confirmation → LLM adjudication), no auto-deletion
+- **Memory staleness**: Claim tracker with reverse index, cascade staleness scoring, prompt prefixes for outdated items
 - **Cross-collection dedup**: Cosine duplicates + fact contradiction detection, dry-run default
 - **Escalation tracker**: 4-state emotional momentum (VALIDATE → GROUNDING → QUIET → GENTLE)
 - **User profile**: Append-only with temporal history, 12 categories, hybrid retrieval
 - **Temporal awareness**: Narrative context (3-tier: monthly/weekly/daily), temporal-aware recency decay
-- **Knowledge integration**: Obsidian vault (multimodal, mtime-based re-embedding), reference docs, git commits, procedural skills, Wikipedia
+- **Knowledge integration**: Obsidian vault (multimodal, mtime-based re-embedding), reference docs, git commits, procedural skills, Wikipedia (FAISS IVFPQ 40M vectors)
+- **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring, wiki enrichment at shutdown
+- **Proactive surfacing**: Cross-domain insight generation from knowledge graph, session-cached LLM calls, novelty-filtered
+- **Synthesis pipeline**: Cross-store candidate generation, 8-stage filter, LLM bridge articulation, convergence tracking
+- **Implementation tracking**: 4-stage proposal detection (file → grep → git → LLM), cooldown-gated
 - **Fast Mode**: Reduced retrieval for mobile/slow connections with progress keepalives
-- **PDF support**: Full pipeline from upload through pdfplumber text extraction
+- **PDF/DOCX support**: Full pipeline with table extraction (pdfplumber + python-docx), chunking with header detection
 - **Multi-provider LLM**: Duel mode, best-of-N, ensemble, fallback chains
 - **Code proposals**: LLM-generated, ChromaDB-stored, GUI management, shutdown integration
-- **Agentic search**: ReAct loop with Tavily + Wolfram Alpha + E2B sandbox, context inventory prevents redundant re-searches, collection diversity tracking
-- **Thread surfacing**: Proactive open-thread detection — LLM extracts unresolved commitments/deadlines/questions at shutdown, surfaces top threads at session start via `[UNRESOLVED THREADS]` prompt section
-- **Production**: PyInstaller desktop build, Docker deployment, graceful shutdown
+- **Agentic search**: ReAct loop with Tavily + Wolfram Alpha + E2B sandbox, context inventory, collection diversity tracking, memory expansion tool, full-document retrieval tool, git stats tool
+- **Thread surfacing**: Proactive open-thread detection with resolution tracking
+- **Session awareness**: Codebase diff + active features inventory at session start
+- **Production**: PyInstaller desktop build (needs rebuild — Goal 2), Docker deployment, graceful shutdown
 - **Privacy**: All data local, API calls only for LLM generation, no telemetry
-- **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring
 - **Testing**: 2,900+ tests across 148 test files, retrieval quality benchmarks with 30 seed memories and 19 test cases
 
 ---
 
 ## Recent Completions
+
+### Wiki-to-Graph Enrichment (2026-03-31)
+- Session-level Wikipedia article tracking → graph nodes at shutdown
+- `wiki_tracker.py` (thread-safe singleton), `wiki_enrichment.py` (shutdown step 6.9)
+- `mentioned_alongside` edges at weight 0.5, `source="wiki_retrieved"` provenance on nodes
+- `wikidata_models.py` Pydantic models for future Wikidata subgraph import
+- 28 tests across 2 files
+
+### Synthesis Calibration + IVFPQ Threshold Tuning (2026-03-31)
+- Calibration fixture expanded 54 → 72 candidates (7 tiers)
+- IVFPQ-aware threshold recalibration (novelty, co-occurrence, composite)
+- Verification scripts: `verify_synthesis_pipeline.py` (26 pairs), `calibrate_coherence_live.py`
+- End-to-end test infrastructure: `test_end_to_end_synthesis.py`, `generate_test_facts.py`
 
 ### FAISS IVFPQ + Zero-Copy Semantic Search + Knowledge Routing (2026-03-31)
 - `build_faiss_index.py`: IVFFlat+OnDiskInvertedLists → IVFPQ (Product Quantization). 48 subquantizers × 8 bits = 48 bytes/vector (~32x compression). Full 41M-vector index fits in ~2 GB RAM, no ondisk inverted lists needed.
@@ -226,12 +262,12 @@ These systems are complete and working. Listed here for context, not as active w
 
 ## Non-Goals (Explicit Exclusions)
 
+- **New feature systems** — feature-complete. No new subsystems until consolidation targets are met.
 - **Auto-execution of code proposals** — proposals are advisory only, human reviews and implements
 - **Auto-deletion of user data** — all destructive operations default to dry_run=True; live deletions require explicit GUI action
 - **Real-time collaboration** — single-user system, not multi-tenant
 - **Mobile/web deployment** — desktop-first (Gradio GUI or CLI)
 - **Fine-tuning or training** — uses commercial APIs and pre-trained local models only
-- **Adding infrastructure complexity before consolidation** — new systems must justify their existence against the maintainability budget. Default answer to "should I add this?" is "not yet."
 
 ---
 
@@ -239,10 +275,12 @@ These systems are complete and working. Listed here for context, not as active w
 
 1. **The filter is the product.** Connection generation is cheap. Identifying which connections are novel and meaningful is the entire value proposition. Every infrastructure decision should be evaluated by whether it improves filtering quality.
 
-2. **Subtractive work is higher priority than additive work.** The codebase must get leaner before it gets bigger. Removing a system that doesn't pull its weight is more valuable than adding a new one.
+2. **No new features until consolidation targets are met.** The codebase is feature-complete. Every addition now is net-negative until the existing ~116K lines are trimmed and hardened. Removing a system that doesn't pull its weight is more valuable than adding a new one.
 
-3. **The personal assistant earns its keep.** It's not scaffolding — it's a daily-use product AND the live testbed. Both purposes matter.
+3. **Data over code.** The limiting factor is now graph density, not missing features. Effort spent populating the knowledge graph with real data has higher ROI than writing new code.
 
-4. **Measure before changing, measure after changing.** The retrieval benchmark suite exists for a reason. No scoring/weight/retrieval changes without before-and-after benchmark runs.
+4. **The personal assistant earns its keep.** It's not scaffolding — it's a daily-use product AND the live testbed. Both purposes matter.
 
-5. **Batch scale reveals infrastructure debt.** Every quirk that's tolerable at conversational volume becomes a critical bug at synthesis volume. Consolidate now while the feedback loop is fast.
+5. **Measure before changing, measure after changing.** The retrieval benchmark suite exists for a reason. No scoring/weight/retrieval changes without before-and-after benchmark runs.
+
+6. **Ship what's built.** A working desktop executable and a smooth onboarding wizard are prerequisite to anyone else using this. Polish and packaging matter now.
