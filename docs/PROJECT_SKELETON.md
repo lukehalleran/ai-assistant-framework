@@ -58,7 +58,7 @@ USER QUERY
 RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 ```
 
-**Note**: Memory system fully refactored (Jan 2026). `memory/memory_coordinator.py` is now a thin orchestrator (~498 lines, down from 1,694) delegating to:
+**Note**: Memory system fully refactored (Jan 2026). `memory/memory_coordinator.py` is now a thin orchestrator (~632 lines, down from 1,694) delegating to:
 - `memory/memory_retriever.py` - Retrieval operations (incl. `get_semantic_top_memories`)
 - `memory/memory_storage.py` - Storage operations
 - `memory/memory_scorer.py` - Scoring and ranking
@@ -104,7 +104,7 @@ The incomplete V2 `memory/coordinator.py` has been deleted.
   - Parses thinking block and strips from final response
   - Stores interaction back to memory (with provenance metadata)
 
-- `_build_system_prompt()` → Composes system prompt from file-based personality **[NEW 2026-03-26]**
+- System prompt composed inline in `prepare_prompt()` via `load_personality_text()` + `load_operating_principles()` **[NEW 2026-03-26]**
   - Loads `default_personality.txt` or `custom_personality.txt` via `load_personality_text()`
   - Appends immutable `operating_principles.txt` via `load_operating_principles()`
   - Performs placeholder substitution: `{USER_NAME}`, `{USER_PRONOUNS}`, `{PRONOUN_SUBJ}`, `{PRONOUN_OBJ}`, `{PRONOUN_POSS}`
@@ -320,13 +320,13 @@ PromptBuilder.build_prompt(context, memories)  →  final prompt
 ---
 
 ### 2.3 memory/memory_coordinator.py (Thin Orchestrator)
-**Purpose**: Unified interface for all memory operations — thin delegation layer (~498 lines)
+**Purpose**: Unified interface for all memory operations — thin delegation layer (~632 lines)
 
 **Status**: Fully refactored (Jan 2026). All inline logic extracted to modular components. Acts as state-syncing orchestrator with ~24 delegation methods.
 
 **Architecture**:
 ```python
-MemoryCoordinator (memory_coordinator.py, ~498 lines)
+MemoryCoordinator (memory_coordinator.py, ~632 lines)
     ↓
 ├── MemoryRetriever (memory_retriever.py) - Retrieval + semantic top memories
 ├── MemoryScorer (memory_scorer.py) - Scoring and ranking
@@ -3689,7 +3689,7 @@ SYNTHESIS_GENERATOR_LLM_CONCURRENCY = 5           # Max parallel LLM bridge call
 SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20          # Graph sparsity guard
 ```
 
-**Tests**: 18 unit tests in `tests/unit/test_synthesis_generator.py`, 6 calibration tests in `tests/test_synthesis_calibration.py`. Calibration fixtures: `tests/fixtures/calibration_candidates.json` (54 labeled candidates in 7 tiers).
+**Tests**: 18 unit tests in `tests/unit/test_synthesis_generator.py`, 6 calibration tests in `tests/test_synthesis_calibration.py`. Calibration fixtures: `tests/fixtures/calibration_candidates.json` (72 labeled candidates in 7 tiers).
 
 ---
 
@@ -4562,7 +4562,7 @@ daemon/
 │       └── base.py          # Utilities and fallbacks
 │
 ├── memory/
-│   ├── memory_coordinator.py      # Thin orchestrator (~498 lines, delegates to components)
+│   ├── memory_coordinator.py      # Thin orchestrator (~632 lines, delegates to components)
 │   ├── shutdown_processor.py      # Session-end summaries, facts, reflections [NEW - EXTRACTED]
 │   ├── memory_scorer.py           # Scoring and ranking operations [NEW - REFACTORED]
 │   ├── memory_retriever.py        # Retrieval operations [NEW - REFACTORED]
@@ -4661,7 +4661,7 @@ daemon/
 │   ├── wiki/                  # Wikipedia source data (102GB)
 │   └── pipeline/              # Wikipedia processing scripts (43GB)
 │
-├── tests/                     # All test files (119+ files)
+├── tests/                     # All test files (148 files)
 │   ├── unit/                  # Unit tests (20+ files)
 │   │   ├── test_tone_detector.py
 │   │   ├── test_need_detection.py  # [NEW]
@@ -4857,25 +4857,10 @@ except Exception as e:
 **Last Full Run**: December 2024
 
 **Test Collection**:
-- **Total tests**: 1554 tests across all files
-- **Collection errors**: 0 (previously 2, now fixed)
-
-**Test Results**:
-- ✅ **Passed**: 1480 (95.2%)
-- ❌ **Failed**: 45 (2.9%) - Pre-existing issues
-- ⚠️ **Errors**: 22 (1.4%) - API signature mismatches
-- ⏭️ **Skipped**: 7 (0.5%) - Method signature differences
-
-**Run Time**: ~2:22 (142 seconds)
-
-**Fixed Issues**:
-- `test_cross_dedup.py`: Fixed `Dependencies` → `DependencyContainer` import
-- `test_full_meta_query.py`: Fixed `Orchestrator` → `DaemonOrchestrator` import
-
-**Test Files**:
-- **Unit tests**: ~20 files in `tests/unit/`
-- **Integration tests**: ~45 files in `tests/`
-- **Total test files**: 119+
+- **Total tests**: 2,900+ tests across all files
+- **Total test files**: 148
+- **Unit tests**: 40+ files in `tests/unit/`
+- **Integration tests**: 100+ files in `tests/`
 
 **Known Failure Categories** (not caused by recent changes):
 - UnifiedPromptBuilder API changes (missing `get_facts`, `get_recent_facts`)
@@ -4988,7 +4973,7 @@ python main.py inspect-summaries
 | response_parser.py | Parse: extract thinking blocks, strip reflections/XML/prompt artifacts [NEW 2026-01-23] |
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
 | intent_classifier.py | Classify: regex-first query intent (9 types), produces weight/retrieval/gate overrides [NEW 2026-02-15] |
-| memory_coordinator.py | Hub: thin orchestrator (~498 lines) delegating to modular components [REFACTORED] |
+| memory_coordinator.py | Hub: thin orchestrator (~632 lines) delegating to modular components [REFACTORED] |
 | shutdown_processor.py | Shutdown: block summaries + fact extraction + procedural skills + reflections + user profile [NEW - EXTRACTED] |
 | memory_scorer.py | Scoring: calculate truth/importance, rank by composite score with temporal decay [NEW - REFACTORED] |
 | memory_retriever.py | Retrieval: get_memories pipeline with gating and ranking [NEW - REFACTORED] |
@@ -5465,7 +5450,7 @@ This document compresses a ~50K line codebase by focusing on architecture, data 
 
 **Recent Changes** (2026-03-28):
 - **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
-- **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts + wiki_knowledge collections, LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 54 labeled candidates in 7 tiers.
+- **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts + wiki_knowledge collections, LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 72 labeled candidates in 7 tiers.
 - **Context Management Fixes** (Sections 2.7, 2.8b) — Post-budget floor for recent conversations (`PROMPT_MIN_RECENT_FLOOR=5`), budget-enforced accumulated context in agentic controller (`_append_accumulated()` trims oldest rounds), budget-aware final prompt assembly (trims low-value sections to preserve conversation history + agentic results).
 
 **Previous Changes** (2026-03-26):

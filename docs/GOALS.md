@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-03-23
+**Last Updated**: 2026-03-30
 
 ---
 
@@ -20,9 +20,9 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 
 ### 1. Infrastructure Consolidation
 - **Status**: Starting — retrieval benchmarks now provide safety net for subtractive changes
-- **Why**: Codebase at 94K lines approaching solo maintainability ceiling (~100-120K). Must be lean and reliable before scaling to batch synthesis workloads.
+- **Why**: Codebase at ~116K lines (incl. tests) past solo maintainability ceiling (~100-120K). Must be lean and reliable before scaling to batch synthesis workloads.
 - Use retrieval benchmark suite to ablate prompt sections — measure recall impact of removing each
-- Audit ChromaDB collections: do all 10 justify separate indexes? Can any be merged without retrieval regression?
+- Audit ChromaDB collections: do all 12 justify separate indexes? Can any be merged without retrieval regression?
 - Reduce prompt context sections (currently 14+) to minimum set that maintains quality
 - Clean up mutable state side-channels in scorer/builder pipeline (e.g., `_intent_weight_overrides` on MemoryScorer — replace with scoped context object or context manager)
 - Resolve JSON corpus + ChromaDB dual-write: define source of truth, add reconciliation or eliminate one path
@@ -95,7 +95,7 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 
 These systems are complete and working. Listed here for context, not as active work items. Changes should be consolidation-oriented (simplify, merge, delete) rather than additive.
 
-- **Memory system**: 5 types (episodic, semantic, procedural, summary, meta), modular components with Protocol contracts, ~498 line thin coordinator
+- **Memory system**: 6 types (episodic, semantic, procedural, summary, meta, fact), 12 ChromaDB collections, modular components with Protocol contracts, ~632 line thin coordinator
 - **Multi-stage gating**: FAISS → Cosine → Cross-Encoder reranking
 - **Intent classification**: 9 types, regex-first, per-intent weight/retrieval/gate overrides, STM refinement
 - **Truth scoring**: Evidence-based (TruthScorer + CorrectionDetector), replaces access-count system
@@ -113,7 +113,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **Production**: PyInstaller desktop build, Docker deployment, graceful shutdown
 - **Privacy**: All data local, API calls only for LLM generation, no telemetry
 - **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring
-- **Testing**: 1,670+ tests, retrieval quality benchmarks with 30 seed memories and 19 test cases
+- **Testing**: 2,900+ tests across 148 test files, retrieval quality benchmarks with 30 seed memories and 19 test cases
 
 ---
 

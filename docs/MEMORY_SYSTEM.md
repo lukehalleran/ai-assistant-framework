@@ -29,9 +29,9 @@ resolved, and stale information is penalized in ranking.
 ### Core Pipeline
 | File | Purpose |
 |------|---------|
-| `memory/memory_coordinator.py` | Thin orchestrator (~498 lines), creates all components, delegates to retriever/storage/shutdown |
+| `memory/memory_coordinator.py` | Thin orchestrator (~632 lines), creates all components, delegates to retriever/storage/shutdown |
 | `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks |
-| `memory/memory_scorer.py` | 12-step scoring algorithm with intent overrides + graph boost |
+| `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 7 additive bonuses/penalties) with intent overrides + graph boost |
 | `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion |
 | `core/prompt/builder.py` | UnifiedPromptBuilder: parallel retrieval, token budgets, prompt assembly |
 | `core/prompt/context_gatherer.py` | 20+ parallel retrieval tasks, graph expansion, web search |
@@ -219,7 +219,7 @@ recency:    0.25    # Temporal decay (active-day aware)
 truth:      0.20    # Evidence-based correctness
 importance: 0.05    # Retention priority
 continuity: 0.10    # Token overlap with current conversation
-structure:  0.05    # Numeric/operator density alignment
+structure:  ——      # Direct additive bonus: 0.15 * density_alignment (not in weighted sum)
 topic:      0.00    # Usually disabled, enabled per-intent
 ```
 
@@ -251,7 +251,7 @@ recency:      0.25 * 0.45 = 0.113    (3 weeks old, moderate decay)
 truth:        0.20 * 0.85 = 0.170    (confirmed once, slight time decay)
 importance:   0.05 * 0.60 = 0.030    (moderate importance)
 continuity:   0.10 * 0.15 = 0.015    ("squat" token overlap)
-structure:    0.15 * 0.90 = 0.135    (high numeric density alignment — "365lb")
+structure:    0.15 * 0.90 = 0.135    (direct additive bonus — high numeric density alignment — "365lb")
 graph_bonus:  0.05                    (1 neighbor "powerlifting" mentioned)
 staleness:    0.00                    (no stale claims)
 penalties:    0.00
@@ -410,7 +410,7 @@ Priority  7: Recent conversations, graph context, unresolved threads
 Priority  6: Semantic chunks, personal notes, user uploads
 Priority  5: Reference docs, memories, web search results
 Priority  4: Procedural skills, facts
-Priority  3: Summaries, proposals, git commits, proactive insights
+Priority  3: Summaries, proposed_features, git commits, proactive insights
 Priority  2: Reflections, dreams, codebase changes
 Priority  1: Wiki
 ```
@@ -424,29 +424,35 @@ Priority  1: Wiki
 
 ## Prompt Assembly Order
 
-The final prompt is assembled with these sections (in order):
+The final prompt is assembled with these sections (in attention-optimized order):
 
 ```
-[SYSTEM PROMPT]          ← personality + crisis-level adjustments
-[ACTIVE FEATURES]        ← feature inventory (always)
-[CODEBASE CHANGES]       ← git diff (first message only)
-[NARRATIVE STATE]        ← temporal grounding ("It's been 3 days since...")
-[RECENT CONVERSATIONS]   ← last N turns (episodic)
-[MEMORIES]               ← scored semantic memories
-[USER PROFILE]           ← categorized facts (fitness, career, identity...)
-[FACTS]                  ← extracted triples
-[SUMMARIES]              ← compressed conversation blocks
-[REFLECTIONS]            ← session-end reflections
-[KNOWLEDGE GRAPH]        ← entity relationships (natural language)
-[PROPOSED FEATURES]      ← code proposals
-[UNRESOLVED THREADS]     ← open commitments/deadlines
-[PROACTIVE INSIGHTS]     ← cross-domain connections
-[PROCEDURAL SKILLS]      ← adaptive workflows
-[WEB SEARCH RESULTS]     ← real-time web content (if triggered)
-[REFERENCE DOCS]         ← uploaded documents
-[PERSONAL NOTES]         ← Obsidian vault
-[WIKI]                   ← Wikipedia content
-[USER QUERY]             ← the actual question
+[RECENT CONVERSATION]                  ← last N turns (session continuity)
+[RELEVANT MEMORIES]                    ← scored semantic memories
+[RECENT SUMMARIES]                     ← compressed recent history
+[SEMANTIC SUMMARIES]                   ← query-relevant compressed history
+[RECENT REFLECTIONS]                   ← meta insights, recent
+[SEMANTIC REFLECTIONS]                 ← meta insights, query-relevant
+[BACKGROUND KNOWLEDGE]                 ← wiki snippets
+[WEB SEARCH RESULTS]                   ← real-time web (if triggered)
+[RELEVANT INFORMATION]                 ← semantic chunks
+[DREAMS]                               ← synthesis insights (if enabled)
+[USER'S PERSONAL NOTES]                ← Obsidian vault
+[USER UPLOADED ITEMS]                  ← uploaded documents
+[DAEMON DOCUMENTATION]                 ← reference docs
+[PROJECT COMMIT HISTORY]               ← git commits
+[ADAPTIVE WORKFLOWS]                   ← procedural skills
+[PROPOSED FEATURES]                    ← code proposals
+[KNOWLEDGE GRAPH]                      ← entity relationships (natural language)
+[UNRESOLVED THREADS]                   ← open commitments/deadlines
+[PROACTIVE INSIGHTS]                   ← cross-domain connections
+[USER PROFILE]                         ← categorized facts (high-attention zone)
+[ACTIVE FEATURES]                      ← feature inventory (always)
+[CODEBASE CHANGES SINCE LAST SESSION]  ← git diff (first message only)
+[TIME CONTEXT]                         ← current datetime (high-attention zone)
+[TEMPORAL GROUNDING]                   ← narrative context
+[SHORT-TERM CONTEXT SUMMARY]           ← STM analysis
+[CURRENT USER QUERY]                   ← always last, protected from compression
 ```
 
 ---

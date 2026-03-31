@@ -5,19 +5,21 @@ Successfully implemented a two-step generation feature where the LLM provides in
 
 ## Changes Made
 
-### 1. Core Orchestrator (`core/orchestrator.py`)
+### 1. Response Parser (`core/response_parser.py`)
 
-#### Added `_parse_thinking_block()` Static Method
-**Location:** Lines 118-149
+#### `parse_thinking_block()` Static Method
+**Location:** `ResponseParser.parse_thinking_block()` at line ~90
 
 ```python
 @staticmethod
-def _parse_thinking_block(response: str) -> Tuple[str, str]:
+def parse_thinking_block(response: str) -> Tuple[str, str]:
     """
     Parse response to extract thinking block and final answer.
 
-    Args:
-        response: Full LLM response potentially containing <thinking>...</thinking>
+    Handles:
+    - <thinking>...</thinking> (Anthropic/OpenAI style)
+    - <think>...</think> (DeepSeek/Qwen/GLM style)
+    - <output>...</output> wrapper (some OpenRouter providers)
 
     Returns:
         Tuple of (thinking_part, final_answer_part)
@@ -27,74 +29,60 @@ def _parse_thinking_block(response: str) -> Tuple[str, str]:
 ```
 
 **Functionality:**
-- Looks for `</thinking>` delimiter
-- Extracts content between `<thinking>` and `</thinking>`
-- Returns clean final answer (everything after `</thinking>`)
+- Tries both `</thinking>` and `</think>` delimiters
+- Extracts content between open and close tags
+- Unwraps `<output>...</output>` wrapper if present in final answer
+- Returns clean final answer (everything after closing tag)
 - Handles edge cases: no thinking block, malformed tags, empty responses
 
-#### Modified `prepare_prompt()` Method
-**Location:** Lines 378-388
+### 2. Thinking Instruction Injection (`core/orchestrator.py`)
+
+#### In `prepare_prompt()` Method
+**Location:** `core/orchestrator.py` at lines ~1210-1216
 
 Added thinking block instruction to system prompt:
 
 ```python
-if not use_raw_mode and isinstance(system_prompt, str) and system_prompt.strip():
+if not use_raw_mode:
     thinking_instruction = (
-        "\n\n"
-        "IMPORTANT: Before you provide your final answer, you must include a <thinking> block. "
-        "Inside this block, detail your step-by-step reasoning and analysis of the user's request. "
-        "After the </thinking> block, provide your final, concise, and helpful response to the user."
+        "\n\n[IMPORTANT] Before your final response, include your reasoning "
+        "in <thinking>...</thinking> tags. Walk through the context step-by-step, "
+        "then provide your answer outside the tags."
     )
     system_prompt = system_prompt.rstrip() + thinking_instruction
 ```
 
 **Key Points:**
 - Only added in enhanced mode (not raw mode)
-- Appended after topic hint
+- Appended to system prompt after all other composition
 - Instructs LLM to use `<thinking>` tags for reasoning
 
-#### Modified `process_user_query()` Method
-**Location:** Lines 669-720
+### 3. Thinking Block Handling in `process_user_query()`
 
-**Changes to streaming response handling:**
+**Location:** `core/orchestrator.py` at line ~1669
 
-1. **Accumulation without yielding** (Lines 677-682)
-   - Full response is accumulated first
-   - No immediate streaming to allow parsing
+**Changes to response handling:**
 
-2. **Thinking block parsing** (Lines 684-691)
+1. **Full response accumulation** — Response is accumulated first, not streamed immediately
+
+2. **Thinking block parsing** (delegates to ResponseParser)
    ```python
-   thinking_part, final_answer = self._parse_thinking_block(full_response)
+   thinking_part, final_answer = ResponseParser.parse_thinking_block(full_response)
+   final_answer = ResponseParser.strip_xml_wrappers(final_answer)
+   ```
 
+3. **Debug logging**
+   ```python
    if thinking_part:
-       if self.logger:
-           self.logger.debug(f"[THINKING BLOCK]\n{thinking_part}")
+       logger.debug(f"[THINKING BLOCK]\n{thinking_part}")
        debug_info["thinking_length"] = len(thinking_part)
    ```
 
-3. **Memory storage** (Lines 693-705)
-   - Only final answer is stored (not thinking block)
-   ```python
-   answer_for_storage = final_answer if final_answer else full_response
+4. **Memory storage** — Only final answer is stored (not thinking block)
 
-   await self.memory_system.store_interaction(
-       query=user_input,
-       response=answer_for_storage,
-       tags=["conversation"]
-   )
-   ```
+5. **Return value** — Returns only the final answer to the user
 
-4. **Return value** (Line 720)
-   - Returns only the final answer to the user
-   ```python
-   return answer_for_storage, debug_info
-   ```
-
-5. **Debug info updates** (Lines 711-717)
-   - Added `thinking_length` field
-   - Added `full_response_length` field
-
-### 2. Test Suite (`test_thinking_blocks.py`)
+### 4. Test Suite (`test_thinking_blocks.py`)
 
 Created comprehensive test suite covering:
 
@@ -104,6 +92,8 @@ Created comprehensive test suite covering:
    - Thinking blocks with newlines
    - Empty responses
    - Malformed tags
+   - `<think>` variant (DeepSeek/Qwen style)
+   - `<output>` wrapper unwrapping
 
 2. **Integration Example**
    - Demonstrates full flow from LLM response to user output
@@ -116,13 +106,13 @@ Created comprehensive test suite covering:
 ```
 User Query
     ↓
-System Prompt (with thinking instruction)
+System Prompt (with thinking instruction appended in orchestrator.prepare_prompt())
     ↓
 LLM Generation
     ↓
 Full Response: "<thinking>reasoning...</thinking>Final answer"
     ↓
-Parse Thinking Block
+ResponseParser.parse_thinking_block()
     ├─→ thinking_part → Logged for debugging
     └─→ final_answer → Returned to user & stored in memory
 ```
@@ -171,32 +161,20 @@ The answer to 2 + 2 is 4.
 - **No breaking changes:** If LLM doesn't include `<thinking>` tags, full response is returned as-is
 - **Raw mode:** Thinking instruction NOT added in raw mode
 - **Graceful degradation:** Parser handles malformed tags safely
+- **Multi-provider:** Supports both `<thinking>` (Anthropic/OpenAI) and `<think>` (DeepSeek/Qwen/GLM) variants
 
 ## Testing Results
 
-All core parsing tests passed ✅:
+All core parsing tests passed:
 - Normal thinking block extraction
 - No thinking block (passthrough)
 - Newlines and formatting preserved
 - Empty response handling
 - Malformed tag safety
-
-Integration example demonstrated:
-- Correct separation of thinking vs. final answer
-- Proper logging of thinking content
-- Clean final answer delivery
+- Multi-provider tag variants
 
 ## Configuration
 
 No configuration needed - feature is automatic for all non-raw mode queries.
 
 To disable thinking blocks, set `use_raw_mode=True` when calling `process_user_query()`.
-
-## Future Enhancements
-
-Potential improvements:
-1. Add `ENABLE_THINKING_BLOCKS` config flag
-2. Support multiple thinking blocks in one response
-3. Add thinking block analysis/metrics
-4. Optional user-visible thinking toggle
-5. Structured thinking formats (e.g., chain-of-thought templates)

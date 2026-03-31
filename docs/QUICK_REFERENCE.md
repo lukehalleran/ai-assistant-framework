@@ -9,14 +9,14 @@
 ```python
 # core/orchestrator.py
 class DaemonOrchestrator:
-    async def handle_request(query: str, thread_id: str = None) -> str:
-        """Main entry: query → memories → prompt → LLM → response"""
-        topics = self.topic_manager.extract_topics(query)
-        memories = await self.memory_coordinator.get_memories(query, topics=topics, limit=30)
-        prompt = self.prompt_builder.build_prompt(query, memories, topics)
-        response = await self.response_generator.generate_response_stream(prompt)
-        await self.memory_coordinator.store_interaction(query, response, tags=topics)
-        return response
+    async def process_user_query(user_input: str, ...) -> Tuple[str, dict]:
+        """Main entry: context pipeline → prompt build → LLM → store → response"""
+        context = await self.context_pipeline.build(user_input)
+        system_prompt = self._compose_system_prompt(context)
+        prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)
+        response = await self._generate_response(prompt_ctx, system_prompt)
+        await self.memory_system.store_interaction(user_input, response)
+        return response, debug_info
 ```
 
 ---
@@ -75,7 +75,7 @@ prompt_ctx = await prompt_builder.build_prompt_from_context(context)
 ## Memory Operations
 
 ```python
-# memory/memory_coordinator.py — Thin orchestrator (~498 lines, plus new component wiring)
+# memory/memory_coordinator.py — Thin orchestrator (~632 lines, plus new component wiring)
 # All methods delegate to modular components. No inline logic.
 class MemoryCoordinator:
     def __init__(self, ...):
@@ -540,7 +540,7 @@ class CorpusManager:
 
 # memory/storage/multi_collection_chroma_store.py
 class MultiCollectionChromaStore:
-    # Collections (11 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads
+    # Collections (12 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results
 
     async def add_memory(text: str, metadata: Dict, collection: str):
         """Embed text and store in ChromaDB collection"""
@@ -958,7 +958,7 @@ class ThreadExtractor:
 # Integration:
 # - Shutdown: step 6.5 in process_shutdown_memory() — extract new threads + resolve existing
 # - Prompt: [UNRESOLVED THREADS] section (after [KNOWLEDGE GRAPH])
-# - Collection: 'threads' in ChromaDB (11 total collections)
+# - Collection: 'threads' in ChromaDB (12 total collections)
 # - Builder: top threads retrieved via ThreadStore.get_top_threads() in build_prompt()
 
 # Config (app_config.py):
@@ -1137,7 +1137,7 @@ PROMPT_TOKEN_BUDGET_DEFAULT = 40000   # API models fallback
 PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
 PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
 PROMPT_TOKEN_BUDGET_CEILING = 60000   # Maximum budget
-PROMPT_MIN_RECENT_FLOOR = 5           # Min recent conversations guaranteed post-budget [NEW 2026-03-28]
+# PROMPT_MIN_RECENT_FLOOR = 5  — defined in core/prompt/builder.py (not app_config.py)
 PROMPT_MAX_MEMS = int(os.getenv("PROMPT_MAX_MEMS", "30"))
 
 # Decay & scoring
@@ -1871,7 +1871,7 @@ Use git_stats for: commit counts, recent commits, contributors, files changed, b
 
 ```python
 # config/app_config.py — Replaces deleted PersonalityManager (JSON configs)
-# System prompt = personality text + operating principles, composed in orchestrator._build_system_prompt()
+# System prompt = personality text + operating principles, composed via load_personality_text() + load_operating_principles()
 
 def load_personality_text() -> str:
     """Load custom_personality.txt if exists, else default_personality.txt.
@@ -2127,7 +2127,7 @@ SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20
 
 # Tests: 18 unit tests in tests/unit/test_synthesis_generator.py
 # Calibration: 6 tests in tests/test_synthesis_calibration.py
-# Fixtures: tests/fixtures/calibration_candidates.json (54 labeled candidates, 7 tiers)
+# Fixtures: tests/fixtures/calibration_candidates.json (72 labeled candidates, 7 tiers)
 ```
 
 ---
