@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: glm-5
+  active: claude-opus-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -293,8 +293,9 @@ synthesis:
   distance_min: 0.2
   distance_max: 0.9
   use_percentile_thresholds: false
-  novelty_known_threshold: 0.8
-  novelty_adjacent_threshold: 0.5
+  novelty_known_threshold: 0.88
+  novelty_adjacent_threshold: 0.7
+  cooccurrence_known_threshold: 0.85
   memory_similarity_threshold: 0.85
   coherence_model: gpt-4o-mini
   coherence_min_level: MODERATE
@@ -303,11 +304,11 @@ synthesis:
     novelty: 0.4
     distance: 0.15
     structural: 0.15
-  composite_min_score: 0.4
+  composite_min_score: 0.65
   convergence_strong_paths: 3
   convergence_strong_sources: 2
 synthesis_generator:
-  enabled: false
+  enabled: true
   candidates_per_session: 5
   llm_concurrency: 5
   min_graph_nodes: 20

@@ -1136,12 +1136,19 @@ SYNTHESIS_DISTANCE_MIN: float = float(SYNTHESIS_CFG.get("distance_min", 0.20))
 SYNTHESIS_DISTANCE_MAX: float = float(SYNTHESIS_CFG.get("distance_max", 0.90))
 SYNTHESIS_USE_PERCENTILE_THRESHOLDS: bool = bool(SYNTHESIS_CFG.get("use_percentile_thresholds", False))
 
-# Stage 3: External Novelty (wiki corpus)
-SYNTHESIS_NOVELTY_KNOWN_THRESHOLD: float = float(SYNTHESIS_CFG.get("novelty_known_threshold", 0.80))
-SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD: float = float(SYNTHESIS_CFG.get("novelty_adjacent_threshold", 0.50))
+# Stage 3: External Novelty (FAISS wiki corpus, 40M vectors)
+# NOTE: With 40M articles, IVFPQ returns 0.70-0.85 claim similarity for ANY
+# coherent English text — it measures "sounds like Wikipedia" not "connection
+# is documented." Claim sim gate set high (0.88) to only catch near-verbatim
+# rehashes. Co-occurrence gate is the primary novelty signal.
+SYNTHESIS_NOVELTY_KNOWN_THRESHOLD: float = float(SYNTHESIS_CFG.get("novelty_known_threshold", 0.88))
+SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD: float = float(SYNTHESIS_CFG.get("novelty_adjacent_threshold", 0.70))
 
 # Stage 3b: Co-occurrence — reject if bare "A B" appears together in wiki
-SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD: float = float(SYNTHESIS_CFG.get("cooccurrence_known_threshold", 0.75))
+# Raised from 0.60 to 0.85: at 40M scale IVFPQ returns 0.65-0.75 for ANY
+# two-word query, so 0.60 was a blanket reject. At 0.85, only genuine
+# co-occurrence (concepts documented together) triggers rejection.
+SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD: float = float(SYNTHESIS_CFG.get("cooccurrence_known_threshold", 0.85))
 
 # Stage 4: Internal Novelty (synthesis memory)
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD: float = float(SYNTHESIS_CFG.get("memory_similarity_threshold", 0.85))
@@ -1156,7 +1163,7 @@ SYNTHESIS_WEIGHT_COHERENCE: float = float(_SYNTH_WEIGHTS.get("coherence", 0.30))
 SYNTHESIS_WEIGHT_NOVELTY: float = float(_SYNTH_WEIGHTS.get("novelty", 0.40))
 SYNTHESIS_WEIGHT_DISTANCE: float = float(_SYNTH_WEIGHTS.get("distance", 0.15))
 SYNTHESIS_WEIGHT_STRUCTURAL: float = float(_SYNTH_WEIGHTS.get("structural", 0.15))
-SYNTHESIS_COMPOSITE_MIN_SCORE: float = float(SYNTHESIS_CFG.get("composite_min_score", 0.40))
+SYNTHESIS_COMPOSITE_MIN_SCORE: float = float(SYNTHESIS_CFG.get("composite_min_score", 0.65))
 
 # Novelty sub-weights (used inside the SYNTHESIS_WEIGHT_NOVELTY envelope)
 _SYNTH_NOVELTY_W = SYNTHESIS_CFG.get("novelty_weights", {})

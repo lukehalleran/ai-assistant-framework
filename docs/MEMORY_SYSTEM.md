@@ -513,7 +513,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | `RECENCY_DECAY_RATE` | varies | Exponential decay speed |
 | `DEICTIC_THRESHOLD` | 0.60 | Acceptance threshold for follow-up queries |
 | `NORMAL_THRESHOLD` | 0.35 | Acceptance threshold for normal queries |
-| `COSINE_SIMILARITY_THRESHOLD` | 0.15 | Minimum cosine gate |
+| `COSINE_SIMILARITY_THRESHOLD` | 0.25 | Minimum cosine gate |
 
 ### Gating
 | Constant | Default | Purpose |
@@ -537,7 +537,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 ### Token Budget
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `PROMPT_TOKEN_BUDGET` | 15000 | Base token budget |
+| `PROMPT_TOKEN_BUDGET_DEFAULT` | 40000 | Base token budget (model-aware; LOCAL=12000, FLOOR=8000, CEILING=60000) |
 | `PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION` | 0.25 | Fraction of model context window |
 | `PROMPT_MAX_RECENT` | 15 | Max recent conversations |
 | `PROMPT_MAX_MEMS` | 15 | Max semantic memories |
