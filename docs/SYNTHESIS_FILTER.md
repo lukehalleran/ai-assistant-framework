@@ -214,7 +214,7 @@ claim** via `semantic_search_with_neighbors()`. Catches direct rehashes.
 Similarity scores are cosine similarity (0-1) returned directly from FAISS,
 extracted by `_extract_faiss_similarity()`.
 
-**Hard gate:** `claim_sim > 0.80` (`SYNTHESIS_NOVELTY_KNOWN_THRESHOLD`)
+**Hard gate:** `claim_sim > 0.60` (`SYNTHESIS_NOVELTY_KNOWN_THRESHOLD`, IVFPQ-calibrated)
 
 **Example rejection:**
 ```
@@ -231,7 +231,7 @@ Searches the FAISS wiki index for the **bare concept conjunction**
 from wiki (novel sentence) but the concepts already appear together in
 literature.
 
-**Hard gate:** `cooccurrence_sim > 0.75` (`SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD`)
+**Hard gate:** `cooccurrence_sim > 0.85` (`SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD`, 40M-scale recalibrated)
 
 **Example:** "Bacterial quorum sensing parallels voting theory" — the claim
 itself is novel text, but searching `"quorum sensing voting theory"` hits
@@ -403,7 +403,7 @@ novelty = 0.25 * (1 - claim_sim)           # claim novelty
 - Internal (0.20) — lower weight because convergence from multiple paths
   is actually a positive signal
 
-**Gate:** `composite >= 0.40` (`SYNTHESIS_COMPOSITE_MIN_SCORE`)
+**Gate:** `composite >= 0.65` (`SYNTHESIS_COMPOSITE_MIN_SCORE`)
 
 ### Stage 7: Storage
 
@@ -469,7 +469,7 @@ novelty = 0.25 * 0.85 + 0.30 * 0.90 + 0.25 * 1.00 + 0.20 * 1.00
 composite = 0.30 * 0.66 + 0.40 * 0.9325 + 0.15 * 1.0 + 0.15 * 0.50
          = 0.198 + 0.373 + 0.15 + 0.075 = 0.796
 ```
-- composite: 0.796 (>= 0.40 threshold) → PASS
+- composite: 0.796 (>= 0.65 threshold) → PASS
 
 **Stage 7 — Storage:** Stored in `synthesis_results` collection. New insight,
 no convergence update needed.
@@ -595,9 +595,9 @@ All constants live in `config/app_config.py` under `SYNTHESIS_CFG` and
 | `SYNTHESIS_MIN_DOMAINS` | `2` | 1 | Minimum domain count |
 | `SYNTHESIS_DISTANCE_MIN` | `0.20` | 2 | Minimum endpoint distance |
 | `SYNTHESIS_DISTANCE_MAX` | `0.90` | 2 | Maximum endpoint distance |
-| `SYNTHESIS_NOVELTY_KNOWN_THRESHOLD` | `0.80` | 3 | Claim sim hard gate |
-| `SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD` | `0.50` | 3 | Label threshold (novel vs adjacent) |
-| `SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD` | `0.75` | 3 | Co-occurrence hard gate |
+| `SYNTHESIS_NOVELTY_KNOWN_THRESHOLD` | `0.88` | 3 | Claim sim hard gate — near-verbatim rehashes only |
+| `SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD` | `0.70` | 3 | Label threshold (novel vs adjacent) |
+| `SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD` | `0.85` | 3 | Co-occurrence hard gate — 40M-scale recalibrated |
 | `SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD` | `0.85` | 4 | Internal duplicate threshold |
 | `SYNTHESIS_COHERENCE_MODEL` | `sonnet-4.5` | 5 | LLM for coherence + skeptic |
 | `SYNTHESIS_COHERENCE_MIN_LEVEL` | `MODERATE` | 5 | Minimum coherence gate |
@@ -609,7 +609,7 @@ All constants live in `config/app_config.py` under `SYNTHESIS_CFG` and
 | `SYNTHESIS_NOVELTY_W_COOCCURRENCE` | `0.30` | 6 | Novelty sub-weight |
 | `SYNTHESIS_NOVELTY_W_SPECIFICITY` | `0.25` | 6 | Novelty sub-weight |
 | `SYNTHESIS_NOVELTY_W_INTERNAL` | `0.20` | 6 | Novelty sub-weight |
-| `SYNTHESIS_COMPOSITE_MIN_SCORE` | `0.40` | 6 | Minimum composite gate |
+| `SYNTHESIS_COMPOSITE_MIN_SCORE` | `0.65` | 6 | Minimum composite gate (raised from 0.40) |
 | `SYNTHESIS_CONVERGENCE_STRONG_PATHS` | `3` | 7 | Paths for CONVERGING status |
 | `SYNTHESIS_CONVERGENCE_STRONG_SOURCES` | `2` | 7 | Sources for CONVERGING status |
 | `SYNTHESIS_LOG_ALL_REJECTIONS` | `True` | — | Log every rejection |

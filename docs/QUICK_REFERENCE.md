@@ -2050,9 +2050,9 @@ SYNTHESIS_MAX_REPETITION_RATIO = 0.5
 SYNTHESIS_MIN_DOMAINS = 2
 SYNTHESIS_DISTANCE_MIN = 0.20
 SYNTHESIS_DISTANCE_MAX = 0.90
-SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.80
-SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.50
-SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.75  # Stage 3b: co-occurrence hard gate
+SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88   # Claim sim gate — only near-verbatim rehashes
+SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.70  # Label threshold
+SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # Co-occurrence gate — 40M-scale recalibrated
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
 SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
@@ -2064,7 +2064,7 @@ SYNTHESIS_NOVELTY_W_CLAIM = 0.25             # 4-signal novelty weights
 SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30
 SYNTHESIS_NOVELTY_W_SPECIFICITY = 0.25
 SYNTHESIS_NOVELTY_W_INTERNAL = 0.20
-SYNTHESIS_COMPOSITE_MIN_SCORE = 0.40
+SYNTHESIS_COMPOSITE_MIN_SCORE = 0.65   # raised from 0.40
 SYNTHESIS_CONVERGENCE_STRONG_PATHS = 3
 SYNTHESIS_CONVERGENCE_STRONG_SOURCES = 2
 SYNTHESIS_DEFAULT_BATCH_SIZE = 100
@@ -2076,12 +2076,12 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 #   batch_size: 100
 #   distance_min: 0.20
 #   distance_max: 0.90
-#   cooccurrence_known_threshold: 0.75
+#   cooccurrence_known_threshold: 0.85   # 40M-scale recalibrated
 #   coherence_model: gpt-4o-mini
 #   coherence_min_level: MODERATE
 #   weights: {coherence: 0.30, novelty: 0.40, distance: 0.15, structural: 0.15}
 #   novelty_weights: {claim: 0.25, cooccurrence: 0.30, specificity: 0.25, internal: 0.20}
-#   composite_min_score: 0.40
+#   composite_min_score: 0.65   # raised from 0.40
 ```
 
 ---
