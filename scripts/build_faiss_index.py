@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build FAISS index from Wikipedia embeddings.
+Build FAISS IVFPQ index from Wikipedia embeddings.
 
 Two input modes:
   1. Stream from tar.zst (no extraction needed — recommended):
@@ -11,8 +11,11 @@ Two input modes:
 
 Phases can be run separately:
   --phase 1     Extract embeddings + metadata only
-  --phase 2     Build FAISS from existing embeddings (if phase 1 done)
+  --phase 2     Build FAISS IVFPQ from existing embeddings (if phase 1 done)
   --phase both  Full pipeline (default)
+
+IVFPQ compression: 48 subquantizers × 8 bits = 48 bytes/vector (~32x reduction
+from 1536-byte float32). Full 41M-vector index fits in ~2 GB RAM.
 
 Supports resume: if interrupted, rerun same command to continue.
 """
@@ -51,7 +54,7 @@ PARQUET_DIR      = os.environ.get("PARQUET_DIR",
 # ── Constants ──────────────────────────────────────────────────────
 DIM           = 384                    # all-MiniLM-L6-v2
 FLUSH_EVERY   = 5_000                  # files per checkpoint
-ADD_BATCH     = 1_000_000              # vectors per FAISS add call
+ADD_BATCH     = 500_000                # vectors per FAISS add call
 META_COLS     = [
     "id", "title", "text", "chunk_index", "total_chunks",
     "prev_snippet", "next_snippet", "char_start", "char_end",
@@ -235,16 +238,16 @@ def phase1(source_iter):
 
 # ── Phase 2: build FAISS index ─────────────────────────────────────
 
-def phase2(total_vectors=None, max_vectors=None):
-    """Build FAISS IVF index from binary embeddings file.
+def phase2(total_vectors=None, max_vectors=None, build_dir=None):
+    """Build FAISS IVFPQ index from binary embeddings file.
 
-    Uses OnDiskInvertedLists to avoid loading all vectors into RAM.
-    Training (~1M samples) fits in RAM; vectors are added in batches
-    and stored on disk.
+    Uses Product Quantization to compress vectors (~48 bytes each),
+    so the full 41M-vector index fits in ~2 GB RAM. No ondisk needed.
 
     Args:
         total_vectors: Total vectors in embeddings file (auto-detected).
         max_vectors:   Optional cap — build index from first N vectors only.
+        build_dir:     Unused (kept for CLI compat). PQ index fits in RAM.
     """
     if total_vectors is None:
         if os.path.exists(INDEX_META_FILE):
@@ -256,56 +259,61 @@ def phase2(total_vectors=None, max_vectors=None):
     use_vectors = total_vectors
     if max_vectors and max_vectors < total_vectors:
         use_vectors = max_vectors
-        print(f"\nPhase 2: building FAISS IVF for {use_vectors:,} / "
+        print(f"\nPhase 2: building FAISS IVFPQ for {use_vectors:,} / "
               f"{total_vectors:,} vectors (subset mode) ...")
     else:
-        print(f"\nPhase 2: building FAISS IVF for {use_vectors:,} vectors ...")
+        print(f"\nPhase 2: building FAISS IVFPQ for {use_vectors:,} vectors ...")
 
     emb = np.memmap(EMBED_FILE, dtype="float32", mode="r",
                     shape=(total_vectors, DIM))
 
-    nlist = int(4 * np.sqrt(use_vectors))
-    train_need = nlist * 39
-    train_size = min(use_vectors, max(train_need, 100_000))
+    # PQ parameters: 48 subquantizers × 8 bits = 48 bytes/vector
+    # 384 dims / 48 subquantizers = 8 dims per sub — divides evenly
+    m = 48                                     # subquantizers
+    nlist = int(2 * np.sqrt(use_vectors))      # IVF centroids
+    train_need = max(nlist * 39, 256 * m)      # PQ needs ≥256 per sub
+    train_size = min(use_vectors, max(train_need, 100_000), 500_000)
 
-    print(f"  Centroids: {nlist:,}, training on {train_size:,} samples")
+    index_size_gb = use_vectors * m / 1e9
+    print(f"  IVFPQ: {nlist:,} centroids, {m} subquantizers, "
+          f"~{index_size_gb:.1f} GB in RAM")
+    print(f"  Training on {train_size:,} samples")
 
     quantizer = faiss.IndexFlatL2(DIM)
-    index = faiss.IndexIVFFlat(quantizer, DIM, nlist)
+    index = faiss.IndexIVFPQ(quantizer, DIM, nlist, m, 8)
 
     rng = np.random.default_rng(42)
     train_idx = rng.choice(use_vectors, train_size, replace=False)
     train_idx.sort()  # sequential mmap reads
-    train_data = np.array(emb[train_idx])
+    train_data = np.ascontiguousarray(emb[train_idx])
 
-    print("  Training ...")
+    mem_gb = train_data.nbytes / 1e9
+    print(f"  Training ({mem_gb:.1f} GB training data) ...")
+    sys.stdout.flush()
     t0 = time.time()
     index.train(train_data)
     print(f"  Trained in {time.time() - t0:.0f}s")
+    sys.stdout.flush()
     del train_data
 
-    # ── Switch to on-disk inverted lists (keeps vectors on disk, not RAM) ──
-    print(f"  Switching to on-disk inverted lists: {ONDISK_FILE}")
-    invlists = faiss.OnDiskInvertedLists(nlist, index.code_size, ONDISK_FILE)
-    index.replace_invlists(invlists, True)  # True = index owns the invlists
-
+    # ── Add vectors in batches (all in RAM — PQ is compact) ──
     print("  Adding vectors ...")
     t_add = time.time()
     for start in range(0, use_vectors, ADD_BATCH):
         end = min(start + ADD_BATCH, use_vectors)
         index.add(np.array(emb[start:end]))
         elapsed = time.time() - t_add
-        print(f"    {end:,} / {use_vectors:,}  ({elapsed:.0f}s)")
+        print(f"    {end:,} / {use_vectors:,}  ({elapsed:.0f}s)", flush=True)
 
     index.nprobe = 32
     faiss.write_index(index, FAISS_FILE)
 
-    ondisk_gb = os.path.getsize(ONDISK_FILE) / 1e9
-    faiss_mb = os.path.getsize(FAISS_FILE) / 1e6
-    print(f"  FAISS saved: {FAISS_FILE} ({index.ntotal:,} vectors, "
-          f"{time.time() - t0:.0f}s)")
-    print(f"  On-disk data: {ONDISK_FILE} ({ondisk_gb:.1f} GB)")
-    print(f"  Index shell: {FAISS_FILE} ({faiss_mb:.1f} MB)")
+    faiss_gb = os.path.getsize(FAISS_FILE) / 1e9
+    print(f"\n  FAISS saved: {FAISS_FILE}")
+    print(f"  {index.ntotal:,} vectors, {faiss_gb:.1f} GB, "
+          f"{time.time() - t0:.0f}s total")
+    print(f"  PQ compression: {DIM*4} → {m} bytes/vector "
+          f"({DIM*4/m:.0f}x reduction)")
 
 
 # ── Legacy: load from extracted directory (original behavior) ──────
@@ -374,6 +382,9 @@ if __name__ == "__main__":
                    help="1=extract only, 2=FAISS only, both=full (default)")
     p.add_argument("--max-vectors", type=int, metavar="N", default=None,
                    help="Phase 2: only index first N vectors (subset mode)")
+    p.add_argument("--build-dir", metavar="DIR", default=None,
+                   help="Phase 2: build ondisk index here (fast local SSD), "
+                        "then copy to final T9 location")
     p.add_argument("--legacy", action="store_true",
                    help="Use legacy mode (read from extracted parquet dir)")
     args = p.parse_args()
@@ -404,6 +415,6 @@ if __name__ == "__main__":
         total = phase1(source)
 
     if args.phase in ("2", "both"):
-        phase2(total, max_vectors=args.max_vectors)
+        phase2(total, max_vectors=args.max_vectors, build_dir=args.build_dir)
 
     print("\nAll done!")

@@ -5,7 +5,7 @@ Module Contract
 - Purpose: 8-stage filter pipeline that processes candidates from knowledge graph
   random walks and identifies genuinely novel, coherent cross-domain connections.
   Cheap stages run first, expensive stages (LLM) run last.
-- Class: SynthesisFilter(chroma_store, model_manager, synthesis_memory, wiki_collection)
+- Class: SynthesisFilter(chroma_store, model_manager, synthesis_memory)
 - Key methods:
   - process_candidate(candidate) -> SynthesisResult  [async, full pipeline]
   - process_batch(candidates) -> dict  [async, batch summary with stats]
@@ -15,9 +15,9 @@ Module Contract
   - Stage 0: Text Sanity Filter (~0ms, regex/heuristic)
   - Stage 1: Domain Crossing Gate (~1ms, metadata check)
   - Stage 2: Semantic Distance Gate (~5ms, embedding cosine)
-  - Stage 3: Novelty Gate -- External (~15ms, wiki vector search)
-    - Sub-check 1: Claim similarity (full claim vs wiki)
-    - Sub-check 2: Co-occurrence (bare "A B" conjunction vs wiki)
+  - Stage 3: Novelty Gate -- External (~15ms, FAISS wiki vector search, 40M vectors)
+    - Sub-check 1: Claim similarity (full claim vs wiki via FAISS)
+    - Sub-check 2: Co-occurrence (bare "A B" conjunction vs wiki via FAISS)
     - Sub-check 3: Template specificity (generic bridge pattern detection)
   - Stage 4: Novelty Gate -- Internal (~10ms, synthesis memory search)
   - Stage 5: Coherence Judge (~500ms-2s, two-pass LLM)
@@ -39,7 +39,7 @@ Module Contract
   - specificity (w=0.25): 1 - template_sim
   - internal novelty (w=0.20): from synthesis memory
 - Helpers:
-  - _extract_similarity(results) -> float  [convert query_collection result to 0-1 sim]
+  - _extract_faiss_similarity(results) -> float  [extract top cosine sim from FAISS results]
   - _compute_template_similarity(claim) -> float  [regex-based generic bridge detection]
 - Inputs: SynthesisCandidate from graph walk engine
 - Outputs: SynthesisResult with ACCEPTED or REJECTED status
@@ -109,15 +109,12 @@ _GENERIC_TOKENS = frozenset({
 })
 
 
-def _extract_similarity(results: list) -> float:
-    """Convert the top query_collection result to a 0-1 similarity score."""
+def _extract_faiss_similarity(results: list) -> float:
+    """Extract the top cosine similarity from FAISS search results (0-1 scale)."""
     if not results:
         return 0.0
-    score = results[0].get("relevance_score")
-    if score is None or score <= 0:
-        return 0.0
-    distance = (1.0 / score) - 1.0
-    return max(1.0 - distance, 0.0)
+    score = results[0].get("similarity", 0.0)
+    return max(float(score), 0.0)
 
 
 def _compute_template_similarity(claim: str) -> float:
@@ -137,10 +134,9 @@ class SynthesisFilter:
     """8-stage synthesis filter pipeline.
 
     Args:
-        chroma_store: MultiCollectionChromaStore for wiki queries and storage
+        chroma_store: MultiCollectionChromaStore for synthesis memory storage
         model_manager: ModelManager for LLM coherence calls
         synthesis_memory: SynthesisMemory instance (or None to create one)
-        wiki_collection: name of the wiki knowledge collection for external novelty
     """
 
     def __init__(
@@ -148,12 +144,10 @@ class SynthesisFilter:
         chroma_store,
         model_manager,
         synthesis_memory: Optional[SynthesisMemory] = None,
-        wiki_collection: str = "wiki_knowledge",
     ):
         self.store = chroma_store
         self.model_manager = model_manager
         self.memory = synthesis_memory or SynthesisMemory(chroma_store)
-        self.wiki_collection = wiki_collection
 
         # Pipeline stage registry -- order matters
         self._stages = [
@@ -354,36 +348,34 @@ class SynthesisFilter:
         )
 
     async def _stage_3_novelty_external(self, result: SynthesisResult) -> StageResult:
-        """Check if connection is already known in wiki/reference corpus.
+        """Check if connection is already known in wiki corpus via FAISS (40M vectors).
 
         Two sub-checks:
         1. Claim similarity — does the full articulated claim match existing wiki text?
         2. Co-occurrence — do concepts A and B already appear together in wiki?
            High co-occurrence + high claim novelty = known connection, novel phrasing.
         """
+        from knowledge.semantic_search import semantic_search_with_neighbors
+
         claim = result.candidate.connection_claim
         concept_a = result.candidate.concept_a
         concept_b = result.candidate.concept_b
 
-        # --- Sub-check 1: Claim similarity (existing logic) ---
+        # --- Sub-check 1: Claim similarity via FAISS ---
         try:
-            claim_results = self.store.query_collection(
-                collection_name=self.wiki_collection,
-                query_text=claim,
-                n_results=3,
-            )
+            claim_results = semantic_search_with_neighbors(claim, k=3)
         except Exception as e:
-            logger.warning(f"Wiki novelty check failed: {e}. Passing by default.")
+            logger.warning(f"FAISS wiki novelty check failed: {e}. Passing by default.")
             return StageResult(
                 stage_name="novelty_external", passed=True, score=1.0,
-                reason="Wiki query failed -- passing by default",
+                reason="FAISS wiki query failed -- passing by default",
             )
 
-        claim_sim = _extract_similarity(claim_results)
+        claim_sim = _extract_faiss_similarity(claim_results)
         result.novelty_score_external = 1.0 - claim_sim
 
         if claim_results:
-            result.nearest_known_external = claim_results[0].get("content", "")[:200]
+            result.nearest_known_external = claim_results[0].get("content", claim_results[0].get("text", ""))[:200]
 
         # Hard gate: direct claim rehash
         if claim_sim > SYNTHESIS_NOVELTY_KNOWN_THRESHOLD:
@@ -395,19 +387,15 @@ class SynthesisFilter:
                 metadata={"claim_similarity": claim_sim, "cooccurrence_similarity": 0.0},
             )
 
-        # --- Sub-check 2: Co-occurrence (bare concept conjunction) ---
+        # --- Sub-check 2: Co-occurrence via FAISS ---
         bare_query = f"{concept_a} {concept_b}"
         try:
-            cooccurrence_results = self.store.query_collection(
-                collection_name=self.wiki_collection,
-                query_text=bare_query,
-                n_results=3,
-            )
+            cooccurrence_results = semantic_search_with_neighbors(bare_query, k=3)
         except Exception as e:
-            logger.debug(f"Co-occurrence check failed: {e}. Skipping.")
+            logger.debug(f"FAISS co-occurrence check failed: {e}. Skipping.")
             cooccurrence_results = []
 
-        cooccurrence_sim = _extract_similarity(cooccurrence_results)
+        cooccurrence_sim = _extract_faiss_similarity(cooccurrence_results)
         result.cooccurrence_similarity = cooccurrence_sim
 
         # Hard gate: concepts already co-occur heavily in literature

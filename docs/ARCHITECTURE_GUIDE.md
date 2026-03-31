@@ -533,7 +533,7 @@ from a different source or collection:
 | Procedural skills | ChromaDB `procedural_skills` | 5 | Adaptive workflows |
 | Unresolved threads | ChromaDB `threads` | 3 | Priority-ranked |
 | Proactive insights | ContextSurfacer | 2 | LLM once/session, cached |
-| Wiki content | ChromaDB `wiki_knowledge` | 3 | Gated at 0.30 threshold |
+| Wiki content | FAISS (40M vectors, IVFPQ index) | 3 | Gated at 0.30 threshold; falls back to ChromaDB if FAISS unavailable |
 | Reference docs | ChromaDB `reference_docs` | 5 | Auto-seeded from docs/ |
 | Personal notes | ChromaDB `obsidian_notes` | 5 | Gated at 0.30 threshold |
 | Git commits | ChromaDB `procedural` | 10 | Project history |
@@ -865,7 +865,7 @@ when a `GitStatsManager` is available.
 | Web Search | Tavily API | Query decomposition, 72hr cache, daily credit tracking |
 | Wolfram Alpha | LLM API | Token bucket rate limiting, MD5 result cache |
 | Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across rounds) |
-| Memory Search | ChromaDB (12 collections, incl. wiki_knowledge) | Per-collection descriptions, diversity tracking |
+| Memory Search | ChromaDB (12 collections) + FAISS (wiki vectors) | wiki_knowledge routes through FAISS; all other collections via ChromaDB |
 | Memory Expansion | MemoryExpander | Summary drill-down via source_doc_ids, temporal neighbors |
 | Full Document | ReferenceDocsManager | Reassemble all chunks of an uploaded doc by title; fuzzy title matching |
 | File Operations | Local filesystem | Read, grep, list (sandboxed to project directory) |
@@ -1345,8 +1345,8 @@ domains. It runs as a "dreaming" step during session shutdown.
 
 `SynthesisGenerator` produces candidates via cross-store sampling:
 
-1. Sample 6 random seeds from personal fact categories → query `facts`
-2. Sample 6 random seeds from knowledge categories → query `wiki_knowledge`
+1. Sample 6 random seeds from personal fact categories → query `facts` (ChromaDB)
+2. Sample 6 random seeds from knowledge categories → query via FAISS (40M Wikipedia vectors; falls back to ChromaDB `wiki_knowledge` if FAISS unavailable)
 3. Form cross-domain pairs (skip same-domain, deduplicate by concept)
 4. LLM bridge articulation: parallel calls asking the LLM to articulate
    a specific connection or respond `NO_CONNECTION`
@@ -1372,10 +1372,10 @@ failure immediately rejects the candidate (short-circuit):
 
 This stage catches three distinct failure modes:
 
-- **Claim similarity**: Full articulated claim searched against wiki.
-  Catches direct rehashes. Hard gate: sim > 0.80 → reject.
+- **Claim similarity**: Full articulated claim searched against wiki
+  via FAISS semantic search. Catches direct rehashes. Hard gate: sim > 0.80 → reject.
 - **Co-occurrence**: Bare concept conjunction ("concept_a concept_b")
-  searched against wiki. Catches "known connection, novel phrasing."
+  searched against wiki via FAISS. Catches "known connection, novel phrasing."
   Hard gate: sim > 0.75 → reject.
 - **Template specificity**: Regex detection of vacuous bridge language
   ("both involve", "share structural similarities", "operates on
@@ -1536,14 +1536,20 @@ Secure Python execution in ephemeral Firecracker microVMs:
 
 ### Wikipedia
 
-**File**: `knowledge/wiki_manager.py`
+**Files**: `knowledge/wiki_manager.py`, `knowledge/semantic_search.py`
 
-6.5M+ articles semantically indexed with FAISS:
+6.5M+ articles (40M+ vectors) semantically indexed with FAISS:
 
 - Pipeline: download dump → parse XML → chunk (512 tokens) →
-  embed (all-MiniLM-L6-v2) → build FAISS IVF index
-- Requires ~102GB storage (optional — system works without it)
-- Retrieved via ChromaDB `wiki_knowledge` collection with gating
+  embed (all-MiniLM-L6-v2) → build FAISS IVFPQ index
+- IVFPQ compression: 48 subquantizers × 8 bits = 48 bytes/vector
+  (~32x reduction from 1536-byte float32), index fits in ~2 GB RAM
+- Zero-copy metadata: parquet file read on-demand per query via
+  row-group offset index — no DataFrame loaded into RAM. Footprint:
+  FAISS index (~2.2 GB) + embedder (~0.4 GB)
+- Requires ~102GB storage for raw wiki data (optional — system works without it)
+- All wiki vector searches (agentic search, prompt retrieval, synthesis
+  pipeline) route through FAISS; ChromaDB `wiki_knowledge` used only as fallback
 
 ### Obsidian Vault
 
@@ -1744,8 +1750,8 @@ system, different I/O layer.
 | RAM | ~500MB | ~1.5GB |
 | GPU VRAM | — | 2-8GB (optional) |
 
-Storage: Corpus JSON ~10MB, ChromaDB ~50MB, Wikipedia FAISS ~102GB
-(optional), Logs ~1MB/day.
+Storage: Corpus JSON ~10MB, ChromaDB ~50MB, Wikipedia raw data ~102GB
+(optional), Wikipedia FAISS IVFPQ index ~2 GB, Logs ~1MB/day.
 
 ---
 

@@ -20,6 +20,7 @@ Tool Support:
       - Persistent sessions for variable persistence across turns
       - Automatic cleanup in finally block
     - Memory search via ChromaDB collections (optional)
+      - wiki_knowledge: FAISS fallback (40M Wikipedia vectors) preferred over sparse ChromaDB [NEW 2026-03-31]
     - Memory expansion via MemoryExpander (optional) [NEW 2026-03]
       - Expands a search result to show surrounding turns (timestamp window)
       - For summaries, retrieves original source conversations
@@ -1618,7 +1619,11 @@ What would you like to do?""")
         return f"[Code Execution Round {round_number}] Purpose: {purpose}\n{content}"
 
     async def _execute_memory_search(self, query: str, collection: str) -> str:
-        """Execute raw semantic search against a ChromaDB collection."""
+        """Execute raw semantic search against a ChromaDB collection.
+
+        For wiki_knowledge: falls back to the FAISS semantic search index
+        (40M Wikipedia vectors) when ChromaDB returns empty results.
+        """
         from config.app_config import AGENTIC_MEMORY_SEARCH_LIMIT
 
         if not self.chroma_store:
@@ -1634,6 +1639,15 @@ What would you like to do?""")
                 n_results=AGENTIC_MEMORY_SEARCH_LIMIT,
             )
 
+            # For wiki_knowledge: always prefer FAISS semantic search (40M vectors)
+            # over ChromaDB which has sparse/irrelevant legacy data.
+            if collection == "wiki_knowledge":
+                faiss_results = self._search_wiki_faiss(query, k=AGENTIC_MEMORY_SEARCH_LIMIT)
+                if faiss_results:
+                    logger.info(f"[AgenticSearch] wiki_knowledge using FAISS index "
+                                f"({len(faiss_results)} results)")
+                    return self._format_wiki_faiss_results(faiss_results)
+
             if not results:
                 return f"[No results found in {collection} for: {query}]"
 
@@ -1642,6 +1656,30 @@ What would you like to do?""")
         except Exception as e:
             logger.warning(f"[AgenticSearch] Memory search failed: {e}")
             return f"[Memory search error: {e}]"
+
+    def _search_wiki_faiss(self, query: str, k: int = 8) -> list[dict]:
+        """Search the FAISS Wikipedia index (40M vectors) as fallback for wiki_knowledge."""
+        try:
+            from knowledge.semantic_search import semantic_search_with_neighbors
+            return semantic_search_with_neighbors(query, k=k)
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] FAISS wiki search failed: {e}")
+            return []
+
+    def _format_wiki_faiss_results(self, results: list[dict]) -> str:
+        """Format FAISS wiki search results for the agentic LLM."""
+        lines = []
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "Unknown")
+            section = r.get("section", "")
+            text = r.get("text", "").strip()
+            score = r.get("similarity", 0.0)
+            header = f"[{i}] Wikipedia: {title}"
+            if section:
+                header += f" / {section}"
+            header += f" (score: {score:.3f})"
+            lines.append(f"{header}\n{text}")
+        return "\n\n".join(lines) if lines else "[No Wikipedia results found]"
 
     def _format_memory_results(self, results: list, collection: str) -> str:
         """Format ChromaDB results into readable text for the LLM."""

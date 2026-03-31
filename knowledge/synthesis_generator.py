@@ -3,18 +3,18 @@
 
 Module Contract
 - Purpose: Minimum viable candidate generator for the knowledge synthesis pipeline.
-  Samples entities from personal ChromaDB stores (facts) and Wikipedia, uses an LLM
-  to articulate cross-domain connections, and packages results as SynthesisCandidate
-  objects for the filter pipeline.
+  Samples entities from personal ChromaDB stores (facts) and Wikipedia (via FAISS
+  semantic search), uses an LLM to articulate cross-domain connections, and packages
+  results as SynthesisCandidate objects for the filter pipeline.
 - Class: SynthesisGenerator(chroma_store, model_manager, graph_memory=None, entity_resolver=None)
 - Key methods:
   - generate_candidates(count) -> List[SynthesisCandidate]  [async, main entry]
   - _sample_personal_entities(n) -> List[Dict]  [ChromaDB facts query]
-  - _sample_wiki_articles(n) -> List[Dict]  [ChromaDB wiki query]
+  - _sample_wiki_articles(n) -> List[Dict]  [FAISS semantic search, 40M wiki vectors]
   - _classify_domain(entity_text, relation) -> str  [reuses user_profile_schema]
   - _articulate_bridge(concept_a, concept_b, context_a, context_b) -> Optional[str]  [LLM]
   - _compute_endpoint_distance(concept_a, concept_b) -> float  [graph shortest path or default]
-- Inputs: ChromaDB store with facts + wiki_knowledge collections, ModelManager for LLM
+- Inputs: ChromaDB store (facts collection), FAISS index (wiki vectors), ModelManager for LLM
 - Outputs: List[SynthesisCandidate] ready for SynthesisFilter.process_batch()
 - Side effects: LLM API calls for bridge articulation (parallelized with semaphore)
 """
@@ -233,26 +233,36 @@ class SynthesisGenerator:
         return entities[:n]
 
     def _sample_wiki_articles(self, n: int) -> List[Dict[str, Any]]:
-        """Sample diverse wiki articles from the wiki_knowledge collection."""
-        seen_ids: Set[str] = set()
+        """Sample diverse wiki articles via FAISS semantic search (40M vectors)."""
+        from knowledge.semantic_search import semantic_search_with_neighbors
+
+        seen_titles: Set[str] = set()
         articles: List[Dict[str, Any]] = []
         seeds = random.sample(_WIKI_QUERY_SEEDS, min(len(_WIKI_QUERY_SEEDS), 6))
 
         per_seed = max(n // len(seeds), 3)
         for seed in seeds:
             try:
-                results = self.store.query_collection(
-                    collection_name="wiki_knowledge",
-                    query_text=seed,
-                    n_results=per_seed,
-                )
+                results = semantic_search_with_neighbors(seed, k=per_seed)
                 for item in results:
-                    doc_id = item.get("id", "")
-                    if doc_id and doc_id not in seen_ids:
-                        seen_ids.add(doc_id)
-                        articles.append(item)
+                    # Deduplicate by title (FAISS results don't have stable IDs)
+                    title = item.get("title", "")
+                    dedup_key = title.lower().strip() if title else item.get("content", "")[:80]
+                    if dedup_key and dedup_key not in seen_titles:
+                        seen_titles.add(dedup_key)
+                        # Normalize to match ChromaDB result shape for downstream compat
+                        articles.append({
+                            "content": item.get("content", item.get("text", "")),
+                            "metadata": {
+                                "title": title,
+                                "source": item.get("source", "wikipedia"),
+                                "section": item.get("section", ""),
+                            },
+                            "collection": "wiki_knowledge",
+                            "relevance_score": item.get("similarity", 0.0),
+                        })
             except Exception as e:
-                logger.debug(f"[SynthesisGenerator] Wiki query failed for '{seed}': {e}")
+                logger.debug(f"[SynthesisGenerator] FAISS wiki query failed for '{seed}': {e}")
 
         random.shuffle(articles)
         return articles[:n]
@@ -549,10 +559,18 @@ class SynthesisGenerator:
         try:
             coll_stats = self.store.get_collection_stats()
             stats["facts_count"] = coll_stats.get("facts", {}).get("count", 0)
-            stats["wiki_count"] = coll_stats.get("wiki_knowledge", {}).get("count", 0)
         except Exception:
             stats["facts_count"] = 0
+
+        # Wiki stats from FAISS index
+        try:
+            from knowledge.semantic_search import get_index
+            idx = get_index()
+            stats["wiki_count"] = idx._total_rows if idx.loaded else 0
+            stats["wiki_source"] = "faiss"
+        except Exception:
             stats["wiki_count"] = 0
+            stats["wiki_source"] = "unavailable"
 
         if self.graph_memory:
             stats["graph_nodes"] = self.graph_memory.node_count()

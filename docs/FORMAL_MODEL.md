@@ -481,7 +481,7 @@ C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U 
 | Category | Collections | Characteristics |
 |----------|-------------|-----------------|
 | Episodic | `conversations` | Raw turns. Recency-biased retrieval. Protected from dedup. |
-| Semantic | `facts`, `wiki_knowledge` | Triples + external knowledge. Truth-scored. Wiki protected from dedup. |
+| Semantic | `facts`, `wiki_knowledge` | Triples + external knowledge. Truth-scored. Wiki queries route through FAISS (40M vectors); ChromaDB `wiki_knowledge` is fallback only. Wiki protected from dedup. |
 | Procedural | `procedural`, `procedural_skills` | Git commits + reusable patterns. Skill dedup at 0.85 threshold. |
 | Summary | `summaries` | Block-compressed conversation history. Relevance-biased. |
 | Reference | `obsidian_notes`, `reference_docs` | User notes + system docs. Protected from dedup. Gated at 0.30 threshold. |

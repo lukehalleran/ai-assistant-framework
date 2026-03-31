@@ -39,8 +39,10 @@ Agentic search activates when ALL conditions are met:
 
 1. `use_agentic_search=True` passed to `process_user_query()`
 2. Config: `agentic_search.enabled = true`
-3. LLM-first trigger (`analyze_for_web_search_llm`) says search is needed
-4. Web decision has `should_search=True` with `search_terms` present
+3. At least one trigger fires in `gui/handlers.py`:
+   - Keyword heuristic: computation, memory, or knowledge keywords detected
+   - Entity match: query mentions known knowledge graph entity
+   - LLM trigger: `should_search=True`, `needs_memory_search=True`, or `needs_knowledge_search=True`
 
 The controller is lazy-initialized on first use via the orchestrator's
 `agentic_controller` property.
@@ -125,6 +127,9 @@ Valid collections: reference_docs, facts, conversations, summaries,
                    reflections, obsidian_notes, wiki_knowledge,
                    procedural, procedural_skills
 Diversity: Per-collection search counts tracked; hints injected after 2+ searches
+wiki_knowledge: Always prefers FAISS semantic search (40M Wikipedia vectors,
+                ~2 GB IVFPQ index) over ChromaDB which has sparse legacy data.
+                Falls back to ChromaDB only if FAISS index is unavailable.
 ```
 
 ### expand_memory

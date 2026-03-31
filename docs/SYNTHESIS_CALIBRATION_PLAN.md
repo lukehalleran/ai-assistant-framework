@@ -20,7 +20,7 @@ Daemon's synthesis pipeline claims that an AI system can **generate genuinely no
 **Code:** `shutdown_processor.py:_run_synthesis_dreaming()` → `SynthesisGenerator` → `SynthesisFilter` → `SynthesisMemory`
 
 - **When:** Session shutdown (Step 6.8), after conversation storage but before graph save
-- **What:** Samples entities from `facts` + `wiki_knowledge` ChromaDB collections, pairs cross-domain, LLM-articulates bridges, runs 8-stage filter
+- **What:** Samples personal entities from `facts` ChromaDB collection and Wikipedia articles via FAISS (`semantic_search_with_neighbors()` from `knowledge/semantic_search.py`, backed by a 40M-vector IVFPQ index), pairs cross-domain, LLM-articulates bridges, runs 8-stage filter
 - **Gate:** `SYNTHESIS_GENERATOR_ENABLED=True` AND graph has ≥`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` (20) nodes
 - **Output:** Accepted results stored in `synthesis_results` ChromaDB collection
 - **Volume:** ~5 candidates per session, expect 0–2 acceptances
@@ -104,12 +104,8 @@ python scripts/build_wiki_subset.py --from-tar /run/media/lukeh/T9/wiki_embeddin
 - **Verify:** Article count is in range 500–5000; all 10 domain categories have representation
 - **Success criteria:** Dry-run shows matches across all domain categories, especially `cross_domain_science`
 
-#### Step 1.2 — Load Wiki Subset into ChromaDB
-```bash
-python scripts/load_parquet_to_chromadb.py --source wiki_data_subset/metadata.parquet --collection wiki_knowledge
-```
-- **Verify:** `wiki_knowledge` collection has expected document count
-- **Success criteria:** Queries like "simulated annealing", "predator prey dynamics", "bone remodeling" all return relevant results
+#### Step 1.2 — ~~Load Wiki Subset into ChromaDB~~ (DEPRECATED)
+**No longer needed.** The synthesis pipeline now queries Wikipedia directly via the FAISS IVFPQ index produced by `build_wiki_subset.py` (Step 1.1). The `wiki_knowledge` ChromaDB collection is **not required** for synthesis — `SynthesisGenerator._sample_wiki_articles()` calls `semantic_search_with_neighbors()` against the FAISS index, not ChromaDB. The `load_parquet_to_chromadb.py` script still exists for other uses (e.g., populating `wiki_knowledge` for the prompt builder's `[WIKIPEDIA]` section), but it is not part of the synthesis calibration path.
 
 #### Step 1.3 — Generate Synthetic Personal Facts
 Create a script (`scripts/generate_test_facts.py`) that populates the `facts` collection and knowledge graph with ~50-100 realistic personal facts spanning multiple domains. Examples:
@@ -133,7 +129,7 @@ These should produce a graph with ≥30 nodes and ≥25 edges — comfortably ab
 ```bash
 python scripts/audit_startup.py
 ```
-Check that `wiki_knowledge` collection, `facts` collection, and knowledge graph are all populated and queryable.
+Check that the FAISS index is loadable and returns results for test queries, that the `facts` collection is populated, and that the knowledge graph is queryable. (The `wiki_knowledge` ChromaDB collection is **not required** for synthesis — wiki sampling goes through the FAISS index.)
 
 ---
 
@@ -367,7 +363,8 @@ This is the minimum viable demonstration that AI-assisted knowledge synthesis is
 | File | Role |
 |------|------|
 | `scripts/build_wiki_subset.py` | Build curated FAISS index from wiki corpus |
-| `scripts/load_parquet_to_chromadb.py` | Load wiki metadata into ChromaDB |
+| `scripts/load_parquet_to_chromadb.py` | Load wiki metadata into ChromaDB (not needed for synthesis — FAISS replaces ChromaDB for wiki vector search; retained for other consumers like the prompt builder's `[WIKIPEDIA]` section) |
+| `knowledge/semantic_search.py` | FAISS IVFPQ semantic search — the wiki vector backend used by `SynthesisGenerator._sample_wiki_articles()` |
 | `scripts/generate_calibration_candidates.py` | Generate fresh candidates for labeling |
 | `scripts/verify_synthesis_pipeline.py` | End-to-end verification with pre-defined pairs |
 | `scripts/calibrate_coherence_live.py` | Live LLM calibration with multi-model comparison |

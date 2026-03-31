@@ -53,7 +53,7 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 - **This is the primary goal. Everything else supports this.**
 
 **Data Ingestion**:
-- Wikipedia embedded in `wiki_knowledge` collection — **done** (currently query-based retrieval; will need different access pattern for random-walk synthesis)
+- Wikipedia embedded via FAISS IVFPQ index (40M vectors, ~2 GB RAM) — **done**. All wiki queries (prompt retrieval, agentic search, synthesis pipeline) now route through FAISS. ChromaDB `wiki_knowledge` collection retained as fallback only.
 - arXiv paper abstracts/full text — planned
 - PubMed abstracts — planned
 - Unified embedding space across all sources
@@ -118,6 +118,12 @@ These systems are complete and working. Listed here for context, not as active w
 ---
 
 ## Recent Completions
+
+### FAISS IVFPQ + Zero-Copy Semantic Search + Knowledge Routing (2026-03-31)
+- `build_faiss_index.py`: IVFFlat+OnDiskInvertedLists → IVFPQ (Product Quantization). 48 subquantizers × 8 bits = 48 bytes/vector (~32x compression). Full 41M-vector index fits in ~2 GB RAM, no ondisk inverted lists needed.
+- `semantic_search.py`: Zero-copy parquet metadata — no DataFrame loaded into RAM. Row-group offset index built at load time, metadata read on-demand for just the ~8 result rows per query. Total footprint: FAISS index (~2.2 GB) + embedder (~0.4 GB).
+- `controller.py`: FAISS Wikipedia for all wiki queries — agentic `search_memory(wiki_knowledge)`, prompt retrieval, and synthesis pipeline all route through FAISS (40M vectors). ChromaDB `wiki_knowledge` retained as fallback only.
+- `handlers.py` + `web_search_trigger.py`: Knowledge search intent routing — keyword-based (`explain in depth`, `how does`, `consult wikipedia`, etc.) and LLM-based `needs_knowledge_search` field. 3-way routing: web search vs memory search vs knowledge search.
 
 ### Git Stats Agentic Tool (2026-03-29)
 - New `git_stats` tool for agentic loop — answers temporal git questions (commit counts, files changed, contributors)

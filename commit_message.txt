@@ -1,57 +1,49 @@
-docs: Synthesis calibration plan, wiki subset builder, cross-doc audit fixes
+feat: FAISS IVFPQ index, zero-copy semantic search, knowledge search routing
 
-New files:
-- docs/SYNTHESIS_CALIBRATION_PLAN.md — step-by-step plan for testing and
-  calibrating the synthesis pipeline using curated FAISS wiki subset and
-  generated data. Covers both synthesis pathways (shutdown dreaming +
-  proactive surfacing), fact-to-graph ingestion flow, 5-phase test plan
-  with concrete success criteria, and threshold tuning guide.
-- scripts/build_wiki_subset.py — builds a domain-focused FAISS index from
-  the full Wikipedia corpus. 10 domain categories (health_medical,
-  education_statistics, computer_science, philosophy_mind, history_politics,
-  geography_places, hobbies_interests, psychology_relationships,
-  cross_domain_science, verification_pairs) with seed titles + keyword
-  patterns. Two input modes: stream from tar.zst or filter from full build.
-  Supports --dry-run, --max-articles, adaptive IVF parameters for smaller
-  indices. Output: wiki_data_subset/ with FAISS index, metadata parquet,
-  embeddings mmap, index_meta.json with matched titles.
+FAISS index build (build_faiss_index.py):
+- IVFFlat + OnDiskInvertedLists → IVFPQ (Product Quantization)
+- 48 subquantizers × 8 bits = 48 bytes/vector (~32x compression)
+- Full 41M-vector index fits in ~2 GB RAM, no ondisk inverted lists
+- ADD_BATCH reduced 1M → 500K for lower peak memory
 
-Modified scripts:
-- scripts/build_faiss_index.py — major rewrite adding streaming tar.zst
-  support (no full extraction needed), 2-phase pipeline (extract → build
-  FAISS, runnable separately via --phase), resume checkpointing with
-  _checkpoint.json for crash recovery, memory-mapped embeddings via numpy
-  mmap, chunked metadata parquet parts merged at end, argparse CLI with
-  --tar/--phase/--parquet-dir options, adaptive IVF centroid count
-  (4*sqrt(n)), index_meta.json output summary. Legacy extracted-parquet
-  mode preserved as fallback.
+Semantic search memory optimization (semantic_search.py):
+- Replaced full pandas DataFrame load (~33 GB for 40M rows) with
+  zero-copy parquet row-group offset index built at load time
+- Metadata read on-demand from parquet for just the ~8 result rows
+  per FAISS search (grouped by row group, each RG read at most once)
+- Total footprint: FAISS index (~2.2 GB) + embedder (~0.4 GB)
+- _row_to_result() now takes dict instead of pandas Series
 
-Modified code:
-- core/orchestrator.py — module contract docstring fix: _build_system_prompt()
-  reference corrected to load_personality_text() + load_operating_principles()
-  (method never existed, system prompt is composed inline in prepare_prompt())
+Wiki FAISS fallback in agentic search (controller.py):
+- search_memory(wiki_knowledge) now always prefers FAISS semantic
+  search (40M Wikipedia vectors) over sparse ChromaDB legacy data
+- New methods: _search_wiki_faiss(), _format_wiki_faiss_results()
 
-Documentation audit (29 fixes across 10 docs):
-- Collection count: "11" → "12" everywhere (was missing synthesis_results)
-- MemoryCoordinator: "~498 lines" → "~632 lines" in all 6 docs
-- Calibration fixture: "54 candidates" → "72 candidates" in 4 docs
-- FORMAL_MODEL: structure score formula 0.05*0.15*density → 0.15*density,
-  added Synthesis category to Section 9 table, fixed token budget 15K → 40K/12K
-- ARCHITECTURE_GUIDE: token budget 15K → 40K/12K, removed phantom "Facts"
-  parallel retrieval task, "18+" → "18" tasks, updated file/test counts
-  (~116K lines, 312 files, 148 test files, 2900+ tests)
-- MEMORY_SYSTEM: clarified scoring (6 weighted + 7 additive bonuses), rewrote
-  prompt assembly section with correct 26-section order, "proposals" →
-  "proposed_features" in priority list
-- THINKING_BLOCKS: full rewrite — parse_thinking_block() is in ResponseParser
-  (not orchestrator), instruction text corrected, stale line numbers removed
-- PROMPT_BUILDING_PIPELINE: section ordering expanded from 13 → 26 sections,
-  "18+" → "18" parallel tasks
-- GOALS: date → 2026-03-30, codebase 94K → ~116K, collections 10 → 12,
-  memory types 5 → 6, tests 1670+ → 2900+
-- QUICK_REFERENCE: handle_request → process_user_query with correct signature,
-  PROMPT_MIN_RECENT_FLOOR location note (builder.py not app_config),
-  _build_system_prompt → load_personality_text + load_operating_principles
-- AGENTIC_SEARCH: added get_full_document to tool list in overview
-- PROJECT_SKELETON: test files 119+ → 148, tests 1554 → 2900+,
-  _build_system_prompt → inline composition description
+Knowledge search intent routing (handlers.py, web_search_trigger.py):
+- New needs_knowledge field in handlers.py: keyword-based detection
+  for encyclopedic/wiki queries ("explain in depth", "how does",
+  "consult wikipedia", etc.), fires for 4+ word substantive queries
+- needs_knowledge_search field added to WebSearchDecision and
+  LLMSearchTriggerResponse with LLM prompt section
+- 3-way routing: web search vs memory search vs knowledge search
+  (at most one active per query)
+
+Synthesis pipeline FAISS migration (synthesis_generator.py, synthesis_filter.py):
+- SynthesisGenerator._sample_wiki_articles() now uses FAISS
+  semantic_search_with_neighbors() instead of ChromaDB wiki_knowledge
+  collection (which choked the machine loading 41M wiki embeddings)
+- FAISS results normalized to match downstream dict shape (content,
+  metadata, collection, relevance_score fields)
+- SynthesisFilter Stage 3 (novelty external) rerouted: both claim
+  similarity and co-occurrence sub-checks use FAISS wiki search
+- _extract_similarity() → _extract_faiss_similarity(): reads cosine
+  similarity directly from FAISS results instead of converting
+  ChromaDB relevance_score
+- wiki_collection constructor parameter removed from SynthesisFilter
+- get_sampling_stats() reports wiki count from FAISS index
+- ChromaDB still used for: facts sampling, synthesis_results storage,
+  convergence tracking, and all other memory collections
+- Tests updated: generator + calibration tests mock FAISS function
+  instead of ChromaDB wiki queries (24/24 passing)
+
+Config: active model → glm-5

@@ -1,7 +1,9 @@
 # core/knowledge/semantic_search.py
 """
-Semantic search with FAISS + SentenceTransformers, optimized for:
-- one-time (lazy) loading of model, FAISS index, and metadata (thread-safe)
+Semantic search with FAISS IVFPQ + SentenceTransformers, optimized for:
+- one-time (lazy) loading of model, FAISS index, and row-group offset table (thread-safe)
+- zero-copy metadata: parquet file read on-demand per query via row-group offset
+  index — no DataFrame loaded into RAM. Footprint: FAISS index (~2.2 GB) + embedder (~0.4 GB)
 - optional offline mode for HF hubs
 - graceful degradation if FAISS or metadata are missing
 - predictable return schema compatible with existing callers
@@ -97,27 +99,38 @@ class SemanticSearchIndex:
     """
     Owns the embedder, FAISS index, and metadata.
     Loaded lazily (call load() or search() which calls load() if needed).
+
+    Memory optimization: NO metadata DataFrame is kept in RAM. The full parquet
+    (40M rows, ~33 GB text column) is never loaded. Instead, a row-group offset
+    index is built at load time (~0 MB) and metadata is read on-demand from the
+    parquet file for just the ~8 rows returned by each FAISS search.
+    Total footprint: FAISS index (~2.2 GB) + embedder (~0.4 GB).
     """
+    # Columns needed for search result assembly
+    _RESULT_COLS = ["text", "title", "section", "section_level",
+                    "chunk_index", "source", "timestamp"]
+
     def __init__(self) -> None:
         self.embedder = None       # SentenceTransformer
         self.index = None          # faiss.Index
-        self.meta = None           # pandas.DataFrame
+        self.meta = None           # legacy compat — kept as None
+        self._pq_file = None       # pyarrow.parquet.ParquetFile for on-demand reads
+        self._rg_offsets: list[int] = []  # cumulative row offsets per row group
+        self._total_rows: int = 0
         self.loaded = False
 
     def load(self) -> None:
-        """Load model + FAISS + metadata once. Fast-return if already loaded."""
+        """Load model + FAISS + row-group index once. Fast-return if already loaded."""
         global _warned_missing
         if self.loaded:
             return
 
         t0 = time.time()
 
-        # DEBUG: Log the actual paths being checked
         logger.debug("[Semantic] Attempting to load: INDEX_PATH=%s, META_PATH=%s", INDEX_PATH, META_PATH)
         logger.debug("[Semantic] faiss=%s, index_exists=%s, meta_exists=%s",
                     faiss is not None, os.path.exists(INDEX_PATH), os.path.exists(META_PATH))
 
-        # If FAISS or files missing, fail open (return empty on search)
         if not (faiss and os.path.exists(INDEX_PATH) and os.path.exists(META_PATH)):
             if not _warned_missing:
                 logger.error("[Semantic] Missing FAISS or metadata — fast-failing search "
@@ -126,25 +139,78 @@ class SemanticSearchIndex:
             return
 
         try:
+            import pyarrow.parquet as pq
+
             # Embedder
             self.embedder = _load_embedder(EMBED_MODEL)
 
-            # FAISS index
+            # FAISS index (~2.2 GB for IVFPQ)
             self.index = faiss.read_index(INDEX_PATH)
 
-            # Metadata (kept as a dataframe; if too big, use a sidecar JSON or sqlite)
-            import pandas as pd  # local import to keep import-time cost low
-            self.meta = pd.read_parquet(META_PATH)
+            # Parquet handle + row-group offset table (no data loaded into RAM)
+            self._pq_file = pq.ParquetFile(META_PATH)
+            meta = self._pq_file.metadata
+            offset = 0
+            self._rg_offsets = []
+            for rg_idx in range(meta.num_row_groups):
+                self._rg_offsets.append(offset)
+                offset += meta.row_group(rg_idx).num_rows
+            self._total_rows = offset
 
             self.loaded = True
-            logger.info("[Semantic] Loaded model=%s index=%s meta=%s in %.2fs",
+            logger.info("[Semantic] Loaded model=%s index=%s rows=%d rg=%d in %.2fs "
+                        "(zero-copy metadata — text read on demand)",
                         EMBED_MODEL,
                         os.path.basename(INDEX_PATH),
-                        os.path.basename(META_PATH),
+                        self._total_rows,
+                        meta.num_row_groups,
                         time.time() - t0)
         except Exception as e:
-            # Do not raise—degrade gracefully; callers get [] from search()
             logger.exception("[Semantic] Load failed: %s", e)
+
+    def _find_row_group(self, row_idx: int) -> tuple[int, int]:
+        """Return (row_group_index, local_offset) for a global row index.
+
+        Uses binary search on the precomputed offset table.
+        """
+        import bisect
+        rg = bisect.bisect_right(self._rg_offsets, row_idx) - 1
+        return rg, row_idx - self._rg_offsets[rg]
+
+    def _read_rows(self, indices: list[int], columns: list[str] | None = None) -> dict[int, dict[str, Any]]:
+        """Read specific columns from parquet for a small set of row indices.
+
+        Groups indices by row group so each row group is read at most once.
+        Returns {global_row_idx: {col: value, ...}}.
+        """
+        if not self._pq_file or not indices:
+            return {}
+
+        cols = columns or self._RESULT_COLS
+        # Intersect with actual schema
+        available = set(self._pq_file.schema_arrow.names)
+        cols = [c for c in cols if c in available]
+
+        # Group indices by row group
+        rg_map: dict[int, list[tuple[int, int]]] = {}  # rg_idx -> [(global_idx, local_offset)]
+        for idx in indices:
+            rg, local = self._find_row_group(idx)
+            rg_map.setdefault(rg, []).append((idx, local))
+
+        result: dict[int, dict[str, Any]] = {}
+        for rg_idx, pairs in rg_map.items():
+            try:
+                table = self._pq_file.read_row_group(rg_idx, columns=cols)
+                for global_idx, local in pairs:
+                    row_data: dict[str, Any] = {}
+                    for col in cols:
+                        val = table.column(col)[local].as_py()
+                        row_data[col] = val
+                    result[global_idx] = row_data
+            except Exception as e:
+                logger.warning("[Semantic] Failed reading row group %d: %s", rg_idx, e)
+
+        return result
 
     def _encode_query(self, query: str) -> np.ndarray:
         """
@@ -158,46 +224,37 @@ class SemanticSearchIndex:
         ).astype(np.float32)
         return vec  # already L2-normalized
 
-    def _row_to_result(self, row, score: float) -> Dict[str, Any]:
-        """
-        Convert a metadata row into the expected result dict.
-        Keeps back-compat with existing consumers.
-        """
-        # Prefer common text columns
+    @staticmethod
+    def _row_to_result(row_data: dict[str, Any], score: float) -> Dict[str, Any]:
+        """Convert a metadata dict (from parquet read) into the expected result dict."""
+        # Text is required
         text = None
         for col in ("text", "content", "chunk_text", "passage"):
-            if col in row.index and getattr(row, col) is not None:
-                text = str(getattr(row, col))
+            val = row_data.get(col)
+            if val is not None:
+                text = str(val)
                 break
         if not text:
-            # If no text field exists, skip the row.
             return {}
 
-        # Determine a source-ish field (namespace/file/etc.)
         source = "unknown"
         for col in ("source", "namespace", "file", "document"):
-            if col in row.index and getattr(row, col) is not None:
-                source = str(getattr(row, col))
+            val = row_data.get(col)
+            if val is not None:
+                source = str(val)
                 break
 
-        # Optional fields
-        ts = getattr(row, "timestamp", "")
-        title = getattr(row, "title", "")
-        section = getattr(row, "section", "")
-        section_level = getattr(row, "section_level", 0)
-        chunk_index = getattr(row, "chunk_index", 0)
-
         return {
-            "text": text,  # Return full text (no truncation)
-            "content": text,  # Return full text (no truncation)
+            "text": text,
+            "content": text,
             "source": source,
             "namespace": source,
-            "similarity": float(score),   # cosine similarity (IP on normalized vectors)
-            "timestamp": ts,
-            "title": title,
-            "section": section,
-            "section_level": section_level,
-            "chunk_index": chunk_index,
+            "similarity": float(score),
+            "timestamp": row_data.get("timestamp", ""),
+            "title": row_data.get("title", ""),
+            "section": row_data.get("section", ""),
+            "section_level": row_data.get("section_level", 0),
+            "chunk_index": row_data.get("chunk_index", 0),
         }
 
     def search(self, query: str, k: int = 8) -> List[Dict[str, Any]]:
@@ -227,23 +284,31 @@ class SemanticSearchIndex:
             logger.error("[Semantic] FAISS search error: %s", e, exc_info=True)
             return []
 
-        # 3) Assemble rows from metadata
+        # 3) Collect valid FAISS hits
+        hits: list[tuple[int, float]] = []
+        for idx, score in zip(I[0], D[0]):
+            if idx < 0:
+                continue
+            if int(idx) < self._total_rows:
+                hits.append((int(idx), float(score)))
+
+        if not hits:
+            return []
+
+        # 4) Batch-read metadata + text for matched rows only (on-demand from parquet)
+        row_data_map = self._read_rows([i for i, _ in hits])
+
+        # 5) Assemble result dicts
         rows: List[Dict[str, Any]] = []
         try:
-            # iloc is faster than loc for int indices
-            for idx, score in zip(I[0], D[0]):
-                if idx < 0:
+            for idx, score in hits:
+                data = row_data_map.get(idx)
+                if not data:
                     continue
-                try:
-                    row = self.meta.iloc[int(idx)]
-                except Exception:
-                    continue
-
-                rec = self._row_to_result(row, score)
+                rec = self._row_to_result(data, score)
                 if rec:
                     rows.append(rec)
 
-            # Sort high->low cosine and cap to k
             rows.sort(key=lambda r: r["similarity"], reverse=True)
             return rows[:k]
         except Exception as e:
