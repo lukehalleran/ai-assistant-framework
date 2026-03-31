@@ -15,10 +15,11 @@ the user knows about (personal facts) and general knowledge (Wikipedia).
 It runs as a "dreaming" step during session shutdown — after conversations
 are stored but before the process exits.
 
-**The core idea:** Sample entities from the user's fact store and wiki,
-pair them across domains, use an LLM to articulate a connection, then run
-the candidate through an 8-stage filter that kills noise, rehashes, and
-pseudoscience. Only genuinely novel, coherent, cross-domain insights survive.
+**The core idea:** Sample entities from the user's fact store (ChromaDB)
+and Wikipedia (FAISS index, 40M vectors), pair them across domains, use an
+LLM to articulate a connection, then run the candidate through an 8-stage
+filter that kills noise, rehashes, and pseudoscience. Only genuinely novel,
+coherent, cross-domain insights survive.
 
 Accepted insights are stored in the `synthesis_results` ChromaDB collection
 and can be surfaced in future conversations. When the same insight is
@@ -36,9 +37,9 @@ sparsity guard (`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES`).
 | File | Purpose |
 |------|---------|
 | `knowledge/synthesis_models.py` | Data models: SynthesisCandidate, SynthesisResult, StageResult, CoherenceLevel, CandidateStatus |
-| `knowledge/synthesis_generator.py` | Cross-store sampling + LLM bridge articulation → SynthesisCandidate[] |
-| `knowledge/synthesis_filter.py` | 8-stage filter pipeline + template patterns + helpers |
-| `memory/synthesis_memory.py` | ChromaDB persistence + convergence tracking |
+| `knowledge/synthesis_generator.py` | Cross-store sampling (ChromaDB facts + FAISS wiki) + LLM bridge articulation → SynthesisCandidate[] |
+| `knowledge/synthesis_filter.py` | 8-stage filter pipeline + FAISS wiki novelty checks + template patterns + helpers |
+| `memory/synthesis_memory.py` | ChromaDB persistence (synthesis_results collection) + convergence tracking |
 | `config/app_config.py` | All `SYNTHESIS_*` constants (filter + generator) |
 | `memory/shutdown_processor.py` | Integration point — calls generator then filter at shutdown |
 | `tests/test_synthesis_calibration.py` | Mock calibration suite (6 tests) |
@@ -74,7 +75,7 @@ coherence_level: CoherenceLevel         # INVALID/WEAK/MODERATE/STRONG
 coherence_justification: str            # full LLM response text
 novelty_score_external: float           # 1 - claim_sim (from Stage 3)
 novelty_score_internal: float           # 1 - synthesis_memory_sim (from Stage 4)
-cooccurrence_similarity: float          # bare "A B" wiki similarity (from Stage 3)
+cooccurrence_similarity: float          # bare "A B" FAISS wiki similarity (from Stage 3)
 template_similarity: float              # generic bridge pattern score (from Stage 3)
 nearest_known_external: str             # closest wiki match text
 nearest_known_internal: str             # closest synthesis memory match text
@@ -109,8 +110,9 @@ graph walks — that's a future enhancement).
 1. Sample 6 random query seeds from `_PERSONAL_QUERY_SEEDS` (e.g. "my family
    and friends", "my work and career") → query `facts` collection
 2. Sample 6 random query seeds from `_WIKI_QUERY_SEEDS` (e.g. "scientific
-   discovery breakthrough", "biological mechanism adaptation") → query
-   `wiki_knowledge` collection
+   discovery breakthrough", "biological mechanism adaptation") → FAISS
+   `semantic_search_with_neighbors()` against 40M Wikipedia vectors (IVFPQ
+   index). Results normalized to match the ChromaDB dict shape.
 3. Form cross-domain pairs: shuffle, deduplicate by concept name, skip
    same-domain pairs. Domain classification reuses `categorize_relation()`
    for personal facts and keyword heuristics for wiki articles.
@@ -129,7 +131,7 @@ graph walks — that's a future enhancement).
 
 ```
 SynthesisGenerator.generate_candidates()
-  ├── Sample facts + wiki articles
+  ├── Sample facts (ChromaDB) + wiki articles (FAISS, 40M vectors)
   ├── Form cross-domain pairs
   ├── LLM bridge articulation (parallel, semaphore)
   └── Package as SynthesisCandidate[]
@@ -139,7 +141,7 @@ SynthesisFilter.process_candidate(candidate)
   ├── Stage 0: Text Sanity          (~0ms, regex)
   ├── Stage 1: Domain Crossing      (~1ms, metadata)
   ├── Stage 2: Semantic Distance    (~5ms, embedding)
-  ├── Stage 3: Novelty External     (~15ms, 2 wiki queries + regex)
+  ├── Stage 3: Novelty External     (~15ms, 2 FAISS wiki searches + regex)
   │     ├── Sub-check 1: Claim similarity
   │     ├── Sub-check 2: Co-occurrence
   │     └── Sub-check 3: Template specificity
@@ -207,7 +209,10 @@ Three sub-checks, each targeting a different failure mode.
 
 #### Sub-check 1: Claim Similarity
 
-Searches wiki for the **full articulated claim**. Catches direct rehashes.
+Searches the FAISS wiki index (40M vectors) for the **full articulated
+claim** via `semantic_search_with_neighbors()`. Catches direct rehashes.
+Similarity scores are cosine similarity (0-1) returned directly from FAISS,
+extracted by `_extract_faiss_similarity()`.
 
 **Hard gate:** `claim_sim > 0.80` (`SYNTHESIS_NOVELTY_KNOWN_THRESHOLD`)
 
@@ -220,10 +225,11 @@ Reason: Claim already known
 
 #### Sub-check 2: Co-occurrence
 
-Searches wiki for the **bare concept conjunction** `"concept_a concept_b"`.
-Catches the "known connection, novel phrasing" failure mode — when the claim
-embeds far from wiki (novel sentence) but the concepts already appear
-together in literature.
+Searches the FAISS wiki index for the **bare concept conjunction**
+`"concept_a concept_b"` via `semantic_search_with_neighbors()`. Catches the
+"known connection, novel phrasing" failure mode — when the claim embeds far
+from wiki (novel sentence) but the concepts already appear together in
+literature.
 
 **Hard gate:** `cooccurrence_sim > 0.75` (`SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD`)
 
@@ -436,10 +442,10 @@ endpoint_distance: 0.55
 - Distance: 0.55 (within [0.20, 0.90])
 - Score: 1.0 (at midpoint — peak score)
 
-**Stage 3 — Novelty External:** PASS
+**Stage 3 — Novelty External:** PASS (FAISS wiki index, 40M vectors)
 - Sub-check 1 (claim sim): 0.15 — claim text is novel (< 0.80 threshold)
 - Sub-check 2 (co-occurrence): 0.10 — "bone remodeling database index" is
-  not a documented pairing in wiki (< 0.75 threshold)
+  not a documented pairing in FAISS wiki vectors (< 0.75 threshold)
 - Sub-check 3 (template sim): 0.00 — no generic templates match; claim uses
   specific terms (Wolff's law, osteoclasts, B-tree, hot nodes)
 - novelty_score_external: 0.85, cooccurrence_similarity: 0.10, template_similarity: 0.00
@@ -554,7 +560,7 @@ To add a new calibration candidate:
 
 ## Benchmark Results (2026-03-29)
 
-Tested against 72 labeled candidates with mock wiki store + real LLM
+Tested against 72 labeled candidates with mock FAISS wiki index + real LLM
 coherence. Candidates that die before Stage 5 (sanity, novelty, distance)
 use deterministic mocks. Stage 5 uses live API calls.
 

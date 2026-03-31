@@ -1448,6 +1448,7 @@ agentic_search:
 - `git_stats` tool [NEW 2026-03-29]: Read-only git repo stats (commit counts, files changed, contributors, branch activity) via keyword intent parsing + temporal windows, no LLM calls
 - `get_full_document` tool [NEW 2026-03-30]: Retrieve complete uploaded document by title with fuzzy matching. Reassembles all chunks in order, 60k char cap.
 - `wiki_knowledge` added to `search_memory` valid collections [NEW 2026-03-30]: enables agentic search of pre-embedded Wikipedia corpus
+- FAISS Wikipedia fallback [NEW 2026-03-31]: `_search_wiki_faiss()` + `_format_wiki_faiss_results()` — when searching `wiki_knowledge`, always prefers FAISS semantic search (40M vectors, IVFPQ index) over sparse ChromaDB data
 
 **Provenance** **[NEW 2026-03-26]**:
 - `AgenticSearchSession.final_prompt_hash` — SHA-256[:16] of final assembled prompt
@@ -1465,16 +1466,17 @@ agentic_search:
 
 **Key Components**:
 
-**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[ENHANCED 2026-03-15]**
+**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[ENHANCED 2026-03-31]**
 - `handle_submit()` → Main async generator yielding response chunks to GUI
   - **Fast Mode** [NEW 2026-03-10]: When `fast_mode=True`, temporarily reduces retrieval limits (PROMPT_MAX_MEMS→10, PROMPT_MAX_RECENT→5, PROMPT_MAX_SEMANTIC→8), sets `context_gatherer._fast_mode` and `hybrid_retriever._fast_mode`. Yields progress keepalive messages ("Thinking...", "Analyzing context...", etc.) every 2s during `prepare_prompt()` to prevent mobile timeouts. All overrides restored in `finally` block.
   - **Agentic Search Path** [ENHANCED 2026-03-15]:
-    - 3-tier agentic gate (all run before casual skip filter):
+    - 4-tier agentic gate (all run before casual skip filter):
       - Tier 1: Keyword heuristic — computation keywords (`calculate`, `solve`, etc.) OR memory keywords (`do you remember`, `my notes`, `search your memory`, etc.)
+      - Tier 1b: Knowledge keywords [NEW 2026-03-31] — encyclopedic/wiki intent (`explain in depth`, `how does`, `what is the difference between`, `consult wikipedia`, etc.). Only fires for substantive queries (4+ words) when no computation/memory trigger matched.
       - Tier 2: Entity match — `extract_graph_entities()` checks query against knowledge graph alias index; if known entity found (e.g., "Flapjack", "Auggie"), triggers memory search
-      - Tier 3: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call; `needs_memory_search` field catches structurally obvious recall queries the keywords missed
-    - Casual skip filter (< 5 words, "nice"/"thanks"/etc.) only applies when no keyword/entity trigger fired
-    - `skip_initial_search=True` for computation and memory queries (skips Round 1 web search)
+      - Tier 3: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call; `needs_memory_search` or `needs_knowledge_search` fields catch structurally obvious recall/encyclopedic queries the keywords missed
+    - Casual skip filter (< 5 words, "nice"/"thanks"/etc.) only applies when no keyword/entity/knowledge trigger fired
+    - `skip_initial_search=True` for computation, memory, and knowledge queries (skips Round 1 web search)
     - Routes through `AgenticSearchController.run_agentic_search()`
     - Yields progress events (🔍 searching, 🧠 searching memory, 📄 found results, ✨ synthesizing)
     - Strips thinking blocks from final response
@@ -1809,20 +1811,23 @@ from config.app_config import config
 
 ---
 
-### 2.12 knowledge/WikiManager.py (Wikipedia Search)
-**Purpose**: FAISS-based Wikipedia semantic search
+### 2.12 knowledge/WikiManager.py + semantic_search.py (Wikipedia Search) **[ENHANCED 2026-03-31]**
+**Purpose**: FAISS IVFPQ-based Wikipedia semantic search (40M+ vectors)
 
 **Data Sources**:
-- Preprocessed Wikipedia dump
-- FAISS index (~350MB)
-- Memory-mapped embeddings (~800MB)
+- Preprocessed Wikipedia dump (40M+ chunked passages)
+- FAISS IVFPQ index (~2 GB in RAM; 48 subquantizers × 8 bits = 48 bytes/vector)
+- Parquet metadata (zero-copy: row-group offset index built at load time, rows read on-demand per query — no DataFrame in RAM)
 
-**Key Methods**:
-- `search(query, k)` → Top K Wikipedia passages
-- `_embed_query(query)` → Query embedding
-- `_faiss_search(embedding, k)` → FAISS retrieval
+**Key Methods** (`semantic_search.py:SemanticSearchIndex`):
+- `load()` → Load embedder + FAISS index + parquet row-group offset table (no full DataFrame)
+- `search(query, k)` → Encode query, FAISS search, batch-read metadata for hit rows, assemble results
+- `_read_rows(indices, columns)` → On-demand parquet read grouped by row group (each RG read at most once)
+- `_find_row_group(row_idx)` → Binary search on precomputed offset table
 
-**Integration**: Called by PromptBuilder if query matches Wikipedia patterns
+**Memory Footprint**: FAISS index (~2.2 GB) + embedder (~0.4 GB). No metadata DataFrame.
+
+**Integration**: Called by PromptBuilder for wiki queries; called by AgenticSearchController as FAISS fallback for `search_memory(wiki_knowledge)`
 
 ---
 
@@ -2022,8 +2027,8 @@ SANDBOX_RATE_LIMIT_PER_MINUTE = 30
 
 ---
 
-### 2.12.2 utils/web_search_trigger.py (Web Search Detection) **[ENHANCED 2026-01]**
-**Purpose**: LLM-first detection with heuristic fallback for when to trigger web search
+### 2.12.2 utils/web_search_trigger.py (Web Search Detection) **[ENHANCED 2026-03-31]**
+**Purpose**: LLM-first detection with heuristic fallback for when to trigger web search, memory search, or knowledge search
 
 **Output**:
 ```python
@@ -2034,7 +2039,9 @@ WebSearchDecision(
     depth=WebSearchDepth.STANDARD,
     search_terms=["optimized query 1", "optimized query 2"],  # LLM-generated
     num_searches=2,
-    source="llm"  # or "heuristic"
+    source="llm",  # or "heuristic"
+    needs_memory_search=False,
+    needs_knowledge_search=False  # [NEW 2026-03-31] encyclopedic/wiki intent
 )
 ```
 
@@ -3571,11 +3578,11 @@ class SynthesisResult:
 - `get_stats()` → `{total_insights, converging_insights, collection}`
 
 **Filter Pipeline** (`knowledge/synthesis_filter.py`):
-- `SynthesisFilter(chroma_store, model_manager, synthesis_memory=None, wiki_collection="wiki_knowledge")`
+- `SynthesisFilter(chroma_store, model_manager, synthesis_memory=None)`
 - `async process_candidate(candidate)` → `SynthesisResult` (ACCEPTED or REJECTED)
 - `async process_batch(candidates)` → summary dict with stats and timing
 - Module-level helpers:
-  - `_extract_similarity(results)` — converts `query_collection` result to 0-1 similarity
+  - `_extract_faiss_similarity(results)` — extracts top cosine similarity from FAISS search results
   - `_compute_template_similarity(claim)` — regex-based generic bridge detection (0-1 score)
   - `_GENERIC_TEMPLATES` — compiled regex patterns for vacuous bridge claims
   - `_GENERIC_TOKENS` — frozenset of generic buzzwords
@@ -3587,7 +3594,7 @@ class SynthesisResult:
 | 0 | Text Sanity | ~0ms | Hard | Min tokens, verb presence, repetition ratio |
 | 1 | Domain Crossing | ~1ms | Hard | Min 2 distinct source domains |
 | 2 | Semantic Distance | ~5ms | Hard | Endpoint distance in [0.20, 0.90] range |
-| 3 | External Novelty | ~10ms | Hard | 3 sub-checks: (a) claim similarity — full claim vs wiki, hard gate at 0.80; (b) co-occurrence — bare "concept_a concept_b" conjunction vs wiki, hard gate at 0.75 (catches known connection with novel phrasing); (c) template specificity — regex generic bridge pattern detection (catches novel connection with vacuous claim) |
+| 3 | External Novelty | ~15ms | Hard | 3 sub-checks via FAISS wiki vector search (40M vectors): (a) claim similarity — full claim vs wiki via `semantic_search_with_neighbors()`, hard gate at 0.80; (b) co-occurrence — bare "concept_a concept_b" conjunction vs wiki via FAISS, hard gate at 0.75 (catches known connection with novel phrasing); (c) template specificity — regex generic bridge pattern detection (catches novel connection with vacuous claim) |
 | 4 | Internal Novelty | ~10ms | Soft | Synthesis memory check; new paths pass (convergence signal) |
 | 5 | Coherence Judge | ~500ms-2s | Hard | Two-pass LLM: Pass 1 structural coherence rates INVALID/WEAK/MODERATE/STRONG (min MODERATE); Pass 2 factual skeptic fires only on MODERATE results, checks for debunked science/fabricated mechanisms (binary PASS/FAIL, downgrades to WEAK on FAIL) |
 | 6 | Composite Scoring | ~0ms | Hard | 4-signal novelty composite ≥ 0.40 minimum |
@@ -3653,14 +3660,14 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 ---
 
 ### 2.15i Synthesis Generator (knowledge/synthesis_generator.py) **[NEW 2026-03-28]**
-**Purpose**: Cross-store candidate generator for the knowledge synthesis pipeline. Samples entities from personal ChromaDB stores (facts) and Wikipedia (wiki_knowledge), uses an LLM to articulate cross-domain connections, and packages results as SynthesisCandidate objects for the filter pipeline.
+**Purpose**: Cross-store candidate generator for the knowledge synthesis pipeline. Samples entities from personal ChromaDB stores (facts) and Wikipedia via FAISS semantic search (40M vectors), uses an LLM to articulate cross-domain connections, and packages results as SynthesisCandidate objects for the filter pipeline.
 
 **Class**: `SynthesisGenerator(chroma_store, model_manager, graph_memory=None, entity_resolver=None)`
 
 **Key Methods**:
 - `async generate_candidates(count=5)` → `List[SynthesisCandidate]` — main entry point
 - `_sample_personal_entities(n)` → `List[Dict]` — broad query seeds against facts collection
-- `_sample_wiki_articles(n)` → `List[Dict]` — broad query seeds against wiki_knowledge collection
+- `_sample_wiki_articles(n)` → `List[Dict]` — broad query seeds via FAISS `semantic_search_with_neighbors()` (40M wiki vectors)
 - `_form_pairs(personal, wiki, max_pairs)` → `List[Tuple]` — cross-domain pairing with dedup
 - `_classify_domain(item)` → `str` — reuses `categorize_relation()` for facts, keyword heuristics for wiki
 - `async _articulate_bridge(...)` → `Optional[str]` — LLM bridge call, returns None on NO_CONNECTION
@@ -3669,7 +3676,7 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 
 **Pipeline Flow**:
 ```
-1. Over-sample entities from facts + wiki_knowledge (count * 3)
+1. Over-sample entities from facts (ChromaDB) + wiki (FAISS, 40M vectors) (count * 3)
 2. Form cross-domain pairs (deduplicated by concept name, skip same-domain)
 3. Parallel LLM bridge articulation (semaphore = SYNTHESIS_GENERATOR_LLM_CONCURRENCY)
 4. Package valid bridges as SynthesisCandidate objects
@@ -4619,7 +4626,7 @@ daemon/
 │   ├── file_processor.py      # File/image/PDF upload processing with security validation [ENHANCED 2026-03-10]
 │   ├── health_check.py        # Docker/K8s health endpoint
 │   ├── conversation_logger.py # Conversation persistence
-│   ├── web_search_trigger.py  # Web search detection (LLM-first + heuristics) [ENHANCED 2026-01]
+│   ├── web_search_trigger.py  # Web/memory/knowledge search detection (LLM-first + heuristics) [ENHANCED 2026-03-31]
 │   ├── daily_notes_generator.py # Auto-generated daily summaries with monthly folder hierarchy [ENHANCED 2026-03-10]
 │   ├── weekly_notes_generator.py # Auto-generated weekly summaries with monthly folder hierarchy [ENHANCED 2026-03-10]
 │   ├── monthly_notes_generator.py # Auto-generated monthly summaries from daily notes [NEW 2026-03-10]
@@ -4627,7 +4634,7 @@ daemon/
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
-│   ├── semantic_search.py     # General semantic utilities
+│   ├── semantic_search.py     # FAISS IVFPQ Wikipedia search (zero-copy parquet metadata) [ENHANCED 2026-03-31]
 │   ├── topic_manager.py       # Topic-specific utilities
 │   ├── web_search_manager.py  # Tavily API + caching [NEW 2025-12-22]
 │   ├── wolfram_manager.py     # Wolfram Alpha LLM API [NEW 2026-01-22]
@@ -4652,7 +4659,7 @@ daemon/
 │
 ├── data/
 │   ├── corpus_v4.json         # Short-term memory store (current)
-│   ├── vector_index_ivf.faiss # FAISS index (781MB)
+│   ├── vector_index_ivf.faiss # FAISS IVFPQ index (~2 GB)
 │   ├── chroma_db_v4_v2/       # ChromaDB vector store (current)
 │   ├── knowledge_graph.json   # Knowledge graph nodes + edges [NEW 2026-03]
 │   ├── entity_aliases.json    # Entity alias → canonical ID mapping [NEW 2026-03]
@@ -5022,7 +5029,7 @@ python main.py inspect-summaries
 | synthesis_models.py | Data: SynthesisCandidate, SynthesisResult, CoherenceLevel, CandidateStatus models [NEW 2026-03-28] |
 | synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking [NEW 2026-03-28] |
 | synthesis_filter.py | Filter: 8-stage async pipeline (text/domain/distance/novelty/two-pass coherence/scoring) [NEW 2026-03-28] |
-| synthesis_generator.py | Generate: Cross-store sampling (facts + wiki) + LLM bridge articulation for synthesis candidates [NEW 2026-03-28] |
+| synthesis_generator.py | Generate: Cross-store sampling (facts via ChromaDB + wiki via FAISS) + LLM bridge articulation for synthesis candidates [NEW 2026-03-28] |
 
 ---
 
@@ -5449,8 +5456,8 @@ This document compresses a ~50K line codebase by focusing on architecture, data 
 **Last Updated**: 2026-03-28
 
 **Recent Changes** (2026-03-28):
-- **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
-- **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts + wiki_knowledge collections, LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 72 labeled candidates in 7 tiers.
+- **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks via FAISS wiki search, 40M vectors: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
+- **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts (ChromaDB) + wiki (FAISS `semantic_search_with_neighbors()`, 40M vectors), LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 72 labeled candidates in 7 tiers.
 - **Context Management Fixes** (Sections 2.7, 2.8b) — Post-budget floor for recent conversations (`PROMPT_MIN_RECENT_FLOOR=5`), budget-enforced accumulated context in agentic controller (`_append_accumulated()` trims oldest rounds), budget-aware final prompt assembly (trims low-value sections to preserve conversation history + agentic results).
 
 **Previous Changes** (2026-03-26):

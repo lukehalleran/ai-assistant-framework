@@ -1,9 +1,9 @@
 # /utils/web_search_trigger.py
 """
-WebSearchTrigger - Detects when a query should trigger web search or memory search.
+WebSearchTrigger - Detects when a query should trigger web search, memory search, or knowledge search.
 
 Module Contract:
-- Purpose: Classify queries to determine if they need real-time web information or stored memory recall
+- Purpose: Classify queries to determine if they need real-time web information, stored memory recall, or encyclopedic/wiki knowledge
 - Inputs:
   - Query text
   - Optional: model_manager (for LLM classification)
@@ -17,14 +17,16 @@ Module Contract:
     - num_searches: int (parallel search count, 1-4)
     - source: str ("llm" | "heuristic" | "explicit")
     - needs_memory_search: bool (LLM detected memory/recall intent) [NEW 2026-03-15]
+    - needs_knowledge_search: bool (LLM detected encyclopedic/wiki intent) [NEW 2026-03-31]
 - Side effects:
   - LLM API call when using analyze_for_web_search_llm() (async)
   - None for heuristic-only path
+- Routing: At most one of should_search, needs_memory_search, needs_knowledge_search is true (web vs memory vs knowledge are separate paths)
 
 Detection Strategy (LLM-First with Heuristic Fallback):
 1. Crisis suppression: Block search during HIGH/MEDIUM crisis levels
 2. Quick pre-filter: Skip LLM for obvious non-search queries (conversational, emotional)
-3. LLM classification: Single call returns should_search + needs_memory_search + optimized search_terms + depth
+3. LLM classification: Single call returns should_search + needs_memory_search + needs_knowledge_search + optimized search_terms + depth
 4. Confidence blend: 70% LLM + 30% heuristic for final decision
 5. Heuristic fallback: On LLM timeout/error, use keyword-based detection
 
@@ -88,6 +90,7 @@ class WebSearchDecision:
     num_searches: int = 1  # Parallel search count (1-4)
     source: str = "heuristic"  # "llm" | "heuristic" | "explicit"
     needs_memory_search: bool = False  # LLM detected memory/recall intent
+    needs_knowledge_search: bool = False  # LLM detected encyclopedic/wiki knowledge intent
 
     def __post_init__(self):
         """Initialize mutable defaults."""
@@ -119,6 +122,7 @@ class LLMSearchTriggerResponse:
     search_depth: str  # "quick" | "standard" | "deep"
     num_searches: int
     needs_memory_search: bool = False  # Whether query wants stored memories/facts/notes
+    needs_knowledge_search: bool = False  # Whether query wants encyclopedic/wiki knowledge
 
     @classmethod
     def parse(cls, json_str: str) -> Optional['LLMSearchTriggerResponse']:
@@ -172,7 +176,8 @@ class LLMSearchTriggerResponse:
                 search_terms=list(data.get("search_terms", [])),
                 search_depth=search_depth,
                 num_searches=num_searches,
-                needs_memory_search=bool(data.get("needs_memory_search", False))
+                needs_memory_search=bool(data.get("needs_memory_search", False)),
+                needs_knowledge_search=bool(data.get("needs_knowledge_search", False))
             )
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             logger.debug(f"[LLMSearchTriggerResponse] JSON parse error: {e}")
@@ -723,6 +728,12 @@ MEMORY SEARCH CRITERIA (needs_memory_search):
 - Examples: "tell me more about Flapjack", "what was that thing we discussed?", "remind me about my dog", "what do my notes say about X", "what have I told you about my job"
 - FALSE if: general knowledge question, web search query, casual chat, or creative request
 
+KNOWLEDGE SEARCH CRITERIA (needs_knowledge_search):
+- TRUE if: the user asks an in-depth factual, scientific, historical, or encyclopedic question that would benefit from consulting reference material (Wikipedia, textbooks, documentation)
+- Examples: "explain nuclear fission vs fusion", "how does photosynthesis work", "what is the history of the Roman Empire", "compare TCP and UDP", "consult Wikipedia about X", "tell me about quantum entanglement in depth"
+- Also TRUE if: user explicitly asks to consult Wikipedia, look something up, or requests a detailed/in-depth explanation of a concept
+- FALSE if: casual chat, simple yes/no questions, personal/emotional topics, creative writing, or questions answerable in one sentence without references
+
 OUTPUT (JSON only, no markdown):
 {{
   "should_search": true or false,
@@ -731,7 +742,8 @@ OUTPUT (JSON only, no markdown):
   "search_terms": ["optimized query 1", "optimized query 2"],
   "search_depth": "quick" or "standard" or "deep",
   "num_searches": 1-4,
-  "needs_memory_search": true or false
+  "needs_memory_search": true or false,
+  "needs_knowledge_search": true or false
 }}
 
 GUIDELINES:
@@ -739,7 +751,7 @@ GUIDELINES:
 - num_searches: Use 2-4 only for comparison queries or multi-faceted topics
 - search_depth: "quick" for simple facts, "standard" for news/analysis, "deep" for research
 - If not searching, return empty search_terms and num_searches: 0
-- needs_memory_search and should_search can both be false, but not both true (web vs memory are separate paths)
+- At most one of should_search, needs_memory_search, needs_knowledge_search should be true (web vs memory vs knowledge are separate paths)
 
 JSON:"""
 
@@ -997,7 +1009,8 @@ async def analyze_for_web_search_llm(
         search_terms=llm_response.search_terms if should_search else [],
         num_searches=llm_response.num_searches if should_search else 0,
         source="llm",
-        needs_memory_search=llm_response.needs_memory_search
+        needs_memory_search=llm_response.needs_memory_search,
+        needs_knowledge_search=llm_response.needs_knowledge_search
     )
 
     # Cache the result to avoid duplicate LLM calls within same request

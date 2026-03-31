@@ -1,7 +1,7 @@
 """
 Tests for knowledge/synthesis_generator.py
 
-Tests the cross-store sampling generator with mocked ChromaDB and LLM.
+Tests the cross-store sampling generator with mocked ChromaDB (facts) and FAISS (wiki).
 """
 
 import asyncio
@@ -36,7 +36,7 @@ def _make_fact_item(doc_id, subject, predicate, obj, content=""):
 
 
 def _make_wiki_item(doc_id, title, content):
-    """Build a fake ChromaDB query result for a wiki article."""
+    """Build a fake ChromaDB query result for a wiki article (legacy helper for non-FAISS tests)."""
     return {
         "id": doc_id,
         "content": content,
@@ -47,9 +47,45 @@ def _make_wiki_item(doc_id, title, content):
     }
 
 
+def _make_faiss_wiki_result(title, content, similarity=0.7):
+    """Build a FAISS semantic_search_with_neighbors result dict."""
+    return {
+        "text": content,
+        "content": content,
+        "title": title,
+        "source": "wikipedia",
+        "namespace": "wikipedia",
+        "similarity": similarity,
+        "timestamp": "",
+        "section": "",
+        "section_level": 0,
+        "chunk_index": 0,
+    }
+
+
+# FAISS wiki pool (returned by mocked semantic_search_with_neighbors)
+_FAISS_WIKI_POOL = [
+    _make_faiss_wiki_result("Quantum Entanglement", "Quantum entanglement is a phenomenon where particles become correlated"),
+    _make_faiss_wiki_result("Treaty of Westphalia", "The Peace of Westphalia established the principle of state sovereignty"),
+    _make_faiss_wiki_result("Lotka-Volterra Equations", "The Lotka-Volterra equations describe predator-prey population dynamics"),
+    _make_faiss_wiki_result("Byzantine Fault Tolerance", "Byzantine fault tolerance allows distributed systems to reach consensus"),
+    _make_faiss_wiki_result("Baroque Counterpoint", "Baroque counterpoint involves independent melodic voices constrained by harmony"),
+    _make_faiss_wiki_result("Mycelial Networks", "Mycorrhizal networks distribute nutrients between trees in forest ecosystems"),
+    _make_faiss_wiki_result("Fermentation Chemistry", "Fermentation converts sugars to acids, gases, or alcohol using microorganisms"),
+    _make_faiss_wiki_result("TCP Congestion Control", "TCP slow start probes network capacity by exponentially increasing window size"),
+]
+
+
+def _mock_faiss_search(query, k=8):
+    """Mock FAISS semantic_search_with_neighbors returning shuffled wiki pool."""
+    import random
+    sample = random.sample(_FAISS_WIKI_POOL, min(k, len(_FAISS_WIKI_POOL)))
+    return sample
+
+
 @pytest.fixture
 def mock_store():
-    """Mock MultiCollectionChromaStore that returns diverse entities."""
+    """Mock MultiCollectionChromaStore that returns diverse facts (wiki is via FAISS)."""
     store = MagicMock()
 
     facts_pool = [
@@ -63,32 +99,16 @@ def mock_store():
         _make_fact_item("f8", "user", "brother_name", "Jake", "User's brother is named Jake"),
     ]
 
-    wiki_pool = [
-        _make_wiki_item("w1", "Quantum Entanglement", "Quantum entanglement is a phenomenon where particles become correlated"),
-        _make_wiki_item("w2", "Treaty of Westphalia", "The Peace of Westphalia established the principle of state sovereignty"),
-        _make_wiki_item("w3", "Lotka-Volterra Equations", "The Lotka-Volterra equations describe predator-prey population dynamics"),
-        _make_wiki_item("w4", "Byzantine Fault Tolerance", "Byzantine fault tolerance allows distributed systems to reach consensus"),
-        _make_wiki_item("w5", "Baroque Counterpoint", "Baroque counterpoint involves independent melodic voices constrained by harmony"),
-        _make_wiki_item("w6", "Mycelial Networks", "Mycorrhizal networks distribute nutrients between trees in forest ecosystems"),
-        _make_wiki_item("w7", "Fermentation Chemistry", "Fermentation converts sugars to acids, gases, or alcohol using microorganisms"),
-        _make_wiki_item("w8", "TCP Congestion Control", "TCP slow start probes network capacity by exponentially increasing window size"),
-    ]
-
     def query_side_effect(collection_name, query_text, n_results=5):
         if collection_name == "facts":
             import random
             sample = random.sample(facts_pool, min(n_results, len(facts_pool)))
-            return sample
-        elif collection_name == "wiki_knowledge":
-            import random
-            sample = random.sample(wiki_pool, min(n_results, len(wiki_pool)))
             return sample
         return []
 
     store.query_collection = MagicMock(side_effect=query_side_effect)
     store.get_collection_stats = MagicMock(return_value={
         "facts": {"count": len(facts_pool)},
-        "wiki_knowledge": {"count": len(wiki_pool)},
     })
     return store
 
@@ -135,7 +155,8 @@ def mock_entity_resolver():
 class TestSynthesisGenerator:
 
     @pytest.mark.asyncio
-    async def test_generate_produces_valid_candidates(self, mock_store, mock_model_manager):
+    @patch("knowledge.semantic_search.semantic_search_with_neighbors", side_effect=_mock_faiss_search)
+    async def test_generate_produces_valid_candidates(self, mock_faiss, mock_store, mock_model_manager):
         """Generator should produce SynthesisCandidate objects."""
         gen = SynthesisGenerator(
             chroma_store=mock_store,
@@ -156,7 +177,8 @@ class TestSynthesisGenerator:
             assert c.endpoint_distance > 0
 
     @pytest.mark.asyncio
-    async def test_generate_respects_count(self, mock_store, mock_model_manager):
+    @patch("knowledge.semantic_search.semantic_search_with_neighbors", side_effect=_mock_faiss_search)
+    async def test_generate_respects_count(self, mock_faiss, mock_store, mock_model_manager):
         """Should not return more candidates than requested."""
         gen = SynthesisGenerator(
             chroma_store=mock_store,
@@ -200,7 +222,8 @@ class TestSynthesisGenerator:
         assert candidates == []
 
     @pytest.mark.asyncio
-    async def test_no_connection_skipped(self, mock_store, mock_model_manager):
+    @patch("knowledge.semantic_search.semantic_search_with_neighbors", side_effect=_mock_faiss_search)
+    async def test_no_connection_skipped(self, mock_faiss, mock_store, mock_model_manager):
         """LLM returning NO_CONNECTION should result in no candidate."""
         mock_model_manager.generate_once = AsyncMock(return_value="NO_CONNECTION")
 
@@ -216,7 +239,8 @@ class TestSynthesisGenerator:
         assert candidates == []
 
     @pytest.mark.asyncio
-    async def test_llm_error_handled_gracefully(self, mock_store, mock_model_manager):
+    @patch("knowledge.semantic_search.semantic_search_with_neighbors", side_effect=_mock_faiss_search)
+    async def test_llm_error_handled_gracefully(self, mock_faiss, mock_store, mock_model_manager):
         """LLM errors should not crash, just reduce candidate count."""
         mock_model_manager.generate_once = AsyncMock(
             side_effect=RuntimeError("API timeout")
@@ -235,8 +259,9 @@ class TestSynthesisGenerator:
         assert candidates == []
 
     @pytest.mark.asyncio
-    async def test_empty_stores_returns_empty(self, mock_model_manager):
-        """Empty ChromaDB collections should return no candidates."""
+    @patch("knowledge.semantic_search.semantic_search_with_neighbors", return_value=[])
+    async def test_empty_stores_returns_empty(self, mock_faiss, mock_model_manager):
+        """Empty facts + empty FAISS should return no candidates."""
         store = MagicMock()
         store.query_collection = MagicMock(return_value=[])
 
@@ -334,18 +359,25 @@ class TestSynthesisGenerator:
 
     def test_get_sampling_stats(self, mock_store, mock_model_manager, mock_graph_memory):
         """Should return collection and graph counts."""
+        mock_index = MagicMock()
+        mock_index.loaded = True
+        mock_index._total_rows = 41_000_000
+
         gen = SynthesisGenerator(
             chroma_store=mock_store,
             model_manager=mock_model_manager,
             graph_memory=mock_graph_memory,
         )
-        stats = gen.get_sampling_stats()
+        with patch("knowledge.semantic_search.get_index", return_value=mock_index):
+            stats = gen.get_sampling_stats()
         assert stats["facts_count"] == 8
-        assert stats["wiki_count"] == 8
+        assert stats["wiki_count"] == 41_000_000
+        assert stats["wiki_source"] == "faiss"
         assert stats["graph_nodes"] == 50
 
     @pytest.mark.asyncio
-    async def test_short_response_skipped(self, mock_store, mock_model_manager):
+    @patch("knowledge.semantic_search.semantic_search_with_neighbors", side_effect=_mock_faiss_search)
+    async def test_short_response_skipped(self, mock_faiss, mock_store, mock_model_manager):
         """Very short LLM responses (< 5 words) should be skipped."""
         mock_model_manager.generate_once = AsyncMock(return_value="They connect somehow.")
 
@@ -362,7 +394,8 @@ class TestSynthesisGenerator:
         assert candidates == []
 
     @pytest.mark.asyncio
-    async def test_graph_used_for_distance(self, mock_store, mock_model_manager, mock_graph_memory, mock_entity_resolver):
+    @patch("knowledge.semantic_search.semantic_search_with_neighbors", side_effect=_mock_faiss_search)
+    async def test_graph_used_for_distance(self, mock_faiss, mock_store, mock_model_manager, mock_graph_memory, mock_entity_resolver):
         """When graph is available, candidates should use graph-based distance."""
         gen = SynthesisGenerator(
             chroma_store=mock_store,

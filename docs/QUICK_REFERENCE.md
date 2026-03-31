@@ -1582,15 +1582,16 @@ class MemoryConsolidator:
 
 ---
 
-## Agentic Search & Tools [NEW 2026-01-22, ENHANCED 2026-03-23]
+## Agentic Search & Tools [NEW 2026-01-22, ENHANCED 2026-03-31]
 
-**Agentic Gate** (gui/handlers.py) — 3-tier trigger before ReAct loop:
+**Agentic Gate** (gui/handlers.py) — 4-tier trigger before ReAct loop:
 1. **Keyword heuristic** (0ms): computation keywords OR memory keywords ("do you remember", "my notes", etc.)
+1b. **Knowledge keywords** (0ms) [NEW 2026-03-31]: encyclopedic/wiki intent (`explain in depth`, `how does`, `consult wikipedia`, etc.) — fires for 4+ word queries when no computation/memory trigger matched
 2. **Entity match** (0ms): `extract_graph_entities()` checks query against knowledge graph aliases; known entities (e.g. "Flapjack") trigger memory search
-3. **LLM fallback**: piggybacks on `analyze_for_web_search_llm()`; `needs_memory_search` field in `WebSearchDecision` catches structural recall queries
+3. **LLM fallback**: piggybacks on `analyze_for_web_search_llm()`; `needs_memory_search` or `needs_knowledge_search` fields in `WebSearchDecision` catch structural recall/encyclopedic queries
 
-Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/entity trigger fired.
-`skip_initial_search=True` for computation and memory queries.
+Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/entity/knowledge trigger fired.
+`skip_initial_search=True` for computation, memory, and knowledge queries.
 
 ```python
 # core/agentic/controller.py
@@ -2010,13 +2011,12 @@ class SynthesisMemory:
 
 # knowledge/synthesis_filter.py — 8-stage async pipeline
 # Module-level helpers:
-#   _extract_similarity(results) -> float   — converts query_collection result to 0-1 similarity
+#   _extract_faiss_similarity(results) -> float — extracts top cosine similarity from FAISS search results
 #   _compute_template_similarity(claim) -> float — regex-based generic bridge detection
 #   _GENERIC_TEMPLATES — compiled regex patterns for vacuous bridge claims
 #   _GENERIC_TOKENS — frozenset of generic buzzwords
 class SynthesisFilter:
-    def __init__(self, chroma_store, model_manager, synthesis_memory=None,
-                 wiki_collection="wiki_knowledge"): ...
+    def __init__(self, chroma_store, model_manager, synthesis_memory=None): ...
     async def process_candidate(candidate) -> SynthesisResult:  # Full pipeline, auto-stores accepted
     async def process_batch(candidates) -> dict:
         # Returns: {total, accepted, rejected, rejection_breakdown, accepted_results, avg_stage_times_ms}
@@ -2028,9 +2028,9 @@ class SynthesisFilter:
 # 0: text_sanity      — min tokens, verb check, repetition ratio (~0ms)
 # 1: domain_crossing   — min 2 distinct domains (~1ms)
 # 2: semantic_distance  — endpoint distance in [0.20, 0.90] (~5ms)
-# 3: novelty_external   — 3 sub-checks (~10ms):
-#      a) claim similarity: full claim vs wiki (hard gate at 0.80)
-#      b) co-occurrence: bare "concept_a concept_b" vs wiki (hard gate at 0.75)
+# 3: novelty_external   — 3 sub-checks (~15ms, FAISS wiki vector search, 40M vectors):
+#      a) claim similarity: full claim vs wiki via FAISS (hard gate at 0.80)
+#      b) co-occurrence: bare "concept_a concept_b" vs wiki via FAISS (hard gate at 0.75)
 #      c) template specificity: regex generic bridge pattern detection
 # 4: novelty_internal   — synthesis memory; new paths pass as convergence (~10ms)
 # 5: coherence_judge    — two-pass LLM: Pass 1 structural coherence (4-tier rating),
@@ -2094,12 +2094,12 @@ class SynthesisGenerator:
     def __init__(self, chroma_store, model_manager, graph_memory=None, entity_resolver=None): ...
     async def generate_candidates(count=5) -> List[SynthesisCandidate]:
         # 1. Sample personal entities from facts collection (broad query seeds)
-        # 2. Sample wiki articles from wiki_knowledge collection
+        # 2. Sample wiki articles via FAISS semantic_search_with_neighbors (40M vectors)
         # 3. Form cross-domain pairs (deduplicated, domain-classified)
         # 4. Parallel LLM bridge articulation (semaphore-limited concurrency)
         # 5. Package as SynthesisCandidate objects for filter pipeline
     def _sample_personal_entities(n) -> List[Dict]:  # 12 query seeds, shuffled
-    def _sample_wiki_articles(n) -> List[Dict]:       # 12 query seeds, shuffled
+    def _sample_wiki_articles(n) -> List[Dict]:       # FAISS search, 12 query seeds, shuffled
     def _classify_domain(item) -> str:                # categorize_relation() or keyword heuristics
     async def _articulate_bridge(concept_a, concept_b, domain_a, domain_b, ctx_a, ctx_b) -> Optional[str]:
         # LLM call; returns None on NO_CONNECTION or <5 words

@@ -10,13 +10,14 @@ Module Contract
 - Behavior:
   - RAW mode: send directly through orchestrator.process_user_query(use_raw_mode=True)
   - DUEL mode: If BEST_OF_DUEL_MODE enabled, two models compete + judge picks winner. Builds provenance with response_mode="best-of-duel". Runs BEFORE agentic check.
-  - AGENTIC: If agentic_search.enabled and query triggers search, computation, OR memory recall, route through AgenticSearchController
-    - 3-tier agentic gate [ENHANCED 2026-03-15]:
+  - AGENTIC: If agentic_search.enabled and query triggers search, computation, memory recall, OR knowledge search, route through AgenticSearchController
+    - 4-tier agentic gate [ENHANCED 2026-03-31]:
       - Tier 1: Keyword heuristic (instant) — computation keywords OR memory keywords ("do you remember", "my notes", etc.)
+      - Tier 1b: Knowledge keywords (instant) [NEW 2026-03-31] — encyclopedic/wiki intent ("explain in depth", "how does", "consult wikipedia", etc.), 4+ words, no computation/memory trigger
       - Tier 2: Entity match (instant) — query mentions a known entity from the knowledge graph (e.g., "Flapjack", "Auggie")
-      - Tier 3: LLM fallback — piggybacks on web search trigger LLM call; also returns needs_memory_search field
-    - Casual skip filter only applies when no keyword/entity trigger fired
-    - skip_initial_search=True for computation and memory queries (skips Round 1 web search)
+      - Tier 3: LLM fallback — piggybacks on web search trigger LLM call; returns needs_memory_search and needs_knowledge_search fields
+    - Casual skip filter only applies when no keyword/entity/knowledge trigger fired
+    - skip_initial_search=True for computation, memory, and knowledge queries (skips Round 1 web search)
     - Streaming hides incomplete thinking blocks via has_incomplete_thinking_block()
     - Citations extracted from memory_id_map via _extract_citations()
   - ENHANCED: orchestrator.prepare_prompt → extract note_images → response_generator.generate_streaming_response(images=...) → store interaction
@@ -537,6 +538,7 @@ async def handle_submit(
         _words = _lower.split()
         needs_computation = False
         needs_memory = False
+        needs_knowledge = False
         _matched_entities = set()
 
         # --- Tier 1: Keyword heuristics (instant, no LLM) ---
@@ -560,6 +562,19 @@ async def handle_submit(
             'my facts', 'what did i say',
         ]
         needs_memory = any(kw in _lower for kw in _memory_keywords)
+
+        # Knowledge/wiki keywords: explicit wiki references or in-depth knowledge requests
+        _knowledge_keywords = [
+            'wikipedia', 'consult wikipedia', 'wiki ',
+            'explain in depth', 'explain in detail', 'in depth',
+            'how does ', 'how do ', 'what is the difference between',
+            'compare and contrast', 'tell me about ',
+            'what is a ', 'what are ', 'what causes ',
+            'history of ', 'science behind', 'mechanism of ',
+        ]
+        # Only trigger for substantive queries (4+ words), not casual one-liners
+        if len(_words) >= 4 and not needs_computation and not needs_memory:
+            needs_knowledge = any(kw in _lower for kw in _knowledge_keywords)
 
         # --- Tier 2: Entity match (instant, no LLM) ---
         # If query mentions a known entity AND has a recall/question signal,
@@ -596,7 +611,7 @@ async def handle_submit(
             'working' in _lower and 'search' in _lower,  # meta-comments about search
             all(w in ['yes', 'no', 'ok', 'okay', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank', 'you'] for w in _words),
         ]
-        if not needs_computation and not needs_memory and any(_skip_patterns):
+        if not needs_computation and not needs_memory and not needs_knowledge and any(_skip_patterns):
             logger.debug("[Handle Submit] Agentic skipped - casual/short message")
             should_use_agentic = False
             search_terms = []
@@ -610,8 +625,12 @@ async def handle_submit(
                 logger.debug("[Handle Submit] Agentic triggered - memory search query detected")
                 should_use_agentic = True
                 search_terms = []  # No web search needed, memory tool handles it
+            elif needs_knowledge:
+                logger.debug("[Handle Submit] Agentic triggered - knowledge/wiki query detected via keywords")
+                should_use_agentic = True
+                search_terms = []  # No web search needed, search_memory(wiki_knowledge) handles it
             else:
-                # Check if web search or memory search should be triggered using LLM-first trigger
+                # Check if web search, memory search, or knowledge search should be triggered using LLM-first trigger
                 try:
                     from utils.web_search_trigger import analyze_for_web_search_llm
                     trigger_decision = await analyze_for_web_search_llm(
@@ -630,7 +649,14 @@ async def handle_submit(
                         needs_memory = True  # skip initial web search
                         search_terms = []
 
-                    logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, needs_memory={needs_memory}, terms={search_terms}")
+                    # LLM-based knowledge search fallback: encyclopedic/wiki queries
+                    if not should_use_agentic and getattr(trigger_decision, 'needs_knowledge_search', False):
+                        logger.debug("[Handle Submit] Agentic triggered - LLM detected knowledge search intent")
+                        should_use_agentic = True
+                        needs_knowledge = True  # skip initial web search
+                        search_terms = []
+
+                    logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, needs_memory={needs_memory}, needs_knowledge={needs_knowledge}, terms={search_terms}")
                 except Exception as e:
                     logger.warning(f"[Handle Submit] Agentic trigger check failed: {e}")
                     import traceback
@@ -660,7 +686,7 @@ async def handle_submit(
                     model_name=model_name,
                     initial_search_terms=initial_terms,
                     initial_context=raw_context,  # Pass RAG context to agentic controller
-                    skip_initial_search=needs_computation or needs_memory,  # Skip web search for computation/memory-only queries
+                    skip_initial_search=needs_computation or needs_memory or needs_knowledge,  # Skip web search for computation/memory/knowledge-only queries
                 ):
                     if isinstance(item, ProgressEvent):
                         # Yield progress events as status messages
