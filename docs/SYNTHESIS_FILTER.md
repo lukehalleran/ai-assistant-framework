@@ -43,7 +43,7 @@ sparsity guard (`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES`).
 | `memory/shutdown_processor.py` | Integration point — calls generator then filter at shutdown |
 | `tests/test_synthesis_calibration.py` | Mock calibration suite (6 tests) |
 | `tests/unit/test_synthesis_generator.py` | Generator unit tests (18 tests) |
-| `tests/fixtures/calibration_candidates.json` | 54 labeled candidates in 7 tiers |
+| `tests/fixtures/calibration_candidates.json` | 72 labeled candidates in 7 tiers |
 | `scripts/calibrate_coherence_live.py` | Live LLM calibration with multi-model comparison |
 
 ---
@@ -254,8 +254,9 @@ substantively empty.
 dynamics, mechanisms, fundamental, inherently, essentially, paradigm,
 parallels, interconnected, holistic, synergy, synergistic.
 
-**Scoring:** `max(template_matches/2, generic_tokens/4 * 0.7)`. No hard gate
-— feeds into composite via specificity signal.
+**Scoring:** `max(min(template_matches/2, 1.0), min(generic_tokens/4, 1.0) * 0.7)`.
+Both sub-scores clamped to 1.0 before the final max. No hard gate — feeds into
+composite via specificity signal.
 
 **Example:**
 ```
@@ -475,16 +476,16 @@ no convergence update needed.
 
 ### Fixture Set
 
-`tests/fixtures/calibration_candidates.json` — 54 labeled candidates in 7 tiers:
+`tests/fixtures/calibration_candidates.json` — 72 labeled candidates in 7 tiers:
 
 | Tier | Count | Expected | Purpose |
 |------|-------|----------|---------|
 | `sanity_fail` | 4 | rejected | Malformed text, should die at Stage 0 |
-| `trivial` | 13 | rejected | Well-known connections (exercise↔mood, sleep↔cognition) |
+| `trivial` | 18 | rejected | Well-known connections (exercise↔mood, sleep↔cognition) |
 | `noise` | 12 | rejected | Forced/incoherent (shoelaces↔game theory) |
-| `noise_borderline` | 5 | rejected | Plausible-sounding pseudoscience (mirror neurons, Mozart effect) |
-| `interesting_known` | 5 | rejected | Published cross-domain work (ant colonies↔TCP) |
-| `interesting_novel` | 10 | accepted | Non-obvious AND new (bone remodeling↔index optimization) |
+| `noise_borderline` | 10 | rejected | Plausible-sounding pseudoscience (mirror neurons, Mozart effect) |
+| `interesting_known` | 8 | rejected | Published cross-domain work (ant colonies↔TCP) |
+| `interesting_novel` | 15 | accepted | Non-obvious AND new (bone remodeling↔index optimization) |
 | `boundary` | 5 | diagnostic | Hard middle cases, no expected outcome |
 
 ### Running Calibration
@@ -553,7 +554,7 @@ To add a new calibration candidate:
 
 ## Benchmark Results (2026-03-29)
 
-Tested against 54 labeled candidates with mock wiki store + real LLM
+Tested against 72 labeled candidates with mock wiki store + real LLM
 coherence. Candidates that die before Stage 5 (sanity, novelty, distance)
 use deterministic mocks. Stage 5 uses live API calls.
 

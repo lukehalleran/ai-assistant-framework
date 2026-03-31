@@ -156,10 +156,10 @@ sigma_iota(d, x) = SUM_i w_i(iota) * f_i(d, x)  +  SUM_j b_j(d, x, G)  +  SUM_k 
 | continuity(d, Theta) | 0.10 | Thread continuity score (recent 10-min window) |
 | topic_match(d, x) | 0.00 | Disabled by default. 1.0 (exact) / 0.5 (neutral) / 0.2 (different) |
 
-**Structure score** (hardcoded at 0.05 multiplier, not in weight dict):
+**Structure score** (direct additive bonus, not in weight dict):
 
 ```
-structure = 0.05 * 0.15 * density_alignment
+structure = 0.15 * density_alignment
 ```
 
 **Bonuses** b_j (additive, not weighted):
@@ -242,7 +242,7 @@ prompt = [
 
 Sections near the end receive higher attention weight in transformer models. The ordering places high-signal, low-token sections (user profile, time, STM, query) in the high-attention zone.
 
-Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 15,000 tokens with two-tier compression: heavily oversized items (≥3x over token limit) get LLM summary via `_llm_compress_oversized()` (async parallel batch, ~0.3-0.5s), while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle).
+Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 40,000 tokens (API) / 12,000 (local) with two-tier compression: heavily oversized items (≥3x over token limit) get LLM summary via `_llm_compress_oversized()` (async parallel batch, ~0.3-0.5s), while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle).
 
 **Code**: `prompt/builder.py` -> `_assemble_prompt()`
 
@@ -472,10 +472,10 @@ delta_shutdown(s):
 
 ## 9. Memory Types as a Typed Corpus
 
-The corpus C is a **typed multiset** partitioned across 11 ChromaDB collections in 6 categories:
+The corpus C is a **typed multiset** partitioned across 12 ChromaDB collections in 7 categories:
 
 ```
-C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U  C_meta
+C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U  C_meta  U  C_synthesis
 ```
 
 | Category | Collections | Characteristics |
@@ -486,6 +486,7 @@ C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U 
 | Summary | `summaries` | Block-compressed conversation history. Relevance-biased. |
 | Reference | `obsidian_notes`, `reference_docs` | User notes + system docs. Protected from dedup. Gated at 0.30 threshold. |
 | Meta | `reflections`, `threads`, `proposals` | Session insights + open loops + code plans. Priority-scored (threads). |
+| Synthesis | `synthesis_results` | Cross-domain insights with convergence tracking. Produced by shutdown dreaming. |
 
 **Knowledge graph** G provides a secondary index over C_semantic. Nodes are entities, edges are relations extracted from facts. Objects with 4+ words are stored as node metadata (not nodes) to prevent junk.
 

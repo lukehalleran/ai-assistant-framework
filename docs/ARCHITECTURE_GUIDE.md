@@ -64,10 +64,10 @@ system — all data stays on disk, API calls go to LLM providers only.
 ### Key Numbers
 
 ```
-Python lines:           ~102,000
-Python files:           284
-Test files:             137
-Test functions:         2,800+
+Python lines:           ~116,000 (incl. tests)
+Python files:           312
+Test files:             148
+Test functions:         2,900+
 ChromaDB collections:   12
 Prompt sections:        26 (conditional)
 Intent types:           9
@@ -108,7 +108,7 @@ core/                    # Request orchestration, context pipeline, agentic loop
     └── token_manager.py # Priority-based budget management
 
 memory/                  # 5-tier memory system
-├── memory_coordinator.py    # Thin orchestrator (~498 lines)
+├── memory_coordinator.py    # Thin orchestrator (~632 lines)
 ├── memory_retriever.py      # Parallel ChromaDB retrieval
 ├── memory_scorer.py         # 12-step composite scoring
 ├── memory_storage.py        # Persistence + fact extraction + graph ingestion
@@ -406,7 +406,7 @@ from all modification — raw turns are the ground truth.
 
 ### MemoryCoordinator — The Thin Orchestrator
 
-`memory_coordinator.py` (~498 lines) is a pure delegation layer. It
+`memory_coordinator.py` (~632 lines) is a pure delegation layer. It
 creates all memory components in `__init__()` and exposes ~24 methods
 that forward to the appropriate component:
 
@@ -517,7 +517,7 @@ golden retriever."
 
 ### Parallel Retrieval Architecture
 
-When a prompt is being built, `builder.py` launches 18+ async retrieval
+When a prompt is being built, `builder.py` launches 18 async retrieval
 tasks via `asyncio.gather()` with a 30-second timeout. Each task fetches
 from a different source or collection:
 
@@ -525,7 +525,6 @@ from a different source or collection:
 |------|--------|-------|-------|
 | Recent conversations | Corpus (recency) | 15 | Recency-ordered, no gating |
 | Semantic memories | ChromaDB multi-collection | 15 | Cosine + cross-encoder gated |
-| Facts | ChromaDB `facts` | 30 | Hybrid: 2/3 semantic + 1/3 recent |
 | Recent summaries | ChromaDB `summaries` | 5 | Time-ordered |
 | Semantic summaries | ChromaDB `summaries` | 5 | Relevance-ordered |
 | Recent reflections | ChromaDB `reflections` | 3 | Time-ordered |
@@ -739,7 +738,7 @@ end for maximum attention weight:
 
 The prompt has a finite token budget: `min(context_window * 0.25, ceiling)`
 clamped to `[floor, ceiling]`, with separate caps for local vs API models.
-Default budget: 15,000 tokens.
+Default budget: 40,000 tokens (API models), 12,000 tokens (local models).
 
 Sections are assigned priorities for trimming:
 
@@ -1410,7 +1409,7 @@ rather than rejecting. At storage time, convergence metadata is updated.
 
 ### Benchmark Performance
 
-Tested against 54 labeled candidates (7 tiers):
+Tested against 72 labeled candidates (7 tiers):
 
 | Model | Precision | Recall | F1 |
 |-------|-----------|--------|-----|
@@ -1850,7 +1849,7 @@ Arrows indicate "calls" or "data flows to."
        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ Memory System                                                │
-│  ├─ MemoryCoordinator (thin orchestrator, ~498 lines)        │
+│  ├─ MemoryCoordinator (thin orchestrator, ~632 lines)        │
 │  │    ├─ MemoryStorage (persist + fact extraction + graph)    │
 │  │    ├─ FactExtractor (dual budget: user + entity)          │
 │  │    ├─ FactVerifier (STORE / FLAG / REJECT / SKIP)         │

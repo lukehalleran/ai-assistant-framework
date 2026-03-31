@@ -15,7 +15,7 @@ Module Contract
   - process_user_query(): deictic check, generate streamed response, store memory (with provenance), schedule consolidation (now at shutdown)
   - _check_narrative_freshness(): Startup check for stale narrative context (>24h) [NEW 2026-01-17]
 - System prompt flow:
-  - Composed from file-based personality (config/prompts/default_personality.txt or custom_personality.txt) + immutable operating principles (config/prompts/operating_principles.txt) via _build_system_prompt(). Falls back to load_system_prompt() if files fail.
+  - Composed from file-based personality (config/prompts/default_personality.txt or custom_personality.txt) + immutable operating principles (config/prompts/operating_principles.txt) via load_personality_text() + load_operating_principles(). Falls back to load_system_prompt() if files fail.
   - Performs placeholder substitution: {USER_NAME}, {USER_PRONOUNS}, {PRONOUN_SUBJ}, {PRONOUN_OBJ}, {PRONOUN_POSS}. Forwarded to response generation as system role message.
   - Appends [THREAD CONTEXT] to system prompt for ongoing conversation threads (depth, topic, heavy-topic flag)
   - Proactive thread surfacing: on first message of session, appends instruction to naturally reference [UNRESOLVED THREADS] from prior sessions
