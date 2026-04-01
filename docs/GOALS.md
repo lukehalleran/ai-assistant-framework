@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-03-31
+**Last Updated**: 2026-04-01
 
 ---
 
@@ -55,50 +55,58 @@ All major feature systems are built. The focus now shifts to: making what exists
 - Consider making dev channel accessible from GUI settings tab post-wizard (not just first-run)
 
 ### 4. Knowledge Graph Data Population
-- **Status**: Graph infrastructure complete, data sparse
-- **Why**: Graph-boosted scoring, query expansion, synthesis walks, and proactive surfacing all scale with graph density. Current graph has real structure but needs volume.
-- Run `scripts/migrate_facts_to_graph.py` against full ChromaDB fact corpus to backfill
-- Run wiki enrichment across broader article set (not just session-tracked articles)
-- Evaluate batch Wikidata subgraph import (`scripts/import_wikidata_to_graph.py`) for entity linking
-- Monitor `count_by_source()` and `count_bridge_edges()` to track density milestones
-- Target: 500+ nodes, 200+ bridge edges before enabling graph walk synthesis
+- **Status**: Density milestone achieved (30,929 nodes), bridge quality under review
+- **Why**: Graph-boosted scoring, query expansion, synthesis walks, and proactive surfacing all scale with graph density. Current graph has 30,929 nodes (29,705 wikidata + 1,209 personal + 15 wiki-retrieved), 8,343 edges.
+- Wikidata subgraph import complete (`scripts/import_wikidata_to_graph.py`) — 29,705 entities across 10 domain categories
+- Fact migration complete — 1,209 personal nodes from ChromaDB facts
+- Bridge cleanup performed: 129 garbage bridges (low-confidence entity mapper matches) reduced to 6 quality bridges
+- WikidataEntityMapper threshold raised 0.60 -> 0.80, exact-match blocklist added to prevent spurious bridges
+- Walk generator (Tier 1) inactive due to low bridge count (6 < 40 minimum) — will activate as retrieval synthesis creates provisional bridges
+- Monitor `count_bridge_edges()` for bridge growth from synthesis feedback loop
 
 ---
 
 ## Medium-Term Goals (Next 1-3 Months)
 
 ### 5. Knowledge Synthesis Pipeline (Core Vision)
-- **Status**: Infrastructure built, calibration in progress, first real run pending
+- **Status**: Validated end-to-end. Three-tier generation operational, retrieval-based synthesis producing mechanism-naming insights.
 - **This is the primary goal. Everything else supports this.**
-- Blocked on: graph density (Goal 4) and consolidation (Goal 1)
 
 **Data Ingestion**:
 - Wikipedia embedded via FAISS IVFPQ index (40M vectors, ~2 GB RAM) — **done**
 - arXiv paper abstracts/full text — planned
 - PubMed abstracts — planned
 
-**Connection Generation**:
-- Markov chain random walks across embedded knowledge graph
-- Walk results passed to LLM with synthesis instructions to articulate connections
-- High volume — most output will be nonsense or trivially true
+**Connection Generation** (three-tier, runs in parallel at shutdown):
+- **Tier 0 — RetrievalSynthesisGenerator** (`synthesis_retriever.py`): Extracts structural queries from personal facts via few-shot LLM, searches FAISS (40M vectors), adversarially evaluates. Produces candidates naming specific mechanisms. Result: 2/15 accepted (13%) with named mechanisms ("conditional dependency", "historical layering"). **This is the primary generator.**
+- **Tier 1 — GraphWalkGenerator**: Biased Markov walks with hub dampening (degree > 15) and cross-domain constraint (>=2 domains). Currently inactive (only 6 bridges after cleanup, minimum 40 required). Will activate as bridge feedback loop creates provisional edges.
+- **Tier 2 — SynthesisGenerator**: Random personal-fact + wiki-article pairing with LLM bridge articulation. Fallback generator. Result: 2/15 accepted (13%) but insight quality lower than Tier 0.
 
-**Multi-Stage Filtering** (the hard problem):
-- 8-stage filter pipeline built (`synthesis_filter.py`), calibration fixture with 72 labeled candidates
+**Multi-Stage Filtering** (validated):
+- 8-stage filter pipeline (`synthesis_filter.py`), calibration fixture with 72 labeled candidates
 - IVFPQ threshold recalibration done (novelty, co-occurrence, composite thresholds adjusted for quantized distances)
-- Remaining: end-to-end validation at scale, pairwise reranking stage
+- Coherence judge recalibrated: WEAK = no mechanism named; MODERATE = names real mechanism concretely applied to both domains
+- End-to-end validation complete: 4/30 accepted (13%), rejection breakdown: composite 13, novelty 12, coherence 1
+- Bridge feedback loop confirmed: accepted insights create provisional graph edges (129 -> 133 edges after run)
 
-**Open Questions**:
-- How to distinguish "interesting but known" from "actually novel"
-- Optimal Markov walk parameters (step count, restart probability, domain crossing frequency)
-- Calibration: what does the score distribution look like for known good cross-domain papers?
+**Achieved milestones**:
+- Retrieval-based synthesis generating mechanism-naming candidates (not just surface metaphor)
+- Coherence judge discriminates structure from metaphor after recalibration
+- Bridge cleanup: 129 garbage bridges -> 6 quality bridges via WikidataEntityMapper threshold raise (0.60 -> 0.80) + blocklist
+- Three generators head-to-head: RETRIEVAL 2/15, WALK 0/0, XSTORE 2/15
+
+**Remaining work**:
+- Composite threshold is tight — may need loosening as retrieval generator matures
+- Novelty gate may over-reject retrieval candidates (structurally novel but Wikipedia-adjacent phrasing)
+- Structural query diversity needs monitoring (few-shot prompt may converge on limited query patterns)
+- Pairwise reranking stage not yet implemented
 
 ### 6. Dreaming Engine (Batch Generation Infrastructure)
-- **Status**: Pending — blocked on consolidation (Goal 1) and graph density (Goal 4)
-- Background thread/async task runs during idle periods
-- Iterates over knowledge bases with Markov walks, generates connection candidates in batches
-- Full pipeline scoring: cosine → cross-encoder → LLM pairwise → novelty check
+- **Status**: Shutdown dreaming operational (three-tier generation at session end). Idle-time dreaming pending.
+- Shutdown dreaming runs three generators in parallel at session end (Step 6.8 in shutdown_processor.py)
+- Idle-time background thread: activates after N minutes inactivity, pauses on user input — not yet implemented
 - Coverage tracking: which domains/topics explored, avoid redundant generation
-- Scheduler: activates after N minutes inactivity, pauses on user input
+- Scheduler design pending
 - **Prerequisite**: Infrastructure must be lean and hardened first — batch workloads will stress every pipeline component at scale
 
 ### 7. Memory Quality Maintenance

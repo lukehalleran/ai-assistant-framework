@@ -1,6 +1,6 @@
 # Formal Model: Daemon RAG Agent
 
-**Last verified against codebase**: 2026-03-29
+**Last verified against codebase**: 2026-04-01
 
 ## 1. Primitive Sets
 
@@ -604,17 +604,44 @@ Pi : {session_id, response_mode, model_name, thinking_block,
 
 ## 13. Synthesis Filter Pipeline
 
-The synthesis pipeline transforms raw graph walk candidates into validated cross-domain insights. It operates on the synthesis memory Sigma_t, independent of the conversational agent loop.
+The synthesis pipeline transforms candidate cross-domain connections into validated insights. It operates on the synthesis memory Sigma_t, independent of the conversational agent loop.
 
-### 13.1 Candidate Space
+### 13.1 Candidate Generation (Three-Tier)
 
-A synthesis candidate c is produced by a random walk over the knowledge graph G:
+Three generators run in parallel at shutdown, producing candidates for the shared filter:
 
 ```
-c = (a, b, claim, path, domains, dist)
+Tier 0 — RETRIEVAL (RetrievalSynthesisGenerator):
+  For each personal fact f in sample(C_facts):
+    q_struct <- LLM_few_shot(f)                    // structural query extraction
+    results  <- FAISS_search(q_struct, k=5)        // 40M Wikipedia vectors
+    claim    <- LLM_adversarial(f, results)        // adversarial evaluation
+    c        = (entity(f), wiki_article, claim, [], domains, dist)
+
+Tier 1 — WALK (GraphWalkGenerator):
+  walk      <- biased_markov_walk(G, start, steps)  // Node2Vec-style, 2.0x personal return bias
+  constraint: |domains(walk)| >= 2, hub_dampening(degree > 15)
+  claim     <- LLM_narrate(walk)                    // walk narration prompt
+  c         = (walk[0], walk[-1], claim, walk, domains, dist)
+
+Tier 2 — XSTORE (SynthesisGenerator):
+  a         <- sample(C_facts)                      // personal entity
+  b         <- FAISS_sample(C_wiki)                 // random Wikipedia article
+  claim     <- LLM_bridge(a, b)                     // bridge articulation
+  c         = (a, b, claim, [], domains, dist)
 ```
 
-where a, b in V (graph nodes), claim in Q (natural language), path = [v_1, ..., v_k] is the walk sequence, domains subset of {family, health, work, hobby, ...}, dist = cosine_distance(embed(a), embed(b)).
+Each generator produces `SynthesisCandidate` objects with a shared schema:
+
+```
+c = (a, b, claim, path, domains, dist, generator_tier)
+```
+
+where a, b in V (graph nodes or entity references), claim in Q (natural language), path = [v_1, ..., v_k] is the walk sequence (empty for retrieval/xstore), domains subset of {family, health, work, hobby, ...}, dist = cosine_distance(embed(a), embed(b)).
+
+**Key difference**: Tier 0 (retrieval) extracts structural queries from personal facts via few-shot LLM prompting, then searches FAISS for Wikipedia articles that share the structural pattern. The LLM evaluates adversarially rather than inventing connections. This produces candidates that name specific mechanisms ("conditional dependency", "historical layering") rather than surface metaphors.
+
+**Tier 1 gate**: GraphWalkGenerator requires `count_bridge_edges() >= GRAPH_WALK_MIN_BRIDGE_EDGES` (40). If insufficient bridges exist, Tier 1 produces zero candidates and its quota is filled by Tier 2.
 
 ### 13.2 Filter Function
 
@@ -682,7 +709,18 @@ For convergence updates (existing result r' matched by new path):
   r'.convergence_strength = |r'.unique_paths| * |r'.unique_sources|
 ```
 
-**Code**: `knowledge/synthesis_models.py`, `knowledge/synthesis_filter.py`, `memory/synthesis_memory.py`
+### 13.6 Bridge Feedback (Provisional Edges)
+
+On acceptance, a provisional bridge edge is created in the knowledge graph:
+
+```
+If F(c).status = ACCEPTED:
+  G_{t+1}.E = G_t.E  U  {(c.a, c.b, relation=claim_summary, weight=0.5, provisional=true)}
+```
+
+Provisional bridges mature to full weight (1.0) when independently rediscovered via convergence (Section 13.4). This creates a feedback loop: accepted synthesis insights densify the graph, enabling the walk generator (Tier 1) to produce candidates that cross the personal-wikidata boundary.
+
+**Code**: `knowledge/synthesis_models.py`, `knowledge/synthesis_filter.py`, `knowledge/synthesis_retriever.py`, `knowledge/graph_walk_generator.py`, `knowledge/synthesis_generator.py`, `memory/synthesis_memory.py`
 
 ---
 
@@ -736,4 +774,7 @@ Eight operations. Perceive, interpret, expand, remember, plan, act, audit, learn
 | Pi | Provenance record (session_id, response_mode, prompt_hash, ...) | `memory_storage.py` + `gui/handlers.py` |
 | Sigma | Synthesis memory (accepted SynthesisResult set) | `synthesis_memory.py` (ChromaDB `synthesis_results`) |
 | F | Synthesis filter (7-stage pipeline g_0 . ... . g_6; g_3 has 3 sub-checks; g_5 has 2-pass structure) | `synthesis_filter.py` |
+| Gen_0 | Retrieval synthesis generator (structural query -> FAISS -> adversarial eval) | `knowledge/synthesis_retriever.py` |
+| Gen_1 | Graph walk generator (biased Markov walk -> narration) | `knowledge/graph_walk_generator.py` |
+| Gen_2 | Cross-store synthesis generator (random pairing -> bridge articulation) | `knowledge/synthesis_generator.py` |
 | gate | Multi-stage gating | `processing/gate_system.py` |

@@ -14,18 +14,37 @@ Daemon's synthesis pipeline claims that an AI system can **generate genuinely no
 
 ---
 
-## The Two Synthesis Pathways
+## The Three Synthesis Pathways
 
-### Pathway 1: Shutdown Dreaming (Batch, Offline)
+### Pathway 0: Retrieval-Based Synthesis (Tier 0, Primary)
+**Code:** `shutdown_processor.py:_run_synthesis_dreaming()` → `RetrievalSynthesisGenerator` → `SynthesisFilter` → `SynthesisMemory`
+
+- **When:** Session shutdown (Step 6.8), runs first in three-tier parallel generation
+- **What:** Extracts structural queries from personal facts via few-shot LLM prompting, searches FAISS (40M vectors) for Wikipedia articles sharing the structural pattern, adversarially evaluates the connection. Produces candidates naming specific mechanisms rather than surface metaphors.
+- **Gate:** `SYNTHESIS_GENERATOR_ENABLED=True` AND graph has ≥`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` (20) nodes
+- **Output:** Accepted results stored in `synthesis_results` ChromaDB collection; provisional bridge edges created in knowledge graph
+- **Volume:** ~15 candidates per session (shared across all tiers), expect 0–2 acceptances from this tier
+
+### Pathway 1: Shutdown Dreaming — Graph Walks (Tier 1)
+**Code:** `shutdown_processor.py:_run_synthesis_dreaming()` → `GraphWalkGenerator` → `SynthesisFilter` → `SynthesisMemory`
+
+- **When:** Session shutdown (Step 6.8), runs in parallel with Tiers 0 and 2
+- **What:** Biased Markov random walks on the unified personal+wikidata graph. Node2Vec-style return bias (2.0x toward personal nodes). Hub dampening (degree > 15). Cross-domain walk constraint (>=2 domains). Walk narration prompt gives LLM the full path to interpret.
+- **Gate:** `GRAPH_WALK_ENABLED=True` AND `count_bridge_edges() >= GRAPH_WALK_MIN_BRIDGE_EDGES` (40)
+- **Current status:** Inactive — only 6 quality bridges after cleanup of 129 garbage bridges. Will activate as Tier 0 creates provisional bridge edges on acceptance.
+- **Output:** Accepted results stored in `synthesis_results` ChromaDB collection
+- **Volume:** When active, fills remaining quota after Tier 0; currently 0 candidates
+
+### Pathway 2: Shutdown Dreaming — Cross-Store Pairing (Tier 2, Fallback)
 **Code:** `shutdown_processor.py:_run_synthesis_dreaming()` → `SynthesisGenerator` → `SynthesisFilter` → `SynthesisMemory`
 
-- **When:** Session shutdown (Step 6.8), after conversation storage but before graph save
+- **When:** Session shutdown (Step 6.8), fills remaining candidate quota after Tiers 0 and 1
 - **What:** Samples personal entities from `facts` ChromaDB collection and Wikipedia articles via FAISS (`semantic_search_with_neighbors()` from `knowledge/semantic_search.py`, backed by a 40M-vector IVFPQ index), pairs cross-domain, LLM-articulates bridges, runs 8-stage filter
 - **Gate:** `SYNTHESIS_GENERATOR_ENABLED=True` AND graph has ≥`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` (20) nodes
 - **Output:** Accepted results stored in `synthesis_results` ChromaDB collection
-- **Volume:** ~5 candidates per session, expect 0–2 acceptances
+- **Volume:** Fills remaining quota (~15 candidates minus Tier 0/1 output), expect 0–2 acceptances
 
-### Pathway 2: Proactive Context Surfacing (Real-Time, In-Conversation)
+### Pathway 3: Proactive Context Surfacing (Real-Time, In-Conversation)
 **Code:** `memory/context_surfacer.py:generate_insights()` → domain classification → bridge selection → LLM synthesis
 
 - **When:** Every query (parallel retrieval task), cached per session (LLM fires once)
@@ -34,7 +53,7 @@ Daemon's synthesis pipeline claims that an AI system can **generate genuinely no
 - **Output:** Up to 2 insight strings injected into `[PROACTIVE INSIGHTS]` prompt section
 - **Approach:** Star topology (entities → "user" hub) + keyword domain detection — faster, less rigorous than shutdown dreaming, but surfaces connections while the user is actively thinking about a topic
 
-**Both pathways share the same graph.** The graph grows through fact extraction (conversation → `fact_extractor` → ChromaDB `facts` → `_ingest_fact_to_graph()`), so every conversation enriches the substrate for both synthesis modes.
+**All pathways share the same graph.** The graph grows through fact extraction (conversation → `fact_extractor` → ChromaDB `facts` → `_ingest_fact_to_graph()`) and through synthesis acceptance (provisional bridge edges), so every conversation enriches the substrate for all synthesis modes. The bridge feedback loop means Tier 0 acceptances gradually enable Tier 1 (graph walks) by growing the bridge count toward the 40-edge minimum.
 
 ---
 
@@ -410,22 +429,32 @@ distinguish "filter too tight" from "unlucky sampling" in a single session.
 ```
 
 **What we're measuring:**
-| Metric | Target | Why It Matters |
-|--------|--------|----------------|
-| Candidates generated | ≥ 10 | Generator can sample from facts (ChromaDB) + wiki (FAISS) |
-| Candidates with LLM articulation | ≥ 6 | LLM produces real claims (not all `NO_CONNECTION`) |
-| Stage 0-2 rejections | ≤ 2 | Text quality, domain, distance — generator output is well-formed |
-| Stage 3 rejections (novelty) | 2-5 | Some candidates should be known — full FAISS index catching them |
-| Stage 5 rejections (coherence) | 1-3 | Some candidates should be weak — coherence gate is working |
-| Final acceptances | 1-4 | Realistic acceptance rate (not everything passes) |
+| Metric | Target | Result (2026-04-01) | Status |
+|--------|--------|---------------------|--------|
+| Candidates generated | ≥ 10 | 30 (across 3 tiers) | **PASS** |
+| Candidates with LLM articulation | ≥ 6 | 30 (all) | **PASS** |
+| Stage 0-2 rejections | ≤ 2 | 0 | **PASS** |
+| Stage 3 rejections (novelty) | 2-5 | 12 | **ABOVE TARGET** |
+| Stage 5 rejections (coherence) | 1-3 | 1 | **PASS** |
+| Stage 6 rejections (composite) | — | 13 | — |
+| Final acceptances | 1-4 | 4 | **PASS** |
 
 **Key diagnostic:** If acceptance rate is 0%, the filter is too strict. If
 acceptance rate is >60%, the filter is too loose. Sweet spot: 10-30%.
+Result: 4/30 = 13% — within target band.
 
-**Note on Stage 3:** With the full 40M FAISS index, expect MORE Stage 3
-rejections than you'd see on a subset. This is correct behavior — the novelty
-gate should catch well-known connections. If Stage 3 rejects everything, check
-whether `SYNTHESIS_NOVELTY_KNOWN_THRESHOLD` is too low.
+**Note on Stage 3:** With the full 40M FAISS index, Stage 3 (novelty) and
+Stage 6 (composite) are the primary rejection gates. The novelty gate catches
+candidates whose connections are already documented; composite scoring catches
+candidates with weak multi-signal profiles. The coherence judge now rejects
+far fewer candidates (1 vs 8 in the 303-node baseline) because the retrieval
+generator produces structurally stronger claims.
+
+**Note on three-tier generation:** The 30 candidates break down as: 15 from
+RetrievalSynthesisGenerator (Tier 0), 0 from GraphWalkGenerator (Tier 1,
+inactive — only 6 bridges), 15 from SynthesisGenerator (Tier 2). Tier 0
+produced 2 acceptances with mechanism-naming insights; Tier 2 produced 2
+acceptances with lower-quality but passing insights.
 
 #### Step 3.2 — Simulate Proactive Surfacing
 Run the context surfacer against the populated graph with test queries:
@@ -568,6 +597,39 @@ Update `docs/SYNTHESIS_FILTER.md` with:
 
 ---
 
+## Results Update (2026-04-01)
+
+### Experiment: Retrieval-Based Synthesis vs. Random Pairing
+
+Three experiments were run against production data (30,929 graph nodes, 8,343 edges, 40M FAISS vectors, 2,179 facts):
+
+| Experiment | Generator | Coherence Calibration | Candidates | Accepted | Rate |
+|---|---|---|---|---|---|
+| Baseline (random + rubber-stamp) | SynthesisGenerator | Pre-calibration (accepts WEAK+) | 45 (3x15) | 7 | 16% |
+| Baseline (random + calibrated) | SynthesisGenerator | Post-calibration (MODERATE+ required, mechanism naming) | 45 (3x15) | 0 | 0% |
+| Retrieval + calibrated | 3-tier (Retrieval + Walk + XStore) | Post-calibration | 30 | 4 | 13% |
+
+**Key findings:**
+
+1. **Calibrated coherence judge discriminates.** The same random generator that produced 7/45 acceptances with rubber-stamp judging produces 0/45 with calibrated judging. The pre-calibration coherence judge accepted WEAK claims (surface metaphor); post-calibration requires MODERATE (named mechanism concretely applied to both domains).
+
+2. **Retrieval produces mechanism-naming candidates.** The RetrievalSynthesisGenerator extracts structural queries from personal facts, then adversarially evaluates FAISS results. Accepted insights name specific mechanisms: "historical layering and cultural shifts" (urban geography ++ heritage studies), "conditional dependency" (family financial help ++ welfare dependency). These are qualitatively different from the 303-node baseline's surface-level connections ("brewing ++ gender inequality").
+
+3. **Three-tier head-to-head:** RETRIEVAL 2/15 (13%), WALK 0/0 (inactive, 6 bridges < 40 minimum), XSTORE 2/15 (13%). Same acceptance rate but retrieval insights were higher quality.
+
+4. **Rejection breakdown (30 candidates):** composite_scoring 13, novelty_external 12, coherence_judge 1. Composite scoring is now the primary rejection gate (was coherence at 303 nodes). This indicates the generator produces structurally better claims that pass coherence, but the multi-signal composite catches weak overall profiles.
+
+5. **Bridge feedback loop confirmed.** Accepted insights create provisional bridge edges in the knowledge graph: 129 -> 133 edges after run. As bridges accumulate, the walk generator (Tier 1) will eventually activate.
+
+### Honest Limitations
+
+- **Composite threshold is tight.** At 0.65, candidates with strong coherence but marginal novelty scores fail. May need loosening as retrieval generator matures.
+- **Novelty gate may over-reject retrieval candidates.** Structurally novel connections phrased in Wikipedia-adjacent language score high claim similarity, triggering false novelty rejections.
+- **Structural query diversity needs monitoring.** The few-shot LLM prompt may converge on limited query patterns, reducing the diversity of retrieval candidates over time.
+- **Walk generator inactive.** Only 6 quality bridges after cleanup (was 129 garbage bridges from low-confidence entity mapper). Will activate as the bridge feedback loop grows the bridge count toward 40.
+
+---
+
 ## Why This Proves the Concept Works with AI
 
 The synthesis pipeline tests whether an AI system can do something that traditionally requires human interdisciplinary expertise: spotting structural parallels between unrelated domains.
@@ -604,8 +666,10 @@ This is the minimum viable demonstration that AI-assisted knowledge synthesis is
 | `scripts/generate_calibration_candidates.py` | Generate fresh candidates for labeling |
 | `scripts/verify_synthesis_pipeline.py` | End-to-end verification with pre-defined pairs |
 | `scripts/calibrate_coherence_live.py` | Live LLM calibration with multi-model comparison |
-| `knowledge/synthesis_generator.py` | Cross-store sampling + LLM bridge articulation |
-| `knowledge/synthesis_filter.py` | 8-stage filter pipeline |
+| `knowledge/synthesis_retriever.py` | Tier 0: Structural query extraction + FAISS retrieval + adversarial evaluation |
+| `knowledge/synthesis_generator.py` | Tier 2: Cross-store random sampling + LLM bridge articulation |
+| `knowledge/graph_walk_generator.py` | Tier 1: Biased Markov walk synthesis with hub dampening |
+| `knowledge/synthesis_filter.py` | 8-stage filter pipeline (shared by all tiers) |
 | `knowledge/synthesis_models.py` | Data models (Candidate, Result, StageResult, enums) |
 | `memory/synthesis_memory.py` | ChromaDB persistence + convergence tracking |
 | `memory/context_surfacer.py` | Proactive real-time cross-domain insights |
