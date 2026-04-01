@@ -1085,11 +1085,11 @@ GIT_STATS_ENABLED = bool(int(os.getenv("GIT_STATS_ENABLED", "1" if GIT_STATS_ENA
 # Token Budget (model-aware prompt budget)
 # --------------------------------------------------------------------
 TOKEN_BUDGET_CFG = config.get("token_budget", {})
-PROMPT_TOKEN_BUDGET_DEFAULT: int = int(TOKEN_BUDGET_CFG.get("default", 40000))
+PROMPT_TOKEN_BUDGET_DEFAULT: int = int(TOKEN_BUDGET_CFG.get("default", 15000))
 PROMPT_TOKEN_BUDGET_LOCAL: int = int(TOKEN_BUDGET_CFG.get("local_model", 12000))
 PROMPT_TOKEN_BUDGET_FLOOR: int = int(TOKEN_BUDGET_CFG.get("floor", 8000))
-PROMPT_TOKEN_BUDGET_CEILING: int = int(TOKEN_BUDGET_CFG.get("ceiling", 60000))
-PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION: float = float(TOKEN_BUDGET_CFG.get("context_fraction", 0.25))
+PROMPT_TOKEN_BUDGET_CEILING: int = int(TOKEN_BUDGET_CFG.get("ceiling", 16000))
+PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION: float = float(TOKEN_BUDGET_CFG.get("context_fraction", 0.12))
 _BUDGET_ENV = os.getenv("PROMPT_TOKEN_BUDGET")
 PROMPT_TOKEN_BUDGET_OVERRIDE: Optional[int] = int(_BUDGET_ENV) if _BUDGET_ENV else None
 
@@ -1198,6 +1198,24 @@ SYNTHESIS_GENERATOR_ENABLED = bool(int(os.getenv(
 )))
 
 # --------------------------------------------------------------------
+# Synthesis Retrieval Generator Configuration
+# Retrieval-based synthesis: extract structural queries from personal
+# facts, search FAISS for cross-domain matches, adversarially evaluate.
+# --------------------------------------------------------------------
+SYNTHESIS_RETRIEVAL_CFG = config.get("synthesis_retrieval", {})
+SYNTHESIS_RETRIEVAL_ENABLED: bool = bool(SYNTHESIS_RETRIEVAL_CFG.get("enabled", True))
+SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS: int = int(SYNTHESIS_RETRIEVAL_CFG.get("structural_query_max_tokens", 100))
+SYNTHESIS_RETRIEVAL_K: int = int(SYNTHESIS_RETRIEVAL_CFG.get("retrieval_k", 5))
+SYNTHESIS_RETRIEVAL_MIN_SIMILARITY: float = float(SYNTHESIS_RETRIEVAL_CFG.get("min_similarity", 0.25))
+SYNTHESIS_BRIDGE_ON_ACCEPT: bool = bool(SYNTHESIS_RETRIEVAL_CFG.get("bridge_on_accept", True))
+SYNTHESIS_BRIDGE_RELATION: str = str(SYNTHESIS_RETRIEVAL_CFG.get("bridge_relation", "structural_parallel"))
+
+# Environment variable overrides
+SYNTHESIS_RETRIEVAL_ENABLED = bool(int(os.getenv(
+    "SYNTHESIS_RETRIEVAL_ENABLED", "1" if SYNTHESIS_RETRIEVAL_ENABLED else "0"
+)))
+
+# --------------------------------------------------------------------
 # Wikidata Import Configuration
 # Import a Wikidata subgraph (~50K entities) into the knowledge graph
 # for structured graph walks in synthesis candidate generation.
@@ -1230,6 +1248,8 @@ GRAPH_WALK_MAX_CANDIDATES: int = int(GRAPH_WALK_CFG.get("max_candidates_per_sess
 GRAPH_WALK_BOUNDARY_REQUIRED: bool = bool(GRAPH_WALK_CFG.get("boundary_crossing_required", True))
 GRAPH_WALK_MIN_BRIDGE_EDGES: int = int(GRAPH_WALK_CFG.get("min_bridge_edges", 40))
 GRAPH_WALK_PERSONAL_RETURN_BIAS: float = float(GRAPH_WALK_CFG.get("personal_return_bias", 2.0))
+GRAPH_WALK_HUB_DEGREE_THRESHOLD: int = int(GRAPH_WALK_CFG.get("hub_degree_threshold", 15))
+GRAPH_WALK_MIN_DOMAINS: int = int(GRAPH_WALK_CFG.get("min_walk_domains", 2))
 
 # Environment variable overrides
 GRAPH_WALK_ENABLED = bool(int(os.getenv(

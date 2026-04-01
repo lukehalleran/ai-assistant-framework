@@ -198,8 +198,12 @@ ShutdownProcessor.process_shutdown_memory()
   ├─ Step 7: Open thread processing
   │     Detect resolutions → extract new → enforce cap
   │
-  ├─ Step 8: Synthesis dreaming
-  │     SynthesisGenerator (FAISS wiki search) → SynthesisFilter → SynthesisMemory
+  ├─ Step 8: Synthesis dreaming (three-tier parallel generation)
+  │     Tier 0: RetrievalSynthesisGenerator (structural query → FAISS → adversarial eval)
+  │     Tier 1: GraphWalkGenerator (biased Markov walks, hub-dampened, cross-domain)
+  │     Tier 2: SynthesisGenerator (cross-store sampling, FAISS wiki search)
+  │     All → SynthesisFilter → SynthesisMemory
+  │     On acceptance: provisional bridge edge created (weight=0.0, status="provisional")
   │
   ├─ Step 9: Knowledge graph save (JSON flush)
   └─ Step 10: Cross-collection dedup (dry-run preview only)

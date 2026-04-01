@@ -2016,7 +2016,7 @@ class SynthesisMemory:
 #   _GENERIC_TEMPLATES — compiled regex patterns for vacuous bridge claims
 #   _GENERIC_TOKENS — frozenset of generic buzzwords
 class SynthesisFilter:
-    def __init__(self, chroma_store, model_manager, synthesis_memory=None): ...
+    def __init__(self, chroma_store, model_manager, synthesis_memory=None, graph_memory=None, entity_resolver=None): ...
     async def process_candidate(candidate) -> SynthesisResult:  # Full pipeline, auto-stores accepted
     async def process_batch(candidates) -> dict:
         # Returns: {total, accepted, rejected, rejection_breakdown, accepted_results, avg_stage_times_ms}
@@ -2108,8 +2108,10 @@ class SynthesisGenerator:
     def get_sampling_stats() -> dict:                 # {facts_count, wiki_count, graph_nodes, graph_edges}
 
 # Integration:
-# - Shutdown: step 6.8 in process_shutdown_memory() — after threads, before graph save
+# - Shutdown: step 6.8 — three generators run in parallel (retrieval Tier 0,
+#   graph walk Tier 1, cross-store Tier 2) with independent quotas
 # - Pipeline: generate_candidates() → SynthesisFilter.process_batch() → SynthesisMemory
+# - On acceptance: provisional bridge edge created (weight=0.0, status="provisional")
 # - Graph sparsity guard: skips if graph < SYNTHESIS_GENERATOR_MIN_GRAPH_NODES nodes
 
 # Config (app_config.py):
@@ -2128,6 +2130,44 @@ SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20
 # Tests: 18 unit tests in tests/unit/test_synthesis_generator.py
 # Calibration: 6 tests in tests/test_synthesis_calibration.py
 # Fixtures: tests/fixtures/calibration_candidates.json (72 labeled candidates, 7 tiers)
+```
+
+---
+
+## Retrieval-Based Synthesis Generator **[NEW 2026-04-01]**
+
+```python
+# knowledge/synthesis_retriever.py — Structural query extraction + FAISS search + adversarial eval
+class RetrievalSynthesisGenerator:
+    def __init__(self, chroma_store, model_manager, graph_memory=None, entity_resolver=None): ...
+    async def generate_candidates(count=5) -> List[SynthesisCandidate]:
+        # 1. Sample personal facts from ChromaDB
+        # 2. LLM structural query extraction (few-shot): fact → structural pattern query
+        # 3. FAISS semantic search (40M vectors) using structural query
+        # 4. Adversarial evaluation: LLM judges structural vs surface connection
+        # 5. Package as SynthesisCandidate objects
+    # Same interface as SynthesisGenerator — drop-in replacement
+
+# Config (app_config.py):
+SYNTHESIS_RETRIEVAL_ENABLED = True                   # Master toggle
+SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS = 100          # Max tokens for structural query LLM call
+SYNTHESIS_RETRIEVAL_K = 5                            # FAISS results per structural query
+SYNTHESIS_RETRIEVAL_MIN_SIMILARITY = 0.25            # Min cosine similarity for FAISS results
+SYNTHESIS_BRIDGE_ON_ACCEPT = True                    # Create provisional graph edge on acceptance
+SYNTHESIS_BRIDGE_RELATION = "structural_parallel"    # Relation type for provisional bridges
+
+# Graph walk generator config (app_config.py):
+GRAPH_WALK_HUB_DEGREE_THRESHOLD = 15   # Hub dampening: log-scale penalty above this degree
+GRAPH_WALK_MIN_DOMAINS = 2             # Min distinct domain categories per walk
+
+# YAML (config.yaml):
+# synthesis_retrieval:
+#   enabled: true
+#   structural_query_max_tokens: 100
+#   retrieval_k: 5
+#   min_similarity: 0.25
+#   bridge_on_accept: true
+#   bridge_relation: structural_parallel
 ```
 
 ---

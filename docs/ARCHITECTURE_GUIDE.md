@@ -507,6 +507,20 @@ generated from BFS traversal of relevant entities. For example:
 "Auggie is user's brother. Auggie has a pet named Biscuit. Biscuit is a
 golden retriever."
 
+### Bridge Quality Cleanup
+
+`GraphMemory.prune_garbage_bridges()` removes 5 categories of noise edges
+between personal and wikidata nodes:
+
+1. **mentioned_alongside** — low-signal edges from wiki enrichment
+2. **Low-confidence embedding** — bridge edges with embedding similarity < 0.80
+3. **Misrouted personal relations** — personal-domain predicates (e.g. "brother") incorrectly linking to wikidata nodes
+4. **Short-name/acronym collisions** — entity aliases that matched wikidata entries by coincidence (e.g. "AI" matching both a personal project and a wikidata concept)
+5. **Unstructured predicates** — freeform text edges that don't follow normalized relation patterns
+
+The `WikidataEntityMapper` embedding threshold was also raised from 0.60 to
+0.80, with an exact-match blocklist added to prevent known false positives.
+
 ---
 
 ## 7. Retrieval Pipeline
@@ -1333,7 +1347,8 @@ via the `ClaimIndex`.
 
 ## 21. Synthesis Pipeline
 
-**Files**: `knowledge/synthesis_generator.py`, `knowledge/synthesis_filter.py`,
+**Files**: `knowledge/synthesis_retriever.py`, `knowledge/graph_walk_generator.py`,
+`knowledge/synthesis_generator.py`, `knowledge/synthesis_filter.py`,
 `memory/synthesis_memory.py`, `knowledge/synthesis_models.py`
 **Deep dive**: `SYNTHESIS_FILTER.md`
 
@@ -1341,16 +1356,30 @@ The synthesis pipeline is Daemon's long-term value proposition — automated
 discovery of non-obvious connections between concepts from different
 domains. It runs as a "dreaming" step during session shutdown.
 
-### Candidate Generation
+### Candidate Generation (Three-Tier)
 
-`SynthesisGenerator` produces candidates via cross-store sampling:
+Three generators run in parallel at shutdown, each with independent quotas.
+All produce `SynthesisCandidate` objects for the same filter pipeline.
 
-1. Sample 6 random seeds from personal fact categories → query `facts` (ChromaDB)
-2. Sample 6 random seeds from knowledge categories → query via FAISS (40M Wikipedia vectors; falls back to ChromaDB `wiki_knowledge` if FAISS unavailable)
-3. Form cross-domain pairs (skip same-domain, deduplicate by concept)
-4. LLM bridge articulation: parallel calls asking the LLM to articulate
-   a specific connection or respond `NO_CONNECTION`
-5. Package survivors as `SynthesisCandidate` objects
+**Tier 0 — RetrievalSynthesisGenerator** (`knowledge/synthesis_retriever.py`):
+Structural query extraction (few-shot LLM) → FAISS semantic search (40M
+vectors) → adversarial evaluation. Highest-quality candidates because the
+retrieval query targets structural patterns rather than surface similarity.
+Drop-in replacement interface for `SynthesisGenerator`.
+
+**Tier 1 — GraphWalkGenerator** (`knowledge/graph_walk_generator.py`):
+Biased Markov random walks on the unified personal+wikidata graph.
+Node2Vec-style return bias (2.0x toward personal nodes). Hub dampening
+(log-scale penalty for degree > `GRAPH_WALK_HUB_DEGREE_THRESHOLD`=15)
+prevents walks from being dominated by highly-connected nodes. Cross-domain
+walk constraint requires walks to touch >= `GRAPH_WALK_MIN_DOMAINS`=2
+distinct domain categories. Activated only when bridge edges >= 40.
+
+**Tier 2 — SynthesisGenerator** (`knowledge/synthesis_generator.py`):
+Cross-store sampling from ChromaDB facts + FAISS wiki. Forms cross-domain
+pairs, uses LLM to articulate bridges. Namespace resolution via
+`_resolve_to_graph()` with 4-strategy fallback (EntityResolver → direct ID
+→ slug form → display_name index).
 
 ### 8-Stage Filter Pipeline
 
@@ -1385,7 +1414,10 @@ This stage catches three distinct failure modes:
 
 **Pass 1 (Structural)**: LLM evaluates whether a shared structural
 pattern genuinely exists. Rates INVALID / WEAK / MODERATE / STRONG.
-Minimum MODERATE to pass.
+Minimum MODERATE to pass. Recalibrated prompt distinguishes WEAK (no
+mechanism named, vague bridging language) from MODERATE (names real
+mechanism applied concretely to both domains). Generality is not a flaw
+if application is concrete. `max_tokens` raised 250 → 400.
 
 **Pass 2 (Factual Skeptic)**: Fires only on MODERATE results. Targets
 pseudoscience wrapped in structural language. Binary PASS/FAIL. On FAIL,
@@ -1471,8 +1503,10 @@ Step 7:  Open thread processing — Three phases:
          b. New thread extraction (commitments, deadlines, questions)
          c. Cap enforcement (prune lowest-priority if over max)
 
-Step 8:  Synthesis dreaming — Cross-store candidate generation
-         + 8-stage filter pipeline + convergence tracking
+Step 8:  Synthesis dreaming — Three-tier parallel candidate generation:
+         Tier 0 RetrievalSynthesisGenerator, Tier 1 GraphWalkGenerator,
+         Tier 2 SynthesisGenerator → 8-stage filter → convergence tracking
+         → provisional bridge creation on acceptance
 
 Step 9:  Knowledge graph save — JSON flush (dirty-flag optimization)
 

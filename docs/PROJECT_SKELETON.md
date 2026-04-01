@@ -83,6 +83,7 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/memory_expander.py` - Temporal context expansion + summary drill-down for agentic tool **[NEW 2026-03-26]**
 - `memory/synthesis_memory.py` - Synthesis results persistence + convergence tracking **[NEW 2026-03-28]**
 - `knowledge/synthesis_generator.py` - Cross-store sampling + LLM bridge articulation for synthesis candidates **[NEW 2026-03-28]**
+- `knowledge/synthesis_retriever.py` - RetrievalSynthesisGenerator: structural query extraction + FAISS search + adversarial eval (Tier 0) **[NEW 2026-04-01]**
 - `memory/memory_interface.py` - Protocol contracts
 
 The incomplete V2 `memory/coordinator.py` has been deleted.
@@ -480,7 +481,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
   6.5. Lightweight implementation tracking — file existence only, ~50ms/proposal (ImplementationDetector) [NEW 2026-03-25]
   6.75. Extract open threads via LLM + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
-  6.8. Synthesis dreaming — generate cross-domain candidates via SynthesisGenerator + filter via SynthesisFilter [NEW 2026-03-28]
+  6.8. Synthesis dreaming — three-tier parallel generation: RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) → SynthesisFilter → SynthesisMemory; provisional bridge creation on acceptance [ENHANCED 2026-04-01]
   7. Save knowledge graph + entity aliases + claim index to disk [ENHANCED 2026-03-25]
   8. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
   9. Update UserProfile with user-only facts (entity facts stored in ChromaDB only) [ENHANCED 2026-03]
@@ -3578,7 +3579,7 @@ class SynthesisResult:
 - `get_stats()` → `{total_insights, converging_insights, collection}`
 
 **Filter Pipeline** (`knowledge/synthesis_filter.py`):
-- `SynthesisFilter(chroma_store, model_manager, synthesis_memory=None)`
+- `SynthesisFilter(chroma_store, model_manager, synthesis_memory=None, graph_memory=None, entity_resolver=None)`
 - `async process_candidate(candidate)` → `SynthesisResult` (ACCEPTED or REJECTED)
 - `async process_batch(candidates)` → summary dict with stats and timing
 - Module-level helpers:
@@ -3651,11 +3652,13 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 
 **File References**:
 - `knowledge/synthesis_models.py` — Data models (SynthesisCandidate, StageResult, SynthesisResult, enums)
-- `memory/synthesis_memory.py` — ChromaDB persistence + convergence tracking
-- `knowledge/synthesis_filter.py` — 8-stage async filter pipeline
-- `knowledge/synthesis_generator.py` — Cross-store candidate generation
-- `config/app_config.py` — `SYNTHESIS_*` and `SYNTHESIS_GENERATOR_*` constants
-- `config/config.yaml` — `synthesis:` and `synthesis_generator:` sections
+- `memory/synthesis_memory.py` — ChromaDB persistence + convergence tracking + provisional bridge creation
+- `knowledge/synthesis_filter.py` — 8-stage async filter pipeline (accepts graph_memory + entity_resolver)
+- `knowledge/synthesis_retriever.py` — RetrievalSynthesisGenerator: structural query → FAISS → adversarial eval (Tier 0)
+- `knowledge/graph_walk_generator.py` — GraphWalkGenerator: hub-dampened Markov walks (Tier 1)
+- `knowledge/synthesis_generator.py` — SynthesisGenerator: cross-store candidate generation (Tier 2)
+- `config/app_config.py` — `SYNTHESIS_*`, `SYNTHESIS_GENERATOR_*`, `SYNTHESIS_RETRIEVAL_*`, `GRAPH_WALK_*` constants
+- `config/config.yaml` — `synthesis:`, `synthesis_generator:`, `synthesis_retrieval:`, `graph_walk:` sections
 
 ---
 
@@ -5453,9 +5456,17 @@ if IS_FROZEN:
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2026-03-28
+**Last Updated**: 2026-04-01
 
-**Recent Changes** (2026-03-28):
+**Recent Changes** (2026-04-01):
+- **Retrieval-Based Synthesis Generator** — `knowledge/synthesis_retriever.py`: RetrievalSynthesisGenerator (Tier 0) with structural query extraction (few-shot LLM), FAISS semantic search (40M vectors), adversarial evaluation. Drop-in replacement interface. Config: `SYNTHESIS_RETRIEVAL_*` constants; YAML section `synthesis_retrieval`.
+- **Three-Tier Parallel Synthesis** — Shutdown step 6.8 now runs RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) with independent quotas. Provisional bridge creation on filter acceptance (weight=0.0, status="provisional").
+- **Bridge Quality Cleanup** — `GraphMemory.prune_garbage_bridges()` removes 5 categories of noise edges. `WikidataEntityMapper` embedding threshold raised 0.60→0.80 with exact-match blocklist.
+- **GraphWalkGenerator Improvements** — Hub dampening (log-scale penalty for degree > 15). Cross-domain walk constraint (min 2 domain categories). Config: `GRAPH_WALK_HUB_DEGREE_THRESHOLD`, `GRAPH_WALK_MIN_DOMAINS`.
+- **Coherence Judge Recalibration** — Prompt distinguishes WEAK (no mechanism named) from MODERATE (names real mechanism concretely). max_tokens raised 250→400.
+- **Retrieval-Aware Filter Stages** — Stage 2 (distance) inverted scoring for retrieval candidates. Stage 3 (novelty) skips claim-similarity gate for retrieval candidates.
+
+**Previous Changes** (2026-03-28):
 - **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks via FAISS wiki search, 40M vectors: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
 - **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts (ChromaDB) + wiki (FAISS `semantic_search_with_neighbors()`, 40M vectors), LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 72 labeled candidates in 7 tiers.
 - **Context Management Fixes** (Sections 2.7, 2.8b) — Post-budget floor for recent conversations (`PROMPT_MIN_RECENT_FLOOR=5`), budget-enforced accumulated context in agentic controller (`_append_accumulated()` trims oldest rounds), budget-aware final prompt assembly (trims low-value sections to preserve conversation history + agentic results).
