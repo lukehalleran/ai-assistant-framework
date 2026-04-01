@@ -37,15 +37,19 @@ sparsity guard (`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES`).
 | File | Purpose |
 |------|---------|
 | `knowledge/synthesis_models.py` | Data models: SynthesisCandidate, SynthesisResult, StageResult, CoherenceLevel, CandidateStatus |
-| `knowledge/synthesis_generator.py` | Cross-store sampling (ChromaDB facts + FAISS wiki) + LLM bridge articulation → SynthesisCandidate[] |
+| `knowledge/synthesis_retriever.py` | RetrievalSynthesisGenerator: structural query extraction + FAISS search + adversarial evaluation (Tier 0) |
+| `knowledge/graph_walk_generator.py` | GraphWalkGenerator: biased Markov walks with hub dampening + cross-domain constraint (Tier 1) |
+| `knowledge/synthesis_generator.py` | SynthesisGenerator: cross-store sampling (ChromaDB facts + FAISS wiki) + LLM bridge articulation (Tier 2) |
 | `knowledge/synthesis_filter.py` | 8-stage filter pipeline + FAISS wiki novelty checks + template patterns + helpers |
-| `memory/synthesis_memory.py` | ChromaDB persistence (synthesis_results collection) + convergence tracking |
-| `config/app_config.py` | All `SYNTHESIS_*` constants (filter + generator) |
-| `memory/shutdown_processor.py` | Integration point — calls generator then filter at shutdown |
+| `memory/synthesis_memory.py` | ChromaDB persistence (synthesis_results collection) + convergence tracking + provisional bridge creation |
+| `config/app_config.py` | All `SYNTHESIS_*` constants (filter + generator + retrieval) |
+| `memory/shutdown_processor.py` | Integration point — runs all three generators then filter at shutdown |
 | `tests/test_synthesis_calibration.py` | Mock calibration suite (6 tests) |
 | `tests/unit/test_synthesis_generator.py` | Generator unit tests (18 tests) |
+| `tests/unit/test_graph_walk_generator.py` | Graph walk generator tests (38 tests) |
 | `tests/fixtures/calibration_candidates.json` | 72 labeled candidates in 7 tiers |
 | `scripts/calibrate_coherence_live.py` | Live LLM calibration with multi-model comparison |
+| `scripts/test_end_to_end_synthesis.py` | E2E test: all three generators head-to-head with per-generator acceptance stats |
 
 ---
 
@@ -103,8 +107,49 @@ STRONG   = 1.0    # predictive cross-domain connection
 
 ## Candidate Generation
 
-`SynthesisGenerator` produces candidates via cross-store sampling (not
-graph walks — that's a future enhancement).
+Three generators produce candidates in parallel at shutdown, each with
+independent quotas. All emit `SynthesisCandidate` objects for the same
+8-stage filter pipeline.
+
+### Tier 0: RetrievalSynthesisGenerator (Retrieval-Based)
+
+`knowledge/synthesis_retriever.py` — highest-quality candidates via
+structural query extraction and FAISS semantic search.
+
+**Pipeline:**
+1. LLM structural query extraction (few-shot): given a personal fact,
+   generate a query describing the *structural pattern* (e.g. "systems
+   where load-bearing stress drives adaptive restructuring").
+2. FAISS semantic search against 40M Wikipedia vectors using the
+   structural query. Top-K results filtered by minimum similarity.
+3. Adversarial evaluation: LLM judges whether the connection is
+   genuinely structural or surface-level.
+4. Package survivors as `SynthesisCandidate` objects.
+
+**Config:** `SYNTHESIS_RETRIEVAL_ENABLED`, `SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS` (default 100),
+`SYNTHESIS_RETRIEVAL_K` (default 5), `SYNTHESIS_RETRIEVAL_MIN_SIMILARITY` (default 0.25).
+
+### Tier 1: GraphWalkGenerator (Wikidata Graph Walks)
+
+`knowledge/graph_walk_generator.py` — biased Markov random walks on the
+unified personal+wikidata graph. Node2Vec-style return bias (2.0x toward
+personal nodes when in wikidata territory).
+
+**Improvements:**
+- **Hub dampening**: Log-scale penalty for nodes with degree >
+  `GRAPH_WALK_HUB_DEGREE_THRESHOLD` (default 15). Prevents walks from
+  being dominated by highly-connected hub nodes.
+- **Cross-domain walk constraint**: Walks must touch at least
+  `GRAPH_WALK_MIN_DOMAINS` (default 2) distinct domain categories.
+  Single-domain walks are discarded.
+
+**Config:** `GRAPH_WALK_ENABLED`, `GRAPH_WALK_MIN_BRIDGE_EDGES` (default 40),
+`GRAPH_WALK_HUB_DEGREE_THRESHOLD` (default 15), `GRAPH_WALK_MIN_DOMAINS` (default 2).
+
+### Tier 2: SynthesisGenerator (Cross-Store Sampling)
+
+`knowledge/synthesis_generator.py` — the original generator. Cross-store
+sampling from ChromaDB facts + FAISS wiki.
 
 **Pipeline:**
 1. Sample 6 random query seeds from `_PERSONAL_QUERY_SEEDS` (e.g. "my family
@@ -122,21 +167,40 @@ graph walks — that's a future enhancement).
 5. Package survivors as `SynthesisCandidate` objects with synthetic walk
    paths and graph-based endpoint distances.
 
+**Namespace resolution:** `_resolve_to_graph()` uses a 4-strategy fallback:
+EntityResolver → direct ID → slug form → display_name index (30K entries).
+`_compute_endpoint_distance()` returns 0.85 for both-resolved-no-path
+instead of the old 0.55 fallback.
+
 **Config:** `SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION` (default 5),
 `SYNTHESIS_GENERATOR_LLM_CONCURRENCY` (default 5).
+
+### Shutdown Orchestration
+
+`_run_synthesis_dreaming()` in `shutdown_processor.py` runs all three
+generators with independent quotas. Each generator fills its allocation,
+then all candidates pass through the same `SynthesisFilter` pipeline.
 
 ---
 
 ## Data Flow
 
 ```
-SynthesisGenerator.generate_candidates()
-  ├── Sample facts (ChromaDB) + wiki articles (FAISS, 40M vectors)
-  ├── Form cross-domain pairs
-  ├── LLM bridge articulation (parallel, semaphore)
-  └── Package as SynthesisCandidate[]
-        │
-        ▼
+Parallel Candidate Generation (shutdown step 6.8):
+  ├── [Tier 0] RetrievalSynthesisGenerator
+  │     ├── Structural query extraction (few-shot LLM)
+  │     ├── FAISS semantic search (40M vectors)
+  │     └── Adversarial evaluation → SynthesisCandidate[]
+  ├── [Tier 1] GraphWalkGenerator (if bridges >= 40)
+  │     ├── Biased Markov walks (hub-dampened, cross-domain)
+  │     └── Walk narration (LLM) → SynthesisCandidate[]
+  └── [Tier 2] SynthesisGenerator
+        ├── Sample facts (ChromaDB) + wiki articles (FAISS, 40M vectors)
+        ├── Form cross-domain pairs
+        ├── LLM bridge articulation (parallel, semaphore)
+        └── Package as SynthesisCandidate[]
+              │
+              ▼ (all generators feed the same pipeline)
 SynthesisFilter.process_candidate(candidate)
   ├── Stage 0: Text Sanity          (~0ms, regex)
   ├── Stage 1: Domain Crossing      (~1ms, metadata)
@@ -197,6 +261,11 @@ nonsensically far (no embedding relationship).
 
 **Score:** Peaks at midpoint (0.55), drops toward edges.
 
+**Retrieval-aware scoring:** For candidates from `RetrievalSynthesisGenerator`,
+distance scoring is inverted — low distance (high semantic similarity) is
+*good*, because the retrieval pipeline already selected structurally relevant
+results. Standard generators penalize low distance as "trivially close."
+
 **Example rejection:**
 ```
 Concepts: "socks" <-> "dark matter"
@@ -215,6 +284,11 @@ Similarity scores are cosine similarity (0-1) returned directly from FAISS,
 extracted by `_extract_faiss_similarity()`.
 
 **Hard gate:** `claim_sim > 0.60` (`SYNTHESIS_NOVELTY_KNOWN_THRESHOLD`, IVFPQ-calibrated)
+
+**Retrieval-aware skip:** For candidates from `RetrievalSynthesisGenerator`,
+the claim-similarity sub-check is skipped. Retrieval candidates derive their
+claims from wiki content by design, so high claim similarity is expected and
+does not indicate a rehash.
 
 **Example rejection:**
 ```
@@ -335,7 +409,15 @@ Rating: <INVALID|WEAK|MODERATE|STRONG>
 **Model:** `SYNTHESIS_COHERENCE_MODEL` (default: `sonnet-4.5`). Calibrated
 against GPT-4o-mini — Sonnet 4.5 achieves higher F1 on the fixture set.
 
-**LLM parameters:** `max_tokens=250`, `temperature=0.1`
+**Recalibrated prompt standards:**
+- **WEAK**: No mechanism named, vague bridging language ("both involve
+  feedback loops" without specifying *which* feedback loops).
+- **MODERATE**: Names a real mechanism and applies it concretely to both
+  domains. Generality is not a flaw if application is concrete.
+- Additional generic bridge templates added to catch vacuous claims that
+  previously slipped through as MODERATE.
+
+**LLM parameters:** `max_tokens=400` (raised from 250), `temperature=0.1`
 
 #### Pass 2: Factual Skeptic
 
@@ -405,11 +487,23 @@ novelty = 0.25 * (1 - claim_sim)           # claim novelty
 
 **Gate:** `composite >= 0.65` (`SYNTHESIS_COMPOSITE_MIN_SCORE`)
 
-### Stage 7: Storage
+### Stage 7: Storage + Provisional Bridge Creation
 
 Accepted results stored in `synthesis_results` ChromaDB collection.
 If a similar insight already exists, convergence tracking is updated instead
 of creating a duplicate.
+
+**Provisional bridge creation:** When `SYNTHESIS_BRIDGE_ON_ACCEPT` is enabled,
+accepted candidates also create a graph edge between their endpoint entities
+via `SynthesisMemory.create_bridge_edge()`. The edge is created with
+`weight=0.0` and `metadata.status="provisional"`, using the relation type
+from `SYNTHESIS_BRIDGE_RELATION` (default: `"structural_parallel"`).
+Provisional bridges mature when rediscovered: subsequent `add_relation()`
+calls on the same edge increment the weight, eventually promoting the
+bridge from provisional to established.
+
+This requires `SynthesisFilter.__init__` to accept `graph_memory` and
+`entity_resolver` parameters.
 
 ---
 
@@ -615,7 +709,7 @@ All constants live in `config/app_config.py` under `SYNTHESIS_CFG` and
 | `SYNTHESIS_LOG_ALL_REJECTIONS` | `True` | — | Log every rejection |
 | `SYNTHESIS_DEFAULT_BATCH_SIZE` | `100` | — | Batch runner size |
 
-### Generator
+### Generator (Cross-Store)
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
@@ -623,3 +717,24 @@ All constants live in `config/app_config.py` under `SYNTHESIS_CFG` and
 | `SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION` | `5` | Target candidates per shutdown |
 | `SYNTHESIS_GENERATOR_LLM_CONCURRENCY` | `5` | Max parallel bridge articulation calls |
 | `SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` | `20` | Graph sparsity guard |
+
+### Retrieval Generator
+
+| Constant | Default | Purpose |
+|----------|---------|---------|
+| `SYNTHESIS_RETRIEVAL_ENABLED` | `True` | Master toggle for retrieval-based synthesis |
+| `SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS` | `100` | Max tokens for structural query extraction LLM call |
+| `SYNTHESIS_RETRIEVAL_K` | `5` | Number of FAISS results per structural query |
+| `SYNTHESIS_RETRIEVAL_MIN_SIMILARITY` | `0.25` | Minimum cosine similarity for FAISS results |
+| `SYNTHESIS_BRIDGE_ON_ACCEPT` | `True` | Create provisional graph edge on filter acceptance |
+| `SYNTHESIS_BRIDGE_RELATION` | `"structural_parallel"` | Relation type for provisional bridge edges |
+
+### Graph Walk Generator
+
+| Constant | Default | Purpose |
+|----------|---------|---------|
+| `GRAPH_WALK_ENABLED` | `True` | Master toggle for graph walk synthesis |
+| `GRAPH_WALK_MIN_BRIDGE_EDGES` | `40` | Minimum bridge edges to activate walk generator |
+| `GRAPH_WALK_PERSONAL_RETURN_BIAS` | `2.0` | Node2Vec-style bias toward personal nodes |
+| `GRAPH_WALK_HUB_DEGREE_THRESHOLD` | `15` | Degree above which hub dampening applies (log-scale penalty) |
+| `GRAPH_WALK_MIN_DOMAINS` | `2` | Minimum distinct domain categories a walk must touch |

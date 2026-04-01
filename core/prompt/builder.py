@@ -505,6 +505,7 @@ class UnifiedPromptBuilder:
                           crisis_level: Optional[str] = None,
                           retrieval_overrides: Optional[Dict[str, int]] = None,
                           weight_overrides: Optional[Dict[str, float]] = None,
+                          intent_type: Optional[str] = None,
                           **kwargs) -> Dict[str, Any]:
         """
         Build a complete prompt context for the given user input.
@@ -738,7 +739,7 @@ class UnifiedPromptBuilder:
 
             # Web search (triggered based on query analysis, suppressed during crisis)
             tasks["web_search"] = asyncio.create_task(
-                _timed_task("web_search", self.context_gatherer._get_web_search_results(user_input, crisis_level))
+                _timed_task("web_search", self.context_gatherer._get_web_search_results(user_input, crisis_level, intent_type=intent_type))
             )
 
             # Gather all results with timeout
@@ -1298,6 +1299,12 @@ class UnifiedPromptBuilder:
             retrieval_overrides = context.intent.retrieval_overrides or {}
             weight_overrides = context.intent.weight_overrides or {}
 
+        # Extract intent type for web search gating
+        _intent_type = None
+        if context.intent is not None:
+            _it = getattr(context.intent, 'intent_type', None)
+            _intent_type = getattr(_it, 'value', str(_it)) if _it else None
+
         # Map ContextResult to build_prompt parameters
         return await self.build_prompt(
             user_input=context.processed_query,
@@ -1310,6 +1317,7 @@ class UnifiedPromptBuilder:
             crisis_level=context.crisis_level_str,
             retrieval_overrides=retrieval_overrides,
             weight_overrides=weight_overrides,
+            intent_type=_intent_type,
         )
 
     async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None,

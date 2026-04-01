@@ -1221,6 +1221,10 @@ The user is processing/analyzing, open to engagement.
         # Store memory_id_map for citation extraction
         self._current_memory_id_map = prompt_ctx.get('memory_id_map', {})
 
+        # Forward intent classification to prompt_ctx for agentic gate decisions
+        if context.intent is not None:
+            prompt_ctx['intent'] = context.intent
+
         # --- 3) Assemble final prompt ---
         user_input = context.file_context if context.has_files else context.original_query
         prompt = self.prompt_builder._assemble_prompt(

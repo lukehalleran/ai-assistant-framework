@@ -67,7 +67,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: claude-opus-4.6
+  active: sonnet-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -245,11 +245,11 @@ session_diff:
   max_committed: 20
   max_uncommitted: 20
 token_budget:
-  default: 40000
+  default: 15000
   local_model: 12000
   floor: 8000
-  ceiling: 60000
-  context_fraction: 0.25
+  ceiling: 16000
+  context_fraction: 0.12
 llm_compression:
   enabled: true
   model: gpt-4o-mini
@@ -312,13 +312,20 @@ synthesis_generator:
   candidates_per_session: 5
   llm_concurrency: 5
   min_graph_nodes: 20
+synthesis_retrieval:
+  enabled: true
+  structural_query_max_tokens: 100
+  retrieval_k: 5
+  min_similarity: 0.25
+  bridge_on_accept: true
+  bridge_relation: structural_parallel
 wikidata_import:
   enabled: true
   persist_path: data/wikidata_cache.json
   entities_per_domain: 5000
   max_total_entities: 50000
   sparql_batch_size: 500
-  embedding_match_threshold: 0.60
+  embedding_match_threshold: 0.6
 graph_walk:
   enabled: true
   max_walk_length: 8

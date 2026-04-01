@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import random
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -107,6 +108,14 @@ class SynthesisGenerator:
         self.model_manager = model_manager
         self.graph_memory = graph_memory
         self.entity_resolver = entity_resolver
+
+        # Build display_name → node_id index for graph resolution
+        self._display_name_index: Dict[str, str] = {}
+        if graph_memory:
+            for nid, data in graph_memory.graph.nodes(data=True):
+                dn = data.get("display_name", "").lower().strip()
+                if dn and dn not in self._display_name_index:
+                    self._display_name_index[dn] = nid
 
     async def generate_candidates(
         self, count: int = 5
@@ -620,30 +629,61 @@ class SynthesisGenerator:
     # Distance Computation
     # ------------------------------------------------------------------
 
+    def _resolve_to_graph(self, concept_name: str) -> Optional[str]:
+        """Try multiple strategies to resolve a concept name to a graph node ID.
+
+        Strategies (in order):
+        1. EntityResolver alias lookup
+        2. Direct node ID lookup (already lowercase)
+        3. Slugified form (spaces→underscores, strip punctuation)
+        4. Display name index (case-insensitive match on display_name)
+        """
+        if not self.graph_memory:
+            return None
+
+        name = concept_name.lower().strip()
+
+        # Strategy 1: EntityResolver
+        if self.entity_resolver:
+            resolved = self.entity_resolver.resolve(name)
+            if resolved and resolved in self.graph_memory.graph:
+                return resolved
+
+        # Strategy 2: Direct node ID lookup
+        if name in self.graph_memory.graph:
+            return name
+
+        # Strategy 3: Slugified form
+        slug = re.sub(r"[^\w\s]", "", name)
+        slug = re.sub(r"\s+", "_", slug).strip("_")
+        if slug and slug in self.graph_memory.graph:
+            return slug
+
+        # Strategy 4: Display name index
+        if name in self._display_name_index:
+            return self._display_name_index[name]
+
+        return None
+
     def _compute_endpoint_distance(self, concept_a: str, concept_b: str) -> float:
         """Compute distance between two concepts.
 
-        Uses graph shortest path if available, falls back to a default
-        mid-range value suitable for the filter's Stage 2.
+        Uses multi-strategy graph resolution to find node IDs, then
+        shortest path for real distance. Falls back to 0.55 only when
+        both concepts are genuinely absent from the graph.
         """
         if self.graph_memory:
             try:
-                # Try to resolve entities in the graph
-                a_id = concept_a.lower().strip()
-                b_id = concept_b.lower().strip()
+                a_id = self._resolve_to_graph(concept_a)
+                b_id = self._resolve_to_graph(concept_b)
 
-                if self.entity_resolver:
-                    a_resolved = self.entity_resolver.resolve(a_id)
-                    b_resolved = self.entity_resolver.resolve(b_id)
-                    a_id = a_resolved or a_id
-                    b_id = b_resolved or b_id
-
-                path = self.graph_memory.shortest_path(a_id, b_id)
-                if path and len(path) >= 2:
-                    # Normalize: path length / max_reasonable_distance
-                    # Longer path = more distant = higher score
-                    normalized = min(len(path) / 6.0, 1.0)
-                    return max(normalized, 0.15)  # floor above distance_min
+                if a_id and b_id:
+                    path = self.graph_memory.shortest_path(a_id, b_id)
+                    if path and len(path) >= 2:
+                        normalized = min(len(path) / 6.0, 1.0)
+                        return max(normalized, 0.15)
+                    # Both in graph but no path = structurally distant
+                    return 0.85
             except Exception:
                 pass
 

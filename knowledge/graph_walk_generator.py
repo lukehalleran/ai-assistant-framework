@@ -120,7 +120,14 @@ class GraphWalkGenerator:
         Prefers nodes with mixed neighborhoods (have both personal and
         wikidata neighbors), which are more likely to produce
         boundary-crossing walks.
+
+        Hub dampening: nodes with degree > HUB_DEGREE_THRESHOLD get a
+        log-scale penalty to prevent high-degree nodes (like "states")
+        from dominating seed selection.
         """
+        import math
+        from config.app_config import GRAPH_WALK_HUB_DEGREE_THRESHOLD
+
         candidates = []
         for nid, data in self.graph.graph.nodes(data=True):
             source = data.get("metadata", {}).get("source", "personal")
@@ -141,8 +148,16 @@ class GraphWalkGenerator:
             )
             degree = len(neighbors)
 
+            # Hub dampening: penalize high-degree nodes logarithmically
+            if degree > GRAPH_WALK_HUB_DEGREE_THRESHOLD:
+                effective_degree = GRAPH_WALK_HUB_DEGREE_THRESHOLD + math.log2(
+                    degree - GRAPH_WALK_HUB_DEGREE_THRESHOLD + 1
+                )
+            else:
+                effective_degree = degree
+
             # Prioritize nodes near bridge edges
-            score = degree
+            score = effective_degree
             if has_wikidata_neighbor:
                 score += 100
 
@@ -255,8 +270,10 @@ class GraphWalkGenerator:
           - Ends at a personal node (different from start)
           - Passes through at least one non-personal node
           - Length >= min_path_length
+          - Walk touches ≥ GRAPH_WALK_MIN_DOMAINS distinct domain categories
+            (counts both endpoint domains + wikidata domain_category metadata)
         """
-        from config.app_config import GRAPH_WALK_MIN_PATH
+        from config.app_config import GRAPH_WALK_MIN_PATH, GRAPH_WALK_MIN_DOMAINS
 
         if len(walk) < GRAPH_WALK_MIN_PATH:
             return False
@@ -271,11 +288,33 @@ class GraphWalkGenerator:
             return False
 
         # Must cross boundary at least once
+        has_non_personal = False
         for node in walk[1:-1]:
             if self._get_node_source(node) != "personal":
-                return True
+                has_non_personal = True
+                break
 
-        return False
+        if not has_non_personal:
+            return False
+
+        # Cross-domain constraint: collect domains from all walk nodes
+        domains = set()
+        for node in walk:
+            data = self.graph.graph.nodes.get(node, {})
+            # Wikidata nodes have domain_category in metadata
+            domain_cat = data.get("metadata", {}).get("domain_category", "")
+            if domain_cat:
+                domains.add(domain_cat)
+            else:
+                # Personal nodes: classify via user edge relations
+                domain = self._classify_endpoint_domain(node)
+                if domain and domain not in ("personal", "unknown", "other"):
+                    domains.add(domain)
+
+        if len(domains) < GRAPH_WALK_MIN_DOMAINS:
+            return False
+
+        return True
 
     def _get_node_source(self, entity_id: str) -> str:
         """Returns 'personal', 'wikidata', or 'wiki_retrieved'."""
@@ -362,8 +401,14 @@ class GraphWalkGenerator:
         if len(claim.split()) < 5:
             return None
 
-        # Build candidate
-        source_domains = {domain_a, domain_b} - {"unknown", "personal", "other"}
+        # Build candidate — collect domains from all walk nodes for richer signal
+        source_domains = {domain_a, domain_b}
+        for node in walk[1:-1]:
+            data = self.graph.graph.nodes.get(node, {})
+            dc = data.get("metadata", {}).get("domain_category", "")
+            if dc:
+                source_domains.add(dc)
+        source_domains -= {"unknown", "personal", "other", ""}
         if len(source_domains) < 1:
             source_domains = {"personal", "knowledge"}
 

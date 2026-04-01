@@ -1185,14 +1185,15 @@ class ShutdownProcessor:
     async def _run_synthesis_dreaming(self):
         """Step 6.8: Generate and filter cross-domain synthesis candidates.
 
-        Uses GraphWalkGenerator (if graph has enough bridge edges) with
-        SynthesisGenerator as fallback.  Both produce SynthesisCandidate
-        objects for the same filter pipeline.
+        Runs all three generators with independent quotas for head-to-head
+        comparison. All candidates pooled into a single filter pass.
+        Generators: RetrievalSynthesisGenerator, GraphWalkGenerator, SynthesisGenerator.
         """
         try:
             from config.app_config import (
                 SYNTHESIS_GENERATOR_ENABLED,
                 SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
+                SYNTHESIS_RETRIEVAL_ENABLED,
                 GRAPH_WALK_ENABLED,
                 GRAPH_WALK_MAX_CANDIDATES,
                 GRAPH_WALK_MIN_BRIDGE_EDGES,
@@ -1200,7 +1201,6 @@ class ShutdownProcessor:
             if not SYNTHESIS_GENERATOR_ENABLED:
                 return
 
-            from knowledge.synthesis_generator import SynthesisGenerator
             from knowledge.synthesis_filter import SynthesisFilter
             from memory.synthesis_memory import SynthesisMemory
 
@@ -1210,7 +1210,25 @@ class ShutdownProcessor:
 
             candidates = []
 
-            # Try graph walk generator first (needs bridge edges)
+            # Tier 0: Retrieval-based generator (primary)
+            if SYNTHESIS_RETRIEVAL_ENABLED:
+                from knowledge.synthesis_retriever import RetrievalSynthesisGenerator
+                retrieval_gen = RetrievalSynthesisGenerator(
+                    chroma_store=self.chroma_store,
+                    model_manager=self.model_manager,
+                    graph_memory=graph_memory,
+                    entity_resolver=entity_resolver,
+                )
+                retrieval_candidates = await retrieval_gen.generate_candidates(
+                    count=SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
+                )
+                candidates.extend(retrieval_candidates)
+                logger.info(
+                    "[Shutdown] Retrieval generator: %d candidates",
+                    len(retrieval_candidates),
+                )
+
+            # Tier 1: Graph walk generator (if bridge edges sufficient)
             if GRAPH_WALK_ENABLED and graph_memory and entity_resolver:
                 bridge_count = graph_memory.count_bridge_edges()
                 if bridge_count >= GRAPH_WALK_MIN_BRIDGE_EDGES:
@@ -1234,7 +1252,8 @@ class ShutdownProcessor:
                         bridge_count, GRAPH_WALK_MIN_BRIDGE_EDGES,
                     )
 
-            # Fill remaining quota with existing SynthesisGenerator
+            # Tier 2: Cross-store random sampling (fallback)
+            from knowledge.synthesis_generator import SynthesisGenerator
             remaining = SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION - len(candidates)
             if remaining > 0:
                 generator = SynthesisGenerator(
@@ -1255,6 +1274,8 @@ class ShutdownProcessor:
                 chroma_store=self.chroma_store,
                 model_manager=self.model_manager,
                 synthesis_memory=synthesis_memory,
+                graph_memory=graph_memory,
+                entity_resolver=entity_resolver,
             )
             results = await filter_pipeline.process_batch(candidates)
 

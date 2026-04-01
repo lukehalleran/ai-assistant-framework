@@ -44,6 +44,7 @@ class CorpusManager:
             self.max_entries = CORPUS_MAX_ENTRIES
         self.memories = []
         self.summaries = []
+        self._episodic_cache = None  # Cached filtered+sorted episodic list
         logger.info(f"[CorpusManager] Initializing with file: {self.corpus_file}")
         self.corpus = self._load_corpus()
         logger.info(f"[CorpusManager] After init, corpus has {len(self.corpus)} entries")
@@ -172,7 +173,7 @@ class CorpusManager:
             entry["topic"] = topic
 
         self.corpus.append(entry)
-
+        self._episodic_cache = None  # Invalidate cache
 
         # Trim if too large (preserve most recent max_entries)
         if len(self.corpus) > self.max_entries:
@@ -181,17 +182,22 @@ class CorpusManager:
         self.save_corpus()
 
 
+    def _get_episodic_sorted(self) -> List[Dict]:
+        """Return filtered+sorted episodic list, cached until corpus changes."""
+        if self._episodic_cache is None:
+            episodic = [
+                e for e in self.corpus
+                if e.get("type") not in ("summary", "reflection")
+                and "@summary" not in e.get("tags", [])
+            ]
+            self._episodic_cache = sorted(episodic, key=lambda x: x.get('timestamp', datetime.min), reverse=True)
+        return self._episodic_cache
+
     def get_recent_memories(self, count: int = 3) -> List[Dict]:
         """Get most recent episodic conversation memories (excludes summaries and reflections)"""
-        # Filter out both summaries and reflections to get actual conversation turns
-        # Reflections have type='reflection' but may have @summary tag, so check both
-        episodic = [
-            e for e in self.corpus
-            if e.get("type") not in ("summary", "reflection")
-            and "@summary" not in e.get("tags", [])
-        ]
-        result = sorted(episodic, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:count]
-        logger.debug(f"[CorpusManager] Returning {len(result)} recent episodic memories from {len(episodic)} entries (filtered out summaries + reflections)")
+        cached = self._get_episodic_sorted()
+        result = cached[:count]
+        logger.debug(f"[CorpusManager] Returning {len(result)} recent episodic memories from {len(cached)} entries (filtered out summaries + reflections)")
         return result
 
 
@@ -236,6 +242,7 @@ class CorpusManager:
             }
         # persist in the same list/file that get_summaries() actually reads
         self.corpus.append(summary)
+        self._episodic_cache = None  # Invalidate cache
         # bound size like other entries
         if len(self.corpus) > self.max_entries:
             self.corpus = self.corpus[-self.max_entries:]

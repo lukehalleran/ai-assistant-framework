@@ -140,13 +140,19 @@ class EntityResolver:
             with open(self.aliases_path, "r", encoding="utf-8") as f:
                 aliases_data = json.load(f)
             count = 0
-            for entity_id, aliases in aliases_data.items():
-                eid = entity_id.lower().strip()
-                for alias in aliases:
-                    a_lower = alias.lower().strip()
-                    if a_lower:
-                        self.graph.register_alias(a_lower, eid)
-                        count += 1
+            # Use bulk_import to suppress auto-saves while rebuilding in-memory
+            # alias index from the persisted file (no graph changes to flush).
+            with self.graph.bulk_import():
+                for entity_id, aliases in aliases_data.items():
+                    eid = entity_id.lower().strip()
+                    for alias in aliases:
+                        a_lower = alias.lower().strip()
+                        if a_lower:
+                            self.graph.register_alias(a_lower, eid)
+                            count += 1
+            # Clear dirty flag — we just loaded what's already on disk.
+            self.graph._dirty = False
+            self.graph._modification_count = 0
             logger.info(f"[EntityResolver] Loaded {count} external aliases from {self.aliases_path}")
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"[EntityResolver] Failed to load aliases from {self.aliases_path}: {e}")

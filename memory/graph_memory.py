@@ -340,8 +340,14 @@ class GraphMemory:
         payload = {"nodes": nodes, "edges": edges}
 
         try:
-            with open(self.persist_path, "w", encoding="utf-8") as f:
+            # Atomic write: write to temp file, then rename.
+            # Prevents data loss if the process is killed mid-write.
+            tmp_path = self.persist_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 _json_dump(payload, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.persist_path)
             self._dirty = False
             self._modification_count = 0
             logger.info(f"[GraphMemory] Saved {len(nodes)} nodes, {len(edges)} edges to {self.persist_path}")
@@ -422,6 +428,115 @@ class GraphMemory:
             if src_source != tgt_source:
                 count += 1
         return count
+
+    def prune_garbage_bridges(self, dry_run: bool = True) -> dict:
+        """Remove low-quality bridge edges between personal and wikidata nodes.
+
+        Targets five categories of noise:
+        1. mentioned_alongside edges from wiki_retrieved enrichment (session noise)
+        2. wikidata_bridge edges with bridge_confidence < 0.80 (low-sim embedding matches)
+        3. Fact-ingestion edges where personal relations (pets, dad, etc.) wrongly
+           target wikidata entities (entity resolution collisions)
+        4. Edges where either endpoint is a short common word that collided with
+           a wikidata acronym (cats→CATS, ice→ICE)
+        5. Unstructured fact predicates crossing to wikidata (verb-phrase relations
+           like upcoming_project, believes_X, terminal_shows, etc.)
+
+        Returns dict with counts of edges removed per category.
+        """
+        # Personal-fact relations that should never cross to wikidata
+        _PERSONAL_ONLY_RELATIONS = frozenset({
+            "pets", "pet", "dad", "mom", "parent", "brother", "sister",
+            "likes_man", "fixed", "ask_about_feelings", "expresses_emotion",
+            "feels_productive", "feels_better", "got_up_earlier",
+            "perception_of_snap_cuts", "user_connection",
+        })
+        # Known structural wikidata relations (these are legitimate cross-provenance)
+        _STRUCTURAL_RELATIONS = frozenset({
+            "has_part", "part_of", "main_subject", "instance_of", "subclass_of",
+            "related_to", "located_in", "country", "field_of_work",
+        })
+
+        to_remove = []
+        categories = {
+            "mentioned_alongside": 0, "low_confidence_bridge": 0,
+            "misrouted_personal": 0, "short_name_collision": 0,
+            "unstructured_predicate": 0,
+        }
+
+        for ekey, edge in list(self._edge_index.items()):
+            src_data = self.graph.nodes.get(edge.source_id, {})
+            tgt_data = self.graph.nodes.get(edge.target_id, {})
+            src_source = src_data.get("metadata", {}).get("source", "personal")
+            tgt_source = tgt_data.get("metadata", {}).get("source", "personal")
+
+            # Only look at cross-provenance edges
+            if src_source == tgt_source:
+                continue
+            is_bridge = (src_source == "wikidata") != (tgt_source == "wikidata")
+            if not is_bridge:
+                continue
+
+            reason = None
+
+            # Category 1: mentioned_alongside noise
+            if edge.relation == "mentioned_alongside":
+                reason = "mentioned_alongside"
+
+            # Category 2: low-confidence embedding bridges
+            if not reason:
+                emeta = edge.metadata or {}
+                if emeta.get("source") == "wikidata_bridge":
+                    conf = emeta.get("bridge_confidence", 1.0)
+                    if conf < 0.80:
+                        reason = "low_confidence_bridge"
+
+            # Category 3: personal relations that crossed to wikidata
+            if not reason:
+                if edge.relation in _PERSONAL_ONLY_RELATIONS:
+                    reason = "misrouted_personal"
+
+            # Category 4: short/common entity name collisions (acronym false positives)
+            if not reason:
+                personal_id = edge.source_id if src_source != "wikidata" else edge.target_id
+                _ACRONYM_COLLISIONS = frozenset({
+                    "cats", "cat", "ice", "man", "today", "crazy", "think",
+                    "thought", "six", "one", "part", "area", "time", "track",
+                })
+                if len(personal_id) < 4 or personal_id in _ACRONYM_COLLISIONS:
+                    reason = "short_name_collision"
+
+            # Category 5: unstructured fact predicates crossing to wikidata
+            if not reason:
+                emeta = edge.metadata or {}
+                has_bridge_meta = emeta.get("source") in ("wikidata_bridge", "wiki_retrieved")
+                if not has_bridge_meta and edge.relation not in _STRUCTURAL_RELATIONS:
+                    reason = "unstructured_predicate"
+
+            if reason:
+                to_remove.append((ekey, edge, reason))
+                categories[reason] = categories.get(reason, 0) + 1
+
+        if dry_run:
+            logger.info(
+                f"[GraphMemory] Bridge cleanup DRY RUN: would remove "
+                f"{len(to_remove)} edges — {categories}"
+            )
+            for ekey, edge, reason in to_remove[:10]:
+                s_dn = self.graph.nodes.get(edge.source_id, {}).get("display_name", edge.source_id)
+                t_dn = self.graph.nodes.get(edge.target_id, {}).get("display_name", edge.target_id)
+                logger.info(f"  [{reason}] {s_dn} --[{edge.relation}]--> {t_dn}")
+        else:
+            for ekey, edge, reason in to_remove:
+                del self._edge_index[ekey]
+                if self.graph.has_edge(edge.source_id, edge.target_id):
+                    self.graph.remove_edge(edge.source_id, edge.target_id)
+            self._mark_dirty()
+            logger.info(
+                f"[GraphMemory] Bridge cleanup: removed {len(to_remove)} edges — {categories}"
+            )
+
+        return {"removed": len(to_remove), "categories": categories, "dry_run": dry_run}
 
     def most_connected(self, n: int = 10) -> list[tuple[str, int]]:
         """Top N entities by total degree (in + out edges)."""

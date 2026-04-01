@@ -81,7 +81,7 @@ class WikidataEntityMapper:
 
     def map_personal_to_wikidata(
         self,
-        embedding_threshold: float = 0.60,
+        embedding_threshold: float = 0.80,
         use_embeddings: bool = True,
     ) -> list[dict]:
         """Find mappings between personal entities and Wikidata entities.
@@ -137,14 +137,31 @@ class WikidataEntityMapper:
 
         return matches
 
+    # Common words that produce false-positive exact matches (e.g. "cats" →
+    # Cloud-Aerosol Transport System, "man" → Wikidata entity "Man").
+    # These are short common words or abbreviations that collide with Wikidata
+    # acronyms/labels across completely unrelated domains.
+    _EXACT_MATCH_BLOCKLIST = frozenset({
+        "man", "cats", "cat", "ice", "today", "crazy", "six", "part",
+        "other", "one", "area", "time", "track", "experiment", "think",
+        "thought", "reflections", "momentum", "work", "rest",
+    })
+
     def _exact_match(self, personal_entity: dict) -> Optional[dict]:
-        """Check if personal entity name or aliases exactly match a Wikidata label/alias."""
+        """Check if personal entity name or aliases exactly match a Wikidata label/alias.
+
+        Skips names that are too short (< 4 chars) or on the common-word
+        blocklist to avoid false positives from acronym/homonym collisions.
+        """
         names_to_check = [personal_entity["display"].lower().strip()]
         names_to_check.extend(a.lower().strip() for a in personal_entity.get("aliases", []))
-        # Also try the entity ID itself
         names_to_check.append(personal_entity["id"])
 
         for name in names_to_check:
+            if len(name) < 4:
+                continue
+            if name in self._EXACT_MATCH_BLOCKLIST:
+                continue
             if name in self._wiki_label_index:
                 qid = self._wiki_label_index[name]
                 wd = self.wikidata[qid]

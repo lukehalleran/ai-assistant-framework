@@ -542,12 +542,14 @@ async def handle_submit(
         _matched_entities = set()
 
         # --- Tier 1: Keyword heuristics (instant, no LLM) ---
+        # Only unambiguous computation terms — avoid common English words
+        # that trigger false positives (e.g. "I mean", "expand on that", "plot of the movie")
         _computation_keywords = [
             'calculate', 'compute', 'solve', 'integral', 'derivative', 'equation',
-            'fibonacci', 'factorial', 'prime', 'mean', 'median', 'standard deviation',
-            'matrix', 'vector', 'plot', 'graph', 'chart', 'numpy', 'pandas', 'sympy',
-            'statistics', 'regression', 'correlation', 'sum of', 'product of',
-            'evaluate', 'simplify', 'expand', 'factor', 'differentiate', 'integrate'
+            'fibonacci', 'factorial', 'median', 'standard deviation',
+            'matrix', 'numpy', 'pandas', 'sympy',
+            'regression', 'correlation', 'sum of', 'product of',
+            'simplify', 'differentiate', 'integrate',
         ]
         needs_computation = any(kw in _lower for kw in _computation_keywords)
 
@@ -661,6 +663,19 @@ async def handle_submit(
                     logger.warning(f"[Handle Submit] Agentic trigger check failed: {e}")
                     import traceback
                     traceback.print_exc()
+                    should_use_agentic = False
+                    search_terms = []
+
+        # --- Intent-based veto: skip agentic for casual/meta queries even if keyword matched ---
+        if should_use_agentic:
+            _intent_info = raw_context.get("intent") if raw_context else None
+            if _intent_info:
+                _intent_type = getattr(_intent_info, 'intent_type', None) if not isinstance(_intent_info, dict) else _intent_info.get('intent_type')
+                _intent_conf = getattr(_intent_info, 'confidence', 0) if not isinstance(_intent_info, dict) else _intent_info.get('confidence', 0)
+                _veto_intents = {'meta_conversational', 'casual_social'}
+                _type_val = getattr(_intent_type, 'value', str(_intent_type)) if _intent_type else ''
+                if _type_val in _veto_intents and _intent_conf >= 0.75:
+                    logger.info(f"[Handle Submit] Agentic VETOED by intent classifier: {_intent_type} (conf={_intent_conf:.2f})")
                     should_use_agentic = False
                     search_terms = []
 
