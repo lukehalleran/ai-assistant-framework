@@ -99,6 +99,10 @@ _GENERIC_TEMPLATES = [
         r"(?:just as|much like|similar to) .{5,40},? (?:so too|similarly|likewise)",
         r"(?:at its|at their) core,? (?:is|are) (?:really|essentially|fundamentally)",
         r"can be (?:seen|viewed|understood|thought of) as (?:a form|an instance|a type) of",
+        r"(?:can )?serve[sd]? as (?:a |the )?(?:microcosm|metaphor|mirror|lens|window)",
+        r"can be (?:viewed|seen|understood|analyzed) through the lens of",
+        r"(?:pursuit|process) of (?:improvement|growth|development|self-improvement)",
+        r"can (?:influence|affect|impact|shape) .{1,30} through (?:social|cultural|group) (?:dynamics|forces|pressures)",
     ]
 ]
 
@@ -144,10 +148,14 @@ class SynthesisFilter:
         chroma_store,
         model_manager,
         synthesis_memory: Optional[SynthesisMemory] = None,
+        graph_memory=None,
+        entity_resolver=None,
     ):
         self.store = chroma_store
         self.model_manager = model_manager
         self.memory = synthesis_memory or SynthesisMemory(chroma_store)
+        self.graph_memory = graph_memory
+        self.entity_resolver = entity_resolver
 
         # Pipeline stage registry -- order matters
         self._stages = [
@@ -205,6 +213,17 @@ class SynthesisFilter:
             )
         except Exception as e:
             logger.error(f"Failed to store accepted synthesis result: {e}")
+
+        # Create provisional bridge edge in graph (Option B)
+        if self.graph_memory and self.entity_resolver:
+            try:
+                bridge_key = self.memory.create_bridge_edge(
+                    result, self.graph_memory, self.entity_resolver,
+                )
+                if bridge_key:
+                    logger.info(f"[SYNTH BRIDGE] Created: {bridge_key}")
+            except Exception as e:
+                logger.warning(f"[SYNTH BRIDGE] Failed (non-fatal): {e}")
 
         return result
 
@@ -318,9 +337,37 @@ class SynthesisFilter:
         )
 
     async def _stage_2_semantic_distance(self, result: SynthesisResult) -> StageResult:
-        """Reject candidates with endpoint distance outside acceptable range."""
-        dist = result.candidate.endpoint_distance
+        """Reject candidates with endpoint distance outside acceptable range.
 
+        Retrieval-based candidates (walk_path starts with "retrieval") use
+        inverted scoring: low distance = high FAISS similarity = good match.
+        Random-pairing candidates use mid-range peak scoring.
+        """
+        dist = result.candidate.endpoint_distance
+        is_retrieval = (
+            result.candidate.walk_path
+            and len(result.candidate.walk_path) >= 3
+            and result.candidate.walk_path[0] == "retrieval"
+        )
+
+        # Retrieval candidates: low distance means relevant retrieval, not trivial overlap
+        if is_retrieval:
+            if dist > SYNTHESIS_DISTANCE_MAX:
+                return StageResult(
+                    stage_name="semantic_distance",
+                    passed=False,
+                    reason=f"Distance {dist:.3f} > {SYNTHESIS_DISTANCE_MAX} (retrieval too distant)",
+                )
+            # Score: higher similarity (lower distance) = better retrieval
+            distance_score = max(0.1, 1.0 - dist)
+            return StageResult(
+                stage_name="semantic_distance",
+                passed=True,
+                score=distance_score,
+                metadata={"distance": dist, "scoring": "retrieval_inverted"},
+            )
+
+        # Random-pairing candidates: original mid-range peak scoring
         if dist < SYNTHESIS_DISTANCE_MIN:
             return StageResult(
                 stage_name="semantic_distance",
@@ -335,7 +382,6 @@ class SynthesisFilter:
                 reason=f"Distance {dist:.3f} > {SYNTHESIS_DISTANCE_MAX} (nonsensical)",
             )
 
-        # Score: peak at middle of range, lower toward edges
         range_mid = (SYNTHESIS_DISTANCE_MIN + SYNTHESIS_DISTANCE_MAX) / 2
         range_half = (SYNTHESIS_DISTANCE_MAX - SYNTHESIS_DISTANCE_MIN) / 2
         distance_score = 1.0 - abs(dist - range_mid) / range_half
@@ -344,7 +390,7 @@ class SynthesisFilter:
             stage_name="semantic_distance",
             passed=True,
             score=distance_score,
-            metadata={"distance": dist, "range": [SYNTHESIS_DISTANCE_MIN, SYNTHESIS_DISTANCE_MAX]},
+            metadata={"distance": dist, "scoring": "midrange_peak"},
         )
 
     async def _stage_3_novelty_external(self, result: SynthesisResult) -> StageResult:
@@ -360,6 +406,14 @@ class SynthesisFilter:
         claim = result.candidate.connection_claim
         concept_a = result.candidate.concept_a
         concept_b = result.candidate.concept_b
+
+        # Retrieval candidates derive claims from wiki content, so claim-similarity
+        # is expected to be high. Skip claim gate for retrieval; keep co-occurrence.
+        is_retrieval = (
+            result.candidate.walk_path
+            and len(result.candidate.walk_path) >= 3
+            and result.candidate.walk_path[0] == "retrieval"
+        )
 
         # --- Sub-check 1: Claim similarity via FAISS ---
         try:
@@ -377,8 +431,8 @@ class SynthesisFilter:
         if claim_results:
             result.nearest_known_external = claim_results[0].get("content", claim_results[0].get("text", ""))[:200]
 
-        # Hard gate: direct claim rehash
-        if claim_sim > SYNTHESIS_NOVELTY_KNOWN_THRESHOLD:
+        # Hard gate: direct claim rehash (skip for retrieval — claims are derived from wiki)
+        if not is_retrieval and claim_sim > SYNTHESIS_NOVELTY_KNOWN_THRESHOLD:
             return StageResult(
                 stage_name="novelty_external",
                 passed=False,
@@ -494,25 +548,17 @@ class SynthesisFilter:
             f"Concept A: {concept_a}\n"
             f"Concept B: {concept_b}\n"
             f"Claimed connection: {claim}\n\n"
-            f"These concepts are from different domains — that is expected and desired. "
-            f"Your job is to evaluate the SPECIFIC MECHANISM or SHARED STRUCTURE described, "
-            f"not whether cross-domain connections are valid in general.\n\n"
-            f"Key distinction: A connection that identifies a shared mathematical pattern, "
-            f"feedback loop, optimization curve, threshold dynamic, or structural isomorphism "
-            f"across domains is MODERATE or STRONG — even if the two systems operate through "
-            f"different physical substrates. Only rate WEAK if the connection is pure metaphor "
-            f"with no identifiable shared process.\n\n"
-            f"First, identify the specific mechanism or structural pattern claimed "
-            f"(e.g., negative feedback, diminishing returns, threshold collapse, competitive selection).\n"
-            f"Then, write one sentence on the strongest reason it might be WRONG.\n"
-            f"Then, write one sentence on what makes it genuinely insightful.\n\n"
-            f"Finally, choose exactly ONE rating:\n"
-            f"INVALID - Factually wrong, or pure wordplay with no shared process at any level of abstraction\n"
-            f"WEAK - No specific shared mechanism identified; only a surface-level metaphor or vague gesture at similarity\n"
-            f"MODERATE - Identifies a real shared structural pattern (feedback loop, optimization curve, phase transition, etc.) that operates in both domains, even if through different substrates\n"
-            f"STRONG - A compelling, specific connection where understanding one system generates testable predictions about the other\n\n"
-            f"Format your response as:\n"
-            f"Mechanism: <the specific shared pattern or process claimed>\n"
+            f"WEAK vs MODERATE distinction:\n"
+            f"- WEAK: No mechanism named, OR mechanism is described so vaguely it says "
+            f"nothing concrete ('both involve systems', 'can be seen as a form of', "
+            f"'serves as a microcosm'). The claim is bridging language without content.\n"
+            f"- MODERATE: Names a real, specific mechanism (e.g., confirmation bias, "
+            f"diminishing returns, circadian regulation, attachment dynamics) AND explains "
+            f"how it concretely operates in both domains. A general mechanism applied "
+            f"specifically to both domains is MODERATE — generality is not a flaw if the "
+            f"application is concrete.\n"
+            f"- STRONG: Understanding one domain generates testable predictions about the other.\n\n"
+            f"Mechanism: <the specific pattern or process claimed>\n"
             f"Against: <strongest criticism>\n"
             f"For: <what makes it insightful>\n"
             f"Rating: <INVALID|WEAK|MODERATE|STRONG>"
@@ -522,8 +568,8 @@ class SynthesisFilter:
             response = await self.model_manager.generate_once(
                 prompt=prompt_1,
                 model_name=SYNTHESIS_COHERENCE_MODEL,
-                system_prompt="You evaluate cross-domain knowledge connections. Focus on whether a shared structural pattern genuinely exists, not on whether the domains seem related. Be skeptical of vague claims but generous toward specific structural parallels.",
-                max_tokens=250,
+                system_prompt="You evaluate cross-domain knowledge connections. Rate WEAK only when no real mechanism is named. Rate MODERATE when a named mechanism is concretely applied to both domains.",
+                max_tokens=300,
                 temperature=0.1,
             )
         except Exception as e:

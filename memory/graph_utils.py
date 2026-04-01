@@ -134,21 +134,50 @@ def rank_expansion_candidates(
     return [name for _, name in scored[:max_terms]]
 
 
-def extract_graph_entities(text: str, resolver) -> Set[str]:
+def extract_graph_entities(text: str, resolver, graph_memory=None) -> Set[str]:
     """Extract entity IDs from text using alias resolution.
 
     Checks trigrams, bigrams, then single words against the resolver's
     alias index.  Returns a set of canonical entity IDs.
 
+    Single-word matches are filtered: generic concept/wikidata nodes are
+    excluded to prevent common English words (e.g. "speed", "test") from
+    polluting query expansion with irrelevant entities.
+
     Args:
         text: Input text to scan for entity mentions
         resolver: EntityResolver (or any object with a .resolve(str)->Optional[str] method)
+        graph_memory: Optional GraphMemory — if provided, single-word matches
+            are filtered to only include personal entity types (person, pet, etc.)
 
     Returns:
         Set of canonical entity IDs found in the text
     """
     if not text or not resolver:
         return set()
+
+    # Entity types that are bulk-imported concepts — single-word matches
+    # against these are almost always false positives (e.g. "speed", "test").
+    _CONCEPT_TYPES = frozenset({"concept", "wikidata_entity"})
+
+    # Common English words that should never resolve as entities on their own.
+    # These cause false positives in query expansion (e.g. "speed test" →
+    # the node "speed" → user's pet, coworker, etc. via graph walk).
+    # Named entities (Flapjack, Auggie, Portland) aren't in this set.
+    _COMMON_WORDS = _STOPWORDS | frozenset({
+        "test", "speed", "light", "water", "fire", "time", "work",
+        "part", "point", "line", "end", "run", "set", "day", "way",
+        "back", "long", "high", "old", "new", "big", "good", "bad",
+        "first", "last", "next", "little", "much", "right", "left",
+        "same", "well", "also", "just", "only", "still", "even",
+        "here", "there", "now", "then", "over", "down", "after",
+        "before", "between", "under", "look", "give", "take", "make",
+        "come", "going", "doing", "thing", "really", "getting",
+        "feel", "feeling", "trying", "keep", "start", "stop",
+        "need", "want", "like", "love", "hate", "mean", "kind",
+        "sort", "type", "form", "plan", "code", "data", "system",
+        "model", "graph", "node", "edge", "query", "search",
+    })
 
     # Strip punctuation from each word for cleaner matching
     words = [re.sub(r"[^\w\s]", "", w) for w in text.lower().split()]
@@ -163,12 +192,19 @@ def extract_graph_entities(text: str, resolver) -> Set[str]:
             if eid:
                 entity_ids.add(eid)
 
-    # Then single words (skip stopwords and short tokens)
+    # Then single words (skip stopwords, short tokens, and common English words)
     for w in words:
-        if w not in _STOPWORDS and len(w) > 2:
-            eid = resolver.resolve(w)
-            if eid:
-                entity_ids.add(eid)
+        if w in _COMMON_WORDS or len(w) <= 2:
+            continue
+        eid = resolver.resolve(w)
+        if eid:
+            # Skip bulk-imported concept nodes (wikidata)
+            if graph_memory:
+                node = graph_memory.get_entity(eid)
+                etype = getattr(node, 'entity_type', None) if node else None
+                if etype in _CONCEPT_TYPES:
+                    continue
+            entity_ids.add(eid)
 
     return entity_ids
 

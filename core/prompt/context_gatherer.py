@@ -1279,7 +1279,7 @@ class ContextGatherer:
             from memory.graph_utils import extract_graph_entities, rank_expansion_candidates
 
             effective_max = min(max_terms, GRAPH_QUERY_EXPANSION_MAX_TERMS)
-            query_entities = extract_graph_entities(query, resolver)
+            query_entities = extract_graph_entities(query, resolver, graph_memory=graph)
             if not query_entities:
                 return query
 
@@ -1942,7 +1942,8 @@ class ContextGatherer:
     async def _get_web_search_results(
         self,
         query: str,
-        crisis_level: Optional[str] = None
+        crisis_level: Optional[str] = None,
+        intent_type: Optional[str] = None,
     ) -> Optional[Any]:
         """
         Get web search results if the query triggers a search.
@@ -1953,6 +1954,7 @@ class ContextGatherer:
         Args:
             query: User query to analyze and potentially search
             crisis_level: Current tone/crisis level (HIGH/MEDIUM suppresses search)
+            intent_type: Intent classifier result (e.g. "casual_social") — skips search for non-search intents
 
         Returns:
             WebSearchResult if search was triggered and successful, None otherwise
@@ -1960,6 +1962,12 @@ class ContextGatherer:
         # Check if web search is enabled
         if not WEB_SEARCH_ENABLED:
             logger.debug("[ContextGatherer] Web search disabled in config")
+            return None
+
+        # Skip web search for intents that never need it
+        _no_search_intents = {"casual_social", "meta_conversational", "emotional_support", "general"}
+        if intent_type and str(intent_type) in _no_search_intents:
+            logger.debug(f"[ContextGatherer] Web search skipped for intent={intent_type}")
             return None
 
         # Check crisis suppression (also done in trigger, but early exit saves time)

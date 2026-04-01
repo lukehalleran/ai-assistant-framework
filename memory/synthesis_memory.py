@@ -193,6 +193,80 @@ class SynthesisMemory:
             logger.error(f"Error fetching recurring results: {e}")
             return []
 
+    def create_bridge_edge(
+        self,
+        result: SynthesisResult,
+        graph_memory,
+        entity_resolver,
+    ) -> str:
+        """Create a provisional bridge edge in the knowledge graph for an accepted result.
+
+        Provisional bridges start at weight=0.0 and only mature when
+        independently rediscovered (convergence tracking detects new path
+        to same claim, incrementing weight via add_relation dedup).
+
+        Returns edge key if created, empty string on failure.
+        """
+        from config.app_config import SYNTHESIS_BRIDGE_ON_ACCEPT, SYNTHESIS_BRIDGE_RELATION
+
+        if not SYNTHESIS_BRIDGE_ON_ACCEPT or not graph_memory or not entity_resolver:
+            return ""
+
+        concept_a = result.candidate.concept_a
+        concept_b = result.candidate.concept_b
+
+        try:
+            # Resolve personal entity (concept_a)
+            source_id = entity_resolver.resolve_or_create(
+                mention=concept_a,
+                entity_type="concept",
+                display_name=concept_a,
+            )
+
+            # Resolve/create wiki entity (concept_b)
+            target_id = entity_resolver.resolve(concept_b.lower().strip())
+            if not target_id:
+                from memory.graph_models import GraphNode
+                target_id = concept_b.lower().strip().replace(" ", "_")
+                graph_memory.add_entity(GraphNode(
+                    entity_id=target_id,
+                    display_name=concept_b,
+                    entity_type="concept",
+                    metadata={
+                        "source": "synthesis_discovery",
+                    },
+                ))
+
+            # Provisional bridge: weight=0.0, matures on rediscovery
+            from memory.graph_models import GraphEdge
+            from datetime import datetime
+
+            edge = GraphEdge(
+                source_id=source_id,
+                relation=SYNTHESIS_BRIDGE_RELATION,
+                target_id=target_id,
+                weight=0.0,
+                truth_score=result.coherence_level.value if result.coherence_level else 0.5,
+                metadata={
+                    "source": "synthesis_discovery",
+                    "status": "provisional",
+                    "coherence_level": result.coherence_level.name if result.coherence_level else "UNKNOWN",
+                    "composite_score": result.composite_score,
+                    "connection_claim": result.candidate.connection_claim[:200],
+                    "discovery_session": datetime.now().isoformat(),
+                },
+            )
+
+            graph_memory.add_relation(edge)
+            logger.info(
+                f"[SYNTH BRIDGE] Provisional: {source_id} --[{SYNTHESIS_BRIDGE_RELATION}]--> {target_id}"
+            )
+            return edge.edge_key()
+
+        except Exception as e:
+            logger.warning(f"[SYNTH BRIDGE] Failed (non-fatal): {e}")
+            return ""
+
     def get_stats(self) -> dict:
         """Return summary stats about synthesis memory."""
         try:
