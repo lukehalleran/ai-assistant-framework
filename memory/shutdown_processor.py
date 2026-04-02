@@ -23,7 +23,9 @@ Module Contract
   - _generate_proposals(session_conversations) — goal-directed code change proposals
   - _check_implementation_tracking() — lightweight proposal implementation detection
   - _process_open_threads(session_conversations) — resolution detection → extraction → cap enforcement
-  - _run_synthesis_dreaming() — cross-domain candidate generation + filter pipeline [async]
+  - _run_synthesis_dreaming() — cross-domain candidate generation + filter pipeline [async];
+    auto-halts if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD (checked via
+    synthesis_memory.get_audit_stats() before generation)
   - _save_knowledge_graph() — flush graph + aliases to disk
   - _run_cross_collection_dedup() — dry-run preview only (never auto-deletes)
 - Note: Entity facts (non-user subjects) go to ChromaDB only, NOT to UserProfile.
@@ -1188,6 +1190,9 @@ class ShutdownProcessor:
         Runs all three generators with independent quotas for head-to-head
         comparison. All candidates pooled into a single filter pass.
         Generators: RetrievalSynthesisGenerator, GraphWalkGenerator, SynthesisGenerator.
+
+        Auto-halt: if audit queue FP rate exceeds threshold with sufficient
+        graded data, synthesis is skipped until FP rate is addressed.
         """
         try:
             from config.app_config import (
@@ -1197,9 +1202,30 @@ class ShutdownProcessor:
                 GRAPH_WALK_ENABLED,
                 GRAPH_WALK_MAX_CANDIDATES,
                 GRAPH_WALK_MIN_BRIDGE_EDGES,
+                SYNTHESIS_AUDIT_ENABLED,
             )
             if not SYNTHESIS_GENERATOR_ENABLED:
                 return
+
+            # Auto-halt check: skip synthesis if FP rate too high
+            if SYNTHESIS_AUDIT_ENABLED:
+                try:
+                    from memory.synthesis_memory import SynthesisMemory
+                    audit_mem = SynthesisMemory(self.chroma_store)
+                    audit_stats = audit_mem.get_audit_stats()
+                    if audit_stats.get("auto_halt", False):
+                        logger.warning(
+                            "[Shutdown] Synthesis HALTED by audit queue — "
+                            "FP rate %.1f%% exceeds threshold %.1f%% "
+                            "(graded: %d, min: %d). Fix quality before re-enabling.",
+                            audit_stats["fp_rate"] * 100,
+                            audit_stats["fp_halt_threshold"] * 100,
+                            audit_stats["total_graded"],
+                            audit_stats["min_graded_for_halt"],
+                        )
+                        return
+                except Exception as e:
+                    logger.debug(f"[Shutdown] Audit check skipped: {e}")
 
             from knowledge.synthesis_filter import SynthesisFilter
             from memory.synthesis_memory import SynthesisMemory

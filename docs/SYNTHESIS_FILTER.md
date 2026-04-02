@@ -28,7 +28,9 @@ strengthens confidence in it.
 
 **When it runs:** `shutdown_processor.py` Step 6.8, after thread extraction
 and before graph save. Gated by `SYNTHESIS_GENERATOR_ENABLED` and graph
-sparsity guard (`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES`).
+sparsity guard (`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES`). Additionally,
+auto-halts if the human audit FP rate exceeds `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`
+(requires at least `SYNTHESIS_AUDIT_MIN_GRADED` graded results).
 
 ---
 
@@ -41,11 +43,12 @@ sparsity guard (`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES`).
 | `knowledge/graph_walk_generator.py` | GraphWalkGenerator: biased Markov walks with hub dampening + cross-domain constraint (Tier 1) |
 | `knowledge/synthesis_generator.py` | SynthesisGenerator: cross-store sampling (ChromaDB facts + FAISS wiki) + LLM bridge articulation (Tier 2) |
 | `knowledge/synthesis_filter.py` | 8-stage filter pipeline + FAISS wiki novelty checks + template patterns + helpers |
-| `memory/synthesis_memory.py` | ChromaDB persistence (synthesis_results collection) + convergence tracking + provisional bridge creation |
+| `memory/synthesis_memory.py` | ChromaDB persistence (synthesis_results collection) + convergence tracking + provisional bridge creation + audit queue (human grading, FP/FN review) |
 | `config/app_config.py` | All `SYNTHESIS_*` constants (filter + generator + retrieval) |
 | `memory/shutdown_processor.py` | Integration point — runs all three generators then filter at shutdown |
 | `tests/test_synthesis_calibration.py` | Mock calibration suite (6 tests) |
 | `tests/unit/test_synthesis_generator.py` | Generator unit tests (18 tests) |
+| `tests/unit/test_synthesis_audit.py` | Audit queue unit tests (27 tests) |
 | `tests/unit/test_graph_walk_generator.py` | Graph walk generator tests (38 tests) |
 | `tests/fixtures/calibration_candidates.json` | 72 labeled candidates in 7 tiers |
 | `scripts/calibrate_coherence_live.py` | Live LLM calibration with multi-model comparison |
@@ -92,6 +95,11 @@ rejection_reason: str
 unique_paths: Set[str]                  # path_hashes that found this insight
 unique_sources: Set[str]                # "concept_a|concept_b" pairs
 convergence_strength: float             # |paths| * |sources|
+
+# Audit fields [NEW 2026-04-01]
+human_grade: Optional[str]              # TRUE_POSITIVE, FALSE_POSITIVE, or FALSE_NEGATIVE
+graded_at: Optional[datetime]           # When the human graded it
+grade_notes: str                        # Free-text grading notes
 ```
 
 ### CoherenceLevel
@@ -671,6 +679,64 @@ real math but misapplies deterministic chaos theory to stochastic markets.
 - Original prompt (pre-rewrite): Sonnet F1=30.8%, 4o-mini F1=42.9%
 - Rewritten prompt (structural focus): Sonnet F1=90.9%, 4o-mini F1=85.7%
 - + Factual skeptic: Sonnet F1=95.2%, 4o-mini F1=90.9%
+
+---
+
+## Audit Queue (Human-in-the-Loop Grading)
+
+The synthesis pipeline produces candidates automatically, but precision can
+only be truly measured by human review. The audit queue provides a blind
+grading workflow with auto-halt capability.
+
+### How It Works
+
+1. **Accepted results** are stored with `human_grade=None` (ungraded).
+2. **Composite-rejected candidates** (those that pass all gates up to Stage 6
+   but score below `SYNTHESIS_COMPOSITE_MIN_SCORE`) are stored via
+   `SynthesisFilter.process_batch()` → `synthesis_memory.store_rejected_for_audit()`
+   for false-negative (FN) review.
+3. The **GUI "Synthesis" tab** presents a blind review queue: the grader sees
+   the claim, concepts, and coherence level but grades without knowing the
+   pipeline's original verdict.
+4. Grades: `TRUE_POSITIVE` (genuinely novel insight), `FALSE_POSITIVE`
+   (noise that slipped through), `FALSE_NEGATIVE` (good insight the pipeline
+   wrongly rejected).
+5. **Auto-halt**: At shutdown, before running synthesis dreaming,
+   `shutdown_processor.py` checks `synthesis_memory.get_audit_stats()`.
+   If `fp_rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` and
+   `graded >= SYNTHESIS_AUDIT_MIN_GRADED`, synthesis is skipped for that
+   session with a warning log. This prevents accumulating more bad output
+   while the pipeline is miscalibrated.
+
+### Audit Stats
+
+`synthesis_memory.get_audit_stats()` returns:
+
+```python
+{
+    "total": int,       # Total results in collection
+    "graded": int,      # Results with a human grade
+    "ungraded": int,    # Results awaiting review
+    "tp": int,          # TRUE_POSITIVE count
+    "fp": int,          # FALSE_POSITIVE count
+    "fn": int,          # FALSE_NEGATIVE count
+    "fp_rate": float,   # fp / graded (0.0 if none graded)
+}
+```
+
+### Config
+
+| Constant | Default | Purpose |
+|----------|---------|---------|
+| `SYNTHESIS_AUDIT_ENABLED` | `True` | Master toggle for audit queue |
+| `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` | `0.50` | FP rate above which synthesis auto-halts |
+| `SYNTHESIS_AUDIT_MIN_GRADED` | `10` | Minimum graded results before auto-halt activates |
+
+YAML section: `synthesis_audit`
+
+### Tests
+
+27 unit tests in `tests/unit/test_synthesis_audit.py`.
 
 ---
 

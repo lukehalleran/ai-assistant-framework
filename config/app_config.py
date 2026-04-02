@@ -1216,6 +1216,16 @@ SYNTHESIS_RETRIEVAL_ENABLED = bool(int(os.getenv(
 )))
 
 # --------------------------------------------------------------------
+# Synthesis Audit Queue Configuration
+# Human-in-the-loop review of accepted and composite-rejected insights.
+# Builds ground-truth dataset for future classifier training.
+# --------------------------------------------------------------------
+SYNTHESIS_AUDIT_CFG = config.get("synthesis_audit", {})
+SYNTHESIS_AUDIT_ENABLED: bool = bool(SYNTHESIS_AUDIT_CFG.get("enabled", True))
+SYNTHESIS_AUDIT_FP_HALT_THRESHOLD: float = float(SYNTHESIS_AUDIT_CFG.get("fp_halt_threshold", 0.50))
+SYNTHESIS_AUDIT_MIN_GRADED: int = int(SYNTHESIS_AUDIT_CFG.get("min_graded", 10))
+
+# --------------------------------------------------------------------
 # Wikidata Import Configuration
 # Import a Wikidata subgraph (~50K entities) into the knowledge graph
 # for structured graph walks in synthesis candidate generation.
