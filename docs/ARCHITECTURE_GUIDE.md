@@ -1395,7 +1395,7 @@ failure immediately rejects the candidate (short-circuit):
 | 4 | Internal Novelty | ~10ms | Check synthesis memory — new paths to same insight pass (convergence) |
 | 5 | Coherence Judge | ~1-4s | Two-pass LLM: structural coherence (Pass 1), factual skeptic (Pass 2, MODERATE only) |
 | 6 | Composite Score | ~0ms | Weighted: coherence(0.30) + novelty(0.40) + distance(0.15) + structural(0.15) ≥ 0.65 |
-| 7 | Storage | ~10ms | ChromaDB write to `synthesis_results` |
+| 7 | Storage | ~10ms | ChromaDB write to `synthesis_results`; composite-rejected stored for FN audit |
 
 ### Stage 3: External Novelty (Three Sub-Checks)
 
@@ -1438,6 +1438,18 @@ Promoted to CONVERGING when:
 
 When Stage 4 finds an existing match with a new path_hash, it passes
 rather than rejecting. At storage time, convergence metadata is updated.
+
+### Audit Queue (Human-in-the-Loop)
+
+Accepted results and composite-rejected candidates are queued for blind
+human grading in the GUI "Synthesis" tab. Grades: TRUE_POSITIVE,
+FALSE_POSITIVE, FALSE_NEGATIVE. `SynthesisMemory.get_audit_stats()`
+tracks FP rate. At shutdown, if `fp_rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`
+(default 0.50) with at least `SYNTHESIS_AUDIT_MIN_GRADED` (default 10)
+graded results, synthesis dreaming auto-halts to prevent accumulating
+miscalibrated output. Config: `SYNTHESIS_AUDIT_ENABLED`,
+`SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`, `SYNTHESIS_AUDIT_MIN_GRADED`;
+YAML section `synthesis_audit`. 27 tests in `tests/unit/test_synthesis_audit.py`.
 
 ### Benchmark Performance
 
@@ -1734,6 +1746,7 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `cross_dedup` | Deduplication | `CROSS_DEDUP_ENABLED`, `CROSS_DEDUP_DUPLICATE_THRESHOLD` |
 | `synthesis` | Filter pipeline | `SYNTHESIS_ENABLED`, `SYNTHESIS_COHERENCE_MODEL` |
 | `synthesis_generator` | Candidate generation | `SYNTHESIS_GENERATOR_ENABLED` |
+| `synthesis_audit` | Human grading + auto-halt | `SYNTHESIS_AUDIT_ENABLED`, `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` |
 | `provenance` | Audit trail | `PROVENANCE_ENABLED` |
 | `git_stats` | Git activity queries | `GIT_STATS_ENABLED`, `GIT_STATS_TIMEOUT`, `GIT_STATS_MAX_OUTPUT_LINES` |
 

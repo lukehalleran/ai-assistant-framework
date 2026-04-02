@@ -297,7 +297,7 @@ synthesis:
   novelty_adjacent_threshold: 0.7
   cooccurrence_known_threshold: 0.85
   memory_similarity_threshold: 0.85
-  coherence_model: gpt-4o-mini
+  coherence_model: claude-opus-4.6
   coherence_min_level: MODERATE
   weights:
     coherence: 0.3
@@ -319,6 +319,10 @@ synthesis_retrieval:
   min_similarity: 0.25
   bridge_on_accept: true
   bridge_relation: structural_parallel
+synthesis_audit:
+  enabled: true
+  fp_halt_threshold: 0.50   # auto-halt if FP rate exceeds this
+  min_graded: 10             # minimum graded results before auto-halt can trigger
 wikidata_import:
   enabled: true
   persist_path: data/wikidata_cache.json

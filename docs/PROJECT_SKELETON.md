@@ -81,7 +81,7 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/surfacing_history.py` - JSON-backed novelty tracking for surfacing cooldowns **[NEW 2026-03-25]**
 - `knowledge/implementation_detector.py` - 4-stage proposal implementation tracking **[NEW 2026-03-25]**
 - `memory/memory_expander.py` - Temporal context expansion + summary drill-down for agentic tool **[NEW 2026-03-26]**
-- `memory/synthesis_memory.py` - Synthesis results persistence + convergence tracking **[NEW 2026-03-28]**
+- `memory/synthesis_memory.py` - Synthesis results persistence + convergence tracking + audit queue (grade_result, get_ungraded, get_graded, get_audit_stats, store_rejected_for_audit) **[ENHANCED 2026-04-01]**
 - `knowledge/synthesis_generator.py` - Cross-store sampling + LLM bridge articulation for synthesis candidates **[NEW 2026-03-28]**
 - `knowledge/synthesis_retriever.py` - RetrievalSynthesisGenerator: structural query extraction + FAISS search + adversarial eval (Tier 0) **[NEW 2026-04-01]**
 - `memory/memory_interface.py` - Protocol contracts
@@ -481,7 +481,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
   6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
   6.5. Lightweight implementation tracking — file existence only, ~50ms/proposal (ImplementationDetector) [NEW 2026-03-25]
   6.75. Extract open threads via LLM + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
-  6.8. Synthesis dreaming — three-tier parallel generation: RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) → SynthesisFilter → SynthesisMemory; provisional bridge creation on acceptance [ENHANCED 2026-04-01]
+  6.8. Synthesis dreaming — three-tier parallel generation: RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) → SynthesisFilter → SynthesisMemory; provisional bridge creation on acceptance; auto-halt if audit FP rate > threshold [ENHANCED 2026-04-01]
   7. Save knowledge graph + entity aliases + claim index to disk [ENHANCED 2026-03-25]
   8. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
   9. Update UserProfile with user-only facts (entity facts stored in ChromaDB only) [ENHANCED 2026-03]
@@ -3577,6 +3577,12 @@ class SynthesisResult:
 - `_update_convergence(existing, new)` → merges unique_paths/unique_sources, promotes to CONVERGING at 3+ paths / 2+ sources
 - `get_recurring(min_paths=3, min_sources=2)` → strongly-converging results
 - `get_stats()` → `{total_insights, converging_insights, collection}`
+- Audit queue methods **[NEW 2026-04-01]**:
+  - `grade_result(doc_id, grade, notes="")` → bool. Grades: TRUE_POSITIVE, FALSE_POSITIVE, FALSE_NEGATIVE
+  - `get_ungraded(limit=10)` → `List[SynthesisResult]` — blind review queue
+  - `get_graded(grade=None, limit=50)` → `List[SynthesisResult]` — graded results (optionally filtered)
+  - `get_audit_stats()` → `{total, graded, ungraded, tp, fp, fn, fp_rate}`
+  - `store_rejected_for_audit(result)` → doc_id. Stores composite-rejected candidates for FN review
 
 **Filter Pipeline** (`knowledge/synthesis_filter.py`):
 - `SynthesisFilter(chroma_store, model_manager, synthesis_memory=None, graph_memory=None, entity_resolver=None)`
@@ -4596,7 +4602,7 @@ daemon/
 │   ├── context_surfacer.py        # Cross-domain insight generation from knowledge graph [NEW 2026-03-25]
 │   ├── surfacing_models.py        # Pydantic models: DomainEntity, DomainCluster, ProactiveInsight [NEW 2026-03-25]
 │   ├── surfacing_history.py       # JSON-backed novelty tracking for proactive surfacing [NEW 2026-03-25]
-│   ├── synthesis_memory.py        # Synthesis results persistence + convergence tracking [NEW 2026-03-28]
+│   ├── synthesis_memory.py        # Synthesis results persistence + convergence tracking + audit queue [ENHANCED 2026-04-01]
 │   ├── hybrid_retriever.py        # Query rewrite + semantic + keyword
 │   └── storage/
 │       └── multi_collection_chroma_store.py  # Vector DB
@@ -5030,7 +5036,7 @@ python main.py inspect-summaries
 | surfacing_history.py | History: JSON-backed novelty tracking for proactive context surfacing [NEW 2026-03-25] |
 | implementation_detector.py | Detect: 4-stage pipeline (file/code/git/LLM) for proposal implementation status [NEW 2026-03-25] |
 | synthesis_models.py | Data: SynthesisCandidate, SynthesisResult, CoherenceLevel, CandidateStatus models [NEW 2026-03-28] |
-| synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking [NEW 2026-03-28] |
+| synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking + audit queue (grading, FP/FN review) [ENHANCED 2026-04-01] |
 | synthesis_filter.py | Filter: 8-stage async pipeline (text/domain/distance/novelty/two-pass coherence/scoring) [NEW 2026-03-28] |
 | synthesis_generator.py | Generate: Cross-store sampling (facts via ChromaDB + wiki via FAISS) + LLM bridge articulation for synthesis candidates [NEW 2026-03-28] |
 

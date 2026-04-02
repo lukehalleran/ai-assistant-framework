@@ -133,7 +133,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **Knowledge integration**: Obsidian vault (multimodal, mtime-based re-embedding), reference docs, git commits, procedural skills, Wikipedia (FAISS IVFPQ 40M vectors)
 - **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring, wiki enrichment at shutdown
 - **Proactive surfacing**: Cross-domain insight generation from knowledge graph, session-cached LLM calls, novelty-filtered
-- **Synthesis pipeline**: Cross-store candidate generation, 8-stage filter, LLM bridge articulation, convergence tracking
+- **Synthesis pipeline**: Cross-store candidate generation, 8-stage filter, LLM bridge articulation, convergence tracking, human audit queue with auto-halt
 - **Implementation tracking**: 4-stage proposal detection (file → grep → git → LLM), cooldown-gated
 - **Fast Mode**: Reduced retrieval for mobile/slow connections with progress keepalives
 - **PDF/DOCX support**: Full pipeline with table extraction (pdfplumber + python-docx), chunking with header detection
@@ -149,6 +149,16 @@ These systems are complete and working. Listed here for context, not as active w
 ---
 
 ## Recent Completions
+
+### Synthesis Audit Queue (2026-04-01)
+- Human-in-the-loop blind grading of synthesis pipeline output
+- SynthesisResult fields: `human_grade`, `graded_at`, `grade_notes`
+- SynthesisMemory audit methods: `grade_result()`, `get_ungraded()`, `get_graded()`, `get_audit_stats()`, `store_rejected_for_audit()`
+- `SynthesisFilter.process_batch()` stores composite-rejected candidates for FN review
+- GUI "Synthesis" tab with blind review queue, grading buttons, audit stats
+- Auto-halt in `shutdown_processor.py`: skips synthesis if FP rate > `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` (0.50)
+- Config: `SYNTHESIS_AUDIT_ENABLED`, `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`, `SYNTHESIS_AUDIT_MIN_GRADED`; YAML section `synthesis_audit`
+- 27 tests in `tests/unit/test_synthesis_audit.py`
 
 ### Wiki-to-Graph Enrichment (2026-03-31)
 - Session-level Wikipedia article tracking → graph nodes at shutdown

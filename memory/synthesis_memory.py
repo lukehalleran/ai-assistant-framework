@@ -2,23 +2,32 @@
 # memory/synthesis_memory.py
 
 Module Contract
-- Purpose: Persistent storage for synthesis results with convergence tracking.
+- Purpose: Persistent storage for synthesis results with convergence tracking
+  and human audit queue for ground-truth grading.
   Uses the 'synthesis_results' ChromaDB collection via MultiCollectionChromaStore.
 - Class: SynthesisMemory(chroma_store, similarity_threshold)
 - Key methods:
   - find_similar(connection_claim, threshold, limit) -> List[Tuple[SynthesisResult, float]]
   - store_result(result) -> str  [returns doc_id; deduplicates via convergence update]
+  - store_rejected_for_audit(result) -> str  [stores composite-rejected for FN review]
   - get_recurring(min_paths, min_sources) -> List[SynthesisResult]
+  - grade_result(doc_id, grade, notes) -> bool  [human audit: valid/invalid/should_pass/correct_reject]
+  - get_ungraded(status_filter, limit) -> List[Tuple[str, SynthesisResult]]  [audit queue items]
+  - get_graded(limit) -> List[Tuple[str, SynthesisResult]]  [graded history]
+  - get_audit_stats() -> dict  [FP rate, FN rate, total graded, auto-halt status]
   - get_stats() -> dict
 - Key behaviors:
   - Uses MultiCollectionChromaStore.query_collection() (flat dict results)
   - Convergence: same insight from different paths merges unique_paths/unique_sources
   - Promotes to CONVERGING status when paths >= 3 and sources >= 2
+  - Audit: stores composite-rejected candidates alongside accepted for review
+  - Auto-halt: if FP rate > threshold with sufficient graded data, flags for halt
 - Side effects: Reads/writes 'synthesis_results' ChromaDB collection
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 from knowledge.synthesis_models import (
@@ -266,6 +275,220 @@ class SynthesisMemory:
         except Exception as e:
             logger.warning(f"[SYNTH BRIDGE] Failed (non-fatal): {e}")
             return ""
+
+    def store_rejected_for_audit(self, result: SynthesisResult) -> str:
+        """Store a composite-rejected candidate for audit queue review.
+
+        These candidates passed coherence but failed composite scoring.
+        Human review determines if composite was too aggressive (false negative).
+        """
+        doc_text = result.candidate.connection_claim
+        metadata = result.to_metadata()
+
+        try:
+            doc_id = self.store.add_to_collection(
+                name=self.COLLECTION_NAME,
+                text=doc_text,
+                metadata=metadata,
+            )
+            logger.debug(f"Stored composite reject for audit: {doc_id}")
+            return doc_id
+        except Exception as e:
+            logger.error(f"Failed to store rejected result for audit: {e}")
+            raise
+
+    def grade_result(self, doc_id: str, grade: str, notes: str = "") -> bool:
+        """Apply a human grade to a synthesis result.
+
+        Args:
+            doc_id: ChromaDB document ID
+            grade: "1"-"5" (structural rubric) or legacy "valid"/"invalid"/etc.
+            notes: Optional reviewer notes
+
+        Returns True on success.
+        """
+        valid_grades = {"1", "2", "3", "4", "5", "valid", "invalid", "should_pass", "correct_reject"}
+        if grade not in valid_grades:
+            logger.error(f"Invalid grade '{grade}', must be one of {valid_grades}")
+            return False
+
+        try:
+            self.store.update_metadata(
+                collection_name=self.COLLECTION_NAME,
+                doc_id=doc_id,
+                metadata_updates={
+                    "human_grade": grade,
+                    "graded_at": datetime.now().isoformat(),
+                    "grade_notes": notes,
+                },
+            )
+            logger.info(f"[SYNTH AUDIT] Graded {doc_id} as '{grade}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to grade result {doc_id}: {e}")
+            return False
+
+    def get_all_results(self, limit: int = 200) -> List[Tuple[str, SynthesisResult]]:
+        """Fetch all synthesis results (accepted + rejected) with doc IDs.
+
+        Returns list of (doc_id, SynthesisResult).
+        """
+        try:
+            results = self.store.query_collection(
+                collection_name=self.COLLECTION_NAME,
+                query_text="cross-domain connection structural mechanism",
+                n_results=limit,
+            )
+            if not results:
+                return []
+
+            items = []
+            for item in results:
+                doc_id = item.get("id", "")
+                doc = item.get("content", "")
+                metadata = item.get("metadata", {})
+                if not doc_id or not metadata:
+                    continue
+                result = SynthesisResult.from_metadata(metadata, doc)
+                items.append((doc_id, result))
+            return items
+        except Exception as e:
+            logger.error(f"Error fetching all synthesis results: {e}")
+            return []
+
+    def get_ungraded(
+        self,
+        status_filter: str = "",
+        limit: int = 50,
+    ) -> List[Tuple[str, SynthesisResult]]:
+        """Fetch ungraded synthesis results for the audit queue.
+
+        Args:
+            status_filter: "accepted", "rejected", or "" for both
+            limit: max results
+
+        Returns list of (doc_id, SynthesisResult) with no human_grade set.
+        """
+        all_results = self.get_all_results(limit=limit * 2)
+        ungraded = []
+        for doc_id, result in all_results:
+            if result.human_grade:
+                continue
+            if status_filter == "accepted" and result.status != CandidateStatus.ACCEPTED:
+                if result.status != CandidateStatus.CONVERGING:
+                    continue
+            if status_filter == "rejected" and result.status != CandidateStatus.REJECTED:
+                continue
+            ungraded.append((doc_id, result))
+            if len(ungraded) >= limit:
+                break
+        return ungraded
+
+    def get_graded(self, limit: int = 50) -> List[Tuple[str, SynthesisResult]]:
+        """Fetch previously graded synthesis results.
+
+        Returns list of (doc_id, SynthesisResult) sorted by graded_at desc.
+        """
+        all_results = self.get_all_results(limit=limit * 2)
+        graded = [
+            (doc_id, result) for doc_id, result in all_results
+            if result.human_grade
+        ]
+        graded.sort(
+            key=lambda x: x[1].graded_at or "",
+            reverse=True,
+        )
+        return graded[:limit]
+
+    @staticmethod
+    def _grade_is_valid(grade: str) -> bool:
+        """Grade 4-5 or legacy 'valid'/'should_pass' = structurally valid."""
+        if grade in ("valid", "should_pass"):
+            return True
+        try:
+            return int(grade) >= 4
+        except (ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def _grade_is_invalid(grade: str) -> bool:
+        """Grade 1-3 or legacy 'invalid'/'correct_reject' = reject."""
+        if grade in ("invalid", "correct_reject"):
+            return True
+        try:
+            return 1 <= int(grade) <= 3
+        except (ValueError, TypeError):
+            return False
+
+    def get_audit_stats(self) -> dict:
+        """Compute audit statistics for the synthesis pipeline.
+
+        Grades 4-5 = valid (structural isomorphism or better).
+        Grades 1-3 = invalid (hallucination, surface metaphor, or trivial).
+        FP rate = fraction of accepted insights graded 1-3.
+        Auto-halt triggers when FP rate > threshold with sufficient data.
+        """
+        from config.app_config import (
+            SYNTHESIS_AUDIT_FP_HALT_THRESHOLD,
+            SYNTHESIS_AUDIT_MIN_GRADED,
+        )
+
+        all_results = self.get_all_results(limit=500)
+
+        valid_count = 0
+        invalid_count = 0
+        ungraded_accepted = 0
+        ungraded_rejected = 0
+        grade_sum = 0
+        grade_count = 0
+
+        for _, result in all_results:
+            grade = result.human_grade
+            if not grade:
+                if result.status in (CandidateStatus.ACCEPTED, CandidateStatus.CONVERGING):
+                    ungraded_accepted += 1
+                elif result.status == CandidateStatus.REJECTED:
+                    ungraded_rejected += 1
+                continue
+
+            if self._grade_is_valid(grade):
+                valid_count += 1
+            elif self._grade_is_invalid(grade):
+                invalid_count += 1
+
+            try:
+                gn = int(grade)
+                grade_sum += gn
+                grade_count += 1
+            except (ValueError, TypeError):
+                pass
+
+        total_graded = valid_count + invalid_count
+
+        fp_rate = (
+            invalid_count / total_graded
+            if total_graded > 0 else 0.0
+        )
+
+        avg_grade = round(grade_sum / grade_count, 2) if grade_count > 0 else 0.0
+
+        auto_halt = (
+            fp_rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
+            and total_graded >= SYNTHESIS_AUDIT_MIN_GRADED
+        )
+
+        return {
+            "total_graded": total_graded,
+            "valid_count": valid_count,
+            "invalid_count": invalid_count,
+            "fp_rate": round(fp_rate, 3),
+            "avg_grade": avg_grade,
+            "auto_halt": auto_halt,
+            "ungraded_accepted": ungraded_accepted,
+            "ungraded_rejected": ungraded_rejected,
+            "fp_halt_threshold": SYNTHESIS_AUDIT_FP_HALT_THRESHOLD,
+            "min_graded_for_halt": SYNTHESIS_AUDIT_MIN_GRADED,
+        }
 
     def get_stats(self) -> dict:
         """Return summary stats about synthesis memory."""
