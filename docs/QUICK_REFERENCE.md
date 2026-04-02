@@ -167,6 +167,7 @@ class ShutdownProcessor:
         6.5a) open thread extraction + resolution detection [NEW 2026-03-23],
         6.5b) implementation tracking (lightweight file-existence check) [NEW 2026-03-24],
         6.8) synthesis dreaming — cross-store candidate generation + filter pipeline [NEW 2026-03-28],
+        6.8a) auto-halt check: skips synthesis if FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD [NEW 2026-04-01],
         7) user profile updates (user-only facts; entity facts stay in ChromaDB only).
         After summary storage: extract claims → register in ClaimIndex → add staleness metadata [NEW 2026-03-25]"""
 
@@ -2008,6 +2009,12 @@ class SynthesisMemory:
     def store_result(result) -> str:       # Deduplicates; updates convergence if similar exists
     def get_recurring(min_paths=3, min_sources=2) -> List[SynthesisResult]: ...
     def get_stats() -> dict:               # {total_insights, converging_insights, collection}
+    # Audit queue methods [NEW 2026-04-01]:
+    def grade_result(doc_id, grade, notes="") -> bool:  # Human grades: TRUE_POSITIVE, FALSE_POSITIVE, FALSE_NEGATIVE
+    def get_ungraded(limit=10) -> List[SynthesisResult]: ...
+    def get_graded(grade=None, limit=50) -> List[SynthesisResult]: ...
+    def get_audit_stats() -> dict:         # {total, graded, ungraded, tp, fp, fn, fp_rate}
+    def store_rejected_for_audit(result) -> str:  # Stores composite-rejected candidate for FN review
 
 # knowledge/synthesis_filter.py — 8-stage async pipeline
 # Module-level helpers:
@@ -2020,6 +2027,7 @@ class SynthesisFilter:
     async def process_candidate(candidate) -> SynthesisResult:  # Full pipeline, auto-stores accepted
     async def process_batch(candidates) -> dict:
         # Returns: {total, accepted, rejected, rejection_breakdown, accepted_results, avg_stage_times_ms}
+        # Also stores composite-rejected candidates for FN audit review via synthesis_memory.store_rejected_for_audit()
     async def _factual_skeptic_pass(result, claim, a, b) -> bool:  # Pass 2 of Stage 5
     @staticmethod
     def _parse_coherence_level(response_text) -> CoherenceLevel:  # Extracted from inline parsing
@@ -2070,6 +2078,11 @@ SYNTHESIS_CONVERGENCE_STRONG_SOURCES = 2
 SYNTHESIS_DEFAULT_BATCH_SIZE = 100
 SYNTHESIS_LOG_ALL_REJECTIONS = True
 
+# Audit queue [NEW 2026-04-01]:
+SYNTHESIS_AUDIT_ENABLED = True
+SYNTHESIS_AUDIT_FP_HALT_THRESHOLD = 0.50   # Auto-halt synthesis if FP rate exceeds this
+SYNTHESIS_AUDIT_MIN_GRADED = 10            # Minimum graded results before auto-halt activates
+
 # YAML (config.yaml):
 # synthesis:
 #   enabled: true
@@ -2082,6 +2095,11 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 #   weights: {coherence: 0.30, novelty: 0.40, distance: 0.15, structural: 0.15}
 #   novelty_weights: {claim: 0.25, cooccurrence: 0.30, specificity: 0.25, internal: 0.20}
 #   composite_min_score: 0.65   # raised from 0.40
+
+# synthesis_audit:
+#   enabled: true
+#   fp_halt_threshold: 0.50
+#   min_graded: 10
 ```
 
 ---

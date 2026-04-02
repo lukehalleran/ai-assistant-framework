@@ -1,61 +1,44 @@
-feat: Retrieval-based synthesis pipeline, bridge quality cleanup, coherence calibration
+feat: Synthesis audit queue, Opus coherence judge, E2E results rewrite
 
-Replaces random-pairing synthesis with retrieval-based discovery (Option A)
-and graph feedback loop (Option B). After calibrating the coherence judge,
-random pairing produced 0/45 accepted candidates. Retrieval-based pipeline
-produces 4/30 (13%) with named structural mechanisms.
+Rewrote E2E results doc after identifying fabricated claims in the
+original (gpt-4o-mini coherence judge was a rubber stamp at 3.6%
+rejection). Built human-in-the-loop audit queue and upgraded coherence
+judge to Opus 4.6 with structural verification tests.
 
-Retrieval-Based Generator (knowledge/synthesis_retriever.py):
-- RetrievalSynthesisGenerator: same interface as SynthesisGenerator (drop-in)
-- Few-shot structural query extraction from personal facts (LLM, ~100 tokens)
-  with diversity-constrained examples to prevent "feedback loops" convergence
-- FAISS semantic search (40M vectors) with similarity floor (0.25)
-- Domain filtering: exclude same-domain retrievals
-- Adversarial evaluation prompt: "find reasons this does NOT hold"
-- Candidates tagged via walk_path=["retrieval", concept_a, concept_b]
+Coherence Judge Upgrade (knowledge/synthesis_filter.py):
+- Stage 5 prompt rewritten: de-jargon test (strip field-specific nouns,
+  evaluate structural content) + variable swap test (changing a parameter
+  in domain B must predict behavior in domain A)
+- System prompt: skeptical stance, default WEAK when in doubt
+- Model: gpt-4o-mini → claude-opus-4.6 via config.yaml
+- Parser: regex-based, searches from end of response for Rating: line
+- Result: coherence rejections 3.6% → 44%, accepted claims now name
+  transferable mechanisms ("irreversible commitment points",
+  "temporal niche mismatch", "path dependency")
 
-Bridge Quality Cleanup:
-- GraphMemory.prune_garbage_bridges(): 5-category noise removal
-  (mentioned_alongside, low-confidence embedding, misrouted personal,
-  acronym collisions, unstructured predicates) — removed 129 garbage edges
-- WikidataEntityMapper: embedding threshold 0.60→0.80, exact-match blocklist
-  for common-word collisions (cats→CATS, ice→ICE, etc.)
-- 6 legitimate bridges remain (Cabo, Eugene, NYC geographic matches)
+Synthesis Audit Queue:
+- memory/synthesis_memory.py: grade_result(), get_ungraded(),
+  get_graded(), get_all_results(), get_audit_stats(),
+  store_rejected_for_audit(). 1-5 structural grading scale.
+  FP rate (grade 1-3 in accepted), avg grade tracking.
+- knowledge/synthesis_models.py: human_grade, graded_at, grade_notes
+  fields on SynthesisResult with serialization roundtrip
+- knowledge/synthesis_filter.py: process_batch() stores composite-
+  rejected candidates for false-negative audit review
+- gui/launch.py: "Synthesis" tab with blind review queue (no generator
+  labels), 1-5 slider, audit stats dashboard, graded history
+- memory/shutdown_processor.py: auto-halt check — skips synthesis
+  dreaming if FP rate > 50% with 10+ graded results
+- docs/grading_plan.md: 1-5 structural rubric, de-jargon/variable-swap/
+  underwriter heuristics, classifier bootstrap plan (300+ pairs)
+- Config: SYNTHESIS_AUDIT_ENABLED, FP_HALT_THRESHOLD, MIN_GRADED
 
-GraphWalkGenerator Improvements:
-- Hub dampening: log-scale penalty for degree > 15 (GRAPH_WALK_HUB_DEGREE_THRESHOLD)
-- Cross-domain walk constraint: walks must touch ≥2 domain categories
-- Richer source_domains from all walk nodes, not just endpoints
+E2E Results Rewrite (docs/SYNTHESIS_E2E_RESULTS.md):
+- Stripped fabricated three-experiment narrative
+- Presents machine-recorded data: gpt-4o-mini run (67% acceptance,
+  coherence as rubber stamp) vs Opus run (30% acceptance, coherence
+  as primary gate at 44% rejection)
+- Retrieval outperforms random 42% vs 23% (1.8x) with Opus judging
+- Notes confound: generation model also changed to Opus
 
-Coherence Judge Recalibration:
-- WEAK = no mechanism named, vague bridging language
-- MODERATE = names real mechanism applied concretely to both domains
-  (generality is not a flaw if application is concrete)
-- max_tokens 250→400 (was truncating before Rating line)
-- New generic bridge templates: "serve as microcosm", "through the lens of"
-
-Namespace Resolution (SynthesisGenerator):
-- _resolve_to_graph(): 4-strategy fallback (EntityResolver → direct ID →
-  slug form → display_name index with 30K entries)
-- _compute_endpoint_distance(): 0.85 for both-resolved-no-path
-
-Retrieval-Aware Filter Stages:
-- Stage 2 (distance): inverted scoring for retrieval candidates
-- Stage 3 (novelty): skip claim-similarity gate for retrieval candidates
-
-Provisional Bridge Creation (Option B):
-- SynthesisMemory.create_bridge_edge(): weight=0.0, status="provisional"
-- Matures on rediscovery via add_relation weight incrementing
-- SynthesisFilter accepts graph_memory + entity_resolver for bridge creation
-- Bridge edges 129→133 after first accepted run (feedback loop confirmed)
-
-Shutdown Processor:
-- Three-tier parallel generators: Retrieval (T0), Walk (T1), XStore (T2)
-- All candidates pooled into single filter pass
-
-Config: SYNTHESIS_RETRIEVAL_*, GRAPH_WALK_HUB_DEGREE_THRESHOLD,
-GRAPH_WALK_MIN_DOMAINS. YAML section: synthesis_retrieval.
-
-Results (3×15 candidates, calibrated coherence judge):
-- Random pairing: 0/45 (0%) — all correctly rejected as surface analogies
-- Retrieval-based: 4/30 (13%) — "conditional dependency", "historical layering"
+34 tests in tests/unit/test_synthesis_audit.py, all passing.

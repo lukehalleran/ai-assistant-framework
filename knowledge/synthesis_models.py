@@ -12,6 +12,7 @@ Module Contract
   - StageResult: Result from a single pipeline stage
   - SynthesisResult: Fully evaluated candidate with all stage results + convergence tracking
     - Includes multi-signal novelty fields: cooccurrence_similarity, template_similarity
+    - Includes human audit fields: human_grade, graded_at, grade_notes
 - Side effects: None (pure data models)
 """
 
@@ -92,6 +93,11 @@ class SynthesisResult:
     unique_sources: Set[str] = field(default_factory=set)
     convergence_strength: float = 0.0
 
+    # Human audit fields
+    human_grade: str = ""           # "valid", "invalid", "should_pass", "correct_reject", or ""
+    graded_at: str = ""             # ISO timestamp when graded
+    grade_notes: str = ""           # optional reviewer notes
+
     @property
     def passed_all_gates(self) -> bool:
         return all(sr.passed for sr in self.stage_results)
@@ -125,6 +131,9 @@ class SynthesisResult:
             "unique_sources": ",".join(sorted(self.unique_sources)),
             "convergence_strength": self.convergence_strength,
             "timestamp": self.candidate.timestamp.isoformat(),
+            "human_grade": self.human_grade,
+            "graded_at": self.graded_at,
+            "grade_notes": self.grade_notes,
         }
 
     @classmethod
@@ -163,4 +172,7 @@ class SynthesisResult:
             if metadata.get("unique_sources") else set()
         )
         result.convergence_strength = float(metadata.get("convergence_strength", 0.0))
+        result.human_grade = metadata.get("human_grade", "")
+        result.graded_at = metadata.get("graded_at", "")
+        result.grade_notes = metadata.get("grade_notes", "")
         return result

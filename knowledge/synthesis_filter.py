@@ -33,6 +33,9 @@ Module Contract
       Simplification is acceptable; only provably wrong claims fail.
   - Stage 6: Composite Scoring + Gates (multi-signal novelty composite)
   - Stage 7: Synthesis Memory Storage (~10ms, ChromaDB write)
+- Audit integration: process_batch() stores composite-rejected candidates
+  (pass all gates but fail Stage 6 composite threshold) via
+  synthesis_memory.store_rejected_for_audit() for false-negative human review.
 - Multi-signal novelty composite (Stage 6):
   - claim novelty (w=0.25): 1 - claim_sim
   - co-occurrence novelty (w=0.30): 1 - cooccurrence_sim
@@ -254,12 +257,24 @@ class SynthesisFilter:
             for name, times in stage_times.items()
         }
 
+        # Store composite-rejected candidates for audit queue review
+        composite_rejects = [
+            r for r in rejected
+            if r.rejection_stage == "composite_scoring"
+        ]
+        for cr in composite_rejects:
+            try:
+                self.memory.store_rejected_for_audit(cr)
+            except Exception as e:
+                logger.debug(f"Failed to store composite reject for audit: {e}")
+
         summary = {
             "total": len(candidates),
             "accepted": len(accepted),
             "rejected": len(rejected),
             "rejection_breakdown": rejection_breakdown,
             "accepted_results": accepted,
+            "composite_rejects_stored": len(composite_rejects),
             "avg_stage_times_ms": avg_times,
         }
 
@@ -544,23 +559,32 @@ class SynthesisFilter:
 
         # -- Pass 1: Structural coherence --
         prompt_1 = (
-            f"Evaluate this claimed connection between two concepts.\n\n"
-            f"Concept A: {concept_a}\n"
-            f"Concept B: {concept_b}\n"
+            f"Evaluate whether this claimed cross-domain connection identifies a real "
+            f"structural isomorphism or is just surface-level pattern matching.\n\n"
+            f"Concept A (personal): {concept_a}\n"
+            f"Concept B (Wikipedia): {concept_b}\n"
             f"Claimed connection: {claim}\n\n"
-            f"WEAK vs MODERATE distinction:\n"
-            f"- WEAK: No mechanism named, OR mechanism is described so vaguely it says "
-            f"nothing concrete ('both involve systems', 'can be seen as a form of', "
-            f"'serves as a microcosm'). The claim is bridging language without content.\n"
-            f"- MODERATE: Names a real, specific mechanism (e.g., confirmation bias, "
-            f"diminishing returns, circadian regulation, attachment dynamics) AND explains "
-            f"how it concretely operates in both domains. A general mechanism applied "
-            f"specifically to both domains is MODERATE — generality is not a flaw if the "
-            f"application is concrete.\n"
-            f"- STRONG: Understanding one domain generates testable predictions about the other.\n\n"
-            f"Mechanism: <the specific pattern or process claimed>\n"
+            f"Apply these tests:\n\n"
+            f"1. DE-JARGON TEST: Strip all field-specific nouns from the claim. Read only "
+            f"the verbs, constraints, and logic. Does any structural content remain, or "
+            f"does it collapse into 'both involve X' / 'can be seen as Y'?\n\n"
+            f"2. VARIABLE SWAP TEST: If the two systems are truly isomorphic, changing a "
+            f"variable in Concept B's ruleset should predict what happens in Concept A's "
+            f"ruleset. Can you state one such prediction? If not, the mapping is cosmetic.\n\n"
+            f"Rating criteria:\n"
+            f"- WEAK: Fails de-jargon test (no structural content without the vocabulary), "
+            f"OR fails variable swap (no transferable predictions). Most connections are WEAK. "
+            f"Broad thematic overlap ('both involve feedback', 'iterative process', "
+            f"'can be viewed through the lens of') is WEAK.\n"
+            f"- MODERATE: Passes both tests. The mechanism maps structurally — changing a "
+            f"parameter in one domain predicts behavior in the other. The connection would "
+            f"survive peer review in a comparative methods paper.\n"
+            f"- STRONG: MODERATE plus the mapping generates non-obvious testable predictions.\n"
+            f"- INVALID: Concepts are misunderstood or the claim is incoherent.\n\n"
+            f"Respond exactly in this format:\n"
+            f"De-jargon: <the claim stripped of field-specific nouns>\n"
+            f"Variable swap: <one concrete prediction, or 'NONE'>\n"
             f"Against: <strongest criticism>\n"
-            f"For: <what makes it insightful>\n"
             f"Rating: <INVALID|WEAK|MODERATE|STRONG>"
         )
 
@@ -568,8 +592,13 @@ class SynthesisFilter:
             response = await self.model_manager.generate_once(
                 prompt=prompt_1,
                 model_name=SYNTHESIS_COHERENCE_MODEL,
-                system_prompt="You evaluate cross-domain knowledge connections. Rate WEAK only when no real mechanism is named. Rate MODERATE when a named mechanism is concretely applied to both domains.",
-                max_tokens=300,
+                system_prompt=(
+                    "You are a structural methods reviewer. Most cross-domain claims are "
+                    "surface metaphor dressed in academic vocabulary. Your job is to reject "
+                    "these. Only rate MODERATE when the structural mapping survives both the "
+                    "de-jargon test and variable swap test. When in doubt, rate WEAK."
+                ),
+                max_tokens=400,
                 temperature=0.1,
             )
         except Exception as e:
@@ -688,28 +717,33 @@ class SynthesisFilter:
 
     @staticmethod
     def _parse_coherence_level(response_text: str) -> CoherenceLevel:
-        """Parse coherence level from LLM response text."""
-        # Primary: find "Rating: LEVEL" line
-        for line in response_text.split("\n"):
-            stripped = line.strip()
-            if stripped.upper().startswith("RATING:"):
-                rating_part = stripped[len("RATING:"):].strip().upper()
-                for level in CoherenceLevel:
-                    if rating_part.startswith(level.name):
-                        return level
-                break
+        """Parse coherence level from LLM response text.
 
-        # Fallback: response starts with level name
-        for level in CoherenceLevel:
-            if response_text.upper().startswith(level.name):
-                return level
+        Searches from the end of the response first (Opus gives long analysis
+        before the Rating: line). Falls back to WEAK on parse failure.
+        """
+        import re
 
-        # Fallback: keyword anywhere
-        for level in CoherenceLevel:
-            if level.name in response_text.upper():
-                return level
+        # Primary: find last "Rating: LEVEL" anywhere in response
+        matches = re.findall(
+            r"(?i)\brating\s*:\s*(INVALID|WEAK|MODERATE|STRONG)\b",
+            response_text,
+        )
+        if matches:
+            level_name = matches[-1].upper()  # last match = final verdict
+            for level in CoherenceLevel:
+                if level.name == level_name:
+                    return level
 
-        logger.warning(f"Could not parse coherence level from: {response_text[:100]}")
+        # Fallback: last line that contains a bare level name
+        for line in reversed(response_text.split("\n")):
+            stripped = line.strip().upper()
+            for level in [CoherenceLevel.STRONG, CoherenceLevel.MODERATE,
+                          CoherenceLevel.WEAK, CoherenceLevel.INVALID]:
+                if level.name in stripped and len(stripped) < 80:
+                    return level
+
+        logger.warning(f"Could not parse coherence level from: {response_text[:120]}")
         return CoherenceLevel.WEAK
 
     async def _stage_6_composite_scoring(self, result: SynthesisResult) -> StageResult:
