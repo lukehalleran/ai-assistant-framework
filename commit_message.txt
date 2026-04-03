@@ -1,67 +1,70 @@
-feat: v1.0.0 desktop build — user/dev mode, expanded wizard, installer
+feat: Two-layer synthesis grading, relative timestamps, Opus coherence judge
 
-First distributable release. Built and tested on Windows 11 with Inno
-Setup installer (293MB). Major wizard expansion, user/dev mode system,
-and multiple UX fixes for desktop distribution.
+Replaces old TP/FP/FN grading with a two-layer system: 3 binary
+screening questions (changes thinking? / mechanism real? / heard before?)
+plus a 1-5 gut-feel slider. Binary screening captures fast honest signal
+for classifier training; slider captures the 3/4 boundary nuance.
 
-User/Dev Mode System (DAEMON_MODE):
-- Wizard asks Personal vs Developer on first run
-- User mode disables: synthesis pipeline, code proposals, reference
-  docs in context, Debug Trace/Logs/Proposals/Synthesis tabs, Memory
-  Maintenance UI, system prompt in Provenance
-- User mode enables: auto-dedup execution on shutdown (vs dry-run)
-- Config gating at end of app_config.py after all flags loaded
+Synthesis Audit Queue (Two-Layer Grading):
+- SynthesisResult: new fields changes_thinking (bool), mechanism_real
+  (yes/no/unsure), heard_before (bool) alongside existing human_grade
+- SynthesisMemory.grade_result(): accepts binary screening params,
+  stores as ChromaDB metadata strings
+- get_audit_stats(): returns total_graded, valid_count, invalid_count,
+  fp_rate, avg_grade, auto_halt, ungraded_accepted/rejected
+- GUI Synthesis tab: 3 Radio inputs (Layer 1) + slider (Layer 2),
+  grade labels renamed (Nonsense/Surface/Obvious/Insight/Breakthrough)
+- Graded results display binary answers inline (Thinking: Y | Real: yes)
+- grading_plan.md fully rewritten: two-layer rationale, binary+slider
+  interaction table, classifier bootstrap plan, streamlined ops section
 
-Wizard Expansion (gui/wizard.py):
-- Flow: WELCOME → INTRO → MODE → API_KEY → TAVILY_KEY → WOLFRAM_KEY →
-  (E2B_KEY if dev) → STYLE → NAME → PRONOUNS → OBSIDIAN → WIKI_INDEX →
-  BACKGROUND → COMPLETE
-- New steps: mode selection, Wolfram Alpha, E2B sandbox (dev only),
-  Obsidian vault (double-confirms skip, disables notes if skipped),
-  Wikipedia FAISS index path
-- Generic write_env_key() replaces duplicated per-key write functions
-- Intro message explains response times as a feature ("I think deeply")
-- Dev mode intro: "I'm actively evolving" messaging
-- Dev mode completion: tips about Proposals, Synthesis, goals.md
-- Completion message: "Close and relaunch" (not "refresh the page")
+Coherence Judge Upgrade:
+- Model changed to claude-opus-4.6 in config.yaml (was gpt-4o-mini/sonnet-4.5)
+- Coherence rejections rose 3.6% → 44%, acceptance dropped 67% → 30%
+- All docs updated to reflect current model
 
-GUI Changes (gui/launch.py):
-- Model selector moved from Settings to Chat tab (dropdown in submit row)
-- Tabs gated by mode: Debug Trace, Logs, Proposals, Synthesis hidden
-  in user mode via Gradio visible= flag
-- Memory Maintenance section hidden in user mode
-- System prompt hidden from Debug Trace and Provenance in user mode
-- Tab overflow menu CSS fix (white-on-white → dark theme)
-- Browser tab close triggers graceful shutdown (Gradio unload event)
-  for both wizard and main UI when running as frozen exe
+Synthesis Generators Frozen:
+- All 3 generators disabled in config.yaml (synthesis, synthesis_generator,
+  synthesis_retrieval, graph_walk) pending grading validation
+- GOALS.md, ARCHITECTURE_GUIDE.md, SYNTHESIS_FILTER.md updated to note
+  disabled status and point to grading_plan.md
 
-Shutdown Improvements (main.py, shutdown_processor.py):
-- Daily note generation added to shutdown tasks
-- Cross-dedup auto-executes in user mode (CROSS_DEDUP_AUTO_EXECUTE)
-- Weekly notes env var override added (was missing)
+Relative Timestamp Formatting (Temporal Hallucination Prevention):
+- New format_relative_timestamp() in utils/time_manager.py: appends
+  "(today)", "(yesterday)", "(N days ago)", "(Nw ago)" to timestamps
+- Applied in builder.py (memory timestamps), formatter.py (memory
+  formatting), stm_analyzer.py (STM conversation context)
+- Prevents LLM from miscalculating day boundaries from raw ISO strings
 
-File Upload Fix (gui/handlers.py, core/prompt/builder.py):
-- prepare_prompt now receives merged_input (user text + file content)
-  instead of bare user_text — file content was being lost
-- Reference docs retrieval suppressed when files uploaded
-  (_suppress_reference_docs flag via context.has_files)
+Wikipedia FAISS Setup Documentation:
+- README.md: rewritten Wikipedia section with HuggingFace download
+  instructions, pre-built vs build-from-scratch paths, resource table
+- BUILD_GUIDE.md: new "Wikipedia FAISS Setup" section with download,
+  configure, and resource requirement docs
+- Storage size corrected: 102GB → 14.5GB (pre-built index + metadata)
 
-Build & Distribution:
-- daemon.spec: console=True (closing console/browser tab kills process)
-- main.py: stdout redirect to log file as safety net for windowless mode
-- Splash screen progress messages during startup
-- Inno Setup installer tested (installer/daemon_installer.iss)
-- .env.example updated with DAEMON_MODE
+IVFPQ Threshold Updates (docs only — code already committed):
+- SYNTHESIS_NOVELTY_KNOWN_THRESHOLD: 0.60 → 0.88 (near-verbatim only)
+- SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD: 0.60 → 0.85 (40M-scale)
+- FORMAL_MODEL.md Stage g_3 thresholds corrected to match
 
-Config Changes:
-- config.yaml: added daemon.mode (default: user)
-- app_config.py: DAEMON_MODE early load, user-mode overrides block,
-  CROSS_DEDUP_AUTO_EXECUTE, WEEKLY_NOTES_ENABLED env override
+Module Contract Updates:
+- stm_analyzer.py: _format_memories now documents temporal markers
+- formatter.py: _format_memory documents relative day labels
+- builder.py: added time_manager.format_relative_timestamp dependency
+- gui/launch.py: added Synthesis tab with two-layer grading to contract
 
-Documentation:
-- BUILD_GUIDE.md: full rewrite with installer, mode table, test checklist
-- README_INSTALLER.md: updated wizard flow, mode explanation
-- PROJECT_SKELETON.md: wizard section rewritten (14 steps)
-- ARCHITECTURE_GUIDE.md: user/dev mode section, updated entry points
-- QUICK_REFERENCE.md: dedup auto-execute docs
-- README.md: wizard summary, installer build command
+Doc Updates (12 docs touched):
+- ARCHITECTURE_GUIDE: audit queue section rewritten, benchmark table
+  updated, coherence model noted, generators-frozen status added
+- BUILD_GUIDE: external data section expanded, FAISS setup section added
+- GOALS: all generator statuses updated to "disabled pending validation"
+- MEMORY_SYSTEM: synthesis_results collection description updated
+- PROJECT_SKELETON: grade_result signature, get_audit_stats return,
+  coherence model, generator enabled flags all updated
+- QUICK_REFERENCE: same as PROJECT_SKELETON updates
+- SYNTHESIS_FILTER: candidate generation frozen note, claim/cooccurrence
+  thresholds corrected, coherence model documented, audit section
+  rewritten with grading API and updated stats format
+- FORMAL_MODEL: Stage g_3 thresholds and g_5 model name corrected
+- PROMPT_BUILDING_PIPELINE: [DREAMS] section notes generators disabled

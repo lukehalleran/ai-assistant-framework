@@ -2011,10 +2011,10 @@ class SynthesisMemory:
     def get_recurring(min_paths=3, min_sources=2) -> List[SynthesisResult]: ...
     def get_stats() -> dict:               # {total_insights, converging_insights, collection}
     # Audit queue methods [NEW 2026-04-01]:
-    def grade_result(doc_id, grade, notes="") -> bool:  # Human grades: TRUE_POSITIVE, FALSE_POSITIVE, FALSE_NEGATIVE
+    def grade_result(doc_id, grade, notes, changes_thinking, mechanism_real, heard_before) -> bool:  # Two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`
     def get_ungraded(limit=10) -> List[SynthesisResult]: ...
     def get_graded(grade=None, limit=50) -> List[SynthesisResult]: ...
-    def get_audit_stats() -> dict:         # {total, graded, ungraded, tp, fp, fn, fp_rate}
+    def get_audit_stats() -> dict:         # {total_graded, valid_count, invalid_count, fp_rate, avg_grade, auto_halt, ungraded_accepted, ungraded_rejected, fp_halt_threshold, min_graded_for_halt}
     def store_rejected_for_audit(result) -> str:  # Stores composite-rejected candidate for FN review
 
 # knowledge/synthesis_filter.py — 8-stage async pipeline
@@ -2063,7 +2063,7 @@ SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88   # Claim sim gate — only near-verbat
 SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.70  # Label threshold
 SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # Co-occurrence gate — 40M-scale recalibrated
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
-SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"
+SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.6"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
 SYNTHESIS_WEIGHT_COHERENCE = 0.30
 SYNTHESIS_WEIGHT_NOVELTY = 0.40
@@ -2091,7 +2091,7 @@ SYNTHESIS_AUDIT_MIN_GRADED = 10            # Minimum graded results before auto-
 #   distance_min: 0.20
 #   distance_max: 0.90
 #   cooccurrence_known_threshold: 0.85   # 40M-scale recalibrated
-#   coherence_model: gpt-4o-mini
+#   coherence_model: claude-opus-4.6
 #   coherence_min_level: MODERATE
 #   weights: {coherence: 0.30, novelty: 0.40, distance: 0.15, structural: 0.15}
 #   novelty_weights: {claim: 0.25, cooccurrence: 0.30, specificity: 0.25, internal: 0.20}
@@ -2134,14 +2134,14 @@ class SynthesisGenerator:
 # - Graph sparsity guard: skips if graph < SYNTHESIS_GENERATOR_MIN_GRAPH_NODES nodes
 
 # Config (app_config.py):
-SYNTHESIS_GENERATOR_ENABLED = True
+SYNTHESIS_GENERATOR_ENABLED = False               # All three generators currently DISABLED in config.yaml pending grading validation
 SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION = 5
 SYNTHESIS_GENERATOR_LLM_CONCURRENCY = 5
 SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20
 
 # YAML (config.yaml):
 # synthesis_generator:
-#   enabled: true
+#   enabled: false                                  # DISABLED pending grading validation
 #   candidates_per_session: 5
 #   llm_concurrency: 5
 #   min_graph_nodes: 20
@@ -2168,7 +2168,7 @@ class RetrievalSynthesisGenerator:
     # Same interface as SynthesisGenerator — drop-in replacement
 
 # Config (app_config.py):
-SYNTHESIS_RETRIEVAL_ENABLED = True                   # Master toggle
+SYNTHESIS_RETRIEVAL_ENABLED = False                  # DISABLED pending grading validation
 SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS = 100          # Max tokens for structural query LLM call
 SYNTHESIS_RETRIEVAL_K = 5                            # FAISS results per structural query
 SYNTHESIS_RETRIEVAL_MIN_SIMILARITY = 0.25            # Min cosine similarity for FAISS results
@@ -2181,7 +2181,7 @@ GRAPH_WALK_MIN_DOMAINS = 2             # Min distinct domain categories per walk
 
 # YAML (config.yaml):
 # synthesis_retrieval:
-#   enabled: true
+#   enabled: false                                  # DISABLED pending grading validation
 #   structural_query_max_tokens: 100
 #   retrieval_k: 5
 #   min_similarity: 0.25

@@ -11,7 +11,7 @@ Module Contract
   - Dict with: topic, user_question, intent, tone, open_threads, constraints
 - Key pieces:
   - analyze(): Main async method that calls LLM to analyze context
-  - _format_memories(): Converts memory dicts to readable conversation text
+  - _format_memories(): Converts memory dicts to readable conversation text with relative day labels
   - _parse_json(): Robust JSON parser with fallback handling
 - Side effects:
   - None beyond LLM API call and logging
@@ -119,23 +119,38 @@ Return JSON only, no markdown or extra text:"""
 
     def _format_memories(self, memories: List[Dict]) -> str:
         """
-        Convert memory dicts to readable conversation text.
+        Convert memory dicts to readable conversation text with temporal markers.
 
         Args:
-            memories: List of conversation dicts with 'query' and 'response' keys
+            memories: List of conversation dicts with 'query', 'response', and 'timestamp' keys
 
         Returns:
-            Formatted conversation string
+            Formatted conversation string with relative day labels
         """
+        from datetime import datetime
+        from utils.time_manager import format_relative_timestamp
+
         lines = []
         for mem in memories:
             query = mem.get('query', '').strip()
             response = mem.get('response', '').strip()
 
+            # Extract timestamp for temporal context
+            ts = mem.get('timestamp', '')
+            ts_prefix = ""
+            if ts:
+                try:
+                    if isinstance(ts, datetime):
+                        ts_prefix = f"[{format_relative_timestamp(ts)}] "
+                    elif isinstance(ts, str):
+                        ts_prefix = f"[{format_relative_timestamp(datetime.fromisoformat(ts))}] "
+                except (ValueError, TypeError):
+                    pass
+
             if query:
                 # Truncate very long messages for STM context
                 query_short = query[:200] + "..." if len(query) > 200 else query
-                lines.append(f"User: {query_short}")
+                lines.append(f"{ts_prefix}User: {query_short}")
 
             if response:
                 # Truncate very long responses

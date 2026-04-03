@@ -12,7 +12,8 @@ Module Contract
   - StageResult: Result from a single pipeline stage
   - SynthesisResult: Fully evaluated candidate with all stage results + convergence tracking
     - Includes multi-signal novelty fields: cooccurrence_similarity, template_similarity
-    - Includes human audit fields: human_grade, graded_at, grade_notes
+    - Includes human audit fields: changes_thinking, mechanism_real, heard_before,
+      human_grade, graded_at, grade_notes
 - Side effects: None (pure data models)
 """
 
@@ -93,8 +94,13 @@ class SynthesisResult:
     unique_sources: Set[str] = field(default_factory=set)
     convergence_strength: float = 0.0
 
-    # Human audit fields
-    human_grade: str = ""           # "valid", "invalid", "should_pass", "correct_reject", or ""
+    # Human audit fields — binary screening questions
+    changes_thinking: Optional[bool] = None   # "Does this make me think differently?"
+    mechanism_real: Optional[str] = None       # "Is the mechanism real?" — "yes"/"no"/"unsure"
+    heard_before: Optional[bool] = None        # "Have I heard this connection before?"
+
+    # Human audit fields — gut-feel slider + notes
+    human_grade: str = ""           # "1"-"5" structural slider (loose, don't agonize)
     graded_at: str = ""             # ISO timestamp when graded
     grade_notes: str = ""           # optional reviewer notes
 
@@ -131,6 +137,9 @@ class SynthesisResult:
             "unique_sources": ",".join(sorted(self.unique_sources)),
             "convergence_strength": self.convergence_strength,
             "timestamp": self.candidate.timestamp.isoformat(),
+            "changes_thinking": "" if self.changes_thinking is None else str(self.changes_thinking),
+            "mechanism_real": self.mechanism_real or "",
+            "heard_before": "" if self.heard_before is None else str(self.heard_before),
             "human_grade": self.human_grade,
             "graded_at": self.graded_at,
             "grade_notes": self.grade_notes,
@@ -172,6 +181,13 @@ class SynthesisResult:
             if metadata.get("unique_sources") else set()
         )
         result.convergence_strength = float(metadata.get("convergence_strength", 0.0))
+        # Binary screening questions
+        ct = metadata.get("changes_thinking", "")
+        result.changes_thinking = None if ct == "" else (ct == "True")
+        result.mechanism_real = metadata.get("mechanism_real", "") or None
+        hb = metadata.get("heard_before", "")
+        result.heard_before = None if hb == "" else (hb == "True")
+        # Gut-feel slider + notes
         result.human_grade = metadata.get("human_grade", "")
         result.graded_at = metadata.get("graded_at", "")
         result.grade_notes = metadata.get("grade_notes", "")

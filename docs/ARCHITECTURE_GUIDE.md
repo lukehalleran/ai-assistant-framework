@@ -17,6 +17,7 @@ docs throughout.
 - `FORMAL_MODEL.md` — mathematical specification of the complete agent
 - `MEMORY_SYSTEM.md` — deep dive on memory lifecycle, scoring, fact pipeline
 - `SYNTHESIS_FILTER.md` — deep dive on synthesis pipeline stages, calibration
+- `grading_plan.md` — two-layer grading protocol, audit queue design, classifier bootstrap
 - `QUICK_REFERENCE.md` — API signatures, function-level compressed reference
 - `PROJECT_SKELETON.md` — per-file method signatures and implementation details
 
@@ -834,7 +835,7 @@ content is captured separately for provenance storage.
 variation (e.g., temp 0.7 vs temp 0.9), then a selector model picks the
 best. Useful for quality improvement without multiple model providers.
 
-**Duel mode**: Two different models (e.g., sonnet-4.5 and gpt-5)
+**Duel mode**: Two different models (e.g., claude-opus-4.6 and gpt-5)
 generate in parallel. A judge model reads both responses and picks the
 winner. The system prompt tells the judge to evaluate for accuracy,
 completeness, and naturalness.
@@ -1374,6 +1375,12 @@ The synthesis pipeline is Daemon's long-term value proposition — automated
 discovery of non-obvious connections between concepts from different
 domains. It runs as a "dreaming" step during session shutdown.
 
+> **Current status (2026-04):** All three generators (retrieval, graph walk,
+> cross-store) are **disabled** in `config.yaml` pending grading validation.
+> No new synthesis candidates are being generated. Existing results in the
+> audit queue are available for grading. See `docs/grading_plan.md` for the
+> validation protocol.
+
 ### Candidate Generation (Three-Tier)
 
 Three generators run in parallel at shutdown, each with independent quotas.
@@ -1420,10 +1427,10 @@ failure immediately rejects the candidate (short-circuit):
 This stage catches three distinct failure modes:
 
 - **Claim similarity**: Full articulated claim searched against wiki
-  via FAISS semantic search. Catches direct rehashes. Hard gate: sim > 0.60 → reject (IVFPQ-calibrated, was 0.80).
+  via FAISS semantic search. Catches direct rehashes. Hard gate: sim > 0.88 → reject (IVFPQ-calibrated, was 0.60).
 - **Co-occurrence**: Bare concept conjunction ("concept_a concept_b")
   searched against wiki via FAISS. Catches "known connection, novel phrasing."
-  Hard gate: sim > 0.60 → reject (IVFPQ-calibrated, was 0.75).
+  Hard gate: sim > 0.85 → reject (IVFPQ-calibrated, was 0.60).
 - **Template specificity**: Regex detection of vacuous bridge language
   ("both involve", "share structural similarities", "operates on
   similar principles"). No hard gate — feeds into composite score.
@@ -1460,21 +1467,35 @@ rather than rejecting. At storage time, convergence metadata is updated.
 ### Audit Queue (Human-in-the-Loop)
 
 Accepted results and composite-rejected candidates are queued for blind
-human grading in the GUI "Synthesis" tab. Grades: TRUE_POSITIVE,
-FALSE_POSITIVE, FALSE_NEGATIVE. `SynthesisMemory.get_audit_stats()`
-tracks FP rate. At shutdown, if `fp_rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`
-(default 0.50) with at least `SYNTHESIS_AUDIT_MIN_GRADED` (default 10)
-graded results, synthesis dreaming auto-halts to prevent accumulating
-miscalibrated output. Config: `SYNTHESIS_AUDIT_ENABLED`,
-`SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`, `SYNTHESIS_AUDIT_MIN_GRADED`;
-YAML section `synthesis_audit`. 27 tests in `tests/unit/test_synthesis_audit.py`.
+human grading in the GUI "Synthesis" tab. See `docs/grading_plan.md` for
+the full grading protocol.
+
+**Two-layer grading:**
+
+- **Layer 1 — Binary screening** (three yes/no questions):
+  - `changes_thinking`: "Does this make me think about something differently?"
+  - `mechanism_real`: "Is the mechanism it describes real?" (yes/no/unsure)
+  - `heard_before`: "Have I heard this connection before?"
+- **Layer 2 — Gut-feel slider** (1-5): 1=Nonsense, 2=Surface metaphor,
+  3=True but obvious, 4=Real insight, 5=Breakthrough.
+- **Classification**: Grades 1-3 = invalid (FP if accepted), grades 4-5 = valid.
+
+`SynthesisMemory.get_audit_stats()` tracks FP rate. At shutdown, if
+`fp_rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` (default 0.50) with at
+least `SYNTHESIS_AUDIT_MIN_GRADED` (default 10) graded results, synthesis
+dreaming auto-halts to prevent accumulating miscalibrated output. Config:
+`SYNTHESIS_AUDIT_ENABLED`, `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`,
+`SYNTHESIS_AUDIT_MIN_GRADED`; YAML section `synthesis_audit`. 34 tests in
+`tests/unit/test_synthesis_audit.py`.
 
 ### Benchmark Performance
 
-Tested against 72 labeled candidates (7 tiers):
+Tested against 72 labeled candidates (7 tiers). Current coherence judge
+model: `claude-opus-4.6` (upgraded from `gpt-4o-mini`, then `sonnet-4.5`).
 
 | Model | Precision | Recall | F1 |
 |-------|-----------|--------|-----|
+| Claude Opus 4.6 (two-pass) | Current production model | — | — |
 | Sonnet 4.5 (two-pass) | 90.9% | 100% | 95.2% |
 | GPT-4o-mini (two-pass) | 83.3% | 100% | 90.9% |
 
