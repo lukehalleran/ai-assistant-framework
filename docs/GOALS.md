@@ -69,7 +69,7 @@ All major feature systems are built. The focus now shifts to: making what exists
 ## Medium-Term Goals (Next 1-3 Months)
 
 ### 5. Knowledge Synthesis Pipeline (Core Vision)
-- **Status**: Validated end-to-end. Three-tier generation operational, retrieval-based synthesis producing mechanism-naming insights.
+- **Status**: Validated end-to-end. All three generators currently DISABLED in `config.yaml` pending grading validation — pipeline code is intact but not running at shutdown. See `docs/grading_plan.md` for the grading protocol that gates re-enablement.
 - **This is the primary goal. Everything else supports this.**
 
 **Data Ingestion**:
@@ -78,14 +78,14 @@ All major feature systems are built. The focus now shifts to: making what exists
 - PubMed abstracts — planned
 
 **Connection Generation** (three-tier, runs in parallel at shutdown):
-- **Tier 0 — RetrievalSynthesisGenerator** (`synthesis_retriever.py`): Extracts structural queries from personal facts via few-shot LLM, searches FAISS (40M vectors), adversarially evaluates. Produces candidates naming specific mechanisms. Result: 2/15 accepted (13%) with named mechanisms ("conditional dependency", "historical layering"). **This is the primary generator.**
-- **Tier 1 — GraphWalkGenerator**: Biased Markov walks with hub dampening (degree > 15) and cross-domain constraint (>=2 domains). Currently inactive (only 6 bridges after cleanup, minimum 40 required). Will activate as bridge feedback loop creates provisional edges.
-- **Tier 2 — SynthesisGenerator**: Random personal-fact + wiki-article pairing with LLM bridge articulation. Fallback generator. Result: 2/15 accepted (13%) but insight quality lower than Tier 0.
+- **Tier 0 — RetrievalSynthesisGenerator** (`synthesis_retriever.py`): Extracts structural queries from personal facts via few-shot LLM, searches FAISS (40M vectors), adversarially evaluates. Produces candidates naming specific mechanisms. Result: 2/15 accepted (13%) with named mechanisms ("conditional dependency", "historical layering"). **This is the primary generator.** Currently disabled in config.yaml.
+- **Tier 1 — GraphWalkGenerator**: Biased Markov walks with hub dampening (degree > 15) and cross-domain constraint (>=2 domains). Currently disabled in config.yaml (and would also be blocked by low bridge count: 6 < 40 minimum). Will activate as bridge feedback loop creates provisional edges.
+- **Tier 2 — SynthesisGenerator**: Random personal-fact + wiki-article pairing with LLM bridge articulation. Fallback generator. Result: 2/15 accepted (13%) but insight quality lower than Tier 0. Currently disabled in config.yaml.
 
 **Multi-Stage Filtering** (validated):
 - 8-stage filter pipeline (`synthesis_filter.py`), calibration fixture with 72 labeled candidates
 - IVFPQ threshold recalibration done (novelty, co-occurrence, composite thresholds adjusted for quantized distances)
-- Coherence judge recalibrated: WEAK = no mechanism named; MODERATE = names real mechanism concretely applied to both domains
+- Coherence judge recalibrated (`claude-opus-4.6`): WEAK = no mechanism named; MODERATE = names real mechanism concretely applied to both domains
 - End-to-end validation complete: 4/30 accepted (13%), rejection breakdown: composite 13, novelty 12, coherence 1
 - Bridge feedback loop confirmed: accepted insights create provisional graph edges (129 -> 133 edges after run)
 
@@ -102,8 +102,8 @@ All major feature systems are built. The focus now shifts to: making what exists
 - Pairwise reranking stage not yet implemented
 
 ### 6. Dreaming Engine (Batch Generation Infrastructure)
-- **Status**: Shutdown dreaming operational (three-tier generation at session end). Idle-time dreaming pending.
-- Shutdown dreaming runs three generators in parallel at session end (Step 6.8 in shutdown_processor.py)
+- **Status**: Shutdown dreaming infrastructure built but all three generators currently disabled in config.yaml pending grading validation. Idle-time dreaming pending.
+- Shutdown dreaming wired to run three generators in parallel at session end (Step 6.8 in shutdown_processor.py), but all are disabled until audit grading validates the pipeline
 - Idle-time background thread: activates after N minutes inactivity, pauses on user input — not yet implemented
 - Coverage tracking: which domains/topics explored, avoid redundant generation
 - Scheduler design pending
@@ -133,7 +133,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **Knowledge integration**: Obsidian vault (multimodal, mtime-based re-embedding), reference docs, git commits, procedural skills, Wikipedia (FAISS IVFPQ 40M vectors)
 - **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring, wiki enrichment at shutdown
 - **Proactive surfacing**: Cross-domain insight generation from knowledge graph, session-cached LLM calls, novelty-filtered
-- **Synthesis pipeline**: Cross-store candidate generation, 8-stage filter, LLM bridge articulation, convergence tracking, human audit queue with auto-halt
+- **Synthesis pipeline**: Cross-store candidate generation, 8-stage filter (`claude-opus-4.6` coherence judge), LLM bridge articulation, convergence tracking, human audit queue with two-layer grading and auto-halt. All three generators currently disabled pending grading validation (see `docs/grading_plan.md`)
 - **Implementation tracking**: 4-stage proposal detection (file → grep → git → LLM), cooldown-gated
 - **Fast Mode**: Reduced retrieval for mobile/slow connections with progress keepalives
 - **PDF/DOCX support**: Full pipeline with table extraction (pdfplumber + python-docx), chunking with header detection
@@ -155,10 +155,11 @@ These systems are complete and working. Listed here for context, not as active w
 - SynthesisResult fields: `human_grade`, `graded_at`, `grade_notes`
 - SynthesisMemory audit methods: `grade_result()`, `get_ungraded()`, `get_graded()`, `get_audit_stats()`, `store_rejected_for_audit()`
 - `SynthesisFilter.process_batch()` stores composite-rejected candidates for FN review
-- GUI "Synthesis" tab with blind review queue, grading buttons, audit stats
+- GUI "Synthesis" tab with two-layer grading UI: 3 binary screening toggles (changes thinking? / real mechanism? / heard before?) + 1-5 gut-feel slider. See `docs/grading_plan.md` for full grading protocol.
 - Auto-halt in `shutdown_processor.py`: skips synthesis if FP rate > `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` (0.50)
+- Coherence judge model: `claude-opus-4.6` (set in config.yaml `synthesis_filter.coherence_model`)
 - Config: `SYNTHESIS_AUDIT_ENABLED`, `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`, `SYNTHESIS_AUDIT_MIN_GRADED`; YAML section `synthesis_audit`
-- 27 tests in `tests/unit/test_synthesis_audit.py`
+- 34 tests in `tests/unit/test_synthesis_audit.py`
 
 ### Wiki-to-Graph Enrichment (2026-03-31)
 - Session-level Wikipedia article tracking → graph nodes at shutdown

@@ -10,7 +10,7 @@ Module Contract
     Section order: RECENT CONVERSATION → RELEVANT MEMORIES → SUMMARIES → REFLECTIONS →
     BACKGROUND KNOWLEDGE → WEB SEARCH → RELEVANT INFORMATION → DREAMS → USER PROFILE →
     TIME CONTEXT → CURRENT USER QUERY (with LAST EXCHANGE for coherence).
-  - _format_memory(mem) -> str  [single memory → "timestamp: User: Q / Daemon: A" with tags]
+  - _format_memory(mem) -> str  [single memory → "timestamp: User: Q / Daemon: A" with tags; uses format_relative_timestamp for day labels]
   - _format_web_search_results(web_search_result, max_chars) -> str  [WebSearchResult → [WEB SEARCH RESULTS] section]
   - _load_directives() -> str  [loads core/system_prompt.txt with header stripping]
   - _get_time_context() -> str  [current time + time_manager deltas]
@@ -25,6 +25,7 @@ Module Contract
   - core.response_parser.ResponseParser (strip_prompt_artifacts)
   - .token_manager.TokenManager (emergency middle-out compression)
   - utils.time_manager.TimeManager (time deltas) [optional]
+  - utils.time_manager.format_relative_timestamp (relative day labels on timestamps)
 - Side effects:
   - Logging of formatting actions and content statistics
   - Emergency whole-prompt compression when over token budget (protects [CURRENT USER QUERY])
@@ -280,11 +281,15 @@ class PromptFormatter:
                 meta = mem.get("metadata", {})
                 timestamp = meta.get("timestamp", "")
 
-            # Format timestamp as datetime string if it's a datetime object
+            # Format timestamp with relative day label to prevent temporal hallucinations
+            from utils.time_manager import format_relative_timestamp
             if isinstance(timestamp, datetime):
-                datetime_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                datetime_str = format_relative_timestamp(timestamp)
             elif timestamp:
-                datetime_str = str(timestamp)
+                try:
+                    datetime_str = format_relative_timestamp(datetime.fromisoformat(str(timestamp)))
+                except (ValueError, TypeError):
+                    datetime_str = str(timestamp)
             else:
                 datetime_str = "Unknown time"
 

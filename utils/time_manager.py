@@ -8,6 +8,7 @@ Module Contract
   - measure_response(start, end), elapsed_since_last(), time_since_previous_message()
   - elapsed_since_last_session() [NEW]
   - get_active_days_since(timestamp), calculate_active_day_decay(timestamp, decay_rate)
+  - format_relative_timestamp(ts, now): Format datetime with relative day label for LLM consumption
 - Side effects:
   - Maintains in‑memory timestamps for latency reporting.
   - Tracks active days in persistent storage for decay calculation.
@@ -17,11 +18,45 @@ Module Contract
   - time_since_previous_message(): Calculate gap between consecutive messages within a session
   - elapsed_since_last_session(): Calculate gap between session end and current message
   - Both deltas displayed in [TIME CONTEXT] prompt header for temporal awareness
+  - format_relative_timestamp(): Adds "(today)", "(yesterday)", etc. to prevent LLM temporal hallucinations
 """
 import json, os, logging
 from datetime import datetime, date, timedelta
 
 logger = logging.getLogger(__name__)
+
+
+def format_relative_timestamp(ts: datetime, now: datetime = None) -> str:
+    """Format a datetime with a relative day label for LLM consumption.
+
+    Prevents temporal hallucinations by making day-relative context explicit
+    instead of forcing the LLM to compute it from raw ISO timestamps.
+
+    Examples:
+        "2026-04-03 08:15 (today)"
+        "2026-04-02 22:45 (yesterday)"
+        "2026-04-01 14:30 (2 days ago)"
+        "2026-03-28 09:00 (6 days ago)"
+    """
+    if now is None:
+        now = datetime.now()
+
+    delta_days = (now.date() - ts.date()).days
+
+    time_str = ts.strftime('%Y-%m-%d %H:%M')
+
+    if delta_days == 0:
+        return f"{time_str} (today)"
+    elif delta_days == 1:
+        return f"{time_str} (yesterday)"
+    elif delta_days < 7:
+        return f"{time_str} ({delta_days} days ago)"
+    elif delta_days < 30:
+        weeks = delta_days // 7
+        return f"{time_str} ({weeks}w ago)"
+    else:
+        return time_str
+
 
 class TimeManager:
     def __init__(self, time_file="data/last_query_time.json"):

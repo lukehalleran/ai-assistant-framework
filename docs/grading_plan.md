@@ -4,145 +4,146 @@
 
 The Synthesis Audit Queue is the ground-truth mechanism for Daemon's knowledge graph. Because LLMs are inherently biased toward finding patterns (apophenia), the Coherence Judge cannot be trusted as the final arbiter for permanent graph edges.
 
-This protocol dictates how human-in-the-loop review evaluates provisional bridge edges, establishes empirical False Positive (FP) and False Negative (FN) rates, and builds the labeled dataset required for future classifier training.
+**Current status:** All three synthesis generators (retrieval, graph walk, cross-store) are disabled in `config.yaml`. No new synthesis candidates are being generated. Existing results in the audit queue are available for grading. Generators remain frozen until the grading approach is validated.
 
 **Implementation:** GUI "Synthesis" tab, `memory/synthesis_memory.py` audit methods, auto-halt in `shutdown_processor.py`.
 
 ---
 
-## 2. The 1-5 Structural Grading Rubric
+## 2. Two-Layer Grading
 
-Grading is strictly based on structural mechanics, not thematic similarity.
+The original 1-5 rubric asked graders to evaluate structural validity — essentially peer-reviewing cross-domain claims. This is paralyzing because the difference between "surface metaphor" (2) and "structural isomorphism" (4) requires expertise in both domains, and a genuine breakthrough (5) is by definition something you can't recognize until it proves out.
 
-### 1: Pure Hallucination / Logical Failure
+The new approach separates grading into two layers: fast binary screening, then a loose gut-feel slider.
 
-**Definition:** The connection is nonsensical, hallucinated, or relies on a fundamental misunderstanding of one of the concepts.
+### Layer 1: Binary Screening (answer first, don't overthink)
 
-**Action:** Reject.
+Three yes/no questions that require no expertise:
 
-**Example:** `1993-02-09 <> Convergence space` — No functional relationship. The date is treated as a "point" in topological space purely because the word "convergence" exists.
+| Question | Maps to | Training signal |
+|----------|---------|-----------------|
+| **"Does this make me think about something differently?"** | Structural validity | If no → likely grade 1-2 |
+| **"Is the mechanism it describes real, as far as I know?"** (yes/no/unsure) | Structural validity | If no → grade 1. If unsure → could be 3-5 |
+| **"Have I heard this connection before?"** | Novelty | Separates "valid but known" from "valid and novel" |
 
-### 2: The Surface Metaphor (LLM Trap)
+These three questions cleanly separate into the two problems the pipeline needs to solve:
+- **Questions 1-2** → "Is this a real structural parallel?" (detect)
+- **Question 3** → "Is this already known?" (subtract)
 
-**Definition:** The nodes share a broad thematic category or a linguistic pun, but the underlying rules, constraints, or mechanisms are completely different.
+This maps directly to the detect-then-subtract architecture: train a structural classifier on Q1+Q2 labels, use FAISS for Q3.
 
-**Action:** Reject.
+### Layer 2: Gut-Feel Slider (1-5, first instinct)
 
-**Example:** `shower after workouts <> Babulang ritual` — Both involve water/cleansing, but the functional mechanism of removing sweat does not map to the cultural rules of the festival.
+After answering the binary questions, pick a number. Don't agonize — your first instinct is probably right and the noise will average out over 300 examples.
 
-### 3: Structurally True, but Trivial
+| Grade | Label | Rough meaning |
+|-------|-------|---------------|
+| 1 | Nonsense | This connection doesn't make sense |
+| 2 | Surface metaphor | Sounds similar but mechanisms are different |
+| 3 | True but obvious | Valid mechanism, but obvious or already known |
+| 4 | Real insight | Changes how I think about one of the concepts |
+| 5 | Breakthrough | Surprising, multi-perspective, genuinely new framing |
 
-**Definition:** A valid functional mechanism is shared, but it is too broad or obvious to yield novel analytical value.
-
-**Action:** Reject. (For classifier training, grade 3 = reject. The classifier should learn to reject trivial connections.)
-
-**Example:** `bartending <> Fluid dynamics` — Accurate, but functionally useless for insight.
-
-### 4: Structural Isomorphism (The Target)
-
-**Definition:** The underlying system rules, causal loops, or mathematical properties of both domains map onto each other perfectly across different disciplines. Applying the Wikipedia concept changes how the personal fact is analyzed.
-
-**Action:** Accept. Promote to permanent bridge edge.
-
-**Example:** Connecting the token-budget decay rate in `MEMORY_SYSTEM` to pharmacokinetic half-life equations — the exponential decay model is structurally identical, and the pharmacokinetic framing yields concrete tuning insights (therapeutic window = useful context range).
-
-### 5: Deep Convergence (Breakthrough)
-
-**Definition:** A profound, perfectly mapped structural connection that synthesizes a completely novel analytical framework for a complex personal node.
-
-**Action:** Accept. Promote to permanent bridge edge with high initial weight.
+**Why keep the slider if the binaries are enough?** The classifier eventually needs to learn the 3/4 boundary — the hardest discrimination in the system. The binary questions can't distinguish "real mechanism but trivial" from "real mechanism that changes my thinking." A grade-3 can have all three binaries as yes (real mechanism, not heard before, but doesn't actually change thinking in a meaningful way). The continuous signal from the slider lets the classifier learn this boundary even if individual labels are noisy.
 
 ---
 
-## 3. Evaluation Heuristics (For Unfamiliar Domains)
+## 3. How Binaries + Slider Work Together
 
-When the pipeline proposes a connection involving an obscure or highly technical Wikipedia concept, apply these analytical tests to verify structural integrity:
+| Q1 (Thinking?) | Q2 (Real?) | Q3 (Heard?) | Likely Grade | Interpretation |
+|:-:|:-:|:-:|:-:|---|
+| No | No | - | 1 | Nonsense connection |
+| No | Yes | - | 2-3 | Real mechanism but doesn't illuminate anything |
+| Yes | No | - | 2 | Feels insightful but mechanism is wrong |
+| Yes | Unsure | No | 3-4 | Interesting, can't verify mechanism |
+| Yes | Yes | Yes | 3 | Valid but already known |
+| Yes | Yes | No | 4-5 | The target: real, novel, changes thinking |
 
-### The "De-Jargon" Test
-
-Strip away all field-specific nouns. Evaluate only the verbs, constraints, and logic gates. If the connection sounds profound only because of the vocabulary, it is a **2**.
-
-### The Variable Swap
-
-If the two systems are truly isomorphic, changing a variable in the Wikipedia concept's ruleset should logically predict the outcome in the personal fact's ruleset. If it doesn't, it is a **2**.
-
-### The Underwriter's Rule
-
-Treat unverified edges as unpriced liabilities. If the underlying mechanics cannot be verified, default to **Reject**. A False Negative (missed insight) is always preferable to a False Positive (graph poisoning).
+The binaries give fast, honest signal. The slider captures nuance the binaries miss. Together they produce richer training data than either alone.
 
 ---
 
 ## 4. Mapping to Implementation
 
-The GUI Synthesis tab uses a 1-5 slider. The system maps grades to FP/FN statistics:
+### Storage Format
 
-| Grade | Label | Classification | Effect |
-|-------|-------|---------------|--------|
-| 1 | Hallucination | Invalid (FP if accepted) | Reject, counts toward FP rate |
-| 2 | Surface metaphor | Invalid (FP if accepted) | Reject, counts toward FP rate |
-| 3 | True but trivial | Invalid (FP if accepted) | Reject, counts toward FP rate |
-| 4 | Structural isomorphism | Valid | Accept, promote bridge edge |
-| 5 | Deep convergence | Valid | Accept, promote bridge edge with high weight |
+Each graded result stores 6 fields in ChromaDB metadata:
 
-**For classifier training:** Grades 1-3 = negative class, grades 4-5 = positive class. The 3/4 boundary is the decision threshold.
+```
+changes_thinking: "True" / "False" / ""
+mechanism_real:   "yes" / "no" / "unsure" / ""
+heard_before:     "True" / "False" / ""
+human_grade:      "1"-"5"
+graded_at:        ISO timestamp
+grade_notes:      free text
+```
 
-**Average grade** is tracked as a quality signal. Avg < 2.5 across recent grading indicates the pipeline is producing mostly junk.
+### FP/FN Classification (unchanged)
+
+| Grade | Classification | Effect |
+|-------|---------------|--------|
+| 1-3 | Invalid (FP if accepted) | Counts toward FP rate |
+| 4-5 | Valid | Counts toward valid rate |
+
+The 3/4 boundary remains the decision threshold for classifier training: grades 1-3 = negative class, grades 4-5 = positive class.
+
+### Future: Binary-Derived Labels
+
+Once enough data accumulates, the binary screening questions provide separate training signals:
+
+- **Structural classifier** (detect): trained on Q1 + Q2 labels
+- **Novelty filter** (subtract): validated against Q3 labels + FAISS corpus overlap
 
 ---
 
-## 5. Audit Operations Plan
+## 5. Audit Operations
 
-### Daily Batch Review
+### Grading Workflow
 
-Grade the pending queue of accepted insights and composite rejects blindly (without seeing generator tags). The GUI hides generator labels by default to prevent bias.
+1. Open Synthesis tab, select "Accepted (ungraded)" view
+2. Read the connection claim (generator labels hidden for blind review)
+3. Answer the three binary questions quickly
+4. Set the slider to your gut feel
+5. Optionally add notes
+6. Submit
 
 ### Threshold Calibration
 
-- If the **FN rate** (grade 4-5 insights found in composite rejects) rises, incrementally lower the composite threshold from 0.65.
-- If the **FP rate** (grade 1-3 insights found in accepted) exceeds 50% over 10+ graded items, the system **auto-halts** synthesis dreaming (`SYNTHESIS_AUDIT_FP_HALT_THRESHOLD = 0.50`).
+- If **FN rate** (grade 4-5 found in composite rejects) rises, lower the composite threshold
+- If **FP rate** (grade 1-3 found in accepted) exceeds 50% over 10+ graded items, the system **auto-halts** synthesis dreaming
 
 ### Auto-Halt Mechanism
-
-The shutdown processor checks audit stats before running synthesis dreaming:
 
 ```
 if fp_rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
    AND total_graded >= SYNTHESIS_AUDIT_MIN_GRADED:
-    → skip synthesis, log warning
+    -> skip synthesis, log warning
 ```
-
-This prevents the pipeline from flooding the graph with junk edges when the coherence judge is clearly failing.
 
 ### Classifier Bootstrap
 
-Once the audit queue accumulates **300+ manually graded pairs** (balanced across valid/invalid), the dataset will be exported to train an SVM/KNN classifier to replace or augment the LLM Coherence Judge.
-
-**Current volume:** 74 results from the 2026-04-01 diagnostic run (composite at 0.55). At the current session rate (~4 accepted per production run), reaching 300 requires either:
-- Multiple diagnostic runs at relaxed thresholds (faster)
-- ~75 production sessions (slower)
+Target: **300+ graded examples** (balanced valid/invalid) to train SVM/KNN on binary features + composite score components. The binary screening questions are the primary training features; the 1-5 slider provides the decision boundary.
 
 ---
 
-## 6. Diagnostic Run Protocol
-
-To generate grading data efficiently:
-
-1. Lower `composite_min_score` to 0.55 in `config/config.yaml`
-2. Run `python scripts/test_end_to_end_synthesis.py --candidates 150 --runs 1`
-3. Revert `composite_min_score` to 0.65
-4. Grade the results through the Synthesis tab
-5. Check audit stats — if FP rate indicates threshold adjustment, update composite accordingly
-
----
-
-## 7. Configuration
+## 6. Configuration
 
 ```yaml
 # config/config.yaml
 synthesis_audit:
   enabled: true
-  fp_halt_threshold: 0.50   # auto-halt if FP rate exceeds this
-  min_graded: 10             # minimum graded results before auto-halt can trigger
+  fp_halt_threshold: 0.50
+  min_graded: 10
+
+# Generators (currently disabled)
+synthesis:
+  enabled: false
+synthesis_generator:
+  enabled: false
+synthesis_retrieval:
+  enabled: false
+graph_walk:
+  enabled: false
 ```
 
 ```python

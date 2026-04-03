@@ -5,6 +5,7 @@ Operational guide for the knowledge synthesis system — candidate generation,
 
 For formal notation see `FORMAL_MODEL.md` Section 13. For config constants
 see `QUICK_REFERENCE.md` under "Knowledge Synthesis Filter Pipeline."
+For the human grading rubric see `docs/grading_plan.md`.
 
 ---
 
@@ -48,7 +49,7 @@ auto-halts if the human audit FP rate exceeds `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
 | `memory/shutdown_processor.py` | Integration point — runs all three generators then filter at shutdown |
 | `tests/test_synthesis_calibration.py` | Mock calibration suite (6 tests) |
 | `tests/unit/test_synthesis_generator.py` | Generator unit tests (18 tests) |
-| `tests/unit/test_synthesis_audit.py` | Audit queue unit tests (27 tests) |
+| `tests/unit/test_synthesis_audit.py` | Audit queue unit tests (34 tests) |
 | `tests/unit/test_graph_walk_generator.py` | Graph walk generator tests (38 tests) |
 | `tests/fixtures/calibration_candidates.json` | 72 labeled candidates in 7 tiers |
 | `scripts/calibrate_coherence_live.py` | Live LLM calibration with multi-model comparison |
@@ -96,9 +97,14 @@ unique_paths: Set[str]                  # path_hashes that found this insight
 unique_sources: Set[str]                # "concept_a|concept_b" pairs
 convergence_strength: float             # |paths| * |sources|
 
-# Audit fields [NEW 2026-04-01]
-human_grade: Optional[str]              # TRUE_POSITIVE, FALSE_POSITIVE, or FALSE_NEGATIVE
-graded_at: Optional[datetime]           # When the human graded it
+# Human audit fields — binary screening questions (Layer 1)
+changes_thinking: Optional[bool]        # "Does this make me think differently?"
+mechanism_real: Optional[str]           # "Is the mechanism real?" — "yes"/"no"/"unsure"
+heard_before: Optional[bool]            # "Have I heard this connection before?"
+
+# Human audit fields — gut-feel slider + notes (Layer 2)
+human_grade: str                        # "1"-"5" structural slider (1=Nonsense → 5=Breakthrough)
+graded_at: str                          # ISO timestamp when graded
 grade_notes: str                        # Free-text grading notes
 ```
 
@@ -114,6 +120,13 @@ STRONG   = 1.0    # predictive cross-domain connection
 ---
 
 ## Candidate Generation
+
+**Current status:** All three generators are DISABLED in `config.yaml`
+(`synthesis.enabled: false`, `synthesis_generator.enabled: false`,
+`synthesis_retrieval.enabled: false`, `graph_walk.enabled: false`) pending
+grading validation. The pipeline code is intact and will resume once the
+two-layer grading system (see `docs/grading_plan.md`) produces enough
+ground truth to validate filter thresholds.
 
 Three generators produce candidates in parallel at shutdown, each with
 independent quotas. All emit `SynthesisCandidate` objects for the same
@@ -291,7 +304,7 @@ claim** via `semantic_search_with_neighbors()`. Catches direct rehashes.
 Similarity scores are cosine similarity (0-1) returned directly from FAISS,
 extracted by `_extract_faiss_similarity()`.
 
-**Hard gate:** `claim_sim > 0.60` (`SYNTHESIS_NOVELTY_KNOWN_THRESHOLD`, IVFPQ-calibrated)
+**Hard gate:** `claim_sim > 0.88` (`SYNTHESIS_NOVELTY_KNOWN_THRESHOLD`, IVFPQ-calibrated — near-verbatim rehashes only)
 
 **Retrieval-aware skip:** For candidates from `RetrievalSynthesisGenerator`,
 the claim-similarity sub-check is skipped. Retrieval candidates derive their
@@ -414,8 +427,12 @@ Rating: <INVALID|WEAK|MODERATE|STRONG>
 
 **Gate:** `coherence_level >= MODERATE` (`SYNTHESIS_COHERENCE_MIN_LEVEL`)
 
-**Model:** `SYNTHESIS_COHERENCE_MODEL` (default: `sonnet-4.5`). Calibrated
-against GPT-4o-mini — Sonnet 4.5 achieves higher F1 on the fixture set.
+**Model:** `SYNTHESIS_COHERENCE_MODEL` (default in app_config: `sonnet-4.5`,
+overridden in config.yaml to `claude-opus-4.6`). System prompt forces
+skeptical stance: "Most cross-domain claims are surface metaphor. When in
+doubt, rate WEAK." Result: coherence rejections rose from 3.6% to 44%,
+acceptance dropped from 67% to 30%, accepted claims now name transferable
+mechanisms.
 
 **Recalibrated prompt standards:**
 - **WEAK**: No mechanism named, vague bridging language ("both involve
@@ -545,9 +562,9 @@ endpoint_distance: 0.55
 - Score: 1.0 (at midpoint — peak score)
 
 **Stage 3 — Novelty External:** PASS (FAISS wiki index, 40M vectors)
-- Sub-check 1 (claim sim): 0.15 — claim text is novel (< 0.80 threshold)
+- Sub-check 1 (claim sim): 0.15 — claim text is novel (< 0.88 threshold)
 - Sub-check 2 (co-occurrence): 0.10 — "bone remodeling database index" is
-  not a documented pairing in FAISS wiki vectors (< 0.75 threshold)
+  not a documented pairing in FAISS wiki vectors (< 0.85 threshold)
 - Sub-check 3 (template sim): 0.00 — no generic templates match; claim uses
   specific terms (Wolff's law, osteoclasts, B-tree, hot nodes)
 - novelty_score_external: 0.85, cooccurrence_similarity: 0.10, template_similarity: 0.00
@@ -686,7 +703,8 @@ real math but misapplies deterministic chaos theory to stochastic markets.
 
 The synthesis pipeline produces candidates automatically, but precision can
 only be truly measured by human review. The audit queue provides a blind
-grading workflow with auto-halt capability.
+grading workflow with auto-halt capability. For the full grading rubric
+and rationale, see `docs/grading_plan.md`.
 
 ### How It Works
 
@@ -697,10 +715,14 @@ grading workflow with auto-halt capability.
    for false-negative (FN) review.
 3. The **GUI "Synthesis" tab** presents a blind review queue: the grader sees
    the claim, concepts, and coherence level but grades without knowing the
-   pipeline's original verdict.
-4. Grades: `TRUE_POSITIVE` (genuinely novel insight), `FALSE_POSITIVE`
-   (noise that slipped through), `FALSE_NEGATIVE` (good insight the pipeline
-   wrongly rejected).
+   pipeline's original verdict (generator labels hidden).
+4. **Two-layer grading** (see `docs/grading_plan.md` for full rubric):
+   - Layer 1: Three binary screening questions — "Does this make me think
+     differently?" (yes/no), "Is the mechanism real?" (yes/no/unsure),
+     "Have I heard this before?" (yes/no).
+   - Layer 2: 1-5 gut-feel slider (1=Nonsense, 2=Surface metaphor,
+     3=True but obvious, 4=Real insight, 5=Breakthrough).
+   - Classification: grades 1-3 = invalid (FP if accepted), grades 4-5 = valid.
 5. **Auto-halt**: At shutdown, before running synthesis dreaming,
    `shutdown_processor.py` checks `synthesis_memory.get_audit_stats()`.
    If `fp_rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` and
@@ -708,19 +730,35 @@ grading workflow with auto-halt capability.
    session with a warning log. This prevents accumulating more bad output
    while the pipeline is miscalibrated.
 
+### Grading API
+
+```python
+synthesis_memory.grade_result(
+    doc_id: str,
+    grade: str,                         # "1"-"5" gut-feel slider
+    notes: str = "",                    # free-text grading notes
+    changes_thinking: Optional[bool] = None,   # Layer 1: Q1
+    mechanism_real: Optional[str] = None,       # Layer 1: Q2 ("yes"/"no"/"unsure")
+    heard_before: Optional[bool] = None,        # Layer 1: Q3
+) -> bool
+```
+
 ### Audit Stats
 
 `synthesis_memory.get_audit_stats()` returns:
 
 ```python
 {
-    "total": int,       # Total results in collection
-    "graded": int,      # Results with a human grade
-    "ungraded": int,    # Results awaiting review
-    "tp": int,          # TRUE_POSITIVE count
-    "fp": int,          # FALSE_POSITIVE count
-    "fn": int,          # FALSE_NEGATIVE count
-    "fp_rate": float,   # fp / graded (0.0 if none graded)
+    "total_graded": int,            # Valid + invalid count
+    "valid_count": int,             # Grades 4-5 (structural isomorphism or better)
+    "invalid_count": int,           # Grades 1-3 (hallucination, surface metaphor, trivial)
+    "fp_rate": float,               # invalid_count / total_graded (0.0 if none graded)
+    "avg_grade": float,             # Mean of all numeric grades
+    "auto_halt": bool,              # True if FP rate exceeds threshold with sufficient data
+    "ungraded_accepted": int,       # Accepted results awaiting review
+    "ungraded_rejected": int,       # Composite-rejected results awaiting FN review
+    "fp_halt_threshold": float,     # Current SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
+    "min_graded_for_halt": int,     # Current SYNTHESIS_AUDIT_MIN_GRADED
 }
 ```
 
@@ -736,7 +774,7 @@ YAML section: `synthesis_audit`
 
 ### Tests
 
-27 unit tests in `tests/unit/test_synthesis_audit.py`.
+34 unit tests in `tests/unit/test_synthesis_audit.py`.
 
 ---
 
@@ -759,7 +797,7 @@ All constants live in `config/app_config.py` under `SYNTHESIS_CFG` and
 | `SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD` | `0.70` | 3 | Label threshold (novel vs adjacent) |
 | `SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD` | `0.85` | 3 | Co-occurrence hard gate — 40M-scale recalibrated |
 | `SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD` | `0.85` | 4 | Internal duplicate threshold |
-| `SYNTHESIS_COHERENCE_MODEL` | `sonnet-4.5` | 5 | LLM for coherence + skeptic |
+| `SYNTHESIS_COHERENCE_MODEL` | `sonnet-4.5` (YAML override: `claude-opus-4.6`) | 5 | LLM for coherence + skeptic |
 | `SYNTHESIS_COHERENCE_MIN_LEVEL` | `MODERATE` | 5 | Minimum coherence gate |
 | `SYNTHESIS_WEIGHT_COHERENCE` | `0.30` | 6 | Composite weight |
 | `SYNTHESIS_WEIGHT_NOVELTY` | `0.40` | 6 | Composite weight |

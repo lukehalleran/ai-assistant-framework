@@ -3591,10 +3591,10 @@ class SynthesisResult:
 - `get_recurring(min_paths=3, min_sources=2)` → strongly-converging results
 - `get_stats()` → `{total_insights, converging_insights, collection}`
 - Audit queue methods **[NEW 2026-04-01]**:
-  - `grade_result(doc_id, grade, notes="")` → bool. Grades: TRUE_POSITIVE, FALSE_POSITIVE, FALSE_NEGATIVE
+  - `grade_result(doc_id, grade, notes, changes_thinking, mechanism_real, heard_before)` → bool. Two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`
   - `get_ungraded(limit=10)` → `List[SynthesisResult]` — blind review queue
   - `get_graded(grade=None, limit=50)` → `List[SynthesisResult]` — graded results (optionally filtered)
-  - `get_audit_stats()` → `{total, graded, ungraded, tp, fp, fn, fp_rate}`
+  - `get_audit_stats()` → `{total_graded, valid_count, invalid_count, fp_rate, avg_grade, auto_halt, ungraded_accepted, ungraded_rejected, fp_halt_threshold, min_graded_for_halt}`
   - `store_rejected_for_audit(result)` → doc_id. Stores composite-rejected candidates for FN review
 
 **Filter Pipeline** (`knowledge/synthesis_filter.py`):
@@ -3652,7 +3652,7 @@ SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88 # Stage 3a: near-verbatim rehashes only
 SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.70  # Stage 3a: novel vs adjacent label
 SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85 # Stage 3b: 40M-scale recalibrated
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85 # Stage 4: above = same insight
-SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"    # Stage 5: LLM for coherence judge
+SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.6"    # Stage 5: LLM for coherence judge
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"   # Stage 5: minimum to pass
 SYNTHESIS_WEIGHT_COHERENCE = 0.30        # Stage 6: composite weights
 SYNTHESIS_WEIGHT_NOVELTY = 0.40
@@ -3712,7 +3712,7 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 
 **Configuration** (`config/app_config.py`, YAML section `synthesis_generator`):
 ```python
-SYNTHESIS_GENERATOR_ENABLED = True                # Enable synthesis dreaming at shutdown
+SYNTHESIS_GENERATOR_ENABLED = False               # All three generators currently DISABLED in config.yaml pending grading validation
 SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION = 5    # Target candidates per session
 SYNTHESIS_GENERATOR_LLM_CONCURRENCY = 5           # Max parallel LLM bridge calls
 SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20          # Graph sparsity guard
@@ -5049,7 +5049,7 @@ python main.py inspect-summaries
 | surfacing_history.py | History: JSON-backed novelty tracking for proactive context surfacing [NEW 2026-03-25] |
 | implementation_detector.py | Detect: 4-stage pipeline (file/code/git/LLM) for proposal implementation status [NEW 2026-03-25] |
 | synthesis_models.py | Data: SynthesisCandidate, SynthesisResult, CoherenceLevel, CandidateStatus models [NEW 2026-03-28] |
-| synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking + audit queue (grading, FP/FN review) [ENHANCED 2026-04-01] |
+| synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking + audit queue (two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`) [ENHANCED 2026-04-01] |
 | synthesis_filter.py | Filter: 8-stage async pipeline (text/domain/distance/novelty/two-pass coherence/scoring) [NEW 2026-03-28] |
 | synthesis_generator.py | Generate: Cross-store sampling (facts via ChromaDB + wiki via FAISS) + LLM bridge articulation for synthesis candidates [NEW 2026-03-28] |
 
@@ -5162,7 +5162,7 @@ SYNTHESIS_DISTANCE_MAX = 0.90
 SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88   # Near-verbatim rehashes only
 SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # 40M-scale recalibrated
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
-SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"
+SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.6"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
 SYNTHESIS_NOVELTY_W_CLAIM = 0.25
 SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30

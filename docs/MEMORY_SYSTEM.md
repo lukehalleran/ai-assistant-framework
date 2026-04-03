@@ -85,7 +85,7 @@ resolved, and stale information is penalized in ranking.
 | `procedural_skills` | Reusable problem-solving patterns | No | Yes |
 | `proposals` | Goal-directed code change proposals | No | Yes |
 | `threads` | Open threads (commitments, deadlines) | No | Yes |
-| `synthesis_results` | Cross-domain synthesis insights (+ human audit grades: human_grade, graded_at, grade_notes) | No | Yes |
+| `synthesis_results` | Cross-domain synthesis insights (+ human audit: two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`) | No | Yes |
 
 **Protected** = never scanned by cross-collection deduplicator.
 

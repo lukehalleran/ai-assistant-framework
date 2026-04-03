@@ -11,7 +11,8 @@ Module Contract
   - store_result(result) -> str  [returns doc_id; deduplicates via convergence update]
   - store_rejected_for_audit(result) -> str  [stores composite-rejected for FN review]
   - get_recurring(min_paths, min_sources) -> List[SynthesisResult]
-  - grade_result(doc_id, grade, notes) -> bool  [human audit: valid/invalid/should_pass/correct_reject]
+  - grade_result(doc_id, grade, notes, changes_thinking, mechanism_real, heard_before) -> bool
+    [two-layer grading: 3 binary screening questions + 1-5 gut-feel slider]
   - get_ungraded(status_filter, limit) -> List[Tuple[str, SynthesisResult]]  [audit queue items]
   - get_graded(limit) -> List[Tuple[str, SynthesisResult]]  [graded history]
   - get_audit_stats() -> dict  [FP rate, FN rate, total graded, auto-halt status]
@@ -297,13 +298,30 @@ class SynthesisMemory:
             logger.error(f"Failed to store rejected result for audit: {e}")
             raise
 
-    def grade_result(self, doc_id: str, grade: str, notes: str = "") -> bool:
+    def grade_result(
+        self,
+        doc_id: str,
+        grade: str,
+        notes: str = "",
+        changes_thinking: Optional[bool] = None,
+        mechanism_real: Optional[str] = None,
+        heard_before: Optional[bool] = None,
+    ) -> bool:
         """Apply a human grade to a synthesis result.
+
+        Two-layer grading:
+          1. Binary screening: changes_thinking (yes/no), mechanism_real
+             (yes/no/unsure), heard_before (yes/no). Fast, honest, no expertise.
+          2. Gut-feel slider: 1-5 structural grade. Don't agonize — first
+             instinct, noise averages out over 300 examples.
 
         Args:
             doc_id: ChromaDB document ID
-            grade: "1"-"5" (structural rubric) or legacy "valid"/"invalid"/etc.
+            grade: "1"-"5" (structural slider) or legacy "valid"/"invalid"/etc.
             notes: Optional reviewer notes
+            changes_thinking: "Does this make me think about something differently?"
+            mechanism_real: "Is the mechanism it describes real?" — "yes"/"no"/"unsure"
+            heard_before: "Have I heard this connection before?"
 
         Returns True on success.
         """
@@ -312,17 +330,30 @@ class SynthesisMemory:
             logger.error(f"Invalid grade '{grade}', must be one of {valid_grades}")
             return False
 
+        updates = {
+            "human_grade": grade,
+            "graded_at": datetime.now().isoformat(),
+            "grade_notes": notes,
+        }
+
+        # Binary screening questions (store as strings for ChromaDB)
+        if changes_thinking is not None:
+            updates["changes_thinking"] = str(changes_thinking)
+        if mechanism_real is not None:
+            updates["mechanism_real"] = mechanism_real
+        if heard_before is not None:
+            updates["heard_before"] = str(heard_before)
+
         try:
             self.store.update_metadata(
                 collection_name=self.COLLECTION_NAME,
                 doc_id=doc_id,
-                metadata_updates={
-                    "human_grade": grade,
-                    "graded_at": datetime.now().isoformat(),
-                    "grade_notes": notes,
-                },
+                metadata_updates=updates,
             )
-            logger.info(f"[SYNTH AUDIT] Graded {doc_id} as '{grade}'")
+            logger.info(
+                f"[SYNTH AUDIT] Graded {doc_id} as '{grade}' "
+                f"(thinking={changes_thinking}, real={mechanism_real}, heard={heard_before})"
+            )
             return True
         except Exception as e:
             logger.error(f"Failed to grade result {doc_id}: {e}")

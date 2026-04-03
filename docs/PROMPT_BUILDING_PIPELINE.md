@@ -182,7 +182,7 @@ high-attention items (user profile, time, query) placed last:
 7. `[BACKGROUND KNOWLEDGE]` — wiki snippets (1-3)
 8. `[WEB SEARCH RESULTS]` — real-time web (if triggered, up to 5)
 9. `[RELEVANT INFORMATION]` — semantic chunks (1-8)
-10. `[DREAMS]` — synthesis insights, if enabled (up to 3)
+10. `[DREAMS]` — synthesis insights, if enabled (up to 3; all generators currently disabled in config.yaml pending grading validation)
 11. `[USER'S PERSONAL NOTES]` — Obsidian vault (1-5)
 12. `[USER UPLOADED ITEMS]` — uploaded documents (1-5)
 13. `[DAEMON DOCUMENTATION]` — reference docs (1-5)
