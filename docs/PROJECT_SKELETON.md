@@ -1561,66 +1561,79 @@ Gradio renders updated chat_history
 
 ---
 
-### 2.9.1 gui/wizard.py (Onboarding Wizard) **[NEW 2025-12-11]**
+### 2.9.1 gui/wizard.py (Onboarding Wizard) **[NEW 2025-12-11, MAJOR UPDATE 2026-04-02]**
 **Purpose**: Conversational first-run setup wizard for new users
 
-**Wizard Flow**:
+**Wizard Flow** (updated 2026-04-02):
 ```
-WELCOME → API_KEY → STYLE → NAME → PRONOUNS → BACKGROUND → COMPLETE
+WELCOME → INTRO → MODE → API_KEY → TAVILY_KEY → WOLFRAM_KEY →
+(E2B_KEY if dev) → STYLE → NAME → PRONOUNS → OBSIDIAN →
+WIKI_INDEX → BACKGROUND → COMPLETE
 ```
 
 **Key Components**:
-- **WizardStep** (Enum) - Tracks current step in wizard flow
+- **WizardStep** (Enum) - Tracks current step in wizard flow (14 steps)
 - **WizardState** (Dataclass) - Maintains wizard state (step, collected_data, error_count)
 - **process_wizard_message()** - Main async handler routing to step-specific handlers
+- **write_env_key(env_var, value)** - Generic .env writer (replaces per-key write functions)
 
 **Step Handlers**:
-1. `_handle_welcome()` - Acknowledges first interaction, advances to API_KEY
-2. `_handle_api_key()` - Validates format + tests API key with live call, writes to .env
-3. `_handle_style()` - Parses style preference (warm/balanced/direct)
-4. `_handle_name()` - Collects user name (optional, supports skip)
-5. `_handle_pronouns()` - Collects pronouns (optional, supports skip)
-6. `_handle_background()` - Extracts facts from background text via LLMFactExtractor
-7. `_finalize_wizard()` - Saves profile, returns completion message
+1. `_handle_welcome()` - Acknowledges first interaction, advances to INTRO
+2. `_handle_intro()` - Explains Daemon's memory system, privacy model, response times
+3. `_handle_mode()` - Personal vs Developer mode selection (writes DAEMON_MODE to .env)
+4. `_handle_api_key()` - Validates format + tests OpenRouter key with live call
+5. `_handle_tavily_key()` - Optional Tavily web search key
+6. `_handle_wolfram_key()` - Optional Wolfram Alpha App ID
+7. `_handle_e2b_key()` - Optional E2B sandbox key (dev mode only, skipped in user mode)
+8. `_handle_style()` - Parses style preference (warm/balanced/direct)
+9. `_handle_name()` - Collects user name (optional)
+10. `_handle_pronouns()` - Collects pronouns (optional)
+11. `_handle_obsidian()` - Obsidian vault path (strongly recommended, double-confirms skip)
+12. `_handle_obsidian_confirm_skip()` - Confirms Obsidian skip, disables daily/weekly/monthly notes
+13. `_handle_wiki_index()` - Wikipedia FAISS index path (optional, ~2GB separate download)
+14. `_handle_background()` - Extracts facts from background text via LLMFactExtractor
+15. `_finalize_wizard()` - Saves profile, shows dev mode tips if applicable
+
+**Mode Selection** (parse_mode_preference):
+- "1", "personal", "user", "basic" → user mode
+- "2", "developer", "dev", "full" → dev mode
+- Default: user mode
+- Effect: Writes `DAEMON_MODE=user|dev` to .env, gates features in app_config.py
 
 **API Key Validation**:
-- Format check: Must start with 'sk-or-' and length > 20
-- Live test: Calls `model_manager.generate_once()` with gpt-4o-mini
-- Success: Writes to `.env` as `OPENAI_API_KEY=<key>` AND sets `os.environ`
-- Failure: Returns error message, stays on API_KEY step
+- OpenRouter: Must start with 'sk-or-' and length > 20, live API test
+- Tavily: Must start with 'tvly-' and length > 20
+- Wolfram: Length >= 6
+- E2B: Must start with 'e2b_' and length > 10
+- All optional keys skippable
 
-**Style Parsing** (parse_style_preference):
-- Numeric: "1" → warm, "2" → balanced, "3" → direct
-- Text: "warm & supportive" → warm, "direct & concise" → direct
-- Keywords: "empathy/caring" → warm, "short/brief" → direct
-- Default: balanced
+**Obsidian Handling**:
+- Validates vault path exists and is a directory
+- If skipped: Double-confirms, then disables OBSIDIAN_ENABLED, DAILY/WEEKLY/MONTHLY_NOTES_ENABLED, NARRATIVE_CONTEXT_ENABLED
+- If provided: Writes OBSIDIAN_VAULT_PATH and OBSIDIAN_ENABLED=1 to .env
 
 **Skip Detection** (is_skip):
 - Recognized: "skip", "none", "n/a", "pass", "no", "-", ""
-- Applied to: NAME, PRONOUNS, BACKGROUND steps
+- Applied to: All optional steps (keys, name, pronouns, obsidian, wiki, background)
 
 **Error Recovery**:
 - Max retries: 3 (configurable via WizardState.max_retries)
 - Error count tracked across failures
 - After max retries: Helpful error message with manual fallback instructions
 
-**Integration with UserProfile**:
-- Calls `profile.update_identity(name, pronouns)`
-- Calls `profile.update_preferences(style, ...)`
-- Adds background facts via `profile.add_fact()`
-- Profile automatically saved to `data/user_profile.json`
-
 **Wizard Routing** (gui/launch.py):
 - First-run check: `user_profile.is_first_run(corpus_manager)`
   - Condition: `corpus_count < 5 AND no identity.name`
 - If first-run: Launch `_launch_wizard_ui()` instead of normal chat
 - Force mode: `python main.py wizard` bypasses first-run check
+- Browser tab close triggers graceful shutdown (Gradio `unload` event)
 
 **Wizard UI** (_launch_wizard_ui):
 - Simple Gradio interface: Chatbot + Text Input + Submit Button
 - Initial message: Wizard welcome automatically displayed
 - State storage: WizardState serialized to dict for Gradio State
-- Completion: Shows "✅ Setup complete! Please refresh the page to start chatting."
+- Completion: "Close this window and relaunch the application to start chatting."
+- Dev mode completion includes tips about Proposals, Synthesis, and goals.md
 
 **Files Modified for Wizard**:
 - `memory/user_profile_schema.py` - Added ProfilePreferences, ProfileIdentity, SCHEMA_VERSION

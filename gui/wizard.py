@@ -4,8 +4,9 @@ gui/wizard.py
 Conversational onboarding wizard for first-run setup.
 
 Module Contract
-- Purpose: Conversational wizard state machine for first-run onboarding. Collects API key,
-  Tavily key, style preferences, and user identity through chat interface.
+- Purpose: Conversational wizard state machine for first-run onboarding. Collects mode
+  (user/dev), API keys (OpenRouter, Tavily, Wolfram, E2B), style preferences, and user
+  identity through chat interface.
 - Inputs:
   - WizardState dataclass tracking current step and collected data
   - process_wizard_message(user_input, state, orchestrator) → (response, new_state, is_complete)
@@ -15,7 +16,7 @@ Module Contract
   - Updated WizardState after each step
   - is_complete=True when wizard finishes
 - Side effects:
-  - Writes API keys to .env file (OPENAI_API_KEY, TAVILY_API_KEY)
+  - Writes DAEMON_MODE and API keys to .env file (OPENAI_API_KEY, TAVILY_API_KEY, WOLFRAM_APP_ID, E2B_API_KEY)
   - Extracts user + entity facts via LLMFactExtractor (dual-budget, fact_scope aware)
   - Stores user facts to both UserProfile (JSON) AND ChromaDB (semantic retrieval)
   - Stores entity facts to ChromaDB only (not UserProfile)
@@ -41,11 +42,17 @@ class WizardStep(Enum):
     """Wizard flow steps."""
     WELCOME = "welcome"
     INTRO = "intro"
+    MODE = "mode"
     API_KEY = "api_key"
     TAVILY_KEY = "tavily_key"
+    WOLFRAM_KEY = "wolfram_key"
+    E2B_KEY = "e2b_key"
     STYLE = "style"
     NAME = "name"
     PRONOUNS = "pronouns"
+    OBSIDIAN = "obsidian"
+    OBSIDIAN_CONFIRM_SKIP = "obsidian_confirm_skip"
+    WIKI_INDEX = "wiki_index"
     BACKGROUND = "background"
     COMPLETE = "complete"
 
@@ -70,7 +77,7 @@ def get_intro_message() -> str:
     """Get the introduction explaining what Daemon is and how it works."""
     return """**What is Daemon?**
 
-I'm a conversational AI with persistent memory. Unlike typical chatbots that forget everything between sessions, I'm designed to remember our conversations, learn about you over time, and build a deeper understanding of who you are and what matters to you.
+I'm a conversational AI with persistent memory. Unlike typical chatbots that forget everything between sessions, I'm designed to remember our conversations, learn about you over time, and build a deeper understanding of who you are and what matters to you. And if you choose Developer mode, I'm even more than that — I'm actively evolving, generating insights about my own codebase and proposing improvements. Dev mode lets me contribute to my own growth.
 
 **How Memory Works**
 
@@ -85,58 +92,63 @@ Right now, your conversations pass through whichever LLM provider you choose (Op
 - **I don't forget.** Facts about you, your preferences, and our history persist across sessions.
 - **I reflect.** Periodically I consolidate what I've learned into summaries and insights.
 - **I improve.** A denser memory space and ongoing reflection mean I get better at helping you over time.
+- **I think deeply.** Because I search memories, retrieve context, and reason before responding, my replies can take a moment — sometimes up to a couple of minutes for complex questions. This isn't lag; it's the depth of processing that makes my answers actually personal and informed rather than generic.
 
 Type anything to continue to setup."""
 
 
-def write_api_key_to_env(key: str) -> bool:
+def _get_env_path() -> Path:
+    """Get the .env file path (user data dir when frozen, project root otherwise)."""
+    if getattr(sys, 'frozen', False):
+        return Path(os.environ.get('APPDATA', '')) / 'Daemon' / '.env'
+    return Path('.env')
+
+
+def write_env_key(env_var: str, value: str) -> bool:
     """
-    Write API key to .env file as plaintext.
-    Standard practice - security via filesystem permissions and .gitignore.
+    Write or update a key=value pair in the .env file.
+
     Args:
-        key: API key to write
+        env_var: Environment variable name (e.g. 'OPENAI_API_KEY')
+        value: Value to set
     Returns:
-        bool: True if successful, False otherwise
+        bool: True if successful
     """
     try:
-        if getattr(sys, 'frozen', False):
-            env_path = Path(os.environ.get('APPDATA', '')) / 'Daemon' / '.env'
-        else:
-            env_path = Path('.env')
+        env_path = _get_env_path()
         lines = []
 
-        # Read existing .env if it exists
         if env_path.exists():
             with open(env_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
 
-        # Update or append OPENAI_API_KEY line
         key_found = False
         for i, line in enumerate(lines):
-            if line.startswith('OPENAI_API_KEY='):
-                lines[i] = f'OPENAI_API_KEY={key}\n'
+            if line.startswith(f'{env_var}='):
+                lines[i] = f'{env_var}={value}\n'
                 key_found = True
                 break
 
         if not key_found:
-            # Ensure newline before appending
             if lines and not lines[-1].endswith('\n'):
                 lines.append('\n')
-            lines.append(f'OPENAI_API_KEY={key}\n')
+            lines.append(f'{env_var}={value}\n')
 
-        # Write atomically
         with open(env_path, 'w', encoding='utf-8') as f:
             f.writelines(lines)
 
-        # Also set in current environment for immediate effect
-        os.environ['OPENAI_API_KEY'] = key
-
-        logger.info("[Wizard] API key written to .env and set in environment")
+        os.environ[env_var] = value
+        logger.info(f"[Wizard] {env_var} written to .env and set in environment")
         return True
 
     except Exception as e:
-        logger.error(f"[Wizard] Failed to write API key to .env: {e}")
+        logger.error(f"[Wizard] Failed to write {env_var} to .env: {e}")
         return False
+
+
+def write_api_key_to_env(key: str) -> bool:
+    """Write OpenRouter API key to .env."""
+    return write_env_key('OPENAI_API_KEY', key)
 
 
 def validate_api_key_format(key: str) -> bool:
@@ -154,53 +166,8 @@ def validate_api_key_format(key: str) -> bool:
 
 
 def write_tavily_key_to_env(key: str) -> bool:
-    """
-    Write Tavily API key to .env file as plaintext.
-
-    Args:
-        key: Tavily API key to write
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        if getattr(sys, 'frozen', False):
-            env_path = Path(os.environ.get('APPDATA', '')) / 'Daemon' / '.env'
-        else:
-            env_path = Path('.env')
-        lines = []
-
-        # Read existing .env if it exists
-        if env_path.exists():
-            with open(env_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-
-        # Update or append TAVILY_API_KEY line
-        key_found = False
-        for i, line in enumerate(lines):
-            if line.startswith('TAVILY_API_KEY='):
-                lines[i] = f'TAVILY_API_KEY={key}\n'
-                key_found = True
-                break
-
-        if not key_found:
-            # Ensure newline before appending
-            if lines and not lines[-1].endswith('\n'):
-                lines.append('\n')
-            lines.append(f'TAVILY_API_KEY={key}\n')
-
-        # Write atomically
-        with open(env_path, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
-
-        # Also set in current environment for immediate effect
-        os.environ['TAVILY_API_KEY'] = key
-
-        logger.info("[Wizard] Tavily API key written to .env and set in environment")
-        return True
-
-    except Exception as e:
-        logger.error(f"[Wizard] Failed to write Tavily API key to .env: {e}")
-        return False
+    """Write Tavily API key to .env."""
+    return write_env_key('TAVILY_API_KEY', key)
 
 
 def validate_tavily_key_format(key: str) -> bool:
@@ -216,6 +183,44 @@ def validate_tavily_key_format(key: str) -> bool:
     key = key.strip()
     # Tavily keys start with 'tvly-' and are reasonably long
     return key.startswith('tvly-') and len(key) > 20
+
+
+def write_wolfram_key_to_env(key: str) -> bool:
+    """Write Wolfram Alpha App ID to .env."""
+    return write_env_key('WOLFRAM_APP_ID', key)
+
+
+def write_e2b_key_to_env(key: str) -> bool:
+    """Write E2B API key to .env."""
+    return write_env_key('E2B_API_KEY', key)
+
+
+def validate_wolfram_key_format(key: str) -> bool:
+    """Check if key looks like a Wolfram Alpha App ID."""
+    key = key.strip()
+    return len(key) >= 6
+
+
+def validate_e2b_key_format(key: str) -> bool:
+    """Check if key matches E2B API key format."""
+    key = key.strip()
+    return key.startswith('e2b_') and len(key) > 10
+
+
+def parse_mode_preference(user_input: str) -> str:
+    """
+    Parse user input into mode preference.
+
+    Returns:
+        str: One of "user" or "dev"
+    """
+    text = user_input.lower().strip()
+    if text in ('1', 'personal', 'user', 'basic', 'simple', 'streamlined'):
+        return 'user'
+    if text in ('2', 'developer', 'dev', 'development', 'full', 'all'):
+        return 'dev'
+    # Default to user for ambiguous input
+    return 'user'
 
 
 def parse_style_preference(user_input: str) -> str:
@@ -285,11 +290,20 @@ async def process_wizard_message(
         elif state.step == WizardStep.INTRO:
             return _handle_intro(user_input, state)
 
+        elif state.step == WizardStep.MODE:
+            return _handle_mode(user_input, state)
+
         elif state.step == WizardStep.API_KEY:
             return await _handle_api_key(user_input, state, orchestrator)
 
         elif state.step == WizardStep.TAVILY_KEY:
             return _handle_tavily_key(user_input, state)
+
+        elif state.step == WizardStep.WOLFRAM_KEY:
+            return _handle_wolfram_key(user_input, state)
+
+        elif state.step == WizardStep.E2B_KEY:
+            return _handle_e2b_key(user_input, state)
 
         elif state.step == WizardStep.STYLE:
             return _handle_style(user_input, state)
@@ -300,11 +314,20 @@ async def process_wizard_message(
         elif state.step == WizardStep.PRONOUNS:
             return _handle_pronouns(user_input, state)
 
+        elif state.step == WizardStep.OBSIDIAN:
+            return _handle_obsidian(user_input, state)
+
+        elif state.step == WizardStep.OBSIDIAN_CONFIRM_SKIP:
+            return _handle_obsidian_confirm_skip(user_input, state)
+
+        elif state.step == WizardStep.WIKI_INDEX:
+            return _handle_wiki_index(user_input, state)
+
         elif state.step == WizardStep.BACKGROUND:
             return await _handle_background(user_input, state, orchestrator)
 
         elif state.step == WizardStep.COMPLETE:
-            return "Setup is complete! Please refresh the page to start chatting.", state, True
+            return "Setup is complete! Close this window and relaunch the application to start chatting.", state, True
 
         else:
             return "Something went wrong. Let's start over.", WizardState(), False
@@ -331,9 +354,38 @@ def _handle_welcome(user_input: str, state: WizardState) -> Tuple[str, WizardSta
 
 
 def _handle_intro(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
-    """Handle intro step - advance to API key collection."""
+    """Handle intro step - advance to mode selection."""
+    state.step = WizardStep.MODE
+    response = """Before we continue, how do you plan to use Daemon?
+
+1. **Personal** — Streamlined experience with core features: chat, persistent memory, web search, computation, daily conversation summaries, and personality customization.
+
+2. **Developer** — Everything in Personal, plus:
+   - **Synthesis pipeline** — cross-domain insight generation from your knowledge graph
+   - **Code proposals** — goal-directed code change suggestions from project analysis
+   - **Debug Trace & Logs** — full visibility into prompts, retrieval, and scoring
+   - **Architecture docs** — internal documentation injected into context for self-aware reasoning
+   - **Provenance details** — system prompt and token-level audit trail
+
+Just say 1 or 2."""
+    return response, state, False
+
+
+def _handle_mode(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
+    """Handle mode selection - personal (user) or developer (dev)."""
+    mode = parse_mode_preference(user_input)
+    state.collected_data['mode'] = mode
+
+    # Persist immediately so config picks it up on next load
+    write_env_key('DAEMON_MODE', mode)
+
+    mode_label = "Personal" if mode == "user" else "Developer"
+    logger.info(f"[Wizard] Mode selected: {mode_label}")
+
     state.step = WizardStep.API_KEY
-    response = """Now let's get you set up. I'll need an **OpenRouter API key** to connect to language models.
+    response = f"""Got it — **{mode_label}** mode.
+
+Now I'll need an **OpenRouter API key** to connect to language models.
 
 OpenRouter gives you access to Claude, GPT-4, Gemini, and many other models through a single API. You can get a key at **openrouter.ai/keys** (free tier available).
 
@@ -425,6 +477,28 @@ Paste your Tavily key below (starts with 'tvly-'), or type **skip** to set this 
     return response, state, False
 
 
+def _get_wolfram_intro() -> str:
+    """Get the Wolfram Alpha key prompt message."""
+    return """**Optional: Computational Engine**
+
+I can use **Wolfram Alpha** for precise math, science, data lookups, and unit conversions. This requires a Wolfram Alpha App ID.
+
+You can get one free at **developer.wolframalpha.com** (2000 queries/month on free tier).
+
+Paste your Wolfram App ID below, or type **skip** to set this up later."""
+
+
+def _get_e2b_intro() -> str:
+    """Get the E2B sandbox key prompt message."""
+    return """**Optional: Code Sandbox**
+
+I can execute Python code in a secure **E2B sandbox** (Firecracker microVMs) for data analysis, calculations, and visualizations. This requires an E2B API key.
+
+You can get one free at **e2b.dev** (free tier available).
+
+Paste your E2B API key below (starts with 'e2b_'), or type **skip** to set this up later."""
+
+
 def _handle_tavily_key(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
     """Handle Tavily API key collection (optional)."""
     text = user_input.strip()
@@ -432,16 +506,8 @@ def _handle_tavily_key(user_input: str, state: WizardState) -> Tuple[str, Wizard
     # Allow skipping
     if is_skip(text):
         logger.info("[Wizard] User skipped Tavily API key setup")
-        state.step = WizardStep.STYLE
-        response = """No problem — you can add a Tavily key later in your .env file if you want web search.
-
-Now, how would you like me to talk with you?
-
-1. Warm & supportive - More empathetic, longer responses when needed
-2. Balanced - Adapts to context (this is the default)
-3. Direct & concise - Shorter, to-the-point responses
-
-Just say 1, 2, or 3, or describe what you prefer."""
+        state.step = WizardStep.WOLFRAM_KEY
+        response = "No problem — you can add a Tavily key later in your .env file if you want web search.\n\n" + _get_wolfram_intro()
         return response, state, False
 
     # Validate format
@@ -458,18 +524,22 @@ Just say 1, 2, or 3, or describe what you prefer."""
         logger.warning("[Wizard] Tavily key couldn't be saved to .env")
         return (
             "I couldn't save the key to .env, but let's continue. "
-            "You may need to add TAVILY_API_KEY manually.",
-            WizardState(step=WizardStep.STYLE, collected_data=state.collected_data),
+            "You may need to add TAVILY_API_KEY manually.\n\n" + _get_wolfram_intro(),
+            WizardState(step=WizardStep.WOLFRAM_KEY, collected_data=state.collected_data),
             False
         )
 
     state.collected_data['tavily_key_saved'] = True
-    state.step = WizardStep.STYLE
+    state.step = WizardStep.WOLFRAM_KEY
     logger.info("[Wizard] Tavily API key saved successfully")
 
-    response = """Got it — web search is now enabled.
+    response = "Got it — web search is now enabled.\n\n" + _get_wolfram_intro()
+    return response, state, False
 
-How would you like me to talk with you?
+
+def _get_style_prompt() -> str:
+    """Get the style preference prompt message."""
+    return """How would you like me to talk with you?
 
 1. Warm & supportive - More empathetic, longer responses when needed
 2. Balanced - Adapts to context (this is the default)
@@ -477,6 +547,79 @@ How would you like me to talk with you?
 
 Just say 1, 2, or 3, or describe what you prefer."""
 
+
+def _handle_wolfram_key(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
+    """Handle Wolfram Alpha App ID collection (optional)."""
+    text = user_input.strip()
+    is_dev = state.collected_data.get('mode') == 'dev'
+
+    # Determine next step: E2B (dev mode only) or STYLE
+    next_step = WizardStep.E2B_KEY if is_dev else WizardStep.STYLE
+    next_intro = _get_e2b_intro() if is_dev else _get_style_prompt()
+
+    if is_skip(text):
+        logger.info("[Wizard] User skipped Wolfram Alpha setup")
+        state.step = next_step
+        response = "No problem — you can add a Wolfram App ID later in your .env file.\n\n" + next_intro
+        return response, state, False
+
+    if not validate_wolfram_key_format(text):
+        return (
+            "That doesn't look like a valid Wolfram App ID (should be at least 6 characters). "
+            "Double-check and try again, or type **skip** to continue without it.",
+            state,
+            False
+        )
+
+    if not write_wolfram_key_to_env(text):
+        logger.warning("[Wizard] Wolfram key couldn't be saved to .env")
+        return (
+            "I couldn't save the key to .env, but let's continue. "
+            "You may need to add WOLFRAM_APP_ID manually.\n\n" + next_intro,
+            WizardState(step=next_step, collected_data=state.collected_data),
+            False
+        )
+
+    state.collected_data['wolfram_key_saved'] = True
+    state.step = next_step
+    logger.info("[Wizard] Wolfram App ID saved successfully")
+
+    response = "Got it — Wolfram Alpha is now enabled.\n\n" + next_intro
+    return response, state, False
+
+
+def _handle_e2b_key(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
+    """Handle E2B API key collection (optional, dev mode only)."""
+    text = user_input.strip()
+
+    if is_skip(text):
+        logger.info("[Wizard] User skipped E2B sandbox setup")
+        state.step = WizardStep.STYLE
+        response = "No problem — you can add an E2B key later in your .env file.\n\n" + _get_style_prompt()
+        return response, state, False
+
+    if not validate_e2b_key_format(text):
+        return (
+            "That doesn't look like a valid E2B API key (should start with 'e2b_'). "
+            "Double-check and try again, or type **skip** to continue without it.",
+            state,
+            False
+        )
+
+    if not write_e2b_key_to_env(text):
+        logger.warning("[Wizard] E2B key couldn't be saved to .env")
+        return (
+            "I couldn't save the key to .env, but let's continue. "
+            "You may need to add E2B_API_KEY manually.\n\n" + _get_style_prompt(),
+            WizardState(step=WizardStep.STYLE, collected_data=state.collected_data),
+            False
+        )
+
+    state.collected_data['e2b_key_saved'] = True
+    state.step = WizardStep.STYLE
+    logger.info("[Wizard] E2B API key saved successfully")
+
+    response = "Got it — code sandbox is now enabled.\n\n" + _get_style_prompt()
     return response, state, False
 
 
@@ -522,11 +665,147 @@ def _handle_pronouns(user_input: str, state: WizardState) -> Tuple[str, WizardSt
     else:
         state.collected_data['pronouns'] = user_input.strip()
 
-    state.step = WizardStep.BACKGROUND
+    state.step = WizardStep.OBSIDIAN
 
-    response = """Last thing — is there anything you'd like me to know about you from the start? Could be your work, interests, what you're hoping to use me for... or just skip."""
+    response = """**Obsidian Vault**
+
+Daemon generates daily, weekly, and monthly conversation summaries and stores them as notes in an **Obsidian** vault. These summaries feed into my narrative memory — they're how I build a picture of what's going on in your life over time.
+
+I **strongly recommend** downloading Obsidian (free at **obsidian.md**) and creating a vault before continuing. It takes about 2 minutes.
+
+If you already have a vault, paste the **full path** to it below (e.g. `C:\\Users\\You\\Documents\\My Vault`).
+
+Or type **skip** if you don't want to use Obsidian."""
 
     return response, state, False
+
+
+def _get_wiki_index_prompt() -> str:
+    """Get the Wikipedia knowledge index prompt message."""
+    return """**Optional: Wikipedia Knowledge Base**
+
+This is a big one. I can tap into a **pre-built index of 6.5 million Wikipedia articles** (40 million semantic vectors) to draw on real-world knowledge when answering your questions — science, history, people, concepts, current events, and more.
+
+Without this, I still work great using the LLM's built-in knowledge. But with the index, I can **cite specific sources**, make **cross-domain connections** between your personal knowledge and the wider world, and give much more grounded, factual answers.
+
+The index is a separate ~2GB download. You can get it from the **Daemon GitHub Releases page**:
+**github.com/lukeh/daemon/releases** — look for `daemon-wiki-index-v1.zip`
+
+Download it, extract the folder somewhere, and paste the **full path** below (e.g. `C:\\Users\\You\\daemon-wiki-index`).
+
+Or type **skip** to set this up later."""
+
+
+def _handle_wiki_index(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
+    """Handle Wikipedia FAISS index path collection (optional)."""
+    text = user_input.strip()
+
+    if is_skip(text):
+        logger.info("[Wizard] User skipped Wikipedia index setup")
+        state.step = WizardStep.BACKGROUND
+        response = "No problem — you can add this later by setting `DAEMON_EXTERNAL_DATA` in your .env file.\n\n" + _get_background_prompt()
+        return response, state, False
+
+    # Validate the path exists
+    index_path = Path(os.path.expanduser(text))
+    if not index_path.exists():
+        return (
+            f"I couldn't find a folder at `{index_path}`. "
+            "Double-check the path and try again, or type **skip** to continue without it.",
+            state,
+            False
+        )
+
+    if not index_path.is_dir():
+        return (
+            f"`{index_path}` exists but isn't a folder. "
+            "Please provide the path to the extracted wiki index directory.",
+            state,
+            False
+        )
+
+    # Save the path
+    write_env_key('DAEMON_EXTERNAL_DATA', str(index_path))
+    state.collected_data['wiki_index_path'] = str(index_path)
+    state.step = WizardStep.BACKGROUND
+    logger.info(f"[Wizard] Wikipedia index set to: {index_path}")
+
+    response = f"Excellent — Wikipedia knowledge base loaded from `{index_path}`. This gives me access to millions of articles for grounded, cross-domain reasoning.\n\n" + _get_background_prompt()
+    return response, state, False
+
+
+def _get_background_prompt() -> str:
+    """Get the background info prompt message."""
+    return """Last thing — is there anything you'd like me to know about you from the start? Could be your work, interests, what you're hoping to use me for... or just skip."""
+
+
+def _handle_obsidian(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
+    """Handle Obsidian vault path collection."""
+    text = user_input.strip()
+
+    if is_skip(text):
+        # Double-confirm — this significantly impacts functionality
+        state.step = WizardStep.OBSIDIAN_CONFIRM_SKIP
+        return (
+            "**Are you sure?** Without an Obsidian vault, I won't be able to generate daily, "
+            "weekly, or monthly conversation summaries. This means my long-term narrative memory "
+            "will be limited — I'll still remember facts and conversations, but I won't build "
+            "the bigger picture of what's happening in your life over time.\n\n"
+            "Type **yes** to continue without Obsidian, or paste a vault path to set one up.",
+            state,
+            False
+        )
+
+    # Validate the path exists
+    vault_path = Path(os.path.expanduser(text))
+    if not vault_path.exists():
+        return (
+            f"I couldn't find a folder at `{vault_path}`. "
+            "Double-check the path and try again, or type **skip** to continue without Obsidian.",
+            state,
+            False
+        )
+
+    if not vault_path.is_dir():
+        return (
+            f"`{vault_path}` exists but isn't a folder. "
+            "Please provide the path to your Obsidian vault directory.",
+            state,
+            False
+        )
+
+    # Save vault path
+    write_env_key('OBSIDIAN_VAULT_PATH', str(vault_path))
+    write_env_key('OBSIDIAN_ENABLED', '1')
+    state.collected_data['obsidian_vault_path'] = str(vault_path)
+    state.step = WizardStep.WIKI_INDEX
+    logger.info(f"[Wizard] Obsidian vault set to: {vault_path}")
+
+    response = f"Got it — vault set to `{vault_path}`. Daily summaries will be generated there.\n\n" + _get_wiki_index_prompt()
+    return response, state, False
+
+
+def _handle_obsidian_confirm_skip(user_input: str, state: WizardState) -> Tuple[str, WizardState, bool]:
+    """Handle confirmation of Obsidian skip."""
+    text = user_input.strip().lower()
+
+    if text in ('yes', 'y', 'yeah', 'yep', 'sure', 'confirm'):
+        # Disable Obsidian and all note generation
+        write_env_key('OBSIDIAN_ENABLED', '0')
+        write_env_key('DAILY_NOTES_ENABLED', '0')
+        write_env_key('WEEKLY_NOTES_ENABLED', '0')
+        write_env_key('MONTHLY_NOTES_ENABLED', '0')
+        write_env_key('NARRATIVE_CONTEXT_ENABLED', '0')
+        state.collected_data['obsidian_skipped'] = True
+        state.step = WizardStep.WIKI_INDEX
+        logger.info("[Wizard] User confirmed skipping Obsidian — notes and narrative disabled")
+
+        response = "Understood — Obsidian integration and note generation are disabled. You can set this up later by adding `OBSIDIAN_VAULT_PATH` to your .env file.\n\n" + _get_wiki_index_prompt()
+        return response, state, False
+
+    # They changed their mind — treat input as a vault path
+    state.step = WizardStep.OBSIDIAN
+    return _handle_obsidian(user_input, state)
 
 
 async def _handle_background(
@@ -718,10 +997,20 @@ async def _finalize_wizard(
 
     state.step = WizardStep.COMPLETE
 
-    if facts_summary:
-        response = f"Got it — I'll remember that{facts_summary}. We're all set! Feel free to start chatting."
+    mode = state.collected_data.get('mode', 'user')
+    base = f"Got it — I'll remember that{facts_summary}." if facts_summary else "Alright, we're all set!"
+
+    if mode == 'dev':
+        response = (
+            f"{base}\n\n"
+            "**Developer mode tips:**\n"
+            "- Check the **Proposals** tab to browse and manage code change proposals generated from project analysis\n"
+            "- The **Synthesis** tab is your audit queue for cross-domain insights — grade them to train the filter\n"
+            "- Drop a `goals.md` file into your project root to steer proposal generation toward your priorities\n\n"
+            "Close this window and relaunch the application to start chatting."
+        )
     else:
-        response = "Alright, we're all set! Feel free to start chatting whenever you're ready."
+        response = f"{base} Close this window and relaunch the application to start chatting."
 
     return response, state, True
 
