@@ -196,6 +196,15 @@ Path(CHROMA_PATH).mkdir(parents=True, exist_ok=True)
 
 IN_HARM_TEST = config.get("daemon", {}).get("in_harm_test", False)
 DEBUG_MODE = config.get("daemon", {}).get("debug_mode", True)
+
+# --------------------------------------------------------------------
+# Daemon Mode: "user" (streamlined) or "dev" (all features)
+# --------------------------------------------------------------------
+DAEMON_MODE: str = config.get("daemon", {}).get("mode", "user")
+DAEMON_MODE = os.getenv("DAEMON_MODE", DAEMON_MODE).strip().lower()
+if DAEMON_MODE not in ("user", "dev"):
+    logger.warning(f"Unknown DAEMON_MODE '{DAEMON_MODE}', defaulting to 'user'")
+    DAEMON_MODE = "user"
 DEFAULT_MODEL_NAME = config.get("models", {}).get("default", "llama")
 DREAM_MODEL_NAME = config.get("models", {}).get("dream_model", "gpt-neo")
 DEFAULT_MAX_TOKENS = config.get("models", {}).get("default_max_tokens", 2048)
@@ -619,6 +628,9 @@ DAILY_NOTES_ENABLED = bool(int(os.getenv("DAILY_NOTES_ENABLED", "1" if DAILY_NOT
 WEEKLY_NOTES_ENABLED: bool = bool(DAILY_NOTES_CFG.get("weekly_enabled", True))
 WEEKLY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("weekly_model", "sonnet-4.5")
 WEEKLY_NOTES_MAX_TOKENS: int = int(DAILY_NOTES_CFG.get("weekly_max_tokens", 1200))
+
+# Environment variable override for Weekly Notes
+WEEKLY_NOTES_ENABLED = bool(int(os.getenv("WEEKLY_NOTES_ENABLED", "1" if WEEKLY_NOTES_ENABLED else "0")))
 
 # Monthly Notes Configuration (extends daily/weekly notes)
 MONTHLY_NOTES_ENABLED: bool = bool(DAILY_NOTES_CFG.get("monthly_enabled", True))
@@ -1301,7 +1313,23 @@ try:
 except Exception:
     pass
 
-logger.info(f"Config loaded successfully for VERSION={VERSION}")
+# --------------------------------------------------------------------
+# User-mode overrides: disable dev-only subsystems
+# --------------------------------------------------------------------
+if DAEMON_MODE == "user":
+    CODE_PROPOSALS_ENABLED = False
+    CODE_PROPOSALS_PROMPT_ENABLED = False
+    SYNTHESIS_GENERATOR_ENABLED = False
+    SYNTHESIS_RETRIEVAL_ENABLED = False
+    SYNTHESIS_AUDIT_ENABLED = False
+    REFERENCE_DOCS_AUTO_SEED = False
+    REFERENCE_DOCS_ENABLED = False
+    CROSS_DEDUP_AUTO_EXECUTE = True  # User mode: auto-execute dedup on shutdown
+    logger.info("DAEMON_MODE=user — proposals, synthesis, and reference docs disabled")
+else:
+    CROSS_DEDUP_AUTO_EXECUTE = False  # Dev mode: dry-run only, manual execution from GUI
+
+logger.info(f"Config loaded successfully for VERSION={VERSION}, MODE={DAEMON_MODE}")
 logger.info(f"Using CORPUS_FILE={CORPUS_FILE}")
 logger.info(f"Using CHROMA_PATH={CHROMA_PATH}")
 logger.info(f"Using DEVICE={device}")

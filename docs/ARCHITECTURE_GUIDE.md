@@ -84,9 +84,27 @@ Config options:         180+
 |-------|---------|-------------|
 | GUI | `python main.py` | Gradio web UI at `http://localhost:7860` |
 | CLI | `python main.py cli` | Terminal-based chat loop |
-| Wizard | `python main.py wizard` | First-run onboarding (API keys, model selection) |
+| Wizard | `python main.py wizard` | First-run onboarding (mode, keys, vault, wiki index) |
 | Docker | `docker-compose up -d` | Containerized deployment |
-| Desktop | `pyinstaller daemon.spec` | Frozen executable via PyInstaller |
+| Desktop | `dist\Daemon\Daemon.exe` | Frozen executable (built via `pyinstaller daemon.spec`) |
+| Installer | `installer\output\DaemonSetup-1.0.0.exe` | Windows installer (built via Inno Setup) |
+
+### User vs Developer Mode (DAEMON_MODE)
+
+The first-run wizard asks users to choose Personal or Developer mode. This gates features at the config level (`config/app_config.py`):
+
+| Feature | User Mode | Dev Mode |
+|---------|-----------|----------|
+| Chat, memory, web search, computation | Yes | Yes |
+| Obsidian daily/weekly/monthly notes | Yes (if vault configured) | Yes |
+| Synthesis pipeline | Disabled | Enabled |
+| Code proposals + prompt surfacing | Disabled | Enabled |
+| Reference docs (architecture) in context | Disabled | Enabled |
+| Auto-dedup on shutdown | Executed | Dry-run preview |
+| GUI: Debug Trace, Logs tabs | Hidden | Visible |
+| GUI: Proposals, Synthesis tabs | Hidden | Visible |
+| GUI: Memory Maintenance section | Hidden | Visible |
+| System prompt in Provenance | Hidden | Visible |
 
 ### Module Layout
 

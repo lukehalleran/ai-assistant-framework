@@ -161,6 +161,32 @@ input[type="text"],
 .wrap-inner span {
     color: #f3f4f6 !important;
 }
+
+/* Tab overflow menu (3-dot button) - fix white-on-white */
+.tab-nav button,
+.tab-nav [role="tab"],
+.tabs > .tab-nav button {
+    color: #f3f4f6 !important;
+}
+/* Tab overflow dropdown/popover menu */
+[role="menu"],
+[role="menuitem"],
+.tab-nav [data-testid="overflow-menu"],
+.tab-nav .overflow-menu,
+.tab-nav details,
+.tab-nav details summary,
+.tab-nav details[open] > ul,
+.tab-nav details ul li,
+.tab-nav details ul li button {
+    color: #f3f4f6 !important;
+    background-color: #1f2937 !important;
+}
+.tab-nav details ul li:hover,
+.tab-nav details ul li button:hover,
+[role="menuitem"]:hover {
+    background-color: #374151 !important;
+    color: #ffffff !important;
+}
 """
 
 def get_dark_theme():
@@ -497,7 +523,7 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
         # If wizard is complete, show completion message
         completion_msg = ""
         if is_complete:
-            completion_msg = "✅ **Setup complete!** Please restart the app with `python main.py` (no wizard flag) to start chatting."
+            completion_msg = "✅ **Setup complete!** Close this window and relaunch the application to start chatting."
 
         return chat_history, new_state_dict, "", completion_msg
 
@@ -569,9 +595,27 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
             server_name=server_name,
             server_port=port,
             share=share,
-            inbrowser=True  #  auto-open browser during first setup
+            inbrowser=True,  # auto-open browser during first setup
+            prevent_thread_lock=True,
         )
         print("[DEBUG] demo.launch() returned")
+
+        # Keep alive until browser tab closes or Ctrl+C
+        import threading
+        _wizard_event = threading.Event()
+
+        if IS_FROZEN:
+            def _on_wizard_close():
+                print("[Wizard] Browser tab closed — shutting down...")
+                _wizard_event.set()
+            demo.unload(_on_wizard_close)
+
+        try:
+            while not _wizard_event.is_set():
+                _wizard_event.wait(timeout=1.0)
+        except KeyboardInterrupt:
+            print("[Wizard] Shutting down...")
+
     except Exception as e:
         print(f"[ERROR] demo.launch() failed: {e}")
         import traceback
@@ -589,6 +633,9 @@ def launch_gui(orchestrator, force_wizard=False):
     SERVER_NAME = os.getenv("GRADIO_SERVER_NAME", "127.0.0.1")  # use loopback by default
     PORT = int(os.getenv("GRADIO_PORT", "7860"))
     PORT = _find_free_port(PORT)
+
+    from config.app_config import DAEMON_MODE as _DAEMON_MODE
+    _show_dev_tabs = (_DAEMON_MODE == "dev")
 
     # ------- First-run wizard check -------
     try:
@@ -806,7 +853,8 @@ def launch_gui(orchestrator, force_wizard=False):
 
             # Show the System Prompt exactly once at the top (below token line),
             # using the most recent value so it stays current across queries.
-            if i == 1 and latest_system_prompt:
+            # Only shown in dev mode to avoid exposing internals to users.
+            if i == 1 and latest_system_prompt and _DAEMON_MODE == "dev":
                 segment += f"**System Prompt**\n\n````\n{latest_system_prompt}\n````\n\n"
 
             segment += (
@@ -1114,7 +1162,28 @@ def launch_gui(orchestrator, force_wizard=False):
                     submit_button = gr.Button("Submit", variant="primary")
                     clear_button = gr.Button("🧹 Clear Chat")
                     sync_notes_button = gr.Button("📝 Sync Notes")
+
+                    # --- Active Model selector (on chat page for visibility) ---
+                    try:
+                        _mm = orchestrator.model_manager
+                        _api_aliases = list(getattr(_mm, 'api_models', {}).keys())
+                        _local_models = list(getattr(_mm, 'models', {}).keys())
+                        _model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
+                        _current_active = _mm.get_active_model_name() or (_model_choices[0] if _model_choices else 'gpt-4-turbo')
+                    except (AttributeError, TypeError, KeyError):
+                        _model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5']
+                        _current_active = 'gpt-5.1'
+
+                    model_dd = gr.Dropdown(
+                        label="Model",
+                        choices=_model_choices,
+                        value=_current_active,
+                        interactive=True,
+                        scale=1,
+                    )
+
                 sync_status_md = gr.Markdown(value="", elem_id="sync_status")
+                model_status = gr.Markdown(visible=True)
 
                 with gr.Row():
                     files = gr.File(file_types=[".txt", ".docx", ".csv", ".py", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"], file_count="multiple", label="Files & Images")
@@ -1186,7 +1255,28 @@ def launch_gui(orchestrator, force_wizard=False):
                     outputs=[sync_status_md],
                 )
 
-            with gr.TabItem("Logs"):
+                # Model selector change handler (fires on dropdown change)
+                def _apply_active_model(name: str):
+                    _name = (name or '').strip()
+                    if not _name:
+                        return "No model selected."
+                    try:
+                        _mm = orchestrator.model_manager
+                        _mm.switch_model(_name)
+                        def _update_active(d):
+                            if 'models' not in d:
+                                d['models'] = {}
+                            d['models']['active'] = _name
+                        _ok, _err = _save_settings(_update_active)
+                        if not _ok:
+                            return f"Switched to '{_name}'. Persist failed: {_err}"
+                        return f"Model: {_name}"
+                    except Exception as _e:
+                        return f"Failed to switch model: {_e}"
+
+                model_dd.change(_apply_active_model, inputs=[model_dd], outputs=[model_status])
+
+            with gr.TabItem("Logs", visible=_show_dev_tabs):
                 gr.Markdown("### 📜 Live Logs")
                 with gr.Row():
                     log_source = gr.Dropdown(
@@ -1230,7 +1320,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     timer = gr.Timer(interval=2.0, active=True)
                 auto_refresh.change(lambda v: gr.update(active=bool(v)), inputs=[auto_refresh], outputs=[timer])
                 timer.tick(_read_logs, inputs=[log_source, tail_n], outputs=[log_view])
-            with gr.TabItem("Debug Trace"):
+            with gr.TabItem("Debug Trace", visible=_show_dev_tabs):
                 gr.Markdown("### 🔎 Query → Prompt → Response")
                 debug_view = gr.Markdown(value=_format_debug_entries([]))
 
@@ -1266,7 +1356,7 @@ def launch_gui(orchestrator, force_wizard=False):
                         lines.append("="*80)
                         lines.append("")
 
-                        if system_prompt:
+                        if system_prompt and _DAEMON_MODE == "dev":
                             lines.append("[SYSTEM PROMPT]")
                             lines.append("-"*80)
                             lines.append(system_prompt)
@@ -1364,34 +1454,36 @@ def launch_gui(orchestrator, force_wizard=False):
                     refresh_button = gr.Button("🔄 Refresh Status")
                 refresh_button.click(fn=get_summary_status, outputs=summary_json)
 
-                # --- Memory Maintenance (Cross-Collection Dedup) ---
-                gr.Markdown("---")
-                gr.Markdown("### Memory Maintenance")
-                with gr.Row():
-                    dedup_preview_btn = gr.Button("Preview Dedup", variant="secondary")
-                    dedup_execute_btn = gr.Button("Run Dedup", variant="primary")
-                dedup_report_md = gr.Markdown(value="*Click Preview to scan for duplicates.*")
+                # --- Memory Maintenance (dev mode only — user mode auto-dedup on shutdown) ---
+                if _show_dev_tabs:
+                    gr.Markdown("---")
+                    gr.Markdown("### Memory Maintenance")
+                    with gr.Row():
+                        dedup_preview_btn = gr.Button("Preview Dedup", variant="secondary")
+                        dedup_execute_btn = gr.Button("Run Dedup", variant="primary")
+                    dedup_report_md = gr.Markdown(value="*Click Preview to scan for duplicates.*")
 
-                def _run_dedup(dry_run: bool) -> str:
-                    try:
-                        from memory.cross_deduplicator import CrossCollectionDeduplicator
-                        store = orchestrator.memory_system.chroma_store
-                        dedup = CrossCollectionDeduplicator(store)
-                        plan = dedup.run(dry_run=dry_run)
-                        return plan.to_markdown()
-                    except Exception as e:
-                        return f"**Error:** {e}"
+                    def _run_dedup(dry_run: bool) -> str:
+                        try:
+                            from memory.cross_deduplicator import CrossCollectionDeduplicator
+                            store = orchestrator.memory_system.chroma_store
+                            dedup = CrossCollectionDeduplicator(store)
+                            plan = dedup.run(dry_run=dry_run)
+                            return plan.to_markdown()
+                        except Exception as e:
+                            return f"**Error:** {e}"
 
-                dedup_preview_btn.click(
-                    fn=lambda: _run_dedup(dry_run=True),
-                    outputs=dedup_report_md,
-                )
-                dedup_execute_btn.click(
-                    fn=lambda: _run_dedup(dry_run=False),
-                    outputs=dedup_report_md,
-                )
+                    dedup_preview_btn.click(
+                        fn=lambda: _run_dedup(dry_run=True),
+                        outputs=dedup_report_md,
+                    )
+                    dedup_execute_btn.click(
+                        fn=lambda: _run_dedup(dry_run=False),
+                        outputs=dedup_report_md,
+                    )
 
-            with gr.TabItem("Proposals"):
+            # Proposals and Synthesis tabs only visible in dev mode
+            with gr.TabItem("Proposals", visible=_show_dev_tabs):
                 gr.Markdown("### Code Proposals")
 
                 # Filter controls
@@ -1934,8 +2026,8 @@ def launch_gui(orchestrator, force_wizard=False):
                     outputs=[proposals_view, manage_selector, codegen_selector, proposals_map],
                 )
 
-            # ── Synthesis Audit Tab ──────────────────────────────────
-            with gr.TabItem("Synthesis"):
+            # ── Synthesis Audit Tab (dev mode only) ─────────────────
+            with gr.TabItem("Synthesis", visible=_show_dev_tabs):
                 gr.Markdown("### Synthesis Audit Queue")
                 gr.Markdown(
                     "Review accepted insights (FP detection) and composite-rejected "
@@ -2175,49 +2267,6 @@ def launch_gui(orchestrator, force_wizard=False):
 
             with gr.TabItem("Settings"):
                 gr.Markdown("### ⚙️ Runtime Settings")
-
-                # --- Active Model selector (persisted) ---
-                try:
-                    _mm = orchestrator.model_manager
-                    _api_aliases = list(getattr(_mm, 'api_models', {}).keys())
-                    _local_models = list(getattr(_mm, 'models', {}).keys())
-                    _model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
-                    _current_active = _mm.get_active_model_name() or (_model_choices[0] if _model_choices else 'gpt-4-turbo')
-                except (AttributeError, TypeError, KeyError):
-                    _model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5']
-                    _current_active = 'gpt-5.1'
-
-                with gr.Row():
-                    model_dd = gr.Dropdown(
-                        label="Active Model",
-                        choices=_model_choices,
-                        value=_current_active,
-                        interactive=True,
-                    )
-                apply_model_btn = gr.Button("Set Active Model", variant="primary")
-                model_status = gr.Markdown(visible=True)
-                gr.Markdown("Note: Active Model is used for normal streaming and as a fallback. Duel mode runs two models in parallel and lets a judge pick the winner.")
-
-                def _apply_active_model(name: str):
-                    _name = (name or '').strip()
-                    if not _name:
-                        return "No model selected."
-                    try:
-                        _mm = orchestrator.model_manager
-                        _mm.switch_model(_name)
-                        # Fixed: Make sure the update actually modifies the dict
-                        def _update_active(d):
-                            if 'models' not in d:
-                                d['models'] = {}
-                            d['models']['active'] = _name
-                        _ok, _err = _save_settings(_update_active)
-                        if not _ok:
-                            return f"Switched to '{_name}'. Persist failed: {_err}"
-                        return f"Active model set to: {_name} (persisted)."
-                    except Exception as _e:
-                        return f"Failed to switch model: {_e}"
-
-                apply_model_btn.click(_apply_active_model, inputs=[model_dd], outputs=[model_status])
 
                 # --- Faster Streaming options ---
                 gr.Markdown("### ⚡ Faster Streaming (reduce first-token latency)")
@@ -2749,12 +2798,20 @@ def launch_gui(orchestrator, force_wizard=False):
         else:
             raise
 
-    # Keep main thread alive with responsive shutdown handling
-    # Using short sleep intervals allows KeyboardInterrupt to be caught promptly
+    # When running as desktop app, shut down when browser tab closes
     import threading
     shutdown_event = threading.Event()
+
+    if IS_FROZEN:
+        def _on_browser_close():
+            print("[GUI] Browser tab closed — shutting down...")
+            shutdown_event.set()
+
+        demo.unload(_on_browser_close)
+
+    # Keep main thread alive with responsive shutdown handling
     try:
         while not shutdown_event.is_set():
-            shutdown_event.wait(timeout=1.0)  # Check every second for interrupts
+            shutdown_event.wait(timeout=1.0)
     except KeyboardInterrupt:
         print("[GUI] Shutting down...")

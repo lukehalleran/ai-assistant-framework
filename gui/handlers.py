@@ -327,8 +327,10 @@ async def handle_submit(
                 retriever.hybrid_retriever._fast_mode = True
                 logger.warning("[Fast Mode] Set hybrid_retriever._fast_mode = True (2150 → ~40 candidates)")
 
+    # Use merged_input (user text + file contents) so file content appears in the prompt.
+    # Still pass files for context pipeline's file_context detection (has_files flag).
     prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
-        user_input=user_text,
+        user_input=merged_input,
         files=files,
         use_raw_mode=False,  # enhanced mode
         return_context=True  # Always get raw context for images and agentic search

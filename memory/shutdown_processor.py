@@ -1393,7 +1393,9 @@ class ShutdownProcessor:
             return
         ShutdownProcessor._dedup_ran = True
 
-        from config.app_config import CROSS_DEDUP_ENABLED, CROSS_DEDUP_ON_SHUTDOWN
+        from config.app_config import (
+            CROSS_DEDUP_ENABLED, CROSS_DEDUP_ON_SHUTDOWN, CROSS_DEDUP_AUTO_EXECUTE,
+        )
 
         if not CROSS_DEDUP_ENABLED or not CROSS_DEDUP_ON_SHUTDOWN:
             logger.debug("[Shutdown] Cross-collection dedup disabled, skipping")
@@ -1403,18 +1405,33 @@ class ShutdownProcessor:
             from memory.cross_deduplicator import CrossCollectionDeduplicator
 
             dedup = CrossCollectionDeduplicator(self.chroma_store)
-            plan = dedup.run(dry_run=True)
 
-            if plan.duplicates_found or plan.contradictions_found:
-                logger.info(
-                    "[Shutdown] Cross-dedup preview: %d duplicates, %d contradictions "
-                    "(%d would be deleted). Run from GUI to execute.",
-                    plan.duplicates_found,
-                    plan.contradictions_found,
-                    plan.deletions_executed,
-                )
+            if CROSS_DEDUP_AUTO_EXECUTE:
+                # User mode: execute dedup automatically
+                plan = dedup.run(dry_run=False)
+                if plan.deletions_executed:
+                    logger.info(
+                        "[Shutdown] Cross-dedup executed: %d duplicates, %d contradictions, "
+                        "%d deletions applied.",
+                        plan.duplicates_found,
+                        plan.contradictions_found,
+                        plan.deletions_executed,
+                    )
+                else:
+                    logger.debug("[Shutdown] Cross-dedup: no cleanup needed")
             else:
-                logger.debug("[Shutdown] Cross-dedup: no duplicates or contradictions found")
+                # Dev mode: dry-run preview only
+                plan = dedup.run(dry_run=True)
+                if plan.duplicates_found or plan.contradictions_found:
+                    logger.info(
+                        "[Shutdown] Cross-dedup preview: %d duplicates, %d contradictions "
+                        "(%d would be deleted). Run from GUI to execute.",
+                        plan.duplicates_found,
+                        plan.contradictions_found,
+                        plan.deletions_executed,
+                    )
+                else:
+                    logger.debug("[Shutdown] Cross-dedup: no duplicates or contradictions found")
 
             if plan.errors:
                 for err in plan.errors:

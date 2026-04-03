@@ -35,6 +35,14 @@ import sys
 import os
 import logging
 
+# Windowless mode (console=False): redirect stdout/stderr to log file
+# so print() calls don't crash and we get a debug log if something fails
+if getattr(sys, 'frozen', False) and sys.stdout is None:
+    _log_path = os.path.join(os.environ.get('APPDATA', '.'), 'Daemon', 'daemon_startup.log')
+    os.makedirs(os.path.dirname(_log_path), exist_ok=True)
+    sys.stdout = open(_log_path, 'w', encoding='utf-8')
+    sys.stderr = sys.stdout
+
 # Disable ChromaDB telemetry before any chromadb imports
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 # Suppress chromadb telemetry errors (known bug with posthog compatibility)
@@ -222,7 +230,10 @@ class _SimplePromptBuilder:
 # main.py (updated build_orchestrator function)
 def build_orchestrator():
     """Builds and returns a configured orchestrator"""
+    from utils.bootstrap import update_splash
+
     # Create model_manager FIRST
+    update_splash("Initializing model manager...")
     model_manager = ModelManager()
     # Register common OpenRouter model ids explicitly
     model_manager.load_openai_model("gpt-4-turbo", "openai/gpt-4-turbo")
@@ -257,6 +268,7 @@ def build_orchestrator():
         logger.debug(f"[build_orchestrator] deps.initialize failed or unavailable: {e}")
 
     # NOW create instances that depend on model_manager
+    update_splash("Loading NLP models...")
     time_manager = TimeManager()
     tokenizer_manager = TokenizerManager(model_manager=model_manager)
     # Enable hybrid topic extraction (heuristics + optional LLM fallback)
@@ -269,6 +281,7 @@ def build_orchestrator():
     response_generator = ResponseGenerator(model_manager, time_manager)
     file_processor = FileProcessor()
 
+    update_splash("Connecting to memory store...")
     chroma_store = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
     # Build shared corpus manager once
     corpus_manager = CorpusManager(corpus_file=CORPUS_FILE)
@@ -303,6 +316,7 @@ def build_orchestrator():
         logger.warning("Using simple fallback prompt builder")
         prompt_builder = _SimplePromptBuilder(memory_coordinator=coord)
 
+    update_splash("Building orchestrator...")
     return DaemonOrchestrator(
         model_manager=model_manager,
         response_generator=response_generator,
@@ -452,6 +466,23 @@ def _run_shutdown_tasks(orchestrator):
                 logger.info("[Shutdown] Summary/fact processing completed")
             except Exception as e:
                 logger.error(f"[Shutdown] Summary/fact processing failed: {e}")
+
+            # Generate today's daily note from this session's conversations
+            try:
+                from config.app_config import DAILY_NOTES_ENABLED
+                if DAILY_NOTES_ENABLED:
+                    from utils.daily_notes_generator import DailyNotesGenerator
+                    from datetime import date
+                    gen = DailyNotesGenerator(orchestrator.model_manager)
+                    result = await gen.generate_for_date(date.today())
+                    if result.success:
+                        logger.info(f"[Shutdown] Daily note generated ({result.conversation_count} conversations)")
+                    elif result.skipped_reason:
+                        logger.info(f"[Shutdown] Daily note skipped: {result.skipped_reason}")
+                    else:
+                        logger.warning(f"[Shutdown] Daily note failed: {result.error}")
+            except Exception as e:
+                logger.warning(f"[Shutdown] Daily note generation failed (non-critical): {e}")
 
         # Run in new event loop
         asyncio.run(_do_shutdown())
@@ -1255,6 +1286,8 @@ if __name__ == "__main__":
             logger.info(f"[Startup] Started idle monitor (check every {_idle_check_interval}m, timeout {_idle_timeout_minutes}m)")
 
             # Close splash screen before showing GUI
+            from utils.bootstrap import update_splash as _update_splash
+            _update_splash("Launching interface...")
             close_splash()
 
             print(f"[DEBUG] About to call launch_gui(orchestrator, force_wizard={force_wizard})")

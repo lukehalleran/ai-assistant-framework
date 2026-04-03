@@ -40,10 +40,15 @@ cd installer
 From the project root:
 
 ```batch
-:: Step 1: Build the PyInstaller executable
+:: Step 1: Install dependencies
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+pip install pyinstaller
+
+:: Step 2: Build the PyInstaller executable
 pyinstaller daemon.spec --clean --noconfirm
 
-:: Step 2: Build the installer
+:: Step 3: Build the installer
 cd installer
 build_installer.bat
 ```
@@ -55,7 +60,7 @@ The installer will be created at:
 installer/output/DaemonSetup-1.0.0.exe
 ```
 
-Expected size: ~650MB (compressed from ~1.5GB PyInstaller output)
+Size: ~293MB (LZMA2 compressed from ~1.2GB PyInstaller output)
 
 ## What the Installer Does
 
@@ -67,11 +72,23 @@ Expected size: ~650MB (compressed from ~1.5GB PyInstaller output)
 5. Optionally launches Daemon after install
 
 ### First Run
-1. Application launches and displays splash screen
-2. First-run wizard appears (if no existing configuration)
-3. User enters OpenAI API key
-4. Configuration saved to `%APPDATA%\Daemon\.env`
-5. Browser opens to Gradio interface at http://localhost:7860
+1. Application launches with splash screen
+2. Console window appears (shows startup progress)
+3. First-run wizard opens in browser
+4. Wizard collects:
+   - **Mode**: Personal (streamlined) or Developer (all features)
+   - **OpenRouter API key** (required, validated with live API call)
+   - **Tavily key** (optional, web search)
+   - **Wolfram Alpha App ID** (optional, computational queries)
+   - **E2B API key** (optional, dev mode only, code sandbox)
+   - **Communication style** (warm/balanced/direct)
+   - **Name and pronouns** (optional)
+   - **Obsidian vault path** (strongly recommended for daily summaries)
+   - **Wikipedia index path** (optional, ~2GB separate download)
+   - **Background info** (optional, facts extracted via LLM)
+5. Configuration saved to `%APPDATA%\Daemon\.env`
+6. User closes browser tab → process shuts down gracefully
+7. Relaunch to start chatting
 
 ### User Data Locations
 | Item | Location |
@@ -79,8 +96,17 @@ Expected size: ~650MB (compressed from ~1.5GB PyInstaller output)
 | Application | `C:\Program Files\Daemon\` |
 | User Config | `%APPDATA%\Daemon\.env` |
 | User Profile | `%APPDATA%\Daemon\user_profile.json` |
-| Conversation Data | `%APPDATA%\Daemon\data\` |
-| ChromaDB | `%APPDATA%\Daemon\chroma\` |
+| Conversation Data | `%APPDATA%\Daemon\corpus_v4.json` |
+| ChromaDB | `%APPDATA%\Daemon\chroma_db_v4\` |
+| Startup Log | `%APPDATA%\Daemon\daemon_startup.log` |
+| Wiki Index | User-specified via `DAEMON_EXTERNAL_DATA` |
+
+### User vs Developer Mode
+
+The wizard asks users to choose a mode:
+
+- **Personal mode**: Chat, memory, web search, computation, daily summaries, personality customization. Synthesis, proposals, debug trace, logs, and architecture docs are disabled.
+- **Developer mode**: All features enabled including synthesis pipeline, code proposals, debug trace, logs, memory maintenance UI, and architecture docs in context.
 
 ## Uninstallation
 
@@ -89,6 +115,12 @@ The uninstaller (via Add/Remove Programs or Start Menu):
 2. Prompts user: "Do you want to delete your Daemon user data?"
    - **No**: Preserves `%APPDATA%\Daemon\` (conversations, API key, settings)
    - **Yes**: Deletes all user data
+
+## Distribution
+
+Upload to GitHub Releases:
+- `DaemonSetup-1.0.0.exe` — Main installer
+- `daemon-wiki-index-v1.zip` — Optional Wikipedia FAISS index (separate, ~2GB)
 
 ## Customization
 
@@ -108,12 +140,6 @@ Edit the following in `daemon_installer.iss`:
 ### Modifying the GUID
 **Warning**: Do NOT change the AppId GUID between versions. Windows uses this to identify the application for upgrades.
 
-### Adding Files
-To include additional files, edit the `[Files]` section:
-```pascal
-Source: "..\path\to\file"; DestDir: "{app}\subfolder"; Flags: ignoreversion
-```
-
 ## Troubleshooting
 
 ### "Inno Setup Compiler not found"
@@ -123,9 +149,9 @@ Source: "..\path\to\file"; DestDir: "{app}\subfolder"; Flags: ignoreversion
 ### "PyInstaller output not found"
 - Run `pyinstaller daemon.spec --clean --noconfirm` from project root first
 
-### Installer too large
-- The ~650MB size is expected due to PyTorch, transformers, and ML dependencies
-- LZMA2 compression is already enabled (best compression ratio)
+### OneDrive lock errors during build
+- Pause OneDrive sync before building (right-click tray icon → Pause syncing)
+- Kill any running Daemon.exe: `taskkill /F /IM Daemon.exe`
 
 ### Desktop shortcut not created
 - User may have unchecked the option during install
@@ -151,10 +177,13 @@ Before distribution, test on a clean Windows system:
 - [ ] Desktop shortcut created
 - [ ] Start Menu shortcuts created
 - [ ] Application launches after install
-- [ ] First-run wizard appears
-- [ ] API key entry works
-- [ ] Chat functionality works
+- [ ] First-run wizard appears with mode selection
+- [ ] All wizard steps work (keys, obsidian, wiki index)
+- [ ] Chat functionality works after wizard
+- [ ] File upload works
+- [ ] Closing browser tab shuts down process
+- [ ] Relaunch skips wizard
 - [ ] Uninstall removes app files
 - [ ] Uninstall preserves user data (when "No" selected)
 - [ ] Uninstall removes user data (when "Yes" selected)
-- [ ] Reinstall works correctly
+- [ ] Reinstall/upgrade works correctly

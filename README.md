@@ -344,9 +344,17 @@ python main.py
 # CLI mode
 python main.py cli
 
-# First-run wizard (for frozen executable)
+# First-run wizard (for testing wizard flow)
 python main.py wizard
 ```
+
+On first launch, the onboarding wizard collects:
+- **Mode** (Personal or Developer — gates advanced features)
+- **API keys** (OpenRouter required; Tavily, Wolfram, E2B optional)
+- **Communication style** (warm/balanced/direct)
+- **Identity** (name, pronouns)
+- **Obsidian vault path** (strongly recommended for daily summaries)
+- **Wikipedia index path** (optional ~2GB download for cross-domain knowledge)
 
 ### Docker
 
@@ -358,15 +366,19 @@ docker-compose up -d
 docker-compose logs -f daemon-gui
 ```
 
-### Desktop Executable
+### Desktop Executable & Installer
 
 ```bash
+# Build executable
 rm -rf build/ dist/
 pyinstaller daemon.spec --clean --noconfirm
-# Output: dist/Daemon/Daemon (Linux) or dist/Daemon/Daemon.exe (Windows)
+
+# Build Windows installer (requires Inno Setup 6)
+cd installer && build_installer.bat
+# Output: installer/output/DaemonSetup-1.0.0.exe (~293MB)
 ```
 
-See [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md) for Windows installer instructions and performance targets.
+See [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md) for full build guide, test checklist, and troubleshooting.
 
 ---
 
@@ -488,7 +500,7 @@ utils/
 gui/                         # Gradio web interface
 ├── launch.py                # Dark theme, tab layout, startup hooks
 ├── handlers.py              # Chat streaming + agentic routing + fast mode
-└── wizard.py                # 7-step onboarding wizard
+└── wizard.py                # 14-step onboarding wizard (mode, keys, vault, wiki index)
 
 tests/                       # 137 test files
 ├── unit/                    # Component tests

@@ -2,16 +2,17 @@
 
 ## Overview
 
-This guide covers building Daemon as a standalone desktop executable using PyInstaller.
+This guide covers building Daemon as a standalone desktop executable using PyInstaller and packaging it with Inno Setup.
 
-**Build Status**: Implementation complete, ready for first full build.
+**Build Status**: v1.0.0 built and tested on Windows 11 (2026-04-02).
 
 ## Prerequisites
 
-1. **Python 3.11+** (tested with 3.11.8)
+1. **Python 3.11+** (tested with 3.11.9)
 2. **PyInstaller 6.0+**: `pip install pyinstaller`
 3. **All Daemon dependencies**: `pip install -r requirements.txt`
 4. **spaCy model**: `python -m spacy download en_core_web_sm`
+5. **Inno Setup 6** (for installer): https://jrsoftware.org/issetup.html
 
 ## Quick Build
 
@@ -19,19 +20,24 @@ This guide covers building Daemon as a standalone desktop executable using PyIns
 # Clean previous builds
 rm -rf build/ dist/
 
-# Run build (takes 10-20 minutes)
+# Build executable (takes 10-20 minutes)
 pyinstaller daemon.spec --clean --noconfirm
 
-# Output will be in dist/Daemon/
+# Build installer (requires Inno Setup 6)
+cd installer
+build_installer.bat
 ```
 
 ## Build Output
 
 ```
 dist/Daemon/
-├── Daemon              # Main executable (Daemon.exe on Windows)
+├── Daemon.exe          # Main executable
 ├── _internal/          # Python runtime and packages
 └── assets/             # Icons and splash screen
+
+installer/output/
+└── DaemonSetup-1.0.0.exe  # Distributable installer (~293MB)
 ```
 
 ## Files Created for Build
@@ -46,6 +52,8 @@ dist/Daemon/
 | `assets/daemon_icon.ico` | Windows icon |
 | `assets/daemon_icon.png` | Linux/general icon |
 | `assets/splash.png` | Splash screen image |
+| `installer/daemon_installer.iss` | Inno Setup installer script |
+| `installer/build_installer.bat` | Automated installer build script |
 
 ## Architecture Decisions
 
@@ -53,10 +61,15 @@ dist/Daemon/
 - **Reason**: One-file mode extracts to temp on every launch (30s+ delay)
 - **Benefit**: Instant startup, easier debugging, smaller AV false positive rate
 
+### Console Window (console=True)
+- Console window is visible during operation — closing the browser tab triggers graceful shutdown via Gradio's `unload` event
+- Closing the console window also kills the process (Windows `CTRL_CLOSE_EVENT`)
+- Stdout is redirected to `%APPDATA%/Daemon/daemon_startup.log` as a safety net when `sys.stdout` is None
+
 ### External Data Not Bundled
-- Wikipedia FAISS index (781MB) and dump (102GB) are NOT bundled
+- Wikipedia FAISS index (~2GB) is NOT bundled — available as separate download
+- Users can provide it via `DAEMON_EXTERNAL_DATA` env var or wizard setup
 - Features gracefully disabled when external data is missing
-- Users can optionally provide external data via `DAEMON_EXTERNAL_DATA` env var
 
 ### User Data Directory
 When running as frozen executable, data is stored in:
@@ -64,19 +77,54 @@ When running as frozen executable, data is stored in:
 - **macOS**: `~/Library/Application Support/Daemon/`
 - **Linux**: `~/.daemon/`
 
-This includes: corpus, ChromaDB, user profile, .env, logs
+This includes: corpus, ChromaDB, user profile, .env, logs, narrative context
+
+### User vs Developer Mode (DAEMON_MODE)
+The first-run wizard asks users to choose between Personal and Developer mode:
+
+| Feature | User Mode | Dev Mode |
+|---------|-----------|----------|
+| Chat, memory, web search | Yes | Yes |
+| Synthesis pipeline | Disabled | Enabled |
+| Code proposals | Disabled | Enabled |
+| Reference docs (architecture) | Disabled | Enabled |
+| Auto-dedup on shutdown | Executed | Dry-run preview |
+| Debug Trace tab | Hidden | Visible |
+| Logs tab | Hidden | Visible |
+| Proposals tab | Hidden | Visible |
+| Synthesis tab | Hidden | Visible |
+| Memory Maintenance UI | Hidden | Visible |
 
 ### Migration Support
 The bootstrap module automatically migrates data from `./data/` to the user data directory on first frozen run.
+
+## First-Run Wizard Flow
+
+```
+WELCOME → INTRO → MODE → API_KEY → TAVILY_KEY → WOLFRAM_KEY →
+(E2B_KEY if dev) → STYLE → NAME → PRONOUNS → OBSIDIAN →
+WIKI_INDEX → BACKGROUND → COMPLETE
+```
+
+| Step | Required | Description |
+|------|----------|-------------|
+| MODE | Yes | Personal or Developer mode |
+| API_KEY | Yes | OpenRouter key (validated with live API call) |
+| TAVILY_KEY | Optional | Web search (Tavily) |
+| WOLFRAM_KEY | Optional | Computational engine (Wolfram Alpha) |
+| E2B_KEY | Optional, dev only | Code sandbox (E2B) |
+| STYLE | Yes | Warm / Balanced / Direct |
+| NAME | Optional | User's name |
+| PRONOUNS | Optional | User's pronouns |
+| OBSIDIAN | Optional | Obsidian vault path (strongly recommended) |
+| WIKI_INDEX | Optional | Wikipedia FAISS index path |
+| BACKGROUND | Optional | Initial facts about user |
 
 ## Testing the Executable
 
 After build completes:
 
 ```bash
-# Linux/macOS
-./dist/Daemon/Daemon
-
 # Windows
 dist\Daemon\Daemon.exe
 ```
@@ -86,8 +134,24 @@ dist\Daemon\Daemon.exe
 - [ ] App launches (splash appears within 1-2s)
 - [ ] GUI appears (within 15-20s)
 - [ ] First-run wizard works (if no existing data)
+- [ ] Mode selection (personal vs dev) works
+- [ ] API key validation works
+- [ ] Optional keys can be skipped
+- [ ] Obsidian vault path validation works
 - [ ] Chat functionality works
-- [ ] Graceful shutdown (close window, data saved)
+- [ ] File upload works (uploaded doc visible in response)
+- [ ] Model selector on chat page works
+- [ ] Closing browser tab kills process
+- [ ] Graceful shutdown (daily note generated, dedup runs)
+- [ ] Relaunch skips wizard (profile persisted)
+
+### Clearing User Data for Fresh Test
+
+```bash
+del "%APPDATA%\Daemon\.env"
+del "%APPDATA%\Daemon\user_profile.json"
+del "%APPDATA%\Daemon\corpus_v4.json"
+```
 
 ## Troubleshooting
 
@@ -104,69 +168,64 @@ datas.append(('path/to/file', 'destination'))
 ```
 
 ### Executable Crashes on Start
-1. Build with console enabled for debugging:
-   - Edit `daemon.spec`: `console=True`
-   - Rebuild and run from terminal to see errors
+1. Check `%APPDATA%\Daemon\daemon_startup.log` for errors
+2. If no log exists, temporarily set `console=True` in `daemon.spec`, rebuild, and run from terminal
 
-2. Check for missing imports:
-   ```bash
-   grep -i "modulenotfound" build.log
-   ```
+### Port Already in Use
+Previous Daemon instance may still be running (zombie process):
+```bash
+taskkill /F /IM Daemon.exe
+```
+
+### OneDrive Lock Errors During Build
+Pause OneDrive sync before building:
+- Right-click OneDrive tray icon → Pause syncing → 2 hours
 
 ### Large Bundle Size
-Current estimate: ~650MB (with torch CPU)
+Current: ~1.2GB uncompressed, ~293MB installer
 
 To reduce:
-- Exclude unused torch features in spec file
-- Use CPU-only torch (`pip install torch --index-url https://download.pytorch.org/whl/cpu`)
+- Use CPU-only torch: `pip install torch --index-url https://download.pytorch.org/whl/cpu`
 
-## Creating Installers
+## Creating the Installer
 
 ### Windows (Inno Setup)
 ```bash
-# After PyInstaller build
-iscc installer/daemon_setup.iss
+cd installer
+build_installer.bat
+# Output: installer/output/DaemonSetup-1.0.0.exe
 ```
 
-### macOS (DMG)
-```bash
-# After PyInstaller build
-./scripts/build_macos_dmg.sh
-```
-
-### Linux (AppImage)
-```bash
-# After PyInstaller build
-./scripts/build_linux_appimage.sh
-```
-
-## CI/CD
-
-See `.github/workflows/release.yml` for automated builds on all platforms.
+### Distribution
+Upload `DaemonSetup-1.0.0.exe` to GitHub Releases along with:
+- `daemon-wiki-index-v1.zip` (optional Wikipedia FAISS index, separate download)
 
 ## Performance Targets
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Installer size | <400MB | Compressed |
-| Cold start to splash | <2s | Native splash |
-| Cold start to GUI | <20s | Model loading |
-| Memory usage | <2GB | During operation |
+| Metric | Actual | Target |
+|--------|--------|--------|
+| Installer size | 293MB | <400MB |
+| Cold start to splash | ~1s | <2s |
+| Cold start to GUI | ~15s | <20s |
+| Memory usage | ~2GB | <2GB |
 
 ## Key Files Reference
 
-- `main.py`: Entry point with freeze_support() and bootstrap integration
-- `utils/bootstrap.py`: Path resolution, data migration, environment setup
-- `utils/startup.py`: Staged imports with progress feedback
+- `main.py`: Entry point with freeze_support(), bootstrap, splash updates, shutdown tasks
+- `utils/bootstrap.py`: Path resolution, data migration, environment setup, splash helpers
 - `daemon.spec`: PyInstaller configuration
-- `build/dependency_manifest.py`: Dependency classification
+- `gui/wizard.py`: First-run wizard (mode, keys, obsidian, wiki index)
+- `gui/launch.py`: Gradio UI with mode-gated tabs
+- `config/app_config.py`: Central config with DAEMON_MODE gating
 
 ## Development vs Frozen Mode
 
 | Aspect | Development | Frozen |
 |--------|-------------|--------|
-| Data location | `./data/` | User data dir |
+| Data location | `./data/` | `%APPDATA%/Daemon/` |
 | Config | `config/config.yaml` | Bundled in `_internal/` |
-| .env | Project root | User data dir |
-| Wiki data | Optional local | External only |
+| .env | Project root | `%APPDATA%/Daemon/.env` |
+| Wiki data | Optional local | Via `DAEMON_EXTERNAL_DATA` |
 | IS_FROZEN | False | True |
+| Browser close | Server keeps running | Triggers shutdown |
+| Splash screen | Print to console | PyInstaller splash |

@@ -1,5 +1,6 @@
 daemon:
   version: v4
+  mode: user
   data_dir: ./data
   log_dir: ./conversation_logs
   in_harm_test: false
@@ -67,7 +68,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: sonnet-4.6
+  active: sonnet-4.5
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -321,8 +322,8 @@ synthesis_retrieval:
   bridge_relation: structural_parallel
 synthesis_audit:
   enabled: true
-  fp_halt_threshold: 0.50   # auto-halt if FP rate exceeds this
-  min_graded: 10             # minimum graded results before auto-halt can trigger
+  fp_halt_threshold: 0.5
+  min_graded: 10
 wikidata_import:
   enabled: true
   persist_path: data/wikidata_cache.json

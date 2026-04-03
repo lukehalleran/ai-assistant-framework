@@ -1,44 +1,67 @@
-feat: Synthesis audit queue, Opus coherence judge, E2E results rewrite
+feat: v1.0.0 desktop build — user/dev mode, expanded wizard, installer
 
-Rewrote E2E results doc after identifying fabricated claims in the
-original (gpt-4o-mini coherence judge was a rubber stamp at 3.6%
-rejection). Built human-in-the-loop audit queue and upgraded coherence
-judge to Opus 4.6 with structural verification tests.
+First distributable release. Built and tested on Windows 11 with Inno
+Setup installer (293MB). Major wizard expansion, user/dev mode system,
+and multiple UX fixes for desktop distribution.
 
-Coherence Judge Upgrade (knowledge/synthesis_filter.py):
-- Stage 5 prompt rewritten: de-jargon test (strip field-specific nouns,
-  evaluate structural content) + variable swap test (changing a parameter
-  in domain B must predict behavior in domain A)
-- System prompt: skeptical stance, default WEAK when in doubt
-- Model: gpt-4o-mini → claude-opus-4.6 via config.yaml
-- Parser: regex-based, searches from end of response for Rating: line
-- Result: coherence rejections 3.6% → 44%, accepted claims now name
-  transferable mechanisms ("irreversible commitment points",
-  "temporal niche mismatch", "path dependency")
+User/Dev Mode System (DAEMON_MODE):
+- Wizard asks Personal vs Developer on first run
+- User mode disables: synthesis pipeline, code proposals, reference
+  docs in context, Debug Trace/Logs/Proposals/Synthesis tabs, Memory
+  Maintenance UI, system prompt in Provenance
+- User mode enables: auto-dedup execution on shutdown (vs dry-run)
+- Config gating at end of app_config.py after all flags loaded
 
-Synthesis Audit Queue:
-- memory/synthesis_memory.py: grade_result(), get_ungraded(),
-  get_graded(), get_all_results(), get_audit_stats(),
-  store_rejected_for_audit(). 1-5 structural grading scale.
-  FP rate (grade 1-3 in accepted), avg grade tracking.
-- knowledge/synthesis_models.py: human_grade, graded_at, grade_notes
-  fields on SynthesisResult with serialization roundtrip
-- knowledge/synthesis_filter.py: process_batch() stores composite-
-  rejected candidates for false-negative audit review
-- gui/launch.py: "Synthesis" tab with blind review queue (no generator
-  labels), 1-5 slider, audit stats dashboard, graded history
-- memory/shutdown_processor.py: auto-halt check — skips synthesis
-  dreaming if FP rate > 50% with 10+ graded results
-- docs/grading_plan.md: 1-5 structural rubric, de-jargon/variable-swap/
-  underwriter heuristics, classifier bootstrap plan (300+ pairs)
-- Config: SYNTHESIS_AUDIT_ENABLED, FP_HALT_THRESHOLD, MIN_GRADED
+Wizard Expansion (gui/wizard.py):
+- Flow: WELCOME → INTRO → MODE → API_KEY → TAVILY_KEY → WOLFRAM_KEY →
+  (E2B_KEY if dev) → STYLE → NAME → PRONOUNS → OBSIDIAN → WIKI_INDEX →
+  BACKGROUND → COMPLETE
+- New steps: mode selection, Wolfram Alpha, E2B sandbox (dev only),
+  Obsidian vault (double-confirms skip, disables notes if skipped),
+  Wikipedia FAISS index path
+- Generic write_env_key() replaces duplicated per-key write functions
+- Intro message explains response times as a feature ("I think deeply")
+- Dev mode intro: "I'm actively evolving" messaging
+- Dev mode completion: tips about Proposals, Synthesis, goals.md
+- Completion message: "Close and relaunch" (not "refresh the page")
 
-E2E Results Rewrite (docs/SYNTHESIS_E2E_RESULTS.md):
-- Stripped fabricated three-experiment narrative
-- Presents machine-recorded data: gpt-4o-mini run (67% acceptance,
-  coherence as rubber stamp) vs Opus run (30% acceptance, coherence
-  as primary gate at 44% rejection)
-- Retrieval outperforms random 42% vs 23% (1.8x) with Opus judging
-- Notes confound: generation model also changed to Opus
+GUI Changes (gui/launch.py):
+- Model selector moved from Settings to Chat tab (dropdown in submit row)
+- Tabs gated by mode: Debug Trace, Logs, Proposals, Synthesis hidden
+  in user mode via Gradio visible= flag
+- Memory Maintenance section hidden in user mode
+- System prompt hidden from Debug Trace and Provenance in user mode
+- Tab overflow menu CSS fix (white-on-white → dark theme)
+- Browser tab close triggers graceful shutdown (Gradio unload event)
+  for both wizard and main UI when running as frozen exe
 
-34 tests in tests/unit/test_synthesis_audit.py, all passing.
+Shutdown Improvements (main.py, shutdown_processor.py):
+- Daily note generation added to shutdown tasks
+- Cross-dedup auto-executes in user mode (CROSS_DEDUP_AUTO_EXECUTE)
+- Weekly notes env var override added (was missing)
+
+File Upload Fix (gui/handlers.py, core/prompt/builder.py):
+- prepare_prompt now receives merged_input (user text + file content)
+  instead of bare user_text — file content was being lost
+- Reference docs retrieval suppressed when files uploaded
+  (_suppress_reference_docs flag via context.has_files)
+
+Build & Distribution:
+- daemon.spec: console=True (closing console/browser tab kills process)
+- main.py: stdout redirect to log file as safety net for windowless mode
+- Splash screen progress messages during startup
+- Inno Setup installer tested (installer/daemon_installer.iss)
+- .env.example updated with DAEMON_MODE
+
+Config Changes:
+- config.yaml: added daemon.mode (default: user)
+- app_config.py: DAEMON_MODE early load, user-mode overrides block,
+  CROSS_DEDUP_AUTO_EXECUTE, WEEKLY_NOTES_ENABLED env override
+
+Documentation:
+- BUILD_GUIDE.md: full rewrite with installer, mode table, test checklist
+- README_INSTALLER.md: updated wizard flow, mode explanation
+- PROJECT_SKELETON.md: wizard section rewritten (14 steps)
+- ARCHITECTURE_GUIDE.md: user/dev mode section, updated entry points
+- QUICK_REFERENCE.md: dedup auto-execute docs
+- README.md: wizard summary, installer build command

@@ -172,7 +172,8 @@ class ShutdownProcessor:
         After summary storage: extract claims → register in ClaimIndex → add staleness metadata [NEW 2026-03-25]"""
 
     async def _run_cross_collection_dedup():
-        """Dry-run only — logs findings but NEVER deletes. Guarded to run once per process."""
+        """User mode (CROSS_DEDUP_AUTO_EXECUTE=True): executes deletions automatically.
+        Dev mode: dry-run only — logs findings but NEVER deletes. Guarded to run once per process."""
 
     async def run_shutdown_reflection(session_conversations=None, session_summaries=None) -> bool:
         """LLM reflection generation + ChromaDB storage"""
