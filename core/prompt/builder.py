@@ -698,9 +698,11 @@ class UnifiedPromptBuilder:
             )
 
             # Reference documents (system docs, project outlines - excludes user uploads)
-            tasks["reference_docs"] = asyncio.create_task(
-                _timed_task("reference_docs", self.context_gatherer.get_reference_docs(user_input, PROMPT_MAX_REFERENCE_DOCS))
-            )
+            # Suppressed when user uploads files so file content dominates context
+            if not kwargs.get("_suppress_reference_docs", False):
+                tasks["reference_docs"] = asyncio.create_task(
+                    _timed_task("reference_docs", self.context_gatherer.get_reference_docs(user_input, PROMPT_MAX_REFERENCE_DOCS))
+                )
 
             # User uploads (previously uploaded files/images)
             tasks["user_uploads"] = asyncio.create_task(
@@ -1306,6 +1308,8 @@ class UnifiedPromptBuilder:
             _intent_type = getattr(_it, 'value', str(_it)) if _it else None
 
         # Map ContextResult to build_prompt parameters
+        # When files are uploaded, pass flag to suppress reference docs
+        # so file content dominates the context window
         return await self.build_prompt(
             user_input=context.processed_query,
             config=config,
@@ -1318,6 +1322,7 @@ class UnifiedPromptBuilder:
             retrieval_overrides=retrieval_overrides,
             weight_overrides=weight_overrides,
             intent_type=_intent_type,
+            _suppress_reference_docs=context.has_files,
         )
 
     async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None,

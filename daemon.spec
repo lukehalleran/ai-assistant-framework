@@ -419,7 +419,7 @@ exe_kwargs = {
     'bootloader_ignore_signals': False,
     'strip': False,
     'upx': False,  # CRITICAL: Disabled - breaks torch/numpy DLLs
-    'console': True,  # GUI app, no console window
+    'console': True,  # Console window visible - closing it kills the app
     'disable_windowed_traceback': False,
     'argv_emulation': False,
     'target_arch': None,
