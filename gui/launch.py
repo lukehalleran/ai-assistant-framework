@@ -27,6 +27,7 @@ Module Contract
     • Chat: chat UI, file upload, raw toggle, Sync Notes button
     • Debug Trace: renders debug_state entries
     • Status: shows counters (summaries, corpus counts, logs)
+    • Synthesis: blind review queue with two-layer grading (3 binary screening + 1-5 gut-feel slider); see docs/grading_plan.md
     • Proposals: browse, filter, and generate code proposals from ChromaDB
     • Provenance: per-turn audit trail (session_id, response_mode, model, thinking block, citations, agentic rounds) [RENAMED from Citations 2026-03-26]
     • Settings: slider to control summary cadence (every N exchanges)
@@ -2058,21 +2059,39 @@ def launch_gui(orchestrator, force_wizard=False):
                 synth_id_map = gr.State({})  # label -> doc_id
 
                 gr.Markdown(
-                    "**Rubric:** 1=Hallucination, 2=Surface metaphor, "
-                    "3=True but trivial, 4=Structural isomorphism, "
-                    "5=Deep convergence. See `docs/grading_plan.md`."
+                    "**Step 1 — Binary screening** (answer honestly, don't overthink):"
+                )
+                with gr.Row():
+                    synth_q_thinking = gr.Radio(
+                        choices=["Yes", "No"],
+                        label="Does this make me think about something differently?",
+                        interactive=True,
+                    )
+                    synth_q_mechanism = gr.Radio(
+                        choices=["Yes", "No", "Unsure"],
+                        label="Is the mechanism it describes real, as far as I know?",
+                        interactive=True,
+                    )
+                    synth_q_heard = gr.Radio(
+                        choices=["Yes", "No"],
+                        label="Have I heard this connection before?",
+                        interactive=True,
+                    )
+
+                gr.Markdown(
+                    "**Step 2 — Gut feel** (first instinct, don't agonize):"
                 )
                 with gr.Row():
                     synth_grade_slider = gr.Slider(
-                        minimum=1, maximum=5, step=1, value=2,
-                        label="Structural Grade (1-5)",
+                        minimum=1, maximum=5, step=1, value=3,
+                        label="1=Nonsense  2=Surface metaphor  3=True but obvious  4=Real insight  5=Breakthrough",
                         interactive=True,
                     )
                     synth_grade_btn = gr.Button("Submit Grade", variant="primary")
 
                 synth_notes_input = gr.Textbox(
                     label="Notes (optional)",
-                    placeholder="Why this grade? De-jargon test, variable swap...",
+                    placeholder="Anything that stood out...",
                     lines=1,
                 )
                 synth_grade_status = gr.Markdown(value="")
@@ -2122,8 +2141,8 @@ def launch_gui(orchestrator, force_wizard=False):
                     grade_html = ""
                     if show_grade and result.human_grade:
                         grade_labels = {
-                            "1": "Hallucination", "2": "Surface metaphor",
-                            "3": "Trivial", "4": "Isomorphism", "5": "Convergence",
+                            "1": "Nonsense", "2": "Surface metaphor",
+                            "3": "True/obvious", "4": "Real insight", "5": "Breakthrough",
                         }
                         try:
                             gn = int(result.human_grade)
@@ -2136,6 +2155,16 @@ def launch_gui(orchestrator, force_wizard=False):
                             f' <span style="background:{gc};color:white;padding:2px 8px;'
                             f'border-radius:4px;font-size:0.8em;">{result.human_grade}: {label}</span>'
                         )
+                        # Binary screening answers
+                        binary_parts = []
+                        if result.changes_thinking is not None:
+                            binary_parts.append(f"Thinking: {'Y' if result.changes_thinking else 'N'}")
+                        if result.mechanism_real:
+                            binary_parts.append(f"Real: {result.mechanism_real}")
+                        if result.heard_before is not None:
+                            binary_parts.append(f"Heard: {'Y' if result.heard_before else 'N'}")
+                        if binary_parts:
+                            grade_html += f' <span style="font-size:0.8em;color:#aaa;">({" | ".join(binary_parts)})</span>'
                         if result.grade_notes:
                             grade_html += f' <em style="font-size:0.85em;">— {result.grade_notes}</em>'
 
@@ -2223,7 +2252,7 @@ def launch_gui(orchestrator, force_wizard=False):
                         _load_synth_stats(),
                     )
 
-                def _grade_synth(selected_label, id_map, grade_num, notes=""):
+                def _grade_synth(selected_label, id_map, q_thinking, q_mechanism, q_heard, grade_num, notes=""):
                     if not selected_label or not id_map:
                         return "Select an insight first."
                     doc_id = id_map.get(selected_label)
@@ -2232,15 +2261,31 @@ def launch_gui(orchestrator, force_wizard=False):
                     sm = _get_synth_memory()
                     if not sm:
                         return "Synthesis memory not available."
+
+                    # Map radio values to storage format
+                    changes_thinking = True if q_thinking == "Yes" else (False if q_thinking == "No" else None)
+                    mechanism_real = q_mechanism.lower() if q_mechanism else None
+                    heard_before = True if q_heard == "Yes" else (False if q_heard == "No" else None)
+
                     grade_str = str(int(grade_num))
-                    ok = sm.grade_result(doc_id, grade_str, notes)
+                    ok = sm.grade_result(
+                        doc_id, grade_str, notes,
+                        changes_thinking=changes_thinking,
+                        mechanism_real=mechanism_real,
+                        heard_before=heard_before,
+                    )
                     labels = {
-                        "1": "Hallucination", "2": "Surface metaphor",
-                        "3": "True but trivial", "4": "Structural isomorphism",
-                        "5": "Deep convergence",
+                        "1": "Nonsense", "2": "Surface metaphor",
+                        "3": "True but obvious", "4": "Real insight",
+                        "5": "Breakthrough",
                     }
                     if ok:
-                        return f"Graded **{grade_str}** — {labels.get(grade_str, '')}."
+                        binary_summary = (
+                            f"Thinking: {q_thinking or '?'} | "
+                            f"Real: {q_mechanism or '?'} | "
+                            f"Heard before: {q_heard or '?'}"
+                        )
+                        return f"Graded **{grade_str}** — {labels.get(grade_str, '')}. ({binary_summary})"
                     return "Failed to apply grade."
 
                 # --- Wire buttons ---
@@ -2257,7 +2302,7 @@ def launch_gui(orchestrator, force_wizard=False):
 
                 synth_grade_btn.click(
                     _grade_synth,
-                    inputs=[synth_selector, synth_id_map, synth_grade_slider, synth_notes_input],
+                    inputs=[synth_selector, synth_id_map, synth_q_thinking, synth_q_mechanism, synth_q_heard, synth_grade_slider, synth_notes_input],
                     outputs=[synth_grade_status],
                 ).then(
                     _load_synth_queue,

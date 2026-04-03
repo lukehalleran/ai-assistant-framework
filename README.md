@@ -510,18 +510,40 @@ tests/                       # 137 test files
 
 ---
 
-## Wikipedia Pipeline
+## Wikipedia Knowledge Base (Optional)
 
-Daemon supports Wikipedia-scale knowledge retrieval with 6.5M+ articles semantically indexed:
+Daemon supports Wikipedia-scale knowledge retrieval with 6.5M+ articles (~41M vectors) semantically indexed via FAISS IVFPQ.
+
+### Pre-built Index (Recommended)
+
+Download the pre-built index from HuggingFace (~14.5 GB):
 
 ```bash
-python data/pipeline/unified_pipeline.py --download --semantic
+pip install huggingface_hub
 
-# Pipeline: download dump → parse XML → chunk (512 tokens) →
-#   embed (all-MiniLM-L6-v2) → build FAISS IVF index → store metadata
+huggingface-cli download PaczkiLives/daemon-wiki-faiss \
+    --repo-type dataset \
+    --local-dir ~/daemon-wiki-data/wiki_data
+
+export WIKI_DATA_ROOT=~/daemon-wiki-data
 ```
 
-**Requirements:** ~102GB storage for the full index. Optional — the assistant works without it.
+**Runtime requirements:** ~2.6 GB RAM (index + embedding model), ~14.5 GB disk. No GPU needed.
+
+### Build From Scratch
+
+If you prefer to build the index yourself:
+
+```bash
+python scripts/build_faiss_index.py
+
+# Pipeline: download dump → parse XML → chunk (512 tokens) →
+#   embed (all-MiniLM-L6-v2) → build FAISS IVFPQ index → store metadata
+```
+
+**Build requirements:** ~102 GB disk for raw dump + ~60 GB for intermediate embeddings.
+
+The assistant works without Wikipedia — features gracefully degrade when the index is not present.
 
 ---
 
@@ -638,5 +660,5 @@ python main.py
 **Storage:**
 - Corpus JSON: ~10MB (2000 conversations)
 - ChromaDB: ~50MB
-- Wikipedia FAISS: 102GB (optional)
+- Wikipedia FAISS index + metadata: ~14.5GB (optional, [download from HuggingFace](https://huggingface.co/datasets/PaczkiLives/daemon-wiki-faiss))
 - Logs: ~1MB/day

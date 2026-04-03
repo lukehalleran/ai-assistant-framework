@@ -285,7 +285,7 @@ provenance:
   enabled: true
   thinking_max_chars: 4000
 synthesis:
-  enabled: true
+  enabled: false
   batch_size: 100
   log_rejections: true
   min_token_length: 10
@@ -309,12 +309,12 @@ synthesis:
   convergence_strong_paths: 3
   convergence_strong_sources: 2
 synthesis_generator:
-  enabled: true
+  enabled: false
   candidates_per_session: 5
   llm_concurrency: 5
   min_graph_nodes: 20
 synthesis_retrieval:
-  enabled: true
+  enabled: false
   structural_query_max_tokens: 100
   retrieval_k: 5
   min_similarity: 0.25
@@ -332,7 +332,7 @@ wikidata_import:
   sparql_batch_size: 500
   embedding_match_threshold: 0.6
 graph_walk:
-  enabled: true
+  enabled: false
   max_walk_length: 8
   walks_per_seed: 20
   restart_probability: 0.15

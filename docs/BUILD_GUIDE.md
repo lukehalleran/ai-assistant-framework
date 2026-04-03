@@ -67,9 +67,10 @@ installer/output/
 - Stdout is redirected to `%APPDATA%/Daemon/daemon_startup.log` as a safety net when `sys.stdout` is None
 
 ### External Data Not Bundled
-- Wikipedia FAISS index (~2GB) is NOT bundled — available as separate download
-- Users can provide it via `DAEMON_EXTERNAL_DATA` env var or wizard setup
+- Wikipedia FAISS index (~2.2GB) and metadata (~12GB) are NOT bundled
 - Features gracefully disabled when external data is missing
+- Users can optionally provide external data via `DAEMON_EXTERNAL_DATA` env var or wizard setup
+- See [Wikipedia FAISS Setup](#wikipedia-faiss-setup-optional) below for download instructions
 
 ### User Data Directory
 When running as frozen executable, data is stored in:
@@ -217,6 +218,58 @@ Upload `DaemonSetup-1.0.0.exe` to GitHub Releases along with:
 - `gui/wizard.py`: First-run wizard (mode, keys, obsidian, wiki index)
 - `gui/launch.py`: Gradio UI with mode-gated tabs
 - `config/app_config.py`: Central config with DAEMON_MODE gating
+
+## Wikipedia FAISS Setup (Optional)
+
+Daemon can use a pre-built FAISS index over 6.5M+ Wikipedia articles (~41M vectors) for knowledge retrieval. This is optional — the assistant works without it.
+
+### Download
+
+```bash
+pip install huggingface_hub
+
+# Download the index and metadata (~14.5 GB total)
+huggingface-cli download PaczkiLives/daemon-wiki-faiss \
+    --repo-type dataset \
+    --local-dir ~/daemon-wiki-data/wiki_data
+```
+
+### Configure
+
+Set `WIKI_DATA_ROOT` to the **parent** directory of `wiki_data/`:
+
+```bash
+export WIKI_DATA_ROOT=~/daemon-wiki-data
+```
+
+Or set individual file paths:
+
+```bash
+export FAISS_INDEX_PATH=/path/to/wiki_data/vector_index_ivf.faiss
+export FAISS_META_PATH=/path/to/wiki_data/metadata.parquet
+```
+
+### Resource Requirements
+
+| Resource | Requirement |
+|----------|-------------|
+| Disk | ~14.5 GB |
+| RAM | ~2.6 GB (2.2 GB index + 0.4 GB embedding model) |
+| GPU | Not required (CPU works fine) |
+
+Metadata is read on-demand via zero-copy parquet row-group access — no DataFrame is loaded into memory.
+
+### Building From Scratch
+
+If you want to build the index yourself instead of downloading the pre-built one:
+
+```bash
+python scripts/build_faiss_index.py
+```
+
+This downloads the latest Wikipedia dump, parses/chunks/embeds all articles, and builds an IVF4096,PQ48 index. Requires ~102 GB disk for the raw dump plus ~60 GB for intermediate embeddings.
+
+---
 
 ## Development vs Frozen Mode
 

@@ -28,6 +28,7 @@ Module Contract
   - .formatter.PromptFormatter (section assembly via _assemble_prompt)
   - .summarizer.LLMSummarizer (on-demand reflections and summaries)
   - .token_manager.TokenManager (budget enforcement, middle-out compression)
+  - utils.time_manager.format_relative_timestamp (relative day labels on timestamps)
   - .base._FallbackMemoryCoordinator (testing fallback)
   - processing.gate_system (relevance filtering)
   - memory.memory_scorer (intent weight overrides, graph refs set/cleared per call)
@@ -1859,11 +1860,16 @@ class UnifiedPromptBuilder:
                     tags = []
                 tags_str = ", ".join(str(tag) for tag in tags) if tags else ""
 
-                # Format timestamp
+                # Format timestamp with relative day label to prevent temporal hallucinations
+                from utils.time_manager import format_relative_timestamp
                 if isinstance(ts, datetime):
-                    ts_str = ts.strftime('%Y-%m-%d %H:%M:%S')
+                    ts_str = format_relative_timestamp(ts)
                 elif ts:
-                    ts_str = str(ts)
+                    # Try parsing ISO string for relative formatting
+                    try:
+                        ts_str = format_relative_timestamp(datetime.fromisoformat(str(ts)))
+                    except (ValueError, TypeError):
+                        ts_str = str(ts)
                 else:
                     ts_str = ""
 
