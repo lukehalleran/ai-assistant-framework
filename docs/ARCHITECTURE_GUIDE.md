@@ -851,14 +851,19 @@ the system falls back to standard streaming.
 
 After generation, responses pass through `ResponseParser`:
 
-- `parse_thinking_block()` — Extract `<thinking>...</thinking>` content
+- `parse_thinking_block()` — Extract thinking content and final answer via three layers:
+  1. **Tag-based**: `<thinking>`/`<think>`/`<output>` tag extraction
+  2. **Heuristic fallback**: `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning phrases, instruction echoes). Requires ≥2 distinct pattern hits.
+  3. **Tag cleanup**: `strip_thinking_tag_leaks()` removes partial/malformed tags
 - `strip_reflection_blocks()` — Remove `<reflect>` and quality reflection blocks
 - `strip_xml_wrappers()` — Remove `<result>`, `<answer>`, `<output>` wrappers
 - `strip_prompt_artifacts()` — Remove echoed prompt headers
 
-The parser also handles `<output>` wrappers (content before `<output>` =
-thinking, inside = answer) and strips leaked `<think>` tags from
-GLM/DeepSeek models.
+For models with native reasoning support (Claude, DeepSeek-R1), thinking is
+separated at the API level via `extra_body={"reasoning": {"effort": "medium"}}`
+in `model_manager.py`. Thinking arrives via `delta.reasoning_content` in
+streaming chunks, not in the text body. The prompt-based `<thinking>` tag
+instruction is skipped for these models to prevent instruction echoing.
 
 ---
 
@@ -1995,12 +2000,18 @@ Arrows indicate "calls" or "data flows to."
 
 - `generate_once(prompt, model_name, system_prompt, max_tokens, temperature)` —
   Primary async generation method. Handles extended thinking extraction
-  for Claude models (text blocks from content arrays).
+  for Claude models (text blocks from content arrays). Passes
+  `extra_body={"reasoning": {"effort": "medium"}}` for reasoning models.
+- `generate_async(prompt, raw, images, **kwargs)` — Async streaming. Passes
+  `extra_body={"reasoning": {"effort": "medium"}}` for reasoning models so
+  thinking arrives via `delta.reasoning_content` (API-level separation).
 - `generate_once_with_tools(prompt, tools, tool_choice)` — For agentic
   workflows. Returns raw completion with `response.tool_calls`.
 - `supports_tools(model_name)` — Whether the model supports function calling.
 - `supports_reasoning(model_name)` — Whether the model may return extended
-  thinking blocks (Claude, DeepSeek-R1).
+  thinking blocks (Claude, DeepSeek-R1). Used by generate_async/generate_once
+  to enable native reasoning, and by orchestrator to skip prompt-based
+  thinking instruction.
 - `get_embedder()` — Cached SentenceTransformer singleton (all-MiniLM-L6-v2).
 
 ### Error Classification

@@ -18,7 +18,8 @@ Module Contract
   - _store_summary(summary_text, N, b, start, end, block) — persists with source_doc_ids backlinks,
     claim extraction, staleness_ratio, and temporal anchors
   - _extract_session_facts(session_conversations) — rule-based fact extraction with fact verification gate
-  - _extract_llm_facts(session_conversations) — LLM-assisted triple extraction with fact verification gate
+  - _extract_llm_facts(session_conversations) — LLM-assisted triple extraction with fact verification gate;
+    injects existing profile facts so LLM reuses relation names for updates/cancellations
   - _extract_procedural_skills(session_conversations) — adaptive workflow extraction
   - _generate_proposals(session_conversations) — goal-directed code change proposals
   - _check_implementation_tracking() — lightweight proposal implementation detection
@@ -558,7 +559,25 @@ class ShutdownProcessor:
             max_input_chars=max_chars,
             max_triples=max_triples,
         )
-        triples = await llm_ex.extract_triples(user_tail)
+
+        # Gather existing profile facts so LLM can reuse relation names for updates
+        existing_facts = None
+        if self.user_profile:
+            try:
+                current_view = self.user_profile.get_current_view()
+                existing_facts = []
+                for cat_name, facts_list in current_view.items():
+                    for f in facts_list:
+                        if isinstance(f, dict) and f.get("relation") and f.get("value"):
+                            existing_facts.append({
+                                "relation": f["relation"],
+                                "value": f["value"],
+                                "category": cat_name,
+                            })
+            except Exception as pf_err:
+                logger.debug(f"[Shutdown] Failed to gather profile facts for LLM context: {pf_err}")
+
+        triples = await llm_ex.extract_triples(user_tail, existing_facts=existing_facts)
 
         # Verification gate: batch-verify before storage
         verifier = getattr(self._storage, 'fact_verifier', None)

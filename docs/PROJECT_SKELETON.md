@@ -167,7 +167,8 @@ Side effects: None (pure functions)
 ```
 
 **Key Methods** (all static):
-- `parse_thinking_block(response)` → Tuple[str, str] - Extract thinking content and final answer. Also handles `<output>...</output>` wrappers (content before `<output>` = thinking, inside = answer) **[ENHANCED 2026-03-26]**
+- `parse_thinking_block(response)` → Tuple[str, str] - Extract thinking content and final answer. Tries tag-based extraction first (`<thinking>`/`<think>`/`<output>`), then heuristic fallback (`_detect_untagged_thinking`) for models that dump reasoning without tags **[ENHANCED 2026-04-05]**
+- `_detect_untagged_thinking(response)` → Tuple[str, str] - Heuristic fallback: pattern-based detection of untagged chain-of-thought (meta-reasoning, instruction echoes). Requires ≥2 distinct pattern hits, ≥20 char remaining answer **[NEW 2026-04-05]**
 - `has_incomplete_thinking_block(response)` → bool - Returns True if opening `<thinking>`/`<think>` tag present but closing tag not yet (for streaming suppression) **[NEW 2026-03-26]**
 - `extract_incomplete_thinking(response)` → str - Extracts content after opening think tag when close not yet arrived **[NEW 2026-03-26]**
 - `strip_reflection_blocks(response)` → str - Remove `<reflect>`, `[SYSTEM QUALITY REFLECTION]` blocks
@@ -476,7 +477,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
      2a. After each summary stored, extract claims via extract_claims_from_text()
          and register in ClaimIndex (if STALENESS_ENABLED) [NEW 2026-03-25]
   3. Store summaries in ChromaDB (summaries collection)
-  4. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor)
+  4. Extract facts via LLM (LLMFactExtractor, injecting existing profile facts for relation reuse) + regex (FactExtractor) **[ENHANCED 2026-04-05]**
   5. Extract procedural skills via LLM (0-3 per session)
   6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
   6.5. Lightweight implementation tracking — file existence only, ~50ms/proposal (ImplementationDetector) [NEW 2026-03-25]
@@ -969,12 +970,14 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
    # All facts (user + entity) still stored in ChromaDB
    ```
 
-2. **memory/llm_fact_extractor.py** (Enhanced) [ENHANCED 2026-03]:
+2. **memory/llm_fact_extractor.py** (Enhanced) [ENHANCED 2026-04]:
    - Auto-categorization via `categorize_relation()` in `_normalize_triple()`
    - Enhanced prompt with 12 category descriptions
    - Confidence scoring (0.0-1.0)
    - Entity facts: extracts facts about people/places/orgs with `user_connection` field
    - `fact_scope` field: "user" or "entity" on all output triples
+   - Accepts `existing_facts` parameter so LLM reuses relation names for updates/cancellations **[ENHANCED 2026-04-05]**
+   - Update rules in prompt: when user updates/cancels/rescinds something, LLM reuses same relation name with new value
 
 3. **core/prompt/context_gatherer.py**:
    - `get_user_profile_context(query, max_tokens=500)` → Calls UserProfile.get_context_injection()
@@ -1761,8 +1764,9 @@ from config.app_config import config
 
 **Key Methods**:
 - `generate(prompt, model_alias, stream)` → async response
-- `generate_once(prompt, model_name, system_prompt, max_tokens, temperature, top_p)` → single-shot generation. Handles list-of-content-blocks responses (e.g. Anthropic extended thinking) by extracting text blocks **[ENHANCED 2026-03-26]**
-- `supports_reasoning(model_name)` → bool - Returns True if model may return extended thinking content (Anthropic Claude, DeepSeek-R1) **[NEW 2026-03-26]**
+- `generate_once(prompt, model_name, system_prompt, max_tokens, temperature, top_p)` → single-shot generation. Handles list-of-content-blocks responses (e.g. Anthropic extended thinking) by extracting text blocks. Passes `extra_body={"reasoning": {"effort": "medium"}}` for reasoning models **[ENHANCED 2026-04-05]**
+- `generate_async(prompt, raw, images, **kwargs)` → async streaming. Passes `extra_body={"reasoning": {"effort": "medium"}}` for reasoning models so thinking arrives via `delta.reasoning_content` (API-level separation) **[ENHANCED 2026-04-05]**
+- `supports_reasoning(model_name)` → bool - Returns True if model may return extended thinking content (Anthropic Claude, DeepSeek-R1). Used by generate_async/generate_once to enable native reasoning, and by orchestrator to skip prompt-based thinking instruction **[ENHANCED 2026-04-05]**
 - `_get_client(provider)` → Provider-specific client
 - `_map_alias_to_model(alias)` → e.g., "sonnet-4.6" → "anthropic/claude-sonnet-4.6" **[NEW 2026-03-10]**
 
@@ -5484,6 +5488,13 @@ This document compresses a ~50K line codebase by focusing on architecture, data 
 - **GraphWalkGenerator Improvements** — Hub dampening (log-scale penalty for degree > 15). Cross-domain walk constraint (min 2 domain categories). Config: `GRAPH_WALK_HUB_DEGREE_THRESHOLD`, `GRAPH_WALK_MIN_DOMAINS`.
 - **Coherence Judge Recalibration** — Prompt distinguishes WEAK (no mechanism named) from MODERATE (names real mechanism concretely). max_tokens raised 250→400.
 - **Retrieval-Aware Filter Stages** — Stage 2 (distance) inverted scoring for retrieval candidates. Stage 3 (novelty) skips claim-similarity gate for retrieval candidates.
+
+**Previous Changes** (2026-04-05):
+- **Thinking Leak Fix — Native API Reasoning** (Section 2.1.1, model_manager) — `generate_async()` and `generate_once()` now pass `extra_body={"reasoning": {"effort": "medium"}}` for models where `supports_reasoning()` returns True (Claude, DeepSeek-R1). Thinking arrives via `delta.reasoning_content` instead of being mixed into the text response.
+- **Thinking Leak Fix — Heuristic Fallback** (Section 2.1.1) — `_detect_untagged_thinking()` added to ResponseParser. Pattern-based detection of untagged chain-of-thought (meta-reasoning, instruction echoes, third-person user references). Requires ≥2 distinct pattern hits, ≥20 char remaining answer. Prevents false positives on legitimate responses.
+- **Thinking Leak Fix — Conditional Instruction** (orchestrator) — System prompt thinking instruction (`<thinking>` tags) now skipped for models with native reasoning support. Prevents instruction echoing that caused thinking leaks.
+- **LLM Fact Extractor — Relation Reuse** (Section 2.4) — `LLMFactExtractor.extract_triples()` now accepts `existing_facts` parameter. Shutdown processor injects current profile facts so LLM reuses relation names for updates/cancellations (e.g., "date_planned" stays "date_planned" when cancelled).
+- **User Profile — Relative Timestamps** (Section 2.4) — `get_context_injection()` now formats fact timestamps as relative labels ("today", "yesterday", "3 days ago") via `format_relative_timestamp()` instead of raw ISO strings.
 
 **Previous Changes** (2026-03-28):
 - **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks via FAISS wiki search, 40M vectors: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.

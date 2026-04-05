@@ -17,6 +17,8 @@ Module Contract
   - supports_tools(): checks if a model supports function/tool calling
   - supports_reasoning(model_name): returns True if model may return extended thinking/reasoning content (Anthropic Claude, DeepSeek-R1) [NEW 2026-03-26]
   - generate_once(): handles list-of-content-blocks responses (Anthropic extended thinking) by extracting text blocks [ENHANCED 2026-03-26]
+  - generate_async() and generate_once(): pass extra_body={"reasoning": {"effort": "medium"}} for
+    reasoning models so thinking arrives via delta.reasoning_content (API-level separation) [ENHANCED 2026-04-05]
 - Dependencies:
   - transformers, sentence-transformers, httpx, environment OPENAI_API_KEY
 - Side effects:
@@ -191,7 +193,7 @@ class ModelManager:
         self.api_models["deepseek-v3.1"] = "deepseek/deepseek-chat-v3.1"
         self.api_models["deepseek-r1"] = "deepseek/deepseek-r1-0528"
         # Google Gemini models
-        self.api_models["gemini-3-pro"] = "google/gemini-3-pro-preview"
+        self.api_models["gemini-3-pro"] = "google/gemini-3.1-pro-preview"
 
     def reinitialize_clients(self, api_key: str = None) -> bool:
         """
@@ -765,6 +767,12 @@ class ModelManager:
                     stream=False,
                 )
 
+                # Request native reasoning separation for supported models
+                if self.supports_reasoning(target_model):
+                    create_kwargs["extra_body"] = {
+                        "reasoning": {"effort": "medium"},
+                    }
+
                 response = await self.async_client.chat.completions.create(**create_kwargs)
 
                 msg = response.choices[0].message
@@ -1035,6 +1043,16 @@ class ModelManager:
                     stop=stop_sequences,
                     stream=True,
                 )
+
+                # Request native reasoning separation for models that support it
+                # (Claude, DeepSeek-R1). Thinking arrives via delta.reasoning_content
+                # instead of being mixed into the text response.
+                if self.supports_reasoning(target_model):
+                    create_kwargs["extra_body"] = {
+                        "reasoning": {"effort": "medium"},
+                    }
+                    logger.info(f"[generate_async] Enabled native reasoning for {target_model}")
+
                 stream = await self.async_client.chat.completions.create(**create_kwargs)
                 return stream
             except Exception as e:
