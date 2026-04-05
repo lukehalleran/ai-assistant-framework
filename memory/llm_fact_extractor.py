@@ -4,10 +4,12 @@
 Additive LLM-assisted fact extractor used at shutdown to augment regex/spaCy/REBEL facts.
 ENHANCED: Now extracts facts with category classification for user profile building.
 ENHANCED (2026-03): Extracts entity facts (non-user subjects) with user_connection metadata.
+ENHANCED (2026-04): Accepts existing profile facts so LLM reuses relation names for updates/cancellations.
 
 Contract
-- Inputs: list of recent user-only messages (strings), model_manager
+- Inputs: list of recent user-only messages (strings), model_manager, optional existing_facts list
 - Behavior: calls a compact LLM prompt to extract SRO triples as strict JSON with category metadata
+  - When existing_facts provided, prompt instructs LLM to reuse relation names for updates
   - User facts: subject="user" for personal facts (pronouns normalized)
   - Entity facts: subject=entity name for people/places/orgs the user discusses
     Entity facts include user_connection field (e.g., "user's boss")
@@ -91,7 +93,7 @@ class LLMFactExtractor:
         self.max_input_chars = int(max_input_chars)
         self.max_triples = int(max_triples)
 
-    def _build_prompt(self, user_messages: List[str]) -> str:
+    def _build_prompt(self, user_messages: List[str], existing_facts: List[Dict[str, Any]] = None) -> str:
         msgs = []
         total = 0
         # Build from newest last; enforce char budget
@@ -107,6 +109,33 @@ class LLMFactExtractor:
             total += len(m) + 10
 
         joined = "\n".join(f"- {m}" for m in msgs)
+
+        # Build existing facts section if provided
+        existing_facts_section = ""
+        if existing_facts:
+            lines = []
+            for f in existing_facts[:60]:  # cap to avoid prompt bloat
+                rel = f.get("relation", "")
+                val = f.get("value", "")
+                cat = f.get("category", "")
+                if rel and val:
+                    lines.append(f"  - {rel}={val} [{cat}]")
+            if lines:
+                existing_facts_section = (
+                    "\n\nEXISTING PROFILE FACTS (current beliefs about the user):\n"
+                    + "\n".join(lines)
+                    + "\n\nUPDATE RULES:\n"
+                    "- When the user's messages UPDATE, CANCEL, RESCHEDULE, or CHANGE something "
+                    "already in the existing facts, you MUST reuse the SAME relation name with "
+                    "the new value. This ensures the old fact gets properly superseded.\n"
+                    "- Example: existing fact is date_planned=date in Algonquin at noon on Sat. "
+                    "User says 'date got cancelled'. Output: "
+                    '{{"subject": "user", "relation": "date_planned", "object": "cancelled — was Algonquin Sat, needs reschedule", "category": "goals", "confidence": 0.95}}\n'
+                    "- Example: existing fact is gym_schedule=MWF mornings. "
+                    "User says 'switching to evenings'. Output: "
+                    '{{"subject": "user", "relation": "gym_schedule", "object": "MWF evenings", "category": "fitness", "confidence": 0.9}}\n'
+                    "- Do NOT invent a new relation name when an existing one covers the same topic.\n"
+                )
 
         # Enhanced extraction prompt with category awareness and few-shot examples
         prompt_template = """You extract factual information about the user from conversation messages.
@@ -166,25 +195,32 @@ RULES:
 - Do NOT extract questions or hypotheticals
 - IMPORTANT: If user introduces themselves or describes their role/activity, extract those as facts
 - TEMPORAL: Today's date is {today}. When the user mentions relative dates ("tomorrow", "next Monday", "the following day"), resolve them to absolute dates in the object field. Example: "I work tomorrow" on 2026-03-12 → object: "work on Thu 2026-03-13"
-
+{existing_facts}
 MESSAGES (user only, newest last):
 {messages}
 
 JSON:"""
         today_str = datetime.now().strftime("%A, %Y-%m-%d")
-        prompt = prompt_template.format(messages=joined, today=today_str)
+        prompt = prompt_template.format(
+            messages=joined,
+            today=today_str,
+            existing_facts=existing_facts_section,
+        )
 
         # Always log the messages being processed (helps debug empty extractions)
         logger.info(f"[LLM Facts] Building prompt with {len(msgs)} messages, total chars={len(prompt)}")
         logger.info(f"[LLM Facts] Input messages: {joined[:300]}{'...' if len(joined) > 300 else ''}")
+        if existing_facts:
+            logger.info(f"[LLM Facts] Injected {len(existing_facts)} existing profile facts for relation reuse")
 
         return prompt
 
-    async def extract_triples(self, user_messages: List[str]) -> List[Dict[str, str]]:
+    async def extract_triples(self, user_messages: List[str],
+                              existing_facts: List[Dict[str, Any]] = None) -> List[Dict[str, str]]:
         if not user_messages:
             return []
 
-        prompt = self._build_prompt(user_messages)
+        prompt = self._build_prompt(user_messages, existing_facts=existing_facts)
 
         try:
             text = await self.mm.generate_once(

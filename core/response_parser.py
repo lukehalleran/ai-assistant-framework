@@ -8,6 +8,17 @@ Module Contract:
 - Purpose: Parse and clean LLM responses (thinking blocks, reflections, XML wrappers, artifacts)
 - Inputs: Raw response strings from LLM
 - Outputs: Cleaned response strings
+- Key methods:
+  - parse_thinking_block(response) → (thinking, answer): Tag-based extraction (<thinking>/<think>/<output>),
+    then heuristic fallback (_detect_untagged_thinking) for models that dump reasoning without tags
+  - _detect_untagged_thinking(response) → (thinking, answer): Pattern-based detection of untagged
+    chain-of-thought (meta-reasoning phrases, instruction echoes). Requires ≥2 distinct pattern hits.
+  - has_incomplete_thinking_block(response) → bool: Streaming suppression (open tag, no close tag yet)
+  - extract_incomplete_thinking(response) → str: Extract in-progress thinking for streaming indicator
+  - strip_thinking_tag_leaks(text) → str: Remove partial/malformed thinking tags
+  - strip_reflection_blocks(response) → str: Remove <reflect> and [SYSTEM QUALITY REFLECTION] blocks
+  - strip_xml_wrappers(text) → str: Unwrap <result>/<answer>/<output>/<response> wrappers
+  - strip_prompt_artifacts(text) → str: Remove echoed prompt section headers
 - Side effects: None (pure functions)
 """
 
@@ -79,12 +90,84 @@ class ResponseParser:
         # Collapse any leading whitespace left behind
         return cleaned.lstrip('\n').strip() if cleaned != text else text
 
+    @staticmethod
+    def _detect_untagged_thinking(response: str) -> Tuple[str, str]:
+        """Heuristic fallback: detect untagged thinking dumped before the real answer.
+
+        Scans lines from the top for meta-reasoning patterns.  When enough
+        distinct patterns are found in a prefix, everything from the first
+        match through a double-newline gap is treated as thinking.
+
+        Returns (thinking, answer) or ("", "") if nothing detected.
+        """
+        if not response or len(response) < 80:
+            return "", ""
+
+        lines = response.split('\n')
+        if len(lines) < 3:
+            return "", ""
+
+        # Find spans of lines that match heuristic patterns
+        hit_patterns: set = set()
+        last_hit_line = -1
+        first_hit_line = -1
+
+        for i, line in enumerate(lines):
+            for j, pat in enumerate(ResponseParser._THINKING_HEURISTIC_PATTERNS):
+                if pat.search(line):
+                    hit_patterns.add(j)
+                    if first_hit_line < 0:
+                        first_hit_line = i
+                    last_hit_line = i
+                    break  # one pattern per line is enough
+
+        if len(hit_patterns) < ResponseParser._HEURISTIC_MIN_HITS:
+            return "", ""
+
+        # Extend the boundary to the next blank-line gap after the last hit,
+        # which typically separates reasoning from the actual response.
+        split_line = last_hit_line + 1
+        for i in range(last_hit_line + 1, len(lines)):
+            if not lines[i].strip():
+                split_line = i + 1
+                break
+            split_line = i + 1
+
+        # Require that the remaining answer is at least 20 chars
+        # (guard against stripping the entire response)
+        answer = '\n'.join(lines[split_line:]).strip()
+        if len(answer) < 20:
+            return "", ""
+
+        thinking = '\n'.join(lines[first_hit_line:split_line]).strip()
+        return thinking, answer
+
     # Pattern to detect <output>...</output> wrapper (used by some providers
     # to separate thinking from answer when thinking is returned inline)
     _OUTPUT_WRAPPER_RE = re.compile(
         r'<\s*output\s*>([\s\S]*?)<\s*/\s*output\s*>',
         re.IGNORECASE,
     )
+
+    # Heuristic patterns indicating untagged thinking / internal reasoning.
+    # Each pattern is a compiled regex.  If >=HEURISTIC_MIN_HITS of these
+    # appear in a *prefix* of the response (before the real answer), we
+    # treat everything up to (and including) the last match as thinking.
+    _THINKING_HEURISTIC_PATTERNS = [
+        # Meta-reasoning about what to do / how to respond
+        re.compile(r"(?:^|\n)\s*(?:I should |I need to |Let me think|Let me (?:consider|check|look)|I'll )", re.IGNORECASE),
+        # Third-person references to the user in internal reasoning
+        re.compile(r"(?:^|\n)\s*(?:He'?s saying|She'?s saying|They'?re saying|The user is |The user (?:wants|asked|said|seems))", re.IGNORECASE),
+        # Planning / strategy language
+        re.compile(r"(?:^|\n)\s*(?:What would (?:actually )?be useful|How should I |I could mention|I (?:shouldn't|should not) )", re.IGNORECASE),
+        # System prompt instruction echo (tail end of the thinking instruction)
+        re.compile(r"Walk through the context step-by-step", re.IGNORECASE),
+        # Explicit "not now" / conversational meta-analysis
+        re.compile(r"(?:^|\n)\s*(?:This is (?:a casual|just a)|not asking me to|flagging that)", re.IGNORECASE),
+        # Bullet-style reasoning about approach
+        re.compile(r"(?:^|\n)\s*-\s+(?:Explicitly |Temporal |Source |Emotional |Deciding )", re.IGNORECASE),
+    ]
+    _HEURISTIC_MIN_HITS = 2  # need at least 2 distinct patterns to trigger
 
     @staticmethod
     def parse_thinking_block(response: str) -> Tuple[str, str]:
@@ -133,7 +216,13 @@ class ResponseParser:
             if answer:
                 return thinking, answer
 
-        # No thinking block found — still strip any leaked partial tags
+        # No tags found — try heuristic detection of untagged thinking.
+        # Models sometimes dump chain-of-thought without wrapping it in tags.
+        thinking, answer = ResponseParser._detect_untagged_thinking(response)
+        if thinking and answer:
+            return thinking, ResponseParser.strip_thinking_tag_leaks(answer)
+
+        # Nothing detected — strip any leaked partial tags
         cleaned = ResponseParser.strip_thinking_tag_leaks(response)
         return "", cleaned
 

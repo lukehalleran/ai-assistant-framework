@@ -413,10 +413,18 @@ class ResponseParser:
 
     @staticmethod
     def parse_thinking_block(response: str) -> Tuple[str, str]:
-        """Extract <thinking>...</thinking> and final answer.
-        Also handles <output>...</output> wrappers (pre-output = thinking, inner = answer)."""
+        """Extract thinking content and final answer. Three layers:
+        1. Tag-based: <thinking>/<think>/<output> extraction
+        2. Heuristic fallback: _detect_untagged_thinking() for models that dump
+           reasoning without tags (meta-reasoning, instruction echoes, ≥2 pattern hits)
+        3. Tag cleanup: strip_thinking_tag_leaks() for partial/malformed tags"""
         # Returns (thinking_content, final_answer)
         # If no thinking block: ("", full_response)
+
+    @staticmethod
+    def _detect_untagged_thinking(response: str) -> Tuple[str, str]:  # [NEW 2026-04-05]
+        """Heuristic fallback: pattern-based detection of untagged chain-of-thought.
+        Requires ≥2 distinct patterns, ≥20 char remaining answer."""
 
     @staticmethod
     def has_incomplete_thinking_block(response: str) -> bool:  # [NEW 2026-03-26]
