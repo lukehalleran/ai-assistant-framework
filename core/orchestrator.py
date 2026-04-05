@@ -1207,13 +1207,23 @@ The user is processing/analyzing, open to engagement.
                 pass
 
         # --- Thinking block instruction ---
+        # Skip for models with native reasoning (Claude, DeepSeek-R1) — their
+        # thinking is separated at the API level via extra_body.  The prompt
+        # instruction is redundant and can cause the model to echo it.
         if not use_raw_mode:
-            thinking_instruction = (
-                "\n\n[IMPORTANT] Before your final response, include your reasoning "
-                "in <thinking>...</thinking> tags. Walk through the context step-by-step, "
-                "then provide your answer outside the tags."
+            _active = getattr(self.model_manager, "get_active_model_name", lambda: None)()
+            _has_native = (
+                _active
+                and hasattr(self.model_manager, "supports_reasoning")
+                and self.model_manager.supports_reasoning(_active)
             )
-            system_prompt = system_prompt.rstrip() + thinking_instruction
+            if not _has_native:
+                thinking_instruction = (
+                    "\n\n[IMPORTANT] Before your final response, include your reasoning "
+                    "in <thinking>...</thinking> tags. Walk through the context step-by-step, "
+                    "then provide your answer outside the tags."
+                )
+                system_prompt = system_prompt.rstrip() + thinking_instruction
 
         # --- 2) Build prompt context via PromptBuilder ---
         prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)

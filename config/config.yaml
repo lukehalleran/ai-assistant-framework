@@ -1,6 +1,6 @@
 daemon:
   version: v4
-  mode: user
+  mode: dev
   data_dir: ./data
   log_dir: ./conversation_logs
   in_harm_test: false
@@ -68,7 +68,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: sonnet-4.5
+  active: claude-opus-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18

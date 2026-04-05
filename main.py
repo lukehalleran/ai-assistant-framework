@@ -473,7 +473,7 @@ def _run_shutdown_tasks(orchestrator):
                 if DAILY_NOTES_ENABLED:
                     from utils.daily_notes_generator import DailyNotesGenerator
                     from datetime import date
-                    gen = DailyNotesGenerator(orchestrator.model_manager)
+                    gen = DailyNotesGenerator(model_manager=orchestrator.model_manager)
                     result = await gen.generate_for_date(date.today())
                     if result.success:
                         logger.info(f"[Shutdown] Daily note generated ({result.conversation_count} conversations)")

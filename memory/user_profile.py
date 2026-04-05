@@ -8,7 +8,7 @@ Module Contract
   - add_facts_batch(facts: List[Dict]) → int
   - get_category(category: ProfileCategory) → List[Dict]
   - get_relevant_facts(query: str, category: ProfileCategory, limit: int) → List[Dict] [NEW: hybrid retrieval]
-  - get_context_injection(max_tokens: int, query: str) → str [UPDATED: now uses query for semantic relevance]
+  - get_context_injection(max_tokens: int, query: str) → str [UPDATED: uses query for semantic relevance; timestamps formatted as relative labels via format_relative_timestamp()]
 - Outputs:
   - Profile data structures (dicts, lists)
   - Markdown exports, context strings for prompt injection
@@ -680,15 +680,22 @@ class UserProfile:
                 )[:facts_per_category]
 
             if relevant_facts:
+                from utils.time_manager import format_relative_timestamp
                 fact_strs = []
                 for f in relevant_facts:
-                    # Include timestamp for temporal reasoning
+                    # Include timestamp with relative day label for temporal reasoning
                     ts = f.get('timestamp', '')
-                    if isinstance(ts, str):
-                        fact_strs.append(f"{f['relation']}={f['value']} [{ts}]")
+                    if isinstance(ts, str) and ts:
+                        try:
+                            from datetime import datetime as _dt
+                            ts_str = format_relative_timestamp(_dt.fromisoformat(ts))
+                        except (ValueError, TypeError):
+                            ts_str = ts
+                    elif hasattr(ts, 'isoformat'):
+                        ts_str = format_relative_timestamp(ts)
                     else:
-                        ts_str = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
-                        fact_strs.append(f"{f['relation']}={f['value']} [{ts_str}]")
+                        ts_str = str(ts) if ts else ''
+                    fact_strs.append(f"{f['relation']}={f['value']} [{ts_str}]")
 
                     # Track relations that overlap with query for timeline
                     if is_temporal:
