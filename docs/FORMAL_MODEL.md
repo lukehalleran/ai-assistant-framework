@@ -63,7 +63,7 @@ The pipeline is a composition phi = phi_8 . phi_7 . ... . phi_1 where each stage
 | phi_4 | Q x tone -> is_heavy, facts | Heavy topic check + inline fact extraction | Partially (LLM for facts) |
 | phi_4.5 | Q x tone -> intent | Intent classification (regex-first, 9 types, no LLM) | Yes |
 | phi_5 | Q x H -> q' | Query rewriting for retrieval (LLM rewrites casual queries) | No (LLM) |
-| phi_6 | H x Q -> stm | Short-term memory analysis (topic, intent, tone, open threads) | No (LLM) |
+| phi_6 | H_24h x N_daily x Q -> stm | Short-term memory analysis (topic, intent, tone, reference_type, temporal_facts, open threads); H_24h = 24h time-windowed conversation slice, N_daily = last 2 daily notes from vault for cross-day recall disambiguation | No (LLM) |
 | phi_6.5 | intent x stm -> intent' | STM intent refinement (if confidence < 0.50) | Yes |
 | phi_7 | U -> identity | User identity injection (name, personality from profile) | Yes |
 | phi_8 | Theta -> thread | Thread context (depth, topic, continuity) | Yes |
@@ -149,7 +149,7 @@ sigma_iota(d, x) = SUM_i w_i(iota) * f_i(d, x)  +  SUM_j b_j(d, x, G)  +  SUM_k 
 
 | Factor f_i | Default weight | Definition |
 |-----------|---------------|------------|
-| relevance(d, x) + collection_boost | 0.35 | Embedding similarity + per-collection bonus (facts +0.15, summaries +0.10, semantic +0.05, wiki +0.05) |
+| relevance(d, x) + collection_boost | 0.35 | Embedding similarity + per-collection bonus (config.yaml active values: facts +0.10, summaries +0.10, conversations +0.30, semantic +0.05, wiki +0.05) |
 | recency(d) | 0.25 | Time decay (see temporal curves below) |
 | truth(d) | 0.20 | Evidence-based reliability via TruthScorer.compute_effective_truth() |
 | importance(d) | 0.05 | Content-based importance in [0,1] |

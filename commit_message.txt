@@ -1,70 +1,189 @@
-feat: Two-layer synthesis grading, relative timestamps, Opus coherence judge
+feat: STM cross-day recall disambiguation (24h window + daily notes injection + reference_type)
 
-Replaces old TP/FP/FN grading with a two-layer system: 3 binary
-screening questions (changes thinking? / mechanism real? / heard before?)
-plus a 1-5 gut-feel slider. Binary screening captures fast honest signal
-for classifier training; slider captures the 3/4 boundary nuance.
+Diagnosed and fixed a class of failures where STM treats user
+restatements of prior events as new occurrences, causing the main
+response model to fabricate "twice in close proximity, that's a
+pattern" framings from a single underlying event. Triaged via
+daemon_debug.log forensics on a real session.
 
-Synthesis Audit Queue (Two-Layer Grading):
-- SynthesisResult: new fields changes_thinking (bool), mechanism_real
-  (yes/no/unsure), heard_before (bool) alongside existing human_grade
-- SynthesisMemory.grade_result(): accepts binary screening params,
-  stores as ChromaDB metadata strings
-- get_audit_stats(): returns total_graded, valid_count, invalid_count,
-  fp_rate, avg_grade, auto_halt, ungraded_accepted/rejected
-- GUI Synthesis tab: 3 Radio inputs (Layer 1) + slider (Layer 2),
-  grade labels renamed (Nonsense/Surface/Obvious/Insight/Breakthrough)
-- Graded results display binary answers inline (Thinking: Y | Real: yes)
-- grading_plan.md fully rewritten: two-layer rationale, binary+slider
-  interaction table, classifier bootstrap plan, streamlined ops section
+Two-layer fix:
 
-Coherence Judge Upgrade:
-- Model changed to claude-opus-4.6 in config.yaml (was gpt-4o-mini/sonnet-4.5)
-- Coherence rejections rose 3.6% → 44%, acceptance dropped 67% → 30%
-- All docs updated to reflect current model
+LAYER 1 — STM prompt + output schema
 
-Synthesis Generators Frozen:
-- All 3 generators disabled in config.yaml (synthesis, synthesis_generator,
-  synthesis_retrieval, graph_walk) pending grading validation
-- GOALS.md, ARCHITECTURE_GUIDE.md, SYNTHESIS_FILTER.md updated to note
-  disabled status and point to grading_plan.md
+core/stm_analyzer.py:
+- Output schema gains two fields:
+    reference_type ∈ {new_event, recall, clarification, correction, unclear}
+    temporal_facts: list of normalized current-state facts
+- Prompt includes 4 critical disambiguation rules:
+    1. Same actors+action+outcome as recent context → recall, not new_event
+    2. Collapse ambiguous temporal phrases ("did not sleep" + "all night"
+       same morning = ONE night, not two)
+    3. Don't invent counts/patterns from single occurrences
+    4. "told them what happened" / "this situation" / "that thing" → recall
+- Default to "recall" or "unclear" when uncertain — treating a recall
+  as a new event is the more dangerous error
+- Two prompt examples (new_event vs recall) so the model has concrete
+  patterns to copy
+- _parse_json backfills new fields for legacy/partial responses
+- _empty_summary includes the new fields
 
-Relative Timestamp Formatting (Temporal Hallucination Prevention):
-- New format_relative_timestamp() in utils/time_manager.py: appends
-  "(today)", "(yesterday)", "(N days ago)", "(Nw ago)" to timestamps
-- Applied in builder.py (memory timestamps), formatter.py (memory
-  formatting), stm_analyzer.py (STM conversation context)
-- Prevents LLM from miscalculating day boundaries from raw ISO strings
+core/prompt/builder.py (_assemble_prompt STM rendering):
+- Renders Reference Type: line in [SHORT-TERM CONTEXT SUMMARY]
+- When reference_type ∈ {recall, clarification, correction, unclear},
+  appends explicit WARNING directive instructing main model not to
+  count current message as separate occurrence or fabricate patterns
+- Renders Resolved State: line from temporal_facts when populated
 
-Wikipedia FAISS Setup Documentation:
-- README.md: rewritten Wikipedia section with HuggingFace download
-  instructions, pre-built vs build-from-scratch paths, resource table
-- BUILD_GUIDE.md: new "Wikipedia FAISS Setup" section with download,
-  configure, and resource requirement docs
-- Storage size corrected: 102GB → 14.5GB (pre-built index + metadata)
+LAYER 2 — Context expansion: 24h window + daily notes injection
 
-IVFPQ Threshold Updates (docs only — code already committed):
-- SYNTHESIS_NOVELTY_KNOWN_THRESHOLD: 0.60 → 0.88 (near-verbatim only)
-- SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD: 0.60 → 0.85 (40M-scale)
-- FORMAL_MODEL.md Stage g_3 thresholds corrected to match
+memory/corpus_manager.py:
+- New method get_recent_within_hours(hours=24, max_count=30) returning
+  time-bounded episodic slice (excludes summaries/reflections), tolerates
+  missing/unparseable timestamps. Used by STM for full-day context
+  instead of fixed last-N.
 
-Module Contract Updates:
-- stm_analyzer.py: _format_memories now documents temporal markers
-- formatter.py: _format_memory documents relative day labels
-- builder.py: added time_manager.format_relative_timestamp dependency
-- gui/launch.py: added Synthesis tab with two-layer grading to contract
+utils/daily_notes_generator.py:
+- New module-level helpers get_daily_note_path() and read_daily_note()
+  resolve all 3 vault layouts (flat / weekly-at-root / monthly/weekly).
+  Pure read-only — never trigger generation or narrative refresh. Allow
+  STM to read daily notes without instantiating DailyNotesGenerator.
 
-Doc Updates (12 docs touched):
-- ARCHITECTURE_GUIDE: audit queue section rewritten, benchmark table
-  updated, coherence model noted, generators-frozen status added
-- BUILD_GUIDE: external data section expanded, FAISS setup section added
-- GOALS: all generator statuses updated to "disabled pending validation"
-- MEMORY_SYSTEM: synthesis_results collection description updated
-- PROJECT_SKELETON: grade_result signature, get_audit_stats return,
-  coherence model, generator enabled flags all updated
-- QUICK_REFERENCE: same as PROJECT_SKELETON updates
-- SYNTHESIS_FILTER: candidate generation frozen note, claim/cooccurrence
-  thresholds corrected, coherence model documented, audit section
-  rewritten with grading API and updated stats format
-- FORMAL_MODEL: Stage g_3 thresholds and g_5 model name corrected
-- PROMPT_BUILDING_PIPELINE: [DREAMS] section notes generators disabled
+core/stm_analyzer.py:
+- New _get_recent_daily_notes_text() reads last STM_INJECT_DAILY_NOTES_DAYS
+  daily notes from the vault and prepends them to STM's prompt as a
+  "Recent daily notes (Daemon-generated EOD summaries)" section
+- Graceful degradation: empty section when no notes available (e.g.
+  session starts before catch-up thread finishes — observed 20s window)
+- Module-contract docstring updated
+
+core/context_pipeline.py (_analyze_stm):
+- Prefers CorpusManager.get_recent_within_hours() when available; falls
+  back to legacy get_recent_memories() for older corpus_managers / mocks
+- Class-level hasattr(type(cm), ...) check (not instance) so Mock-based
+  test fixtures fall through cleanly without explicit method registration
+
+config/app_config.py:
+- STM_RECENT_HOURS = 24 (new) — time window for recent-conversation slice,
+  aligns with daily-notes EOD generation cycle
+- STM_INJECT_DAILY_NOTES_DAYS = 2 (new) — yesterday + day-before
+- STM_MAX_RECENT_MESSAGES bumped 8 → 30 (now serves as cap on the
+  time-windowed slice rather than the slice size itself)
+
+DESIGN CHOICES
+
+- Daily notes injected into STM only (gpt-4o-mini consumer), NOT into
+  the main response model's prompt. The main model still gets the
+  existing [TEMPORAL GROUNDING] narrative_context section unchanged.
+  No prompt-position fight, no token-budget interaction.
+- narrative_context deliberately NOT injected into STM — keep STM lean,
+  daily notes already give event-level detail STM needs for reference_type
+  classification. narrative_context is month-scale abstraction, less
+  useful for "is this a recall?" decisions.
+- Daily notes read directly from disk (file path resolution via shared
+  helper), not via ChromaDB obsidian_notes collection — avoids ~50ms
+  ChromaDB query latency, simpler error path.
+- 24h window is the leverage point: aligns with daily-notes EOD cycle,
+  so anything older than 24h is covered by injected daily notes; weekly/
+  monthly notes carry the load further back via normal retrieval.
+
+LATENCY
+
+- Daily notes block: ~1000 tokens for last 2 days (3303 + 711 bytes
+  measured against real vault)
+- Added STM call latency: ~100-300ms per call, often hidden by parallel
+  query rewrite (STM and rewrite run via asyncio.gather in
+  context_pipeline.py:311-326)
+- Disk I/O: <10ms for both files combined
+
+DOCS UPDATED
+
+- docs/PROJECT_SKELETON.md (STM Analyzer section, config block ×2)
+- docs/PROMPT_BUILDING_PIPELINE.md (section ordering #25 description)
+- docs/QUICK_REFERENCE.md (pipeline stage 6, section ordering)
+- docs/MEMORY_SYSTEM.md (prompt section ordering)
+- docs/ARCHITECTURE_GUIDE.md (ContextResult fields, full STM Analysis section rewrite)
+- docs/FORMAL_MODEL.md (phi_6 signature updated to H_24h x N_daily x Q -> stm)
+
+TESTS
+
+114 tests pass across context_pipeline, corpus_manager, integration,
+provenance, and llm_compression suites. STM unit tests using Mock
+corpus_manager fall through to legacy get_recent_memories path via
+class-level hasattr check.
+
+VERIFIED AGAINST REAL VAULT
+
+End-to-end smoke test confirmed:
+- get_daily_note_path resolves yesterday + day-before in
+  ~/Documents/Luke Notes/Vault/Daily Notes and To Do's/April 2026/Week 15 Apr 2026/
+- Today's note correctly returns None (only generated tomorrow)
+- STMAnalyzer prompt assembly includes "Recent daily notes" section
+  with the ICE incident text from yesterday's daily note (verified
+  recall classification path)
+
+----------------------------------------------------------------------
+
+ALSO BUNDLED — doc accuracy sweep + active model swap (pre-existing work
+from prior days, folded into this commit since they were already staged
+or in the working tree):
+
+config/config.yaml:
+- models.active: claude-opus-4.6 → sonnet-4.6 (everyday driver swap)
+
+Doc corrections (bringing docs in sync with what the code actually
+does — none of these are STM-related, they were already-staged
+housekeeping from prior sessions):
+
+docs/ARCHITECTURE_GUIDE.md:
+- Agentic tool count corrected 7 → 11
+- Tools table: split File Operations into File Read / File Grep /
+  File List (3 separate tools), added Done Searching control signal
+
+docs/FORMAL_MODEL.md:
+- Stage 7 sigma_iota relevance row: collection bonuses updated to
+  reflect config.yaml-active values (facts +0.10, summaries +0.10,
+  conversations +0.30, semantic +0.05, wiki +0.05) instead of stale
+  code defaults
+
+docs/GOALS.md:
+- Codebase line count refresh: ~116K → ~118K (×2 occurrences)
+
+docs/MEMORY_SYSTEM.md:
+- Default Weights table: now shows config.yaml-active values alongside
+  code defaults (relevance 0.30, recency 0.22, truth 0.18, topic 0.10);
+  structure clarified as additive bonus, not weighted-sum factor
+- Gating constants table: notes which constants live in app_config.py
+  vs which are env-var-only in gate_system.py (GATE_COSINE_WEIGHT,
+  MIN_GATED_MEMORIES)
+
+docs/PROJECT_SKELETON.md:
+- Added strip_thinking_tag_leaks() to ResponseParser docs
+- Shutdown step ordering corrected: UserProfile update merged into
+  step 4 (with note about user-only vs entity facts split); removed
+  duplicate step 9; added 6.9 wiki enrichment
+- "Recent Changes" log reordered so most recent date (2026-04-05)
+  appears first
+
+docs/PROMPT_BUILDING_PIPELINE.md:
+- Token budget defaults corrected to match current code:
+  ceiling 60000 → 16000, default 40000 → 15000
+- PROMPT_MAX_SEMANTIC bumped 8 → 10
+
+docs/QUICK_REFERENCE.md:
+- Multiple method signature corrections to match current code:
+    ContextPipeline.build() — added personality + conversation_history
+    MemoryScorer.rank_memories() — current_query + is_meta_conversational
+    GateSystem.filter_memories() — removed stale k arg
+    AgenticSearchController.run_agentic_search() — renamed from execute_search,
+      added system_prompt/model_name/initial_search_terms args
+    GitStatsManager.execute_query() — marked async
+    _last_session reference updated to run_agentic_search()
+- PROMPT_TOKEN_BUDGET defaults corrected (40000 → 15000, 60000 → 16000)
+- SYNTHESIS_COHERENCE_MODEL clarified: code default is "sonnet-4.5",
+  config.yaml overrides to "claude-opus-4.6"
+
+docs/THINKING_BLOCKS_IMPLEMENTATION.md:
+- Line number reference bumped (~1672 → ~1683)
+- Test coverage caveat: heuristic detection (`_detect_untagged_thinking`)
+  and `<output>` wrapper handling were verified via inline smoke tests
+  during development but do not yet have dedicated test file coverage

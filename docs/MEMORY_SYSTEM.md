@@ -220,13 +220,13 @@ Every retrieved memory gets a `final_score` from `MemoryScorer.rank_memories()`.
 ### Default Weights
 
 ```
-relevance:  0.35    # Pre-gate semantic similarity
-recency:    0.25    # Temporal decay (active-day aware)
-truth:      0.20    # Evidence-based correctness
+relevance:  0.35    # Pre-gate semantic similarity (config.yaml: 0.30)
+recency:    0.25    # Temporal decay (active-day aware) (config.yaml: 0.22)
+truth:      0.20    # Evidence-based correctness (config.yaml: 0.18)
 importance: 0.05    # Retention priority
 continuity: 0.10    # Token overlap with current conversation
-structure:  ——      # Direct additive bonus: 0.15 * density_alignment (not in weighted sum)
-topic:      0.00    # Usually disabled, enabled per-intent
+structure:  0.05    # In SCORE_WEIGHTS dict but UNUSED — actual structure is additive: 0.15 * density_alignment
+topic:      0.00    # Disabled by default (config.yaml: 0.10)
 ```
 
 ### Step-by-Step
@@ -457,7 +457,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 [CODEBASE CHANGES SINCE LAST SESSION]  ← git diff (first message only)
 [TIME CONTEXT]                         ← current datetime (high-attention zone)
 [TEMPORAL GROUNDING]                   ← narrative context
-[SHORT-TERM CONTEXT SUMMARY]           ← STM analysis
+[SHORT-TERM CONTEXT SUMMARY]           ← STM analysis (24h window + daily notes injection + reference_type / temporal_facts disambiguation)
 [CURRENT USER QUERY]                   ← always last, protected from compression
 ```
 
@@ -524,9 +524,9 @@ The final prompt is assembled with these sections (in attention-optimized order)
 ### Gating
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `GATE_REL_THRESHOLD` | 0.18 | Multi-stage gate threshold |
-| `GATE_COSINE_WEIGHT` | 0.85 | Weight of cosine vs truth in blended gate score |
-| `MIN_GATED_MEMORIES` | 8 | Forced minimum even if below threshold |
+| `GATE_REL_THRESHOLD` | 0.18 | Multi-stage gate threshold (app_config.py) |
+| `GATE_COSINE_WEIGHT` | 0.85 | Weight of cosine vs truth in blended gate score (env var in gate_system.py, NOT app_config) |
+| `MIN_GATED_MEMORIES` | 8 | Forced minimum even if below threshold (env var in gate_system.py, NOT app_config) |
 
 ### Facts & Truth
 | Constant | Default | Purpose |

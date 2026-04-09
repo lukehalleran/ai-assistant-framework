@@ -133,8 +133,8 @@ Priority: env override > model-aware > default
 
 Model-aware = 25% of context window
   Local models:  max(8000, min(computed, 12000))
-  API models:    max(8000, min(computed, 60000))
-  Default:       40000
+  API models:    max(8000, min(computed, 16000))
+  Default:       15000
   Floor:         8000
 ```
 
@@ -197,7 +197,7 @@ high-attention items (user profile, time, query) placed last:
 22. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
 23. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
 24. `[TEMPORAL GROUNDING]` — narrative context (if available)
-25. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available)
+25. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available). Includes `Reference Type:` line (`new_event` / `recall` / `clarification` / `correction` / `unclear`) with explicit WARNING directive when type ≠ `new_event`. Also renders `Resolved State:` line from STM's `temporal_facts` field. STM internally injects last 2 daily notes from the Obsidian vault for cross-day recall disambiguation.
 26. `[CURRENT USER QUERY]` — always last, protected from compression
 
 Items with `staleness_ratio >= 0.6` get `[HISTORICAL — PARTIALLY OUTDATED]` prefix.
@@ -292,7 +292,7 @@ PROMPT_MAX_MEMS = 15
 PROMPT_MAX_SUMMARIES = 10
 PROMPT_MAX_REFLECTIONS = 10
 PROMPT_MAX_DREAMS = 3
-PROMPT_MAX_SEMANTIC = 8
+PROMPT_MAX_SEMANTIC = 10
 PROMPT_MAX_WIKI = 3
 PROMPT_MIN_RECENT_FLOOR = 5
 

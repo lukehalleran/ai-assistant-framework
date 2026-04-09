@@ -2413,6 +2413,36 @@ class UnifiedPromptBuilder:
             stm_lines.append(f"Intent: {stm_summary.get('intent', '')}")
             stm_lines.append(f"Tone: {stm_summary.get('tone', 'neutral')}")
 
+            ref_type = stm_summary.get('reference_type', 'unclear')
+            stm_lines.append(f"Reference Type: {ref_type}")
+            if ref_type == 'recall':
+                stm_lines.append(
+                    "WARNING: The current message restates an event already in context. "
+                    "Do NOT count it as a separate occurrence and do NOT fabricate a "
+                    "pattern from a single underlying event."
+                )
+            elif ref_type == 'clarification':
+                stm_lines.append(
+                    "WARNING: The current message adds detail to an existing topic. "
+                    "Do NOT treat it as a new event."
+                )
+            elif ref_type == 'correction':
+                stm_lines.append(
+                    "WARNING: The user is correcting a prior assistant claim. "
+                    "Update your understanding; do not double down."
+                )
+            elif ref_type == 'unclear':
+                stm_lines.append(
+                    "WARNING: Reference is ambiguous. Before treating the current message "
+                    "as a new event, verify it is not already present in [RELEVANT MEMORIES] "
+                    "or [RECENT CONVERSATION]. Do NOT invent counts or patterns from a "
+                    "single underlying occurrence."
+                )
+
+            temporal_facts = stm_summary.get('temporal_facts', [])
+            if temporal_facts:
+                stm_lines.append(f"Resolved State: {' | '.join(temporal_facts)}")
+
             open_threads = stm_summary.get('open_threads', [])
             if open_threads:
                 stm_lines.append(f"Open Threads: {', '.join(open_threads)}")
