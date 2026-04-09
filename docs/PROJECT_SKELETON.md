@@ -172,6 +172,7 @@ Side effects: None (pure functions)
 - `has_incomplete_thinking_block(response)` → bool - Returns True if opening `<thinking>`/`<think>` tag present but closing tag not yet (for streaming suppression) **[NEW 2026-03-26]**
 - `extract_incomplete_thinking(response)` → str - Extracts content after opening think tag when close not yet arrived **[NEW 2026-03-26]**
 - `strip_reflection_blocks(response)` → str - Remove `<reflect>`, `[SYSTEM QUALITY REFLECTION]` blocks
+- `strip_thinking_tag_leaks(text)` → str - Remove partial/malformed thinking tags (e.g., `/think>`, `<|think|>`)
 - `strip_xml_wrappers(text)` → str - Remove `<result>`, `<answer>`, `<final>`, `<output>`, `<response>` wrappers **[ENHANCED 2026-03-26]**
 - `strip_prompt_artifacts(text)` → str - Remove echoed prompt headers like `[TIME CONTEXT]`, `[FACTS]`
 
@@ -276,48 +277,69 @@ PromptBuilder.build_prompt(context, memories)  →  final prompt
 ---
 
 ### 2.2 core/stm_analyzer.py (Short-Term Memory Analyzer) **[NEW]**
-**Purpose**: Lightweight LLM pass to analyze recent conversation context and generate structured summaries
+**Purpose**: Lightweight LLM pass to analyze recent conversation context and generate structured summaries with cross-day recall disambiguation.
 
 **Key Methods**:
 - `analyze(recent_memories, user_query, last_assistant_response)` → Dict[str, Any]
   - Formats recent conversation history (last 10 lines, truncated to 200 chars each)
+  - Internally reads last `STM_INJECT_DAILY_NOTES_DAYS` daily notes from the Obsidian vault and prepends them to the prompt as a `Recent daily notes` section. Read-only — never triggers generation or narrative refresh. Gracefully degrades to recent-conversation-only mode when notes are missing.
   - Calls LLM (gpt-4o-mini) with low temperature (0.3) for structured JSON output
-  - Returns parsed JSON with: topic, user_question, intent, tone, open_threads, constraints
+  - Returns parsed JSON with: topic, user_question, intent, tone, **reference_type**, **temporal_facts**, open_threads, constraints
   - Fallback to empty summary on failures
 
 - `_format_memories(memories)` → Formatted conversation string
-- `_parse_json(raw)` → Robust JSON parser (handles markdown wrapping, validates fields)
-- `_empty_summary()` → Fallback for failures
+- `_get_recent_daily_notes_text(num_days=None)` → Reads vault daily notes via `utils.daily_notes_generator.read_daily_note()`. Returns "" when disabled or no notes available.
+- `_parse_json(raw)` → Robust JSON parser (handles markdown wrapping, validates required fields, backfills new optional fields `reference_type` and `temporal_facts` for legacy responses)
+- `_empty_summary()` → Fallback for failures (now includes `reference_type: "unclear"` and `temporal_facts: []`)
 
-**Activation Logic** (in orchestrator):
+**Activation Logic** (in context_pipeline):
 - Requires `STM_MIN_CONVERSATION_DEPTH` (default: 3) conversation turns
-- Skips queries < 10 characters
-- Uses last `STM_MAX_RECENT_MESSAGES` (default: 8) for analysis
+- Pulls episodic memory window via `CorpusManager.get_recent_within_hours(hours=STM_RECENT_HOURS, max_count=STM_MAX_RECENT_MESSAGES)` when available; falls back to legacy `get_recent_memories()` for older corpus_managers / mocks
+- Class-level `hasattr(type(cm), 'get_recent_within_hours')` check ensures Mock-based test fixtures fall through cleanly without explicit method registration
 
 **Output Structure**:
 ```python
 {
-  "topic": "Python debugging",                    # 2-5 words
-  "user_question": "How to fix timeout error",    # One sentence
-  "intent": "Get practical solution",             # One sentence
-  "tone": "frustrated",                           # Single word
-  "open_threads": ["Performance", "Error handling"], # List
-  "constraints": ["Standard library only"]        # List
+  "topic": "Police response",                     # 2-5 words
+  "user_question": "Re-emphasizing prior incident",  # One sentence (paraphrases the act of restating, not the underlying claim)
+  "intent": "Express continued distress",         # One sentence
+  "tone": "concerned",                            # Single word
+  "reference_type": "recall",                     # new_event | recall | clarification | correction | unclear
+  "temporal_facts": ["one prior incident; no second occurrence"],  # Normalized current-state facts
+  "open_threads": [],                             # List
+  "constraints": []                               # List
 }
 ```
 
+**reference_type values**:
+- `new_event` — user is reporting something not present in recent conversation
+- `recall` — user is restating, re-emphasizing, or returning to an event already in context
+- `clarification` — user is adding a small detail to an existing topic
+- `correction` — user is contradicting a claim the assistant made
+- `unclear` — cannot tell from context (default when uncertain)
+
+**Disambiguation rules** (in prompt):
+1. Same actors+action+outcome as recent context → `recall`, not `new_event`
+2. Collapse ambiguous temporal phrases ("did not sleep" + "fight mode all night" same morning = ONE night)
+3. Don't invent counts/patterns from single occurrences
+4. Phrases like "told them what happened", "this situation", "that thing" → `recall` or `unclear`
+
 **Integration**:
-- Injected into prompt RIGHT BEFORE `[CURRENT USER QUERY]` (maximum attention window)
+- Injected into prompt RIGHT BEFORE `[CURRENT USER QUERY]` (maximum attention window) via `builder.py:_assemble_prompt()`
+- `Reference Type:` line rendered in `[SHORT-TERM CONTEXT SUMMARY]` section, with explicit WARNING directive when type is `recall`, `clarification`, `correction`, or `unclear` — instructs main response model not to fabricate patterns from single underlying events
+- `Resolved State:` line rendered when `temporal_facts` populated
 - Token manager preserves STM (priority=10, no token cost - metadata only)
 - Passed through: orchestrator → prompt_builder.build_prompt() → formatter._assemble_prompt()
 
 **Configuration**:
 - `USE_STM_PASS`: Enable/disable STM system (default: True)
 - `STM_MODEL_NAME`: Model for analysis (default: "gpt-4o-mini")
-- `STM_MAX_RECENT_MESSAGES`: Messages to analyze (default: 8)
+- `STM_MAX_RECENT_MESSAGES`: Hard cap on messages passed to STM (default: 30, was 8 before time-window switch)
+- `STM_RECENT_HOURS`: Time window for recent-conversation slice (default: 24h, aligns with daily-note EOD cycle)
+- `STM_INJECT_DAILY_NOTES_DAYS`: Daily notes to inject for cross-day recall disambiguation (default: 2 = yesterday + day-before, 0 = disabled)
 - `STM_MIN_CONVERSATION_DEPTH`: Minimum depth to trigger (default: 3)
 
-**Dependencies**: ModelManager
+**Dependencies**: ModelManager, `utils.daily_notes_generator.read_daily_note` (lazy import), `memory.corpus_manager.get_recent_within_hours` (via context_pipeline)
 
 ---
 
@@ -477,16 +499,17 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
      2a. After each summary stored, extract claims via extract_claims_from_text()
          and register in ClaimIndex (if STALENESS_ENABLED) [NEW 2026-03-25]
   3. Store summaries in ChromaDB (summaries collection)
-  4. Extract facts via LLM (LLMFactExtractor, injecting existing profile facts for relation reuse) + regex (FactExtractor) **[ENHANCED 2026-04-05]**
+  4. Extract facts via LLM (LLMFactExtractor, injecting existing profile facts for relation reuse) + regex (FactExtractor).
+     UserProfile updated WITHIN this step — user-only facts go to add_facts_batch(); entity facts to ChromaDB only **[ENHANCED 2026-04-05]**
   5. Extract procedural skills via LLM (0-3 per session)
   6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
   6.5. Lightweight implementation tracking — file existence only, ~50ms/proposal (ImplementationDetector) [NEW 2026-03-25]
   6.75. Extract open threads via LLM + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
   6.8. Synthesis dreaming — three-tier parallel generation: RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) → SynthesisFilter → SynthesisMemory; provisional bridge creation on acceptance; auto-halt if audit FP rate > threshold [ENHANCED 2026-04-01]
+  6.9. Wiki enrichment — tracked wiki articles → graph nodes [NEW 2026-03-28]
   7. Save knowledge graph + entity aliases + claim index to disk [ENHANCED 2026-03-25]
   8. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
-  9. Update UserProfile with user-only facts (entity facts stored in ChromaDB only) [ENHANCED 2026-03]
-  10. Log statistics
+  9. Log statistics
   ```
 
 - `async run_shutdown_reflection(session_conversations=None, session_summaries=None)` → End-of-session LLM reflection:
@@ -4214,7 +4237,9 @@ HYBRID_REFLECTIONS_ENABLED = True
 # Short-Term Memory (STM) [NEW]
 USE_STM_PASS = True                    # Enable STM analysis
 STM_MODEL_NAME = "gpt-4o-mini"         # Model for STM (fast/cheap)
-STM_MAX_RECENT_MESSAGES = 8            # Messages to analyze
+STM_MAX_RECENT_MESSAGES = 30           # Hard cap on messages passed to STM
+STM_RECENT_HOURS = 24                  # Time window for recent-conversation slice
+STM_INJECT_DAILY_NOTES_DAYS = 2        # Daily notes injected for cross-day recall (0=disabled)
 STM_MIN_CONVERSATION_DEPTH = 3         # Minimum depth to trigger
 
 # Best-of-N Generation
@@ -5121,7 +5146,9 @@ HEAVY_TOPIC_TIMEOUT = 2.0  # seconds
 # Short-Term Memory (STM) [NEW]
 USE_STM_PASS = True
 STM_MODEL_NAME = "gpt-4o-mini"
-STM_MAX_RECENT_MESSAGES = 8
+STM_MAX_RECENT_MESSAGES = 30   # cap on time-windowed slice
+STM_RECENT_HOURS = 24          # time window aligns with daily-note EOD cycle
+STM_INJECT_DAILY_NOTES_DAYS = 2  # cross-day recall disambiguation
 STM_MIN_CONVERSATION_DEPTH = 3
 
 # Feature Toggles
@@ -5479,22 +5506,22 @@ if IS_FROZEN:
 
 This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2026-04-01
+**Last Updated**: 2026-04-05
 
-**Recent Changes** (2026-04-01):
+**Recent Changes** (2026-04-05):
+- **Thinking Leak Fix — Native API Reasoning** (Section 2.1.1, model_manager) — `generate_async()` and `generate_once()` now pass `extra_body={"reasoning": {"effort": "medium"}}` for models where `supports_reasoning()` returns True (Claude, DeepSeek-R1). Thinking arrives via `delta.reasoning_content` instead of being mixed into the text response.
+- **Thinking Leak Fix — Heuristic Fallback** (Section 2.1.1) — `_detect_untagged_thinking()` added to ResponseParser. Pattern-based detection of untagged chain-of-thought (meta-reasoning, instruction echoes, third-person user references). Requires ≥2 distinct pattern hits, ≥20 char remaining answer. Prevents false positives on legitimate responses.
+- **Thinking Leak Fix — Conditional Instruction** (orchestrator) — System prompt thinking instruction (`<thinking>` tags) now skipped for models with native reasoning support. Prevents instruction echoing that caused thinking leaks.
+- **LLM Fact Extractor — Relation Reuse** (Section 2.4) — `LLMFactExtractor.extract_triples()` now accepts `existing_facts` parameter. Shutdown processor injects current profile facts so LLM reuses relation names for updates/cancellations (e.g., "date_planned" stays "date_planned" when cancelled).
+- **User Profile — Relative Timestamps** (Section 2.4) — `get_context_injection()` now formats fact timestamps as relative labels ("today", "yesterday", "3 days ago") via `format_relative_timestamp()` instead of raw ISO strings.
+
+**Previous Changes** (2026-04-01):
 - **Retrieval-Based Synthesis Generator** — `knowledge/synthesis_retriever.py`: RetrievalSynthesisGenerator (Tier 0) with structural query extraction (few-shot LLM), FAISS semantic search (40M vectors), adversarial evaluation. Drop-in replacement interface. Config: `SYNTHESIS_RETRIEVAL_*` constants; YAML section `synthesis_retrieval`.
 - **Three-Tier Parallel Synthesis** — Shutdown step 6.8 now runs RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) with independent quotas. Provisional bridge creation on filter acceptance (weight=0.0, status="provisional").
 - **Bridge Quality Cleanup** — `GraphMemory.prune_garbage_bridges()` removes 5 categories of noise edges. `WikidataEntityMapper` embedding threshold raised 0.60→0.80 with exact-match blocklist.
 - **GraphWalkGenerator Improvements** — Hub dampening (log-scale penalty for degree > 15). Cross-domain walk constraint (min 2 domain categories). Config: `GRAPH_WALK_HUB_DEGREE_THRESHOLD`, `GRAPH_WALK_MIN_DOMAINS`.
 - **Coherence Judge Recalibration** — Prompt distinguishes WEAK (no mechanism named) from MODERATE (names real mechanism concretely). max_tokens raised 250→400.
 - **Retrieval-Aware Filter Stages** — Stage 2 (distance) inverted scoring for retrieval candidates. Stage 3 (novelty) skips claim-similarity gate for retrieval candidates.
-
-**Previous Changes** (2026-04-05):
-- **Thinking Leak Fix — Native API Reasoning** (Section 2.1.1, model_manager) — `generate_async()` and `generate_once()` now pass `extra_body={"reasoning": {"effort": "medium"}}` for models where `supports_reasoning()` returns True (Claude, DeepSeek-R1). Thinking arrives via `delta.reasoning_content` instead of being mixed into the text response.
-- **Thinking Leak Fix — Heuristic Fallback** (Section 2.1.1) — `_detect_untagged_thinking()` added to ResponseParser. Pattern-based detection of untagged chain-of-thought (meta-reasoning, instruction echoes, third-person user references). Requires ≥2 distinct pattern hits, ≥20 char remaining answer. Prevents false positives on legitimate responses.
-- **Thinking Leak Fix — Conditional Instruction** (orchestrator) — System prompt thinking instruction (`<thinking>` tags) now skipped for models with native reasoning support. Prevents instruction echoing that caused thinking leaks.
-- **LLM Fact Extractor — Relation Reuse** (Section 2.4) — `LLMFactExtractor.extract_triples()` now accepts `existing_facts` parameter. Shutdown processor injects current profile facts so LLM reuses relation names for updates/cancellations (e.g., "date_planned" stays "date_planned" when cancelled).
-- **User Profile — Relative Timestamps** (Section 2.4) — `get_context_injection()` now formats fact timestamps as relative labels ("today", "yesterday", "3 days ago") via `format_relative_timestamp()` instead of raw ISO strings.
 
 **Previous Changes** (2026-03-28):
 - **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks via FAISS wiki search, 40M vectors: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.

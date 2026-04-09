@@ -26,7 +26,7 @@ All major feature systems are built. The focus now shifts to: making what exists
 
 ### 1. Consolidation & Stabilization
 - **Status**: Primary focus — all features built, now harden
-- **Why**: Codebase at ~116K lines (incl. tests). Must be lean and reliable before scaling to batch synthesis workloads or shipping to users.
+- **Why**: Codebase at ~118K lines (incl. tests). Must be lean and reliable before scaling to batch synthesis workloads or shipping to users.
 - Use retrieval benchmark suite to ablate prompt sections — measure recall impact of removing each
 - Audit ChromaDB collections: do all 12 justify separate indexes? Can any be merged without retrieval regression?
 - Reduce prompt context sections (currently 14+) to minimum set that maintains quality
@@ -294,7 +294,7 @@ These systems are complete and working. Listed here for context, not as active w
 
 1. **The filter is the product.** Connection generation is cheap. Identifying which connections are novel and meaningful is the entire value proposition. Every infrastructure decision should be evaluated by whether it improves filtering quality.
 
-2. **No new features until consolidation targets are met.** The codebase is feature-complete. Every addition now is net-negative until the existing ~116K lines are trimmed and hardened. Removing a system that doesn't pull its weight is more valuable than adding a new one.
+2. **No new features until consolidation targets are met.** The codebase is feature-complete. Every addition now is net-negative until the existing ~118K lines are trimmed and hardened. Removing a system that doesn't pull its weight is more valuable than adding a new one.
 
 3. **Data over code.** The limiting factor is now graph density, not missing features. Effort spent populating the knowledge graph with real data has higher ROI than writing new code.
 

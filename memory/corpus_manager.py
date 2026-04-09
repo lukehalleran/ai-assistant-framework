@@ -200,6 +200,39 @@ class CorpusManager:
         logger.debug(f"[CorpusManager] Returning {len(result)} recent episodic memories from {len(cached)} entries (filtered out summaries + reflections)")
         return result
 
+    def get_recent_within_hours(self, hours: int = 24, max_count: int = 30) -> List[Dict]:
+        """Get episodic memories from the last `hours` hours, capped at `max_count`.
+
+        Used by STM analyzer to widen its context window from a fixed-N count
+        to a time-bounded slice. Falls back gracefully when timestamps are
+        missing or unparseable.
+        """
+        from datetime import timedelta
+
+        cached = self._get_episodic_sorted()
+        cutoff = datetime.now() - timedelta(hours=hours)
+        result: List[Dict] = []
+
+        for entry in cached:
+            ts = entry.get("timestamp")
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except (ValueError, TypeError):
+                    continue
+            if not isinstance(ts, datetime):
+                continue
+            if ts >= cutoff:
+                result.append(entry)
+                if len(result) >= max_count:
+                    break
+
+        logger.debug(
+            f"[CorpusManager] Returning {len(result)} episodic memories within last "
+            f"{hours}h (cap={max_count}, total episodic={len(cached)})"
+        )
+        return result
+
 
     def add_summary(self, content, tags: List[str] = None, timestamp: datetime = None):
         """Add a summary-like node to the corpus.

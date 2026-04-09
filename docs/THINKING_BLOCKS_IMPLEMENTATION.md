@@ -105,7 +105,7 @@ if not use_raw_mode:
 
 ### 4. Thinking Block Handling in `process_user_query()`
 
-**Location:** `core/orchestrator.py` at line ~1672
+**Location:** `core/orchestrator.py` at line ~1683
 
 1. **Full response accumulation** — Response is accumulated first, not streamed immediately
 2. **Thinking block parsing** (delegates to ResponseParser)
@@ -132,14 +132,13 @@ During streaming, `handlers.py`:
 
 ### 6. Test Suite (`test_thinking_blocks.py`)
 
-Covers:
+Covers (tag-based parsing):
 - Normal thinking block extraction (both `<thinking>` and `<think>` variants)
 - No thinking block (passthrough)
 - Thinking blocks with newlines
 - Empty responses, malformed tags
-- `<output>` wrapper unwrapping
-- Heuristic detection of untagged thinking
-- False positive prevention (single pattern, short response, all-thinking)
+
+Note: Heuristic detection (`_detect_untagged_thinking`) and `<output>` wrapper were verified via inline smoke tests during development but do not yet have dedicated test file coverage.
 
 ## How It Works
 

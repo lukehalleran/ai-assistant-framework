@@ -703,7 +703,17 @@ BEST_OF_MIN_TOKENS = int(config.get("features", {}).get("best_of_min_tokens", 8)
 # before main response generation
 USE_STM_PASS = bool(config.get("features", {}).get("use_stm_pass", True))
 STM_MODEL_NAME = config.get("features", {}).get("stm_model_name", "gpt-4o-mini")
-STM_MAX_RECENT_MESSAGES = int(config.get("features", {}).get("stm_max_recent_messages", 8))
+# Hard cap on number of episodic messages passed to STM. Acts as ceiling for
+# the time-windowed slice (see STM_RECENT_HOURS) so a chatty session can't
+# blow up the STM prompt.
+STM_MAX_RECENT_MESSAGES = int(config.get("features", {}).get("stm_max_recent_messages", 30))
+# Time window (hours) for STM's recent-conversation slice. 24h aligns with the
+# daily-notes EOD generation cycle: anything older than 24h is covered by the
+# injected daily notes (see STM_INJECT_DAILY_NOTES_DAYS).
+STM_RECENT_HOURS = int(config.get("features", {}).get("stm_recent_hours", 24))
+# Number of recent daily notes to inject into STM input for cross-day recall
+# disambiguation. 2 = yesterday + day-before. Set to 0 to disable injection.
+STM_INJECT_DAILY_NOTES_DAYS = int(config.get("features", {}).get("stm_inject_daily_notes_days", 2))
 # Minimum conversation depth before STM kicks in (avoid overhead for trivial exchanges)
 STM_MIN_CONVERSATION_DEPTH = int(config.get("features", {}).get("stm_min_conversation_depth", 3))
 # Topic similarity threshold for STM topic-change detection (0.0-1.0)

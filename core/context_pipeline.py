@@ -653,12 +653,26 @@ Rewritten query (just the rewritten text, no explanation):"""
             return None
 
         try:
-            # Get recent memories
+            # Get recent memories — prefer the time-windowed method (24h slice
+            # capped at STM_MAX_RECENT_MESSAGES) when available so STM gets the
+            # full session-day rather than the last N messages. Falls back to
+            # the legacy fixed-N pull on older corpus_managers / mocks.
             recent_memories = []
             if self.memory_system and hasattr(self.memory_system, 'corpus_manager'):
-                recent_memories = self.memory_system.corpus_manager.get_recent_memories(
-                    self._stm_max_recent
-                )
+                cm = self.memory_system.corpus_manager
+                # Class-level hasattr (not instance) so Mock objects with auto-created
+                # attributes correctly fall through to the legacy get_recent_memories path.
+                if hasattr(type(cm), 'get_recent_within_hours'):
+                    try:
+                        from config.app_config import STM_RECENT_HOURS
+                    except ImportError:
+                        STM_RECENT_HOURS = 24
+                    recent_memories = cm.get_recent_within_hours(
+                        hours=STM_RECENT_HOURS,
+                        max_count=self._stm_max_recent,
+                    )
+                else:
+                    recent_memories = cm.get_recent_memories(self._stm_max_recent)
             elif conversation_history:
                 recent_memories = conversation_history[:self._stm_max_recent]
 
