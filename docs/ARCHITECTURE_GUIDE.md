@@ -74,7 +74,7 @@ Prompt sections:        26 (conditional)
 Intent types:           9
 Parallel retrieval:     18 async tasks
 Memory tiers:           5
-Agentic tools:          7
+Agentic tools:          11
 Gating latency:         ~200ms
 Config options:         180+
 ```
@@ -278,7 +278,7 @@ ContextResult:
   primary_topic      — main topic string
   file_context       — processed file content (if files uploaded)
   thread_context     — active thread metadata (id, depth, topic)
-  stm_summary        — STM analysis result (topic, intent, tone, open_threads)
+  stm_summary        — STM analysis result (topic, intent, tone, reference_type, temporal_facts, open_threads)
   identity_block     — user identity context string
   is_heavy_topic     — heavy/sensitive topic flag
   extracted_facts    — inline facts (if heavy topic triggered extraction)
@@ -304,16 +304,41 @@ Four crisis levels drive system behavior:
 
 ### STM Analysis
 
-Short-term memory analysis runs an LLM pass over recent conversation
-(last 8 messages, 200 chars each, low temperature) to produce structured
-context: current topic, user question, intent, tone, open threads, and
-constraints. This summary is injected at the very end of the prompt
-(maximum transformer attention window) as a `[SHORT-TERM CONTEXT SUMMARY]`
-section.
+Short-term memory analysis runs an LLM pass over a 24-hour time-windowed
+slice of recent conversation (capped at `STM_MAX_RECENT_MESSAGES=30`,
+truncated to 200 chars per message). It internally injects the last 2
+daily notes from the Obsidian vault (`STM_INJECT_DAILY_NOTES_DAYS=2`)
+read directly from disk via `utils.daily_notes_generator.read_daily_note()`
+— this gives STM cross-day recall disambiguation without waiting for the
+narrative-context refresh chain. Read-only: never triggers note generation.
+
+The structured output includes: topic, user_question, intent, tone,
+**reference_type**, **temporal_facts**, open_threads, constraints.
+`reference_type` ∈ {new_event, recall, clarification, correction, unclear}
+classifies whether the current message is a fresh report or a restatement
+of prior context — defaults to `unclear` when uncertain. `temporal_facts`
+is a list of normalized current-state facts produced under a
+collapse-toward-fewer-events disambiguation rule (e.g. "did not sleep" +
+"fight mode all night" same morning = ONE night, not two).
+
+This summary is injected at the very end of the prompt (maximum
+transformer attention window) as a `[SHORT-TERM CONTEXT SUMMARY]` section.
+When `reference_type` is anything other than `new_event`, the renderer
+appends an explicit WARNING directive instructing the main response model
+not to count the current message as a separate occurrence or fabricate
+patterns from a single underlying event. This addresses a class of
+failures where the main model would stitch a recall + a retrieved memory
+into a phantom "twice in close proximity, that's a pattern" framing.
 
 STM has a secondary role: when the intent classifier produces a
 low-confidence result (< 0.50), STM's free-text intent field can upgrade
 the classification via keyword matching.
+
+**Graceful degradation**: when a session starts before the daily-note
+catch-up thread has finished writing yesterday's note (≤20s window),
+STM falls back to the recent-conversation-only mode. Mock-based test
+fixtures fall through cleanly via class-level `hasattr` check on the
+new `CorpusManager.get_recent_within_hours` method.
 
 ---
 
@@ -896,7 +921,7 @@ web search and go straight to `search_memory`. Git-related queries
 ("commits", "contributors", "recent changes") route through `git_stats`
 when a `GitStatsManager` is available.
 
-### 8 Tools
+### 11 Tools (8 action + done_searching + file_read/file_grep/file_list as 3)
 
 | Tool | Implementation | Key Feature |
 |------|---------------|-------------|
@@ -906,8 +931,9 @@ when a `GitStatsManager` is available.
 | Memory Search | ChromaDB (12 collections) + FAISS (wiki vectors) | wiki_knowledge routes through FAISS; all other collections via ChromaDB |
 | Memory Expansion | MemoryExpander | Summary drill-down via source_doc_ids, temporal neighbors |
 | Full Document | ReferenceDocsManager | Reassemble all chunks of an uploaded doc by title; fuzzy title matching |
-| File Operations | Local filesystem | Read, grep, list (sandboxed to project directory) |
+| File Read / File Grep / File List | Local filesystem | 3 separate tools, sandboxed to project directory |
 | Git Stats | GitStatsManager | Read-only local git commands: commit counts, contributors, files changed, diff stats. Keyword-based intent parsing with temporal phrase extraction. |
+| Done Searching | Control signal | Model declares search complete, triggers final synthesis |
 
 ### ReAct Loop Structure
 

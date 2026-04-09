@@ -67,6 +67,65 @@ class GenerationResult:
     error: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# Module-level path resolvers (shared by DailyNotesGenerator and STM injection)
+# ---------------------------------------------------------------------------
+# These exist as module-level functions so callers (e.g. STMAnalyzer) can read
+# daily notes without instantiating DailyNotesGenerator (which would lazy-load
+# corpus_manager + model_manager). Both helpers are read-only and never trigger
+# generation or narrative refresh.
+
+def get_daily_note_path(target_date: date, vault_path: Optional[Path] = None) -> Optional[Path]:
+    """Resolve the actual on-disk path for a daily note, checking all known
+    layouts (flat, weekly-at-root, monthly/weekly).
+
+    Returns None if no file exists for the given date.
+    """
+    if vault_path is None:
+        try:
+            from config.app_config import OBSIDIAN_VAULT_PATH, DAILY_NOTES_FOLDER
+            base = Path(OBSIDIAN_VAULT_PATH).expanduser() / DAILY_NOTES_FOLDER
+        except ImportError:
+            return None
+    else:
+        base = Path(vault_path).expanduser()
+
+    filename = f"{target_date.month} {target_date.day} {target_date.strftime('%y')} Daily Note.md"
+
+    # Layout 1: flat
+    p = base / filename
+    if p.exists():
+        return p
+
+    # Layout 2: weekly folder at root (legacy)
+    monday = target_date - timedelta(days=target_date.weekday())
+    week_num = monday.isocalendar()[1]
+    week_folder = f"Week {week_num} {monday.strftime('%b %Y')}"
+    p = base / week_folder / filename
+    if p.exists():
+        return p
+
+    # Layout 3: monthly/weekly folder (current)
+    month_folder = f"{monday.strftime('%B %Y')}"
+    p = base / month_folder / week_folder / filename
+    if p.exists():
+        return p
+
+    return None
+
+
+def read_daily_note(target_date: date, vault_path: Optional[Path] = None) -> Optional[str]:
+    """Read the markdown text for a daily note, or None if missing or unreadable."""
+    p = get_daily_note_path(target_date, vault_path)
+    if p is None:
+        return None
+    try:
+        return p.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"[DailyNotes] Failed to read {p}: {e}")
+        return None
+
+
 # LLM prompt template
 DAILY_NOTES_PROMPT = '''You are Daemon, an AI companion writing a daily note about your conversations with Luke today.
 

@@ -26,7 +26,8 @@ class DaemonOrchestrator:
 ```python
 # core/context_pipeline.py
 class ContextPipeline:
-    async def build(user_input: str, files: List = None, use_raw_mode: bool = False) -> ContextResult:
+    async def build(user_input: str, files: List = None, use_raw_mode: bool = False,
+                    personality: Optional[str] = None, conversation_history: Optional[List[Dict]] = None) -> ContextResult:
         """
         Pipeline: topics → tone → files → heavy_check → intent → rewrite → stm → identity → thread
         Returns ContextResult with all processed components.
@@ -39,6 +40,9 @@ class ContextPipeline:
         4.5. Intent classification (IntentClassifier, regex-first, no LLM) [NEW 2026-02-15]
         5. Query rewriting (LLM)
         6. STM analysis (STMAnalyzer)
+           - 24h time-windowed recent_memories slice (was: last 8 fixed)
+           - Internally injects last 2 daily notes for cross-day recall disambiguation
+           - Output now includes reference_type + temporal_facts fields
            6b. STM intent refinement (low-confidence intents upgraded) [NEW 2026-02-15]
         7. Identity injection (UserProfile)
         8. Thread context (memory_system)
@@ -133,7 +137,7 @@ class MemoryScorer:
     _graph_memory = None          # Set by PromptBuilder for graph-boosted scoring [NEW 2026-03]
     _entity_resolver = None       # Set by PromptBuilder for entity extraction [NEW 2026-03]
 
-    def rank_memories(memories, query, current_topic=None, weight_overrides=None) -> List[Dict]:
+    def rank_memories(memories, current_query, current_topic=None, is_meta_conversational=False, weight_overrides=None) -> List[Dict]:
         """
         Score = weights['relevance']*rel + weights['recency']*recency + weights['truth']*truth
               + weights['importance']*importance + weights['continuity']*continuity
@@ -321,7 +325,7 @@ INTENT_STM_REFINEMENT_THRESHOLD = 0.50
 ```python
 # processing/gate_system.py
 class MultiStageGateSystem:
-    async def filter_memories(query: str, memories: List[Dict], k: int = 20) -> List[Dict]:
+    async def filter_memories(query: str, memories: List[Dict]) -> List[Dict]:
         """
         Stage 1: FAISS semantic search → top 50
         Stage 2: Cosine threshold (0.45) → ~20-30
@@ -1143,10 +1147,10 @@ CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
 # Token budgets (model-aware — see config.yaml token_budget: section)
 # Auto-computed: min(context_window * 0.25, ceiling) clamped to [floor, ceiling]
 # Override: PROMPT_TOKEN_BUDGET=15000 env var forces a specific value
-PROMPT_TOKEN_BUDGET_DEFAULT = 40000   # API models fallback
+PROMPT_TOKEN_BUDGET_DEFAULT = 15000   # API models fallback
 PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
 PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
-PROMPT_TOKEN_BUDGET_CEILING = 60000   # Maximum budget
+PROMPT_TOKEN_BUDGET_CEILING = 16000   # Maximum budget
 # PROMPT_MIN_RECENT_FLOOR = 5  — defined in core/prompt/builder.py (not app_config.py)
 PROMPT_MAX_MEMS = int(os.getenv("PROMPT_MAX_MEMS", "30"))
 
@@ -1389,7 +1393,7 @@ score = (
 [RELEVANT INFORMATION]         # Wikipedia chunks
 [TIME CONTEXT]                 # Current datetime
 [TEMPORAL GROUNDING]           # Synthesized life context (monthly/weekly/daily notes) [ENHANCED 2026-03-10]
-[STM SUMMARY]                  # Short-term memory analysis
+[STM SUMMARY]                  # Short-term memory analysis (24h window + daily notes injection + reference_type disambiguation) [ENHANCED 2026-04-09]
 [CURRENT USER QUERY]           # The actual query to respond to
 ```
 
@@ -1608,7 +1612,9 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done"""
 
-    async def execute_search(query: str, max_turns: int = 8) -> AsyncIterator[AgenticEvent]:
+    async def run_agentic_search(query: str, system_prompt: str, model_name: str,
+                                   initial_search_terms: List[str], initial_context=None,
+                                   crisis_level=None, skip_initial_search=False) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Main loop:
         1. Build prompt with gathered context + tool instructions
@@ -1718,7 +1724,7 @@ class GitStatsManager:
     def is_available() -> bool:
         """True if cwd is inside a git repo"""
 
-    def execute_query(query: str) -> Dict[str, Any]:
+    async def execute_query(query: str) -> Dict[str, Any]:
         """Parse natural-language query → safe git subcommand → structured result dict"""
 
     def format_for_prompt(result: Dict) -> str:
@@ -1939,7 +1945,7 @@ class AgenticSearchSession:
 
 # core/agentic/controller.py
 class AgenticSearchController:
-    _last_session: AgenticSearchSession   # Accessible after execute_search()
+    _last_session: AgenticSearchSession   # Accessible after run_agentic_search()
     # Hashes final prompt (SHA-256), adds [MEM_RECENT_N] / [MEM_SEMANTIC_N] citation markers
 
 # core/response_parser.py
@@ -2071,7 +2077,7 @@ SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88   # Claim sim gate — only near-verbat
 SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.70  # Label threshold
 SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # Co-occurrence gate — 40M-scale recalibrated
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
-SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.6"
+SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"  # code default; config.yaml overrides to "claude-opus-4.6"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
 SYNTHESIS_WEIGHT_COHERENCE = 0.30
 SYNTHESIS_WEIGHT_NOVELTY = 0.40
