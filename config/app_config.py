@@ -227,6 +227,11 @@ MAX_WORKING_MEMORY = config.get("memory", {}).get("max_working_memory", 10)
 CHILD_MEM_LIMIT = config.get("memory", {}).get("child_mem_limit", 3)
 CORPUS_MAX_ENTRIES = int(config.get("memory", {}).get("corpus_max_entries", 2000))
 COSINE_SIMILARITY_THRESHOLD = config.get("gating", {}).get("cosine_similarity_threshold", 0.25)
+# Minimum FAISS similarity for wiki semantic chunks to be included in prompt
+# IVFPQ scores run ~0.15-0.20 lower than exact cosine; 0.35 filters out noise
+SEMANTIC_CHUNKS_GATE_THRESHOLD: float = float(
+    config.get("gating", {}).get("semantic_chunks_gate_threshold", 0.35)
+)
 
 # Hybrid Retrieval Configuration
 # ------------------------------
@@ -568,7 +573,7 @@ OBSIDIAN_MAX_NOTES_PROMPT: int = int(OBSIDIAN_CFG.get("max_notes_prompt", 5))
 # Stricter relevance threshold for personal notes (vs 0.18 general gate)
 # Notes below this score are filtered out post-gating to prevent topically-similar
 # but contextually-irrelevant notes from leaking into responses
-PERSONAL_NOTES_GATE_THRESHOLD: float = float(OBSIDIAN_CFG.get("gate_threshold", 0.30))
+PERSONAL_NOTES_GATE_THRESHOLD: float = float(OBSIDIAN_CFG.get("gate_threshold", 0.45))
 
 # Environment variable overrides for Obsidian
 OBSIDIAN_ENABLED = bool(int(os.getenv("OBSIDIAN_ENABLED", "1" if OBSIDIAN_ENABLED else "0")))
@@ -599,6 +604,9 @@ REFERENCE_DOCS_ENABLED: bool = bool(REFERENCE_DOCS_CFG.get("enabled", True))
 REFERENCE_DOCS_CHUNK_THRESHOLD: int = int(REFERENCE_DOCS_CFG.get("chunk_threshold", 2000))
 # Maximum document chunks to include in prompt
 REFERENCE_DOCS_MAX_PROMPT: int = int(REFERENCE_DOCS_CFG.get("max_prompt", 15))
+# Minimum relevance score for reference docs to be included in prompt
+# Docs below this threshold are filtered out to prevent irrelevant content
+REFERENCE_DOCS_GATE_THRESHOLD: float = float(REFERENCE_DOCS_CFG.get("gate_threshold", 0.40))
 
 # Auto-seed docs/ directory on GUI startup (uses mtime for idempotency)
 REFERENCE_DOCS_AUTO_SEED: bool = bool(REFERENCE_DOCS_CFG.get("auto_seed", True))
@@ -754,9 +762,15 @@ REWRITE_TIMEOUT_S = float(config.get("features", {}).get("rewrite_timeout_s", 1.
 # Enable tracking and display of memory provenance in responses
 # When enabled, Claude cites which memories it references, and citations
 # are displayed in a separate tab (toggleable via GUI checkbox)
-ENABLE_MEMORY_CITATIONS = bool(config.get("features", {}).get("enable_memory_citations", False))
+ENABLE_MEMORY_CITATIONS = bool(config.get("features", {}).get("enable_memory_citations", True))
 MAX_CITATIONS_DISPLAY = int(config.get("features", {}).get("max_citations_display", 10))
 CITATION_CONTENT_LENGTH = int(config.get("features", {}).get("citation_content_length", 200))
+
+# Attribution System for Graph Context and AI Insights
+# Controls transparency about content sources (graph relationships vs user quotes vs AI synthesis)
+ENABLE_GRAPH_ATTRIBUTION = bool(config.get("features", {}).get("enable_graph_attribution", True))
+ENABLE_INSIGHT_ATTRIBUTION = bool(config.get("features", {}).get("enable_insight_attribution", True))
+ATTRIBUTION_VERBOSITY = config.get("features", {}).get("attribution_verbosity", "moderate")  # "minimal", "moderate", "verbose"
 
 # Soft latency budget for best-of reranking before falling back to streaming
 BEST_OF_LATENCY_BUDGET_S = float(config.get("features", {}).get("best_of_latency_budget_s", 2.0))
@@ -1045,6 +1059,20 @@ AGENTIC_MEMORY_SEARCH_ENABLED: bool = bool(AGENTIC_CFG.get("memory_search_enable
 AGENTIC_MEMORY_SEARCH_LIMIT: int = int(AGENTIC_CFG.get("memory_search_limit", 7))
 
 # --------------------------------------------------------------------
+# Uncertainty Fallback (retry via agentic search on "I don't know" responses)
+# --------------------------------------------------------------------
+UNCERTAINTY_CFG = config.get("uncertainty_fallback", {})
+UNCERTAINTY_FALLBACK_ENABLED: bool = bool(UNCERTAINTY_CFG.get("enabled", True))
+UNCERTAINTY_SEMANTIC_THRESHOLD: float = float(UNCERTAINTY_CFG.get("semantic_threshold", 0.70))
+UNCERTAINTY_MAX_LENGTH: int = int(UNCERTAINTY_CFG.get("max_length", 400))
+
+# Environment override
+UNCERTAINTY_FALLBACK_ENABLED = bool(int(os.getenv(
+    "UNCERTAINTY_FALLBACK_ENABLED",
+    "1" if UNCERTAINTY_FALLBACK_ENABLED else "0",
+)))
+
+# --------------------------------------------------------------------
 # Agentic File Access (read/grep/list within approved folders)
 # --------------------------------------------------------------------
 FILE_ACCESS_CFG = config.get("file_access", {})
@@ -1074,6 +1102,9 @@ EXPAND_DEFAULT_WINDOW: int = int(EXPAND_CFG.get("default_window", 3))
 EXPAND_MAX_TOTAL_TOKENS: int = int(EXPAND_CFG.get("max_total_tokens", 2000))
 EXPAND_ANCHOR_CHAR_LIMIT: int = int(EXPAND_CFG.get("anchor_char_limit", 600))
 EXPAND_CONTEXT_CHAR_LIMIT: int = int(EXPAND_CFG.get("context_char_limit", 300))
+# Long-form collections (obsidian_notes, reference_docs) need higher limits
+EXPAND_ANCHOR_CHAR_LIMIT_LONG: int = int(EXPAND_CFG.get("anchor_char_limit_long", 3000))
+EXPAND_CONTEXT_CHAR_LIMIT_LONG: int = int(EXPAND_CFG.get("context_char_limit_long", 2000))
 EXPAND_MEMORY_ENABLED = bool(int(os.getenv("EXPAND_MEMORY_ENABLED", "1" if EXPAND_MEMORY_ENABLED else "0")))
 
 # --------------------------------------------------------------------

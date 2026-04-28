@@ -292,10 +292,16 @@ class GraphMemory:
     # Natural Language Context (for prompt injection)
     # ------------------------------------------------------------------
 
-    def get_context_sentences(self, entity_id: str, depth: int = 2, max_sentences: int = 15) -> list[str]:
+    def get_context_sentences(self, entity_id: str, depth: int = 2, max_sentences: int = 15, with_attribution: bool = False) -> list[str]:
         """Return natural language sentences about an entity's neighborhood.
 
         Sorted by edge weight (strongest relationships first).
+
+        Args:
+            entity_id: Entity to get context for
+            depth: Graph traversal depth
+            max_sentences: Maximum sentences to return
+            with_attribution: If True, append derivation markers to sentences
         """
         edges = self.subgraph_around(entity_id, depth=depth)
         # Sort by weight descending
@@ -307,7 +313,7 @@ class GraphMemory:
             tgt_node = self.get_entity(e.target_id)
             src_name = src_node.display_name if src_node else e.source_id
             tgt_name = tgt_node.display_name if tgt_node else e.target_id
-            sentences.append(e.to_natural_language(src_name, tgt_name))
+            sentences.append(e.to_natural_language(src_name, tgt_name, with_attribution=with_attribution))
         return sentences
 
     # ------------------------------------------------------------------

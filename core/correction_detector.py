@@ -2,19 +2,23 @@
 # core/correction_detector.py
 
 Module Contract
-- Purpose: Detect when a user corrects or confirms previously stored facts.
+- Purpose: Detect when a user corrects or confirms previously stored facts,
+  including entity-level corrections (e.g., "Flapjack did not die").
   Feeds correction/confirmation events to the TruthScorer so that fact
   truth_scores evolve based on real evidence rather than access counts.
+  Entity corrections trigger resolution annotations on crisis-era summaries.
 - Inputs:
   - user_message: str (the latest user utterance)
   - recent_facts: list[dict] (facts from user_profile or ChromaDB)
 - Outputs:
   - list[CorrectionEvent] — each event identifies a fact and whether it
     was corrected or confirmed, with a confidence score.
+  - list[EntityCorrectionEvent] — entity-level corrections (alive/survived/etc.)
 - Key behaviors:
   - Pattern-based detection (no LLM call — fast, deterministic)
   - Correction patterns: "actually it's...", "no, I meant...", "I moved to..."
   - Confirmation patterns: "yeah I still...", "still working at..."
+  - Entity correction patterns: "X did not die", "X is still alive", "X survived"
   - Minimum confidence threshold of 0.6 to reduce false positives
 - Side effects:
   - None (pure detection; callers decide what to do with events)
@@ -39,6 +43,21 @@ class CorrectionEvent(BaseModel):
     new_value: str = Field("", description="New value (empty for confirmations)")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Detection confidence")
     event_type: str = Field(..., description="'correction' or 'confirmation'")
+
+
+class EntityCorrectionEvent(BaseModel):
+    """An event indicating an entity-level correction (e.g., 'Flapjack is alive').
+
+    Unlike CorrectionEvent, this does not reference a specific stored fact —
+    it detects when the user corrects an assumption about a named entity
+    (pet, person, etc.) so the system can annotate crisis-era summaries
+    with resolution metadata.
+    """
+
+    entity_name: str = Field(..., description="Name of the entity being corrected")
+    correction_type: str = Field(..., description="Type: alive, survived, not_dead")
+    correction_text: str = Field(..., description="Raw user text (truncated)")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Detection confidence")
 
 
 # ------------------------------------------------------------------
@@ -68,6 +87,34 @@ _CONFIRMATION_PATTERNS = [
     (re.compile(r"\bthat'?s?\s+(right|correct|true|accurate)\b", re.I), 0.80),
     (re.compile(r"\byou('?re|\s+are)\s+(right|correct)\b", re.I), 0.75),
 ]
+
+# ------------------------------------------------------------------
+# Entity correction patterns (for non-user entities: pets, people, etc.)
+# ------------------------------------------------------------------
+
+# Each tuple: (compiled regex, confidence, correction_type)
+# Named group (?P<entity>...) captures the entity name.
+# re.I makes [A-Z] match lowercase too — intentional so "flapjack did not die" works.
+_ENTITY_CORRECTION_PATTERNS = [
+    # "Flapjack did not die" / "Flapjack didn't die"
+    (re.compile(r"\b(?P<entity>[A-Z]\w+)\s+did\s*n[o']t\s+die\b", re.I), 0.90, "not_dead"),
+    # "Flapjack is not dead / still alive / still here / alive"
+    (re.compile(r"\b(?P<entity>[A-Z]\w+)\s+is\s+(?:not\s+dead|still\s+alive|still\s+here|alive)\b", re.I), 0.90, "alive"),
+    # "Flapjack survived / made it / is fine / is okay / pulled through"
+    (re.compile(r"\b(?P<entity>[A-Z]\w+)\s+(?:survived|made\s+it|is\s+fine|is\s+okay|is\s+ok|pulled\s+through)\b", re.I), 0.85, "survived"),
+    # "my cat Flapjack is alive" / "my dog Rex survived"
+    (re.compile(r"\bmy\s+\w+\s+(?P<entity>[A-Z]\w+)\s+(?:is\s+(?:not\s+dead|still\s+alive|alive|fine|okay|ok)|survived|made\s+it|pulled\s+through)\b", re.I), 0.90, "alive"),
+    # "Flapjack is still with us / still around / still kicking"
+    (re.compile(r"\b(?P<entity>[A-Z]\w+)\s+is\s+still\s+(?:with\s+us|around|kicking)\b", re.I), 0.85, "alive"),
+    # "no, Flapjack didn't die" / "no Flapjack is alive"
+    (re.compile(r"\bno[,.]?\s*(?P<entity>[A-Z]\w+)\s+(?:did\s*n[o']t\s+die|is\s+(?:alive|fine|okay|ok|not\s+dead))\b", re.I), 0.90, "not_dead"),
+]
+
+# Words that should never be captured as entity names
+_ENTITY_STOPWORDS = frozenset({
+    "i", "it", "he", "she", "they", "we", "the", "that", "this",
+    "who", "what", "my", "your", "our", "but", "and", "not", "no",
+})
 
 # Minimum confidence to emit an event
 _MIN_CONFIDENCE = 0.6
@@ -144,6 +191,51 @@ class CorrectionDetector:
             logger.info(
                 "[CorrectionDetector] Detected %d correction(s) in: %s",
                 len(events), user_message[:80],
+            )
+
+        return events
+
+    def detect_entity_corrections(
+        self, user_message: str
+    ) -> List["EntityCorrectionEvent"]:
+        """Detect entity-level corrections (e.g., 'Flapjack did not die').
+
+        Unlike detect_corrections(), this does NOT require a fact list —
+        it's pure pattern matching on the user's message text.
+
+        Args:
+            user_message: The latest user utterance.
+
+        Returns:
+            List of EntityCorrectionEvent for detected entity corrections.
+        """
+        if not user_message:
+            return []
+
+        events: List[EntityCorrectionEvent] = []
+        seen_entities: set = set()
+
+        for pattern, confidence, correction_type in _ENTITY_CORRECTION_PATTERNS:
+            for match in pattern.finditer(user_message):
+                entity = match.group("entity").strip()
+                entity_lower = entity.lower()
+
+                if entity_lower in _ENTITY_STOPWORDS:
+                    continue
+
+                if entity_lower not in seen_entities:
+                    seen_entities.add(entity_lower)
+                    events.append(EntityCorrectionEvent(
+                        entity_name=entity,
+                        correction_type=correction_type,
+                        correction_text=user_message[:200],
+                        confidence=confidence,
+                    ))
+
+        if events:
+            logger.info(
+                "[CorrectionDetector] Detected %d entity correction(s): %s",
+                len(events), ", ".join(e.entity_name for e in events),
             )
 
         return events

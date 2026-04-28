@@ -185,11 +185,11 @@ PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
 PROMPT_MIN_RECENT_FLOOR = _cfg_int("prompt_min_recent_floor", 5)
 
 def _staleness_prefix(item) -> str:
-    """Return a staleness prefix for highly stale summaries/reflections.
+    """Return a staleness or resolution prefix for summaries/reflections.
 
-    Items with staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD get prefixed
-    with [HISTORICAL — PARTIALLY OUTDATED] to signal the LLM to treat claims
-    skeptically.
+    Priority:
+    1. If a resolution_note exists → [RESOLVED — <note>]
+    2. If staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD → [HISTORICAL — PARTIALLY OUTDATED]
     """
     try:
         from config.app_config import STALENESS_ENABLED, STALENESS_HISTORICAL_THRESHOLD
@@ -197,6 +197,11 @@ def _staleness_prefix(item) -> str:
             return ""
         if isinstance(item, dict):
             md = item.get("metadata", {}) or {}
+            # Check for explicit resolution note first (entity corrections)
+            resolution_note = md.get("resolution_note", "") or item.get("resolution_note", "")
+            if resolution_note:
+                return f"[RESOLVED — {resolution_note}] "
+            # Fall back to generic staleness prefix
             ratio = float(md.get("staleness_ratio", 0) or item.get("staleness_ratio", 0) or 0)
         else:
             return ""
@@ -227,12 +232,14 @@ try:
         OBSIDIAN_MAX_IMAGES_PER_NOTE,
         MULTIMODAL_MODELS,
         PERSONAL_NOTES_GATE_THRESHOLD,
+        REFERENCE_DOCS_GATE_THRESHOLD,
     )
 except ImportError:
     OBSIDIAN_INCLUDE_IMAGES = True
     OBSIDIAN_MAX_IMAGES_PER_NOTE = 3
     MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gemini"]
-    PERSONAL_NOTES_GATE_THRESHOLD = 0.30
+    PERSONAL_NOTES_GATE_THRESHOLD = 0.45
+    REFERENCE_DOCS_GATE_THRESHOLD = 0.40
 
 
 def _is_multimodal_model(model_id: str) -> bool:
@@ -943,14 +950,15 @@ class UnifiedPromptBuilder:
                     except Exception as gate_err:
                         logger.warning(f"Personal notes gating failed, keeping original: {gate_err}")
 
-                # Reference docs bypass gating — they're authored system knowledge
-                # already filtered by hybrid retrieval (keyword + semantic) in
-                # get_documents().  Double-gating drops most docs because
-                # conversational queries rarely cosine-match architecture docs.
+                # Filter reference docs by relevance threshold to prevent
+                # semantically-distant content from polluting the prompt
                 reference_docs = context.get("reference_docs", [])
                 if reference_docs:
+                    pre_count = len(reference_docs)
+                    reference_docs = [d for d in reference_docs
+                                      if d.get("relevance_score", 0) >= REFERENCE_DOCS_GATE_THRESHOLD]
                     context["reference_docs"] = reference_docs[:PROMPT_MAX_REFERENCE_DOCS]
-                    logger.debug(f"Reference docs (no gate): {len(reference_docs)} -> {len(context['reference_docs'])}")
+                    logger.debug(f"Reference docs gate: {pre_count} -> {len(context['reference_docs'])} (threshold={REFERENCE_DOCS_GATE_THRESHOLD})")
             except Exception as e:
                 logger.warning(f"Gating failed: {e}")
 
@@ -2321,7 +2329,14 @@ class UnifiedPromptBuilder:
         graph_sentences = context.get("graph_context", []) or []
         if graph_sentences:
             graph_block = "\n".join(f"- {s}" for s in graph_sentences)
-            sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)}\n{graph_block}")
+            try:
+                from config.app_config import ENABLE_GRAPH_ATTRIBUTION
+                if ENABLE_GRAPH_ATTRIBUTION:
+                    sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)} (derived relationships)\n{graph_block}")
+                else:
+                    sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)}\n{graph_block}")
+            except ImportError:
+                sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)}\n{graph_block}")
 
         # Unresolved threads (proactive surfacing)
         unresolved_threads = context.get("unresolved_threads", []) or []
@@ -2344,8 +2359,8 @@ class UnifiedPromptBuilder:
             insight_block = "\n".join(f"- {s}" for s in proactive_insights)
             sections.append(
                 f"[PROACTIVE INSIGHTS] n={len(proactive_insights)}\n"
-                "These are non-obvious connections across different areas of the user's life. "
-                "Weave them in naturally IF relevant. Do NOT announce them as insights.\n"
+                "These are AI-generated insights based on relationship analysis. "
+                "Reference naturally when relevant, but clearly distinguish from user-provided facts.\n"
                 f"{insight_block}")
 
         # User Profile (replaces semantic_facts + fresh_facts)

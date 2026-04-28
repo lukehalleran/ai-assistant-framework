@@ -20,6 +20,7 @@ Module Contract
     - skip_initial_search=True for computation, memory, and knowledge queries (skips Round 1 web search)
     - Streaming hides incomplete thinking blocks via has_incomplete_thinking_block()
     - Citations extracted from memory_id_map via _extract_citations()
+  - UNCERTAINTY FALLBACK [NEW 2026-04-27]: After standard streaming, UncertaintyDetector checks response for "I don't know" signals (keyword regex + semantic embedding). If uncertain + agentic enabled → retries via run_agentic_search(skip_initial_search=True) with retry hint. Single boolean flag prevents infinite retry. Provenance: response_mode="uncertainty-fallback".
   - ENHANCED: orchestrator.prepare_prompt → extract note_images → response_generator.generate_streaming_response(images=...) → store interaction
   - IMAGE SUPPORT [NEW 2026-01-30]: Extracts note_images from raw_context and passes to streaming for multimodal models
   - API error classification: [CREDITS EXHAUSTED], [RATE LIMITED], [AUTH ERROR], [MODEL NOT FOUND], [SERVER ERROR] with user-friendly messages
@@ -577,7 +578,8 @@ async def handle_submit(
             'history of ', 'science behind', 'mechanism of ',
         ]
         # Only trigger for substantive queries (4+ words), not casual one-liners
-        if len(_words) >= 4 and not needs_computation and not needs_memory:
+        # Allow knowledge + memory combinations (e.g., "tell me about my notes on physics")
+        if len(_words) >= 4 and not needs_computation:
             needs_knowledge = any(kw in _lower for kw in _knowledge_keywords)
 
         # --- Tier 2: Entity match (instant, no LLM) ---
@@ -621,18 +623,19 @@ async def handle_submit(
             search_terms = []
         else:
 
-            if needs_computation:
-                logger.debug("[Handle Submit] Agentic triggered - computational query detected")
+            if needs_computation or needs_memory or needs_knowledge:
                 should_use_agentic = True
-                search_terms = []  # No web search needed, just computation
-            elif needs_memory:
-                logger.debug("[Handle Submit] Agentic triggered - memory search query detected")
-                should_use_agentic = True
-                search_terms = []  # No web search needed, memory tool handles it
-            elif needs_knowledge:
-                logger.debug("[Handle Submit] Agentic triggered - knowledge/wiki query detected via keywords")
-                should_use_agentic = True
-                search_terms = []  # No web search needed, search_memory(wiki_knowledge) handles it
+                search_terms = []  # No initial web search needed, tools handle it
+
+                # Log all triggered modes (can be multiple)
+                triggered_modes = []
+                if needs_computation:
+                    triggered_modes.append("computation")
+                if needs_memory:
+                    triggered_modes.append("memory")
+                if needs_knowledge:
+                    triggered_modes.append("knowledge")
+                logger.debug(f"[Handle Submit] Agentic triggered - modes: {', '.join(triggered_modes)}")
             else:
                 # Check if web search, memory search, or knowledge search should be triggered using LLM-first trigger
                 try:
@@ -971,6 +974,135 @@ async def handle_submit(
             # Update final_output to only include the final answer for storage
             final_output = final_answer_stream if final_answer_stream else final_output
 
+        # ── Uncertainty Fallback: retry via agentic search if response is uncertain ──
+        _uncertainty_retry_done = False
+        if agentic_enabled and final_output:
+            try:
+                from config.app_config import (
+                    UNCERTAINTY_FALLBACK_ENABLED,
+                    UNCERTAINTY_SEMANTIC_THRESHOLD,
+                    UNCERTAINTY_MAX_LENGTH,
+                )
+                if UNCERTAINTY_FALLBACK_ENABLED:
+                    from core.uncertainty_detector import UncertaintyDetector
+
+                    _uf_embedder = getattr(
+                        getattr(orchestrator, 'model_manager', None), 'embed_model', None
+                    )
+
+                    _uf_result = UncertaintyDetector.detect(
+                        response=final_output,
+                        embedder=_uf_embedder,
+                        semantic_threshold=UNCERTAINTY_SEMANTIC_THRESHOLD,
+                        max_length=UNCERTAINTY_MAX_LENGTH,
+                    )
+
+                    if _uf_result.is_uncertain:
+                        logger.warning(
+                            f"[UNCERTAINTY FALLBACK] Detected uncertain response "
+                            f"(trigger={_uf_result.trigger_type}, "
+                            f"conf={_uf_result.confidence:.2f}, "
+                            f"pattern={_uf_result.matched_pattern}). "
+                            f"Retrying via agentic search."
+                        )
+
+                        yield {
+                            "role": "assistant",
+                            "content": "🔍 Searching memory more deeply...",
+                            "is_progress": True,
+                        }
+
+                        try:
+                            from core.agentic import ProgressEvent
+
+                            _retry_agentic = orchestrator.agentic_controller
+                            _retry_hint = (
+                                f'[MEMORY SEARCH RETRY] The user asked: "{user_text}" '
+                                f"and the initial response could not find relevant "
+                                f"information from context. Search memory deeply using "
+                                f"the search_memory tool across conversations, "
+                                f"summaries, and obsidian_notes collections. The "
+                                f"information may exist but was not retrieved in the "
+                                f"initial pass."
+                            )
+                            _retry_system = _retry_hint + "\n\n" + (system_prompt or "")
+
+                            _retry_response = ""
+                            async for item in _retry_agentic.run_agentic_search(
+                                query=user_text,
+                                system_prompt=_retry_system,
+                                model_name=model_name,
+                                initial_search_terms=[],
+                                initial_context=raw_context,
+                                skip_initial_search=True,
+                            ):
+                                if isinstance(item, ProgressEvent):
+                                    _icon = {
+                                        "searching_memory": "🧠",
+                                        "thinking": "💭",
+                                        "found_results": "📄",
+                                        "expanding_memory": "🧠",
+                                        "memory_expanded": "✅",
+                                        "synthesizing": "✨",
+                                        "done": "✅",
+                                    }.get(item.event_type, "🔍")
+                                    yield {
+                                        "role": "assistant",
+                                        "content": f"{_icon} {item.message}",
+                                        "is_progress": True,
+                                    }
+                                else:
+                                    _retry_response += item
+                                    if not ResponseParser.has_incomplete_thinking_block(
+                                        _retry_response
+                                    ):
+                                        _, _clean = ResponseParser.parse_thinking_block(
+                                            _retry_response
+                                        )
+                                        yield {
+                                            "role": "assistant",
+                                            "content": _clean or _retry_response,
+                                        }
+
+                            if _retry_response.strip():
+                                _think_retry, _answer_retry = (
+                                    ResponseParser.parse_thinking_block(_retry_response)
+                                )
+                                final_output = (
+                                    _answer_retry if _answer_retry else _retry_response
+                                )
+                                display_output = final_output
+                                thinking_part_stream = (
+                                    _think_retry or thinking_part_stream
+                                )
+                                _uncertainty_retry_done = True
+                                logger.info(
+                                    f"[UNCERTAINTY FALLBACK] Agentic retry produced "
+                                    f"{len(final_output)} chars"
+                                )
+                            else:
+                                logger.warning(
+                                    "[UNCERTAINTY FALLBACK] Agentic retry returned "
+                                    "empty, keeping original response"
+                                )
+
+                        except Exception as e:
+                            logger.error(
+                                f"[UNCERTAINTY FALLBACK] Agentic retry failed: {e}"
+                            )
+                            import traceback
+                            logger.debug(
+                                f"[UNCERTAINTY FALLBACK] Traceback:\n"
+                                f"{traceback.format_exc()}"
+                            )
+
+            except ImportError as e:
+                logger.debug(f"[UNCERTAINTY FALLBACK] Module not available: {e}")
+            except Exception as e:
+                logger.warning(
+                    f"[UNCERTAINTY FALLBACK] Detection failed (non-fatal): {e}"
+                )
+
         # After streaming completes, emit a final debug record so the Debug Trace tab is populated
         try:
             tm = getattr(orchestrator, 'tokenizer_manager', None)
@@ -1006,15 +1138,26 @@ async def handle_submit(
                 logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
 
         _enh_session_id = getattr(orchestrator.memory_system, 'session_id', None) if hasattr(orchestrator, 'memory_system') else None
+        _enh_mode = "uncertainty-fallback" if _uncertainty_retry_done else "enhanced"
         _enh_prov = {
-            "response_mode": "enhanced",
+            "response_mode": _enh_mode,
             "session_id": _enh_session_id or "",
             "model_name": model_name,
             "thinking_block": thinking_part_stream or "",
             "cited_ids": [c['memory_id'] for c in citations] if citations else [],
         }
+        if _uncertainty_retry_done:
+            try:
+                _ac = getattr(orchestrator, 'agentic_controller', None)
+                _last = getattr(_ac, '_last_session', None) if _ac else None
+                if _last and hasattr(_last, 'get_provenance_summary'):
+                    _ap = _last.get_provenance_summary()
+                    _enh_prov["agentic_rounds"] = _ap.get("agentic_rounds", [])
+                    _enh_prov["final_prompt_hash"] = _ap.get("final_prompt_hash", "")
+            except Exception:
+                pass
         debug_record = {
-            'mode': 'enhanced',
+            'mode': _enh_mode,
             'query': user_text,
             'prompt': full_prompt,
             'system_prompt': system_prompt,

@@ -404,6 +404,99 @@ class DaemonOrchestrator:
         except Exception as e:
             self.logger.warning(f"[Orchestrator] Failed to apply truth event: {e}")
 
+    # ---------- Entity Resolution Methods ----------
+
+    _CRISIS_KEYWORDS = frozenset({
+        'die', 'died', 'death', 'dead', 'dying', 'icu', 'emergency',
+        'hospital', 'dnr', 'critical', 'serious', 'make it', 'losing',
+        'loss', 'crisis', 'panic', 'euthan', 'terminal', 'end of life',
+    })
+
+    def _cascade_entity_resolution(self, events: list) -> None:
+        """Annotate crisis-era summaries/reflections with resolution metadata.
+
+        When the user says "Flapjack did not die", finds summaries mentioning
+        Flapjack + crisis keywords and marks them with a resolution note +
+        elevated staleness_ratio so the prompt prefix signals resolution.
+        """
+        from config.app_config import STALENESS_ENABLED
+        if not STALENESS_ENABLED:
+            return
+
+        chroma_store = None
+        if self.memory_system and hasattr(self.memory_system, 'chroma_store'):
+            chroma_store = self.memory_system.chroma_store
+        if not chroma_store:
+            return
+
+        entity_resolver = getattr(self.memory_system, 'entity_resolver', None)
+
+        from datetime import date
+        today = date.today().isoformat()
+
+        for event in events:
+            # Resolve display name via entity resolver if available
+            display_name = event.entity_name
+            if entity_resolver:
+                try:
+                    resolved_id = entity_resolver.resolve(event.entity_name)
+                    if resolved_id:
+                        graph_memory = getattr(self.memory_system, 'graph_memory', None)
+                        if graph_memory:
+                            node = graph_memory.get_node(resolved_id)
+                            if node and hasattr(node, 'display_name') and node.display_name:
+                                display_name = node.display_name
+                except Exception:
+                    pass
+
+            entity_lower = event.entity_name.lower()
+            resolution_note = f"{display_name} is alive (confirmed {today})"
+            total_affected = 0
+
+            for collection in ('summaries', 'reflections'):
+                try:
+                    results = chroma_store.query_collection(
+                        collection, event.entity_name, n_results=20
+                    )
+
+                    for doc in results:
+                        content = (doc.get("content") or "").lower()
+
+                        if entity_lower not in content:
+                            continue
+
+                        has_crisis = any(kw in content for kw in self._CRISIS_KEYWORDS)
+                        if not has_crisis:
+                            continue
+
+                        doc_id = doc.get("id")
+                        if not doc_id:
+                            continue
+
+                        metadata = doc.get("metadata", {}) or {}
+                        current_staleness = float(metadata.get("staleness_ratio", 0) or 0)
+                        new_staleness = max(current_staleness, 0.65)
+
+                        chroma_store.update_metadata(collection, doc_id, {
+                            "resolution_note": resolution_note,
+                            "staleness_ratio": new_staleness,
+                            "resolution_date": today,
+                            "resolution_entity": display_name,
+                        })
+                        total_affected += 1
+
+                except Exception as e:
+                    self.logger.debug(
+                        f"[EntityResolution] Failed to query {collection} for "
+                        f"'{event.entity_name}': {e}"
+                    )
+
+            if total_affected:
+                self.logger.info(
+                    f"[EntityResolution] Annotated {total_affected} document(s) "
+                    f"with resolution for '{display_name}'"
+                )
+
     # ---------- STM Helper Methods ----------
     def _compute_topic_similarity(self, topic1: str, topic2: str) -> float:
         """
@@ -1742,10 +1835,10 @@ The user is processing/analyzing, open to engagement.
                     if correction_events:
                         try:
                             from config.app_config import STALENESS_ENABLED
-                            claim_index = getattr(self.memory_coordinator, 'claim_index', None) if self.memory_coordinator else None
+                            claim_index = getattr(self.memory_system, 'claim_index', None) if self.memory_system else None
                             if STALENESS_ENABLED and claim_index:
                                 from memory.claim_tracker import canonicalize_claim
-                                entity_resolver = getattr(self.memory_coordinator, 'entity_resolver', None)
+                                entity_resolver = getattr(self.memory_system, 'entity_resolver', None)
                                 for event in correction_events:
                                     ck = canonicalize_claim(
                                         "user", event.relation,
@@ -1753,7 +1846,7 @@ The user is processing/analyzing, open to engagement.
                                     )
                                     affected = claim_index.cascade_staleness(
                                         ck,
-                                        chroma_store=self.memory_coordinator.chroma_store if self.memory_coordinator else None,
+                                        chroma_store=self.memory_system.chroma_store if self.memory_system else None,
                                     )
                                     if affected:
                                         self.logger.info(
@@ -1765,6 +1858,15 @@ The user is processing/analyzing, open to engagement.
 
                 except Exception as e:
                     self.logger.warning(f"[Orchestrator] Truth event detection failed: {e}")
+
+            # --- Entity correction detection (non-profile entities) ---
+            if self.correction_detector:
+                try:
+                    entity_corrections = self.correction_detector.detect_entity_corrections(user_input)
+                    if entity_corrections:
+                        self._cascade_entity_resolution(entity_corrections)
+                except Exception as e:
+                    self.logger.debug(f"[Orchestrator] Entity correction detection failed (non-fatal): {e}")
 
             # Summaries now run on shutdown; skip mid-session consolidation
             debug_info.update({
