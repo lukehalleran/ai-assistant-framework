@@ -213,6 +213,10 @@ User types: "How's my squat progress looking?"
     │     Standard streaming | Best-of-N | Duel (A vs B + judge) | Ensemble
     │     Thinking block extracted and stored separately
     │
+    ├─ 9b. Uncertainty Fallback (if enabled)
+    │      UncertaintyDetector checks for "I don't know" responses (keyword regex + semantic)
+    │      If uncertain → automatic retry via agentic ReAct loop with memory search hint
+    │
     ├─ 10. Post-Response State Update
     │      Store to corpus + ChromaDB with provenance metadata
     │      Run correction/confirmation detection → truth score adjustments
@@ -921,6 +925,17 @@ web search and go straight to `search_memory`. Git-related queries
 ("commits", "contributors", "recent changes") route through `git_stats`
 when a `GitStatsManager` is available.
 
+### Uncertainty Fallback (Post-Generation)
+
+If a standard (non-agentic) response is detected as uncertain — "I don't
+have information about that", "I can't recall" — the `UncertaintyDetector`
+(`core/uncertainty_detector.py`) triggers an automatic retry via the agentic
+loop. Detection uses two layers: keyword regex (~18 patterns, confidence
+>=0.70) and semantic embedding similarity against 8 anchor sentences
+(threshold configurable, default 0.70). Long responses (>400 chars after
+hedge-stripping) skip detection. Config: `UNCERTAINTY_FALLBACK_ENABLED`,
+`UNCERTAINTY_SEMANTIC_THRESHOLD`, `UNCERTAINTY_MAX_LENGTH`.
+
 ### 11 Tools (8 action + done_searching + file_read/file_grep/file_list as 3)
 
 | Tool | Implementation | Key Feature |
@@ -929,7 +944,7 @@ when a `GitStatsManager` is available.
 | Wolfram Alpha | LLM API | Token bucket rate limiting, MD5 result cache |
 | Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across rounds) |
 | Memory Search | ChromaDB (12 collections) + FAISS (wiki vectors) | wiki_knowledge routes through FAISS; all other collections via ChromaDB |
-| Memory Expansion | MemoryExpander | Summary drill-down via source_doc_ids, temporal neighbors |
+| Memory Expansion | MemoryExpander | Summary drill-down via source_doc_ids, temporal neighbors. Collection-aware char limits: long-form (obsidian, reference_docs) use 3000/2000 vs default 600/300. |
 | Full Document | ReferenceDocsManager | Reassemble all chunks of an uploaded doc by title; fuzzy title matching |
 | File Read / File Grep / File List | Local filesystem | 3 separate tools, sandboxed to project directory |
 | Git Stats | GitStatsManager | Read-only local git commands: commit counts, contributors, files changed, diff stats. Keyword-based intent parsing with temporal phrase extraction. |
@@ -944,7 +959,7 @@ Round 1 (automatic):
   If low quality → generate relaxation hint for next round
 
 Rounds 2–N (model-driven, max 5):
-  1. Build iteration prompt with accumulated context + context inventory
+  1. Build iteration prompt with [TIME CONTEXT] + accumulated context + context inventory
   2. LLM generates thought + tool selection
   3. Parse decision: wants_search / wants_code / wants_memory / wants_end
   4. Execute selected tool, capture observation
@@ -953,7 +968,7 @@ Rounds 2–N (model-driven, max 5):
 
 Final synthesis:
   Generate response with full accumulated context
-  Build final prompt, trim low-value sections if over ceiling
+  Build final prompt with [TIME CONTEXT], trim low-value sections if over ceiling
 ```
 
 ### Context Inventory
@@ -1281,6 +1296,11 @@ topics across sessions. These are surfaced proactively at session start.
 **Extraction** (at shutdown): `ThreadExtractor` uses LLM to identify new
 threads from session conversation. Each thread gets urgency scoring and
 optional deadline extraction.
+
+**Per-turn resolution** (real-time): `check_quick_resolutions()` in
+`thread_store.py` runs after every `store_interaction()` call. Pure regex
+matching of completion signals against open thread topic keywords (~1ms).
+Fast pre-check skips DB query if no completion signal in the message.
 
 **Resolution detection** (at shutdown): The extractor also checks if
 existing threads were addressed during the session. Resolved threads

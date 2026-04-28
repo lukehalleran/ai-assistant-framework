@@ -24,6 +24,7 @@ Module Contract
   - config.app_config (feature flags, thresholds)
 """
 
+import re
 from typing import List, Optional
 
 from utils.logging_utils import get_logger
@@ -32,6 +33,70 @@ from memory.thread_models import OpenThread, ThreadStatus
 logger = get_logger("thread_store")
 
 COLLECTION_NAME = "threads"
+
+# ---------------------------------------------------------------------------
+# Lightweight per-turn resolution detection (pure regex, no LLM)
+# ---------------------------------------------------------------------------
+
+_COMPLETION_SIGNALS = re.compile(
+    r"\b(?:submitted|turned\s+in|finished|completed|done\s+with|handed\s+in|"
+    r"wrapped\s+up|knocked\s+out|got\s+it\s+done|already\s+(?:did|done|submitted|finished)|"
+    r"just\s+(?:submitted|finished|turned\s+in))\b",
+    re.IGNORECASE,
+)
+
+_STOPWORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "to", "of", "and", "in",
+    "on", "for", "my", "user", "today", "due", "thread", "type", "summary",
+})
+
+
+def _extract_topic_keywords(thread: OpenThread) -> set:
+    """Extract meaningful keywords from thread topic + summary."""
+    text = f"{thread.topic} {thread.summary}".lower()
+    words = re.findall(r"[a-z]{3,}", text)
+    return {w for w in words if w not in _STOPWORDS}
+
+
+def check_quick_resolutions(user_message: str, open_threads: List[OpenThread]) -> List[str]:
+    """Check if user's message signals completion of any open threads.
+
+    Pure regex — no LLM, no DB queries. ~1ms.
+
+    Args:
+        user_message: The user's raw input text.
+        open_threads: Currently open threads to check against.
+
+    Returns:
+        List of thread_ids that should be resolved.
+    """
+    if not user_message or not open_threads:
+        return []
+
+    msg_lower = user_message.lower()
+
+    # Must contain at least one completion signal
+    if not _COMPLETION_SIGNALS.search(msg_lower):
+        return []
+
+    msg_words = set(re.findall(r"[a-z]{3,}", msg_lower))
+    resolved_ids = []
+
+    for thread in open_threads:
+        keywords = _extract_topic_keywords(thread)
+        if not keywords:
+            continue
+        # Require at least 2 keyword overlaps (or 1 if topic has ≤2 keywords)
+        overlap = msg_words & keywords
+        min_required = min(2, len(keywords))
+        if len(overlap) >= min_required:
+            resolved_ids.append(thread.thread_id)
+            logger.info(
+                f"[QuickResolve] Thread '{thread.topic}' matched: "
+                f"signal + keywords {overlap}"
+            )
+
+    return resolved_ids
 
 
 class ThreadStore:

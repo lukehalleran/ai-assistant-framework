@@ -143,6 +143,10 @@ SUMMARIES_HYBRID_FILTER = _parse_bool(os.getenv("SUMMARIES_HYBRID_FILTER", "1"))
 SEM_K = int(os.getenv("SEM_K", "50"))
 SEM_TIMEOUT_S = int(os.getenv("SEM_TIMEOUT_S", "8"))
 SEM_STITCH_MAX_CHARS = int(os.getenv("SEM_STITCH_MAX_CHARS", "4000"))
+try:
+    from config.app_config import SEMANTIC_CHUNKS_GATE_THRESHOLD
+except ImportError:
+    SEMANTIC_CHUNKS_GATE_THRESHOLD = 0.35
 
 # Gating configuration
 GATE_COSINE_THRESHOLD = float(os.getenv("GATE_COSINE_THRESHOLD", "0.45"))
@@ -792,7 +796,7 @@ class ContextGatherer:
             List of natural language relationship sentences
         """
         try:
-            from config.app_config import KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH
+            from config.app_config import KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH, ENABLE_GRAPH_ATTRIBUTION
             if not KNOWLEDGE_GRAPH_ENABLED:
                 return []
 
@@ -833,7 +837,20 @@ class ContextGatherer:
                     ctx = graph.get_context_sentences(
                         eid, depth=KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH,
                         max_sentences=max_sentences - len(sentences),
+                        with_attribution=ENABLE_GRAPH_ATTRIBUTION,
                     )
+
+                    # Track graph sentences in memory_id_map for citation
+                    for i, sentence in enumerate(ctx):
+                        citation_id = f"GRAPH_REL_{len(self.memory_id_map) + 1}"
+                        self.memory_id_map[citation_id] = {
+                            "content": sentence,
+                            "entity_id": eid,
+                            "query_mention": mention,
+                            "source_type": "graph_relationship",
+                            "metadata": {"entity": eid, "mention": mention}
+                        }
+
                     sentences.extend(ctx)
                     if len(sentences) >= max_sentences:
                         break
@@ -846,7 +863,7 @@ class ContextGatherer:
             return sentences[:max_sentences]
 
         except Exception as e:
-            logger.debug(f"[ContextGatherer] Graph context retrieval failed: {e}")
+            logger.warning(f"[ContextGatherer] Graph context retrieval failed: {e}")
             return []
 
     async def get_unresolved_threads(self, max_results: int = 3) -> List[Dict[str, Any]]:
@@ -889,7 +906,7 @@ class ContextGatherer:
             List of insight text strings for prompt injection
         """
         try:
-            from config.app_config import PROACTIVE_SURFACING_ENABLED
+            from config.app_config import PROACTIVE_SURFACING_ENABLED, ENABLE_INSIGHT_ATTRIBUTION
             if not PROACTIVE_SURFACING_ENABLED:
                 return []
 
@@ -897,9 +914,31 @@ class ContextGatherer:
             if not surfacer:
                 return []
 
-            insights = await surfacer.generate_insights(query, max_insights=max_insights)
-            logger.debug(f"[ContextGatherer] Retrieved {len(insights)} proactive insights")
-            return insights or []
+            raw_insights = await surfacer.generate_insights(query, max_insights=max_insights)
+
+            # Add attribution markers and track in memory_id_map for citation
+            attributed_insights = []
+            for i, insight_text in enumerate(raw_insights):
+                # Add attribution marker if enabled
+                if ENABLE_INSIGHT_ATTRIBUTION:
+                    attributed_text = f"Analysis suggests: {insight_text}"
+                else:
+                    attributed_text = insight_text
+
+                # Track in memory_id_map for citation system
+                citation_id = f"AI_INSIGHT_{len(self.memory_id_map) + 1}"
+                self.memory_id_map[citation_id] = {
+                    "content": attributed_text,
+                    "original_insight": insight_text,
+                    "source_type": "ai_synthesis",
+                    "query": query,
+                    "metadata": {"insight_index": i, "query": query}
+                }
+
+                attributed_insights.append(attributed_text)
+
+            logger.debug(f"[ContextGatherer] Retrieved {len(attributed_insights)} proactive insights")
+            return attributed_insights
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get proactive insights: {e}")
@@ -1848,6 +1887,15 @@ class ContextGatherer:
                 timeout=SEM_TIMEOUT_S
             )
 
+            if not results:
+                return []
+
+            # Filter by similarity threshold to prevent irrelevant wiki content
+            pre_gate = len(results)
+            results = [r for r in results
+                       if r.get("similarity", 0) >= SEMANTIC_CHUNKS_GATE_THRESHOLD]
+            if pre_gate != len(results):
+                logger.debug(f"Semantic chunks gate: {pre_gate} -> {len(results)} (threshold={SEMANTIC_CHUNKS_GATE_THRESHOLD})")
             if not results:
                 return []
 

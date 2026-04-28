@@ -47,6 +47,19 @@ Agentic search activates when ALL conditions are met:
 The controller is lazy-initialized on first use via the orchestrator's
 `agentic_controller` property.
 
+### Uncertainty Fallback (Post-Generation Trigger)
+
+In addition to the pre-generation gate above, the agentic loop can also
+be triggered **after** standard generation. If `UNCERTAINTY_FALLBACK_ENABLED`
+is true and the response indicates uncertainty ("I don't have information",
+"I can't recall"), `UncertaintyDetector` (`core/uncertainty_detector.py`)
+fires and retries via agentic search with a memory-search hint. Detection
+layers: keyword regex (~18 patterns) + semantic embedding similarity
+against 8 anchor sentences. Long responses (>max_length after hedge-stripping)
+skip detection. Config: `UNCERTAINTY_FALLBACK_ENABLED`,
+`UNCERTAINTY_SEMANTIC_THRESHOLD` (default 0.70),
+`UNCERTAINTY_MAX_LENGTH` (default 400).
+
 ---
 
 ## ReAct Loop Lifecycle
@@ -69,15 +82,15 @@ Loop continues while `session.can_continue`:
 
 Each round:
 
-1. **THINKING** — Build iteration prompt with accumulated context +
-   inventory of already-gathered RAG context + relaxation/diversity hints
+1. **THINKING** — Build iteration prompt with `[TIME CONTEXT]` (current date/time) +
+   accumulated context + inventory of already-gathered RAG context + relaxation/diversity hints
 2. **DECIDE** — Call `_get_model_decision()` (native tools or XML markers)
 3. **EXECUTE** — Dispatch to the appropriate tool handler
 
 ### Final Generation
 
 After the loop exits:
-- Assemble final prompt: RAG context + accumulated search results + query
+- Assemble final prompt: `[TIME CONTEXT]` + RAG context + accumulated search results + query
 - Budget-enforce: trim low-priority sections if over `context_budget * 5`
 - Compute `final_prompt_hash` (SHA-256[:16]) for provenance
 - Stream response chunks to caller
@@ -399,9 +412,16 @@ AGENTIC_MEMORY_SEARCH_LIMIT         # Results per memory search
 EXPAND_MEMORY_ENABLED               # Feature gate
 EXPAND_MAX_PER_SESSION              # Max expansions per session
 EXPAND_MAX_WINDOW                   # Max neighbors to retrieve
+EXPAND_ANCHOR_CHAR_LIMIT_LONG       # Long-form anchor limit (3000, for obsidian/reference_docs)
+EXPAND_CONTEXT_CHAR_LIMIT_LONG      # Long-form context limit (2000)
 
 # Git stats tool
 GIT_STATS_ENABLED                   # Feature gate (default True)
 GIT_STATS_TIMEOUT                   # Subprocess timeout in seconds
 GIT_STATS_MAX_OUTPUT_LINES          # Cap raw output (default 50)
+
+# Uncertainty fallback (YAML: uncertainty_fallback:)
+UNCERTAINTY_FALLBACK_ENABLED        # Post-generation retry gate (default True)
+UNCERTAINTY_SEMANTIC_THRESHOLD      # Cosine sim threshold for semantic layer (default 0.70)
+UNCERTAINTY_MAX_LENGTH              # Max response length to check (default 400)
 ```

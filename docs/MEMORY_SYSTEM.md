@@ -60,7 +60,7 @@ resolved, and stale information is penalized in ranking.
 |------|---------|
 | `memory/shutdown_processor.py` | 10-step session-end processing |
 | `memory/thread_manager.py` | Thread detection for conversation continuity |
-| `memory/thread_store.py` | ChromaDB-backed thread persistence + priority ranking |
+| `memory/thread_store.py` | ChromaDB-backed thread persistence + priority ranking + per-turn regex resolution |
 | `memory/thread_extractor.py` | LLM-based thread extraction + resolution detection |
 
 ### Storage Layer
@@ -160,6 +160,10 @@ MemoryStorage.store_interaction(query, response)
   ├─ 5. Score calculation: truth_score + importance_score
   ├─ 6. Metadata assembly: timestamp, tags, thread, provenance
   ├─ 7. ChromaDB storage: conversations collection
+  │
+  ├─ 7b. Per-turn thread resolution (check_quick_resolutions)
+  │     Pure regex: completion signals × open thread keywords, ~1ms
+  │     Skips DB query if no completion signal detected in message
   │
   ├─ 8. Fact extraction (if FACTS_EXTRACT_EACH_TURN)
   │     ├── FactExtractor: corrections > spaCy > REBEL > regex

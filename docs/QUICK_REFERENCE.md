@@ -1239,6 +1239,8 @@ EXPAND_MAX_WINDOW = 5                  # Max temporal window (±N turns)
 EXPAND_DEFAULT_WINDOW = 3              # Default temporal window
 EXPAND_ANCHOR_CHAR_LIMIT = 600        # Char limit for anchor document
 EXPAND_CONTEXT_CHAR_LIMIT = 300       # Char limit for context documents
+EXPAND_ANCHOR_CHAR_LIMIT_LONG = 3000  # Long-form collections (obsidian_notes, reference_docs)
+EXPAND_CONTEXT_CHAR_LIMIT_LONG = 2000 # Long-form context limit
 
 # LLM Compression [NEW 2026-03-26]
 LLM_COMPRESSION_ENABLED = True         # Use LLM to compress heavily oversized items
@@ -1250,6 +1252,11 @@ LLM_COMPRESSION_MAX_BATCH = 8          # Max items to compress per request (cost
 # Citation & Provenance [NEW 2026-03-26]
 PROVENANCE_ENABLED = True              # Toggle provenance metadata on interactions
 PROVENANCE_THINKING_MAX_CHARS = 4000   # Max chars for thinking block in metadata
+
+# Uncertainty Fallback [NEW 2026-04]
+UNCERTAINTY_FALLBACK_ENABLED = True    # Retry uncertain responses via agentic search
+UNCERTAINTY_SEMANTIC_THRESHOLD = 0.70  # Cosine sim threshold for semantic anchor match
+UNCERTAINTY_MAX_LENGTH = 400           # Skip detection for responses longer than this
 
 # Personality / Operating Principles (file-based) [NEW 2026-03-26]
 PERSONALITY_DEFAULT_PATH = "config/prompts/default_personality.txt"
@@ -1606,6 +1613,8 @@ class MemoryConsolidator:
 
 Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/entity/knowledge trigger fired.
 `skip_initial_search=True` for computation, memory, and knowledge queries.
+
+**Post-generation trigger** [NEW 2026-04]: If standard response is uncertain ("I don't know"), `UncertaintyDetector` (`core/uncertainty_detector.py`) retries via agentic search. Keyword regex (~18 patterns) + semantic embedding layer. Config: `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD`, `UNCERTAINTY_MAX_LENGTH`.
 
 ```python
 # core/agentic/controller.py

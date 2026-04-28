@@ -114,7 +114,7 @@ class MemoryExpander:
 
         # --- check expandable ---
         if collection not in EXPANDABLE_COLLECTIONS:
-            turn = self._doc_to_turn(anchor_doc, is_anchor=True)
+            turn = self._doc_to_turn(anchor_doc, is_anchor=True, collection=collection)
             return {
                 **error_template,
                 "collection": collection,
@@ -140,7 +140,7 @@ class MemoryExpander:
         3. Fall back to returning the summary anchor only with a note.
         """
         meta = anchor_doc.get("metadata") or {}
-        anchor_turn = self._doc_to_turn(anchor_doc, is_anchor=True)
+        anchor_turn = self._doc_to_turn(anchor_doc, is_anchor=True, collection="summaries")
 
         base = {
             "anchor_id": memory_id,
@@ -187,7 +187,7 @@ class MemoryExpander:
         for did in doc_ids:
             doc = self._store.get_by_id(collection, did)
             if doc:
-                turns.append(self._doc_to_turn(doc, is_anchor=False))
+                turns.append(self._doc_to_turn(doc, is_anchor=False, collection=collection))
         turns.sort(key=lambda t: (t.get("timestamp", ""), t.get("id", "")))
         return turns
 
@@ -216,7 +216,7 @@ class MemoryExpander:
                 matched.append(doc)
 
         matched.sort(key=lambda d: self._sort_key(d))
-        return [self._doc_to_turn(d, is_anchor=False) for d in matched]
+        return [self._doc_to_turn(d, is_anchor=False, collection="conversations") for d in matched]
 
     def _expand_temporal_window(
         self, anchor_doc: dict, memory_id: str, window: int, collection: str
@@ -232,7 +232,7 @@ class MemoryExpander:
                 break
 
         if anchor_idx is None:
-            turn = self._doc_to_turn(anchor_doc, is_anchor=True)
+            turn = self._doc_to_turn(anchor_doc, is_anchor=True, collection=collection)
             return {
                 "anchor_id": memory_id,
                 "collection": collection,
@@ -249,7 +249,7 @@ class MemoryExpander:
         turns = []
         for doc in window_docs:
             is_anchor = doc.get("id") == memory_id
-            turns.append(self._doc_to_turn(doc, is_anchor=is_anchor))
+            turns.append(self._doc_to_turn(doc, is_anchor=is_anchor, collection=collection))
 
         return {
             "anchor_id": memory_id,
@@ -278,12 +278,18 @@ class MemoryExpander:
         doc_id = doc.get("id") or ""
         return (ts, doc_id)
 
+    # Collections with long-form documents that need higher char limits
+    _LONG_FORM_COLLECTIONS = frozenset({"obsidian_notes", "reference_docs"})
+
     @staticmethod
-    def _doc_to_turn(doc: dict, is_anchor: bool = False) -> dict:
+    def _doc_to_turn(doc: dict, is_anchor: bool = False, collection: str = "") -> dict:
         """Convert a raw ChromaDB doc dict into a turn record."""
         meta = doc.get("metadata") or {}
         content = doc.get("content", "")
-        char_limit = cfg.EXPAND_ANCHOR_CHAR_LIMIT if is_anchor else cfg.EXPAND_CONTEXT_CHAR_LIMIT
+        if collection in MemoryExpander._LONG_FORM_COLLECTIONS:
+            char_limit = cfg.EXPAND_ANCHOR_CHAR_LIMIT_LONG if is_anchor else cfg.EXPAND_CONTEXT_CHAR_LIMIT_LONG
+        else:
+            char_limit = cfg.EXPAND_ANCHOR_CHAR_LIMIT if is_anchor else cfg.EXPAND_CONTEXT_CHAR_LIMIT
         if len(content) > char_limit:
             content = content[:char_limit] + "..."
         return {

@@ -1332,7 +1332,9 @@ Provide a focused summary with the most important information."""
         session: Optional[AgenticSearchSession] = None
     ) -> str:
         """Build prompt for iteration decision."""
-        parts = [f"""User Question: {query}
+        _now = datetime.now()
+        _time_ctx = _now.strftime("Today is %A, %Y-%m-%d %H:%M. ")
+        parts = [f"""{_time_ctx}User Question: {query}
 
 Search Results So Far:
 {search_context}
@@ -1464,6 +1466,10 @@ What would you like to do?""")
                 ref_text = self._format_reflections(recent_reflections)
                 if ref_text:
                     parts.append(f"[RECENT REFLECTIONS]\n{ref_text}")
+
+        # Time context (critical for temporal queries — model needs today's date)
+        _now = datetime.now()
+        parts.append(f"[TIME CONTEXT]\nCurrent time: {_now.strftime('%A, %Y-%m-%d %H:%M:%S')}")
 
         # Add search results
         if session.accumulated_context:

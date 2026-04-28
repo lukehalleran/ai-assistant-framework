@@ -144,6 +144,10 @@ agentic_search:
   prefer_native_tools: true
   memory_search_enabled: true
   memory_search_limit: 7
+uncertainty_fallback:
+  enabled: true
+  semantic_threshold: 0.7
+  max_length: 400
 file_access:
   enabled: true
   approved_folders:

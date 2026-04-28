@@ -378,6 +378,22 @@ class MemoryCoordinator:
         self.conversation_context = self._storage.conversation_context
         self.interactions_since_consolidation = self._storage.interactions_since_consolidation
 
+        # --- Lightweight per-turn thread resolution (pure regex, ~1ms) ---
+        if self.thread_store and query:
+            try:
+                from memory.thread_store import check_quick_resolutions, _COMPLETION_SIGNALS
+                # Fast pre-check: skip DB query if no completion signal in message
+                if _COMPLETION_SIGNALS.search(query.lower()):
+                    open_threads = self.thread_store.list_open_threads()
+                    if open_threads:
+                        resolved_ids = check_quick_resolutions(query, open_threads)
+                        for tid in resolved_ids:
+                            self.thread_store.resolve_thread(
+                                tid, "auto-resolved: completion signal in user message"
+                            )
+            except Exception as e:
+                logger.debug(f"[MemoryCoordinator] Quick thread resolution failed (non-fatal): {e}")
+
         return memory_id
 
     async def _consolidate_and_store_summary(self):

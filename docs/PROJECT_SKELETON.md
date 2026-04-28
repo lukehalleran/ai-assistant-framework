@@ -80,7 +80,7 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/surfacing_models.py` - Pydantic models: DomainEntity, DomainCluster, CrossDomainCandidate, ProactiveInsight **[NEW 2026-03-25]**
 - `memory/surfacing_history.py` - JSON-backed novelty tracking for surfacing cooldowns **[NEW 2026-03-25]**
 - `knowledge/implementation_detector.py` - 4-stage proposal implementation tracking **[NEW 2026-03-25]**
-- `memory/memory_expander.py` - Temporal context expansion + summary drill-down for agentic tool **[NEW 2026-03-26]**
+- `memory/memory_expander.py` - Temporal context expansion + summary drill-down for agentic tool; collection-aware char limits (long-form: 3000/2000 vs default 600/300) **[ENHANCED 2026-04-27]**
 - `memory/synthesis_memory.py` - Synthesis results persistence + convergence tracking + audit queue (grade_result, get_ungraded, get_graded, get_audit_stats, store_rejected_for_audit) **[ENHANCED 2026-04-01]**
 - `knowledge/synthesis_generator.py` - Cross-store sampling + LLM bridge articulation for synthesis candidates **[NEW 2026-03-28]**
 - `knowledge/synthesis_retriever.py` - RetrievalSynthesisGenerator: structural query extraction + FAISS search + adversarial eval (Tier 0) **[NEW 2026-04-01]**
@@ -3157,6 +3157,12 @@ class ThreadStore:
     resolve_thread(thread_id, resolution) → bool        # Mark resolved
     enforce_cap(max_threads=50) → int                   # Prune oldest low-priority
     mark_stale_threads(stale_days=14) → int             # Batch staleness check
+
+# Module-level function (not method)
+check_quick_resolutions(user_message, open_threads) → List[str]
+    # Pure regex: completion signals × open thread topic keywords, ~1ms
+    # Returns list of thread_ids to resolve
+    # Fast pre-check: skips DB query if no _COMPLETION_SIGNALS in message
 ```
 - Embedding text: topic + summary (for semantic matching)
 - Status updates via delete-and-re-add (ChromaDB lacks native update)
@@ -3183,6 +3189,7 @@ class ThreadExtractor:
 3. **Builder**: Parallel task `open_threads` in `build_prompt()` alongside other retrieval tasks
 4. **Prompt Section**: `[UNRESOLVED THREADS]` after `[KNOWLEDGE GRAPH]`, before `[USER PROFILE]`
 5. **Orchestrator**: First-message thread injection — on first message of session, top threads injected into context for proactive follow-up
+6. **Per-turn resolution**: `memory_coordinator.store_interaction()` calls `check_quick_resolutions()` after every turn — pure regex, ~1ms, skips DB query if no completion signal
 
 **Collection**: `threads` (11th ChromaDB collection, registered in `multi_collection_chroma_store.py`)
 
@@ -4605,6 +4612,7 @@ daemon/
 │   ├── response_generator.py  # LLM streaming + Best-of-N/Duel (FIXED)
 │   ├── best_of_handler.py     # Best-of orchestration (duel/ensemble/single) [NEW]
 │   ├── git_stats_manager.py   # GitStatsManager — read-only git repo stats for agentic loop [NEW 2026-03-29]
+│   ├── uncertainty_detector.py # UncertaintyDetector — keyword regex + semantic detection of "I don't know" responses [NEW 2026-04]
 │   ├── competitive_scorer.py  # Judge-based response selection
 │   ├── dependencies.py        # Dependency injection setup
 │   ├── wiki_util.py          # Wikipedia utility functions
