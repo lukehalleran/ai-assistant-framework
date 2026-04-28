@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.correction_detector import CorrectionDetector, CorrectionEvent
+from core.correction_detector import CorrectionDetector, CorrectionEvent, EntityCorrectionEvent
 
 
 @pytest.fixture
@@ -142,3 +142,156 @@ class TestCorrectionEventModel:
         )
         assert event.event_type == "confirmation"
         assert event.old_value == event.new_value
+
+
+class TestEntityCorrectionDetection:
+    """Test entity-level correction pattern matching."""
+
+    def test_did_not_die(self, detector):
+        events = detector.detect_entity_corrections("Flapjack did not die")
+        assert len(events) == 1
+        assert events[0].entity_name == "Flapjack"
+        assert events[0].correction_type == "not_dead"
+        assert events[0].confidence >= 0.85
+
+    def test_didnt_die(self, detector):
+        events = detector.detect_entity_corrections("Flapjack didn't die")
+        assert len(events) == 1
+        assert events[0].entity_name == "Flapjack"
+        assert events[0].correction_type == "not_dead"
+
+    def test_lowercase_entity(self, detector):
+        """Lowercase entity names should work (re.I flag)."""
+        events = detector.detect_entity_corrections("flapjack did not die hes still here")
+        assert len(events) >= 1
+        assert any(e.entity_name.lower() == "flapjack" for e in events)
+
+    def test_is_still_alive(self, detector):
+        events = detector.detect_entity_corrections("Flapjack is still alive")
+        assert len(events) == 1
+        assert events[0].correction_type == "alive"
+
+    def test_is_alive(self, detector):
+        events = detector.detect_entity_corrections("Flapjack is alive")
+        assert len(events) == 1
+        assert events[0].correction_type == "alive"
+
+    def test_is_not_dead(self, detector):
+        events = detector.detect_entity_corrections("Flapjack is not dead")
+        assert len(events) == 1
+        assert events[0].correction_type == "alive"
+
+    def test_still_here(self, detector):
+        events = detector.detect_entity_corrections("Flapjack is still here")
+        assert len(events) == 1
+        assert events[0].correction_type == "alive"
+
+    def test_survived(self, detector):
+        events = detector.detect_entity_corrections("Flapjack survived the surgery")
+        assert len(events) == 1
+        assert events[0].correction_type == "survived"
+
+    def test_made_it(self, detector):
+        events = detector.detect_entity_corrections("Flapjack made it through")
+        assert len(events) == 1
+        assert events[0].correction_type == "survived"
+
+    def test_pulled_through(self, detector):
+        events = detector.detect_entity_corrections("Flapjack pulled through")
+        assert len(events) == 1
+        assert events[0].correction_type == "survived"
+
+    def test_is_fine(self, detector):
+        events = detector.detect_entity_corrections("Flapjack is fine")
+        assert len(events) == 1
+        assert events[0].correction_type == "survived"
+
+    def test_my_cat_pattern(self, detector):
+        events = detector.detect_entity_corrections("my cat Flapjack is alive")
+        assert len(events) >= 1
+        assert any(e.entity_name == "Flapjack" for e in events)
+
+    def test_still_with_us(self, detector):
+        events = detector.detect_entity_corrections("Flapjack is still with us")
+        assert len(events) == 1
+        assert events[0].correction_type == "alive"
+
+    def test_no_prefix(self, detector):
+        events = detector.detect_entity_corrections("no, Flapjack didn't die")
+        assert len(events) >= 1
+        assert any(e.entity_name == "Flapjack" for e in events)
+
+    def test_no_match_on_normal_text(self, detector):
+        events = detector.detect_entity_corrections("Flapjack had his dinner")
+        assert events == []
+
+    def test_no_match_on_unrelated(self, detector):
+        events = detector.detect_entity_corrections("I went to the store today")
+        assert events == []
+
+    def test_empty_message(self, detector):
+        events = detector.detect_entity_corrections("")
+        assert events == []
+
+    def test_pronoun_filtered(self, detector):
+        """Pronouns should not be captured as entity names."""
+        events = detector.detect_entity_corrections("He is still alive")
+        assert events == []
+
+    def test_it_pronoun_filtered(self, detector):
+        events = detector.detect_entity_corrections("It did not die")
+        assert events == []
+
+    def test_multiple_entities(self, detector):
+        events = detector.detect_entity_corrections(
+            "Flapjack survived and Whiskers is fine"
+        )
+        assert len(events) == 2
+        names = {e.entity_name for e in events}
+        assert any("flapjack" in n.lower() for n in names)
+        assert any("whiskers" in n.lower() for n in names)
+
+    def test_deduplication(self, detector):
+        """Same entity matching multiple patterns should produce one event."""
+        events = detector.detect_entity_corrections(
+            "Flapjack is alive and Flapjack is not dead"
+        )
+        flapjack_events = [e for e in events if e.entity_name.lower() == "flapjack"]
+        assert len(flapjack_events) == 1
+
+    def test_real_user_message(self, detector):
+        """The exact message that triggered the Flapjack hallucination."""
+        events = detector.detect_entity_corrections(
+            "i forgot about that. oh i need to fix this later haha flapjack did not die hes still here"
+        )
+        assert len(events) >= 1
+        assert any(e.entity_name.lower() == "flapjack" for e in events)
+
+    def test_correction_text_truncated(self, detector):
+        long_msg = "Flapjack did not die " + "x" * 300
+        events = detector.detect_entity_corrections(long_msg)
+        assert len(events) == 1
+        assert len(events[0].correction_text) <= 200
+
+
+class TestEntityCorrectionEventModel:
+    """Test the EntityCorrectionEvent Pydantic model."""
+
+    def test_valid_event(self):
+        event = EntityCorrectionEvent(
+            entity_name="Flapjack",
+            correction_type="alive",
+            correction_text="Flapjack is alive",
+            confidence=0.90,
+        )
+        assert event.entity_name == "Flapjack"
+        assert event.correction_type == "alive"
+
+    def test_confidence_bounds(self):
+        with pytest.raises(Exception):
+            EntityCorrectionEvent(
+                entity_name="Flapjack",
+                correction_type="alive",
+                correction_text="test",
+                confidence=1.5,
+            )

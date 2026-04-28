@@ -268,8 +268,13 @@ AGENT(q, s):
     p    <- beta(x, d*, iota, E_t)               // prompt construction (plan)
     a_0  <- LLM(p)                                // first generation (act)
 
+    // UNCERTAINTY FALLBACK (post-generation, optional)
+    // If initial response indicates uncertainty, retry via agentic search
+    if UNCERTAINTY_FALLBACK_ENABLED and is_uncertain(a_0):
+        agentic_search_trigger := true               // force agentic retry
+
     // AGENTIC SEARCH LOOP (ReAct pattern, optional)
-    // Triggered by LLM-first decision on whether response needs real-time data
+    // Triggered by LLM-first decision OR uncertainty fallback
     if agentic_search_trigger(a_0, x):
         inventory <- compute_context_inventory(d*)    // what RAG already gathered
         observations <- {}
@@ -381,8 +386,8 @@ delta(s, q, r):
                 if KNOWLEDGE_GRAPH_ENABLED and is_graph_worthy(fact):
                     s'.G <- s'.G + fact_to_edge(fact)                        // graph ingestion
 
-    // UNCHANGED by default
-    s'.Lambda <- s.Lambda                                                    // threads unchanged per-turn
+    // PER-TURN THREAD RESOLUTION (regex-based, ~1ms)
+    s'.Lambda <- check_quick_resolutions(q, s.Lambda)                        // resolve threads matching completion signals
     s'.U <- s'.U                                                             // profile unchanged (except truth events above)
 
     return s'
@@ -777,4 +782,5 @@ Eight operations. Perceive, interpret, expand, remember, plan, act, audit, learn
 | Gen_0 | Retrieval synthesis generator (structural query -> FAISS -> adversarial eval) | `knowledge/synthesis_retriever.py` |
 | Gen_1 | Graph walk generator (biased Markov walk -> narration) | `knowledge/graph_walk_generator.py` |
 | Gen_2 | Cross-store synthesis generator (random pairing -> bridge articulation) | `knowledge/synthesis_generator.py` |
+| is_uncertain | Uncertainty detection (keyword regex + semantic embedding) | `core/uncertainty_detector.py` |
 | gate | Multi-stage gating | `processing/gate_system.py` |

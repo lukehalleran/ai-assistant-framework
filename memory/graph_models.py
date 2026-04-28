@@ -168,9 +168,19 @@ class GraphEdge(BaseModel):
         """Composite key for deduplication: source|relation|target."""
         return f"{self.source_id}|{self.relation}|{self.target_id}"
 
-    def to_natural_language(self, source_display: str = "", target_display: str = "") -> str:
-        """Render as a human-readable sentence for prompt injection."""
+    def to_natural_language(self, source_display: str = "", target_display: str = "", with_attribution: bool = False) -> str:
+        """Render as a human-readable sentence for prompt injection.
+
+        Args:
+            source_display: Display name for source entity
+            target_display: Display name for target entity
+            with_attribution: If True, append derivation markers to indicate this is from relationship data
+        """
         src = source_display or self.source_id
         tgt = target_display or self.target_id
         rel = self.relation.replace("_", " ")
-        return f"{src} {rel} {tgt}"
+        base_sentence = f"{src} {rel} {tgt}"
+
+        if with_attribution:
+            return f"{base_sentence} (from relationship data)"
+        return base_sentence

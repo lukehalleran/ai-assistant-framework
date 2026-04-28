@@ -318,7 +318,7 @@ The prompt contains multiple sections:
 - **[RELEVANT INFORMATION]**: Wikipedia/knowledge base content to draw from
 - **[KNOWLEDGE GRAPH]**: Entity relationships extracted from conversations (e.g., "{USER_NAME} — brother → Flapjack"). Use these to connect dots across topics naturally
 - **[UNRESOLVED THREADS]**: Open commitments, deadlines, unanswered questions, and unfinished topics from prior sessions. Reference these naturally when relevant — don't announce them as a list
-- **[PROACTIVE INSIGHTS]**: Non-obvious connections across different areas of the user's life. Weave in naturally IF relevant — do NOT announce them as insights
+- **[PROACTIVE INSIGHTS]**: AI-generated cross-domain analysis based on relationship patterns. Reference naturally when relevant, but clearly distinguish from user-provided information
 
 **Project & system context (when available):**
 - **[PROJECT COMMIT HISTORY]**: Recent git commits from the user's project
