@@ -694,7 +694,7 @@ class UnifiedPromptBuilder:
             # Check if model is multimodal to decide whether to load images
             current_model = getattr(self.model_manager, 'active_model_name', '') if self.model_manager else ''
             include_note_images = OBSIDIAN_INCLUDE_IMAGES and _is_multimodal_model(current_model)
-            logger.warning(f"[PromptBuilder] IMAGE DEBUG: model={current_model}, OBSIDIAN_INCLUDE_IMAGES={OBSIDIAN_INCLUDE_IMAGES}, is_multimodal={_is_multimodal_model(current_model)}, include_note_images={include_note_images}")
+            logger.debug(f"[PromptBuilder] image check: model={current_model}, OBSIDIAN_INCLUDE_IMAGES={OBSIDIAN_INCLUDE_IMAGES}, is_multimodal={_is_multimodal_model(current_model)}, include_note_images={include_note_images}")
 
             tasks["personal_notes"] = asyncio.create_task(
                 _timed_task("personal_notes", self.context_gatherer.get_personal_notes(
@@ -752,38 +752,50 @@ class UnifiedPromptBuilder:
                 _timed_task("web_search", self.context_gatherer._get_web_search_results(user_input, crisis_level, intent_type=intent_type))
             )
 
-            # Gather all results with timeout
+            # Gather all results with timeout — use asyncio.wait so completed
+            # tasks survive a timeout instead of wiping the entire context.
             _gather_start = time.time()
             try:
-                results = await asyncio.wait_for(
-                    asyncio.gather(*tasks.values(), return_exceptions=True),
-                    timeout=30.0
+                done, pending = await asyncio.wait(
+                    list(tasks.values()),
+                    timeout=30.0,
+                    return_when=asyncio.ALL_COMPLETED,
                 )
                 _gather_elapsed = time.time() - _gather_start
 
-                # Map results back to names
                 gathered = {}
-                for i, (name, _) in enumerate(tasks.items()):
-                    result = results[i]
-                    if isinstance(result, Exception):
-                        logger.warning(f"Task {name} failed: {result}")
-                        gathered[name] = []
+                timed_out_names = []
+                for name, task in tasks.items():
+                    if task in done:
+                        try:
+                            gathered[name] = task.result() or []
+                            if name == "memories":
+                                logger.debug(f"MEMORIES TASK: Got {len(gathered[name])} memories")
+                            if name == "proposed_features":
+                                logger.info(f"[PROPOSED_FEATURES] Task returned {len(gathered[name])} proposals")
+                        except Exception as exc:
+                            logger.warning("Context task %s failed: %s", name, exc)
+                            gathered[name] = []
                     else:
-                        gathered[name] = result or []
-                        if name == "memories":
-                            logger.debug(f"MEMORIES TASK: Got {len(result) if result else 0} memories")
-                        if name == "proposed_features":
-                            logger.info(f"[PROPOSED_FEATURES] Task returned {len(result) if result else 0} proposals")
+                        task.cancel()
+                        gathered[name] = []
+                        timed_out_names.append(name)
 
-                # Sort tasks by time (slowest first) for easy identification of bottlenecks
-                sorted_timings = sorted(task_timings.items(), key=lambda x: x[1], reverse=True)
-                timing_str = " | ".join([f"{k}={v:.2f}s" for k, v in sorted_timings])
-                logger.info(
-                    f"[BUILD_PROMPT TIMING] total={_gather_elapsed:.2f}s | {timing_str}"
-                )
+                if timed_out_names:
+                    logger.warning(
+                        "Prompt context retrieval timed out; partial context used. Pending: %s",
+                        sorted(timed_out_names),
+                    )
 
-            except asyncio.TimeoutError:
-                logger.warning("Data gathering timed out, using partial results")
+                if task_timings:
+                    sorted_timings = sorted(task_timings.items(), key=lambda x: x[1], reverse=True)
+                    timing_str = " | ".join([f"{k}={v:.2f}s" for k, v in sorted_timings])
+                    logger.info(
+                        f"[BUILD_PROMPT TIMING] total={_gather_elapsed:.2f}s | {timing_str}"
+                    )
+
+            except Exception as _gather_exc:
+                logger.warning("Unexpected error during context gathering: %s", _gather_exc)
                 gathered = {name: [] for name in tasks.keys()}
             finally:
                 # Clear intent weight overrides from scorer (set before gather)
@@ -798,18 +810,18 @@ class UnifiedPromptBuilder:
 
             # Handle separated summaries (recent + semantic)
             summaries_data = gathered.get("summaries", {})
-            logger.warning(f"CONTEXT GATHERING: summaries_data = {summaries_data}, type = {type(summaries_data)}")
+            logger.debug(f"CONTEXT GATHERING: summaries_data type={type(summaries_data).__name__}, len={len(summaries_data) if isinstance(summaries_data, (list, dict)) else '?'}")
             if isinstance(summaries_data, dict):
                 recent_summaries = summaries_data.get("recent", [])
                 semantic_summaries = summaries_data.get("semantic", [])
                 all_summaries = recent_summaries + semantic_summaries
-                logger.warning(f"CONTEXT GATHERING: Extracted {len(recent_summaries)} recent, {len(semantic_summaries)} semantic summaries")
+                logger.debug(f"CONTEXT GATHERING: Extracted {len(recent_summaries)} recent, {len(semantic_summaries)} semantic summaries")
             else:
                 # Backward compatibility for old format
                 all_summaries = summaries_data or []
                 recent_summaries = []
                 semantic_summaries = []
-                logger.warning(f"CONTEXT GATHERING: Using old format, got {len(all_summaries)} summaries")
+                logger.debug(f"CONTEXT GATHERING: Using old format, got {len(all_summaries)} summaries")
 
             # Handle separated reflections (recent + semantic)
             reflections_data = gathered.get("reflections", {})
@@ -870,20 +882,20 @@ class UnifiedPromptBuilder:
 
             # DEBUG: Check what's in recent conversations
             recent_convos = gathered.get("recent", [])
-            logger.warning(f"[DEBUG RECENT] build_prompt: Got {len(recent_convos)} recent_conversations from gatherer")
+            logger.debug(f"[DEBUG RECENT] build_prompt: Got {len(recent_convos)} recent_conversations from gatherer")
             if recent_convos:
                 # Log first 3 and last 3 with timestamps
                 for i in range(min(3, len(recent_convos))):
                     mem = recent_convos[i]
                     ts = mem.get('timestamp', 'NO_TS')
                     query = mem.get('query', '')[:80]
-                    logger.warning(f"[DEBUG RECENT] Item {i+1} (first): ts={ts}, query={query}...")
+                    logger.debug(f"[DEBUG RECENT] Item {i+1} (first): ts={ts}, query={query}...")
                 if len(recent_convos) > 3:
                     for i in range(max(0, len(recent_convos) - 3), len(recent_convos)):
                         mem = recent_convos[i]
                         ts = mem.get('timestamp', 'NO_TS')
                         query = mem.get('query', '')[:80]
-                        logger.warning(f"[DEBUG RECENT] Item {i+1} (last): ts={ts}, query={query}...")
+                        logger.debug(f"[DEBUG RECENT] Item {i+1} (last): ts={ts}, query={query}...")
 
             context = {
                 "recent_conversations": recent_convos,
@@ -963,7 +975,7 @@ class UnifiedPromptBuilder:
                 logger.warning(f"Gating failed: {e}")
 
             # Step 6: Apply hygiene and caps
-            logger.warning(f"BEFORE HYGIENE_AND_CAPS: memories count = {len(context.get('memories', []))}")
+            logger.debug(f"BEFORE HYGIENE_AND_CAPS: memories count = {len(context.get('memories', []))}")
             context = await self._hygiene_and_caps(context, stm_summary=stm_summary)
 
             # Step 6.1: Top-up relevant memories if cross-effects reduced them too much.
@@ -994,26 +1006,26 @@ class UnifiedPromptBuilder:
                     if needed:
                         mems.extend(filler[:needed])
                         context["memories"] = mems
-                        logger.warning(f"MEMORY TOP-UP: Added {min(needed, len(filler))} new memories (had {len(mems) - min(needed, len(filler))}, target {PROMPT_MAX_MEMS}), skipped {skipped_count} duplicates")
+                        logger.debug(f"MEMORY TOP-UP: Added {min(needed, len(filler))} new memories (had {len(mems) - min(needed, len(filler))}, target {PROMPT_MAX_MEMS}), skipped {skipped_count} duplicates")
             except Exception as e:
                 logger.warning(f"Memory top-up failed: {e}")
 
-            logger.warning(f"AFTER MEMORY TOP-UP: memories count = {len(context.get('memories', []))}")
+            logger.debug(f"AFTER MEMORY TOP-UP: memories count = {len(context.get('memories', []))}")
 
             # Step 6.2: Ensure minimum summaries and reflections by pulling directly from storage
             try:
-                logger.warning(f"START OF SUMMARIES BLOCK: memories count = {len(context.get('memories', []))}, context id = {id(context)}")
+                logger.debug(f"START OF SUMMARIES BLOCK: memories count = {len(context.get('memories', []))}")
                 # Summaries — if we have too few, pull most recent without gating
                 if len(context.get("summaries", []) or []) < PROMPT_MAX_SUMMARIES:
                     needed = PROMPT_MAX_SUMMARIES - len(context.get("summaries", []))
                     try:
                         # try memory_coordinator first (supports sync or async)
                         if hasattr(self.memory_coordinator, 'get_summaries'):
-                            logger.warning(f"BEFORE get_summaries: memories count = {len(context.get('memories', []))}, context id = {id(context)}")
+                            logger.debug(f"BEFORE get_summaries: memories count = {len(context.get('memories', []))}")
                             res = self.memory_coordinator.get_summaries(PROMPT_MAX_SUMMARIES * 2)
                             import asyncio as _asyncio
                             stored = await res if _asyncio.iscoroutine(res) else res
-                            logger.warning(f"AFTER get_summaries: memories count = {len(context.get('memories', []))}, context id = {id(context)}, stored type = {type(stored)}")
+                            logger.debug(f"AFTER get_summaries: memories count = {len(context.get('memories', []))}, stored type = {type(stored).__name__}")
                         elif hasattr(self.memory_coordinator, 'corpus_manager') and hasattr(self.memory_coordinator.corpus_manager, 'get_summaries'):
                             stored = self.memory_coordinator.corpus_manager.get_summaries(PROMPT_MAX_SUMMARIES * 2)
                         else:
@@ -1085,9 +1097,9 @@ class UnifiedPromptBuilder:
             context = await self._llm_compress_oversized(context)
 
             # Step 7: Token budget management
-            logger.warning(f"BEFORE TOKEN BUDGET: memories count = {len(context.get('memories', []))}")
+            logger.debug(f"BEFORE TOKEN BUDGET: memories count = {len(context.get('memories', []))}")
             context = self.token_manager._manage_token_budget(context)
-            logger.warning(f"AFTER TOKEN BUDGET: memories count = {len(context.get('memories', []))}")
+            logger.debug(f"AFTER TOKEN BUDGET: memories count = {len(context.get('memories', []))}")
 
             # Step 7.1: Post-budget floors for critical sections
             # Ensure recent conversations, summaries, and reflections are not
@@ -1896,16 +1908,15 @@ class UnifiedPromptBuilder:
 
         # Recent conversations
         recent = context.get("recent_conversations", []) or []
-        logger.warning(f"[DEBUG RECENT] _assemble_prompt: Got {len(recent)} items in recent_conversations")
+        logger.debug(f"[DEBUG RECENT] _assemble_prompt: Got {len(recent)} items in recent_conversations")
         recent_lines: list[str] = []
         for i, mem in enumerate(recent, start=1):
             content, ts = mem_parts(mem)
-            # Debug: Log first 3 and last 3 items
             if i <= 3 or i > len(recent) - 3:
-                logger.warning(f"[DEBUG RECENT] Item {i}: ts={ts}, content_preview={content[:100] if content else 'EMPTY'}...")
+                logger.debug(f"[DEBUG RECENT] Item {i}: ts={ts}, content_preview={content[:100] if content else 'EMPTY'}...")
             recent_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
         if recent_lines:
-            logger.warning(f"[DEBUG RECENT] Adding [RECENT CONVERSATION] section with {len(recent_lines)} formatted entries")
+            logger.debug(f"[DEBUG RECENT] Adding [RECENT CONVERSATION] section with {len(recent_lines)} formatted entries")
             sections.append(f"[RECENT CONVERSATION] n={len(recent_lines)}\n" + "\n\n".join(recent_lines))
 
         # Relevant memories
@@ -2501,7 +2512,7 @@ class UnifiedPromptBuilder:
             logger.error(f"[DEBUG RECENT] DUPLICATE SECTIONS DETECTED: {duplicates}")
             logger.error(f"[DEBUG RECENT] Total sections: {len(sections)}, section headers: {section_headers}")
         else:
-            logger.warning(f"[DEBUG RECENT] No duplicate sections. Total sections: {len(sections)}")
+            logger.debug(f"[DEBUG RECENT] No duplicate sections. Total sections: {len(sections)}")
 
         final_prompt = "\n\n".join(sections)
 

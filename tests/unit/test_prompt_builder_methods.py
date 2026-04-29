@@ -199,8 +199,8 @@ def test_format_memory_with_timestamp(formatter):
 
     result = formatter._format_memory(memory)
 
-    # Timestamp should be included at the start
-    assert "2024-01-01T12:00:00" in result
+    # Timestamp should be included at the start (formatted as human-readable, not raw ISO)
+    assert "2024-01-01 12:00" in result
     assert "User: Question" in result
 
 
@@ -258,7 +258,7 @@ def test_format_memory_content_with_timestamp(formatter):
 
     result = formatter._format_memory(memory)
 
-    assert "2024-01-01T12:00:00" in result
+    assert "2024-01-01 12:00" in result
     assert "Fact about X" in result
 
 

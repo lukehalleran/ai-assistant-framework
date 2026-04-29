@@ -319,6 +319,9 @@ class TestSynthesisGenerator:
 
     def test_endpoint_distance_with_graph(self, mock_store, mock_model_manager, mock_graph_memory, mock_entity_resolver):
         """Should compute distance from graph shortest path."""
+        # Make entity resolver return the name itself, and graph contain any node
+        mock_entity_resolver.resolve.side_effect = lambda x: x
+        mock_graph_memory.graph.__contains__ = MagicMock(return_value=True)
         gen = SynthesisGenerator(
             chroma_store=mock_store,
             model_manager=mock_model_manager,
@@ -397,6 +400,9 @@ class TestSynthesisGenerator:
     @patch("knowledge.semantic_search.semantic_search_with_neighbors", side_effect=_mock_faiss_search)
     async def test_graph_used_for_distance(self, mock_faiss, mock_store, mock_model_manager, mock_graph_memory, mock_entity_resolver):
         """When graph is available, candidates should use graph-based distance."""
+        # Make entity resolver return the name itself, and graph contain any node
+        mock_entity_resolver.resolve.side_effect = lambda x: x
+        mock_graph_memory.graph.__contains__ = MagicMock(return_value=True)
         gen = SynthesisGenerator(
             chroma_store=mock_store,
             model_manager=mock_model_manager,

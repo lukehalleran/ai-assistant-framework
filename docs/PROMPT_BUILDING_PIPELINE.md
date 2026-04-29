@@ -57,7 +57,10 @@ a context dict ready for formatting.
 
 ### Step 4 — Parallel Retrieval (18 tasks, 30s timeout)
 
-All tasks execute simultaneously via `asyncio.gather()`:
+All tasks execute simultaneously via `asyncio.wait()` (not `asyncio.gather`).
+Completed tasks survive a timeout — only the still-pending sections fall back
+to `[]`. A single `warning` names the pending sections; per-task exceptions
+default to `[]` without affecting other sections.
 
 | Task | Method | Default Limit |
 |------|--------|---------------|
@@ -307,7 +310,7 @@ LLM_COMPRESSION_RATIO_THRESHOLD = 3.0
 
 ## Typical Performance
 
-- **Parallel gather**: 3-8s (30s timeout)
+- **Parallel gather**: 3-8s (30s timeout, partial context preserved on timeout)
 - **Hygiene & dedup**: 0.5-2s
 - **Token budget**: 1-3s
 - **Final assembly**: 0.5-1s
