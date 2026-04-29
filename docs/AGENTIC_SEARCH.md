@@ -424,4 +424,9 @@ GIT_STATS_MAX_OUTPUT_LINES          # Cap raw output (default 50)
 UNCERTAINTY_FALLBACK_ENABLED        # Post-generation retry gate (default True)
 UNCERTAINTY_SEMANTIC_THRESHOLD      # Cosine sim threshold for semantic layer (default 0.70)
 UNCERTAINTY_MAX_LENGTH              # Max response length to check (default 400)
+
+# Response review gate (YAML: response_planning:)
+RESPONSE_REVIEW_ENABLED             # Post-answer review against plan (default True)
+RESPONSE_REVIEW_CONFIDENCE_THRESHOLD  # Min confidence to trigger agentic retry (default 0.80)
+RESPONSE_REVIEW_TIMEOUT             # Seconds before review skipped (default 5.0)
 ```

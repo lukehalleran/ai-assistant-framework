@@ -4613,6 +4613,7 @@ daemon/
 │   ├── best_of_handler.py     # Best-of orchestration (duel/ensemble/single) [NEW]
 │   ├── git_stats_manager.py   # GitStatsManager — read-only git repo stats for agentic loop [NEW 2026-03-29]
 │   ├── uncertainty_detector.py # UncertaintyDetector — keyword regex + semantic detection of "I don't know" responses [NEW 2026-04]
+│   ├── response_planner.py    # ResponsePlanner — pre-answer planning + post-answer review gate [NEW 2026-04]
 │   ├── competitive_scorer.py  # Judge-based response selection
 │   ├── dependencies.py        # Dependency injection setup
 │   ├── wiki_util.py          # Wikipedia utility functions

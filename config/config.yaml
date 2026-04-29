@@ -68,7 +68,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: sonnet-4.6
+  active: deepseek-v4
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -148,6 +148,16 @@ uncertainty_fallback:
   enabled: true
   semantic_threshold: 0.7
   max_length: 400
+response_planning:
+  enabled: true
+  model: null
+  max_tokens: 200
+  timeout: 5.0
+  review_enabled: true
+  review_model: null
+  review_max_tokens: 200
+  review_confidence_threshold: 0.8
+  review_timeout: 5.0
 file_access:
   enabled: true
   approved_folders:

@@ -1258,6 +1258,17 @@ UNCERTAINTY_FALLBACK_ENABLED = True    # Retry uncertain responses via agentic s
 UNCERTAINTY_SEMANTIC_THRESHOLD = 0.70  # Cosine sim threshold for semantic anchor match
 UNCERTAINTY_MAX_LENGTH = 400           # Skip detection for responses longer than this
 
+# Response Planning [NEW 2026-04]
+RESPONSE_PLANNING_ENABLED = True       # Pre-answer plan from query + context signals
+RESPONSE_PLANNING_MODEL = None         # None → active model
+RESPONSE_PLANNING_MAX_TOKENS = 200     # Plan LLM call budget
+RESPONSE_PLANNING_TIMEOUT = 5.0        # Seconds before plan skipped
+RESPONSE_REVIEW_ENABLED = True         # Post-answer review against plan
+RESPONSE_REVIEW_MODEL = None           # None → active model
+RESPONSE_REVIEW_MAX_TOKENS = 200       # Review LLM call budget
+RESPONSE_REVIEW_CONFIDENCE_THRESHOLD = 0.80  # Min confidence to trigger agentic retry
+RESPONSE_REVIEW_TIMEOUT = 5.0         # Seconds before review skipped
+
 # Personality / Operating Principles (file-based) [NEW 2026-03-26]
 PERSONALITY_DEFAULT_PATH = "config/prompts/default_personality.txt"
 PERSONALITY_CUSTOM_PATH = "config/prompts/custom_personality.txt"
