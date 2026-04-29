@@ -700,14 +700,41 @@ async def handle_submit(
                 # Run agentic search loop with RAG context
                 agentic_response = ""
                 logger.debug(f"[Handle Submit] Starting agentic loop with RAG context keys: {list(raw_context.keys())}")
-                async for item in agentic_controller.run_agentic_search(
+
+                # Keepalive wrapper: if the agentic loop stalls for >8s without
+                # yielding (e.g. waiting on a slow LLM API call mid-stream), emit
+                # a heartbeat progress message so the browser WebSocket stays alive
+                # and the final response is actually delivered to the UI.
+                _agentic_gen = agentic_controller.run_agentic_search(
                     query=user_text,
                     system_prompt=system_prompt,
                     model_name=model_name,
                     initial_search_terms=initial_terms,
-                    initial_context=raw_context,  # Pass RAG context to agentic controller
-                    skip_initial_search=needs_computation or needs_memory or needs_knowledge,  # Skip web search for computation/memory/knowledge-only queries
-                ):
+                    initial_context=raw_context,
+                    skip_initial_search=needs_computation or needs_memory or needs_knowledge,
+                )
+
+                async def _agentic_next():
+                    try:
+                        return await _agentic_gen.__anext__(), False
+                    except StopAsyncIteration:
+                        return None, True
+
+                _KEEPALIVE_S = 8.0
+                _keepalive_n = 0
+
+                while True:
+                    _task = asyncio.ensure_future(_agentic_next())
+                    while True:
+                        _done, _ = await asyncio.wait({_task}, timeout=_KEEPALIVE_S)
+                        if _done:
+                            break
+                        _keepalive_n += 1
+                        _elapsed = int(_keepalive_n * _KEEPALIVE_S)
+                        yield {"role": "assistant", "content": f"🔄 Processing... ({_elapsed}s)", "is_progress": True}
+                    item, _exhausted = _task.result()
+                    if _exhausted:
+                        break
                     if isinstance(item, ProgressEvent):
                         # Yield progress events as status messages
                         status_icon = {
@@ -822,41 +849,34 @@ async def handle_submit(
                 yield {"role": "assistant", "content": display_output, "debug": debug_record}
                 logger.debug("[Handle Submit] Agentic final response yielded")
 
-                # Store interaction in memory
+                # Store interaction in background (fire-and-forget, same as enhanced path).
+                # Avoids a ~5s blocking await after the final yield that kept the
+                # Gradio generator open and could prevent the response from rendering.
                 try:
-                    # Sanitize response before storage
-                    try:
-                        from core.prompt import _truncate_at_spurious_turns
-                        final_output_sanitized = _truncate_at_spurious_turns(final_output)
-                    except Exception as e:
-                        logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
-                        final_output_sanitized = final_output
-
-                    tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
-                    memory_id = await orchestrator.memory_system.store_interaction(
-                        query=merged_input,
-                        response=final_output_sanitized,
-                        tags=tags,
-                        session_id=_agentic_session_id,
-                        provenance=_agentic_prov,
-                    )
-                    logger.info(f"[Handle Submit] Agentic interaction stored with ID: {memory_id}")
-
-                    # Log conversation
-                    conversation_logger.log_interaction(
-                        user_input=user_text,
-                        assistant_response=final_output,
-                        metadata={
-                            'mode': 'agentic-search',
-                            'files': file_names if file_names else None,
-                            'personality': personality or "default",
-                            'topic': getattr(orchestrator, 'current_topic', None),
-                            'db_id': memory_id,
-                            'provenance': _agentic_prov,
-                        }
-                    )
+                    from core.prompt import _truncate_at_spurious_turns
+                    final_output_sanitized = _truncate_at_spurious_turns(final_output)
                 except Exception as e:
-                    logger.error(f"[Handle Submit] Failed to store agentic interaction: {e}")
+                    logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
+                    final_output_sanitized = final_output
+
+                tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
+                _store_task = asyncio.create_task(_background_store_interaction(
+                    orchestrator=orchestrator,
+                    merged_input=merged_input,
+                    response_to_store=final_output_sanitized,
+                    tags=tags,
+                    user_text=user_text,
+                    final_output=final_output,
+                    personality=personality,
+                    file_names=file_names,
+                    conversation_logger=conversation_logger,
+                    session_id=_agentic_session_id,
+                    provenance=_agentic_prov,
+                    mode='agentic-search',
+                ))
+                _pending_storage_tasks.add(_store_task)
+                _store_task.add_done_callback(_pending_storage_tasks.discard)
+                logger.info("[Handle Submit] Agentic storage dispatched to background")
 
                 return  # Exit after agentic search completes
 
