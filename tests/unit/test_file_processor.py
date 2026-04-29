@@ -310,15 +310,14 @@ def test_process_single_file_pdf_single_page(file_processor, tmp_path):
 
 
 def test_process_single_file_pdf_multi_page(file_processor, tmp_path):
-    """_process_single_file adds page headers for multi-page PDFs"""
+    """_process_single_file extracts text from multi-page PDFs (no synthetic page headers)"""
     pdf_path = tmp_path / "multi.pdf"
     _make_pdf(pdf_path, ["First page content", "Second page content"])
     mock_file = create_mock_file("multi.pdf", str(pdf_path))
 
     content, size = file_processor._process_single_file(mock_file)
 
-    assert "## Page 1" in content
-    assert "## Page 2" in content
+    # Synthetic ## Page N headers were deliberately removed (see CLAUDE.md chunking improvement)
     assert "First page content" in content
     assert "Second page content" in content
     assert size > 0

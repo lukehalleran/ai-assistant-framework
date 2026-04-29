@@ -2238,6 +2238,10 @@ pytest -m "not benchmark"
 ## Quick Debug Commands
 
 ```bash
+# Run full unit suite (either works — root conftest.py adds project to sys.path)
+python -m pytest tests/unit/ -q
+venv/bin/pytest tests/unit/ -q
+
 # Check coverage
 python -m pytest --cov=. --cov-report=term --ignore=tests/memory_test.py --ignore=tests/test_gated_prompt.py
 

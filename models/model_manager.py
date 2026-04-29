@@ -184,7 +184,8 @@ class ModelManager:
         self.api_models["gpt-4.1"] = "openai/gpt-4.1"
         # Add GPT‑5 support (via OpenRouter naming)
         self.api_models["gpt-5"] = "openai/gpt-5"
-        self.api_models["gpt-5.1"] = "openai/gpt-5.1"  # New ChatGPT 5.1
+        self.api_models["gpt-5.1"] = "openai/gpt-5.1"
+        self.api_models["gpt-5.5"] = "openai/gpt-5.5"
         # GLM models
         self.api_models["glm-4.6"] = "z-ai/glm-4.6"
         self.api_models["glm-4.7"] = "z-ai/glm-4.7"
@@ -192,6 +193,7 @@ class ModelManager:
         self.api_models["glm-5-turbo"] = "z-ai/glm-5-turbo"
         # DeepSeek models
         self.api_models["deepseek-v3.1"] = "deepseek/deepseek-chat-v3.1"
+        self.api_models["deepseek-v4"] = "deepseek/deepseek-chat-v4"
         self.api_models["deepseek-r1"] = "deepseek/deepseek-r1-0528"
         # Google Gemini models
         self.api_models["gemini-3-pro"] = "google/gemini-3.1-pro-preview"

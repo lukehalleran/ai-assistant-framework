@@ -1,0 +1,68 @@
+feat: portfolio stability pass — prompt modular refactor
+
+## Prompt builder: preserve partial context on retrieval timeout
+
+core/prompt/builder.py — replaced asyncio.wait_for(asyncio.gather(...))
+with asyncio.wait(...) so tasks that finish before the 30s deadline keep
+their results. Previously a global timeout wiped everything.
+
+- done tasks: result extracted via task.result(), exceptions default to []
+- pending tasks: cancelled, fall back to []
+- single warning names pending sections; per-task failures stay at warning
+- normal diagnostic logs demoted from warning → debug (15 calls):
+  IMAGE DEBUG, CONTEXT GATHERING, DEBUG RECENT, BEFORE/AFTER HYGIENE_AND_CAPS,
+  MEMORY TOP-UP, START OF SUMMARIES BLOCK, BEFORE/AFTER get_summaries,
+  BEFORE/AFTER TOKEN BUDGET, _assemble_prompt DEBUG RECENT block,
+  "No duplicate sections" check
+
+## Test fixes: 5 stale unit test assertions
+
+tests/unit/test_prompt_builder_methods.py
+  - test_format_memory_with_timestamp: assert "2024-01-01 12:00" (was ISO T format)
+  - test_format_memory_content_with_timestamp: same
+
+tests/unit/test_synthesis_generator.py
+  - test_endpoint_distance_with_graph: add mock_entity_resolver.resolve.side_effect
+    and mock_graph_memory.graph.__contains__ so _resolve_to_graph() can find nodes
+  - test_graph_used_for_distance: same mock setup
+
+tests/unit/test_file_processor.py
+  - test_process_single_file_pdf_multi_page: remove "## Page N" assertions —
+    synthetic page headers were deliberately removed (CLAUDE.md chunking improvement)
+
+## New tests
+
+tests/unit/test_prompt_timeout.py — 4 tests proving asyncio.wait() preserves
+  partial results: fast task kept, exception → [], slow/timed-out → [], all-success,
+  single-failure isolation
+
+tests/unit/test_prompt_compat.py — 7 tests proving core.prompt backward compat:
+  UnifiedPromptBuilder, ContextGatherer, PromptFormatter, TokenManager,
+  _truncate_at_spurious_turns, helper utilities all importable; package (not shim)
+  is the active entry point
+
+## python -m pytest path fix
+
+conftest.py (root) — inserts project root into sys.path so system Python can
+  resolve internal modules without requiring the venv
+config/__init__.py, gui/__init__.py, knowledge/__init__.py, memory/__init__.py,
+models/__init__.py, processing/__init__.py, utils/__init__.py — empty package
+  markers so project directories take priority over any system packages with
+  conflicting names (e.g. system 'utils' package)
+
+Result: both `python -m pytest tests/unit/ -q` and `venv/bin/pytest` pass
+  with 2007 tests, 0 failures (was: 5 failures with venv, 112 collection
+  errors with system python)
+
+## Docs
+
+docs/PROMPT_BUILDING_PIPELINE.md — Step 4 updated: asyncio.gather → asyncio.wait,
+  partial-context timeout behaviour documented
+docs/QUICK_REFERENCE.md — testing section updated: both pytest invocations work
+
+## Pre-existing unstaged changes (also included)
+
+gui/handlers.py — agentic keepalive wrapper (asyncio.wait heartbeat every 8s)
+  and background store_interaction for agentic path (fire-and-forget)
+models/model_manager.py — added gpt-5.5, deepseek-v4 model aliases
+test_corpus.json — updated test corpus data
