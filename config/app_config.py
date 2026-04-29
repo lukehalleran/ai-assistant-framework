@@ -1073,6 +1073,30 @@ UNCERTAINTY_FALLBACK_ENABLED = bool(int(os.getenv(
 )))
 
 # --------------------------------------------------------------------
+# Response Planning (pre-answer plan + post-answer review gate)
+# --------------------------------------------------------------------
+RESPONSE_PLANNING_CFG = config.get("response_planning", {})
+RESPONSE_PLANNING_ENABLED: bool = bool(RESPONSE_PLANNING_CFG.get("enabled", True))
+RESPONSE_PLANNING_MODEL: Optional[str] = RESPONSE_PLANNING_CFG.get("model", None)
+RESPONSE_PLANNING_MAX_TOKENS: int = int(RESPONSE_PLANNING_CFG.get("max_tokens", 200))
+RESPONSE_PLANNING_TIMEOUT: float = float(RESPONSE_PLANNING_CFG.get("timeout", 5.0))
+RESPONSE_REVIEW_ENABLED: bool = bool(RESPONSE_PLANNING_CFG.get("review_enabled", True))
+RESPONSE_REVIEW_MODEL: Optional[str] = RESPONSE_PLANNING_CFG.get("review_model", None)
+RESPONSE_REVIEW_MAX_TOKENS: int = int(RESPONSE_PLANNING_CFG.get("review_max_tokens", 200))
+RESPONSE_REVIEW_CONFIDENCE_THRESHOLD: float = float(RESPONSE_PLANNING_CFG.get("review_confidence_threshold", 0.80))
+RESPONSE_REVIEW_TIMEOUT: float = float(RESPONSE_PLANNING_CFG.get("review_timeout", 5.0))
+
+# Environment overrides
+RESPONSE_PLANNING_ENABLED = bool(int(os.getenv(
+    "RESPONSE_PLANNING_ENABLED",
+    "1" if RESPONSE_PLANNING_ENABLED else "0",
+)))
+RESPONSE_REVIEW_ENABLED = bool(int(os.getenv(
+    "RESPONSE_REVIEW_ENABLED",
+    "1" if RESPONSE_REVIEW_ENABLED else "0",
+)))
+
+# --------------------------------------------------------------------
 # Agentic File Access (read/grep/list within approved folders)
 # --------------------------------------------------------------------
 FILE_ACCESS_CFG = config.get("file_access", {})

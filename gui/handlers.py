@@ -1123,6 +1123,134 @@ async def handle_submit(
                     f"[UNCERTAINTY FALLBACK] Detection failed (non-fatal): {e}"
                 )
 
+        # ── Post-Answer Review Gate: check response against plan ──
+        _review_retry_done = False
+        if agentic_enabled and final_output and not _uncertainty_retry_done:
+            try:
+                from config.app_config import (
+                    RESPONSE_REVIEW_ENABLED,
+                    RESPONSE_REVIEW_CONFIDENCE_THRESHOLD,
+                )
+                if RESPONSE_REVIEW_ENABLED:
+                    _plan = getattr(orchestrator, '_current_response_plan', None)
+                    _planner = getattr(orchestrator, 'response_planner', None)
+                    if _plan is not None and _planner is not None:
+                        _review = await _planner.review_answer(
+                            plan=_plan,
+                            response=final_output,
+                            query=user_text,
+                        )
+                        if (
+                            _review
+                            and not _review.passes
+                            and _review.confidence >= RESPONSE_REVIEW_CONFIDENCE_THRESHOLD
+                        ):
+                            logger.warning(
+                                f"[REVIEW GATE] Response failed review "
+                                f"(confidence={_review.confidence:.2f}, "
+                                f"issues={_review.issues}). Retrying via agentic."
+                            )
+
+                            yield {
+                                "role": "assistant",
+                                "content": "🔍 Refining response...",
+                                "is_progress": True,
+                            }
+
+                            try:
+                                from core.agentic import ProgressEvent
+
+                                _review_agentic = orchestrator.agentic_controller
+                                _review_hint = (
+                                    f'[RESPONSE REVIEW RETRY] The user asked: "{user_text}" '
+                                    f"The initial response had these issues: "
+                                    f"{'; '.join(_review.issues)}. "
+                                    f"Suggestion: {_review.suggestion}. "
+                                    f"Search memory and provide a better answer."
+                                )
+                                _review_system = _review_hint + "\n\n" + (system_prompt or "")
+
+                                _review_response = ""
+                                async for item in _review_agentic.run_agentic_search(
+                                    query=user_text,
+                                    system_prompt=_review_system,
+                                    model_name=model_name,
+                                    initial_search_terms=[],
+                                    initial_context=raw_context,
+                                    skip_initial_search=True,
+                                ):
+                                    if isinstance(item, ProgressEvent):
+                                        _icon = {
+                                            "searching_memory": "🧠",
+                                            "thinking": "💭",
+                                            "found_results": "📄",
+                                            "expanding_memory": "🧠",
+                                            "memory_expanded": "✅",
+                                            "synthesizing": "✨",
+                                            "done": "✅",
+                                        }.get(item.event_type, "🔍")
+                                        yield {
+                                            "role": "assistant",
+                                            "content": f"{_icon} {item.message}",
+                                            "is_progress": True,
+                                        }
+                                    else:
+                                        _review_response += item
+                                        if not ResponseParser.has_incomplete_thinking_block(
+                                            _review_response
+                                        ):
+                                            _, _clean = ResponseParser.parse_thinking_block(
+                                                _review_response
+                                            )
+                                            yield {
+                                                "role": "assistant",
+                                                "content": _clean or _review_response,
+                                            }
+
+                                if _review_response.strip():
+                                    _think_review, _answer_review = (
+                                        ResponseParser.parse_thinking_block(_review_response)
+                                    )
+                                    final_output = (
+                                        _answer_review if _answer_review else _review_response
+                                    )
+                                    display_output = final_output
+                                    thinking_part_stream = (
+                                        _think_review or thinking_part_stream
+                                    )
+                                    _review_retry_done = True
+                                    logger.info(
+                                        f"[REVIEW GATE] Agentic retry produced "
+                                        f"{len(final_output)} chars"
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[REVIEW GATE] Agentic retry returned "
+                                        "empty, keeping original response"
+                                    )
+
+                            except Exception as e:
+                                logger.error(
+                                    f"[REVIEW GATE] Agentic retry failed: {e}"
+                                )
+                                import traceback
+                                logger.debug(
+                                    f"[REVIEW GATE] Traceback:\n"
+                                    f"{traceback.format_exc()}"
+                                )
+                        elif _review:
+                            logger.debug(
+                                f"[REVIEW GATE] Response passed review "
+                                f"(confidence={_review.confidence:.2f})"
+                            )
+
+            except ImportError as e:
+                logger.debug(f"[REVIEW GATE] Module not available: {e}")
+            except Exception as e:
+                logger.warning(
+                    f"[REVIEW GATE] Review failed (non-fatal): {e}"
+                )
+
         # After streaming completes, emit a final debug record so the Debug Trace tab is populated
         try:
             tm = getattr(orchestrator, 'tokenizer_manager', None)
