@@ -55,6 +55,17 @@ a context dict ready for formatting.
 - Set `scorer._graph_memory` / `_entity_resolver` for graph-boosted scoring
 - Cleared after gather completes
 
+### Step 3.5 — Response Planning (parallel with Step 4)
+
+If `RESPONSE_PLANNING_ENABLED` and `ResponsePlanner.should_plan()` passes
+(skips small-talk, crisis/elevated tone, disabled config), the planner
+runs in parallel with the retrieval tasks below via `asyncio.wait()` in
+the orchestrator's `build_full_prompt()`. The planner makes a lightweight
+LLM call (~200 tokens, 5s timeout) producing a `ResponsePlan` with
+key_points, tone, avoid list, and strategy. The plan is injected into
+the system prompt before `_assemble_prompt()`. If the planner times out
+or fails, the prompt proceeds without a plan.
+
 ### Step 4 — Parallel Retrieval (18 tasks, 30s timeout)
 
 All tasks execute simultaneously via `asyncio.wait()` (not `asyncio.gather`).

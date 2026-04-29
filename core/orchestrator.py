@@ -294,6 +294,20 @@ class DaemonOrchestrator:
         except Exception as e:
             self.logger.warning(f"[Orchestrator] Failed to initialize CorrectionDetector: {e}")
 
+        # Response Planner — pre-answer planning + post-answer review gate
+        self.response_planner = None
+        self._current_response_plan = None
+        try:
+            from config.app_config import RESPONSE_PLANNING_ENABLED
+            if RESPONSE_PLANNING_ENABLED:
+                from core.response_planner import ResponsePlanner
+                self.response_planner = ResponsePlanner(model_manager=model_manager)
+                self.logger.info("[Orchestrator] ResponsePlanner enabled")
+            else:
+                self.logger.debug("[Orchestrator] ResponsePlanner disabled via config")
+        except Exception as e:
+            self.logger.warning(f"[Orchestrator] Failed to initialize ResponsePlanner: {e}")
+
         # Memory citation system
         self.enable_citations = False  # Will be set from GUI checkbox
         # Pattern matches citation formats: MEM_RECENT_3, MEM_SEMANTIC_4-7, SUM_RECENT_1, REFL_SEMANTIC_2, PROFILE_CONTEXT
@@ -1318,8 +1332,44 @@ The user is processing/analyzing, open to engagement.
                 )
                 system_prompt = system_prompt.rstrip() + thinking_instruction
 
-        # --- 2) Build prompt context via PromptBuilder ---
-        prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)
+        # --- 2) Build prompt context (+ optional response plan in parallel) ---
+        _plan_result = None
+        if self.response_planner and self.response_planner.should_plan(context):
+            import asyncio as _aio
+            _plan_task = _aio.create_task(
+                self.response_planner.create_plan(
+                    query=context.original_query,
+                    context=context,
+                )
+            )
+            _prompt_task = _aio.create_task(
+                self.prompt_builder.build_prompt_from_context(context)
+            )
+            done, _ = await _aio.wait(
+                [_plan_task, _prompt_task],
+                timeout=35.0,
+                return_when=_aio.ALL_COMPLETED,
+            )
+            try:
+                prompt_ctx = _prompt_task.result()
+            except Exception as e:
+                logger.warning(f"[BUILD_FULL_PROMPT] Prompt build failed: {e}")
+                prompt_ctx = {}
+            try:
+                _plan_result = _plan_task.result()
+            except Exception as e:
+                logger.debug(f"[BUILD_FULL_PROMPT] Response planner failed (non-fatal): {e}")
+                _plan_result = None
+        else:
+            prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)
+
+        # Inject plan into system prompt
+        if _plan_result:
+            system_prompt = system_prompt.rstrip() + self.response_planner.format_plan_injection(_plan_result)
+            logger.info(f"[BUILD_FULL_PROMPT] Response plan injected: {len(_plan_result.key_points)} points, tone={_plan_result.tone}")
+
+        # Store plan on instance for review gate in handlers.py
+        self._current_response_plan = _plan_result
 
         # Store memory_id_map for citation extraction
         self._current_memory_id_map = prompt_ctx.get('memory_id_map', {})

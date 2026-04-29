@@ -265,13 +265,21 @@ AGENT(q, s):
     d*   <- rho_iota(x, s.C, s.G)                 // memory retrieval (remember)
                                                   // NOTE: web search runs as a PARALLEL
                                                   // retrieval task here, not post-generation
-    p    <- beta(x, d*, iota, E_t)               // prompt construction (plan)
+    pi_plan <- plan(q, x) if should_plan(x)      // response planning (parallel with d*)
+    p    <- beta(x, d*, iota, E_t, pi_plan)      // prompt construction (plan injection)
     a_0  <- LLM(p)                                // first generation (act)
 
     // UNCERTAINTY FALLBACK (post-generation, optional)
     // If initial response indicates uncertainty, retry via agentic search
     if UNCERTAINTY_FALLBACK_ENABLED and is_uncertain(a_0):
         agentic_search_trigger := true               // force agentic retry
+
+    // POST-ANSWER REVIEW GATE (optional)
+    // If response planning produced a plan, review the answer against it
+    if RESPONSE_REVIEW_ENABLED and pi_plan exists:
+        review <- review_answer(a_0, pi_plan)        // lightweight LLM check (~300 tokens)
+        if not review.passes and review.confidence >= 0.80:
+            agentic_search_trigger := true            // force agentic retry with review feedback
 
     // AGENTIC SEARCH LOOP (ReAct pattern, optional)
     // Triggered by LLM-first decision OR uncertainty fallback
@@ -739,14 +747,16 @@ Agent(q, s_t) =
     let iota    = classify_intent(q, x.tone)         in    // interpret
     let q'      = expand(q, s_t.G)                   in    // expand (graph-augmented query)
     let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (18 parallel retrievals)
-    let p       = beta(x, d*, iota, s_t.E)           in    // plan (26-section prompt assembly)
+    let pi_plan = plan(q, x) if should_plan(x)      in    // plan response (parallel with remember)
+    let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (26-section prompt + plan injection)
     let r       = generate_or_search(p)              in    // act (LLM + optional agentic loop)
-    let Pi      = provenance(r, p, session)           in    // audit (provenance metadata)
-    let s_{t+1} = delta(s_t, q, r, Pi)                in    // learn (store + truth + escalation + provenance)
-    (r, s_{t+1})
+    let r'      = review_or_retry(r, pi_plan)        in    // review (post-answer gate + optional retry)
+    let Pi      = provenance(r', p, session)          in    // audit (provenance metadata)
+    let s_{t+1} = delta(s_t, q, r', Pi)               in    // learn (store + truth + escalation + provenance)
+    (r', s_{t+1})
 ```
 
-Eight operations. Perceive, interpret, expand, remember, plan, act, audit, learn.
+Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, act, review, audit, learn.
 
 ---
 
@@ -783,4 +793,7 @@ Eight operations. Perceive, interpret, expand, remember, plan, act, audit, learn
 | Gen_1 | Graph walk generator (biased Markov walk -> narration) | `knowledge/graph_walk_generator.py` |
 | Gen_2 | Cross-store synthesis generator (random pairing -> bridge articulation) | `knowledge/synthesis_generator.py` |
 | is_uncertain | Uncertainty detection (keyword regex + semantic embedding) | `core/uncertainty_detector.py` |
+| pi_plan | Response plan (key_points, tone, avoid, strategy) | `core/response_planner.py` |
+| plan | Response planning function (lightweight LLM call) | `core/response_planner.py:create_plan()` |
+| review_answer | Post-answer review against plan | `core/response_planner.py:review_answer()` |
 | gate | Multi-stage gating | `processing/gate_system.py` |

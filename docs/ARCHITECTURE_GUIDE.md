@@ -116,6 +116,7 @@ core/                    # Request orchestration, context pipeline, agentic loop
 ├── intent_classifier.py # Regex-first intent detection (9 types)
 ├── best_of_handler.py   # Best-of-N, duel, ensemble generation
 ├── escalation_tracker.py# Crisis cooldown FSM (4 states)
+├── response_planner.py  # Pre-answer planning + post-answer review gate
 ├── agentic/             # ReAct tool loop
 │   ├── controller.py    # Loop orchestration
 │   ├── types.py         # Tool definitions, state types
@@ -203,6 +204,7 @@ User types: "How's my squat progress looking?"
     │     Token-budgeted: priority-based trimming, middle-out compression,
     │     LLM compression for oversized items
     │     High-signal sections placed at end for transformer attention
+    │     ResponsePlanner runs in parallel with retrieval (Step 4), plan injected into system prompt
     │
     ├─ 8. Agentic Gate Check
     │     3-tier: keyword heuristic → entity match → LLM fallback
@@ -216,6 +218,10 @@ User types: "How's my squat progress looking?"
     ├─ 9b. Uncertainty Fallback (if enabled)
     │      UncertaintyDetector checks for "I don't know" responses (keyword regex + semantic)
     │      If uncertain → automatic retry via agentic ReAct loop with memory search hint
+    │
+    ├─ 9c. Post-Answer Review Gate (if enabled)
+    │      ResponsePlanner.review_answer() checks response against pre-answer plan
+    │      If review fails with confidence >= 0.80 → retry via agentic search with review feedback
     │
     ├─ 10. Post-Response State Update
     │      Store to corpus + ChromaDB with provenance metadata
@@ -935,6 +941,15 @@ loop. Detection uses two layers: keyword regex (~18 patterns, confidence
 (threshold configurable, default 0.70). Long responses (>400 chars after
 hedge-stripping) skip detection. Config: `UNCERTAINTY_FALLBACK_ENABLED`,
 `UNCERTAINTY_SEMANTIC_THRESHOLD`, `UNCERTAINTY_MAX_LENGTH`.
+
+### Post-Answer Review Gate
+
+After uncertainty fallback, the `ResponsePlanner` (`core/response_planner.py`)
+can review the generated answer against the pre-answer plan. If the review
+fails with high confidence (>= 0.80), the system retries via agentic search
+with the review feedback as a hint. The review is a lightweight LLM call
+(~300 tokens, 5s timeout). Config: `RESPONSE_REVIEW_ENABLED`,
+`RESPONSE_REVIEW_CONFIDENCE_THRESHOLD`, `RESPONSE_REVIEW_TIMEOUT`.
 
 ### 11 Tools (8 action + done_searching + file_read/file_grep/file_list as 3)
 
@@ -1839,6 +1854,7 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `synthesis_audit` | Human grading + auto-halt | `SYNTHESIS_AUDIT_ENABLED`, `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` |
 | `provenance` | Audit trail | `PROVENANCE_ENABLED` |
 | `git_stats` | Git activity queries | `GIT_STATS_ENABLED`, `GIT_STATS_TIMEOUT`, `GIT_STATS_MAX_OUTPUT_LINES` |
+| `response_planning` | Pre-answer plan + post-answer review | `RESPONSE_PLANNING_ENABLED`, `RESPONSE_REVIEW_ENABLED`, `RESPONSE_REVIEW_CONFIDENCE_THRESHOLD` |
 
 ### Environment Variable Overrides
 

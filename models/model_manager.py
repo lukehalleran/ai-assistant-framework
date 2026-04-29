@@ -193,7 +193,8 @@ class ModelManager:
         self.api_models["glm-5-turbo"] = "z-ai/glm-5-turbo"
         # DeepSeek models
         self.api_models["deepseek-v3.1"] = "deepseek/deepseek-chat-v3.1"
-        self.api_models["deepseek-v4"] = "deepseek/deepseek-chat-v4"
+        self.api_models["deepseek-v4"] = "deepseek/deepseek-v4-pro"
+        self.api_models["deepseek-v4-flash"] = "deepseek/deepseek-v4-flash"
         self.api_models["deepseek-r1"] = "deepseek/deepseek-r1-0528"
         # Google Gemini models
         self.api_models["gemini-3-pro"] = "google/gemini-3.1-pro-preview"
