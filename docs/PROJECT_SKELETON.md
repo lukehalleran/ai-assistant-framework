@@ -1001,12 +1001,13 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
    - `fact_scope` field: "user" or "entity" on all output triples
    - Accepts `existing_facts` parameter so LLM reuses relation names for updates/cancellations **[ENHANCED 2026-04-05]**
    - Update rules in prompt: when user updates/cancels/rescinds something, LLM reuses same relation name with new value
+   - `_attach_source_excerpts()`: after extraction, keyword-matches each triple back to its source user message (200-char truncated) **[ENHANCED 2026-04-30]**
 
 3. **core/prompt/context_gatherer.py**:
    - `get_user_profile_context(query, max_tokens=500)` → Calls UserProfile.get_context_injection()
 
 4. **core/prompt/formatter.py**:
-   - `[USER PROFILE]` section → Pre-formatted string from context["user_profile"]
+   - `[USER PROFILE]` section → Pre-formatted string from context["user_profile"] with inline anti-confabulation instruction
 
 **Configuration** (`config/app_config.py`):
 ```python

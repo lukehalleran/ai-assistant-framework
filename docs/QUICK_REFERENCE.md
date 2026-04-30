@@ -1392,7 +1392,7 @@ score = (
 # Prompt section hierarchy (in builder.py _assemble_prompt):
 [RECENT CONVERSATION]          # Historical context
 [RELEVANT MEMORIES]            # Scored episodic memories
-[USER PROFILE]                 # Categorized user facts
+[USER PROFILE]                 # Categorized user facts + source excerpts + anti-confabulation instruction
 [SUMMARIES]                    # Consolidated conversation blocks
 [REFLECTIONS]                  # Session reflections
 [DREAMS]                       # Dream memories (if enabled)

@@ -2380,7 +2380,10 @@ class UnifiedPromptBuilder:
         if user_profile and isinstance(user_profile, str):
             # Count facts (each fact ends with [timestamp])
             fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
-            sections.append(f"[USER PROFILE] n={fact_count}\n{user_profile}")
+            sections.append(
+                f"[USER PROFILE] n={fact_count}\n"
+                "Stored facts — reference naturally but do not add names, apps, or details not written here.\n"
+                f"{user_profile}")
 
         # Active Features Inventory (always present, compact)
         feature_inventory = self._build_feature_inventory(context)

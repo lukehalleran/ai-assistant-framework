@@ -206,7 +206,7 @@ high-attention items (user profile, time, query) placed last:
 17. `[KNOWLEDGE GRAPH]` — entity relationships, natural language (up to 12 sentences)
 18. `[UNRESOLVED THREADS]` — open commitments/deadlines (1-3)
 19. `[PROACTIVE INSIGHTS]` — cross-domain connections (1-2)
-20. `[USER PROFILE]` — categorized facts (high-attention zone)
+20. `[USER PROFILE]` — categorized facts with inline anti-confabulation instruction and source excerpts when available (high-attention zone)
 21. `[ACTIVE FEATURES]` — feature inventory (always)
 22. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
 23. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
