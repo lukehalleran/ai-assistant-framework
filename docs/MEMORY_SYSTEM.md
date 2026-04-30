@@ -42,7 +42,7 @@ resolved, and stale information is penalized in ranking.
 | File | Purpose |
 |------|---------|
 | `memory/fact_extractor.py` | Multi-stage extraction: corrections > spaCy > REBEL > regex, dual budget |
-| `memory/llm_fact_extractor.py` | LLM-assisted triple extraction with entity support; accepts existing profile facts for relation reuse |
+| `memory/llm_fact_extractor.py` | LLM-assisted triple extraction with entity support; accepts existing profile facts for relation reuse; attaches source_excerpt via keyword matching |
 | `memory/fact_verification.py` | Pre-storage conflict checking: ephemeral > candidates > trust > LLM adjudication |
 | `memory/truth_scorer.py` | Stateless truth computation: initial score + adjustments + time decay |
 | `memory/claim_tracker.py` | Claim extraction, hashing, reverse index, staleness cascade |

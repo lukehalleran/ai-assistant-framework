@@ -13,8 +13,10 @@ Contract
   - User facts: subject="user" for personal facts (pronouns normalized)
   - Entity facts: subject=entity name for people/places/orgs the user discusses
     Entity facts include user_connection field (e.g., "user's boss")
-- Output: list of dict triples (subject, relation, object, value, category, confidence, fact_scope)
+- Output: list of dict triples (subject, relation, object, value, category, confidence, fact_scope, source_excerpt)
   - fact_scope: "user" or "entity" — indicates whether fact is about the user or a third-party entity
+  - source_excerpt: keyword-matched user message that sourced the fact (200-char truncated);
+    falls back to last message if no keyword match found
 """
 
 from __future__ import annotations
@@ -282,7 +284,9 @@ JSON:"""
             if len(triples) >= self.max_triples:
                 break
 
+        # Attach source_excerpt by matching each triple back to its source message
         if triples:
+            self._attach_source_excerpts(triples, user_messages)
             logger.info(f"[LLM Facts] SUCCESS: extracted={len(triples)} facts using model={self.model_alias}")
             for t in triples:
                 logger.info(f"[LLM Facts]   -> {t['relation']}: {t['object']} (conf={t['confidence']})")
@@ -290,3 +294,42 @@ JSON:"""
             logger.warning(f"[LLM Facts] WARNING: extracted=0 facts from LLM response. Model returned empty array.")
 
         return triples
+
+    @staticmethod
+    def _attach_source_excerpts(triples: List[Dict[str, str]],
+                                user_messages: List[str]) -> None:
+        """Match each triple to its most likely source message via keyword overlap."""
+        if not user_messages:
+            return
+        # Clean messages once
+        cleaned = []
+        for m in user_messages:
+            text = re.sub(r"^(?:user|assistant)\s*:\s*", "", (m or "").strip(), flags=re.I)
+            cleaned.append(text)
+        for triple in triples:
+            # Build keyword set from object + relation words
+            keywords = set()
+            for field in ("object", "relation"):
+                val = triple.get(field, "")
+                # Split snake_case and regular words
+                for word in re.split(r"[_\s]+", val.lower()):
+                    if len(word) > 2:
+                        keywords.add(word)
+            # Score each message by keyword overlap
+            best_msg = ""
+            best_score = 0
+            for msg in cleaned:
+                if not msg:
+                    continue
+                msg_lower = msg.lower()
+                score = sum(1 for kw in keywords if kw in msg_lower)
+                if score > best_score:
+                    best_score = score
+                    best_msg = msg
+            # Fallback to last non-empty message if no keyword match
+            if not best_msg:
+                for msg in reversed(cleaned):
+                    if msg:
+                        best_msg = msg
+                        break
+            triple["source_excerpt"] = best_msg[:200]

@@ -19,7 +19,7 @@ Module Contract
   - Triggers summary consolidation (if not SUMMARIZE_AT_SHUTDOWN_ONLY)
   - _maybe_regenerate_narrative(): Triggers narrative context refresh after consolidation [NEW 2026-01-17]
   - Entity metadata forwarding: extract_and_store_facts() uses dict-based source to pass
-    fact_scope, entity_type, user_connection through to ChromaDB metadata [NEW 2026-03]
+    fact_scope, entity_type, user_connection, source_excerpt through to ChromaDB metadata [NEW 2026-03]
   - Thread metadata forwarding: store_interaction() propagates thread_id and thread_depth
     from thread_info to ChromaDB conversation metadata [NEW 2026-03]
 - Dependencies:
@@ -450,10 +450,10 @@ class MemoryStorage:
                     "source": src,
                     "confidence": conf,
                 }
-                for key in ("fact_scope", "entity_type", "user_connection"):
+                for key in ("fact_scope", "entity_type", "user_connection", "source_excerpt"):
                     val = md.get(key)
                     if val:
-                        source_dict[key] = val
+                        source_dict[key] = val[:200] if key == "source_excerpt" else val
 
                 try:
                     # Fact verification gate: check for conflicts before storage

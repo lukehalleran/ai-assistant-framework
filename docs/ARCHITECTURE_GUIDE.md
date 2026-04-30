@@ -1602,9 +1602,11 @@ Step 1:  Block summaries — LLM compression of N-turn conversation blocks
 
 Step 2:  Session fact extraction — Rule-based, last 10 turns
          Each fact passes through FactVerifier gate
+         source_excerpt forwarded from MemoryNode metadata to ChromaDB
 
 Step 3:  LLM fact extraction — Neural triple extraction, last 12 turns
          Batch verification before storage
+         source_excerpt attached via keyword matching (_attach_source_excerpts)
          Graph ingestion for entity-worthy facts
 
 Step 4:  Procedural skill extraction — WHEN/THEN adaptive workflows
@@ -2158,8 +2160,10 @@ entity information from polluting the user's self-model.
 ### Prompt Integration
 
 The user profile is rendered as the `[USER PROFILE]` prompt section,
-organized by category. It sits in the high-attention zone of the prompt
-(near the end) and is naturally bounded at ~1-3K tokens.
+organized by category with source excerpts when available (`(said: "...")`).
+An inline anti-confabulation instruction prevents the LLM from embellishing
+vague facts with fabricated specifics. It sits in the high-attention zone
+of the prompt (near the end) and is naturally bounded at ~1-3K tokens.
 
 ---
 

@@ -1396,7 +1396,10 @@ What would you like to do?""")
             # User profile (categorized facts)
             user_profile = initial_context.get('user_profile', '')
             if user_profile and isinstance(user_profile, str) and user_profile.strip():
-                parts.append(f"[USER PROFILE]\n{user_profile}")
+                parts.append(
+                    f"[USER PROFILE]\n"
+                    "Stored facts — reference naturally but do not add names, apps, or details not written here.\n"
+                    f"{user_profile}")
 
             # Summaries (recent + semantic)
             # Builder provides: summaries (flat list), recent_summaries, semantic_summaries
