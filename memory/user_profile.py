@@ -8,7 +8,7 @@ Module Contract
   - add_facts_batch(facts: List[Dict]) → int
   - get_category(category: ProfileCategory) → List[Dict]
   - get_relevant_facts(query: str, category: ProfileCategory, limit: int) → List[Dict] [NEW: hybrid retrieval]
-  - get_context_injection(max_tokens: int, query: str) → str [UPDATED: uses query for semantic relevance; timestamps formatted as relative labels via format_relative_timestamp()]
+  - get_context_injection(max_tokens: int, query: str) → str [UPDATED: uses query for semantic relevance; timestamps formatted as relative labels via format_relative_timestamp(); includes source_excerpt as (said: "...") when available]
 - Outputs:
   - Profile data structures (dicts, lists)
   - Markdown exports, context strings for prompt injection
@@ -695,7 +695,13 @@ class UserProfile:
                         ts_str = format_relative_timestamp(ts)
                     else:
                         ts_str = str(ts) if ts else ''
-                    fact_strs.append(f"{f['relation']}={f['value']} [{ts_str}]")
+                    entry = f"{f['relation']}={f['value']} [{ts_str}]"
+                    # Include source excerpt when available for LLM grounding
+                    src_exc = (f.get('source_excerpt') or '').strip()
+                    if src_exc:
+                        clean_exc = src_exc[:80].replace('"', "'")
+                        entry += f' (said: "{clean_exc}")'
+                    fact_strs.append(entry)
 
                     # Track relations that overlap with query for timeline
                     if is_temporal:

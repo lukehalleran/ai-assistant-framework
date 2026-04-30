@@ -1,53 +1,17 @@
-feat: Uncertainty fallback, agentic time context, collection-aware expansion, per-turn thread resolution, entity correction detection, graph model extensions
+feat: Source excerpt pipeline fix + anti-confabulation guardrails
 
-Uncertainty Fallback:
-- UncertaintyDetector (core/uncertainty_detector.py): two-layer detection
-  (18 keyword regexes + 8 semantic anchor embeddings) with length guard
-- handlers.py: after standard streaming, if response is uncertain and
-  agentic is enabled, retries via run_agentic_search(skip_initial_search=True)
-  with retry hint in system prompt. Single boolean flag prevents infinite retry.
-- Provenance tracks response_mode="uncertainty-fallback"
-- Config: UNCERTAINTY_FALLBACK_ENABLED, UNCERTAINTY_SEMANTIC_THRESHOLD,
-  UNCERTAINTY_MAX_LENGTH; YAML section uncertainty_fallback
-- 33 unit tests, all passing
+LLM fabricated "HelloTalk exchange" from a vague profile fact (language_exchange=Spanish and English).
+Two-pronged fix: repair the broken source_excerpt pipeline so facts carry their original user words,
+and harden the prompt to prevent embellishment of vague facts.
 
-Agentic Time Context:
-- controller.py: _build_iteration_prompt() and _build_final_prompt() now
-  inject current date/time so the agentic model knows what "last Monday"
-  means. Previously the agentic controller was completely date-blind,
-  causing GLM-5 to hallucinate September 2025 dates for April 2026 queries.
+Pipeline fix:
+- llm_fact_extractor: _attach_source_excerpts() keyword-matches triples back to source messages
+- shutdown_processor: forwards source_excerpt from both extractors to ChromaDB
+- memory_storage: forwards source_excerpt in per-turn storage alongside entity metadata
+- user_profile: get_context_injection() shows (said: "...") when source_excerpt available
 
-Collection-Aware Expand Limits:
-- memory_expander.py: _doc_to_turn() now accepts collection parameter;
-  obsidian_notes and reference_docs use EXPAND_ANCHOR_CHAR_LIMIT_LONG (3000)
-  and EXPAND_CONTEXT_CHAR_LIMIT_LONG (2000) instead of 600/300. Fixes empty
-  bodies when expanding daily notes in agentic search.
-- Config: EXPAND_ANCHOR_CHAR_LIMIT_LONG, EXPAND_CONTEXT_CHAR_LIMIT_LONG
+Prompt hardening:
+- system_prompt.txt: "Never add specific names, apps, platforms not in stored fact"
+- builder.py, formatter.py, controller.py: inline anti-confabulation instruction on [USER PROFILE]
 
-Per-Turn Thread Resolution:
-- thread_store.py: check_quick_resolutions() — pure regex completion signal
-  detection (~1ms) against open thread topic keywords. No LLM call.
-- memory_coordinator.py: store_interaction() runs quick resolution check
-  after every turn. Fast pre-check skips DB query if no completion signal
-  ("submitted", "finished", "done with", etc.) in user message.
-- Fixes stale deadline threads persisting in prompt after user reports
-  completion (e.g. "I submitted my project" not resolving the thread).
-
-Entity Correction Detection:
-- correction_detector.py: detect_entity_corrections() for non-profile
-  entities (e.g. "Flapjack didn't die", "my cat is still alive")
-- EntityCorrectionEvent model, pronoun filtering, dedup
-- orchestrator.py: _cascade_entity_resolution() wired after store_interaction
-- 25 new tests (41 total), all passing
-
-Graph Model Extensions:
-- graph_models.py: source, is_wikidata, wikidata_qid properties on GraphNode
-- graph_memory.py: count_by_source(), count_bridge_edges(), orjson serialization
-- context_gatherer.py: graph context retrieval improvements
-- builder.py: prompt assembly refinements
-
-Other:
-- model_manager.py: minor model support update
-- system_prompt.txt: prompt wording tweak
-- 6 docs updated (ARCHITECTURE_GUIDE, AGENTIC_SEARCH, QUICK_REFERENCE,
-  PROJECT_SKELETON, FORMAL_MODEL, GOALS)
+21 tests in test_source_excerpt_pipeline.py (extraction, forwarding, injection, HelloTalk regression)

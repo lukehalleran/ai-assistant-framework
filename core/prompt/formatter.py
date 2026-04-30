@@ -602,7 +602,10 @@ class PromptFormatter:
             # Count facts (each fact ends with [timestamp])
             fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
             # Profile is already formatted from UserProfile.get_context_injection()
-            sections.append(f"[USER PROFILE] n={fact_count}\n{user_profile}")
+            sections.append(
+                f"[USER PROFILE] n={fact_count}\n"
+                "Stored facts — reference naturally but do not add names, apps, or details not written here.\n"
+                f"{user_profile}")
 
         # Time context
         # MOVED: Placed here (right before query) for temporal grounding with high attention

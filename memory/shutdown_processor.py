@@ -17,9 +17,11 @@ Module Contract
   - _generate_block_summaries(entries, conversations, topic) — fixed-size block summaries
   - _store_summary(summary_text, N, b, start, end, block) — persists with source_doc_ids backlinks,
     claim extraction, staleness_ratio, and temporal anchors
-  - _extract_session_facts(session_conversations) — rule-based fact extraction with fact verification gate
+  - _extract_session_facts(session_conversations) — rule-based fact extraction with fact verification gate;
+    forwards source_excerpt from MemoryNode metadata to ChromaDB
   - _extract_llm_facts(session_conversations) — LLM-assisted triple extraction with fact verification gate;
-    injects existing profile facts so LLM reuses relation names for updates/cancellations
+    injects existing profile facts so LLM reuses relation names for updates/cancellations;
+    forwards source_excerpt from triples to ChromaDB and UserProfile
   - _extract_procedural_skills(session_conversations) — adaptive workflow extraction
   - _generate_proposals(session_conversations) — goal-directed code change proposals
   - _check_implementation_tracking() — lightweight proposal implementation detection
@@ -493,9 +495,18 @@ class ShutdownProcessor:
                         except Exception as ve:
                             logger.debug(f"[Shutdown] Verification failed, proceeding: {ve}")
 
+                    # Forward source_excerpt if available in metadata
+                    src_dict = {
+                        "source": "shutdown_extraction",
+                        "confidence": 0.7,
+                    }
+                    fact_md = getattr(fact, 'metadata', None) or {}
+                    src_exc = fact_md.get("source_excerpt", "")
+                    if src_exc:
+                        src_dict["source_excerpt"] = src_exc[:200]
                     result = self.chroma_store.add_fact(
                         fact=fact_content,
-                        source='shutdown_extraction',
+                        source=src_dict,
                         confidence=0.7
                     )
                     if result is None:
@@ -631,9 +642,16 @@ class ShutdownProcessor:
                                 pass
 
             try:
+                src_dict = {
+                    "source": "llm_shutdown",
+                    "confidence": 0.75,
+                }
+                src_exc = t.get("source_excerpt", "")
+                if src_exc:
+                    src_dict["source_excerpt"] = src_exc[:200]
                 result = self.chroma_store.add_fact(
                     fact=fact_text,
-                    source='llm_shutdown',
+                    source=src_dict,
                     confidence=0.75,
                 )
                 if result is not None:

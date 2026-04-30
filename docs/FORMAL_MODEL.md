@@ -230,7 +230,7 @@ prompt = [
     [KNOWLEDGE GRAPH]                        // if available (entity relationship sentences)
     [UNRESOLVED THREADS]                     // if available (open commitments/deadlines)
     [PROACTIVE INSIGHTS]                     // if available (cross-domain connections)
-    [USER PROFILE]                           // if available (categorized user facts)
+    [USER PROFILE]                           // if available (categorized facts + source excerpts + anti-confabulation instruction)
     [ACTIVE FEATURES]                        // always (compact feature inventory)
     [CODEBASE CHANGES SINCE LAST SESSION]    // first message only (git diff since last session)
     [TIME CONTEXT]                           // always (current datetime)
