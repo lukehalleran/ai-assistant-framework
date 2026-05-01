@@ -21,7 +21,8 @@ Module Contract
     - Streaming hides thinking via has_incomplete_thinking_block() (tags) + likely_untagged_thinking() (heuristic)
     - Post-content ProgressEvents suppressed to prevent response pop-back
     - Citations extracted from memory_id_map via _extract_citations()
-  - UNCERTAINTY FALLBACK [NEW 2026-04-27]: After standard streaming, UncertaintyDetector checks response for "I don't know" signals (keyword regex + semantic embedding). If uncertain + agentic enabled → retries via run_agentic_search(skip_initial_search=True) with retry hint. Single boolean flag prevents infinite retry. Provenance: response_mode="uncertainty-fallback".
+  - UNCERTAINTY FALLBACK [NEW 2026-04-27]: After standard streaming, UncertaintyDetector checks response for "I don't know" signals (keyword regex + semantic embedding). If uncertain + agentic enabled → silent retry via agentic search. Retry only accepted if word overlap with original < 70%. No progress messages or chunk streaming during retry.
+  - POST-ANSWER REVIEW GATE: Checks response against ResponsePlan. Silent retry if confidence >= 0.90 (raised from 0.80). Skipped for responses < 120 chars. Same similarity guard (overlap < 70%).
   - ENHANCED: orchestrator.prepare_prompt → extract note_images → response_generator.generate_streaming_response(images=...) → store interaction
   - IMAGE SUPPORT [NEW 2026-01-30]: Extracts note_images from raw_context and passes to streaming for multimodal models
   - API error classification: [CREDITS EXHAUSTED], [RATE LIMITED], [AUTH ERROR], [MODEL NOT FOUND], [SERVER ERROR] with user-friendly messages
@@ -966,9 +967,16 @@ async def handle_submit(
                 display_output = final_answer
                 yield {"role": "assistant", "content": display_output, "is_thinking": False}
             elif final_answer:
-                # Suppress untagged thinking that parse_thinking_block couldn't split yet
-                if not thinking_complete and (thinking_started or ResponseParser.likely_untagged_thinking(final_output)):
-                    thinking_started = True
+                # Suppress untagged thinking that parse_thinking_block couldn't split yet.
+                # Only fire when: (a) heuristic detects thinking patterns, (b) text is short
+                # enough that a split hasn't been possible yet. Bail out at 300 chars to
+                # avoid false positives on normal responses that happen to match patterns.
+                _heuristic_thinks = (
+                    not thinking_complete
+                    and len(final_output) < 300
+                    and ResponseParser.likely_untagged_thinking(final_output)
+                )
+                if _heuristic_thinks:
                     display_output = "💭 **Thinking...**"
                     yield {"role": "assistant", "content": display_output, "is_thinking": True}
                 else:
@@ -1060,12 +1068,7 @@ async def handle_submit(
                             f"Retrying via agentic search."
                         )
 
-                        yield {
-                            "role": "assistant",
-                            "content": "🔍 Searching memory more deeply...",
-                            "is_progress": True,
-                        }
-
+                        # Retry silently — don't show progress, only swap if result is different
                         try:
                             from core.agentic import ProgressEvent
 
@@ -1091,49 +1094,37 @@ async def handle_submit(
                                 skip_initial_search=True,
                             ):
                                 if isinstance(item, ProgressEvent):
-                                    _icon = {
-                                        "searching_memory": "🧠",
-                                        "thinking": "💭",
-                                        "found_results": "📄",
-                                        "expanding_memory": "🧠",
-                                        "memory_expanded": "✅",
-                                        "synthesizing": "✨",
-                                        "done": "✅",
-                                    }.get(item.event_type, "🔍")
-                                    yield {
-                                        "role": "assistant",
-                                        "content": f"{_icon} {item.message}",
-                                        "is_progress": True,
-                                    }
+                                    pass  # Don't show retry progress to user
                                 else:
                                     _retry_response += item
-                                    if not ResponseParser.has_incomplete_thinking_block(
-                                        _retry_response
-                                    ):
-                                        _, _clean = ResponseParser.parse_thinking_block(
-                                            _retry_response
-                                        )
-                                        yield {
-                                            "role": "assistant",
-                                            "content": _clean or _retry_response,
-                                        }
 
                             if _retry_response.strip():
                                 _think_retry, _answer_retry = (
                                     ResponseParser.parse_thinking_block(_retry_response)
                                 )
-                                final_output = (
+                                _retry_clean = (
                                     _answer_retry if _answer_retry else _retry_response
                                 )
-                                display_output = final_output
-                                thinking_part_stream = (
-                                    _think_retry or thinking_part_stream
-                                )
-                                _uncertainty_retry_done = True
-                                logger.info(
-                                    f"[UNCERTAINTY FALLBACK] Agentic retry produced "
-                                    f"{len(final_output)} chars"
-                                )
+                                # Only replace if meaningfully different from original
+                                _orig_words = set(final_output.lower().split())
+                                _retry_words = set(_retry_clean.lower().split())
+                                _overlap = len(_orig_words & _retry_words) / max(len(_orig_words | _retry_words), 1)
+                                if _overlap < 0.7:
+                                    final_output = _retry_clean
+                                    display_output = final_output
+                                    thinking_part_stream = (
+                                        _think_retry or thinking_part_stream
+                                    )
+                                    _uncertainty_retry_done = True
+                                    logger.info(
+                                        f"[UNCERTAINTY FALLBACK] Agentic retry accepted "
+                                        f"({len(final_output)} chars, overlap={_overlap:.2f})"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"[UNCERTAINTY FALLBACK] Retry too similar "
+                                        f"(overlap={_overlap:.2f}), keeping original"
+                                    )
                             else:
                                 logger.warning(
                                     "[UNCERTAINTY FALLBACK] Agentic retry returned "
@@ -1159,7 +1150,9 @@ async def handle_submit(
 
         # ── Post-Answer Review Gate: check response against plan ──
         _review_retry_done = False
-        if agentic_enabled and final_output and not _uncertainty_retry_done:
+        # Skip review for short responses (casual/brief answers don't need quality gating)
+        _review_min_len = 120
+        if agentic_enabled and final_output and not _uncertainty_retry_done and len(final_output) >= _review_min_len:
             try:
                 from config.app_config import (
                     RESPONSE_REVIEW_ENABLED,
@@ -1185,12 +1178,7 @@ async def handle_submit(
                                 f"issues={_review.issues}). Retrying via agentic."
                             )
 
-                            yield {
-                                "role": "assistant",
-                                "content": "🔍 Refining response...",
-                                "is_progress": True,
-                            }
-
+                            # Retry silently — don't show progress, only swap if result is different
                             try:
                                 from core.agentic import ProgressEvent
 
@@ -1214,49 +1202,37 @@ async def handle_submit(
                                     skip_initial_search=True,
                                 ):
                                     if isinstance(item, ProgressEvent):
-                                        _icon = {
-                                            "searching_memory": "🧠",
-                                            "thinking": "💭",
-                                            "found_results": "📄",
-                                            "expanding_memory": "🧠",
-                                            "memory_expanded": "✅",
-                                            "synthesizing": "✨",
-                                            "done": "✅",
-                                        }.get(item.event_type, "🔍")
-                                        yield {
-                                            "role": "assistant",
-                                            "content": f"{_icon} {item.message}",
-                                            "is_progress": True,
-                                        }
+                                        pass  # Don't show retry progress to user
                                     else:
                                         _review_response += item
-                                        if not ResponseParser.has_incomplete_thinking_block(
-                                            _review_response
-                                        ):
-                                            _, _clean = ResponseParser.parse_thinking_block(
-                                                _review_response
-                                            )
-                                            yield {
-                                                "role": "assistant",
-                                                "content": _clean or _review_response,
-                                            }
 
                                 if _review_response.strip():
                                     _think_review, _answer_review = (
                                         ResponseParser.parse_thinking_block(_review_response)
                                     )
-                                    final_output = (
+                                    _review_clean = (
                                         _answer_review if _answer_review else _review_response
                                     )
-                                    display_output = final_output
-                                    thinking_part_stream = (
-                                        _think_review or thinking_part_stream
-                                    )
-                                    _review_retry_done = True
-                                    logger.info(
-                                        f"[REVIEW GATE] Agentic retry produced "
-                                        f"{len(final_output)} chars"
-                                    )
+                                    # Only replace if meaningfully different from original
+                                    _orig_words = set(final_output.lower().split())
+                                    _rev_words = set(_review_clean.lower().split())
+                                    _overlap = len(_orig_words & _rev_words) / max(len(_orig_words | _rev_words), 1)
+                                    if _overlap < 0.7:
+                                        final_output = _review_clean
+                                        display_output = final_output
+                                        thinking_part_stream = (
+                                            _think_review or thinking_part_stream
+                                        )
+                                        _review_retry_done = True
+                                        logger.info(
+                                            f"[REVIEW GATE] Agentic retry accepted "
+                                            f"({len(final_output)} chars, overlap={_overlap:.2f})"
+                                        )
+                                    else:
+                                        logger.info(
+                                            f"[REVIEW GATE] Retry too similar "
+                                            f"(overlap={_overlap:.2f}), keeping original"
+                                        )
                                 else:
                                     logger.warning(
                                         "[REVIEW GATE] Agentic retry returned "
