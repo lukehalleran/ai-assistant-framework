@@ -221,7 +221,7 @@ User types: "How's my squat progress looking?"
     │
     ├─ 9c. Post-Answer Review Gate (if enabled)
     │      ResponsePlanner.review_answer() checks response against pre-answer plan
-    │      If review fails with confidence >= 0.80 → retry via agentic search with review feedback
+    │      If review fails with confidence >= 0.90 → silent retry via agentic search (similarity-guarded)
     │
     ├─ 10. Post-Response State Update
     │      Store to corpus + ChromaDB with provenance metadata
@@ -941,7 +941,7 @@ when a `GitStatsManager` is available.
 
 If a standard (non-agentic) response is detected as uncertain — "I don't
 have information about that", "I can't recall" — the `UncertaintyDetector`
-(`core/uncertainty_detector.py`) triggers an automatic retry via the agentic
+(`core/uncertainty_detector.py`) triggers a **silent** retry via the agentic
 loop. Detection uses two layers: keyword regex (~18 patterns, confidence
 >=0.70) and semantic embedding similarity against 8 anchor sentences
 (threshold configurable, default 0.70). Long responses (>400 chars after
@@ -952,10 +952,21 @@ hedge-stripping) skip detection. Config: `UNCERTAINTY_FALLBACK_ENABLED`,
 
 After uncertainty fallback, the `ResponsePlanner` (`core/response_planner.py`)
 can review the generated answer against the pre-answer plan. If the review
-fails with high confidence (>= 0.80), the system retries via agentic search
-with the review feedback as a hint. The review is a lightweight LLM call
-(~300 tokens, 5s timeout). Config: `RESPONSE_REVIEW_ENABLED`,
-`RESPONSE_REVIEW_CONFIDENCE_THRESHOLD`, `RESPONSE_REVIEW_TIMEOUT`.
+fails with high confidence (>= 0.90), the system retries via agentic search
+with the review feedback as a hint. Responses under 120 chars skip review.
+The review is a lightweight LLM call (~300 tokens, 5s timeout). Config:
+`RESPONSE_REVIEW_ENABLED`, `RESPONSE_REVIEW_CONFIDENCE_THRESHOLD`,
+`RESPONSE_REVIEW_TIMEOUT`.
+
+### Silent Retry Protocol
+
+Both the uncertainty fallback and review gate follow a silent retry protocol:
+
+- **No UI feedback** during retry — no progress messages, no streaming chunks
+- **Similarity guard**: retry result only accepted if word overlap with the
+  original response is < 70% (Jaccard on word sets). If too similar, the
+  retry is silently discarded and the original stays visible.
+- This prevents the jarring UX of showing the same response twice.
 
 ### 11 Tools (8 action + done_searching + file_read/file_grep/file_list as 3)
 
