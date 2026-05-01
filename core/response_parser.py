@@ -12,7 +12,11 @@ Module Contract:
   - parse_thinking_block(response) → (thinking, answer): Tag-based extraction (<thinking>/<think>/<output>),
     then heuristic fallback (_detect_untagged_thinking) for models that dump reasoning without tags
   - _detect_untagged_thinking(response) → (thinking, answer): Pattern-based detection of untagged
-    chain-of-thought (meta-reasoning phrases, instruction echoes). Requires ≥2 distinct pattern hits.
+    chain-of-thought (meta-reasoning phrases, instruction echoes). Requires ≥2 distinct pattern hits
+    and a clean split point (blank-line gap + ≥20 chars answer).
+  - likely_untagged_thinking(response) → bool: Fast streaming-time check — same heuristic patterns
+    but no split required. Returns True when ≥2 patterns present. Used by handlers.py to suppress
+    thinking during streaming before parse_thinking_block() can find a clean split.
   - has_incomplete_thinking_block(response) → bool: Streaming suppression (open tag, no close tag yet)
   - extract_incomplete_thinking(response) → str: Extract in-progress thinking for streaming indicator
   - strip_thinking_tag_leaks(text) → str: Remove partial/malformed thinking tags
@@ -168,6 +172,32 @@ class ResponseParser:
         re.compile(r"(?:^|\n)\s*-\s+(?:Explicitly |Temporal |Source |Emotional |Deciding )", re.IGNORECASE),
     ]
     _HEURISTIC_MIN_HITS = 2  # need at least 2 distinct patterns to trigger
+
+    @staticmethod
+    def likely_untagged_thinking(response: str) -> bool:
+        """Fast streaming check: does accumulated text look like untagged thinking?
+
+        Unlike _detect_untagged_thinking(), this does NOT require a clean split
+        point or ≥20 chars of answer.  It only checks whether the heuristic
+        patterns appear often enough to indicate reasoning is being dumped.
+
+        Used during streaming to suppress leaked thinking before the full
+        split can be computed.
+        """
+        if not response or len(response) < 60:
+            return False
+        lines = response.split('\n')
+        if len(lines) < 2:
+            return False
+        hit_patterns: set = set()
+        for line in lines:
+            for j, pat in enumerate(ResponseParser._THINKING_HEURISTIC_PATTERNS):
+                if pat.search(line):
+                    hit_patterns.add(j)
+                    if len(hit_patterns) >= ResponseParser._HEURISTIC_MIN_HITS:
+                        return True
+                    break  # one pattern per line
+        return False
 
     @staticmethod
     def parse_thinking_block(response: str) -> Tuple[str, str]:

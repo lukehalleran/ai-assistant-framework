@@ -14,7 +14,7 @@ Contract:
     - Falls back gracefully on search/API failures
 
 Tool Support:
-    - Web search via WebSearchManager
+    - Web search via WebSearchManager (multi-term: all initial_search_terms searched in parallel)
     - Wolfram Alpha computation via WolframManager (optional)
     - Python code execution via SandboxManager (optional) [NEW 2026-01-22]
       - Persistent sessions for variable persistence across turns
@@ -1043,11 +1043,12 @@ class AgenticSearchController:
                 crisis_level=crisis_level
             )
         else:
-            # Multiple terms - use multi_search
+            # Multiple terms - search all in parallel via multi_search
             return await self.web_search_manager.multi_search(
-                query=search_terms[0],  # Primary query
+                query=search_terms[0],
                 depth=WebSearchDepth.STANDARD,
-                auto_decompose=False  # We already have decomposed terms
+                auto_decompose=False,
+                sub_queries=search_terms,
             )
 
     async def _compress_results(
@@ -1068,8 +1069,15 @@ class AgenticSearchController:
         if not result or not hasattr(result, 'pages') or not result.pages:
             return "No results found."
 
-        # Format results
-        formatted = result.get_formatted_content(max_chars=6000)
+        # Format results with [WEB_N] source IDs for citations
+        from knowledge.web_search_manager import assign_web_ids, format_web_sources_with_ids
+        numbered_sources, web_source_map = assign_web_ids(result.pages)
+        # Store map on session for provenance
+        if hasattr(self, '_current_web_source_map'):
+            self._current_web_source_map.update(web_source_map)
+        else:
+            self._current_web_source_map = web_source_map
+        formatted = format_web_sources_with_ids(numbered_sources, max_chars=6000)
 
         # Estimate token count (rough: 4 chars per token)
         estimated_tokens = len(formatted) // 4
@@ -1482,9 +1490,15 @@ What would you like to do?""")
         parts.append(f"[CURRENT USER QUERY — RESPOND TO THIS]\n{query}")
 
         # Instructions
-        parts.append("""Please provide a comprehensive answer based on ALL context above:
+        has_web = bool(session.accumulated_context)
+        citation_line = (
+            "- Cite web sources using [WEB_N] markers (e.g., 'According to Reuters [WEB_1]...'). "
+            "Every factual claim from web sources MUST include a [WEB_N] citation."
+            if has_web else "- Cite web sources when stating facts from search results"
+        )
+        parts.append(f"""Please provide a comprehensive answer based on ALL context above:
 - Use your memories, facts, and personal notes to personalize the response
-- Cite web sources when stating facts from search results
+{citation_line}
 - Note any uncertainties or conflicting information
 - Focus on answering the user's specific question""")
 

@@ -310,9 +310,10 @@ class DaemonOrchestrator:
 
         # Memory citation system
         self.enable_citations = False  # Will be set from GUI checkbox
-        # Pattern matches citation formats: MEM_RECENT_3, MEM_SEMANTIC_4-7, SUM_RECENT_1, REFL_SEMANTIC_2, PROFILE_CONTEXT
+        # Pattern matches citation formats: MEM_RECENT_3, MEM_SEMANTIC_4-7, SUM_RECENT_1, REFL_SEMANTIC_2, PROFILE_CONTEXT, WEB_1
         self.citation_pattern = re.compile(
             r'\[('
+            r'WEB_\d+|'                   # WEB_1, WEB_2 (web search sources)
             r'MEM_\w+_\d+(?:-\d+)?|'      # MEM_RECENT_3, MEM_SEMANTIC_4-7
             r'SUM_\w+_\d+(?:-\d+)?|'      # SUM_RECENT_1, SUM_SEMANTIC_2-5
             r'REFL_\w+_\d+(?:-\d+)?|'     # REFL_RECENT_1, REFL_SEMANTIC_3
@@ -320,6 +321,7 @@ class DaemonOrchestrator:
             r'PROFILE_\w+'                # PROFILE_CONTEXT
             r')\]'
         )
+        self._web_source_map: Dict[str, Dict[str, str]] = {}  # Set per-request by handlers
 
         # Check narrative context freshness on startup (non-blocking)
         self._check_narrative_freshness()
@@ -1373,6 +1375,8 @@ The user is processing/analyzing, open to engagement.
 
         # Store memory_id_map for citation extraction
         self._current_memory_id_map = prompt_ctx.get('memory_id_map', {})
+        # Store web source map for web citation extraction (populated by _assemble_prompt)
+        self._web_source_map = prompt_ctx.get('_web_source_map', {})
 
         # Forward intent classification to prompt_ctx for agentic gate decisions
         if context.intent is not None:
@@ -1494,49 +1498,68 @@ The user is processing/analyzing, open to engagement.
 
     def _extract_citations(self, response: str, memory_map: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Extract memory citations from response, handling both single citations and ranges.
+        Extract memory and web citations from response.
 
-        Args:
-            response: Raw response with citation tags like [MEM_RECENT_3] or [MEM_RECENT_4-7]
-            memory_map: Dictionary mapping citation IDs to memory metadata
+        Handles: [MEM_RECENT_3], [MEM_SEMANTIC_4-7], [WEB_1], etc.
+        Web citations validated against self._web_source_map; invalid IDs stripped.
 
         Returns:
             Tuple of (clean_response, citations_list)
-            - clean_response: Response with citation tags removed
-            - citations_list: List of cited memory metadata dicts
         """
-        # Find all cited memory IDs (includes ranges like MEM_RECENT_4-7)
         cited_ids = set(self.citation_pattern.findall(response))
 
         citations = []
-        seen_ids = set()  # Track which individual IDs we've already added
+        seen_ids = set()
+        invalid_cited_ids = []
 
+        # Memory citations
         if memory_map:
             for mem_id in cited_ids:
-                # Expand ranges into individual IDs
+                if mem_id.startswith("WEB_"):
+                    continue  # handle below
                 expanded_ids = self._expand_citation_range(mem_id)
-
-                # Look up each individual ID in memory_map
                 for individual_id in expanded_ids:
                     if individual_id in memory_map and individual_id not in seen_ids:
                         citations.append({
                             'memory_id': individual_id,
                             'type': memory_map[individual_id].get('type', 'unknown'),
                             'timestamp': memory_map[individual_id].get('timestamp', ''),
-                            'content': memory_map[individual_id].get('content', '')[:200],  # Truncate for display
+                            'content': memory_map[individual_id].get('content', '')[:200],
                             'relevance_score': memory_map[individual_id].get('relevance_score', 0.0),
-                            'db_id': memory_map[individual_id].get('db_id', None)  # Include database ID for traceability
+                            'db_id': memory_map[individual_id].get('db_id', None)
                         })
                         seen_ids.add(individual_id)
 
-        # Remove citation tags for clean display (always, even if memory_map is empty)
-        clean_response = self.citation_pattern.sub('', response)
+        # Web citations — validate against web_source_map
+        web_source_map = self._web_source_map or {}
+        for cid in cited_ids:
+            if not cid.startswith("WEB_"):
+                continue
+            if cid in web_source_map and cid not in seen_ids:
+                src = web_source_map[cid]
+                citations.append({
+                    'memory_id': cid,
+                    'type': 'web_source',
+                    'title': src.get('title', ''),
+                    'url': src.get('url', ''),
+                    'domain': src.get('domain', ''),
+                })
+                seen_ids.add(cid)
+            elif cid not in web_source_map:
+                invalid_cited_ids.append(cid)
 
-        # Clean up multiple spaces left by removal
-        clean_response = re.sub(r'\s+', ' ', clean_response)
-        clean_response = clean_response.strip()
+        # Strip invalid web citation markers from response
+        clean_response = response
+        for bad_id in invalid_cited_ids:
+            clean_response = clean_response.replace(f"[{bad_id}]", "")
 
-        self.logger.debug(f"[Citation] Extracted {len(citations)} citations from response (from {len(cited_ids)} citation tags)")
+        # Remove all remaining citation tags for clean display
+        clean_response = self.citation_pattern.sub('', clean_response)
+        clean_response = re.sub(r'\s+', ' ', clean_response).strip()
+
+        if invalid_cited_ids:
+            self.logger.warning(f"[Citation] Invalid web citations stripped: {invalid_cited_ids}")
+        self.logger.debug(f"[Citation] Extracted {len(citations)} citations (from {len(cited_ids)} tags, {len(invalid_cited_ids)} invalid)")
 
         return clean_response, citations
 
@@ -1840,15 +1863,22 @@ The user is processing/analyzing, open to engagement.
             # Sanitize prompt header echoes before returning/storing
             answer_for_storage = ResponseParser.strip_prompt_artifacts(answer_for_storage)
 
-            # Extract citations if enabled
+            # Extract citations — auto-enable when web search results present
             citations = []
-            if self.enable_citations and hasattr(self, '_current_memory_id_map') and self._current_memory_id_map:
+            has_web_sources = bool(getattr(self, '_web_source_map', None))
+            should_extract = self.enable_citations or has_web_sources
+            if should_extract and (
+                (hasattr(self, '_current_memory_id_map') and self._current_memory_id_map)
+                or has_web_sources
+            ):
                 raw_response_with_citations = answer_for_storage
                 answer_for_storage, citations = self._extract_citations(
                     answer_for_storage,
-                    self._current_memory_id_map
+                    self._current_memory_id_map if hasattr(self, '_current_memory_id_map') else {}
                 )
                 debug_info['raw_response_with_citations'] = raw_response_with_citations
+                if has_web_sources:
+                    debug_info['web_source_map'] = self._web_source_map
 
             # Record response in escalation tracker for engagement detection
             if self.escalation_tracker:

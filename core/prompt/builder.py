@@ -2018,29 +2018,38 @@ class UnifiedPromptBuilder:
         if wiki_lines:
             sections.append(f"[BACKGROUND KNOWLEDGE] n={len(wiki_lines)}\n" + "\n\n".join(wiki_lines))
 
-        # Web search results (real-time web content)
+        # Web search results (real-time web content) — with [WEB_N] source IDs
         web_search = context.get("web_search_results")
         if web_search is not None:
             try:
                 # Handle WebSearchResult object
                 if hasattr(web_search, 'has_results') and web_search.has_results:
+                    from knowledge.web_search_manager import assign_web_ids
                     pages = web_search.pages
                     from_cache = web_search.from_cache
+                    # Assign stable WEB_N IDs after dedupe
+                    numbered_sources, web_source_map = assign_web_ids(pages)
+                    # Store map for citation validation downstream
+                    context["_web_source_map"] = web_source_map
                     ws_lines: list[str] = []
-                    for i, page in enumerate(pages[:5], start=1):  # Limit to 5 results
-                        title = page.title if hasattr(page, 'title') else page.get('title', '')
-                        url = page.url if hasattr(page, 'url') else page.get('url', '')
-                        content = (page.content if hasattr(page, 'content') else page.get('content', '')) or \
-                                  (page.snippet if hasattr(page, 'snippet') else page.get('snippet', ''))
+                    for src in numbered_sources[:8]:  # Limit to 8 results
+                        content = src.content
                         if content:
-                            # Truncate long content
                             if len(content) > 2000:
                                 content = content[:2000] + "..."
-                            ws_lines.append(f"{i}) **{title}** ({url})\n{content}")
+                            ws_lines.append(f"[{src.source_id}] **{src.title}** ({src.url})\n{content}")
                     if ws_lines:
                         cache_note = " (cached)" if from_cache else ""
-                        sections.append(f"[WEB SEARCH RESULTS] n={len(ws_lines)}{cache_note}\n" + "\n\n".join(ws_lines))
-                        logger.info(f"[PROMPT ASSEMBLY] Added web search section with {len(ws_lines)} results")
+                        citation_instruction = (
+                            "Cite web sources using [WEB_N] markers (e.g., 'According to Reuters [WEB_1]...'). "
+                            "Every factual claim from web sources MUST include a citation.\n"
+                        )
+                        sections.append(
+                            f"[WEB SEARCH RESULTS] n={len(ws_lines)}{cache_note}\n"
+                            f"{citation_instruction}"
+                            + "\n\n".join(ws_lines)
+                        )
+                        logger.info(f"[PROMPT ASSEMBLY] Added web search section with {len(ws_lines)} results, {len(web_source_map)} source IDs")
             except Exception as e:
                 logger.warning(f"[PROMPT ASSEMBLY] Failed to format web search results: {e}")
 

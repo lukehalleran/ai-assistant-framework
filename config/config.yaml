@@ -150,11 +150,11 @@ uncertainty_fallback:
   max_length: 400
 response_planning:
   enabled: true
-  model: null
+  model: "gpt-4o-mini"
   max_tokens: 200
   timeout: 5.0
   review_enabled: true
-  review_model: null
+  review_model: "gpt-4o-mini"
   review_max_tokens: 200
   review_confidence_threshold: 0.8
   review_timeout: 5.0

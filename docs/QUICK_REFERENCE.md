@@ -2153,7 +2153,7 @@ class SynthesisGenerator:
         # 5. Package as SynthesisCandidate objects for filter pipeline
     def _sample_personal_entities(n) -> List[Dict]:  # 12 query seeds, shuffled
     def _sample_wiki_articles(n) -> List[Dict]:       # FAISS search, 12 query seeds, shuffled
-    def _classify_domain(item) -> str:                # categorize_relation() or keyword heuristics
+    def _classify_domain(item) -> str:                # categorize_relation() 5-layer cascade (direct→prefix→token→embedding→LLM)
     async def _articulate_bridge(concept_a, concept_b, domain_a, domain_b, ctx_a, ctx_b) -> Optional[str]:
         # LLM call; returns None on NO_CONNECTION or <5 words
     def _compute_endpoint_distance(concept_a, concept_b) -> float:

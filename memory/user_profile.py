@@ -185,13 +185,20 @@ class UserProfile:
         relation = relation.strip().lower()
         value = value.strip()
 
+        # Canonicalize relation name to prevent namespace drift
+        from memory.user_profile_schema import canonicalize_profile_relation
+        original_relation = relation
+        relation = canonicalize_profile_relation(relation, value)
+        if relation != original_relation:
+            logger.debug(f"[UserProfile] Canonicalized relation: {original_relation} → {relation}")
+
         # Resolve relative temporal references ("tomorrow" → "Thu 2026-03-13")
         from utils.temporal_resolver import resolve_temporal_references, has_temporal_reference
         if has_temporal_reference(value):
             ref_date = timestamp if isinstance(timestamp, datetime) else datetime.now()
             value = resolve_temporal_references(value, reference_date=ref_date)
 
-        # Auto-categorize if not provided
+        # Re-categorize after canonicalization (unless explicitly provided)
         if category is None:
             category = categorize_relation(relation)
 
@@ -220,19 +227,23 @@ class UserProfile:
             cat_key = category.value
             facts_list = self.profile["categories"][cat_key]
 
-            # Find existing facts with same relation
-            exact_match_idx = None  # same relation AND value
-            same_relation_current = []  # same relation, is_current=True, different value
+            # Find existing facts with same canonical relation
+            exact_match_idx = None  # same canonical relation AND value
+            same_relation_current = []  # same canonical relation, is_current=True, different value
 
             for i, existing in enumerate(facts_list):
                 if not isinstance(existing, dict):
                     continue
                 existing_rel = existing.get("relation", "")
-                if existing_rel != relation:
+                # Compare using canonical forms so e.g. pet_name matches pet
+                existing_canonical = canonicalize_profile_relation(
+                    existing_rel, existing.get("value")
+                )
+                if existing_canonical != relation:
                     continue
 
                 existing_val = existing.get("value", "")
-                if existing_val == value:
+                if existing_val.lower() == value.lower():
                     exact_match_idx = i
                 elif existing.get("is_current", True):
                     same_relation_current.append(i)
