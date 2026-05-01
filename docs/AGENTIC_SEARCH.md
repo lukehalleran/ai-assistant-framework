@@ -344,8 +344,12 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `listing_files` / `files_listed` | File list |
 | `querying_git` / `git_queried` | Git stats |
 | `synthesizing` | Starting final generation |
-| `done` | Session complete |
+| `done` | Session complete (suppressed in GUI after response starts) |
 | `error` | Error occurred |
+
+**Note:** `handlers.py` skips any `ProgressEvent` that arrives after response
+chunks have started accumulating, preventing late events (e.g. `done`) from
+overwriting the streamed response in the chatbot.
 
 ---
 

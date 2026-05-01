@@ -339,6 +339,93 @@ def _matches_phrase(text: str, phrases: Tuple[str, ...]) -> Tuple[bool, List[str
     return len(matched) > 0, matched
 
 
+# ========================================================================
+# Semantic similarity layer for search trigger
+# ========================================================================
+
+# Anchor phrases for "needs web search" — embedded once, compared to query
+_SEARCH_ANCHOR_PHRASES = [
+    "latest news current events headlines today",
+    "stock market price bitcoin crypto trading today",
+    "weather forecast temperature tomorrow this week",
+    "election results polls voting latest count",
+    "sports scores game results standings playoffs",
+    "product release date launch availability price",
+    "breaking news just announced reported confirmed",
+    "what happened situation update conflict war",
+]
+
+# Anchor phrases for "does NOT need web search" — personal/static/creative
+_NO_SEARCH_ANCHOR_PHRASES = [
+    "how are you feeling tell me about yourself",
+    "explain concept definition theory formula meaning",
+    "help me write create generate compose advice",
+    "remember when we talked about you mentioned earlier",
+    "my pet family friend relationship feelings emotions",
+]
+
+_search_anchor_embs = None
+_no_search_anchor_embs = None
+
+
+def _get_search_anchors():
+    """Lazily compute and cache search anchor embeddings."""
+    global _search_anchor_embs, _no_search_anchor_embs
+    if _search_anchor_embs is not None:
+        return _search_anchor_embs, _no_search_anchor_embs
+    try:
+        from models.model_manager import ModelManager
+        embedder = ModelManager._get_cached_embedder()
+        if embedder is None:
+            return None, None
+        import numpy as np
+        _search_anchor_embs = embedder.encode(
+            _SEARCH_ANCHOR_PHRASES, convert_to_numpy=True, normalize_embeddings=True
+        )
+        _no_search_anchor_embs = embedder.encode(
+            _NO_SEARCH_ANCHOR_PHRASES, convert_to_numpy=True, normalize_embeddings=True
+        )
+        return _search_anchor_embs, _no_search_anchor_embs
+    except Exception:
+        return None, None
+
+
+def _semantic_search_boost(query: str, threshold: float = 0.35) -> float:
+    """
+    Compute semantic similarity boost for search trigger.
+
+    Compares query embedding to search vs no-search anchor phrases.
+    Returns a boost (0.0 to 0.3) if query is semantically close to
+    search-worthy topics and far from no-search topics.
+    """
+    search_embs, no_search_embs = _get_search_anchors()
+    if search_embs is None:
+        return 0.0
+    try:
+        from models.model_manager import ModelManager
+        embedder = ModelManager._get_cached_embedder()
+        if embedder is None:
+            return 0.0
+        import numpy as np
+        q_emb = embedder.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
+        # Max similarity to any search anchor
+        search_sims = search_embs @ q_emb
+        max_search_sim = float(np.max(search_sims))
+        # Max similarity to any no-search anchor
+        no_search_sims = no_search_embs @ q_emb
+        max_no_search_sim = float(np.max(no_search_sims))
+        # Only boost if closer to search anchors than no-search anchors
+        margin = max_search_sim - max_no_search_sim
+        if max_search_sim > threshold and margin > 0.05:
+            # Scale boost based on both absolute similarity and margin
+            # Higher margin = more confident this is search-worthy
+            boost = min(0.3, margin * 0.8 + (max_search_sim - threshold) * 0.5)
+            return round(boost, 2)
+    except Exception:
+        pass
+    return 0.0
+
+
 def should_search_heuristic(query: str) -> WebSearchDecision:
     """
     Determine if query needs web search using heuristics only.
@@ -437,6 +524,14 @@ def should_search_heuristic(query: str) -> WebSearchDecision:
         # Reduced penalty when strong positive signals present
         confidence -= min(static_count * 0.1, 0.2)
         reasons.append(f"{static_count} static topic(s) (reduced penalty due to strong signals)")
+
+    # Semantic similarity boost: catch queries near keyword sets but without exact matches
+    # Only runs if keyword confidence is ambiguous (0.1-0.45) — clear hits/misses skip this
+    if 0.1 <= confidence < SEARCH_CONFIDENCE_THRESHOLD:
+        sem_boost = _semantic_search_boost(query)
+        if sem_boost > 0:
+            confidence += sem_boost
+            reasons.append(f"semantic boost +{sem_boost:.2f}")
 
     # Clamp confidence
     confidence = max(0.0, min(1.0, confidence))

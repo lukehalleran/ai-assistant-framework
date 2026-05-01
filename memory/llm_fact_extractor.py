@@ -9,7 +9,8 @@ ENHANCED (2026-04): Accepts existing profile facts so LLM reuses relation names 
 Contract
 - Inputs: list of recent user-only messages (strings), model_manager, optional existing_facts list
 - Behavior: calls a compact LLM prompt to extract SRO triples as strict JSON with category metadata
-  - When existing_facts provided, prompt instructs LLM to reuse relation names for updates
+  - When existing_facts provided, prompt instructs LLM to reuse relation names for updates;
+    explicit-only guard prevents inferring updates from absence of mentions
   - User facts: subject="user" for personal facts (pronouns normalized)
   - Entity facts: subject=entity name for people/places/orgs the user discusses
     Entity facts include user_connection field (e.g., "user's boss")
@@ -95,6 +96,33 @@ class LLMFactExtractor:
         self.max_input_chars = int(max_input_chars)
         self.max_triples = int(max_triples)
 
+    @staticmethod
+    def _build_alias_hints(existing_facts: List[Dict[str, Any]]) -> str:
+        """Build compact alias hints from SAFE_RELATION_ALIASES for relations the user has."""
+        try:
+            from memory.user_profile_schema import SAFE_RELATION_ALIASES
+        except ImportError:
+            return ""
+        # Invert: canonical → [variants]
+        from collections import defaultdict
+        canonical_to_variants = defaultdict(set)
+        for variant, canonical in SAFE_RELATION_ALIASES.items():
+            canonical_to_variants[canonical].add(variant)
+        # Only show aliases where user has a matching fact
+        user_rels = {f.get("relation", "") for f in (existing_facts or [])}
+        lines = []
+        for canonical, variants in sorted(canonical_to_variants.items()):
+            if canonical in user_rels or variants & user_rels:
+                bad = ", ".join(sorted(variants - {canonical}))
+                if bad:
+                    lines.append(f"- {canonical}, NOT: {bad}")
+        if not lines:
+            return ""
+        return (
+            "\nRELATION ALIASES — always use canonical form:\n"
+            + "\n".join(lines[:15]) + "\n"  # cap at 15 to limit token cost
+        )
+
     def _build_prompt(self, user_messages: List[str], existing_facts: List[Dict[str, Any]] = None) -> str:
         msgs = []
         total = 0
@@ -137,7 +165,15 @@ class LLMFactExtractor:
                     "User says 'switching to evenings'. Output: "
                     '{{"subject": "user", "relation": "gym_schedule", "object": "MWF evenings", "category": "fitness", "confidence": 0.9}}\n'
                     "- Do NOT invent a new relation name when an existing one covers the same topic.\n"
+                    "- Do NOT infer updates from absence. If the user does not mention a topic, "
+                    "leave the existing fact unchanged — do not extract a contradicting fact.\n"
+                    "- Only extract an update when the user EXPLICITLY states a change "
+                    '(e.g., "I got a new job", "we broke up", "I moved to Boston").\n'
                 )
+                # Add relation alias hints from SAFE_RELATION_ALIASES
+                alias_hints = self._build_alias_hints(existing_facts)
+                if alias_hints:
+                    existing_facts_section += alias_hints
 
         # Enhanced extraction prompt with category awareness and few-shot examples
         prompt_template = """You extract factual information about the user from conversation messages.

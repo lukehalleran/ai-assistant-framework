@@ -1883,6 +1883,11 @@ from config.app_config import config
 - `WebSearchSession`: Maintains search state across prompt building
 - `QueryDecomposition` **[NEW 2026-01]**: Result of query analysis (should_decompose, sub_queries, confidence)
 - `MultiSearchResult` **[NEW 2026-01]**: Extended result with decomposition metadata
+- `NumberedWebSource` **[NEW 2026-04]**: Web page with stable `[WEB_N]` source ID for citations
+- `assign_web_ids()` **[NEW 2026-04]**: Assigns stable WEB_N IDs centrally after merge/dedupe by canonical URL
+- `_is_broad_news_query()` **[NEW 2026-04]**: Detects broad news briefing requests vs specific topic queries
+- `_decompose_news_query()` **[NEW 2026-04]**: Generates 3-5 source-aware facet queries for news briefings
+- `dedupe_search_terms()` **[NEW 2026-04]**: Collapses near-duplicate search terms by word overlap ratio
 
 **Key Components**:
 
@@ -4922,19 +4927,19 @@ except Exception as e:
 - **Purpose**: Verify tests catch code mutations
 
 ### 8.4 Test Suite Status (Current)
-**Last Full Run**: December 2024
+**Last Full Run**: 2026-05-01
 
 **Test Collection**:
-- **Total tests**: 2,900+ tests across all files
-- **Total test files**: 148
-- **Unit tests**: 40+ files in `tests/unit/`
-- **Integration tests**: 100+ files in `tests/`
+- **Total tests**: 3,250+ tests across all files
+- **Total test files**: 152
+- **Unit tests**: 40+ files in `tests/unit/` (2097 tests)
+- **Integration/other tests**: 100+ files in `tests/` (1151 tests)
+
+**Results**: 3248 passed, 5 failed (all in `test_wizard.py` — wizard step ordering)
 
 **Known Failure Categories** (not caused by recent changes):
-- UnifiedPromptBuilder API changes (missing `get_facts`, `get_recent_facts`)
-- MultiCollectionChromaStore __init__ kwargs mismatches
-- DaemonOrchestrator __init__ signature changes
-- Need detection edge cases (8 tests, acceptable tolerance)
+- `test_wizard.py`: 5 tests — wizard flow step ordering changed
+- `test_active_day_decay.py`: 1 test — time_manager assertion
 
 ---
 

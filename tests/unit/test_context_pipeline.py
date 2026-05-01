@@ -266,8 +266,8 @@ class TestContextPipelineBasic:
 
         assert result.processed_query == "test query"
         assert result.metadata["use_raw_mode"] is True
-        # Topic extraction still runs in raw mode
-        mock_topic_manager.update_from_user_input.assert_called_once()
+        # Raw mode skips topic extraction (cost reduction)
+        mock_topic_manager.update_from_user_input.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_conversation_depth_increments(self, pipeline):
@@ -295,7 +295,7 @@ class TestContextPipelineTopicExtraction:
         """Test that topic manager methods are called."""
         await pipeline.build("Tell me about Python async")
 
-        mock_topic_manager.update_from_user_input.assert_called_once_with("Tell me about Python async")
+        # update_from_user_input removed in cost reduction; only get_primary_topic is called
         mock_topic_manager.get_primary_topic.assert_called_once()
 
     @pytest.mark.asyncio
@@ -323,7 +323,7 @@ class TestContextPipelineTopicExtraction:
     @pytest.mark.asyncio
     async def test_topic_extraction_handles_exception(self, pipeline, mock_topic_manager):
         """Test graceful handling when topic extraction fails."""
-        mock_topic_manager.update_from_user_input.side_effect = Exception("Topic error")
+        mock_topic_manager.get_primary_topic.side_effect = Exception("Topic error")
 
         result = await pipeline.build("test query")
 
@@ -608,7 +608,7 @@ class TestContextPipelineIntegration:
     ):
         """Test that pipeline handles errors gracefully in all stages."""
         # Make everything fail
-        mock_topic_manager.update_from_user_input.side_effect = Exception("Topic error")
+        mock_topic_manager.get_primary_topic.side_effect = Exception("Topic error")
         mock_file_processor.process_files.side_effect = Exception("File error")
         mock_stm_analyzer.analyze.side_effect = Exception("STM error")
         mock_memory_system.get_thread_context.side_effect = Exception("Thread error")

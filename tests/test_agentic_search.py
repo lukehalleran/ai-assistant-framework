@@ -583,13 +583,18 @@ class TestAgenticSearchController:
             web_search_manager=mock_web_search_manager
         )
 
-        # Mock result with short content
+        # Mock result with short content (pages need title/url/content for WEB_N formatting)
+        mock_page = MagicMock()
+        mock_page.title = "Test Page"
+        mock_page.url = "https://example.com"
+        mock_page.content = "Short content"
+        mock_page.score = 0.9
         mock_result = MagicMock()
-        mock_result.pages = [MagicMock()]
-        mock_result.get_formatted_content = MagicMock(return_value="Short content")
+        mock_result.pages = [mock_page]
 
         compressed = await controller._compress_results(mock_result)
-        assert compressed == "Short content"
+        assert "Short content" in compressed
+        assert "[WEB_1]" in compressed
 
     @pytest.mark.asyncio
     async def test_compress_results_empty(self, mock_model_manager, mock_web_search_manager):

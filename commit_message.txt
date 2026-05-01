@@ -1,17 +1,34 @@
-feat: Source excerpt pipeline fix + anti-confabulation guardrails
+fix: Streaming thinking leak, agentic response pop-back, multi-term web search, broad news detection
 
-LLM fabricated "HelloTalk exchange" from a vague profile fact (language_exchange=Spanish and English).
-Two-pronged fix: repair the broken source_excerpt pipeline so facts carry their original user words,
-and harden the prompt to prevent embellishment of vague facts.
+Thinking Leak Fix:
+- response_parser: added likely_untagged_thinking() — fast streaming-time check
+  for untagged chain-of-thought (≥2 heuristic pattern hits, no split required)
+- handlers.py streaming loop: suppresses untagged thinking during streaming
+  before parse_thinking_block() can find a clean split point
 
-Pipeline fix:
-- llm_fact_extractor: _attach_source_excerpts() keyword-matches triples back to source messages
-- shutdown_processor: forwards source_excerpt from both extractors to ChromaDB
-- memory_storage: forwards source_excerpt in per-turn storage alongside entity metadata
-- user_profile: get_context_injection() shows (said: "...") when source_excerpt available
+Agentic Response Pop-Back Fix:
+- handlers.py agentic loop: skip ProgressEvents after response chunks start
+  accumulating — prevents "done" event from overwriting streamed response
+- Removed redundant pre-debug yield after agentic loop (response already
+  streamed chunk-by-chunk, only one final yield with debug record needed)
 
-Prompt hardening:
-- system_prompt.txt: "Never add specific names, apps, platforms not in stored fact"
-- builder.py, formatter.py, controller.py: inline anti-confabulation instruction on [USER PROFILE]
+Multi-Term Web Search Fix:
+- web_search_manager: multi_search() accepts sub_queries param for pre-computed
+  sub-queries, skips decomposition analysis and goes straight to parallel search
+- context_gatherer: passes ALL LLM search terms (was only using first term)
+- agentic/controller: _execute_search() passes all terms via sub_queries param
 
-21 tests in test_source_excerpt_pipeline.py (extraction, forwarding, injection, HelloTalk regression)
+Broad News Detection Improvements:
+- _is_broad_news_query(): added "what's in the news" keyword, fixed named entity
+  check to only flag mid-sentence capitals (sentence-initial words always skipped)
+- Added _semantic_broad_news_check(): embedding similarity fallback against
+  5 news anchor phrases vs 4 non-news anchors (threshold 0.45, margin 0.05)
+- Catches "Anything happening in the world?", "Brief me on current affairs" etc.
+
+Stale Test Fixes:
+- test_context_pipeline: 3 tests updated (update_from_user_input removed in cost reduction)
+- test_user_profile: 3 tests updated (sleep_quality categorizes to HEALTH not PREFERENCES)
+- test_citation_system: added _web_source_map to bare orchestrator mocks
+- test_agentic_search: compress_results mock updated for [WEB_N] formatting
+
+Tests: 3248 passed, 5 wizard-only failures (pre-existing)

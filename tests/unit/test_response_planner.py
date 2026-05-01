@@ -44,7 +44,7 @@ class _IntentResult:
 
 @dataclass
 class _FakeContext:
-    original_query: str = "What is my brother's name?"
+    original_query: str = "Can you help me understand how the memory system works in detail?"
     tone_level: _ToneLevel = _ToneLevel.CONVERSATIONAL
     query_analysis: _QueryAnalysis = field(default_factory=_QueryAnalysis)
     intent: _IntentResult = field(default_factory=_IntentResult)

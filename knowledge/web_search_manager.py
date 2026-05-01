@@ -9,6 +9,7 @@ Module Contract:
   - Crisis level to suppress search during therapeutic moments
 - Outputs:
   - WebSearchResult containing relevant web content with sources
+  - NumberedWebSource + web_source_map for stable [WEB_N] citation IDs (assigned centrally after merge/dedupe)
 - Side effects:
   - Network requests to Tavily API
   - ChromaDB cache writes (72-hour TTL)
@@ -23,7 +24,11 @@ Enhanced Features (2026-01):
   - Uses Tavily's news-optimized agent (topic="news") for better results
   - Limits to recent results (days=1) for "today" queries
   - Keyword/phrase detection for news intent
+  - Semantic similarity fallback: _semantic_broad_news_check() compares query
+    embedding against 5 news anchors vs 4 non-news anchors (threshold 0.45)
+  - Named entity check uses mid-sentence capitals only (sentence-initial words skipped)
 - Entry point: multi_search() for decomposed queries, search() for single queries
+  - sub_queries param: callers can pass pre-computed sub-queries for parallel search
 """
 
 import asyncio
@@ -246,6 +251,94 @@ class MultiSearchResult:
             timestamp=self.timestamp,
             error=self.error
         )
+
+
+@dataclass
+class NumberedWebSource:
+    """Web page with stable [WEB_N] source ID assigned after merge/dedupe."""
+    source_id: str      # "WEB_1", "WEB_2", etc.
+    title: str
+    url: str
+    domain: str
+    content: str        # snippet or extracted text
+    score: float = 0.0
+
+
+def assign_web_ids(pages: List[WebPage]) -> Tuple[List[NumberedWebSource], Dict[str, Dict[str, str]]]:
+    """
+    Assign stable WEB_N IDs after merge/dedupe.
+
+    Deduplicates by canonical URL, ranks by score, assigns sequential IDs.
+    Returns (numbered_sources, web_source_map).
+
+    web_source_map: {"WEB_1": {"title": ..., "url": ..., "domain": ...}, ...}
+    """
+    if not pages:
+        return [], {}
+
+    # Dedupe by canonical URL (strip trailing slash, fragments)
+    seen_urls: Dict[str, WebPage] = {}
+    for page in pages:
+        canonical = page.url.rstrip("/").split("#")[0].split("?")[0]
+        if canonical not in seen_urls or page.score > seen_urls[canonical].score:
+            seen_urls[canonical] = page
+
+    # Rank by score descending
+    ranked = sorted(seen_urls.values(), key=lambda p: p.score, reverse=True)
+
+    numbered = []
+    source_map = {}
+    for idx, page in enumerate(ranked):
+        source_id = f"WEB_{idx + 1}"
+        domain = ""
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(page.url).netloc.replace("www.", "")
+        except Exception:
+            pass
+        content = page.content or page.snippet or ""
+        numbered.append(NumberedWebSource(
+            source_id=source_id,
+            title=page.title,
+            url=page.url,
+            domain=domain,
+            content=content,
+            score=page.score,
+        ))
+        source_map[source_id] = {
+            "title": page.title,
+            "url": page.url,
+            "domain": domain,
+        }
+
+    return numbered, source_map
+
+
+def format_web_sources_with_ids(
+    numbered_sources: List[NumberedWebSource],
+    max_chars: int = 10000,
+) -> str:
+    """Format web sources with [WEB_N] markers for prompt injection."""
+    if not numbered_sources:
+        return ""
+    parts = []
+    total_chars = 0
+    for src in numbered_sources:
+        if total_chars >= max_chars:
+            break
+        content = src.content
+        if not content:
+            continue
+        entry = f"[{src.source_id}] **{src.title}** ({src.url})\n{content}"
+        if total_chars + len(entry) > max_chars:
+            remaining = max_chars - total_chars
+            if remaining > 100:
+                entry = entry[:remaining] + "..."
+                parts.append(entry)
+            break
+        parts.append(entry)
+        total_chars += len(entry) + 2
+    return "\n\n".join(parts)
 
 
 class WebSearchRateLimiter:
@@ -1042,6 +1135,188 @@ If not splitting, leave SUB_QUERIES empty."""
                 reason=f"Decomposition error: {str(e)}"
             )
 
+    # Semantic anchors for broad news detection (lazy-initialized)
+    _broad_news_anchors = None
+    _not_news_anchors = None
+
+    _BROAD_NEWS_PHRASES = [
+        "what is happening in the news today",
+        "give me a news briefing current events update",
+        "catch me up on what's going on in the world",
+        "latest headlines breaking news today",
+        "what did I miss in the news recently",
+    ]
+    _NOT_NEWS_PHRASES = [
+        "tell me about my dog my family my notes",
+        "explain how a concept works scientific theory",
+        "help me write code fix this bug programming",
+        "how are you feeling emotions conversation casual",
+    ]
+
+    @classmethod
+    def _get_news_anchors(cls):
+        """Lazily embed broad-news anchor phrases."""
+        if cls._broad_news_anchors is not None:
+            return cls._broad_news_anchors, cls._not_news_anchors
+        try:
+            from models.model_manager import ModelManager
+            embedder = ModelManager._get_cached_embedder()
+            if embedder is None:
+                return None, None
+            import numpy as np
+            cls._broad_news_anchors = embedder.encode(
+                cls._BROAD_NEWS_PHRASES, convert_to_numpy=True, normalize_embeddings=True
+            )
+            cls._not_news_anchors = embedder.encode(
+                cls._NOT_NEWS_PHRASES, convert_to_numpy=True, normalize_embeddings=True
+            )
+            return cls._broad_news_anchors, cls._not_news_anchors
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _is_broad_news_query(query: str) -> bool:
+        """Detect broad news/current-events briefing requests (not topic-specific)."""
+        q = query.lower().strip()
+        positives = [
+            "what's going on", "what's happening", "whats going on", "whats happening",
+            "catch me up", "current events", "latest headlines", "what did i miss",
+            "news update", "fill me in", "what's new in the world", "what have i missed",
+            "up on the news", "what's the news", "what's in the news",
+        ]
+        has_positive = any(p in q for p in positives)
+        # Also catch: "news" + question mark + no specific topic
+        if not has_positive:
+            if "news" in q and "?" in query:
+                has_positive = True
+            else:
+                # No keyword match — try semantic similarity as fallback
+                has_positive = WebSearchManager._semantic_broad_news_check(query)
+
+        if not has_positive:
+            return False
+
+        # Negative: specific topic modifier → focused search, not briefing
+        specifics = ["news about", "latest on ", "update on ", "happened with",
+                     "what about ", "regarding ", "tell me about"]
+        if any(s in q for s in specifics):
+            return False
+        # Named entities (capitalized mid-sentence words) → specific query
+        # Skip first word of each sentence (always capitalized, not an entity signal)
+        import re as _re
+        _sentences = _re.split(r'[.!?]+\s*', query)
+        _NON_ENTITY_MID = {
+            "i", "i'll", "i'm", "i've", "i'd",
+        }
+        has_named_entity = False
+        for _sent in _sentences:
+            _words = _sent.split()
+            for w in _words[1:]:  # skip sentence-initial word
+                if len(w) > 1 and w[0].isupper() and w.lower().rstrip("?.,!") not in _NON_ENTITY_MID:
+                    has_named_entity = True
+                    break
+            if has_named_entity:
+                break
+        if has_named_entity:
+            return False
+        return True
+
+    @classmethod
+    def _semantic_broad_news_check(cls, query: str, threshold: float = 0.45) -> bool:
+        """Semantic similarity fallback for broad news detection."""
+        news_embs, not_news_embs = cls._get_news_anchors()
+        if news_embs is None:
+            return False
+        try:
+            from models.model_manager import ModelManager
+            embedder = ModelManager._get_cached_embedder()
+            if embedder is None:
+                return False
+            import numpy as np
+            q_emb = embedder.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
+            max_news_sim = float(np.max(news_embs @ q_emb))
+            max_not_news_sim = float(np.max(not_news_embs @ q_emb))
+            margin = max_news_sim - max_not_news_sim
+            if max_news_sim > threshold and margin > 0.05:
+                log.debug(
+                    f"[WebSearch] Semantic broad news match: sim={max_news_sim:.3f}, "
+                    f"margin={margin:.3f}"
+                )
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def _decompose_news_query(self, query: str, user_interests: List[str] = None) -> List[str]:
+        """Generate 3-5 targeted sub-queries for a news briefing."""
+        date_str = datetime.now().strftime("%B %Y")
+        interest_hint = ""
+        if user_interests:
+            interest_hint = (
+                f"\nThe user has known interests in: {', '.join(user_interests[:5])}. "
+                "Bias one query toward these if relevant."
+            )
+        prompt = (
+            f"Generate 3-5 specific web search queries for a concise news briefing as of {date_str}.\n"
+            "Prefer authoritative sources:\n"
+            "- geopolitics/world: Reuters, AP, BBC\n"
+            "- economy/markets: Reuters, CNBC, Financial Times\n"
+            "- science/space/tech: official agency sources, plus Reuters/AP\n"
+            "- wildcard: major developing story from reputable outlets\n"
+            f"{interest_hint}\n"
+            f"Return one query per line. No numbering. Avoid generic queries like 'current news {date_str}'."
+        )
+        try:
+            from models.model_manager import ModelManager
+            mm = ModelManager()
+            response = await mm.generate_once(
+                prompt=prompt,
+                model_name=self.link_selector_model,
+                system_prompt="Generate search queries. One per line. No numbering.",
+                max_tokens=150,
+                temperature=0.3,
+            )
+            queries = [
+                line.strip() for line in (response or "").strip().split("\n")
+                if line.strip() and len(line.strip()) > 10
+            ]
+            if queries:
+                log.info(f"[WebSearch] News decomposition: {len(queries)} facet queries generated")
+            return queries[:5]
+        except Exception as e:
+            log.warning(f"[WebSearch] News decomposition failed: {e}")
+            return []
+
+    @staticmethod
+    def dedupe_search_terms(terms: List[str]) -> List[str]:
+        """Collapse near-duplicate search terms by word overlap ratio."""
+        if len(terms) <= 1:
+            return terms
+        # Remove common filler words that inflate overlap
+        _FILLER = {"the", "a", "an", "in", "on", "of", "for", "and", "to", "is", "are", "was"}
+        def _content_words(text):
+            return {w for w in text.lower().split() if w not in _FILLER and len(w) > 2}
+
+        deduped = [terms[0]]
+        for term in terms[1:]:
+            words_new = _content_words(term)
+            is_dupe = False
+            for existing in deduped:
+                words_existing = _content_words(existing)
+                # Use overlap ratio: shared / min(len_a, len_b)
+                # This catches cases where short generic terms overlap heavily
+                if not words_new or not words_existing:
+                    continue
+                overlap = len(words_new & words_existing)
+                min_len = min(len(words_new), len(words_existing))
+                ratio = overlap / min_len if min_len > 0 else 0
+                if ratio > 0.5:
+                    is_dupe = True
+                    break
+            if not is_dupe:
+                deduped.append(term)
+        return deduped
+
     async def multi_search(
         self,
         query: str,
@@ -1050,7 +1325,8 @@ If not splitting, leave SUB_QUERIES empty."""
         timeout: Optional[float] = None,
         use_cache: bool = True,
         max_results_per_query: int = 3,
-        auto_decompose: bool = True
+        auto_decompose: bool = True,
+        sub_queries: Optional[List[str]] = None
     ) -> MultiSearchResult:
         """
         Perform a multi-query search with automatic decomposition.
@@ -1069,6 +1345,7 @@ If not splitting, leave SUB_QUERIES empty."""
             use_cache: Whether to use cache
             max_results_per_query: Max results per sub-query
             auto_decompose: Whether to auto-analyze for decomposition
+            sub_queries: Pre-computed sub-queries (skips decomposition analysis)
 
         Returns:
             MultiSearchResult with merged pages from all sub-queries
@@ -1082,10 +1359,38 @@ If not splitting, leave SUB_QUERIES empty."""
                 error=f"Search suppressed during {crisis_level} crisis level"
             )
 
-        # Attempt query decomposition if enabled
-        decomposition = None
-        if auto_decompose:
-            decomposition = await self.decompose_query(query)
+        # Pre-computed sub-queries: skip all decomposition analysis
+        if sub_queries and len(sub_queries) > 1:
+            log.info(f"[WebSearch] Using {len(sub_queries)} pre-computed sub-queries")
+            decomposition = QueryDecomposition(
+                original_query=query,
+                should_decompose=True,
+                sub_queries=sub_queries[:4],
+                confidence=0.9,
+                reason="Pre-computed sub-queries from caller",
+            )
+            # Fall through to parallel execution below
+
+        # Broad news detection: bypass general decomposition, use facet queries
+        elif self._is_broad_news_query(query):
+            news_queries = await self._decompose_news_query(query)
+            if news_queries:
+                log.info(f"[WebSearch] Broad news detected, using {len(news_queries)} facet queries")
+                decomposition = QueryDecomposition(
+                    original_query=query,
+                    should_decompose=True,
+                    sub_queries=news_queries,
+                    confidence=0.9,
+                    reason="Broad news briefing request",
+                )
+                # Fall through to parallel execution below
+            else:
+                decomposition = None
+        else:
+            # Attempt general query decomposition if enabled
+            decomposition = None
+            if auto_decompose:
+                decomposition = await self.decompose_query(query)
 
         # If decomposition not beneficial, fall back to single search
         if not decomposition or not decomposition.should_decompose:

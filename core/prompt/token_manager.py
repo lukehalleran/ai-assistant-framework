@@ -56,7 +56,7 @@ PRIORITY_ORDER = [
     ("user_uploads",          6),  # User explicitly uploaded content
     ("reference_docs",        5),  # User uploaded reference documents
     ("memories",              5),
-    ("web_search_results",    5),  # Real-time web content, can be large (2-10K)
+    ("web_search_results",    8),  # Real-time web content — high priority, user explicitly asked for current info
     ("procedural_skills",     4),  # Adaptive workflows
     ("facts",                 4),
     ("summaries",             3),

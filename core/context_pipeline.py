@@ -112,6 +112,9 @@ class ContextResult:
     # Intent classification
     intent: Optional["IntentResult"] = None
 
+    # Small talk flag (set when CASUAL_SOCIAL intent with high confidence)
+    is_small_talk: bool = False
+
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -294,6 +297,7 @@ class ContextPipeline:
                 logger.debug(f"Stage 4 (Heavy Topic): detected, {len(extracted_facts)} facts extracted")
 
         # Stage 4.5: Intent Classification (regex-first, no LLM)
+        is_small_talk = False
         if not use_raw_mode and self._intent_classifier:
             intent_result = self._intent_classifier.classify(
                 user_input,
@@ -303,6 +307,11 @@ class ContextPipeline:
                 f"Stage 4.5 (Intent): {intent_result.intent.value} "
                 f"(conf={intent_result.confidence:.2f})"
             )
+            # Flag casual social messages to skip expensive downstream calls
+            from core.intent_classifier import IntentType
+            if intent_result.intent == IntentType.CASUAL_SOCIAL and intent_result.confidence >= 0.70:
+                is_small_talk = True
+                logger.debug("Stage 4.5: is_small_talk=True (CASUAL_SOCIAL, high confidence)")
 
         # Stages 5+6: Query Rewriting + STM Analysis (parallelized — independent LLM calls)
         run_rewrite = not use_raw_mode and self._enable_query_rewrite
@@ -385,6 +394,7 @@ class ContextPipeline:
             extracted_facts=extracted_facts,
             query_analysis=query_analysis,
             intent=intent_result,
+            is_small_talk=is_small_talk,
             metadata={
                 "use_raw_mode": use_raw_mode,
                 "has_files": file_context is not None,
@@ -409,10 +419,7 @@ class ContextPipeline:
             return None, []
 
         try:
-            # Update topic manager state
-            self.topic_manager.update_from_user_input(query)
-
-            # Get primary topic
+            # Get primary topic (also updates internal state + has LLM cache)
             primary = self.topic_manager.get_primary_topic(query)
 
             # Get all topics (primary + any extracted entities)
@@ -526,8 +533,13 @@ class ContextPipeline:
         try:
             from utils.query_checker import analyze_query_async, analyze_query
 
-            # First, get basic query analysis (synchronous)
+            # First, get basic query analysis (synchronous, heuristic only)
             query_analysis = analyze_query(query, self.model_manager)
+
+            # Skip LLM heavy topic check for short casual messages —
+            # keyword heuristic (250+ weighted terms) is sufficient
+            if len(query.split()) < 8 and not query_analysis.is_heavy_topic:
+                return False, [], query_analysis
 
             # Then check for heavy topics (async, may use LLM)
             async_analysis = await analyze_query_async(query, self.model_manager)

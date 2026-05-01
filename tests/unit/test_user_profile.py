@@ -170,15 +170,15 @@ class TestAppendOnlyStorage:
         profile.add_fact("sleep_quality", "poor", confidence=0.7)
         profile.add_fact("sleep_quality", "slept fine", confidence=0.7)
 
-        # Current view: only latest
-        current = profile.get_category(ProfileCategory.PREFERENCES)
+        # Current view: only latest (sleep_quality categorizes to HEALTH)
+        current = profile.get_category(ProfileCategory.HEALTH)
         sleep_current = [f for f in current if f["relation"] == "sleep_quality"]
         assert len(sleep_current) == 1
         assert sleep_current[0]["value"] == "slept fine"
         assert sleep_current[0]["is_current"] is True
 
         # Historical view: both preserved
-        all_facts = profile.get_category(ProfileCategory.PREFERENCES, include_historical=True)
+        all_facts = profile.get_category(ProfileCategory.HEALTH, include_historical=True)
         sleep_all = [f for f in all_facts if f["relation"] == "sleep_quality"]
         assert len(sleep_all) == 2
         old = [f for f in sleep_all if f["value"] == "poor"][0]
@@ -286,22 +286,22 @@ class TestComputedViews:
 
         # Snapshot at Jan 20 → should see "poor" as the latest
         snapshot = profile.get_profile_at(datetime(2025, 1, 20))
-        pref_facts = snapshot.get("preferences", [])
-        sleep = [f for f in pref_facts if f["relation"] == "sleep_quality"]
+        health_facts = snapshot.get("health", [])
+        sleep = [f for f in health_facts if f["relation"] == "sleep_quality"]
         assert len(sleep) == 1
         assert sleep[0]["value"] == "poor"
 
         # Snapshot at Feb 1 → should see "slept fine"
         snapshot = profile.get_profile_at(datetime(2025, 2, 1))
-        pref_facts = snapshot.get("preferences", [])
-        sleep = [f for f in pref_facts if f["relation"] == "sleep_quality"]
+        health_facts = snapshot.get("health", [])
+        sleep = [f for f in health_facts if f["relation"] == "sleep_quality"]
         assert len(sleep) == 1
         assert sleep[0]["value"] == "slept fine"
 
         # Snapshot at Feb 10 → should see "okay"
         snapshot = profile.get_profile_at(datetime(2025, 2, 10))
-        pref_facts = snapshot.get("preferences", [])
-        sleep = [f for f in pref_facts if f["relation"] == "sleep_quality"]
+        health_facts = snapshot.get("health", [])
+        sleep = [f for f in health_facts if f["relation"] == "sleep_quality"]
         assert len(sleep) == 1
         assert sleep[0]["value"] == "okay"
 
@@ -517,7 +517,7 @@ class TestEphemeralPruning:
                                  timestamp=datetime(2025, 1, 1) + timedelta(hours=i))
 
             # Check final state
-            all_facts = profile.get_category(ProfileCategory.PREFERENCES, include_historical=True)
+            all_facts = profile.get_category(ProfileCategory.HOBBIES, include_historical=True)
             current_activity = [f for f in all_facts if f["relation"] == "current_activity"]
 
             # Historical count should be bounded near max_history

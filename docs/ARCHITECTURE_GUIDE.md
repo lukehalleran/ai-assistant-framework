@@ -858,9 +858,14 @@ cautiously.
 
 The default mode: the assembled prompt is sent to the active LLM model
 via `response_generator.generate_streaming_response()`. Chunks stream
-back to the GUI as they arrive. Thinking blocks (`<thinking>...</thinking>`)
-are detected during streaming and suppressed from output — the thinking
-content is captured separately for provenance storage.
+back to the GUI as they arrive. Thinking blocks are suppressed from
+output via three streaming-time gates:
+
+1. **Tag-based**: `has_incomplete_thinking_block()` detects `<thinking>`/`<think>` open tags before the close tag arrives.
+2. **API-level**: Models with native reasoning (Claude, DeepSeek-R1) send thinking via `delta.reasoning_content`; synthetic `<thinking>` tags are emitted by the response generator.
+3. **Heuristic**: `likely_untagged_thinking()` catches untagged chain-of-thought during streaming (≥2 distinct meta-reasoning patterns like "I should...", "The user wants..."). Suppresses display until `parse_thinking_block()` can cleanly split thinking from answer.
+
+The thinking content is captured separately for provenance storage.
 
 ### Best-of-N / Duel / Ensemble
 
@@ -888,8 +893,9 @@ After generation, responses pass through `ResponseParser`:
 
 - `parse_thinking_block()` — Extract thinking content and final answer via three layers:
   1. **Tag-based**: `<thinking>`/`<think>`/`<output>` tag extraction
-  2. **Heuristic fallback**: `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning phrases, instruction echoes). Requires ≥2 distinct pattern hits.
+  2. **Heuristic fallback**: `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning phrases, instruction echoes). Requires ≥2 distinct pattern hits and a clean split point.
   3. **Tag cleanup**: `strip_thinking_tag_leaks()` removes partial/malformed tags
+- `likely_untagged_thinking()` — Fast streaming-time check (no split required). Returns True when ≥2 heuristic patterns are present. Used by `handlers.py` to suppress thinking before `parse_thinking_block()` can find a clean split.
 - `strip_reflection_blocks()` — Remove `<reflect>` and quality reflection blocks
 - `strip_xml_wrappers()` — Remove `<result>`, `<answer>`, `<output>` wrappers
 - `strip_prompt_artifacts()` — Remove echoed prompt headers
@@ -1351,7 +1357,7 @@ connections across different domains of the user's life.
 
 1. **Classify user edges**: Walk all edges from the "user" node, classify
    by domain (health, career, fitness, relationships, hobbies, etc.)
-   using `categorize_relation()` and override dict
+   using `categorize_relation()` (5-layer cascade: direct→prefix→token→embedding→LLM) and override dict
 
 2. **Identify active domains**: Match query entities to domains via
    entity resolution + keyword fallback
@@ -1662,8 +1668,12 @@ Real-time web search with query decomposition, caching, and rate limiting:
   parallel sub-queries (max 4), results merged
 - **Caching**: 72-hour cache in ChromaDB to avoid repeated API calls
 - **Rate limiting**: Daily credit budget (default 100 credits/day)
-- **News detection**: Pattern-based detection triggers news-optimized
-  search parameters
+- **News detection**: Keyword + semantic similarity detection for broad
+  news briefings. `_is_broad_news_query()` uses keyword phrases, `news + ?`
+  fallback, and a semantic embedding check against 5 news anchor phrases.
+  Mid-sentence named entities trigger specific-query rejection.
+- **Multi-term search**: `multi_search(sub_queries=[...])` accepts pre-computed
+  sub-queries for parallel execution (used when LLM generates multiple terms)
 - **Crisis suppression**: Web search is suppressed during HIGH/MEDIUM
   crisis tone levels
 
@@ -1922,6 +1932,8 @@ tests/
 ├── benchmarks/     # Retrieval quality (real embeddings)
 └── fixtures/       # Seed data (30 memories, 54 synthesis candidates)
 ```
+
+**Last full run**: 2026-05-01 — 3248 passed, 5 wizard-only failures (pre-existing).
 
 Key test counts by subsystem:
 
