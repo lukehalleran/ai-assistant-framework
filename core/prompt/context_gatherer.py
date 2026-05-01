@@ -29,6 +29,7 @@ Module Contract
   - _get_wiki_content(query, limit) -> List[Dict]  [ChromaDB wiki_knowledge first, API fallback]
   - _get_semantic_chunks(query, k) -> List[Dict]
   - _get_web_search_results(query, crisis_level, ...) -> WebSearchResult/MultiSearchResult
+    [passes all LLM search terms via sub_queries for parallel search]
   - _get_dreams(limit) -> List[Dict]
   - get_facts(query, limit) / get_recent_facts(limit) -> List[Dict]
   - _expand_query_with_graph(query, max_terms) -> str  [appends graph neighbor names]
@@ -2086,15 +2087,14 @@ class ContextGatherer:
             search_terms = getattr(decision, 'search_terms', [])
             if search_terms:
                 logger.info(f"[ContextGatherer] Using LLM-optimized search terms: {search_terms}")
-                # Execute search with optimized terms (bypass auto_decompose since LLM already did this)
-                # Use first LLM term as primary query; skip auto_decompose since LLM already optimized
                 result = await manager.multi_search(
                     query=search_terms[0],
                     depth=search_depth,
                     crisis_level=crisis_level,
                     timeout=WEB_SEARCH_TIMEOUT,
                     use_cache=True,
-                    auto_decompose=False
+                    auto_decompose=False,
+                    sub_queries=search_terms if len(search_terms) > 1 else None,
                 )
             else:
                 # No LLM search terms, use original query with auto-decompose

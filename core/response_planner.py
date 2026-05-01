@@ -92,7 +92,9 @@ class ResponsePlanner:
         except ImportError:
             return False
 
-        # Skip small-talk
+        # Skip small-talk (set by IntentClassifier CASUAL_SOCIAL)
+        if getattr(context, "is_small_talk", False):
+            return False
         qa = getattr(context, "query_analysis", None)
         if qa and getattr(qa, "is_small_talk", False):
             return False
@@ -103,6 +105,18 @@ class ResponsePlanner:
             from core.context_pipeline import ToneLevel
             if tone in (ToneLevel.CRISIS, ToneLevel.ELEVATED):
                 return False
+
+        # Skip for casual social intent
+        intent = getattr(context, "intent", None)
+        if intent and hasattr(intent, "intent"):
+            from core.intent_classifier import IntentType
+            if intent.intent == IntentType.CASUAL_SOCIAL:
+                return False
+
+        # Skip for very short queries
+        query = getattr(context, "original_query", "") or ""
+        if len(query.split()) < 8:
+            return False
 
         return True
 

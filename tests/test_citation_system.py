@@ -14,6 +14,7 @@ def test_extract_citations_basic():
     # Create a minimal orchestrator instance
     orchestrator = DaemonOrchestrator.__new__(DaemonOrchestrator)
     orchestrator.citation_pattern = re.compile(r'\[(MEM_\w+_\d+|FACT_\d+|SUM_\d+|PROFILE_\w+)\]')
+    orchestrator._web_source_map = {}
     orchestrator.logger = Mock()
 
     response = "You mentioned [MEM_RECENT_3] that you're starting OMSA and [PROFILE_CONTEXT] you like Python"
@@ -61,6 +62,7 @@ def test_extract_citations_no_citations():
     """Test extraction when response has no citations."""
     orchestrator = DaemonOrchestrator.__new__(DaemonOrchestrator)
     orchestrator.citation_pattern = re.compile(r'\[(MEM_\w+_\d+|FACT_\d+|SUM_\d+|PROFILE_\w+)\]')
+    orchestrator._web_source_map = {}
     orchestrator.logger = Mock()
 
     response = "This is a regular response without any citations"
@@ -82,6 +84,7 @@ def test_extract_citations_empty_memory_map():
     """Test extraction with empty memory map."""
     orchestrator = DaemonOrchestrator.__new__(DaemonOrchestrator)
     orchestrator.citation_pattern = re.compile(r'\[(MEM_\w+_\d+|FACT_\d+|SUM_\d+|PROFILE_\w+)\]')
+    orchestrator._web_source_map = {}
     orchestrator.logger = Mock()
 
     response = "Response with [MEM_RECENT_1] citation that doesn't exist"
@@ -99,6 +102,7 @@ def test_extract_citations_multiple_same_citation():
     """Test extraction when same citation appears multiple times."""
     orchestrator = DaemonOrchestrator.__new__(DaemonOrchestrator)
     orchestrator.citation_pattern = re.compile(r'\[(MEM_\w+_\d+|FACT_\d+|SUM_\d+|PROFILE_\w+)\]')
+    orchestrator._web_source_map = {}
     orchestrator.logger = Mock()
 
     response = "You said [MEM_RECENT_1] earlier and then [MEM_RECENT_1] again"
@@ -125,6 +129,7 @@ def test_extract_citations_semantic_memory():
     """Test extraction with semantic memory citations."""
     orchestrator = DaemonOrchestrator.__new__(DaemonOrchestrator)
     orchestrator.citation_pattern = re.compile(r'\[(MEM_\w+_\d+|FACT_\d+|SUM_\d+|PROFILE_\w+)\]')
+    orchestrator._web_source_map = {}
     orchestrator.logger = Mock()
 
     response = "Based on [MEM_SEMANTIC_5] your previous research"
@@ -166,6 +171,7 @@ def test_citation_content_truncation():
     """Test that citation content is truncated to 200 chars."""
     orchestrator = DaemonOrchestrator.__new__(DaemonOrchestrator)
     orchestrator.citation_pattern = re.compile(r'\[(MEM_\w+_\d+|FACT_\d+|SUM_\d+|PROFILE_\w+)\]')
+    orchestrator._web_source_map = {}
     orchestrator.logger = Mock()
 
     long_content = "A" * 500  # 500 character string

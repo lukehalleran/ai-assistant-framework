@@ -18,7 +18,8 @@ Module Contract
       - Tier 3: LLM fallback — piggybacks on web search trigger LLM call; returns needs_memory_search and needs_knowledge_search fields
     - Casual skip filter only applies when no keyword/entity/knowledge trigger fired
     - skip_initial_search=True for computation, memory, and knowledge queries (skips Round 1 web search)
-    - Streaming hides incomplete thinking blocks via has_incomplete_thinking_block()
+    - Streaming hides thinking via has_incomplete_thinking_block() (tags) + likely_untagged_thinking() (heuristic)
+    - Post-content ProgressEvents suppressed to prevent response pop-back
     - Citations extracted from memory_id_map via _extract_citations()
   - UNCERTAINTY FALLBACK [NEW 2026-04-27]: After standard streaming, UncertaintyDetector checks response for "I don't know" signals (keyword regex + semantic embedding). If uncertain + agentic enabled → retries via run_agentic_search(skip_initial_search=True) with retry hint. Single boolean flag prevents infinite retry. Provenance: response_mode="uncertainty-fallback".
   - ENHANCED: orchestrator.prepare_prompt → extract note_images → response_generator.generate_streaming_response(images=...) → store interaction
@@ -611,11 +612,18 @@ async def handle_submit(
                 logger.debug(f"[Handle Submit] Entity match check failed (non-fatal): {e}")
 
         # Casual skip filter: only applies when no keyword/entity trigger fired
+        _search_words = {'search', 'look', 'find', 'news', 'latest', 'current', 'today', 'recent', '2026', '2025', 'what is', 'who is', 'how does', 'tell me about'}
+        _has_search_signal = any(w in _lower for w in _search_words) or '?' in user_text
         _skip_patterns = [
-            len(_words) < 5 and not any(w in _lower for w in ['search', 'news', 'latest', 'current', 'today', 'recent', '2026', '2025']),
-            _lower.startswith(('nice', 'thanks', 'thank you', 'cool', 'great', 'awesome', 'got it', 'ok ', 'okay', 'yeah', 'yes', 'no ', 'nope', 'nah')),
-            'working' in _lower and 'search' in _lower,  # meta-comments about search
-            all(w in ['yes', 'no', 'ok', 'okay', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank', 'you'] for w in _words),
+            len(_words) < 5 and not _has_search_signal,
+            len(_words) < 10 and not _has_search_signal,
+            # Casual starters only skip for SHORT messages without search signals
+            len(_words) < 12 and not _has_search_signal and _lower.startswith((
+                'nice', 'thanks', 'thank you', 'cool', 'great', 'awesome', 'got it',
+                'ok ', 'okay', 'yeah', 'yes', 'no ', 'nope', 'nah', 'haha', 'lol',
+                'true', 'fair', 'same', 'right', 'exactly', 'for sure', 'bet', 'word',
+            )),
+            all(w in ['yes', 'no', 'ok', 'okay', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank', 'you', 'lol', 'haha', 'true', 'right', 'fair', 'same'] for w in _words),
         ]
         if not needs_computation and not needs_memory and not needs_knowledge and any(_skip_patterns):
             logger.debug("[Handle Submit] Agentic skipped - casual/short message")
@@ -736,6 +744,10 @@ async def handle_submit(
                     if _exhausted:
                         break
                     if isinstance(item, ProgressEvent):
+                        # Don't overwrite streamed response with late progress events
+                        if agentic_response:
+                            logger.debug(f"[Handle Submit] Skipping post-content progress: {item.event_type}")
+                            continue
                         # Yield progress events as status messages
                         status_icon = {
                             "thinking": "💭",
@@ -782,6 +794,24 @@ async def handle_submit(
                 final_output = agentic_response
                 thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
                 display_output = final_answer if final_answer else final_output
+
+                # Append web sources footer if [WEB_N] citations present
+                _web_map = getattr(agentic_controller, '_current_web_source_map', None) or {}
+                if _web_map:
+                    import re as _re
+                    _cited_ids = set(_re.findall(r'\[WEB_(\d+)\]', display_output))
+                    if _cited_ids:
+                        _footer_lines = []
+                        for _n in sorted(_cited_ids, key=int):
+                            _key = f"WEB_{_n}"
+                            _src = _web_map.get(_key)
+                            if _src:
+                                _footer_lines.append(f"[{_key}] [{_src.get('title', '')}]({_src.get('url', '')})")
+                        if _footer_lines:
+                            display_output += "\n\n---\n**Sources:**\n" + "\n".join(_footer_lines)
+                    # Also set on orchestrator for provenance
+                    orchestrator._web_source_map = _web_map
+
                 logger.debug(f"[Handle Submit] Agentic loop done, response_len={len(final_output)}, display_len={len(display_output)}")
 
                 # Token counts for debug
@@ -841,11 +871,9 @@ async def handle_submit(
                     'citations_enabled': getattr(orchestrator, 'enable_citations', False),
                     'provenance': _agentic_prov,
                 }
-                # Yield the clean response first (without debug, to ensure it displays)
+                # Yield final response with debug record (response was already streamed
+                # chunk-by-chunk during the loop, so only one yield needed here)
                 logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
-                yield {"role": "assistant", "content": display_output}
-
-                # Then yield with debug record for the debug trace
                 yield {"role": "assistant", "content": display_output, "debug": debug_record}
                 logger.debug("[Handle Submit] Agentic final response yielded")
 
@@ -938,16 +966,22 @@ async def handle_submit(
                 display_output = final_answer
                 yield {"role": "assistant", "content": display_output, "is_thinking": False}
             elif final_answer:
-                # Continue streaming the answer
-                try:
-                    import re
-                    # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
-                    # Use non-greedy match and ensure we capture everything between outer tags
-                    m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
-                    display_output = (m.group(2).strip() if m else final_answer)
-                except (IndexError, AttributeError):
-                    display_output = final_answer
-                yield {"role": "assistant", "content": display_output}
+                # Suppress untagged thinking that parse_thinking_block couldn't split yet
+                if not thinking_complete and (thinking_started or ResponseParser.likely_untagged_thinking(final_output)):
+                    thinking_started = True
+                    display_output = "💭 **Thinking...**"
+                    yield {"role": "assistant", "content": display_output, "is_thinking": True}
+                else:
+                    # Continue streaming the answer
+                    try:
+                        import re
+                        # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
+                        # Use non-greedy match and ensure we capture everything between outer tags
+                        m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
+                        display_output = (m.group(2).strip() if m else final_answer)
+                    except (IndexError, AttributeError):
+                        display_output = final_answer
+                    yield {"role": "assistant", "content": display_output}
             else:
                 # No thinking block detected, stream normally
                 try:

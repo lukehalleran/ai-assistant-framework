@@ -243,8 +243,13 @@ class ShutdownProcessor:
             # 6.9) Wiki-to-graph enrichment — add session's wiki articles to graph
             await self._run_wiki_enrichment()
 
-            # 7) Save knowledge graph and entity aliases
+            # 7) Save knowledge graph, entity aliases, and category cache
             self._save_knowledge_graph()
+            try:
+                from memory.user_profile_schema import save_category_cache
+                save_category_cache()
+            except Exception as e:
+                logger.debug(f"[Shutdown] Category cache save failed (non-fatal): {e}")
 
             # 8) Cross-collection deduplication (if enabled)
             await self._run_cross_collection_dedup()
@@ -572,19 +577,40 @@ class ShutdownProcessor:
         )
 
         # Gather existing profile facts so LLM can reuse relation names for updates
+        # Deduplicate by canonical relation, keep newest per relation, sort newest first
         existing_facts = None
         if self.user_profile:
             try:
+                from memory.user_profile_schema import canonicalize_profile_relation
                 current_view = self.user_profile.get_current_view()
-                existing_facts = []
+                raw_facts = []
                 for cat_name, facts_list in current_view.items():
                     for f in facts_list:
                         if isinstance(f, dict) and f.get("relation") and f.get("value"):
-                            existing_facts.append({
+                            raw_facts.append({
                                 "relation": f["relation"],
                                 "value": f["value"],
                                 "category": cat_name,
+                                "timestamp": f.get("timestamp", ""),
                             })
+                # Deduplicate by canonical relation — keep newest per canonical name
+                seen_rels = {}
+                for f in raw_facts:
+                    canonical = canonicalize_profile_relation(f["relation"], f.get("value"))
+                    ts = f.get("timestamp", "")
+                    if canonical not in seen_rels or ts > seen_rels[canonical].get("timestamp", ""):
+                        # Store with canonical relation name so LLM sees clean names
+                        seen_rels[canonical] = {
+                            "relation": canonical,
+                            "value": f["value"],
+                            "category": f["category"],
+                            "timestamp": ts,
+                        }
+                existing_facts = sorted(
+                    seen_rels.values(),
+                    key=lambda x: x.get("timestamp", ""),
+                    reverse=True
+                )[:60]
             except Exception as pf_err:
                 logger.debug(f"[Shutdown] Failed to gather profile facts for LLM context: {pf_err}")
 
