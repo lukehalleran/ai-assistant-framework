@@ -387,9 +387,13 @@ time window get gentle decay (1.0 → 0.7), memories outside get standard
 exponential decay.
 
 **Retrieval overrides** adjust how many items each parallel retrieval task
-fetches. CASUAL_SOCIAL reduces max memories to 5, max facts to 10, and max
-recent to 5. EMOTIONAL_SUPPORT increases max recent to 20. These overrides
-flow through `builder.py` into every parallel task launch.
+fetches. CASUAL_SOCIAL reduces max memories to 3, reflections/reference_docs/
+narrative/user_uploads/proactive to 0, and summaries to 1. EMOTIONAL_SUPPORT
+increases max recent to 20 and keeps reflections at 8. These overrides flow
+through `builder.py` into every parallel task launch — setting any count to
+0 skips the async retrieval task entirely. Profile values were calibrated
+against eval data (50 snapshots, 1799 pairs, two judge models) in Phase 8.
+Gated by `PROMPT_SECTION_GATING_ENABLED` config flag (default True).
 
 **Gate threshold overrides** adjust the cosine similarity threshold in
 multi-stage gating. Some intents lower the threshold to let more

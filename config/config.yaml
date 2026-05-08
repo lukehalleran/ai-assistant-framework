@@ -218,6 +218,7 @@ narrative_context:
 intent_classifier:
   enabled: true
   stm_refinement_threshold: 0.5
+  section_gating_enabled: true  # Phase 8: eval-driven section gating via _PROFILES
 entity_facts:
   enabled: true
   per_turn_cap: 4

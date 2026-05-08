@@ -306,6 +306,9 @@ class IntentClassifier:
 #   weights: {relevance, recency, truth, ...} overrides for SCORE_WEIGHTS
 #   retrieval: {max_mems, max_recent, max_summaries, ...} overrides for PROMPT_MAX_*
 #   gate: threshold override for gate system
+# Phase 8 added retrieval keys: max_reference_docs, max_narrative,
+#   max_user_uploads, max_proactive, max_personal_notes
+# Setting max_X=0 skips retrieval task entirely (no async call launched)
 
 # Integration flow:
 # ContextPipeline Stage 4.5 → classify() → IntentResult on ContextResult
@@ -316,6 +319,7 @@ class IntentClassifier:
 # Config (app_config.py):
 INTENT_ENABLED = True
 INTENT_STM_REFINEMENT_THRESHOLD = 0.50
+PROMPT_SECTION_GATING_ENABLED = True  # Phase 8 eval-driven gating
 ```
 
 ---

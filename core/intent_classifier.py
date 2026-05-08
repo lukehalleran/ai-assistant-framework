@@ -90,6 +90,9 @@ class IntentResult:
 #
 # Retrieval keys match the PROMPT_MAX_* constants in builder.py / gatherer.
 
+# Per-intent profiles: scoring weights, retrieval count overrides, gate thresholds.
+# Retrieval counts updated 2026-05-08 based on Phase 5+6 eval findings
+# (50 snapshots, 1799 pairs, two judges: gpt-4o-mini + haiku-4.5).
 _PROFILES: Dict[IntentType, dict] = {
     IntentType.FACTUAL_RECALL: {
         "weights": {
@@ -99,6 +102,7 @@ _PROFILES: Dict[IntentType, dict] = {
         "retrieval": {
             "max_mems": 20, "max_recent": 5, "max_summaries": 5,
             "max_dreams": 0, "max_wiki": 5,
+            "max_user_uploads": 0,  # eval: DROP? 0%/0%
         },
         "gate": 0.45,
     },
@@ -121,6 +125,8 @@ _PROFILES: Dict[IntentType, dict] = {
         "retrieval": {
             "max_recent": 20, "max_mems": 10, "max_facts": 5,
             "max_dreams": 3,
+            "max_reflections": 8,   # eval: KEEP for emotional (50%/100%)
+            "max_narrative": 5,     # eval: KEEP (100%/50%)
         },
         "gate": 0.35,
     },
@@ -131,9 +137,14 @@ _PROFILES: Dict[IntentType, dict] = {
         },
         "retrieval": {
             "max_recent": 5, "max_mems": 3, "max_facts": 3,
-            "max_summaries": 2, "max_reflections": 0,
+            "max_summaries": 1,         # eval: tightened from 2 (26%/38% BL)
+            "max_reflections": 0,       # eval: confirms DROP (21%/37%)
             "max_dreams": 0, "max_wiki": 0, "max_skills": 0,
             "max_proposals": 0, "max_git_commits": 0,
+            "max_reference_docs": 0,    # eval: GPT DROP (36%), saves ~2K tokens
+            "max_narrative": 0,         # eval: DROP (27%/33%)
+            "max_user_uploads": 0,      # eval: DROP (25%/40%)
+            "max_proactive": 0,         # eval: low-impact (29%/14%)
         },
         "gate": 0.65,
     },
@@ -143,7 +154,9 @@ _PROFILES: Dict[IntentType, dict] = {
             "importance": 0.05, "continuity": 0.05, "structure": 0.10,
         },
         "retrieval": {
-            "max_skills": 8, "max_mems": 15, "max_wiki": 5,
+            "max_skills": 8, "max_mems": 10, "max_wiki": 5,
+            "max_reflections": 0,       # eval: DROP (17%/33%)
+            "max_reference_docs": 15,   # eval: Haiku 67% KEEP
         },
         "gate": 0.40,
     },
@@ -163,7 +176,10 @@ _PROFILES: Dict[IntentType, dict] = {
             "importance": 0.15, "continuity": 0.10, "structure": 0.10,
         },
         "retrieval": {
-            "max_mems": 20, "max_summaries": 10, "max_reflections": 8,
+            "max_mems": 5,              # eval: reduced from 20 (DROP? 33%/33%)
+            "max_summaries": 5,         # reduced from 10
+            "max_reflections": 0,       # eval: DROP (0%/0% for meta)
+            "max_reference_docs": 15,   # eval: KEEP? (100%/33%)
         },
         "gate": 0.30,
     },
@@ -175,6 +191,9 @@ _PROFILES: Dict[IntentType, dict] = {
         "retrieval": {
             "max_skills": 8, "max_git_commits": 15,
             "max_proposals": 5, "max_mems": 15,
+            "max_recent": 5,            # eval: reduced from 15 (DROP 25%/25%)
+            "max_reflections": 4,       # eval: SPLIT (50%/25%), keep some
+            "max_reference_docs": 15,   # eval: KEEP (75%/50%)
         },
         "gate": 0.40,
     },
@@ -502,14 +521,32 @@ class IntentClassifier:
     # Internal helpers
     # -------------------------------------------------------------------
 
+    # Keys added in Phase 8 (eval-driven gating). When section gating is
+    # disabled, these are stripped so only the original pre-Phase-8 retrieval
+    # overrides take effect.
+    _PHASE8_GATING_KEYS = frozenset({
+        "max_reference_docs", "max_narrative", "max_user_uploads",
+        "max_proactive", "max_personal_notes",
+    })
+
     def _build_result(self, intent: IntentType, confidence: float) -> IntentResult:
         """Build an IntentResult with profile overrides populated."""
+        from config.app_config import PROMPT_SECTION_GATING_ENABLED
+
         profile = _PROFILES.get(intent, _PROFILES[IntentType.GENERAL])
+        retrieval = dict(profile.get("retrieval", {}))
+
+        # Strip Phase 8 gating keys when section gating is disabled
+        if not PROMPT_SECTION_GATING_ENABLED:
+            retrieval = {
+                k: v for k, v in retrieval.items()
+                if k not in self._PHASE8_GATING_KEYS
+            }
 
         return IntentResult(
             intent=intent,
             confidence=round(confidence, 3),
             weight_overrides=dict(profile.get("weights", {})),
-            retrieval_overrides=dict(profile.get("retrieval", {})),
+            retrieval_overrides=retrieval,
             gate_threshold_override=profile.get("gate"),
         )

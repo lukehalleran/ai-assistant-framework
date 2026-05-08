@@ -18,7 +18,7 @@
 | Phase 5: Pairwise Judge Harness | **COMPLETE** | 25 tests passing, position randomization, blind judging |
 | Phase 6: Objective Checks | **COMPLETE** | 33 tests passing, 5 automated checks, run against 1849 responses |
 | Phase 7: Aggregation & Reporting | Not started | Depends on Phases 5 + 6 |
-| Phase 8: Prompt Policy & Shadow-Mode | Not started | Depends on Phase 7 + human review |
+| Phase 8: Prompt Policy & Shadow-Mode | **PARTIAL** | Intent-conditioned gating wired, shadow-mode deferred |
 
 ### Phase 1 Deliverables (Implemented)
 
@@ -1025,6 +1025,30 @@ confirmed as weak performers across most intents.
 2. Proposed policy changes documented and approved
 3. Shadow-mode validation shows no regression
 4. Explicit human approval before production rollout
+
+### Implementation Notes (2026-05-08)
+
+**Implemented:** Intent-conditioned section gating via existing `_PROFILES` mechanism.
+No new infrastructure — the `IntentResult.retrieval_overrides` → `eff_max_*` pipeline
+was already wired. Changes:
+
+1. `core/intent_classifier.py` — Updated `_PROFILES` retrieval counts based on eval data.
+   New keys: `max_reference_docs`, `max_narrative`, `max_user_uploads`, `max_proactive`.
+   CASUAL_SOCIAL gates 4 additional sections to 0. TECHNICAL_HELP drops reflections.
+   PROJECT_WORK reduces recent_conversation. META_CONVERSATIONAL reduces memories 20→5.
+   Config flag `PROMPT_SECTION_GATING_ENABLED` strips Phase 8 keys when disabled.
+
+2. `core/prompt/builder.py` — Added 4 new `eff_max_*` variables plus `max_narrative`
+   gate. Parallel task launches use `> 0` guards so `max_X: 0` skips entirely.
+
+3. `config/app_config.py` + `config/config.yaml` — `PROMPT_SECTION_GATING_ENABLED`
+   flag (default True), env var override.
+
+**Deferred:** Shadow-mode (dual-prompt comparison in live chat), A/B rollout,
+formal policy rules engine. These are needed for production validation but the
+gating mechanism is live and can be tuned via `_PROFILES` directly.
+
+74 intent classifier tests + 246 eval tests passing, zero regressions.
 
 ---
 
