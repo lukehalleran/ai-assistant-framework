@@ -56,13 +56,20 @@ _EXTRA_SKIP_RELATIONS: frozenset[str] = frozenset({
     "took_nap", "internet", "got", "said",
 })
 
+# Relation prefixes that are almost always ephemeral activity logs
+_EPHEMERAL_PREFIXES: tuple[str, ...] = (
+    "about_to_", "action_", "activity_", "added_", "accomplished_",
+    "doing_", "going_", "made_", "thought_", "felt_", "slept_",
+    "express_", "walking_", "took_", "finish_", "took_",
+)
+
 def _is_ephemeral_relation(rel: str) -> bool:
     """Check if a relation is ephemeral / transient."""
     r = rel.lower().strip().replace(" ", "_")
     if r in _EPHEMERAL_RELATIONS or r in _EXTRA_SKIP_RELATIONS:
         return True
-    # Catch prefixed variants: current_*, recent_*, last_*
-    if r.startswith(("current_", "recent_", "last_")):
+    # Catch prefixed variants: current_*, recent_*, last_*, about_to_*, etc.
+    if r.startswith(("current_", "recent_", "last_") + _EPHEMERAL_PREFIXES):
         return True
     return False
 
@@ -103,6 +110,51 @@ def _is_low_quality_object(obj: str) -> bool:
     return False
 
 
+# 4. Graph-worthy object filter (mirrors MemoryStorage._is_graph_worthy_object)
+_TEMPORAL_RE = re.compile(
+    r"^\d+(\.\d+)?\s*(years?|months?|weeks?|days?|hours?)", re.IGNORECASE
+)
+_FREQUENCY_RE = re.compile(
+    r"^(once|twice|three\s+times)\s+a\s+", re.IGNORECASE
+)
+_MEASUREMENT_RE = re.compile(
+    r"""^\d[\d'".,]*(lbs?|iu|mg|mcg|kg|oz|ft|in)?\s*$""", re.IGNORECASE
+)
+_VERB_STEMS = frozenset({
+    "stopped", "started", "went", "came", "used", "began",
+    "finished", "understands", "feels", "thinks", "strained",
+    "relying", "protecting", "finishing", "moved", "working",
+    "planning", "trying", "wanting", "becoming", "living",
+    "dealing", "struggling", "considering", "taking",
+})
+_GENERIC_OBJECTS = frozenset({
+    "a lot", "some", "none", "true", "false",
+    "yes", "no", "many", "few", "lots", "not sure", "unknown",
+    "graph", "user",
+})
+
+
+def _is_graph_worthy_object(obj: str) -> bool:
+    """Check if object is an entity worth graphing (not a phrase/measurement/verb)."""
+    o = obj.strip().lower()
+    if len(o) < 2 or len(o) > 60:
+        return False
+    if len(o.split()) >= 4:
+        return False
+    if o in _GENERIC_OBJECTS:
+        return False
+    if _TEMPORAL_RE.match(o):
+        return False
+    if _FREQUENCY_RE.match(o):
+        return False
+    if _MEASUREMENT_RE.match(o):
+        return False
+    first_word = o.split()[0]
+    if first_word in _VERB_STEMS:
+        return False
+    return True
+
+
 # ---------------------------------------------------------------
 # Migration
 # ---------------------------------------------------------------
@@ -123,6 +175,7 @@ def migrate_facts(dry_run: bool = False):
     print(f"Found {len(all_facts)} facts in ChromaDB\n")
 
     added = 0
+    metadata_stored = 0
     skipped = 0
     skip_reasons: dict[str, int] = {
         "bad_format": 0,
@@ -131,6 +184,7 @@ def migrate_facts(dry_run: bool = False):
         "ephemeral_relation": 0,
         "garbage_subject": 0,
         "low_quality_object": 0,
+        "non_entity_object": 0,
     }
 
     for fact in all_facts:
@@ -183,6 +237,26 @@ def migrate_facts(dry_run: bool = False):
         subj_type = "person" if subj.lower() == "user" else (entity_type or "other")
         subj_display = "User" if subj.lower() == "user" else subj
 
+        # Non-entity objects (phrases, measurements, durations) get stored
+        # as metadata on the subject node, not as separate nodes
+        if not _is_graph_worthy_object(obj):
+            if dry_run:
+                print(f"  [DRY RUN] {subj_display}.{canon_rel} = '{obj}' (metadata)")
+                metadata_stored += 1
+                continue
+            subj_id = resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
+            from memory.graph_models import GraphNode
+            node = graph.get_entity(subj_id)
+            if node:
+                graph.add_entity(GraphNode(
+                    entity_id=subj_id,
+                    display_name=node.display_name,
+                    entity_type=node.entity_type,
+                    metadata={canon_rel: obj},
+                ))
+            metadata_stored += 1
+            continue
+
         if dry_run:
             print(f"  [DRY RUN] {subj_display} --{canon_rel}--> {obj}")
             added += 1
@@ -206,7 +280,7 @@ def migrate_facts(dry_run: bool = False):
     print(f"\n{'='*60}")
     print(
         f"Migration {'(DRY RUN) ' if dry_run else ''}complete: "
-        f"{added} facts added, {skipped} skipped"
+        f"{added} edges added, {metadata_stored} stored as metadata, {skipped} skipped"
     )
     print(f"Graph: {graph.node_count()} nodes, {graph.edge_count()} edges")
     print(f"\nSkip breakdown:")

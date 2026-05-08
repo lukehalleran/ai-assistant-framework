@@ -1,36 +1,44 @@
-fix: Streaming thinking leak, agentic response pop-back, multi-term web search, broad news detection, silent retry gates
+feat: Prompt eval system (Phases 1-2, 4-6), graph context fix, streaming fixes, fact extraction improvements
 
-Thinking Leak Fix:
-- response_parser: added likely_untagged_thinking() — fast streaming-time check
-  for untagged chain-of-thought (≥2 heuristic pattern hits, no split required)
-- handlers.py streaming loop: suppresses untagged thinking during streaming
-  with 300-char bail-out to prevent false-positive response suppression
+Prompt Eval System (eval/):
+- Phase 1: Snapshot capture, replay, no-store generation, persistence guard
+  - 27-entry section registry, gated builder hook (DAEMON_EVAL_CAPTURE=1)
+- Phase 2: Variant generation (LOO, AOI, bundle, reorder), 27-query seed corpus
+  with real IntentType enum, section utilization analysis
+- Phase 4: Generation harness with resume, rate limiting, cost tracking
+  - 1849 pairs generated across 50 snapshots
+- Phase 5: Pairwise judge with blind A/B comparison, position randomization,
+  5-criterion rubric. Two judge runs (gpt-4o-mini + haiku-4.5)
+- Phase 6: Objective checks (length, thinking leak, profile grounding,
+  citation validity, filler detection). No LLM calls.
+- Key finding: memories (8K avg tokens) hurts conciseness but prevents
+  confabulation. Intent-gating recommended, not blanket removal.
+- 246 eval tests, all passing. No production code changes from eval.
 
-Agentic Response Pop-Back Fix:
-- handlers.py agentic loop: skip ProgressEvents after response chunks start
-  accumulating — prevents "done" event from overwriting streamed response
-- Removed redundant pre-debug yield after agentic loop
+Graph Context Fix:
+- context_gatherer: replaced manual entity extraction (no punctuation
+  stripping) with extract_graph_entities() from graph_utils (strips
+  punctuation, filters stopwords, skips wikidata concepts)
+- migrate_facts_to_graph: added _is_graph_worthy_object filter,
+  ephemeral relation prefix filters, metadata storage for non-entity objects
+- Graph context hit rate: 4% -> 80% after fix + migration
 
-Multi-Term Web Search Fix:
-- web_search_manager: multi_search() accepts sub_queries param for pre-computed
-  sub-queries, skips decomposition and goes straight to parallel search
-- context_gatherer + agentic/controller: pass ALL LLM search terms (was first only)
+Streaming/Thinking Fixes:
+- controller.py: reasoning_content separation in agentic streaming
+  (delta.reasoning_content -> <thinking> tags, not mixed into response)
+- handlers.py: improved thinking leak suppression during streaming,
+  added [MODEL NOT SUPPORTED] error category, display_output sync
+- model_manager: haiku-4.5 alias, native reasoning skipped when images
+  present (OpenRouter conflict), reasoning for generate_once_with_tools
 
-Broad News Detection Improvements:
-- _is_broad_news_query(): added keyword, fixed entity check to mid-sentence only
-- Added _semantic_broad_news_check(): embedding fallback (5 news vs 4 non-news anchors)
+Fact Extraction Improvements:
+- llm_fact_extractor: accepts conversation pairs (query+response) so
+  entity facts extracted from both sides of conversation
+- shutdown_processor: passes response text to fact extraction, increased
+  input char limit 4000 -> 6000, skips API error responses
+- file_processor: image compression for files exceeding 4.5MB API limit
+  (progressive quality + resolution reduction via PIL)
 
-Silent Retry Gates (uncertainty fallback + review gate):
-- Retries run silently — no progress messages or chunk streaming to UI
-- Similarity guard: retry only accepted if word overlap with original < 70%
-- Review gate threshold raised 0.80 → 0.90, short responses (<120 chars) skip review
-- Prevents showing same/similar response twice after unnecessary retry
-
-Stale Test Fixes:
-- test_context_pipeline: 3 tests (update_from_user_input removed in cost reduction)
-- test_user_profile: 3 tests (sleep_quality → HEALTH category)
-- test_citation_system: _web_source_map on bare orchestrator mocks
-- test_agentic_search: compress_results mock for [WEB_N] formatting
-- New: 23 tests in test_thinking_heuristic.py (likely_untagged_thinking + bail-out)
-
-Tests: 3248 passed, 5 wizard-only failures (pre-existing)
+Config:
+- config.yaml: YAML formatting normalization (quoted strings -> unquoted)
+- .gitignore: eval run data excluded (eval/runs/, eval/snapshots/, etc.)
