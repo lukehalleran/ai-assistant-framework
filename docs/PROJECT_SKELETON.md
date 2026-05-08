@@ -754,18 +754,25 @@ Each intent type defines:
 - `retrieval`: Override dict for PROMPT_MAX_* counts (e.g., CASUAL_SOCIAL reduces max_mems to 3)
 - `gate`: Override for gate threshold (e.g., CASUAL_SOCIAL raises to 0.65)
 
+Phase 8 retrieval keys (eval-driven, gated by `PROMPT_SECTION_GATING_ENABLED`):
+- `max_reference_docs`, `max_narrative`, `max_user_uploads`, `max_proactive`, `max_personal_notes`
+- Setting any key to 0 skips the retrieval task entirely (no async call launched)
+- CASUAL_SOCIAL gates reference_docs/narrative/user_uploads/proactive to 0 (~10K token savings)
+- Profile values calibrated against eval data (50 snapshots, 1799 pairs, two judge models)
+
 **Integration Points**:
 1. **ContextPipeline** Stage 4.5: `intent_classifier.classify()` runs after heavy topic check
 2. **ContextPipeline** Stage 6b: `intent_classifier.refine_with_stm()` runs after STM analysis
 3. **ContextResult.intent**: Carries IntentResult downstream
 4. **UnifiedPromptBuilder.build_prompt_from_context()**: Extracts retrieval_overrides and weight_overrides
-5. **UnifiedPromptBuilder.build_prompt()**: Applies retrieval overrides to all max_* counts, sets weight overrides on scorer
+5. **UnifiedPromptBuilder.build_prompt()**: Applies retrieval overrides to all max_* counts (including Phase 8 keys), sets weight overrides on scorer
 6. **MemoryScorer.rank_memories()**: Uses weight_overrides to tune scoring formula per intent; pops `_temporal_anchor_hours` for temporal-aware decay
 
 **Configuration** (`config/app_config.py`):
 ```python
-INTENT_ENABLED = True                    # Feature toggle
-INTENT_STM_REFINEMENT_THRESHOLD = 0.50   # Below this confidence, STM can refine
+INTENT_ENABLED = True                        # Feature toggle
+INTENT_STM_REFINEMENT_THRESHOLD = 0.50       # Below this confidence, STM can refine
+PROMPT_SECTION_GATING_ENABLED = True         # Phase 8 eval-driven section gating
 ```
 
 **Tests**: `tests/unit/test_intent_classifier.py` — 74 tests

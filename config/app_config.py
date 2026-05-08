@@ -927,9 +927,12 @@ INTENT_ENABLED: bool = bool(INTENT_CFG.get("enabled", True))
 # STM refinement threshold: below this confidence, STM free-text intent
 # can upgrade the classification (no extra LLM call — STM already ran)
 INTENT_STM_REFINEMENT_THRESHOLD: float = float(INTENT_CFG.get("stm_refinement_threshold", 0.50))
+# Section gating: use eval-driven retrieval overrides in _PROFILES (Phase 8)
+PROMPT_SECTION_GATING_ENABLED: bool = bool(INTENT_CFG.get("section_gating_enabled", True))
 
 # Environment variable overrides for Intent Classifier
 INTENT_ENABLED = bool(int(os.getenv("INTENT_ENABLED", "1" if INTENT_ENABLED else "0")))
+PROMPT_SECTION_GATING_ENABLED = bool(int(os.getenv("PROMPT_SECTION_GATING_ENABLED", "1" if PROMPT_SECTION_GATING_ENABLED else "0")))
 
 # --------------------------------------------------------------------
 # Entity Facts Configuration

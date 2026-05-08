@@ -227,9 +227,9 @@ weights. Applied in `build_prompt()` before parallel tasks launch.
 
 ```python
 retrieval_overrides = {
-    "max_recent": 20,       # Override PROMPT_MAX_RECENT
-    "max_mems": 25,         # Override PROMPT_MAX_MEMS
-    "max_summaries": 15,    # Total; split evenly if not specified
+    "max_recent": 20,           # Override PROMPT_MAX_RECENT
+    "max_mems": 25,             # Override PROMPT_MAX_MEMS
+    "max_summaries": 15,        # Total; split evenly if not specified
     "max_reflections": 15,
     "max_dreams": 5,
     "max_semantic": 12,
@@ -238,8 +238,19 @@ retrieval_overrides = {
     "max_proposals": 5,
     "max_git_commits": 15,
     "max_surfaced_threads": 5,
+    # Phase 8 additions (eval-driven gating):
+    "max_reference_docs": 15,   # Override PROMPT_MAX_REFERENCE_DOCS
+    "max_user_uploads": 5,      # Override PROMPT_MAX_USER_UPLOADS
+    "max_proactive": 2,         # Override PROMPT_MAX_PROACTIVE_INSIGHTS
+    "max_personal_notes": 5,    # Override PROMPT_MAX_PERSONAL_NOTES
+    "max_narrative": 1,         # 0 = skip narrative_state entirely
 }
 ```
+
+Setting any key to 0 skips that section's retrieval task entirely (no async
+call launched). Config flag `PROMPT_SECTION_GATING_ENABLED` (default True)
+controls whether Phase 8 gating keys are applied; when disabled, only the
+original pre-Phase-8 retrieval overrides take effect.
 
 ### Weight Overrides
 
