@@ -1,44 +1,20 @@
-feat: Prompt eval system (Phases 1-2, 4-6), graph context fix, streaming fixes, fact extraction improvements
+feat: Phase 8 intent-conditioned section gating (eval-driven prompt optimization)
 
-Prompt Eval System (eval/):
-- Phase 1: Snapshot capture, replay, no-store generation, persistence guard
-  - 27-entry section registry, gated builder hook (DAEMON_EVAL_CAPTURE=1)
-- Phase 2: Variant generation (LOO, AOI, bundle, reorder), 27-query seed corpus
-  with real IntentType enum, section utilization analysis
-- Phase 4: Generation harness with resume, rate limiting, cost tracking
-  - 1849 pairs generated across 50 snapshots
-- Phase 5: Pairwise judge with blind A/B comparison, position randomization,
-  5-criterion rubric. Two judge runs (gpt-4o-mini + haiku-4.5)
-- Phase 6: Objective checks (length, thinking leak, profile grounding,
-  citation validity, filler detection). No LLM calls.
-- Key finding: memories (8K avg tokens) hurts conciseness but prevents
-  confabulation. Intent-gating recommended, not blanket removal.
-- 246 eval tests, all passing. No production code changes from eval.
+Phase 8 — Intent-Conditioned Section Gating:
+- intent_classifier.py: Updated _PROFILES retrieval counts based on eval data
+  (50 snapshots, 1799 pairs, two judge models). New retrieval override keys:
+  max_reference_docs, max_narrative, max_user_uploads, max_proactive.
+  CASUAL_SOCIAL gates 4 additional sections to 0 (~10K token savings).
+  TECHNICAL_HELP drops reflections. PROJECT_WORK reduces recent_conversation.
+  META_CONVERSATIONAL reduces memories 20→5, drops reflections.
+  Config flag PROMPT_SECTION_GATING_ENABLED strips Phase 8 keys when disabled.
+- builder.py: Added 4 new eff_max_* variables + max_narrative gate on
+  narrative_state. Parallel task launches use > 0 guards so max_X=0 skips
+  the async retrieval task entirely.
+- app_config.py + config.yaml: PROMPT_SECTION_GATING_ENABLED flag (default True),
+  env var override supported.
 
-Graph Context Fix:
-- context_gatherer: replaced manual entity extraction (no punctuation
-  stripping) with extract_graph_entities() from graph_utils (strips
-  punctuation, filters stopwords, skips wikidata concepts)
-- migrate_facts_to_graph: added _is_graph_worthy_object filter,
-  ephemeral relation prefix filters, metadata storage for non-entity objects
-- Graph context hit rate: 4% -> 80% after fix + migration
+Docs updated: PLAN.md, PROMPT_BUILDING_PIPELINE.md, QUICK_REFERENCE.md,
+ARCHITECTURE_GUIDE.md, PROJECT_SKELETON.md.
 
-Streaming/Thinking Fixes:
-- controller.py: reasoning_content separation in agentic streaming
-  (delta.reasoning_content -> <thinking> tags, not mixed into response)
-- handlers.py: improved thinking leak suppression during streaming,
-  added [MODEL NOT SUPPORTED] error category, display_output sync
-- model_manager: haiku-4.5 alias, native reasoning skipped when images
-  present (OpenRouter conflict), reasoning for generate_once_with_tools
-
-Fact Extraction Improvements:
-- llm_fact_extractor: accepts conversation pairs (query+response) so
-  entity facts extracted from both sides of conversation
-- shutdown_processor: passes response text to fact extraction, increased
-  input char limit 4000 -> 6000, skips API error responses
-- file_processor: image compression for files exceeding 4.5MB API limit
-  (progressive quality + resolution reduction via PIL)
-
-Config:
-- config.yaml: YAML formatting normalization (quoted strings -> unquoted)
-- .gitignore: eval run data excluded (eval/runs/, eval/snapshots/, etc.)
+Tests: 74 intent classifier + 246 eval = 320 passing, zero regressions.

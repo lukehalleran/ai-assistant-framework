@@ -700,13 +700,16 @@ class UnifiedPromptBuilder:
                 return await self._build_lightweight_context(user_input, stm_summary=stm_summary, codebase_changes=codebase_changes)
 
             # Step 2: Gather narrative context (synchronous, cheap file read)
+            # Gated by intent override: max_narrative=0 skips entirely
             narrative_state = ""
-            try:
-                narrative_state = self.context_gatherer.get_narrative_context()
-                if narrative_state:
-                    logger.debug(f"[PromptBuilder] Got narrative context ({len(narrative_state)} chars)")
-            except Exception as e:
-                logger.debug(f"[PromptBuilder] Failed to get narrative context: {e}")
+            _ro_pre = retrieval_overrides or {}
+            if _ro_pre.get("max_narrative", 1) > 0:
+                try:
+                    narrative_state = self.context_gatherer.get_narrative_context()
+                    if narrative_state:
+                        logger.debug(f"[PromptBuilder] Got narrative context ({len(narrative_state)} chars)")
+                except Exception as e:
+                    logger.debug(f"[PromptBuilder] Failed to get narrative context: {e}")
 
             # Apply intent-driven retrieval count overrides
             _ro = retrieval_overrides or {}
@@ -732,6 +735,10 @@ class UnifiedPromptBuilder:
             eff_max_proposals = _ro.get("max_proposals", PROMPT_MAX_PROPOSALS)
             eff_max_git = _ro.get("max_git_commits", PROMPT_MAX_GIT_COMMITS)
             eff_max_surfaced_threads = _ro.get("max_surfaced_threads", PROMPT_MAX_SURFACED_THREADS)
+            eff_max_reference_docs = _ro.get("max_reference_docs", PROMPT_MAX_REFERENCE_DOCS)
+            eff_max_user_uploads = _ro.get("max_user_uploads", PROMPT_MAX_USER_UPLOADS)
+            eff_max_proactive = _ro.get("max_proactive", PROMPT_MAX_PROACTIVE_INSIGHTS)
+            eff_max_personal_notes = _ro.get("max_personal_notes", PROMPT_MAX_PERSONAL_NOTES)
 
             if _ro:
                 logger.info(f"[BUILD_PROMPT] Intent retrieval overrides: {_ro}")
@@ -809,26 +816,28 @@ class UnifiedPromptBuilder:
             include_note_images = OBSIDIAN_INCLUDE_IMAGES and _is_multimodal_model(current_model)
             logger.debug(f"[PromptBuilder] image check: model={current_model}, OBSIDIAN_INCLUDE_IMAGES={OBSIDIAN_INCLUDE_IMAGES}, is_multimodal={_is_multimodal_model(current_model)}, include_note_images={include_note_images}")
 
-            tasks["personal_notes"] = asyncio.create_task(
-                _timed_task("personal_notes", self.context_gatherer.get_personal_notes(
-                    user_input,
-                    PROMPT_MAX_PERSONAL_NOTES,
-                    include_images=include_note_images,
-                    max_images_per_note=OBSIDIAN_MAX_IMAGES_PER_NOTE
-                ))
-            )
+            if eff_max_personal_notes > 0:
+                tasks["personal_notes"] = asyncio.create_task(
+                    _timed_task("personal_notes", self.context_gatherer.get_personal_notes(
+                        user_input,
+                        eff_max_personal_notes,
+                        include_images=include_note_images,
+                        max_images_per_note=OBSIDIAN_MAX_IMAGES_PER_NOTE
+                    ))
+                )
 
             # Reference documents (system docs, project outlines - excludes user uploads)
             # Suppressed when user uploads files so file content dominates context
-            if not kwargs.get("_suppress_reference_docs", False):
+            if not kwargs.get("_suppress_reference_docs", False) and eff_max_reference_docs > 0:
                 tasks["reference_docs"] = asyncio.create_task(
-                    _timed_task("reference_docs", self.context_gatherer.get_reference_docs(user_input, PROMPT_MAX_REFERENCE_DOCS))
+                    _timed_task("reference_docs", self.context_gatherer.get_reference_docs(user_input, eff_max_reference_docs))
                 )
 
             # User uploads (previously uploaded files/images)
-            tasks["user_uploads"] = asyncio.create_task(
-                _timed_task("user_uploads", self.context_gatherer.get_user_uploads(user_input, PROMPT_MAX_USER_UPLOADS))
-            )
+            if eff_max_user_uploads > 0:
+                tasks["user_uploads"] = asyncio.create_task(
+                    _timed_task("user_uploads", self.context_gatherer.get_user_uploads(user_input, eff_max_user_uploads))
+                )
 
             # Git commit history (procedural memory)
             tasks["git_commits"] = asyncio.create_task(
@@ -856,9 +865,10 @@ class UnifiedPromptBuilder:
             )
 
             # Proactive cross-domain insights from knowledge graph
-            tasks["proactive_insights"] = asyncio.create_task(
-                _timed_task("proactive_insights", self.context_gatherer.get_proactive_insights(user_input, PROMPT_MAX_PROACTIVE_INSIGHTS))
-            )
+            if eff_max_proactive > 0:
+                tasks["proactive_insights"] = asyncio.create_task(
+                    _timed_task("proactive_insights", self.context_gatherer.get_proactive_insights(user_input, eff_max_proactive))
+                )
 
             # Web search (triggered based on query analysis, suppressed during crisis)
             tasks["web_search"] = asyncio.create_task(
