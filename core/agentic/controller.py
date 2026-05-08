@@ -1236,13 +1236,25 @@ Provide a focused summary with the most important information."""
             )
 
             # Handle different return types
+            _was_reasoning = False
             if hasattr(stream, '__aiter__'):
                 # It's an async iterator (OpenAI stream)
                 async for chunk in stream:
                     if hasattr(chunk, 'choices') and chunk.choices:
                         delta = chunk.choices[0].delta
-                        if hasattr(delta, 'content') and delta.content:
-                            yield delta.content
+                        # Skip reasoning-only chunks (API-level thinking separation)
+                        delta_reasoning = getattr(delta, 'reasoning_content', '') or getattr(delta, 'reasoning', '') or ''
+                        delta_content = getattr(delta, 'content', '') or ''
+                        if delta_reasoning and not delta_content:
+                            if not _was_reasoning:
+                                _was_reasoning = True
+                                yield "<thinking>"
+                            continue
+                        if _was_reasoning and delta_content:
+                            _was_reasoning = False
+                            yield "</thinking>"
+                        if delta_content:
+                            yield delta_content
                     elif isinstance(chunk, str):
                         yield chunk
             elif isinstance(stream, str):

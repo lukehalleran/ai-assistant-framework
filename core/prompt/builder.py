@@ -129,6 +129,111 @@ except ImportError:
     LLM_COMPRESSION_MAX_BATCH = 8
 
 
+# ---------------------------------------------------------------------------
+# Eval snapshot hook (gated, read-only, disabled by default)
+# ---------------------------------------------------------------------------
+
+def _eval_capture_enabled() -> bool:
+    """Check if eval snapshot capture is enabled via environment variable."""
+    return os.environ.get("DAEMON_EVAL_CAPTURE", "0") == "1"
+
+
+def _eval_capture_strict() -> bool:
+    """Check if eval capture should raise on errors (vs log warnings)."""
+    return os.environ.get("DAEMON_EVAL_CAPTURE_STRICT", "0") == "1"
+
+
+def _maybe_capture_eval_snapshot(
+    context: Dict[str, Any],
+    user_input: str,
+    sections: list,
+    final_prompt: str,
+) -> None:
+    """Gated eval snapshot hook. Does nothing unless DAEMON_EVAL_CAPTURE=1.
+
+    This function is read-only: it does not mutate context, sections, or prompt.
+    It captures the post-hygiene assembled prompt for eval replay and saves it
+    to disk. Failures log warnings but do not break normal chat (unless strict mode).
+    """
+    if not _eval_capture_enabled():
+        return
+
+    try:
+        # Lazy import to avoid loading eval modules during normal operation
+        from eval.snapshots import SnapshotCapture, save_snapshot, extract_sections_from_prompt
+        from eval.schema import PromptProvenance, compute_hash
+        from eval.section_registry import match_header_to_key
+        from datetime import datetime, timezone
+        import subprocess
+
+        # Build formatted_sections map from the sections list
+        formatted_sections: Dict[str, str] = {}
+        for section_text in sections:
+            if not section_text:
+                continue
+            first_line = section_text.split("\n", 1)[0]
+            key = match_header_to_key(first_line)
+            if key:
+                formatted_sections[key] = section_text
+            else:
+                # Try to detect [CURRENT USER QUERY] which has a nested structure
+                if "[CURRENT USER QUERY]" in first_line:
+                    formatted_sections["current_query"] = section_text
+
+        # Build provenance
+        git_hash = ""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                git_hash = result.stdout.strip()
+        except Exception:
+            pass
+
+        provenance = PromptProvenance(
+            model_name="",  # Not available in builder context
+            git_commit_hash=git_hash,
+            system_prompt_hash="",  # System prompt is in orchestrator
+            capture_timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+        # Capture post_hygiene layer only (raw_retrieval would need pre-hygiene context)
+        capture = SnapshotCapture()
+        layer = capture.capture_layer(
+            layer_name="post_hygiene",
+            structured_context=context,
+            formatted_sections=formatted_sections,
+            prompt_text=final_prompt,
+        )
+
+        # Build minimal snapshot (single layer from builder hook)
+        import uuid
+        from eval.schema import PromptSnapshot
+
+        snapshot = PromptSnapshot(
+            snapshot_id=str(uuid.uuid4())[:8],
+            query_text=user_input,
+            query_timestamp=datetime.now(timezone.utc).isoformat(),
+            processed_query=user_input,
+            detected_intent="",
+            detected_tone="",
+            provenance=provenance,
+            layers={"post_hygiene": layer},
+            retrieval_metadata={},
+            assembly_metadata={"section_count": len(sections)},
+        )
+
+        save_snapshot(snapshot)
+        logger.info(f"[EVAL] Snapshot captured: {snapshot.snapshot_id} ({len(formatted_sections)} sections)")
+
+    except Exception as e:
+        if _eval_capture_strict():
+            raise
+        logger.warning(f"[EVAL] Snapshot capture failed (non-fatal): {e}")
+
+
 def _compute_token_budget(model_manager) -> int:
     """Compute prompt token budget based on model context window.
 
@@ -290,11 +395,6 @@ def _load_upload_image(image_path: str) -> Optional[dict]:
             logger.debug(f"[_load_upload_image] File not found: {image_path}")
             return None
 
-        # Enforce 5MB cap to avoid memory issues
-        if path.stat().st_size > 5 * 1024 * 1024:
-            logger.warning(f"[_load_upload_image] File too large (>5MB), skipping: {image_path}")
-            return None
-
         # Determine media type from extension
         ext = path.suffix.lower()
         media_types = {
@@ -306,7 +406,20 @@ def _load_upload_image(image_path: str) -> Optional[dict]:
         }
         media_type = media_types.get(ext, 'application/octet-stream')
 
-        data = base64.b64encode(path.read_bytes()).decode('utf-8')
+        file_bytes = path.read_bytes()
+
+        # Compress if image exceeds API limit (5MB)
+        API_IMAGE_LIMIT = 4_500_000
+        if len(file_bytes) > API_IMAGE_LIMIT:
+            from utils.file_processor import FileProcessor
+            fp = FileProcessor()
+            file_bytes = fp._compress_image(file_bytes, ext, API_IMAGE_LIMIT)
+            # Compression may change format to JPEG
+            if ext not in ('.png',):
+                media_type = 'image/jpeg'
+            logger.info(f"[_load_upload_image] Compressed {image_path}: {path.stat().st_size//1024}KB → {len(file_bytes)//1024}KB")
+
+        data = base64.b64encode(file_bytes).decode('utf-8')
         return {
             'data': data,
             'media_type': media_type,
@@ -2540,6 +2653,9 @@ class UnifiedPromptBuilder:
                 context_start = max(0, start - 50)
                 context_end = min(len(final_prompt), end + 200)
                 logger.error(f"[DEBUG RECENT] Match {i+1} context: ...{final_prompt[context_start:context_end]}...")
+
+        # --- Eval snapshot hook (gated, read-only) ---
+        _maybe_capture_eval_snapshot(context, user_input, sections, final_prompt)
 
         return final_prompt
 

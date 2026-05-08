@@ -7,13 +7,16 @@ ENHANCED (2026-03): Extracts entity facts (non-user subjects) with user_connecti
 ENHANCED (2026-04): Accepts existing profile facts so LLM reuses relation names for updates/cancellations.
 
 Contract
-- Inputs: list of recent user-only messages (strings), model_manager, optional existing_facts list
+- Inputs: list of recent messages — either plain strings (user-only) or dicts with
+  {"query": str, "response": str} (conversation pairs). model_manager, optional existing_facts list
 - Behavior: calls a compact LLM prompt to extract SRO triples as strict JSON with category metadata
   - When existing_facts provided, prompt instructs LLM to reuse relation names for updates;
     explicit-only guard prevents inferring updates from absence of mentions
   - User facts: subject="user" for personal facts (pronouns normalized)
-  - Entity facts: subject=entity name for people/places/orgs the user discusses
-    Entity facts include user_connection field (e.g., "user's boss")
+  - Entity facts: subject=entity name for people/places/orgs/pets discussed in either
+    user messages OR assistant responses. This allows extracting structured facts about
+    entities that Daemon knows about from conversation history (e.g., pet details, family info)
+    Entity facts include user_connection field (e.g., "user's boss", "user's mom's cat")
 - Output: list of dict triples (subject, relation, object, value, category, confidence, fact_scope, source_excerpt)
   - fact_scope: "user" or "entity" — indicates whether fact is about the user or a third-party entity
   - source_excerpt: keyword-matched user message that sourced the fact (200-char truncated);
@@ -123,20 +126,34 @@ class LLMFactExtractor:
             + "\n".join(lines[:15]) + "\n"  # cap at 15 to limit token cost
         )
 
-    def _build_prompt(self, user_messages: List[str], existing_facts: List[Dict[str, Any]] = None) -> str:
+    def _build_prompt(self, user_messages: List, existing_facts: List[Dict[str, Any]] = None) -> str:
         msgs = []
         total = 0
-        # Build from newest last; enforce char budget
+        # Accept either plain strings or conversation pair dicts
         for m in user_messages[-50:]:  # hard cap safety
-            m = (m or "").strip()
-            if not m:
-                continue
-            # Strip role prefixes if user text contained them
-            m = re.sub(r"^(?:user|assistant)\s*:\s*", "", m, flags=re.I)
-            if total + len(m) + 10 > self.max_input_chars:
+            if isinstance(m, dict):
+                # Conversation pair: include both query and response
+                q = (m.get("query") or "").strip()
+                r = (m.get("response") or "").strip()
+                # Skip API error responses
+                if r.startswith("[API Error]"):
+                    r = ""
+                if not q:
+                    continue
+                if r:
+                    entry = f"User: {q}\nDaemon: {r}"
+                else:
+                    entry = f"User: {q}"
+            else:
+                entry = (m or "").strip()
+                if not entry:
+                    continue
+                # Strip role prefixes if user text contained them
+                entry = re.sub(r"^(?:user|assistant)\s*:\s*", "", entry, flags=re.I)
+            if total + len(entry) + 10 > self.max_input_chars:
                 break
-            msgs.append(m)
-            total += len(m) + 10
+            msgs.append(entry)
+            total += len(entry) + 10
 
         joined = "\n".join(f"- {m}" for m in msgs)
 
@@ -218,12 +235,15 @@ Output: [
 ]
 
 ENTITY FACTS (in addition to user facts):
-- Also extract facts about people, places, topics the user discusses
+- Extract facts about people, pets, places, topics discussed in EITHER user OR Daemon messages
 - Subject should be the entity name (NOT "user")
 - Add "user_connection" field explaining relation to user (if known)
 - Only extract when clearly stated, not hypothetical
+- Pay special attention to pets, family members, and recurring people — these are high-value entities
 - Example: "My boss Oliver moved from London"
   → {{"subject": "Oliver", "relation": "moved_from", "object": "London", "category": "relationships", "confidence": 0.75, "user_connection": "user's boss"}}
+- Example: Daemon says "Poppy is your mom's black cat, male, with long fur"
+  → {{"subject": "Poppy", "relation": "species", "object": "cat, black, long fur, male", "category": "hobbies", "confidence": 0.85, "user_connection": "user's mom's cat"}}
 
 RULES:
 - Subject is "user" for personal facts, or the entity name for entity facts
@@ -234,7 +254,7 @@ RULES:
 - IMPORTANT: If user introduces themselves or describes their role/activity, extract those as facts
 - TEMPORAL: Today's date is {today}. When the user mentions relative dates ("tomorrow", "next Monday", "the following day"), resolve them to absolute dates in the object field. Example: "I work tomorrow" on 2026-03-12 → object: "work on Thu 2026-03-13"
 {existing_facts}
-MESSAGES (user only, newest last):
+MESSAGES (conversation pairs, newest last):
 {messages}
 
 JSON:"""
@@ -253,7 +273,7 @@ JSON:"""
 
         return prompt
 
-    async def extract_triples(self, user_messages: List[str],
+    async def extract_triples(self, user_messages: List,
                               existing_facts: List[Dict[str, Any]] = None) -> List[Dict[str, str]]:
         if not user_messages:
             return []
@@ -333,14 +353,22 @@ JSON:"""
 
     @staticmethod
     def _attach_source_excerpts(triples: List[Dict[str, str]],
-                                user_messages: List[str]) -> None:
+                                user_messages: List) -> None:
         """Match each triple to its most likely source message via keyword overlap."""
         if not user_messages:
             return
-        # Clean messages once
+        # Clean messages once — handle both plain strings and conversation pair dicts
         cleaned = []
         for m in user_messages:
-            text = re.sub(r"^(?:user|assistant)\s*:\s*", "", (m or "").strip(), flags=re.I)
+            if isinstance(m, dict):
+                q = (m.get("query") or "").strip()
+                r = (m.get("response") or "").strip()
+                # Combine both for keyword matching
+                text = q
+                if r and not r.startswith("[API Error]"):
+                    text = f"{q} {r}"
+            else:
+                text = re.sub(r"^(?:user|assistant)\s*:\s*", "", (m or "").strip(), flags=re.I)
             cleaned.append(text)
         for triple in triples:
             # Build keyword set from object + relation words

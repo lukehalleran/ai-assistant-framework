@@ -224,6 +224,16 @@ class FileProcessor:
             pf.error = f"Empty image file: {basename}"
             return pf
 
+        # Compress if image exceeds API limit (5MB raw → ~6.67MB base64)
+        # Use 4.5MB threshold to leave headroom
+        API_IMAGE_LIMIT = 4_500_000
+        if pf.file_size > API_IMAGE_LIMIT:
+            file_bytes = self._compress_image(file_bytes, ext, API_IMAGE_LIMIT)
+            pf.file_size = len(file_bytes)
+            # Update media type — compression always outputs JPEG for non-PNG
+            if ext not in ('.png',):
+                pf.media_type = 'image/jpeg'
+
         # Base64 encode
         pf.base64_data = base64.b64encode(file_bytes).decode('utf-8')
 
@@ -253,6 +263,58 @@ class FileProcessor:
         else:
             with open(file.name, 'rb') as f:
                 return f.read()
+
+    def _compress_image(self, file_bytes: bytes, ext: str, target_size: int) -> bytes:
+        """
+        Compress an image to fit within target_size bytes.
+        Progressively reduces quality and resolution until it fits.
+        """
+        from PIL import Image
+        import io
+
+        img = Image.open(io.BytesIO(file_bytes))
+        original_size = len(file_bytes)
+
+        # Convert RGBA to RGB for JPEG output (unless PNG)
+        if img.mode in ('RGBA', 'LA', 'P') and ext not in ('.png',):
+            img = img.convert('RGB')
+
+        # Choose output format
+        out_format = 'PNG' if ext == '.png' else 'JPEG'
+
+        # Step 1: Try quality reduction (JPEG only)
+        if out_format == 'JPEG':
+            for quality in (85, 70, 55, 40):
+                buf = io.BytesIO()
+                img.save(buf, format='JPEG', quality=quality, optimize=True)
+                if buf.tell() <= target_size:
+                    logger.info(f"[compress_image] {original_size//1024}KB → {buf.tell()//1024}KB (quality={quality})")
+                    return buf.getvalue()
+
+        # Step 2: Progressively resize (halve dimensions) + compress
+        for scale in (0.75, 0.5, 0.35):
+            new_w = int(img.width * scale)
+            new_h = int(img.height * scale)
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+            buf = io.BytesIO()
+            if out_format == 'JPEG':
+                resized.save(buf, format='JPEG', quality=60, optimize=True)
+            else:
+                resized.save(buf, format='PNG', optimize=True)
+            if buf.tell() <= target_size:
+                logger.info(f"[compress_image] {original_size//1024}KB → {buf.tell()//1024}KB (scale={scale}, {new_w}x{new_h})")
+                return buf.getvalue()
+
+        # Final fallback: aggressive resize + low quality JPEG
+        new_w = int(img.width * 0.25)
+        new_h = int(img.height * 0.25)
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        if resized.mode != 'RGB':
+            resized = resized.convert('RGB')
+        buf = io.BytesIO()
+        resized.save(buf, format='JPEG', quality=40, optimize=True)
+        logger.warning(f"[compress_image] Aggressive: {original_size//1024}KB → {buf.tell()//1024}KB ({new_w}x{new_h})")
+        return buf.getvalue()
 
     def _process_text_file(self, file) -> ProcessedFile:
         """
