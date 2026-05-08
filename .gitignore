@@ -40,6 +40,12 @@ project/
 embeddings_mmap.dat
 embed_checkpoint.json
 
+# --- EVAL RUN DATA ---
+eval/runs/
+eval/snapshots/
+eval/phase2_output/
+eval/corpus.json
+
 # --- EXCEPTIONS (White-list) ---
 !data/pipeline/
 !data/scripts/

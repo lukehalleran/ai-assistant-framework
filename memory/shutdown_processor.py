@@ -464,7 +464,11 @@ class ShutdownProcessor:
                 q = (conv.get('query') or '').strip()
                 if not q:
                     continue
-                facts = await self.fact_extractor.extract_facts(q, "")
+                r = (conv.get('response') or '').strip()
+                # Skip API error responses
+                if r.startswith("[API Error]"):
+                    r = ""
+                facts = await self.fact_extractor.extract_facts(q, r)
             except (AttributeError, RuntimeError, ValueError) as e:
                 logger.debug(f"[Shutdown] Fact extraction failed: {e}")
                 facts = []
@@ -538,9 +542,9 @@ class ShutdownProcessor:
         except (ValueError, TypeError):
             max_triples = 10
         try:
-            max_chars = int(os.getenv("LLM_FACTS_MAX_INPUT_CHARS", "4000"))
+            max_chars = int(os.getenv("LLM_FACTS_MAX_INPUT_CHARS", "6000"))
         except (ValueError, TypeError):
-            max_chars = 4000
+            max_chars = 6000
         model_alias = os.getenv("LLM_FACTS_MODEL", "gpt-4o-mini")
 
         if isinstance(session_conversations, list) and session_conversations:
@@ -562,10 +566,17 @@ class ShutdownProcessor:
                     if (not self._is_summary(e)) and (not self._is_reflection(e))
                 ]
 
-        users = [(e.get('query') or '').strip() for e in sess_items if (e.get('query') or '').strip()]
-        user_tail = users[-max(1, last_turns):]
+        # Build conversation pairs (query + response) so LLM can extract entity facts
+        # from both user messages AND Daemon's responses
+        conv_pairs = []
+        for e in sess_items:
+            q = (e.get('query') or '').strip()
+            r = (e.get('response') or '').strip()
+            if q:
+                conv_pairs.append({"query": q, "response": r})
+        conv_tail = conv_pairs[-max(1, last_turns):]
 
-        if not user_tail:
+        if not conv_tail:
             return
 
         from memory.llm_fact_extractor import LLMFactExtractor
@@ -614,7 +625,7 @@ class ShutdownProcessor:
             except Exception as pf_err:
                 logger.debug(f"[Shutdown] Failed to gather profile facts for LLM context: {pf_err}")
 
-        triples = await llm_ex.extract_triples(user_tail, existing_facts=existing_facts)
+        triples = await llm_ex.extract_triples(conv_tail, existing_facts=existing_facts)
 
         # Verification gate: batch-verify before storage
         verifier = getattr(self._storage, 'fact_verifier', None)

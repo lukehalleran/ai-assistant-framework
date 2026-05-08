@@ -807,54 +807,32 @@ class ContextGatherer:
             if not graph or not resolver or graph.node_count() == 0:
                 return []
 
-            # Extract entity mentions from query by checking each word/phrase
-            # against the alias index
+            # Extract entity mentions from query using the shared utility
+            # (strips punctuation, filters stopwords/common words, skips wikidata concepts)
+            from memory.graph_utils import extract_graph_entities
+            seen_entities = extract_graph_entities(query, resolver, graph_memory=graph)
+
             sentences: list[str] = []
-            seen_entities: set[str] = set()
+            for eid in seen_entities:
+                ctx = graph.get_context_sentences(
+                    eid, depth=KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH,
+                    max_sentences=max_sentences - len(sentences),
+                    with_attribution=ENABLE_GRAPH_ATTRIBUTION,
+                )
 
-            # Try multi-word then single-word resolution
-            words = query.lower().split()
-            candidates: list[str] = []
-            # Check bigrams and trigrams first
-            for n in (3, 2):
-                for i in range(len(words) - n + 1):
-                    phrase = " ".join(words[i:i + n])
-                    candidates.append(phrase)
-            # Then single words (skip stopwords)
-            _STOPWORDS = {"the", "a", "an", "is", "are", "was", "were", "do", "does",
-                          "did", "have", "has", "had", "what", "who", "where", "when",
-                          "how", "why", "about", "with", "from", "for", "and", "or",
-                          "but", "not", "to", "in", "on", "at", "of", "my", "your",
-                          "i", "me", "you", "we", "they", "it", "this", "that", "can",
-                          "will", "would", "should", "could", "tell", "know", "think"}
-            for w in words:
-                if w not in _STOPWORDS and len(w) > 2:
-                    candidates.append(w)
+                # Track graph sentences in memory_id_map for citation
+                for i, sentence in enumerate(ctx):
+                    citation_id = f"GRAPH_REL_{len(self.memory_id_map) + 1}"
+                    self.memory_id_map[citation_id] = {
+                        "content": sentence,
+                        "entity_id": eid,
+                        "source_type": "graph_relationship",
+                        "metadata": {"entity": eid}
+                    }
 
-            for mention in candidates:
-                eid = resolver.resolve(mention)
-                if eid and eid not in seen_entities:
-                    seen_entities.add(eid)
-                    ctx = graph.get_context_sentences(
-                        eid, depth=KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH,
-                        max_sentences=max_sentences - len(sentences),
-                        with_attribution=ENABLE_GRAPH_ATTRIBUTION,
-                    )
-
-                    # Track graph sentences in memory_id_map for citation
-                    for i, sentence in enumerate(ctx):
-                        citation_id = f"GRAPH_REL_{len(self.memory_id_map) + 1}"
-                        self.memory_id_map[citation_id] = {
-                            "content": sentence,
-                            "entity_id": eid,
-                            "query_mention": mention,
-                            "source_type": "graph_relationship",
-                            "metadata": {"entity": eid, "mention": mention}
-                        }
-
-                    sentences.extend(ctx)
-                    if len(sentences) >= max_sentences:
-                        break
+                sentences.extend(ctx)
+                if len(sentences) >= max_sentences:
+                    break
 
             if sentences:
                 logger.debug(

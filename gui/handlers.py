@@ -786,15 +786,24 @@ async def handle_submit(
                         # Hide incomplete thinking blocks during streaming
                         if ResponseParser.has_incomplete_thinking_block(agentic_response):
                             yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
+                        elif ResponseParser.likely_untagged_thinking(agentic_response):
+                            # Heuristic: suppress untagged thinking during streaming
+                            yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
                         else:
                             # Strip any completed thinking block before display
-                            _, clean_answer = ResponseParser.parse_thinking_block(agentic_response)
-                            yield {"role": "assistant", "content": clean_answer or agentic_response}
+                            thinking_detected, clean_answer = ResponseParser.parse_thinking_block(agentic_response)
+                            # Only use clean_answer if non-empty; if thinking was detected but
+                            # answer is empty, show indicator instead of falling back to raw
+                            if thinking_detected and not clean_answer:
+                                yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
+                            else:
+                                yield {"role": "assistant", "content": clean_answer or agentic_response}
 
                 # Final output from agentic search - strip thinking blocks
                 final_output = agentic_response
                 thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
                 display_output = final_answer if final_answer else final_output
+                display_output = ResponseParser.strip_thinking_tag_leaks(display_output)
 
                 # Append web sources footer if [WEB_N] citations present
                 _web_map = getattr(agentic_controller, '_current_web_source_map', None) or {}
@@ -968,12 +977,10 @@ async def handle_submit(
                 yield {"role": "assistant", "content": display_output, "is_thinking": False}
             elif final_answer:
                 # Suppress untagged thinking that parse_thinking_block couldn't split yet.
-                # Only fire when: (a) heuristic detects thinking patterns, (b) text is short
-                # enough that a split hasn't been possible yet. Bail out at 300 chars to
-                # avoid false positives on normal responses that happen to match patterns.
+                # Fire when heuristic detects thinking patterns and we haven't already
+                # found/completed a tagged thinking block.
                 _heuristic_thinks = (
                     not thinking_complete
-                    and len(final_output) < 300
                     and ResponseParser.likely_untagged_thinking(final_output)
                 )
                 if _heuristic_thinks:
@@ -1018,6 +1025,7 @@ async def handle_submit(
             "[CREDITS EXHAUSTED]": "💳 **Out of API Credits**\n\n{msg}\n\nYou can add credits at your provider's billing page or switch models in the dropdown above.",
             "[RATE LIMITED]": "⏳ **Rate Limited**\n\n{msg}",
             "[AUTH ERROR]": "🔑 **Authentication Error**\n\n{msg}",
+            "[MODEL NOT SUPPORTED]": "🚫 **Unsupported Input**\n\n{msg}\n\nTry switching to a multimodal model (e.g. GPT-4o, Claude) in the dropdown above.",
             "[MODEL NOT FOUND]": "❓ **Model Not Found**\n\n{msg}",
             "[SERVER ERROR]": "🔥 **Server Error**\n\n{msg}",
             "[API Error]": "⚠️ **API Error**\n\n{msg}",
@@ -1035,6 +1043,8 @@ async def handle_submit(
             logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK FROM STREAM]\n{thinking_part_stream}")
             # Update final_output to only include the final answer for storage
             final_output = final_answer_stream if final_answer_stream else final_output
+            # Sync display_output so final yield doesn't show stale thinking-polluted content
+            display_output = final_output
 
         # ── Uncertainty Fallback: retry via agentic search if response is uncertain ──
         _uncertainty_retry_done = False
@@ -1276,6 +1286,12 @@ async def handle_submit(
 
         # Ensure we have content to log even if no chunk set display_output yet
         _resp_for_debug = display_output or final_output
+
+        # Final safety net: strip any thinking that leaked through all layers
+        _think_final, _answer_final = ResponseParser.parse_thinking_block(_resp_for_debug)
+        if _think_final and _answer_final:
+            _resp_for_debug = _answer_final
+        _resp_for_debug = ResponseParser.strip_thinking_tag_leaks(_resp_for_debug)
 
         # Truncate at spurious turn markers (training data leakage) for display
         try:

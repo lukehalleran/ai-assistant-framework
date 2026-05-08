@@ -96,6 +96,13 @@ def _classify_api_error(e: Exception) -> str:
             "Check your API key in .env or config.yaml."
         )
 
+    # --- Model capability mismatch (e.g., image input not supported) ---
+    if 'image input' in err_str or 'does not support' in err_str:
+        return (
+            f"[MODEL NOT SUPPORTED] The current model doesn't support this type of input "
+            f"(e.g., images). Switch to a multimodal model like GPT-4o or Claude. ({e})"
+        )
+
     # --- Model not found ---
     if status_code == 404 or 'model_not_found' in err_str or 'does not exist' in err_str:
         return f"[MODEL NOT FOUND] The requested model was not found. Check the model name in config. ({e})"
@@ -178,6 +185,7 @@ class ModelManager:
         self.api_models["claude-opus-4.7"] = "anthropic/claude-opus-4.7"
         self.api_models["sonnet-4.5"] = "anthropic/claude-sonnet-4.5"
         self.api_models["sonnet-4.6"] = "anthropic/claude-sonnet-4.6"
+        self.api_models["haiku-4.5"] = "anthropic/claude-haiku-4.5"
         # OpenAI models via OpenRouter
         self.api_models["gpt-4o-mini"] = "openai/gpt-4o-mini"
         self.api_models["gpt-4o"] = "openai/gpt-4o"
@@ -912,6 +920,12 @@ class ModelManager:
                     request_params["tools"] = tools
                     request_params["tool_choice"] = tool_choice
 
+                # Request native reasoning separation for supported models
+                if self.supports_reasoning(target_model):
+                    request_params["extra_body"] = {
+                        "reasoning": {"effort": "medium"},
+                    }
+
                 response = await self.async_client.chat.completions.create(**request_params)
 
                 # Return the message object (has content and tool_calls)
@@ -1051,11 +1065,15 @@ class ModelManager:
                 # Request native reasoning separation for models that support it
                 # (Claude, DeepSeek-R1). Thinking arrives via delta.reasoning_content
                 # instead of being mixed into the text response.
-                if self.supports_reasoning(target_model):
+                # Skip when images are present — OpenRouter may not find an endpoint
+                # that supports both extended thinking and image input simultaneously.
+                if self.supports_reasoning(target_model) and not images:
                     create_kwargs["extra_body"] = {
                         "reasoning": {"effort": "medium"},
                     }
                     logger.info(f"[generate_async] Enabled native reasoning for {target_model}")
+                elif images and self.supports_reasoning(target_model):
+                    logger.info(f"[generate_async] Skipping native reasoning for {target_model} (images present, would conflict on OpenRouter)")
 
                 stream = await self.async_client.chat.completions.create(**create_kwargs)
                 return stream
