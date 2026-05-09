@@ -4,7 +4,7 @@
 
 Daemon's synthesis pipeline claims that an AI system can **generate genuinely novel cross-domain insights** — connections between personal knowledge and general knowledge that are structurally sound, non-trivial, and not already documented. If the calibration results below hold, this concept works because:
 
-1. **The filter is the product.** Connection generation is cheap (random sampling + LLM articulation). The 8-stage filter pipeline is what separates signal from noise. If the filter achieves high precision (few false positives) and high recall (few false negatives), the system reliably distinguishes real structural isomorphisms from metaphor, pseudoscience, and trivia.
+1. **The filter is the product.** Connection generation is cheap (random sampling + LLM articulation). The 7-stage filter pipeline is what separates signal from noise. If the filter achieves high precision (few false positives) and high recall (few false negatives), the system reliably distinguishes real structural isomorphisms from metaphor, pseudoscience, and trivia.
 
 2. **Convergence validates discovery.** When the same insight is independently rediscovered from different entity pairs and different graph paths, that's evidence of a real structural pattern — not a lucky hallucination. If we observe convergence on known-good connections and not on noise, the signal is real.
 
@@ -39,7 +39,7 @@ Daemon's synthesis pipeline claims that an AI system can **generate genuinely no
 **Code:** `shutdown_processor.py:_run_synthesis_dreaming()` → `SynthesisGenerator` → `SynthesisFilter` → `SynthesisMemory`
 
 - **When:** Session shutdown (Step 6.8), fills remaining candidate quota after Tiers 0 and 1
-- **What:** Samples personal entities from `facts` ChromaDB collection and Wikipedia articles via FAISS (`semantic_search_with_neighbors()` from `knowledge/semantic_search.py`, backed by a 40M-vector IVFPQ index), pairs cross-domain, LLM-articulates bridges, runs 8-stage filter
+- **What:** Samples personal entities from `facts` ChromaDB collection and Wikipedia articles via FAISS (`semantic_search_with_neighbors()` from `knowledge/semantic_search.py`, backed by a 40M-vector IVFPQ index), pairs cross-domain, LLM-articulates bridges, runs 7-stage filter
 - **Gate:** `SYNTHESIS_GENERATOR_ENABLED=True` AND graph has ≥`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` (20) nodes
 - **Output:** Accepted results stored in `synthesis_results` ChromaDB collection
 - **Volume:** Fills remaining quota (~15 candidates minus Tier 0/1 output), expect 0–2 acceptances
@@ -636,7 +636,7 @@ The synthesis pipeline tests whether an AI system can do something that traditio
 
 **The key insight is that LLMs are good at articulating connections but bad at judging whether those connections are novel or meaningful.** An LLM will happily tell you that "ant colonies are like the internet" — which is true but well-known. It will also tell you that "sourdough fermentation is like quantum tunneling" — which sounds smart but is mechanistically wrong.
 
-The 8-stage filter pipeline compensates for this by:
+The 7-stage filter pipeline compensates for this by:
 
 1. **Cheap heuristic gates** (Stages 0-2) kill malformed, single-domain, and trivially-close/far candidates before any expensive processing
 2. **Corpus-backed novelty** (Stage 3) uses the actual Wikipedia embedding space to detect whether a connection is already documented — not the LLM's training data, but a verifiable external corpus
@@ -669,7 +669,7 @@ This is the minimum viable demonstration that AI-assisted knowledge synthesis is
 | `knowledge/synthesis_retriever.py` | Tier 0: Structural query extraction + FAISS retrieval + adversarial evaluation |
 | `knowledge/synthesis_generator.py` | Tier 2: Cross-store random sampling + LLM bridge articulation |
 | `knowledge/graph_walk_generator.py` | Tier 1: Biased Markov walk synthesis with hub dampening |
-| `knowledge/synthesis_filter.py` | 8-stage filter pipeline (shared by all tiers) |
+| `knowledge/synthesis_filter.py` | 7-stage filter pipeline (shared by all tiers) |
 | `knowledge/synthesis_models.py` | Data models (Candidate, Result, StageResult, enums) |
 | `memory/synthesis_memory.py` | ChromaDB persistence + convergence tracking |
 | `memory/context_surfacer.py` | Proactive real-time cross-domain insights |

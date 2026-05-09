@@ -77,10 +77,14 @@ accumulated. Low-quality detection may suggest query relaxation.
 
 ### Rounds 2-N — Model-Driven Iteration
 
-Loop continues while `session.can_continue`:
+Loop continues while `session.can_continue AND session.current_round <= self.max_rounds`:
+
+`session.can_continue` is True when all of:
 - `not model_signaled_done`
-- `current_round <= max_rounds` (default 5)
 - `state not in (DONE, ERROR)`
+
+The explicit `current_round <= max_rounds` guard (default 5) is checked
+separately in the `while` condition alongside `can_continue`.
 
 Each round:
 
@@ -142,9 +146,11 @@ Valid collections: reference_docs, facts, conversations, summaries,
                    reflections, obsidian_notes, wiki_knowledge,
                    procedural, procedural_skills
 Diversity: Per-collection search counts tracked; hints injected after 2+ searches
-wiki_knowledge: Always prefers FAISS semantic search (40M Wikipedia vectors,
-                ~2 GB IVFPQ index) over ChromaDB which has sparse legacy data.
-                Falls back to ChromaDB only if FAISS index is unavailable.
+wiki_knowledge: ChromaDB is queried first (like all collections). Then FAISS
+                semantic search (40M Wikipedia vectors, ~2 GB IVFPQ index) is
+                additionally attempted. If FAISS returns results, they are
+                preferred over the ChromaDB results. If FAISS is unavailable
+                or returns nothing, the ChromaDB results are used as fallback.
 ```
 
 ### expand_memory
@@ -221,7 +227,7 @@ Effect: Sets model_signaled_done=True, exits loop
 
 Uses OpenAI-style function calling. LLM response includes
 `tool_calls[0].function.name` and `.arguments` (JSON). Parsed by
-`NativeToolsHandler` → `SearchDecision`.
+`NativeToolsHandler` -> `SearchDecision`.
 
 ### XML Markers
 
@@ -240,9 +246,11 @@ For models without native tool support. Markers embedded in text:
 <done/>
 ```
 
-Parsed by `XMLMarkerHandler` using regex. Checked in order:
-python → wolfram → memory → expand → file_read → file_grep →
-file_list → git_stats → web_search → done → implicit answer.
+Parsed by `XMLMarkerHandler` using regex. `<done/>` is checked first
+and returns immediately if present. Remaining markers are collected
+in order: python -> wolfram -> memory -> expand_memory ->
+get_full_document -> file_read -> file_grep -> git_stats ->
+file_list -> search -> implicit answer (if no markers found).
 
 ### System Prompt Augmentation
 
@@ -268,8 +276,8 @@ file_list → git_stats → web_search → done → implicit answer.
 `_build_final_prompt()`:
 
 - Limit: `context_budget_tokens * 5` (~40K for default 8K)
-- Trim order: dreams → reflections → docs → semantic summaries →
-  recent summaries → personal notes
+- Trim order: dreams -> reflections -> docs -> semantic summaries ->
+  recent summaries -> personal notes
 - Always preserved: recent conversations, agentic search results,
   user profile
 
@@ -286,9 +294,9 @@ Uses `TokenManager.get_token_count()` if available, otherwise
 
 `_is_low_quality_result(search_result, query)` checks:
 
-1. No results → low quality
-2. Only 1 result → low quality
-3. Top result lacks >= 30% of query terms → low quality
+1. No results -> low quality
+2. Only 1 result -> low quality
+3. Top result lacks >= 30% of query terms -> low quality
 
 ### Relaxation
 
@@ -344,7 +352,8 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `reading_file` / `file_read` | File read |
 | `searching_files` / `files_searched` | File grep |
 | `listing_files` / `files_listed` | File list |
-| `querying_git` / `git_queried` | Git stats |
+| `retrieving_document` / `document_retrieved` | Full document retrieval |
+| `querying_git` / `git_stats_done` | Git stats |
 | `synthesizing` | Starting final generation |
 | `done` | Session complete (suppressed in GUI after response starts) |
 | `error` | Error occurred |
@@ -377,8 +386,8 @@ overwriting the streamed response in the chatbot.
 }
 ```
 
-Round actions classified by prefix: `[Memory:` → memory_search,
-`[Python:` → sandbox, `[File Read]` → file_read, `[Git:` → git_stats, etc.
+Round actions classified by prefix: `[Memory:` -> memory_search,
+`[Python:` -> sandbox, `[File Read]` -> file_read, `[Git:` -> git_stats, etc.
 
 ---
 

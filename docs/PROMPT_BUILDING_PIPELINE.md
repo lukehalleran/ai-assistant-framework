@@ -215,7 +215,7 @@ high-attention items (user profile, time, query) placed last:
 22. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
 23. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
 24. `[TEMPORAL GROUNDING]` — narrative context (if available)
-25. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available). Includes `Reference Type:` line (`new_event` / `recall` / `clarification` / `correction` / `unclear`) with explicit WARNING directive when type ≠ `new_event`. Also renders `Resolved State:` line from STM's `temporal_facts` field. STM internally injects last 2 daily notes from the Obsidian vault for cross-day recall disambiguation.
+25. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available). Includes `Reference Type:` line (`new_event` / `recall` / `clarification` / `correction` / `unclear`) with explicit WARNING directive when type ≠ `new_event`. Also renders `Resolved State:` from `temporal_facts`, `Open Threads:` from `open_threads` (ongoing commitments/topics), and `Constraints:` from `constraints` (implicit/explicit response limits). STM internally injects last 2 daily notes from the Obsidian vault for cross-day recall disambiguation.
 26. `[CURRENT USER QUERY]` — always last, protected from compression
 
 Items with `staleness_ratio >= 0.6` get `[HISTORICAL — PARTIALLY OUTDATED]` prefix.

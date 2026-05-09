@@ -9,7 +9,7 @@ Read this document to understand **how the system works as a whole**. For
 deep dives into specific subsystems, see the cross-references to companion
 docs throughout.
 
-**Last Updated**: 2026-03-29
+**Last Updated**: 2026-05-09
 
 **Related docs**:
 - `README.md` — external audience, feature highlights, getting started
@@ -53,6 +53,7 @@ docs throughout.
 26. [Configuration Architecture](#26-configuration-architecture)
 27. [Production Deployment](#27-production-deployment)
 28. [Testing & Benchmarks](#28-testing--benchmarks)
+29. [Prompt Eval System](#29-prompt-eval-system)
 
 ---
 
@@ -65,10 +66,10 @@ system — all data stays on disk, API calls go to LLM providers only.
 ### Key Numbers
 
 ```
-Python lines:           ~116,000 (incl. tests)
-Python files:           312
-Test files:             148
-Test functions:         2,900+
+Python lines:           ~143,000 (incl. tests)
+Python files:           392
+Test files:             173
+Test functions:         3,559
 ChromaDB collections:   12
 Prompt sections:        26 (conditional)
 Intent types:           9
@@ -134,11 +135,11 @@ core/                    # Request orchestration, context pipeline, agentic loop
     └── token_manager.py # Priority-based budget management
 
 memory/                  # 5-tier memory system
-├── memory_coordinator.py    # Thin orchestrator (~632 lines)
+├── memory_coordinator.py    # Thin orchestrator (~551 lines)
 ├── memory_retriever.py      # Parallel ChromaDB retrieval
 ├── memory_scorer.py         # 12-step composite scoring
 ├── memory_storage.py        # Persistence + fact extraction + graph ingestion
-├── shutdown_processor.py    # 10-step session-end pipeline
+├── shutdown_processor.py    # 12-step session-end pipeline
 ├── graph_memory.py          # NetworkX knowledge graph
 ├── entity_resolver.py       # Alias resolution + relation normalization
 ├── fact_extractor.py        # Dual-budget fact extraction
@@ -155,13 +156,36 @@ memory/                  # 5-tier memory system
     └── multi_collection_chroma_store.py  # ChromaDB wrapper (12 collections)
 
 knowledge/               # External knowledge integration
-├── web_search_manager.py      # Tavily API + caching
+├── web_search_manager.py      # Tavily API + caching + numbered web citations
 ├── wolfram_manager.py         # Wolfram Alpha + rate limiting
 ├── sandbox_manager.py         # E2B code sandbox
-├── synthesis_generator.py     # Cross-store synthesis candidates
-├── synthesis_filter.py        # 8-stage synthesis filter
+├── synthesis_generator.py     # Cross-store synthesis candidates (Tier 2)
+├── synthesis_retriever.py     # Structural query + FAISS synthesis (Tier 0)
+├── synthesis_filter.py        # 7-stage synthesis filter
+├── graph_walk_generator.py    # Biased Markov walk synthesis (Tier 1)
+├── synthesis_models.py        # Synthesis pipeline data models + enums
 ├── implementation_detector.py # Proposal implementation tracking
-└── reference_docs_manager.py  # Auto-seeded docs/
+├── reference_docs_manager.py  # Auto-seeded docs/
+├── wiki_tracker.py            # Session-level Wikipedia article tracking
+├── wiki_enrichment.py         # Shutdown: tracked wiki articles → graph nodes
+├── wikidata_resolver.py       # Personal ↔ Wikidata entity resolution
+├── wikidata_models.py         # Pydantic models for Wikidata import
+├── git_memory.py              # Git commit history extractor
+├── git_memory_loader.py       # Git → PROCEDURAL ChromaDB loader
+└── proposal_generator.py      # Goal-directed code proposal generation
+
+eval/                    # Prompt section ablation & eval system
+├── schema.py              # Pure data models (no Daemon imports)
+├── section_registry.py    # 27-entry canonical section registry
+├── snapshots.py           # Snapshot capture, replay, save/load
+├── variants.py            # LOO, AOI, bundle, reorder variant generation
+├── corpus.py              # 27-query seed corpus (3 per intent type)
+├── utilization.py         # Per-section presence/token utilization analysis
+├── harness.py             # Batch generation with rate limiting + resume
+├── judge.py               # Pairwise A/B judging with position randomization
+├── checks.py              # 5 automated objective checks (no LLM)
+├── no_store_generation.py # Side-effect-free LLM generation
+└── persistence_guard.py   # State fingerprinting (prevents mutations)
 
 processing/gate_system.py  # Multi-stage retrieval gating
 models/model_manager.py    # Multi-provider LLM abstraction
@@ -299,6 +323,7 @@ ContextResult:
   is_heavy_topic     — heavy/sensitive topic flag
   extracted_facts    — inline facts (if heavy topic triggered extraction)
   intent             — IntentResult with type, confidence, weight/retrieval/gate overrides
+  is_small_talk      — True when CASUAL_SOCIAL intent >= 0.70 (skips planning, reduces retrieval)
 ```
 
 ### Tone Detection
@@ -470,16 +495,16 @@ from all modification — raw turns are the ground truth.
 
 ### MemoryCoordinator — The Thin Orchestrator
 
-`memory_coordinator.py` (~632 lines) is a pure delegation layer. It
-creates all memory components in `__init__()` and exposes ~24 methods
-that forward to the appropriate component:
+`memory_coordinator.py` (~551 lines) is a pure delegation layer. It
+creates ~16 components in `__init__()` and exposes ~24 methods that
+forward to the appropriate component:
 
 ```
 MemoryCoordinator
   ├── MemoryRetriever    — retrieval + semantic top memories
   ├── MemoryStorage      — persistence + fact extraction + graph ingestion
   ├── MemoryScorer       — composite scoring with intent overrides
-  ├── ShutdownProcessor  — 10-step session-end pipeline
+  ├── ShutdownProcessor  — 12-step session-end pipeline
   ├── ThreadManager      — conversation thread tracking
   ├── HybridRetriever    — query rewrite + keyword search
   ├── UserProfile        — categorized user fact profile
@@ -487,7 +512,11 @@ MemoryCoordinator
   ├── EntityResolver     — alias resolution + relation normalization
   ├── FactVerifier       — pre-storage conflict detection
   ├── ClaimIndex         — claim staleness tracking
-  └── ContextSurfacer    — proactive cross-domain insights
+  ├── ContextSurfacer    — proactive cross-domain insights
+  ├── ThreadStore        — open thread persistence (ChromaDB-backed)
+  ├── FactExtractor      — rule-based fact extraction
+  ├── MemoryConsolidator — summary block generation
+  └── TopicManager       — topic extraction
 ```
 
 No business logic lives in the coordinator itself. All scoring, storage,
@@ -839,9 +868,11 @@ Priority  1: Wiki
 
 When the assembled prompt exceeds the budget:
 
-1. **LLM compression** — Items ≥3x over their allocation get intelligent
-   reduction via parallel async LLM calls (2s timeout per item, falls
-   back to middle-out on timeout)
+1. **LLM compression** — Items ≥3x over their allocation (`LLM_COMPRESSION_RATIO_THRESHOLD`)
+   get intelligent reduction via parallel async LLM calls (gpt-4o-mini,
+   3s timeout per item, max 8 batch). Falls back to middle-out on timeout.
+   Config: `LLM_COMPRESSION_ENABLED`, `LLM_COMPRESSION_MODEL`,
+   `LLM_COMPRESSION_TIMEOUT`; YAML section `llm_compression`
 2. **Middle-out compression** — Keeps 60% head + 40% tail, trims middle.
    Inserts snip marker: `… [middle-out snipped N chars] …`
 3. **Section removal** — Lowest priority sections dropped first, 25% of
@@ -1625,7 +1656,7 @@ When Daemon starts (GUI launch or CLI start):
 
 See [Section 13: Per-Turn State Updates](#13-per-turn-state-updates).
 
-### Session Shutdown (10-Step Pipeline)
+### Session Shutdown (12-Step Pipeline)
 
 `ShutdownProcessor.process_shutdown_memory()` runs a strict sequence:
 
@@ -1643,27 +1674,37 @@ Step 3:  LLM fact extraction — Neural triple extraction, last 12 turns
          source_excerpt attached via keyword matching (_attach_source_excerpts)
          Graph ingestion for entity-worthy facts
 
-Step 4:  Procedural skill extraction — WHEN/THEN adaptive workflows
+Step 4:  Behavioral pattern extraction — Cross-turn habit detection
+         Single LLM call identifies recurring cross-domain behaviors the user
+         exhibits but never states explicitly (e.g., "codes at the gym").
+         Stores as profile facts. Min 3 turns required, max 3 patterns.
+         Config: behavioral_patterns.enabled (default true).
 
-Step 5:  Code proposal generation — Self-improvement suggestions
+Step 5:  Procedural skill extraction — WHEN/THEN adaptive workflows
+
+Step 6:  Code proposal generation — Self-improvement suggestions
          Filtered against GOALS.md for relevance
 
-Step 6:  Implementation tracking — Lightweight file-existence check
+Step 7:  Implementation tracking — Lightweight file-existence check
          for previously proposed features
 
-Step 7:  Open thread processing — Three phases:
+Step 8:  Open thread processing — Three phases:
          a. Resolution detection (check if threads addressed)
          b. New thread extraction (commitments, deadlines, questions)
          c. Cap enforcement (prune lowest-priority if over max)
 
-Step 8:  Synthesis dreaming — Three-tier parallel candidate generation:
+Step 9:  Synthesis dreaming — Three-tier parallel candidate generation:
          Tier 0 RetrievalSynthesisGenerator, Tier 1 GraphWalkGenerator,
-         Tier 2 SynthesisGenerator → 8-stage filter → convergence tracking
+         Tier 2 SynthesisGenerator → 7-stage filter → convergence tracking
          → provisional bridge creation on acceptance
 
-Step 9:  Knowledge graph save — JSON flush (dirty-flag optimization)
+Step 10: Wiki-to-graph enrichment — Tracked wiki articles from session
+         added as graph nodes, linked to existing entities via
+         extract_graph_entities(). Edges use mentioned_alongside relation.
 
-Step 10: Cross-collection dedup — Dry-run preview only (never auto-deletes)
+Step 11: Knowledge graph save — JSON flush (dirty-flag optimization)
+
+Step 12: Cross-collection dedup — Dry-run preview only (never auto-deletes)
 ```
 
 **Critical invariant**: No user data is auto-deleted at shutdown. Dedup
@@ -1672,7 +1713,7 @@ and it removes lowest-priority threads when over the cap.
 
 ### Session-End Reflection
 
-After the 10-step pipeline, `run_shutdown_reflection()` generates a
+After the 12-step pipeline, `run_shutdown_reflection()` generates a
 meta-reflection about the session — what was discussed, what stood out,
 what patterns emerged. This is stored in the `reflections` collection
 for future context.
@@ -1727,7 +1768,9 @@ Secure Python execution in ephemeral Firecracker microVMs:
 
 ### Wikipedia
 
-**Files**: `knowledge/wiki_manager.py`, `knowledge/semantic_search.py`
+**Files**: `knowledge/semantic_search.py`, `knowledge/wiki_tracker.py`,
+`knowledge/wiki_enrichment.py`, `knowledge/wikidata_resolver.py`,
+`knowledge/wikidata_models.py`
 
 6.5M+ articles (40M+ vectors) semantically indexed with FAISS:
 
@@ -1741,6 +1784,13 @@ Secure Python execution in ephemeral Firecracker microVMs:
 - Requires ~102GB storage for raw wiki data (optional — system works without it)
 - All wiki vector searches (agentic search, prompt retrieval, synthesis
   pipeline) route through FAISS; ChromaDB `wiki_knowledge` used only as fallback
+- **Session tracking**: `WikiArticleTracker` records articles accessed during
+  queries. At shutdown, `WikiGraphEnricher` creates graph nodes (source="wiki_retrieved")
+  for tracked articles and links them to existing entities. Edges use
+  `mentioned_alongside` relation at weight 0.5.
+- **Wikidata integration**: `WikidataEntityMapper` resolves personal entities
+  against Wikidata via 3 strategies (exact alias, embedding similarity, domain
+  filtering). `wikidata_models.py` defines Pydantic models for import.
 
 ### Obsidian Vault
 
@@ -1895,6 +1945,12 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `provenance` | Audit trail | `PROVENANCE_ENABLED` |
 | `git_stats` | Git activity queries | `GIT_STATS_ENABLED`, `GIT_STATS_TIMEOUT`, `GIT_STATS_MAX_OUTPUT_LINES` |
 | `response_planning` | Pre-answer plan + post-answer review | `RESPONSE_PLANNING_ENABLED`, `RESPONSE_REVIEW_ENABLED`, `RESPONSE_REVIEW_CONFIDENCE_THRESHOLD` |
+| `llm_compression` | Smart token compression | `LLM_COMPRESSION_ENABLED`, `LLM_COMPRESSION_MODEL`, `LLM_COMPRESSION_TIMEOUT` |
+| `behavioral_patterns` | Cross-turn habit detection | `behavioral_patterns.enabled` |
+| `wiki_enrichment` | Session wiki articles to graph | `WIKI_ENRICHMENT_ENABLED`, `WIKI_ENRICHMENT_MAX_PER_SESSION` |
+| `wikidata_import` | Wikidata entity resolution | `WIKIDATA_*` constants |
+| `graph_walk` | Biased Markov walk synthesis | `GRAPH_WALK_ENABLED`, `GRAPH_WALK_MIN_BRIDGE_EDGES` |
+| `uncertainty_fallback` | "I don't know" detection + retry | `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD` |
 
 ### Environment Variable Overrides
 
@@ -1952,13 +2008,14 @@ Storage: Corpus JSON ~10MB, ChromaDB ~50MB, Wikipedia raw data ~102GB
 
 ### Test Structure
 
-2,800+ tests across 137 files:
+3,559 tests across 173 files:
 
 ```
 tests/
 ├── unit/           # Component tests (most test files here)
+├── test_eval/      # Eval system tests (246 tests)
 ├── benchmarks/     # Retrieval quality (real embeddings)
-└── fixtures/       # Seed data (30 memories, 54 synthesis candidates)
+└── fixtures/       # Seed data (30 memories, 72 synthesis candidates)
 ```
 
 **Last full run**: 2026-05-01 — 3248 passed, 5 wizard-only failures (pre-existing).
@@ -1978,6 +2035,7 @@ Key test counts by subsystem:
 | File access | 44 | `tests/unit/test_file_access_manager.py` |
 | Fact verification | 39 | `tests/unit/test_fact_verification.py` |
 | Thread system | 137 | 4 files (models + store + extractor + integration) |
+| Eval system | 246 | `tests/test_eval/` (7 files) |
 
 ### Retrieval Quality Benchmarks
 
@@ -2002,6 +2060,71 @@ Exclude: `pytest -m "not benchmark"`
 - **Debug dict**: `memory_scorer.py` debug dict only populated at DEBUG
   log level — tests must set logger level explicitly
 - **Excluded dirs**: `venv/`, `data/`, `integration.bak/`
+
+---
+
+## 29. Prompt Eval System
+
+**Files**: `eval/` directory (16 files)
+**Plan**: `eval/PLAN.md` (8-phase architecture)
+
+The eval system provides prompt section ablation and quality measurement
+infrastructure. It answers the question: "Which prompt sections actually
+help, and which hurt?" without modifying production code or persisting
+any data.
+
+### Architecture (8 Phases)
+
+| Phase | Status | What It Does |
+|-------|--------|-------------|
+| 1 | Complete | Snapshot capture and deterministic replay |
+| 2 | Complete | Variant generation, query corpus, utilization analysis |
+| 3 | Skipped | Manual baseline collection |
+| 4 | Complete | Batch generation harness with rate limiting and resume |
+| 5 | Complete | Pairwise A/B judging with position randomization |
+| 6 | Complete | Automated objective checks (length, filler, grounding, citations, thinking leak) |
+| 7 | Planned | Longitudinal tracking |
+| 8 | Complete | Intent-conditioned section gating (eval-driven prompt optimization) |
+
+### Pipeline
+
+```
+SnapshotCapture (builder.py hook)
+  → save to eval/snapshots/*.json
+  → SnapshotReplay (deterministic from stored formatted_text)
+  → VariantGenerator (LOO, AOI, bundle, reorder strategies)
+  → GenerationHarness (batch model calls with PersistenceGuard)
+  → PairwiseJudge (blind A/B, 5-criterion rubric)
+  → ObjectiveChecks (5 automated checks, no LLM)
+  → Section impact report (per-section win/loss/tie rates)
+```
+
+### Integration Point
+
+`builder.py:_maybe_capture_eval_snapshot()` is a gated hook at the end of
+prompt assembly. Disabled by default (`DAEMON_EVAL_CAPTURE=0`). When
+enabled, it lazy-imports eval modules and captures the post-hygiene layer
+with formatted sections, prompt text, and git provenance. Zero overhead
+when disabled.
+
+### Safety
+
+`PersistenceGuard` fingerprints ChromaDB collections and JSON data files
+before and after eval runs. `before.assert_same_as(after)` raises on any
+mutation, ensuring eval never modifies production state.
+
+### Key Result (Phase 8)
+
+Phase 8 used Phase 5 judge verdicts and Phase 6 objective checks to
+calibrate per-intent retrieval overrides. CASUAL_SOCIAL now skips most
+retrieval; EMOTIONAL_SUPPORT increases recent conversation retrieval.
+Gated by `PROMPT_SECTION_GATING_ENABLED` config flag (default True).
+
+### Test Coverage
+
+246 tests in `tests/test_eval/` covering registry, snapshots, replay,
+generation, persistence, variants, corpus, utilization, harness, judge,
+and checks.
 
 ---
 
@@ -2044,13 +2167,14 @@ Arrows indicate "calls" or "data flows to."
 │  ├─ GateSystem (cosine + cross-encoder filtering)            │
 │  ├─ MemoryScorer (12-step composite scoring)                 │
 │  ├─ TokenManager (priority-based budget + compression)       │
-│  └─ Formatter (26-section assembly)                          │
+│  ├─ Formatter (26-section assembly)                          │
+│  └─ EvalSnapshot (optional capture, gated by env var)        │
 └──────┬───────────────────────────────────────────────────────┘
        │
        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ Memory System                                                │
-│  ├─ MemoryCoordinator (thin orchestrator, ~632 lines)        │
+│  ├─ MemoryCoordinator (thin orchestrator, ~16 components)    │
 │  │    ├─ MemoryStorage (persist + fact extraction + graph)    │
 │  │    ├─ FactExtractor (dual budget: user + entity)          │
 │  │    ├─ FactVerifier (STORE / FLAG / REJECT / SKIP)         │
@@ -2060,12 +2184,14 @@ Arrows indicate "calls" or "data flows to."
 │  │    ├─ EntityResolver (alias table, relation normalization)│
 │  │    └─ CrossDeduplicator (duplicates + contradictions)     │
 │  │                                                           │
-│  └─ ShutdownProcessor (10-step session-end pipeline)         │
+│  └─ ShutdownProcessor (12-step session-end pipeline)         │
 │       ├─ Block summaries + claim registration                │
 │       ├─ Fact extraction (regex + LLM) + verification        │
+│       ├─ Behavioral pattern extraction (cross-turn habits)   │
 │       ├─ Skills, proposals, implementation tracking          │
 │       ├─ Thread extraction + resolution + cap enforcement    │
-│       ├─ SynthesisGenerator + SynthesisFilter + convergence  │
+│       ├─ Synthesis dreaming (3-tier) + filter + audit queue  │
+│       ├─ Wiki-to-graph enrichment                            │
 │       ├─ Knowledge graph persistence                         │
 │       └─ Cross-dedup preview (dry-run only)                  │
 └──────────────────────────────────────────────────────────────┘

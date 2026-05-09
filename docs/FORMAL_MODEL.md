@@ -1,6 +1,6 @@
 # Formal Model: Daemon RAG Agent
 
-**Last verified against codebase**: 2026-04-01
+**Last verified against codebase**: 2026-05-09
 
 ## 1. Primitive Sets
 
@@ -151,7 +151,7 @@ sigma_iota(d, x) = SUM_i w_i(iota) * f_i(d, x)  +  SUM_j b_j(d, x, G)  +  SUM_k 
 |-----------|---------------|------------|
 | relevance(d, x) + collection_boost | 0.35 | Embedding similarity + per-collection bonus (config.yaml active values: facts +0.10, summaries +0.10, conversations +0.30, semantic +0.05, wiki +0.05) |
 | recency(d) | 0.25 | Time decay (see temporal curves below) |
-| truth(d) | 0.20 | Evidence-based reliability via TruthScorer.compute_effective_truth() |
+| truth(d) | 0.20 | Evidence-based reliability via TruthScorer.compute_effective_truth() (see truth decay below) |
 | importance(d) | 0.05 | Content-based importance in [0,1] |
 | continuity(d, Theta) | 0.10 | Thread continuity score (recent 10-min window) |
 | topic_match(d, x) | 0.00 | Disabled by default. 1.0 (exact) / 0.5 (neutral) / 0.2 (different) |
@@ -190,6 +190,19 @@ recency(d) =
 ```
 
 Default recency (no temporal anchor): `recency(d) = 1.0 / (1.0 + 0.05 * age_hours)`
+
+**Truth decay** (TruthScorer, computed at read time, never persisted):
+
+Initial scores depend on fact source: `user_stated=0.80`, `corrected=0.85`, `llm_extracted=0.70`, `inferred=0.50`. After creation or last confirmation, truth decays linearly per week:
+
+```
+decayed = current_score - (weeks_since_confirmed * DECAY_RATE)
+clamped to [DECAY_FLOOR, current_score]
+```
+
+where `DECAY_RATE = 0.02` per week and `DECAY_FLOOR = 0.30`. Confirmations reset the decay clock and boost by `+0.08`. Corrections penalize by `-0.25`; cross-collection contradictions by `-0.15`.
+
+**Code**: `memory/truth_scorer.py`
 
 The final retrieval returns: rho(x, C) = top-K documents sorted by sigma descending.
 
@@ -266,11 +279,22 @@ AGENT(q, s):
                                                   // NOTE: web search runs as a PARALLEL
                                                   // retrieval task here, not post-generation
     pi_plan <- plan(q, x) if should_plan(x)      // response planning (parallel with d*)
+                                                  // should_plan() bypasses: CASUAL_SOCIAL intent,
+                                                  // crisis/elevated tone, <8 word queries, disabled
     p    <- beta(x, d*, iota, E_t, pi_plan)      // prompt construction (plan injection)
+                                                  // Plan injected via format_plan_injection():
+                                                  // appends [RESPONSE PLAN] section to system prompt
+                                                  // with key_points, tone, avoid, strategy fields
     a_0  <- LLM(p)                                // first generation (act)
 
     // UNCERTAINTY FALLBACK (post-generation, optional)
-    // If initial response indicates uncertainty, retry via agentic search
+    // Dual-layer detection: keyword regex then semantic embedding
+    //   Layer 0: Length guard — strip hedge prefixes, skip if substantive > 400 chars
+    //   Layer 1: ~18 compiled regex patterns (confidence 0.75–0.90), min confidence 0.70
+    //   Layer 2: Cosine similarity of first 300 chars against 8 pre-embedded anchor
+    //            sentences (e.g. "I don't have any information about that in my memory."),
+    //            threshold 0.70
+    // Returns UncertaintyResult(is_uncertain, confidence, trigger_type, matched_pattern)
     if UNCERTAINTY_FALLBACK_ENABLED and is_uncertain(a_0):
         agentic_search_trigger := true               // force agentic retry
 
@@ -278,7 +302,7 @@ AGENT(q, s):
     // If response planning produced a plan, review the answer against it
     if RESPONSE_REVIEW_ENABLED and pi_plan exists:
         review <- review_answer(a_0, pi_plan)        // lightweight LLM check (~300 tokens)
-        if not review.passes and review.confidence >= 0.80:
+        if not review.passes and review.confidence >= 0.90:
             agentic_search_trigger := true            // force agentic retry with review feedback
 
     // AGENTIC SEARCH LOOP (ReAct pattern, optional)
@@ -332,6 +356,13 @@ mu(d_id, w, c):
 Session-gated: `expand_count <= EXPAND_MAX_PER_SESSION` (default 3). Cached per `(d_id, w, c)` tuple.
 
 **Code**: `memory/memory_expander.py` -> `MemoryExpander.expand()`
+
+The agentic search controller is decomposed into three classes:
+- `AgenticSearchController` (`core/agentic/controller.py`) — main loop orchestration, prompt building, model interaction
+- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 11 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, full document, signal done)
+- `AgenticFormatter` (`core/agentic/formatters.py`) — pure stateless formatting for all result types (conversations, memories, web results, etc.)
+
+Protocol dispatch uses `detect_protocol()` (`core/agentic/protocols.py`) to choose between `NativeToolsHandler` (OpenAI/Anthropic function calling) and `XMLMarkerHandler` (local models using XML tags) based on model name. Both handlers parse responses into `SearchDecision` objects with a shared interface.
 
 **Code**: `orchestrator.py` -> `process_user_query()` and `core/agentic/controller.py`
 
@@ -518,6 +549,8 @@ iota : Q x tone -> IntentResult = (type, confidence, w_override, r_override, g_o
 ```
 
 **9 intent types**: FACTUAL_RECALL, TEMPORAL_RECALL, EMOTIONAL_SUPPORT, CASUAL_SOCIAL, TECHNICAL_HELP, CREATIVE_EXPLORATION, META_CONVERSATIONAL, PROJECT_WORK, GENERAL.
+
+Each intent type has a corresponding entry in the `_PROFILES` dict (`intent_classifier.py`) specifying concrete overrides. For example, FACTUAL_RECALL boosts truth weight (0.30 vs default 0.20) and relevance (0.40 vs 0.35) while cutting recency (0.10 vs 0.25); CASUAL_SOCIAL zeroes out wiki, skills, proposals, git, and reference docs retrieval counts; TEMPORAL_RECALL boosts recency weight (0.40) and threads a `_temporal_anchor_hours` key to reshape the scorer's decay curve. GENERAL uses all defaults unchanged.
 
 where:
 - **w_override** is a subset of R^6 overriding the weight vector [w_relevance, w_recency, w_truth, w_importance, w_continuity, w_topic_match]
@@ -792,7 +825,7 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | Gen_0 | Retrieval synthesis generator (structural query -> FAISS -> adversarial eval) | `knowledge/synthesis_retriever.py` |
 | Gen_1 | Graph walk generator (biased Markov walk -> narration) | `knowledge/graph_walk_generator.py` |
 | Gen_2 | Cross-store synthesis generator (random pairing -> bridge articulation) | `knowledge/synthesis_generator.py` |
-| is_uncertain | Uncertainty detection (keyword regex + semantic embedding) | `core/uncertainty_detector.py` |
+| is_uncertain | Uncertainty detection (length guard + ~18 keyword regex patterns + 8 semantic anchors, threshold 0.70) | `core/uncertainty_detector.py` |
 | pi_plan | Response plan (key_points, tone, avoid, strategy) | `core/response_planner.py` |
 | plan | Response planning function (lightweight LLM call) | `core/response_planner.py:create_plan()` |
 | review_answer | Post-answer review against plan | `core/response_planner.py:review_answer()` |

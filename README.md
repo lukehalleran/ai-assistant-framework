@@ -3,10 +3,10 @@
 **A formally-specified cognitive agent with persistent memory, knowledge graph reasoning, agentic tool use, and a long-term vision for automated cross-domain knowledge synthesis.**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-2%2C800%2B-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-3%2C559-brightgreen.svg)](#testing)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
-> 102K lines of Python · 284 files · 2,800+ tests · Solo-built over 11 months, part-time
+> 143K lines of code · 444 files · 3,559 tests · Solo-built over 12 months, part-time
 
 ---
 
@@ -34,7 +34,7 @@ The entire agent is [formally modeled](docs/FORMAL_MODEL.md) as a composition of
 
 ### Agentic Tool System (ReAct Loop)
 
-When a query needs more than stored memory, Daemon enters a multi-round ReAct loop with six tools:
+When a query needs more than stored memory, Daemon enters a multi-round ReAct loop with seven tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -208,16 +208,18 @@ Daemon doesn't just chat — it performs structured cognitive maintenance at ses
 
 **Per-turn:** Stores episodic memory, updates truth scores from correction/confirmation detection, runs optional fact extraction with verification gate, ingests facts into the knowledge graph, and transitions the escalation FSM.
 
-**Session end (9-step pipeline):**
+**Session end (11-step pipeline):**
 1. Block summaries — LLM-compressed conversation history with source document backlinks
 2. Regex-based fact extraction (last 10 turns) with conflict verification
 3. LLM-assisted fact extraction (last 12 turns) with batch verification and graph ingestion
-4. Procedural skill extraction (learned trigger → action patterns)
-5. Self-improvement proposal generation (filtered against GOALS.md)
-6. Cross-collection deduplication scan (dry-run only, never auto-deletes)
-7. Open thread processing — resolution detection + new thread extraction + cap enforcement
-8. Implementation tracking — checks if previously proposed features have been built
-9. Session reflection — LLM meta-reflection stored for future context
+4. Behavioral pattern extraction — cross-turn habit detection (e.g., "codes at the gym")
+5. Procedural skill extraction (learned trigger → action patterns)
+6. Self-improvement proposal generation (filtered against GOALS.md)
+7. Cross-collection deduplication scan (dry-run only, never auto-deletes)
+8. Open thread processing — resolution detection + new thread extraction + cap enforcement
+9. Implementation tracking — checks if previously proposed features have been built
+10. Synthesis dreaming — 3-tier generator pipeline (retrieval, graph walk, cross-store), currently disabled pending grading validation
+11. Session reflection — LLM meta-reflection stored for future context
 
 **Critical invariant:** No user data is auto-deleted at shutdown.
 
@@ -289,9 +291,14 @@ Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces ma
 
 The idea: use **Markov chain random walks** across large embedded knowledge bases to generate candidate cross-domain connections, then filter through a multi-stage pipeline to surface genuinely novel, non-obvious links between ideas.
 
-**Data sources** (planned): Wikipedia (embedded, query-retrieval working), arXiv abstracts, PubMed abstracts — unified embedding space.
+**Three generator tiers** (implemented, currently disabled pending grading validation):
+- **Tier 0 — Retrieval** (`synthesis_retriever.py`): Structural query extraction → FAISS semantic search (40M vectors) → adversarial evaluation
+- **Tier 1 — Graph Walk** (`graph_walk_generator.py`): Biased Markov random walks across unified personal + Wikidata graph (30K nodes, 7K edges, 41 bridges). Hub dampening, cross-domain walk constraint
+- **Tier 2 — Cross-Store** (`synthesis_generator.py`): Entity sampling from facts + wiki_knowledge, LLM bridge articulation
 
-**Filtering pipeline** (implemented — `knowledge/synthesis_filter.py`):
+**Data sources**: Wikipedia (41M vectors via FAISS IVFPQ, embedded and indexed), personal knowledge graph (facts, entities, relations). arXiv/PubMed planned for future.
+
+**Filtering pipeline** (7 stages — `knowledge/synthesis_filter.py`):
 
 | Stage | Gate | Cost | What It Does |
 |-------|------|------|-------------|
@@ -301,11 +308,15 @@ The idea: use **Markov chain random walks** across large embedded knowledge base
 | 3 | External Novelty | ~10ms | Wiki corpus search — reject if similarity > 0.80 (already known) |
 | 4 | Internal Novelty | ~10ms | Synthesis memory check — new paths to same insight pass (convergence signal) |
 | 5 | Coherence Judge | ~500ms | LLM rates INVALID/WEAK/MODERATE/STRONG — minimum MODERATE to pass |
-| 6 | Composite Score | ~0ms | Weighted composite ≥ 0.40: coherence(0.30) + novelty(0.40) + distance(0.15) + structural(0.15) |
+| 6 | Composite Score | ~0ms | Weighted composite ≥ 0.65: coherence(0.30) + novelty(0.40) + distance(0.15) + structural(0.15) |
 
 **Convergence detection**: The real signal isn't raw frequency — it's independent rediscovery. When different random walks find the same insight via different paths, that's evidence of a genuine connection. The pipeline tracks unique walk paths and concept pairs per insight, promoting to CONVERGING status at 3+ independent paths from 2+ distinct source pairs.
 
-**Synthesis memory**: Accepted insights are stored in a dedicated ChromaDB collection (`synthesis_results`) with full metadata — coherence rating, novelty scores, convergence tracking. Duplicate detection prevents redundant storage; instead, new paths to existing insights update convergence metadata.
+**Synthesis memory**: Accepted insights are stored in a dedicated ChromaDB collection (`synthesis_results`) with full metadata — coherence rating, novelty scores, convergence tracking. Duplicate detection prevents redundant storage; instead, new paths to existing insights update convergence metadata. Provisional graph edges (weight=0.0) are created on acceptance and mature on independent rediscovery.
+
+**Human audit queue**: A blind review interface (GUI "Synthesis" tab) presents candidates without generator labels. Two-layer grading: 3 binary screening questions (changes thinking? mechanism real? heard before?) + 1-5 gut-feel slider. Auto-halt threshold: synthesis dreaming disabled if FP rate exceeds 50% with 10+ graded results.
+
+**Current status**: All three generators are disabled in config.yaml pending sufficient grading data. The eval system (246 tests) provides infrastructure for validating re-enablement.
 
 The personal assistant earns its keep as a daily testbed for every component in this pipeline — gating, scoring, reranking, truth scoring, deduplication — at conversational scale before batch synthesis workloads stress them at knowledge-base scale.
 
@@ -391,18 +402,21 @@ python -m pytest -m "not slow"          # Exclude slow tests
 python -m pytest --cov=. --cov-report=html  # With coverage
 ```
 
-**2,800+ tests** across 137 test files — unit, integration, and retrieval quality benchmarks. Key areas:
+**3,559 tests** across 173 test files — unit, integration, eval, and retrieval quality benchmarks. Key areas:
 
+- 246 eval system tests (registry, snapshots, replay, variants, corpus, harness, judge, checks)
 - 74 intent classification tests
 - 70 knowledge graph tests
 - 66 implementation tracking tests
 - 55 proactive context surfacing tests
-- 51 escalation tracker tests
+- 51 escalation tracker + 51 git stats tests
 - 50 graph integration tests
-- 47 cross-deduplication tests
-- 47 claim tracker / staleness tests
+- 47 cross-deduplication + 47 claim tracker tests
 - 44 file access manager tests
-- 39 fact verification tests
+- 39 fact verification + 38 graph walk generator tests
+- 34 synthesis audit + 33 uncertainty detector tests
+- 26 profile namespace + 23 web search citation tests
+- 21 source excerpt pipeline + 20 response planner tests
 - 19 retrieval quality benchmarks (30 seed memories, real embeddings, recall@K + MRR)
 
 ---
@@ -410,16 +424,18 @@ python -m pytest --cov=. --cov-report=html  # With coverage
 ## Project Stats
 
 ```
-Lines of Python:        ~102,000
-Python files:           284
-Test files:             137
-Test functions:         2,800+
+Lines of code:          ~143,000 (across all source files)
+Python lines:           ~139,000
+Total files:            444
+Python files:           392
+Test files:             173
+Test functions:         3,559
 ChromaDB collections:   12
 Prompt sections:        26 (conditional)
 Intent types:           9
 Retrieval tasks:        18 (parallel)
-Memory tiers:           5
-Agentic tools:          7
+Memory tiers:           5 + synthesis
+Agentic tools:          7 + done signal
 Gating latency:         ~200ms
 Config options:         180+
 ```
@@ -438,14 +454,22 @@ core/                        # Request orchestration
 ├── correction_detector.py   # User correction/confirmation detection
 ├── git_stats_manager.py     # Read-only git repo stats for agentic loop
 ├── response_parser.py       # Thinking block + tag stripping utilities
+├── uncertainty_detector.py   # "I don't know" detection for agentic retry fallback
+├── response_planner.py      # Pre-answer planning + post-answer review gate
 ├── agentic/                 # ReAct agentic tool loop
 │   ├── controller.py        # ReAct loop orchestration (5-round max)
+│   ├── tools.py             # ToolExecutor: dispatch routing + execution for all tools
+│   ├── formatters.py        # AgenticFormatter: pure stateless result formatting
 │   ├── types.py             # Tool definitions, state machine, progress events
 │   └── protocols.py         # Native function calling + XML marker handlers
 └── prompt/                  # Modular prompt system
-    ├── builder.py           # 26-section prompt assembly
-    ├── context_gatherer.py  # 18 parallel async retrieval tasks
-    ├── formatter.py         # Section assembly + attention ordering
+    ├── builder.py           # Thin orchestrator: parallel task dispatch, intent overrides
+    ├── context_gatherer.py  # Mixin compositor (init + properties + utilities)
+    ├── gatherer_web.py      # WebSearchMixin: web search trigger + retrieval
+    ├── gatherer_memory.py   # MemoryRetrievalMixin: conversations, summaries, facts, profile
+    ├── gatherer_knowledge.py # KnowledgeRetrievalMixin: notes, docs, wiki, graph, threads
+    ├── formatter.py         # PromptFormatter: 26-section assembly + attention ordering
+    ├── hygiene.py           # ContentHygiene: dedup, caps, backfill
     ├── token_manager.py     # Priority-based budget management
     └── proposal_filter.py   # 10-stage proposal injection pipeline
 
@@ -454,7 +478,7 @@ memory/                      # 5-tier memory system
 ├── memory_retriever.py      # Parallel ChromaDB retrieval pipeline
 ├── memory_scorer.py         # Composite scoring with intent overrides + graph boost
 ├── memory_storage.py        # Persistence with fact verification gate
-├── shutdown_processor.py    # 9-step session-end processing pipeline
+├── shutdown_processor.py    # Session-end processing pipeline (11 major steps)
 ├── truth_scorer.py          # Evidence-based truth tracking
 ├── graph_memory.py          # NetworkX knowledge graph (JSON persistence)
 ├── entity_resolver.py       # Entity alias resolution + relation normalization
@@ -464,7 +488,10 @@ memory/                      # 5-tier memory system
 ├── cross_deduplicator.py    # Cross-collection dedup + contradiction detection
 ├── context_surfacer.py      # Proactive cross-domain insight generation
 ├── memory_expander.py       # Temporal expansion + summary drill-down
-├── synthesis_memory.py      # Synthesis results persistence + convergence tracking
+├── synthesis_memory.py      # Synthesis results persistence + convergence + audit queue
+├── user_profile.py          # Categorized fact storage with namespace canonicalization
+├── user_profile_schema.py   # 5-layer relation categorization, safe aliases, ephemeral TTL
+├── procedural_skill.py      # ProceduralSkill dataclass + SkillCategory enum
 ├── thread_store.py          # ChromaDB-backed thread CRUD + priority ranking
 ├── thread_extractor.py      # LLM-based thread extraction + resolution detection
 └── storage/
@@ -487,7 +514,14 @@ knowledge/
 ├── wiki_manager.py          # FAISS-indexed Wikipedia (6.5M articles)
 ├── implementation_detector.py # 4-stage proposal implementation tracking
 ├── synthesis_models.py      # Synthesis pipeline data models + enums
-└── synthesis_filter.py      # 8-stage synthesis filter pipeline
+├── synthesis_filter.py      # 7-stage synthesis filter pipeline
+├── synthesis_generator.py   # Cross-store sampling + LLM bridge articulation (Tier 2)
+├── synthesis_retriever.py   # Structural query + FAISS search + adversarial eval (Tier 0)
+├── graph_walk_generator.py  # Biased Markov walk synthesis generator (Tier 1)
+├── wiki_tracker.py          # Session-level Wikipedia article tracking
+├── wiki_enrichment.py       # Shutdown: tracked wiki articles → graph nodes
+├── wikidata_resolver.py     # Personal ↔ Wikidata entity resolution
+└── wikidata_models.py       # Pydantic models for Wikidata import
 
 utils/
 ├── tone_detector.py         # 250+ weighted keywords, 4 crisis levels
@@ -500,10 +534,28 @@ utils/
 gui/                         # Gradio web interface
 ├── launch.py                # Dark theme, tab layout, startup hooks
 ├── handlers.py              # Chat streaming + agentic routing + fast mode
-└── wizard.py                # 14-step onboarding wizard (mode, keys, vault, wiki index)
+├── wizard.py                # 14-step onboarding wizard (mode, keys, vault, wiki index)
+└── tabs/                    # Modular tab UI
+    ├── proposals.py         # Code proposal management tab
+    ├── settings.py          # Settings tab
+    └── synthesis.py         # Synthesis audit queue + blind review
 
-tests/                       # 137 test files
-├── unit/                    # Component tests
+eval/                        # Prompt section ablation & eval system (246 tests)
+├── schema.py                # Pure data models (no Daemon imports)
+├── section_registry.py      # 27-entry canonical section registry
+├── snapshots.py             # Snapshot capture, replay, save/load
+├── variants.py              # LOO, AOI, bundle, reorder variant generation
+├── corpus.py                # 27-query seed corpus (3 per IntentType)
+├── utilization.py           # Per-section presence/token analysis
+├── harness.py               # Batch generation orchestration with resume
+├── judge.py                 # Pairwise blind A/B judging with position randomization
+├── checks.py                # 5 automated objective checks (no LLM)
+├── no_store_generation.py   # Side-effect-free LLM generation
+└── persistence_guard.py     # State fingerprinting (ChromaDB + JSON files)
+
+tests/                       # 173 test files
+├── unit/                    # Component tests (~60 files)
+├── test_eval/               # Eval system tests (246 tests)
 ├── benchmarks/              # Retrieval quality (real embeddings, recall@K, MRR)
 └── fixtures/                # Benchmark seed data (30 memories, 19 test cases)
 ```
@@ -633,8 +685,11 @@ python main.py
 | [QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) | Ultra-compressed API reference — function signatures and core logic |
 | [MEMORY_SYSTEM.md](docs/MEMORY_SYSTEM.md) | Memory lifecycle, scoring algorithm, fact pipeline, tuning guide |
 | [SYNTHESIS_FILTER.md](docs/SYNTHESIS_FILTER.md) | Synthesis pipeline stages, calibration, benchmark results |
+| [PROMPT_BUILDING_PIPELINE.md](docs/PROMPT_BUILDING_PIPELINE.md) | Prompt assembly, token budgets, section ordering, intent overrides |
+| [AGENTIC_SEARCH.md](docs/AGENTIC_SEARCH.md) | ReAct loop, tool system, protocol handling, provenance |
+| [THINKING_BLOCKS_IMPLEMENTATION.md](docs/THINKING_BLOCKS_IMPLEMENTATION.md) | Three-layer thinking separation defense |
 | [GOALS.md](docs/GOALS.md) | Active goals, principles, and recent completions |
-| [TAG_GENERATION.md](docs/TAG_GENERATION.md) | Tag generation system documentation |
+| [eval/PLAN.md](eval/PLAN.md) | Prompt eval system architecture (8-phase plan) |
 | [BUILD_GUIDE.md](docs/BUILD_GUIDE.md) | Desktop executable build guide |
 
 ---

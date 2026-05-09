@@ -63,6 +63,7 @@ class ContextResult:
     is_heavy_topic: bool          # Heavy topic flag
     extracted_facts: List[Dict]   # Inline facts
     intent: Optional[IntentResult]# Intent classification [NEW 2026-02-15]
+    is_small_talk: bool           # True when CASUAL_SOCIAL >= 0.70 [NEW 2026-04]
 
 # Usage in orchestrator
 context = await self.build_context(user_input, files, use_raw_mode)
@@ -79,7 +80,7 @@ prompt_ctx = await prompt_builder.build_prompt_from_context(context)
 ## Memory Operations
 
 ```python
-# memory/memory_coordinator.py — Thin orchestrator (~632 lines, plus new component wiring)
+# memory/memory_coordinator.py — Thin orchestrator (~551 lines, plus new component wiring)
 # All methods delegate to modular components. No inline logic.
 class MemoryCoordinator:
     def __init__(self, ...):
@@ -167,10 +168,11 @@ class ShutdownProcessor:
 
     async def process_shutdown_memory(session_conversations=None):
         """Steps: 1) block summaries, 2) session facts, 3) LLM facts,
-        4) procedural skills, 5) code proposals, 6) cross-dedup (dry_run=True only),
+        4) behavioral pattern extraction (cross-turn habit detection, min 3 turns) [NEW 2026-05-09],
+        5) procedural skills, 6) code proposals, 6.4) cross-dedup (dry_run=True only),
         6.5a) open thread extraction + resolution detection [NEW 2026-03-23],
         6.5b) implementation tracking (lightweight file-existence check) [NEW 2026-03-24],
-        6.8) synthesis dreaming — cross-store candidate generation + filter pipeline [NEW 2026-03-28],
+        6.8) synthesis dreaming — 3-tier generators in parallel (retrieval, graph walk, cross-store) [NEW 2026-03-28],
         6.8a) auto-halt check: skips synthesis if FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD [NEW 2026-04-01],
         7) user profile updates (user-only facts; entity facts stay in ChromaDB only).
         After summary storage: extract claims → register in ClaimIndex → add staleness metadata [NEW 2026-03-25]"""
@@ -1050,6 +1052,67 @@ PROACTIVE_SURFACING_MAX_INSIGHTS = 3
 
 ---
 
+## Uncertainty Detector **[NEW 2026-04]**
+
+```python
+# core/uncertainty_detector.py
+class UncertaintyDetector:
+    def detect(response: str) -> UncertaintyResult:
+        """Dual-layer detection of 'I don't know' responses:
+        Layer 1: Keyword regex (~18 compiled patterns, confidence 0.75-0.90)
+        Layer 2: Semantic embedding (8 pre-embedded anchor sentences, cosine threshold 0.70)
+        Length guard: strips hedge prefixes, skips if substantive content > 400 chars.
+        Returns: UncertaintyResult(is_uncertain, confidence, method, matched_pattern)"""
+
+# Integration:
+# gui/handlers.py: after standard streaming, if flagged, retries via agentic search
+# Single boolean prevents infinite retry; only fires on non-agentic responses
+# Provenance: response_mode="uncertainty-fallback"
+
+# Config:
+UNCERTAINTY_FALLBACK_ENABLED = True
+UNCERTAINTY_SEMANTIC_THRESHOLD = 0.70
+UNCERTAINTY_MAX_LENGTH = 400
+```
+
+---
+
+## Response Planner **[NEW 2026-04]**
+
+```python
+# core/response_planner.py
+class ResponsePlan(BaseModel):
+    key_points: List[str]; tone: str; avoid: List[str]; strategy: str; raw_llm_output: str
+
+class ReviewResult(BaseModel):
+    passes: bool; confidence: float; issues: List[str]; suggestion: str
+
+class ResponsePlanner:
+    def should_plan(context) -> bool:
+        """Skips for: small-talk, crisis/elevated tone, CASUAL_SOCIAL intent, <8 word queries, disabled config."""
+
+    async def create_plan(query, context_signals) -> Optional[ResponsePlan]:
+        """Lightweight LLM call (~200 tokens, 5s timeout) → ResponsePlan."""
+
+    async def review_answer(query, answer, plan) -> ReviewResult:
+        """Post-answer review (~300 tokens). If passes=False and confidence >= 0.90, triggers silent agentic retry."""
+
+# Integration:
+# orchestrator.py: plan runs in parallel with build_prompt_from_context() via asyncio.wait()
+# Plan injected into system prompt before _assemble_prompt()
+# gui/handlers.py: review gate after uncertainty fallback, similarity-guarded retry
+
+# Config:
+RESPONSE_PLANNING_ENABLED = True
+RESPONSE_PLANNING_MODEL = None         # None → active model (config.yaml overrides to gpt-4o-mini)
+RESPONSE_PLANNING_MAX_TOKENS = 200
+RESPONSE_PLANNING_TIMEOUT = 5.0
+RESPONSE_REVIEW_ENABLED = True
+RESPONSE_REVIEW_CONFIDENCE_THRESHOLD = 0.90
+```
+
+---
+
 ## Memory Staleness System **[NEW 2026-03-25]**
 
 ```python
@@ -1356,8 +1419,11 @@ recency = 1.0 - (age_hours / temporal_anchor) * 0.3  # gentle 1.0→0.7
 # Outside window:
 recency = 0.7 / (1.0 + 0.05 * (age_hours - temporal_anchor))
 
-# Truth boost from access
-truth = min(1.0, base_truth + 0.02 * access_count)
+# Truth (evidence-based via TruthScorer) [UPDATED 2026-03]
+# Initial: user_stated=0.85, corrected=0.90, llm_extracted=0.70, inferred=0.65
+# Confirmation: +0.08, Correction: -0.25, Contradiction: -0.15
+# Time decay: truth -= (weeks_since_confirmed * 0.02), floor 0.30
+truth = TruthScorer.compute_effective_truth(metadata)
 
 # Continuity score
 continuity = (0.1 if age < 10min else 0) + (0.3 * token_overlap_ratio)
@@ -1394,30 +1460,33 @@ score = (
 ## Knowledge Sources (Prompt Sections)
 
 ```python
-# Prompt section hierarchy (in formatter.py _assemble_prompt):
-[RECENT CONVERSATION]          # Historical context
-[RELEVANT MEMORIES]            # Scored episodic memories
-[USER PROFILE]                 # Categorized user facts + source excerpts + anti-confabulation instruction
-[SUMMARIES]                    # Consolidated conversation blocks
-[REFLECTIONS]                  # Session reflections
-[DREAMS]                       # Dream memories (if enabled)
-[USER'S PERSONAL NOTES]        # Obsidian vault notes; post-filtered by PERSONAL_NOTES_GATE_THRESHOLD (0.30); headers show [relevance: X.XX] [ENHANCED 2026-03-20]
-[USER UPLOADED ITEMS]          # Persisted user file/image uploads from reference_docs collection [NEW 2026-02-10]
-[DAEMON DOCUMENTATION]         # Self-knowledge: architecture docs, PROJECT_SKELETON
-[PROJECT COMMIT HISTORY]       # Git commit history (procedural memory)
-[ADAPTIVE WORKFLOWS]           # Reusable problem-solving patterns (WHEN/THEN)
-[PROPOSED FEATURES]            # Code proposals surfaced for project-related queries [NEW 2026-02-09]
-[KNOWLEDGE GRAPH]              # Graph traversal: related entities as natural language [NEW 2026-03]
-[UNRESOLVED THREADS]           # Open commitments, deadlines, unfinished topics [NEW 2026-03-23]
-[PROACTIVE INSIGHTS]           # Cross-domain insights from knowledge graph [NEW 2026-03-24]
-[ACTIVE FEATURES]              # Feature inventory (always present) [NEW 2026-03-24]
-[CODEBASE CHANGES SINCE LAST SESSION]  # Git changes (first message only) [NEW 2026-03-24]
-[WEB SEARCH RESULTS]           # Real-time Tavily results
-[RELEVANT INFORMATION]         # Wikipedia chunks
-[TIME CONTEXT]                 # Current datetime
-[TEMPORAL GROUNDING]           # Synthesized life context (monthly/weekly/daily notes) [ENHANCED 2026-03-10]
-[STM SUMMARY]                  # Short-term memory analysis (24h window + daily notes injection + reference_type disambiguation) [ENHANCED 2026-04-09]
-[CURRENT USER QUERY]           # The actual query to respond to
+# Prompt section ordering (formatter.py _assemble_prompt, attention-optimized):
+[RECENT CONVERSATION]          # 1. Session continuity (1-15 items)
+[RELEVANT MEMORIES]            # 2. Semantic hits (1-15 items)
+[RECENT SUMMARIES]             # 3. Compressed recent history (1-5)
+[SEMANTIC SUMMARIES]           # 4. Query-relevant compressed history (1-5)
+[RECENT REFLECTIONS]           # 5. Meta insights, recent (1-5)
+[SEMANTIC REFLECTIONS]         # 6. Meta insights, query-relevant (1-5)
+[BACKGROUND KNOWLEDGE]         # 7. Wiki snippets (1-3)
+[WEB SEARCH RESULTS]           # 8. Real-time web with [WEB_N] source IDs + citation instruction
+[RELEVANT INFORMATION]         # 9. Semantic chunks (1-8)
+[DREAMS]                       # 10. Synthesis insights (if enabled; all generators currently disabled)
+[USER'S PERSONAL NOTES]        # 11. Obsidian vault notes; post-filtered by PERSONAL_NOTES_GATE_THRESHOLD (0.30)
+[USER UPLOADED ITEMS]          # 12. Persisted user file/image uploads from reference_docs collection
+[DAEMON DOCUMENTATION]         # 13. Self-knowledge: architecture docs, PROJECT_SKELETON
+[PROJECT COMMIT HISTORY]       # 14. Git commit history (procedural memory)
+[ADAPTIVE WORKFLOWS]           # 15. Reusable problem-solving patterns (WHEN/THEN)
+[PROPOSED FEATURES]            # 16. Code proposals surfaced for project-related queries
+[KNOWLEDGE GRAPH]              # 17. Graph traversal: related entities as natural language
+[UNRESOLVED THREADS]           # 18. Open commitments, deadlines, unfinished topics
+[PROACTIVE INSIGHTS]           # 19. Cross-domain insights from knowledge graph
+[USER PROFILE]                 # 20. Categorized facts + anti-confabulation instruction + source excerpts (high-attention zone)
+[ACTIVE FEATURES]              # 21. Feature inventory (always present)
+[CODEBASE CHANGES SINCE LAST SESSION]  # 22. Git changes (first message only)
+[TIME CONTEXT]                 # 23. Current datetime (high-attention zone)
+[TEMPORAL GROUNDING]           # 24. Synthesized life context (monthly/weekly/daily notes)
+[SHORT-TERM CONTEXT SUMMARY]   # 25. STM analysis + reference_type + temporal_facts + open_threads + constraints
+[CURRENT USER QUERY]           # 26. Always last, protected from compression
 ```
 
 ---
@@ -2031,7 +2100,7 @@ class SynthesisMemory:
     def get_audit_stats() -> dict:         # {total_graded, valid_count, invalid_count, fp_rate, avg_grade, auto_halt, ungraded_accepted, ungraded_rejected, fp_halt_threshold, min_graded_for_halt}
     def store_rejected_for_audit(result) -> str:  # Stores composite-rejected candidate for FN review
 
-# knowledge/synthesis_filter.py — 8-stage async pipeline
+# knowledge/synthesis_filter.py — 7-stage async pipeline (storage is post-pipeline)
 # Module-level helpers:
 #   _extract_faiss_similarity(results) -> float — extracts top cosine similarity from FAISS search results
 #   _compute_template_similarity(claim) -> float — regex-based generic bridge detection
@@ -2058,8 +2127,8 @@ class SynthesisFilter:
 # 4: novelty_internal   — synthesis memory; new paths pass as convergence (~10ms)
 # 5: coherence_judge    — two-pass LLM: Pass 1 structural coherence (4-tier rating),
 #                          Pass 2 factual skeptic (MODERATE only, binary PASS/FAIL) (~500ms-2s)
-# 6: composite_scoring  — weighted 4-signal novelty composite ≥ 0.40 threshold
-# 7: storage            — accepted → synthesis_results collection
+# 6: composite_scoring  — weighted 4-signal novelty composite ≥ 0.65 threshold
+# Storage happens post-pipeline in process_candidate(), not as a formal stage
 
 # Composite: 0.30*coherence + 0.40*novelty + 0.15*distance + 0.15*structural
 # Novelty (4-signal):
@@ -2256,4 +2325,6 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-This document is ~2,070 lines → ~14K tokens, providing instant lookup for critical functions and patterns.
+**Last verified**: 2026-05-09
+
+This document provides instant lookup for critical functions and patterns.
