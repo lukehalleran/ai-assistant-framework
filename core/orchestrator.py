@@ -33,8 +33,6 @@ Additional Contract (Agentic Search):
   - Agentic mode uses LLM-first trigger's search_terms for initial search
   - Initializes SandboxManager for E2B code execution support [NEW 2026-01-22]
 """
-import asyncio
-import os
 import re
 import processing.gate_system as gate_system
 from datetime import datetime
@@ -43,29 +41,18 @@ from core.response_parser import ResponseParser
 from utils.logging_utils import get_logger
 logger = get_logger("orchestrator")
 from integrations.wikipedia_api import WikipediaAPI
-from utils.tone_detector import (
-    detect_crisis_level,
-    CrisisLevel,
-    should_log_tone_shift,
-    format_tone_shift_log,
-    format_tone_log,
-)
-from utils.emotional_context import (
-    EmotionalContext,
-    analyze_emotional_context,
-    format_emotional_context_log,
-)
+from utils.tone_detector import CrisisLevel
+from utils.emotional_context import EmotionalContext
 from utils.need_detector import NeedType
 from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
-from core.best_of_handler import BestOfHandler, BestOfResult
-from core.escalation_tracker import EscalationTracker, ResponseStrategy
+from core.best_of_handler import BestOfHandler
+from core.escalation_tracker import EscalationTracker
 from core.correction_detector import CorrectionDetector, CorrectionEvent
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
 gate_system.wikipedia_api = wiki_api  # This sets it globally
-# If you have a real helper, import that instead:
-from utils.query_checker import is_deictic, analyze_query
+from utils.query_checker import is_deictic
 
 
 class _SimplePromptBuilder:

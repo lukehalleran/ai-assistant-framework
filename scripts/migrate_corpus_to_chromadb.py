@@ -86,7 +86,7 @@ class CorpusToChromaMigrator:
                             stats['date_range']['earliest'] = dt
                         if stats['date_range']['latest'] is None or dt > stats['date_range']['latest']:
                             stats['date_range']['latest'] = dt
-                    except:
+                    except Exception:
                         pass
 
         return stats

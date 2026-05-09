@@ -12,9 +12,9 @@ Contract:
 Public Interface:
     - detect_protocol(model_name: str) -> SearchProtocol
     - get_protocol_handler(protocol, wolfram_available, sandbox_available) -> BaseProtocolHandler
-    - BaseProtocolHandler.parse_response() -> SearchDecision
-    - NativeToolsHandler.parse_response() -> SearchDecision (parses tool_calls)
-    - XMLMarkerHandler.parse_response() -> SearchDecision (parses XML markers)
+    - BaseProtocolHandler.parse_response() -> List[SearchDecision]
+    - NativeToolsHandler.parse_response() -> List[SearchDecision] (parses ALL tool_calls)
+    - XMLMarkerHandler.parse_response() -> List[SearchDecision] (parses ALL XML markers)
 
 Supported Tools:
     - web_search / <search>: Web search queries
@@ -88,15 +88,19 @@ class BaseProtocolHandler(ABC):
     """Abstract base class for protocol handlers."""
 
     @abstractmethod
-    def parse_response(self, response: Any) -> SearchDecision:
+    def parse_response(self, response: Any) -> List[SearchDecision]:
         """
-        Parse LLM response to extract search decision.
+        Parse LLM response to extract search decisions.
+
+        Returns a list of SearchDecision objects. When the LLM requests
+        multiple independent tools in one step, each gets its own entry.
+        Single-tool responses return a 1-element list (backward compatible).
 
         Args:
             response: Raw response from LLM (format depends on protocol)
 
         Returns:
-            SearchDecision indicating what the model wants to do
+            List of SearchDecision(s) — one per tool call requested
         """
         pass
 
@@ -163,15 +167,19 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.file_access_available = file_access_available
         self.git_stats_available = git_stats_available
 
-    def parse_response(self, response: Any) -> SearchDecision:
+    def parse_response(self, response: Any) -> List[SearchDecision]:
         """
         Parse native tool call response.
+
+        Processes ALL tool_calls from the LLM response, returning one
+        SearchDecision per tool call. Single-tool responses return a
+        1-element list (backward compatible).
 
         Args:
             response: LLM response object with potential tool_calls
 
         Returns:
-            SearchDecision based on tool calls or lack thereof
+            List of SearchDecision(s) based on tool calls
         """
         # Handle different response formats
         tool_calls = None
@@ -186,14 +194,33 @@ class NativeToolsHandler(BaseProtocolHandler):
         if not tool_calls:
             # No tool calls - model wants to answer directly
             content = self._extract_content(response)
-            return SearchDecision(
+            return [SearchDecision(
                 wants_answer=True,
                 partial_response=content
-            )
+            )]
 
-        # Parse first tool call
-        tool_call = tool_calls[0]
+        # Parse ALL tool calls
+        decisions = []
+        for tool_call in tool_calls:
+            decision = self._parse_single_tool_call(tool_call)
+            if decision is not None:
+                decisions.append(decision)
 
+        if not decisions:
+            return [SearchDecision(wants_answer=True)]
+
+        return decisions
+
+    def _parse_single_tool_call(self, tool_call: Any) -> Optional[SearchDecision]:
+        """
+        Parse a single tool call into a SearchDecision.
+
+        Args:
+            tool_call: A single tool call object (OpenAI or dict format)
+
+        Returns:
+            SearchDecision or None if the tool call is malformed
+        """
         # Handle different tool call formats
         if hasattr(tool_call, 'function'):
             # OpenAI format
@@ -212,7 +239,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 args = {}
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool call format: {type(tool_call)}")
-            return SearchDecision(wants_answer=True)
+            return None
 
         # Process tool call
         if func_name == "web_search":
@@ -227,7 +254,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] web_search called without query")
-                return SearchDecision(wants_answer=True)
+                return None
 
         elif func_name == "done_searching":
             reason = args.get("reason")
@@ -249,7 +276,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] wolfram_alpha called without query")
-                return SearchDecision(wants_answer=True)
+                return None
 
         elif func_name == "execute_python":
             code = args.get("code", "")
@@ -263,7 +290,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] execute_python called without code")
-                return SearchDecision(wants_answer=True)
+                return None
 
         elif func_name == "search_memory":
             query = args.get("query", "")
@@ -279,7 +306,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] search_memory called without query")
-                return SearchDecision(wants_answer=True)
+                return None
 
         elif func_name == "expand_memory":
             memory_id = args.get("memory_id", "")
@@ -295,7 +322,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] expand_memory called without memory_id")
-                return SearchDecision(wants_answer=True)
+                return None
 
         elif func_name == "file_read":
             filepath = args.get("filepath", "")
@@ -311,7 +338,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] file_read called without filepath")
-                return SearchDecision(wants_answer=True)
+                return None
 
         elif func_name == "file_grep":
             pattern = args.get("pattern", "")
@@ -327,7 +354,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] file_grep called without pattern")
-                return SearchDecision(wants_answer=True)
+                return None
 
         elif func_name == "file_list":
             dirpath = args.get("dirpath", "")
@@ -342,7 +369,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] file_list called without dirpath")
-                return SearchDecision(wants_answer=True)
+                return None
 
         elif func_name == "git_stats":
             query = args.get("query", "")
@@ -356,7 +383,7 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] git_stats called without query")
-                return SearchDecision(wants_answer=True)
+                return None
 
         elif func_name == "get_full_document":
             title = args.get("title", "")
@@ -370,11 +397,11 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             else:
                 logger.warning("[AgenticProtocol] get_full_document called without title")
-                return SearchDecision(wants_answer=True)
+                return None
 
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
-            return SearchDecision(wants_answer=True)
+            return None
 
     def _extract_content(self, response: Any) -> Optional[str]:
         """Extract text content from response."""
@@ -440,6 +467,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             f"Use web_search for current info, wolfram_alpha for quick math/science computations, "
             f"execute_python for multi-step calculations and data analysis "
             f"(up to {max_rounds} tool uses total).{memory_guidance} "
+            "You may call multiple tools in a single step when the queries are independent "
+            "(e.g., web_search AND search_memory simultaneously). "
             "Use done_searching when you have enough information to answer."
         )
         return system_prompt + addition
@@ -503,161 +532,160 @@ class XMLMarkerHandler(BaseProtocolHandler):
         re.DOTALL | re.IGNORECASE
     )
 
-    def parse_response(self, response: Any) -> SearchDecision:
+    def parse_response(self, response: Any) -> List[SearchDecision]:
         """
         Parse XML markers from text response.
+
+        Collects ALL markers found in the response. If a <done/> marker
+        is present, returns only the done signal (tools are ignored).
+        Single-marker responses return a 1-element list.
 
         Args:
             response: Text response from LLM
 
         Returns:
-            SearchDecision based on markers found
+            List of SearchDecision(s) based on markers found
         """
         # Extract text content
         text = self._to_text(response)
         if not text:
-            return SearchDecision(wants_answer=True)
+            return [SearchDecision(wants_answer=True)]
 
-        # Check for Python sandbox marker first (most specific for multi-step computation)
-        python_match = self.PYTHON_PATTERN.search(text)
-        if python_match:
+        # Check for done marker first — if present, honor it immediately
+        if self.DONE_PATTERN.search(text):
+            logger.debug("[AgenticProtocol] XML done marker found")
+            return [SearchDecision(is_done=True)]
+
+        decisions = []
+
+        # Check for Python sandbox markers
+        for python_match in self.PYTHON_PATTERN.finditer(text):
             purpose = python_match.group(1)  # May be None if no purpose attr
             code = python_match.group(2).strip()
             if code:
                 logger.debug(f"[AgenticProtocol] XML python marker found: {purpose or 'code execution'}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_sandbox=True,
                     sandbox_code=code,
                     sandbox_purpose=purpose
-                )
+                ))
 
-        # Check for Wolfram marker (quick calculations)
-        wolfram_match = self.WOLFRAM_PATTERN.search(text)
-        if wolfram_match:
+        # Check for Wolfram markers
+        for wolfram_match in self.WOLFRAM_PATTERN.finditer(text):
             query = wolfram_match.group(1).strip()
             if query:
                 logger.debug(f"[AgenticProtocol] XML wolfram marker found: {query}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_wolfram=True,
                     wolfram_query=query
-                )
+                ))
 
-        # Check for memory search marker
-        memory_match = self.MEMORY_PATTERN.search(text)
-        if memory_match:
+        # Check for memory search markers
+        for memory_match in self.MEMORY_PATTERN.finditer(text):
             collection = memory_match.group(1) or "facts"
             query = memory_match.group(2).strip()
             if query:
                 logger.debug(f"[AgenticProtocol] XML memory marker found: {collection}/{query}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_memory_search=True,
                     memory_query=query,
                     memory_collection=collection
-                )
+                ))
 
-        # Check for expand_memory marker
-        expand_match = self.EXPAND_MEMORY_PATTERN.search(text)
-        if expand_match:
+        # Check for expand_memory markers
+        for expand_match in self.EXPAND_MEMORY_PATTERN.finditer(text):
             memory_id = expand_match.group(1).strip()
             collection = expand_match.group(2) or None
             window = int(expand_match.group(3)) if expand_match.group(3) else 3
             if memory_id:
                 logger.debug(f"[AgenticProtocol] XML expand_memory marker found: {memory_id[:8]}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_memory_expand=True,
                     expand_memory_id=memory_id,
                     expand_window=window,
                     expand_collection=collection,
-                )
+                ))
 
-        # Check for get_full_document marker
-        full_doc_match = self.GET_FULL_DOCUMENT_PATTERN.search(text)
-        if full_doc_match:
+        # Check for get_full_document markers
+        for full_doc_match in self.GET_FULL_DOCUMENT_PATTERN.finditer(text):
             title = full_doc_match.group(1).strip()
             reason = full_doc_match.group(2).strip() or None
             if title:
                 logger.debug(f"[AgenticProtocol] XML get_full_document marker found: {title}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_full_document=True,
                     full_document_title=title,
                     full_document_reason=reason,
-                )
+                ))
 
-        # Check for file read marker
-        file_read_match = self.FILE_READ_PATTERN.search(text)
-        if file_read_match:
+        # Check for file read markers
+        for file_read_match in self.FILE_READ_PATTERN.finditer(text):
             filepath = file_read_match.group(1).strip()
             start_line = int(file_read_match.group(2)) if file_read_match.group(2) else None
             end_line = int(file_read_match.group(3)) if file_read_match.group(3) else None
             if filepath:
                 logger.debug(f"[AgenticProtocol] XML file_read marker found: {filepath}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_file_read=True,
                     file_read_path=filepath,
                     file_read_start_line=start_line,
                     file_read_end_line=end_line,
-                )
+                ))
 
-        # Check for file grep marker
-        file_grep_match = self.FILE_GREP_PATTERN.search(text)
-        if file_grep_match:
+        # Check for file grep markers
+        for file_grep_match in self.FILE_GREP_PATTERN.finditer(text):
             pattern = file_grep_match.group(1).strip()
             glob = file_grep_match.group(2)
             folder = file_grep_match.group(3).strip() if file_grep_match.group(3) else None
             if pattern:
                 logger.debug(f"[AgenticProtocol] XML file_grep marker found: {pattern}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_file_grep=True,
                     file_grep_pattern=pattern,
                     file_grep_folder=folder if folder else None,
                     file_grep_glob=glob if glob else None,
-                )
+                ))
 
-        # Check for git stats marker
-        git_stats_match = self.GIT_STATS_PATTERN.search(text)
-        if git_stats_match:
+        # Check for git stats markers
+        for git_stats_match in self.GIT_STATS_PATTERN.finditer(text):
             query = git_stats_match.group(1).strip()
             if query:
                 logger.debug(f"[AgenticProtocol] XML git_stats marker found: {query}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_git_stats=True,
                     git_stats_query=query,
-                )
+                ))
 
-        # Check for file list marker
-        file_list_match = self.FILE_LIST_PATTERN.search(text)
-        if file_list_match:
+        # Check for file list markers
+        for file_list_match in self.FILE_LIST_PATTERN.finditer(text):
             dirpath = file_list_match.group(1).strip()
             recursive = file_list_match.group(2) or "false"
             if dirpath:
                 logger.debug(f"[AgenticProtocol] XML file_list marker found: {dirpath}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_file_list=True,
                     file_list_path=dirpath,
                     file_list_recursive=recursive.lower() == "true",
-                )
+                ))
 
-        # Check for search marker
-        search_match = self.SEARCH_PATTERN.search(text)
-        if search_match:
+        # Check for search markers
+        for search_match in self.SEARCH_PATTERN.finditer(text):
             query = search_match.group(1).strip()
             if query:
                 logger.debug(f"[AgenticProtocol] XML search marker found: {query}")
-                return SearchDecision(
+                decisions.append(SearchDecision(
                     wants_search=True,
                     search_query=query
-                )
+                ))
 
-        # Check for done marker
-        if self.DONE_PATTERN.search(text):
-            logger.debug("[AgenticProtocol] XML done marker found")
-            return SearchDecision(is_done=True)
+        # No markers found - model wants to answer
+        if not decisions:
+            return [SearchDecision(
+                wants_answer=True,
+                partial_response=text
+            )]
 
-        # No markers - model wants to answer
-        return SearchDecision(
-            wants_answer=True,
-            partial_response=text
-        )
+        return decisions
 
     def _to_text(self, response: Any) -> Optional[str]:
         """Convert response to text string."""

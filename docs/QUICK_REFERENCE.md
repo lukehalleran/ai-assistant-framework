@@ -923,8 +923,8 @@ class OpenThread(BaseModel):
 
     def priority_score() -> float:
         """TYPE_PRIORITY[type] * urgency * recency_decay(14 days)"""
-    def is_stale(stale_days=14) -> bool:
-        """True if no reference in stale_days."""
+    def is_stale(stale_days=14, deadline_grace_hours=48) -> bool:
+        """True if no reference in stale_days, or deadline_date passed + grace period."""
     def mark_resolved(resolution="") -> None
     def mark_stale() -> None
     def to_metadata() / from_metadata()   # ChromaDB flat primitives
@@ -1632,9 +1632,12 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 **Post-generation trigger** [NEW 2026-04]: If standard response is uncertain ("I don't know"), `UncertaintyDetector` (`core/uncertainty_detector.py`) retries via agentic search. Keyword regex (~18 patterns) + semantic embedding layer. Config: `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD`, `UNCERTAINTY_MAX_LENGTH`.
 
 ```python
-# core/agentic/controller.py
+# core/agentic/controller.py — orchestration, prompt building, model interaction, quality heuristics
+# core/agentic/tools.py — ToolExecutor: dispatch routing + 10 execute methods
+# core/agentic/formatters.py — AgenticFormatter: 17 pure formatting methods
 class AgenticSearchController:
-    """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done"""
+    """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
+    Delegates tool execution to ToolExecutor, formatting to AgenticFormatter."""
 
     async def run_agentic_search(query: str, system_prompt: str, model_name: str,
                                    initial_search_terms: List[str], initial_context=None,
@@ -1644,39 +1647,11 @@ class AgenticSearchController:
         1. Build prompt with gathered context + tool instructions
         1b. Compute context inventory (summarize RAG-gathered sections) [ENHANCED 2026-03-23]
         2. Call LLM for decision (search/wolfram/memory/git_stats/done)
-        3. Execute tool if requested, add result to context
+        3. Execute tool if requested (via ToolExecutor), add result to context
         3b. Track memory_search_counts per collection (diversity enforcement) [ENHANCED 2026-03-23]
         4. Repeat until done or max_turns reached
         5. Yield AgenticEvent for each stage (thinking/searching/computed/done)
         """
-        context = []
-        for turn in range(max_turns):
-            # Get LLM decision via protocol handler
-            decision = await self.protocol_handler.parse_response(llm_response)
-
-            if decision.wants_search:
-                results = await self.web_search_manager.search(decision.search_query)
-                context.append(self._format_search_context(results))
-                yield AgenticEvent(type="searched", data=results)
-
-            elif decision.wants_wolfram:
-                result = await self._execute_wolfram(decision.wolfram_query)
-                context.append(self._format_wolfram_context(result))
-                yield AgenticEvent(type="computed", data=result)
-
-            elif decision.wants_memory_search:  # [ENHANCED 2026-03-23]
-                results = await self._execute_memory_search(decision.memory_query, decision.memory_collection)
-                context.append(self._format_memory_context(results))
-                yield AgenticEvent(type="memory_searched", data=results)
-
-            elif decision.wants_memory_expand:  # [NEW 2026-03-26]
-                result = await self._execute_memory_expand(decision.expand_memory_id, decision.expand_window, decision.expand_collection)
-                context.append(self._format_expand_context(result))
-                yield AgenticEvent(type="memory_expanded", data=result)
-
-            elif decision.is_done:
-                yield AgenticEvent(type="done", response=final_response)
-                break
 
     # Budget-enforced context accumulation [NEW 2026-03-28]
     def _append_accumulated(session, new_context) -> None:

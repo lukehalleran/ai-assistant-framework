@@ -25,7 +25,9 @@ events to the UI in real time.
 
 | File | Purpose |
 |------|---------|
-| `core/agentic/controller.py` | Main loop: session management, tool dispatch, budget, final generation |
+| `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics |
+| `core/agentic/tools.py` | ToolExecutor: dispatch routing + 10 execute methods (web, wolfram, memory, expand, files, git, sandbox, full-doc) |
+| `core/agentic/formatters.py` | AgenticFormatter: 17 pure formatting methods (context, results, prompts) |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |

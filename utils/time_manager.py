@@ -277,3 +277,25 @@ class TimeManager:
     def last_response(self) -> str:
         return f"{self.last_response_time.total_seconds():.2f} s" if self.last_response_time else "N/A"
 
+
+# ---- Shared time helpers (used by coordinator, storage, thread_manager) ----
+
+def now_from(time_manager) -> datetime:
+    """Get current time from a TimeManager instance, falling back to datetime.now()."""
+    try:
+        if time_manager is not None and hasattr(time_manager, "current"):
+            return time_manager.current()
+    except Exception:
+        pass
+    return datetime.now()
+
+
+def now_iso_from(time_manager) -> str:
+    """Get current time as ISO string from a TimeManager instance."""
+    try:
+        if time_manager is not None and hasattr(time_manager, "current_iso"):
+            return time_manager.current_iso()
+    except Exception:
+        pass
+    return now_from(time_manager).isoformat()
+

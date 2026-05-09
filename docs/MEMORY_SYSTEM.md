@@ -60,7 +60,7 @@ resolved, and stale information is penalized in ranking.
 |------|---------|
 | `memory/shutdown_processor.py` | 10-step session-end processing |
 | `memory/thread_manager.py` | Thread detection for conversation continuity |
-| `memory/thread_store.py` | ChromaDB-backed thread persistence + priority ranking + per-turn regex resolution |
+| `memory/thread_store.py` | ChromaDB-backed thread persistence + priority ranking + deadline-aware staleness + per-turn regex resolution |
 | `memory/thread_extractor.py` | LLM-based thread extraction + resolution detection |
 
 ### Storage Layer
