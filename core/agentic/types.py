@@ -88,10 +88,22 @@ class SearchDecision:
     """
     Result of parsing LLM output for search decisions.
 
-    One of these should be True:
+    One or more of these may be True when the model requests parallel tools.
+    When multiple flags are set, the controller dispatches them concurrently
+    via asyncio.gather(). Protocol handlers return List[SearchDecision] —
+    each element has exactly one wants_* flag set.
+
+    Tool flags:
     - wants_search: Model wants to perform a web search
     - wants_wolfram: Model wants to perform a Wolfram Alpha computation
     - wants_sandbox: Model wants to execute Python code in sandbox
+    - wants_memory_search: Model wants to search internal memory
+    - wants_memory_expand: Model wants to expand a memory hit
+    - wants_file_read/grep/list: File access tools
+    - wants_git_stats: Git repository stats
+    - wants_full_document: Full document retrieval
+
+    Terminal flags:
     - is_done: Model signals it has enough information
     - wants_answer: Model wants to provide final answer (no explicit done signal)
     """
@@ -730,6 +742,7 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | Full uploaded document (syllabus, PDF, etc.) | Get Full Document |
 
 You can use tools up to {max_rounds} times total. Be specific with queries.
+You may use multiple tools in a single response when the queries are independent (e.g., <search>...</search> and <memory>...</memory> together).
 
 ## Query Reformulation
 
@@ -764,3 +777,21 @@ MAX_RELAXATION_HINT = """ℹ️ Search relaxation limit reached. Answer using:
 - Explicit acknowledgment of gaps
 
 Do not attempt further searches on this topic."""
+
+
+@dataclass
+class _ToolResult:
+    """Internal: result from a single tool dispatch coroutine.
+
+    Used by the parallel dispatch pattern in AgenticSearchController.
+    Each _dispatch_* method returns one of these instead of yielding
+    ProgressEvents directly, so the caller can gather() multiple
+    dispatches and yield events in deterministic order afterward.
+    """
+    decision: SearchDecision
+    round_data: Optional[SearchRound]  # None if tool was skipped/errored
+    formatted_context: str             # Ready for _append_accumulated()
+    start_events: List[ProgressEvent]  # "Searching for X...", etc.
+    end_events: List[ProgressEvent]    # "Found N results", etc.
+    memory_collection: Optional[str] = None  # For search count tracking
+    is_expand: bool = False            # For expand_count tracking

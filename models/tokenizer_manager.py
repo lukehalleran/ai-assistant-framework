@@ -169,7 +169,7 @@ class TokenizerManager:
             else:
                 # Fallback for whitespace tokenizer
                 return len(tokenizer.encode(text))
-        except:
+        except Exception:
             # Ultimate fallback
             return max(1, len(text) // 4)
 # ✅ Manual test

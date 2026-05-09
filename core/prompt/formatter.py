@@ -343,7 +343,7 @@ class PromptFormatter:
             try:
                 mem_id = mem.get("id", "unknown") if isinstance(mem, dict) else "unknown"
                 return f"Memory {mem_id} (formatting error)"
-            except:
+            except Exception:
                 return "Memory (formatting error)"
 
     def _format_web_search_results(self, web_search_result: Any, max_chars: int = 10000) -> str:

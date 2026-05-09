@@ -3,46 +3,34 @@ Agentic Search Controller Module
 
 Contract:
     - Provides AgenticSearchController for multi-round search loops
-    - Manages ReAct cycle: Think → Act (search/compute/code) → Observe → Repeat
+    - Manages ReAct cycle: Think → Multi-Act (parallel dispatch) → Observe → Repeat
+    - Multi-action dispatch: LLM may request multiple independent tools per step;
+      dispatched concurrently via asyncio.gather(), results accumulated in order
     - Emits ProgressEvent for UI updates
-    - Enforces max_rounds limit (default 5)
-    - Compresses search results to fit context budget
+    - Enforces max_rounds limit (default 5, each tool call counts as one round)
     - Budget-enforced accumulated_context: _append_accumulated() trims oldest rounds
-      when accumulated context exceeds context_budget_tokens (default 8000) [NEW 2026-03-28]
+      when accumulated context exceeds context_budget_tokens (default 8000)
     - Budget-aware final prompt: _build_final_prompt() trims low-value sections
-      (dreams, reflections, docs, summaries) if total exceeds ceiling [NEW 2026-03-28]
-    - Falls back gracefully on search/API failures
+      (dreams, reflections, docs, summaries) if total exceeds ceiling
+    - Falls back gracefully on search/API failures (partial failure: gather returns_exceptions=True)
+    - Provenance: computes final_prompt_hash (SHA-256[:16]) on assembled prompt
 
-Tool Support:
-    - Web search via WebSearchManager (multi-term: all initial_search_terms searched in parallel)
-    - Wolfram Alpha computation via WolframManager (optional)
-    - Python code execution via SandboxManager (optional) [NEW 2026-01-22]
-      - Persistent sessions for variable persistence across turns
-      - Automatic cleanup in finally block
-    - Memory search via ChromaDB collections (optional)
-      - wiki_knowledge: FAISS fallback (40M Wikipedia vectors) preferred over sparse ChromaDB [NEW 2026-03-31]
-    - Memory expansion via MemoryExpander (optional) [NEW 2026-03]
-      - Expands a search result to show surrounding turns (timestamp window)
-      - For summaries, retrieves original source conversations
-      - Gated by EXPAND_MAX_PER_SESSION per session
-    - File access via file_read/file_grep/file_list tools (optional) [NEW 2026-03-26]
-    - Git stats via git_stats tool (optional) [NEW 2026-03-29]
-    - Full document retrieval via get_full_document tool [NEW 2026-03-30]
-
-Provenance [NEW 2026-03-26]:
-    - Computes final_prompt_hash (SHA-256[:16]) on the assembled prompt for audit trail
-    - Saves completed session to _last_session for handler access after execute_search()
-    - Formats memory citations with [MEM_RECENT_N] / [MEM_SEMANTIC_N] markers for citation extraction
-
-Key Parameters:
-    - skip_initial_search: bool - Skip Round 1 web search for computation-only queries [NEW 2026-01-22]
+Modular Architecture (2026-05-09):
+    - AgenticFormatter (core/agentic/formatters.py): Pure stateless formatting methods
+      for all result types (search, memory, file, wiki, etc.)
+    - ToolExecutor (core/agentic/tools.py): Dispatch routing + low-level tool execution
+      for all 10 tool types (web search, wolfram, sandbox, memory, files, git stats, etc.)
+    - Controller retains: orchestration loop, prompt building, model interaction,
+      quality heuristics, and delegation wrappers for backward compatibility
 
 Dependencies:
+    - core.agentic.formatters.AgenticFormatter (result formatting)
+    - core.agentic.tools.ToolExecutor (tool dispatch + execution)
     - models.model_manager.ModelManager (for LLM generation)
     - knowledge.web_search_manager.WebSearchManager (for web searches)
     - knowledge.wolfram_manager.WolframManager (for computations, optional)
-    - knowledge.sandbox_manager.SandboxManager (for code execution, optional) [NEW 2026-01-22]
-    - memory.memory_expander.MemoryExpander (for memory expansion, optional) [NEW 2026-03]
+    - knowledge.sandbox_manager.SandboxManager (for code execution, optional)
+    - memory.memory_expander.MemoryExpander (for memory expansion, optional)
     - core.prompt.token_manager.TokenManager (for budget enforcement)
 
 Public Interface:
@@ -66,6 +54,7 @@ from core.agentic.types import (
     SearchProtocol,
     SearchRequest,
     SearchRound,
+    _ToolResult,
     LOW_QUALITY_HINT_TEMPLATE,
     MAX_RELAXATION_HINT,
 )
@@ -74,6 +63,8 @@ from core.agentic.protocols import (
     get_protocol_handler,
     BaseProtocolHandler,
 )
+from core.agentic.formatters import AgenticFormatter
+from core.agentic.tools import ToolExecutor
 
 if TYPE_CHECKING:
     from models.model_manager import ModelManager
@@ -169,6 +160,22 @@ class AgenticSearchController:
                 self.memory_expander = MemoryExpander(chroma_store)
             except Exception as e:
                 logger.warning(f"[AgenticSearch] Could not init MemoryExpander: {e}")
+
+        # Modular components (extracted from this class)
+        self._formatter = AgenticFormatter()
+        self._tool_executor = ToolExecutor(
+            model_manager=model_manager,
+            web_search_manager=web_search_manager,
+            formatter=self._formatter,
+            chroma_store=chroma_store,
+            wolfram_manager=wolfram_manager,
+            sandbox_manager=sandbox_manager,
+            file_access_manager=file_access_manager,
+            git_stats_manager=git_stats_manager,
+            token_manager=token_manager,
+            memory_expander=self.memory_expander,
+            compression_model=compression_model,
+        )
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count for text, using tokenizer if available."""
@@ -394,7 +401,7 @@ class AgenticSearchController:
                 )
 
                 # Generate with protocol-appropriate method
-                decision = await self._get_model_decision(
+                decisions = await self._get_model_decision(
                     prompt=iteration_prompt,
                     system_prompt=augmented_system_prompt,
                     model_name=model_name,
@@ -402,551 +409,97 @@ class AgenticSearchController:
                     session=session
                 )
 
-                if decision.wants_search and decision.search_query:
-                    # Model wants another search
-                    yield ProgressEvent(
-                        event_type="searching",
-                        message=f"Searching for: {decision.search_query}",
-                        round_number=session.current_round,
-                        metadata={"query": decision.search_query, "reason": decision.search_reason}
-                    )
-
-                    session.state = AgentState.SEARCHING
-                    start_time = time.time()
-                    result = await self._execute_search(
-                        [decision.search_query],
-                        crisis_level=crisis_level
-                    )
-                    search_duration = (time.time() - start_time) * 1000
-
-                    # Record round
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=decision.search_query,
-                            reason=decision.search_reason,
-                            round_number=session.current_round
-                        ),
-                        results=result,
-                        duration_ms=search_duration
-                    )
-
-                    result_count = len(result.pages) if result and hasattr(result, 'pages') else 0
-                    yield ProgressEvent(
-                        event_type="found_results",
-                        message=f"Found {result_count} results",
-                        round_number=session.current_round,
-                        metadata={"result_count": result_count}
-                    )
-
-                    # Compress and accumulate
-                    session.state = AgentState.OBSERVING
-                    compressed = await self._compress_results(result)
-                    round_data.summary = compressed
-                    session.rounds.append(round_data)
-
-                    # Add to accumulated context (budget-enforced)
-                    self._append_accumulated(session, self._format_search_context(
-                        session.current_round - 1,  # Already incremented by rounds.append
-                        decision.search_query,
-                        compressed
-                    ))
-
-                    # Check result quality and update relaxation hint
-                    is_low_quality, issue = self._is_low_quality_result(
-                        result, decision.search_query
-                    )
-                    if is_low_quality:
-                        session.low_quality_search_count += 1
-                        if session.low_quality_search_count > 2:
-                            session.relaxation_hint = MAX_RELAXATION_HINT
-                            logger.info(
-                                "[AgenticSearch] Max relaxation attempts reached, "
-                                "forcing synthesis"
-                            )
-                        else:
-                            suggestion = self._generate_relaxation_suggestion(decision.search_query)
-                            remaining = 2 - session.low_quality_search_count
-                            session.relaxation_hint = LOW_QUALITY_HINT_TEMPLATE.format(
-                                query=decision.search_query,
-                                issue=issue,
-                                suggestion=suggestion,
-                                remaining=remaining
-                            )
-                            logger.info(
-                                f"[AgenticSearch] Low quality result ({issue}), "
-                                f"relaxation count: {session.low_quality_search_count}"
-                            )
-                    else:
-                        # Good results - reset counter and clear hint
-                        session.low_quality_search_count = 0
-                        session.relaxation_hint = None
-                        logger.debug("[AgenticSearch] Good search results, reset relaxation counter")
-
-                elif decision.wants_wolfram and decision.wolfram_query:
-                    # Model wants a Wolfram Alpha computation
-                    yield ProgressEvent(
-                        event_type="computing",
-                        message=f"Computing: {decision.wolfram_query}",
-                        round_number=session.current_round,
-                        metadata={"query": decision.wolfram_query, "reason": decision.wolfram_reason}
-                    )
-
-                    session.state = AgentState.SEARCHING  # Reuse SEARCHING state
-                    start_time = time.time()
-                    wolfram_result = await self._execute_wolfram(decision.wolfram_query)
-                    compute_duration = (time.time() - start_time) * 1000
-
-                    # Record round
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=decision.wolfram_query,
-                            reason=decision.wolfram_reason,
-                            round_number=session.current_round
-                        ),
-                        results=None,  # Wolfram results stored as summary
-                        duration_ms=compute_duration
-                    )
-
-                    yield ProgressEvent(
-                        event_type="computed",
-                        message="Computation complete",
-                        round_number=session.current_round,
-                        metadata={"duration_ms": compute_duration}
-                    )
-
-                    # Store result and accumulate
-                    session.state = AgentState.OBSERVING
-                    round_data.summary = wolfram_result
-                    session.rounds.append(round_data)
-
-                    # Add to accumulated context (budget-enforced)
-                    self._append_accumulated(session, self._format_wolfram_context(
-                        session.current_round - 1,
-                        decision.wolfram_query,
-                        wolfram_result
-                    ))
-
-                elif decision.wants_sandbox and decision.sandbox_code:
-                    # Model wants to execute Python code in sandbox
-                    purpose = decision.sandbox_purpose or "executing code"
-                    yield ProgressEvent(
-                        event_type="executing_code",
-                        message=f"Running Python: {purpose}",
-                        round_number=session.current_round,
-                        metadata={"purpose": purpose}
-                    )
-
-                    session.state = AgentState.SEARCHING  # Reuse SEARCHING state
-                    start_time = time.time()
-
-                    # Execute in persistent session if available, otherwise ephemeral
-                    if sandbox_session and not sandbox_session.is_closed:
-                        sandbox_result = await sandbox_session.run(decision.sandbox_code)
-                    elif self.sandbox_manager and self.sandbox_manager.is_available():
-                        sandbox_result = await self.sandbox_manager.execute_code(decision.sandbox_code)
-                    else:
-                        # No sandbox available - create error result
-                        from knowledge.sandbox_manager import SandboxResult
-                        sandbox_result = SandboxResult(
-                            code=decision.sandbox_code,
-                            success=False,
-                            error="Code sandbox not available (E2B not configured)"
-                        )
-
-                    execution_duration = (time.time() - start_time) * 1000
-
-                    # Record round
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=f"[Python: {purpose}]",
-                            reason=purpose,
-                            round_number=session.current_round
-                        ),
-                        results=None,  # Sandbox results stored as summary
-                        duration_ms=execution_duration
-                    )
-
-                    if sandbox_result.success:
-                        yield ProgressEvent(
-                            event_type="code_executed",
-                            message=f"Code executed ({sandbox_result.execution_time:.1f}s)",
-                            round_number=session.current_round,
-                            metadata={"duration_ms": execution_duration}
-                        )
-                    else:
-                        yield ProgressEvent(
-                            event_type="code_error",
-                            message="Execution error (see details)",
-                            round_number=session.current_round,
-                            metadata={"error": sandbox_result.error}
-                        )
-
-                    # Store result and accumulate
-                    session.state = AgentState.OBSERVING
-                    formatted_result = self.sandbox_manager.format_for_prompt(
-                        sandbox_result, purpose
-                    ) if self.sandbox_manager else str(sandbox_result.error or sandbox_result.stdout)
-                    round_data.summary = formatted_result
-                    session.rounds.append(round_data)
-
-                    # Add to accumulated context (budget-enforced)
-                    self._append_accumulated(session, self._format_sandbox_context(
-                        session.current_round - 1,
-                        purpose,
-                        formatted_result
-                    ))
-
-                elif decision.wants_memory_search and decision.memory_query:
-                    # Model wants to search internal memory/knowledge base
-                    collection = decision.memory_collection or "facts"
-                    yield ProgressEvent(
-                        event_type="searching_memory",
-                        message=f"Searching {collection}: {decision.memory_query}",
-                        round_number=session.current_round,
-                        metadata={
-                            "query": decision.memory_query,
-                            "collection": collection,
-                            "reason": decision.memory_reason,
-                        }
-                    )
-
-                    session.state = AgentState.SEARCHING
-                    start_time = time.time()
-                    memory_result = await self._execute_memory_search(
-                        decision.memory_query, collection
-                    )
-                    search_duration = (time.time() - start_time) * 1000
-
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=f"[Memory: {collection}] {decision.memory_query}",
-                            reason=decision.memory_reason,
-                            round_number=session.current_round
-                        ),
-                        results=None,
-                        duration_ms=search_duration
-                    )
-
-                    yield ProgressEvent(
-                        event_type="found_results",
-                        message=f"Found memory results from {collection}",
-                        round_number=session.current_round,
-                        metadata={"collection": collection, "duration_ms": search_duration}
-                    )
-
-                    session.state = AgentState.OBSERVING
-                    round_data.summary = memory_result
-                    session.rounds.append(round_data)
-
-                    # Track per-collection search counts for diversity enforcement
-                    session.memory_search_counts[collection] = (
-                        session.memory_search_counts.get(collection, 0) + 1
-                    )
-
-                    self._append_accumulated(session, self._format_memory_context(
-                        session.current_round - 1,
-                        collection,
-                        decision.memory_query,
-                        memory_result
-                    ))
-
-                elif decision.wants_memory_expand and decision.expand_memory_id:
-                    # Model wants to expand a memory hit for surrounding context
-                    from config.app_config import EXPAND_MEMORY_ENABLED, EXPAND_MAX_PER_SESSION
-                    memory_id = decision.expand_memory_id
-                    if not EXPAND_MEMORY_ENABLED or not self.memory_expander:
-                        logger.info("[AgenticSearch] expand_memory disabled or no expander")
-                        # Treat as implicit answer to avoid stalling
-                        break
-                    if session.expand_count >= EXPAND_MAX_PER_SESSION:
-                        logger.info("[AgenticSearch] expand_memory limit reached (%d/%d)",
-                                    session.expand_count, EXPAND_MAX_PER_SESSION)
-                        break
-
-                    is_summary = (decision.expand_collection == "summaries")
-                    recall_label = "Recalling Long Term Memory..." if is_summary else "Recalling..."
-
-                    yield ProgressEvent(
-                        event_type="expanding_memory",
-                        message=recall_label,
-                        round_number=session.current_round,
-                        metadata={
-                            "memory_id": memory_id,
-                            "collection": decision.expand_collection,
-                            "reason": decision.expand_reason,
-                        }
-                    )
-
-                    session.state = AgentState.SEARCHING
-                    start_time = time.time()
-                    expand_result = self._execute_memory_expand(
-                        memory_id, decision.expand_window, decision.expand_collection
-                    )
-                    duration = (time.time() - start_time) * 1000
-
-                    formatted = self._format_expanded_results(expand_result)
-                    n_turns = len(expand_result.get("turns", []))
-
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=f"[Expand Memory] {memory_id[:8]}",
-                            reason=decision.expand_reason,
-                            round_number=session.current_round
-                        ),
-                        results=None,
-                        duration_ms=duration
-                    )
-
-                    done_label = (
-                        f"Recalled {n_turns} memories from long term"
-                        if is_summary else f"Recalled {n_turns} surrounding turns"
-                    )
-                    yield ProgressEvent(
-                        event_type="memory_expanded",
-                        message=done_label,
-                        round_number=session.current_round,
-                        metadata={"duration_ms": duration}
-                    )
-
-                    session.state = AgentState.OBSERVING
-                    round_data.summary = formatted
-                    session.rounds.append(round_data)
-                    session.expand_count += 1
-                    self._append_accumulated(session, self._format_expand_context(
-                        session.current_round - 1, memory_id, formatted
-                    ))
-
-                elif decision.wants_file_read and decision.file_read_path:
-                    # Model wants to read a file from disk
-                    yield ProgressEvent(
-                        event_type="reading_file",
-                        message=f"Reading {decision.file_read_path}",
-                        round_number=session.current_round,
-                        metadata={"path": decision.file_read_path, "reason": decision.file_read_reason}
-                    )
-
-                    session.state = AgentState.SEARCHING
-                    start_time = time.time()
-                    file_result = await self._execute_file_read(
-                        decision.file_read_path,
-                        decision.file_read_start_line,
-                        decision.file_read_end_line,
-                    )
-                    duration = (time.time() - start_time) * 1000
-
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=f"[File Read] {decision.file_read_path}",
-                            reason=decision.file_read_reason,
-                            round_number=session.current_round
-                        ),
-                        results=None,
-                        duration_ms=duration
-                    )
-
-                    yield ProgressEvent(
-                        event_type="file_read",
-                        message=f"Read {decision.file_read_path}",
-                        round_number=session.current_round,
-                        metadata={"duration_ms": duration}
-                    )
-
-                    session.state = AgentState.OBSERVING
-                    round_data.summary = file_result
-                    session.rounds.append(round_data)
-                    self._append_accumulated(session, self._format_file_context(
-                        session.current_round - 1,
-                        f"file_read: {decision.file_read_path}",
-                        file_result
-                    ))
-
-                elif decision.wants_file_grep and decision.file_grep_pattern:
-                    # Model wants to grep files on disk
-                    yield ProgressEvent(
-                        event_type="searching_files",
-                        message=f"Grepping for '{decision.file_grep_pattern}'",
-                        round_number=session.current_round,
-                        metadata={"pattern": decision.file_grep_pattern, "reason": decision.file_grep_reason}
-                    )
-
-                    session.state = AgentState.SEARCHING
-                    start_time = time.time()
-                    grep_result = await self._execute_file_grep(
-                        decision.file_grep_pattern,
-                        decision.file_grep_folder,
-                        decision.file_grep_glob,
-                    )
-                    duration = (time.time() - start_time) * 1000
-
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=f"[File Grep] {decision.file_grep_pattern}",
-                            reason=decision.file_grep_reason,
-                            round_number=session.current_round
-                        ),
-                        results=None,
-                        duration_ms=duration
-                    )
-
-                    yield ProgressEvent(
-                        event_type="files_searched",
-                        message=f"Grep complete for '{decision.file_grep_pattern}'",
-                        round_number=session.current_round,
-                        metadata={"duration_ms": duration}
-                    )
-
-                    session.state = AgentState.OBSERVING
-                    round_data.summary = grep_result
-                    session.rounds.append(round_data)
-                    self._append_accumulated(session, self._format_file_context(
-                        session.current_round - 1,
-                        f"file_grep: {decision.file_grep_pattern}",
-                        grep_result
-                    ))
-
-                elif decision.wants_file_list and decision.file_list_path:
-                    # Model wants to list a directory
-                    yield ProgressEvent(
-                        event_type="listing_files",
-                        message=f"Listing {decision.file_list_path}",
-                        round_number=session.current_round,
-                        metadata={"path": decision.file_list_path, "reason": decision.file_list_reason}
-                    )
-
-                    session.state = AgentState.SEARCHING
-                    start_time = time.time()
-                    list_result = await self._execute_file_list(
-                        decision.file_list_path,
-                        decision.file_list_recursive,
-                    )
-                    duration = (time.time() - start_time) * 1000
-
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=f"[File List] {decision.file_list_path}",
-                            reason=decision.file_list_reason,
-                            round_number=session.current_round
-                        ),
-                        results=None,
-                        duration_ms=duration
-                    )
-
-                    yield ProgressEvent(
-                        event_type="files_listed",
-                        message=f"Listed {decision.file_list_path}",
-                        round_number=session.current_round,
-                        metadata={"duration_ms": duration}
-                    )
-
-                    session.state = AgentState.OBSERVING
-                    round_data.summary = list_result
-                    session.rounds.append(round_data)
-                    self._append_accumulated(session, self._format_file_context(
-                        session.current_round - 1,
-                        f"file_list: {decision.file_list_path}",
-                        list_result
-                    ))
-
-                elif decision.wants_full_document and decision.full_document_title:
-                    # Model wants the complete text of an uploaded document
-                    title = decision.full_document_title
-                    yield ProgressEvent(
-                        event_type="retrieving_document",
-                        message=f"Retrieving full document: {title}",
-                        round_number=session.current_round,
-                        metadata={"title": title, "reason": decision.full_document_reason}
-                    )
-
-                    session.state = AgentState.SEARCHING
-                    start_time = time.time()
-                    doc_result = await self._execute_full_document_retrieval(title)
-                    duration = (time.time() - start_time) * 1000
-
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=f"[Full Document] {title}",
-                            reason=decision.full_document_reason,
-                            round_number=session.current_round
-                        ),
-                        results=None,
-                        duration_ms=duration
-                    )
-
-                    yield ProgressEvent(
-                        event_type="document_retrieved",
-                        message=f"Retrieved full document: {title}",
-                        round_number=session.current_round,
-                        metadata={"duration_ms": duration}
-                    )
-
-                    session.state = AgentState.OBSERVING
-                    round_data.summary = doc_result
-                    session.rounds.append(round_data)
-                    self._append_accumulated(session, self._format_full_document_context(
-                        session.current_round - 1, title, doc_result
-                    ))
-
-                elif decision.wants_git_stats and decision.git_stats_query:
-                    # Model wants to query git repository stats
-                    yield ProgressEvent(
-                        event_type="querying_git",
-                        message=f"Git stats: {decision.git_stats_query}",
-                        round_number=session.current_round,
-                        metadata={"query": decision.git_stats_query, "reason": decision.git_stats_reason}
-                    )
-
-                    session.state = AgentState.SEARCHING
-                    start_time = time.time()
-                    git_result = await self._execute_git_stats(decision.git_stats_query)
-                    duration = (time.time() - start_time) * 1000
-
-                    round_data = SearchRound(
-                        round_number=session.current_round,
-                        request=SearchRequest(
-                            query=f"[Git Stats] {decision.git_stats_query}",
-                            reason=decision.git_stats_reason,
-                            round_number=session.current_round
-                        ),
-                        results=None,
-                        duration_ms=duration
-                    )
-
-                    yield ProgressEvent(
-                        event_type="git_stats_done",
-                        message="Git stats retrieved",
-                        round_number=session.current_round,
-                        metadata={"duration_ms": duration}
-                    )
-
-                    session.state = AgentState.OBSERVING
-                    round_data.summary = git_result
-                    session.rounds.append(round_data)
-                    self._append_accumulated(session, self._format_git_stats_context(
-                        session.current_round - 1,
-                        decision.git_stats_query,
-                        git_result
-                    ))
-
-                elif decision.is_done:
-                    # Model signals it has enough info
+                # Check for done signal — honor it immediately
+                if any(d.is_done for d in decisions):
+                    done_d = next((d for d in decisions if d.is_done), None)
                     session.model_signaled_done = True
-                    session.done_reason = decision.done_reason
-                    logger.info(f"[AgenticSearch] Model signaled done: {decision.done_reason}")
+                    session.done_reason = done_d.done_reason if done_d else None
+                    logger.info(f"[AgenticSearch] Model signaled done: {session.done_reason}")
                     break
 
-                else:
-                    # Model wants to answer (no explicit done signal)
+                # Filter to actual tool requests
+                tool_decisions = [
+                    d for d in decisions
+                    if not d.is_done and not d.wants_answer
+                ]
+                if not tool_decisions:
                     logger.info("[AgenticSearch] Model ready to answer (implicit)")
                     break
+
+                # Clamp to remaining round budget
+                rounds_remaining = self.max_rounds - len(session.rounds)
+                if rounds_remaining <= 0:
+                    break
+                if len(tool_decisions) > rounds_remaining:
+                    tool_decisions = tool_decisions[:rounds_remaining]
+                    logger.info(
+                        f"[AgenticSearch] Clamped to {rounds_remaining} tools (max_rounds)"
+                    )
+
+                # Pre-filter expand_memory requests against session limit
+                from config.app_config import EXPAND_MEMORY_ENABLED, EXPAND_MAX_PER_SESSION
+                expand_budget = EXPAND_MAX_PER_SESSION - session.expand_count
+                filtered_decisions = []
+                for d in tool_decisions:
+                    if d.wants_memory_expand and d.expand_memory_id:
+                        if not EXPAND_MEMORY_ENABLED or not self.memory_expander:
+                            logger.info("[AgenticSearch] expand_memory disabled, skipping")
+                            continue
+                        if expand_budget <= 0:
+                            logger.info("[AgenticSearch] expand_memory limit reached, skipping")
+                            continue
+                        expand_budget -= 1
+                    filtered_decisions.append(d)
+                tool_decisions = filtered_decisions
+
+                if not tool_decisions:
+                    logger.info("[AgenticSearch] No dispatchable tools after filtering")
+                    break
+
+                # Assign round numbers and dispatch concurrently
+                base_round = session.current_round
+                session.state = AgentState.SEARCHING
+
+                if len(tool_decisions) > 1:
+                    logger.info(
+                        f"[AgenticSearch] Parallel dispatch: {len(tool_decisions)} tools"
+                    )
+
+                tasks = [
+                    self._dispatch_single(
+                        d, base_round + i, session, crisis_level, sandbox_session
+                    )
+                    for i, d in enumerate(tool_decisions)
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Yield events and accumulate results (deterministic order)
+                session.state = AgentState.OBSERVING
+                for tr in results:
+                    if isinstance(tr, Exception):
+                        logger.error(f"[AgenticSearch] Tool dispatch error: {tr}")
+                        continue
+                    for ev in tr.start_events:
+                        yield ev
+                    for ev in tr.end_events:
+                        yield ev
+                    if tr.round_data is not None:
+                        session.rounds.append(tr.round_data)
+                    if tr.formatted_context:
+                        self._append_accumulated(session, tr.formatted_context)
+                    if tr.memory_collection:
+                        session.memory_search_counts[tr.memory_collection] = (
+                            session.memory_search_counts.get(tr.memory_collection, 0) + 1
+                        )
+                    if tr.is_expand and tr.round_data is not None:
+                        session.expand_count += 1
+
+                # Relaxation tracking (web search results only)
+                for tr in results:
+                    if isinstance(tr, Exception):
+                        continue
+                    if tr.decision.wants_search and tr.round_data is not None:
+                        self._update_relaxation_tracking(session, tr)
 
             # === FINAL GENERATION ===
             session.state = AgentState.GENERATING
@@ -1019,93 +572,137 @@ class AgenticSearchController:
                 except Exception as e:
                     logger.warning(f"[AgenticSearch] Error closing sandbox session: {e}")
 
-    async def _execute_search(
-        self,
-        search_terms: List[str],
-        crisis_level: Optional[str] = None
-    ) -> Any:
+    # ------------------------------------------------------------------
+    # Parallel dispatch infrastructure
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Delegation wrappers (methods moved to ToolExecutor/AgenticFormatter)
+    # Preserved for backward compatibility with tests that mock these.
+    # ------------------------------------------------------------------
+
+    async def _dispatch_single(self, decision, round_number, session, crisis_level, sandbox_session):
+        """Route a single SearchDecision to the appropriate dispatch method.
+
+        Uses self._dispatch_* methods (not tool_executor directly) so that
+        tests can mock individual dispatch/execute methods on the controller.
         """
-        Execute web search with given terms.
-
-        Args:
-            search_terms: List of search queries
-            crisis_level: Current crisis level
-
-        Returns:
-            WebSearchResult or MultiSearchResult
-        """
-        from knowledge.web_search_manager import WebSearchDepth
-
-        if len(search_terms) == 1:
-            return await self.web_search_manager.search(
-                query=search_terms[0],
-                depth=WebSearchDepth.STANDARD,
-                crisis_level=crisis_level
-            )
+        if decision.wants_search and decision.search_query:
+            return await self._dispatch_web_search(decision, round_number, crisis_level)
+        elif decision.wants_wolfram and decision.wolfram_query:
+            return await self._dispatch_wolfram(decision, round_number)
+        elif decision.wants_sandbox and decision.sandbox_code:
+            return await self._dispatch_sandbox(decision, round_number, sandbox_session)
+        elif decision.wants_memory_search and decision.memory_query:
+            return await self._dispatch_memory_search(decision, round_number)
+        elif decision.wants_memory_expand and decision.expand_memory_id:
+            return await self._dispatch_memory_expand(decision, round_number)
+        elif decision.wants_file_read and decision.file_read_path:
+            return await self._dispatch_file_read(decision, round_number)
+        elif decision.wants_file_grep and decision.file_grep_pattern:
+            return await self._dispatch_file_grep(decision, round_number)
+        elif decision.wants_file_list and decision.file_list_path:
+            return await self._dispatch_file_list(decision, round_number)
+        elif decision.wants_full_document and decision.full_document_title:
+            return await self._dispatch_full_document(decision, round_number)
+        elif decision.wants_git_stats and decision.git_stats_query:
+            return await self._dispatch_git_stats(decision, round_number)
         else:
-            # Multiple terms - search all in parallel via multi_search
-            return await self.web_search_manager.multi_search(
-                query=search_terms[0],
-                depth=WebSearchDepth.STANDARD,
-                auto_decompose=False,
-                sub_queries=search_terms,
+            return _ToolResult(
+                decision=decision, round_data=None,
+                formatted_context="", start_events=[], end_events=[],
             )
 
-    async def _compress_results(
-        self,
-        result: Any,
-        max_tokens: int = DEFAULT_COMPRESSION_MAX_TOKENS
-    ) -> str:
-        """
-        Compress search results to fit context budget.
+    async def _dispatch_web_search(self, decision, round_number, crisis_level=None):
+        """Dispatch web search. Calls self._execute_search/_format_* for mock compatibility."""
+        start_events = [ProgressEvent(event_type="searching", message=f"Searching for: {decision.search_query}",
+                                       round_number=round_number, metadata={"query": decision.search_query, "reason": decision.search_reason})]
+        start_time = time.time()
+        result = await self._execute_search([decision.search_query], crisis_level=crisis_level)
+        duration = (time.time() - start_time) * 1000
+        round_data = SearchRound(round_number=round_number, request=SearchRequest(query=decision.search_query, reason=decision.search_reason, round_number=round_number), results=result, duration_ms=duration)
+        result_count = len(result.pages) if result and hasattr(result, 'pages') else 0
+        compressed = await self._compress_results(result)
+        round_data.summary = compressed
+        end_events = [ProgressEvent(event_type="found_results", message=f"Found {result_count} results", round_number=round_number, metadata={"result_count": result_count})]
+        return _ToolResult(decision=decision, round_data=round_data, formatted_context=self._format_search_context(round_number, decision.search_query, compressed), start_events=start_events, end_events=end_events)
 
-        Args:
-            result: WebSearchResult to compress
-            max_tokens: Maximum tokens for compressed output
+    async def _dispatch_wolfram(self, decision, round_number):
+        return await self._tool_executor._dispatch_wolfram(decision, round_number)
 
-        Returns:
-            Compressed text representation of results
-        """
-        if not result or not hasattr(result, 'pages') or not result.pages:
-            return "No results found."
+    async def _dispatch_sandbox(self, decision, round_number, sandbox_session=None):
+        return await self._tool_executor._dispatch_sandbox(decision, round_number, sandbox_session)
 
-        # Format results with [WEB_N] source IDs for citations
-        from knowledge.web_search_manager import assign_web_ids, format_web_sources_with_ids
-        numbered_sources, web_source_map = assign_web_ids(result.pages)
-        # Store map on session for provenance
-        if hasattr(self, '_current_web_source_map'):
-            self._current_web_source_map.update(web_source_map)
+    async def _dispatch_memory_search(self, decision, round_number):
+        """Dispatch memory search. Calls self._execute_memory_search/_format_* for mock compat."""
+        collection = decision.memory_collection or "facts"
+        start_events = [ProgressEvent(event_type="searching_memory", message=f"Searching {collection}: {decision.memory_query}",
+                                       round_number=round_number, metadata={"query": decision.memory_query, "collection": collection, "reason": decision.memory_reason})]
+        start_time = time.time()
+        memory_result = await self._execute_memory_search(decision.memory_query, collection)
+        duration = (time.time() - start_time) * 1000
+        round_data = SearchRound(round_number=round_number, request=SearchRequest(query=f"[Memory: {collection}] {decision.memory_query}", reason=decision.memory_reason, round_number=round_number), results=None, duration_ms=duration)
+        round_data.summary = memory_result
+        end_events = [ProgressEvent(event_type="found_results", message=f"Found memory results from {collection}", round_number=round_number, metadata={"collection": collection, "duration_ms": duration})]
+        return _ToolResult(decision=decision, round_data=round_data, formatted_context=self._format_memory_context(round_number, collection, decision.memory_query, memory_result), start_events=start_events, end_events=end_events, memory_collection=collection)
+
+    async def _dispatch_memory_expand(self, decision, round_number):
+        return await self._tool_executor._dispatch_memory_expand(decision, round_number)
+
+    async def _dispatch_file_read(self, decision, round_number):
+        return await self._tool_executor._dispatch_file_read(decision, round_number)
+
+    async def _dispatch_file_grep(self, decision, round_number):
+        return await self._tool_executor._dispatch_file_grep(decision, round_number)
+
+    async def _dispatch_file_list(self, decision, round_number):
+        return await self._tool_executor._dispatch_file_list(decision, round_number)
+
+    async def _dispatch_full_document(self, decision, round_number):
+        return await self._tool_executor._dispatch_full_document(decision, round_number)
+
+    async def _dispatch_git_stats(self, decision, round_number):
+        return await self._tool_executor._dispatch_git_stats(decision, round_number)
+
+    def _update_relaxation_tracking(
+        self, session: AgenticSearchSession, tr: _ToolResult
+    ) -> None:
+        """Update relaxation hints after a web search result."""
+        search_result = tr.round_data.results
+        query = tr.decision.search_query
+        is_low_quality, issue = self._is_low_quality_result(search_result, query)
+        if is_low_quality:
+            session.low_quality_search_count += 1
+            if session.low_quality_search_count > 2:
+                session.relaxation_hint = MAX_RELAXATION_HINT
+                logger.info(
+                    "[AgenticSearch] Max relaxation attempts reached, forcing synthesis"
+                )
+            else:
+                suggestion = self._generate_relaxation_suggestion(query)
+                remaining = 2 - session.low_quality_search_count
+                session.relaxation_hint = LOW_QUALITY_HINT_TEMPLATE.format(
+                    query=query, issue=issue,
+                    suggestion=suggestion, remaining=remaining
+                )
+                logger.info(
+                    f"[AgenticSearch] Low quality result ({issue}), "
+                    f"relaxation count: {session.low_quality_search_count}"
+                )
         else:
-            self._current_web_source_map = web_source_map
-        formatted = format_web_sources_with_ids(numbered_sources, max_chars=6000)
+            session.low_quality_search_count = 0
+            session.relaxation_hint = None
+            logger.debug("[AgenticSearch] Good search results, reset relaxation counter")
 
-        # Estimate token count (rough: 4 chars per token)
-        estimated_tokens = len(formatted) // 4
+    # ------------------------------------------------------------------
+    # Execution/compression delegation wrappers (moved to ToolExecutor)
+    # ------------------------------------------------------------------
 
-        if estimated_tokens <= max_tokens:
-            return formatted
+    async def _execute_search(self, search_terms, crisis_level=None):
+        return await self._tool_executor._execute_search(search_terms, crisis_level)
 
-        # Need to compress via LLM
-        try:
-            summary_prompt = f"""Summarize these search results concisely, preserving key facts, dates, and sources:
-
-{formatted}
-
-Provide a focused summary with the most important information."""
-
-            summary = await self.model_manager.generate_once(
-                prompt=summary_prompt,
-                model_name=self.compression_model,
-                max_tokens=max_tokens,
-                temperature=0.3
-            )
-
-            return summary if summary else formatted[:max_tokens * 4]
-
-        except Exception as e:
-            logger.warning(f"[AgenticSearch] Compression failed: {e}")
-            # Fallback to truncation
-            return formatted[:max_tokens * 4]
+    async def _compress_results(self, result, max_tokens=DEFAULT_COMPRESSION_MAX_TOKENS):
+        return await self._tool_executor._compress_results(result, max_tokens)
 
     async def _get_model_decision(
         self,
@@ -1114,9 +711,12 @@ Provide a focused summary with the most important information."""
         model_name: str,
         handler: BaseProtocolHandler,
         session: AgenticSearchSession
-    ) -> SearchDecision:
+    ) -> List[SearchDecision]:
         """
-        Get the model's decision on what to do next.
+        Get the model's decision(s) on what to do next.
+
+        Returns a list of SearchDecision objects. When the model requests
+        multiple independent tools in one step, each gets its own entry.
 
         Args:
             prompt: The prompt to send
@@ -1126,7 +726,7 @@ Provide a focused summary with the most important information."""
             session: Current session state
 
         Returns:
-            SearchDecision indicating model's choice
+            List of SearchDecision(s) indicating model's choice(s)
         """
         try:
             if session.protocol == SearchProtocol.NATIVE_TOOLS:
@@ -1152,7 +752,7 @@ Provide a focused summary with the most important information."""
         except Exception as e:
             logger.error(f"[AgenticSearch] Decision generation failed: {e}")
             # On error, signal to answer with current context
-            return SearchDecision(wants_answer=True)
+            return [SearchDecision(wants_answer=True)]
 
     async def _generate_with_tools(
         self,
@@ -1546,517 +1146,84 @@ What would you like to do?""")
 
         return "\n\n".join(parts)
 
-    def _format_recent_conversations(self, conversations: List[Dict]) -> str:
-        """Format recent conversations for the prompt with citation markers."""
-        if not conversations:
-            return ""
-        lines = []
-        for i, conv in enumerate(conversations, 1):
-            ts = conv.get('timestamp', '')
-            user_msg = conv.get('query', conv.get('user', ''))
-            assistant_msg = conv.get('response', conv.get('assistant', ''))
-            if user_msg:
-                lines.append(f"[MEM_RECENT_{i}] {ts}: User: {user_msg[:500]}")
-                if assistant_msg:
-                    lines.append(f"   Daemon: {assistant_msg[:500]}")
-        return "\n".join(lines)
-
-    def _format_memories(self, memories: List[Dict]) -> str:
-        """Format memories for the prompt with citation markers."""
-        if not memories:
-            return ""
-        lines = []
-        for i, mem in enumerate(memories, 1):
-            ts = mem.get('timestamp', '')
-            content = mem.get('content', mem.get('query', ''))
-            response = mem.get('response', '')
-            if content:
-                lines.append(f"[MEM_SEMANTIC_{i}] {ts}: {content[:400]}")
-                if response:
-                    lines.append(f"   Response: {response[:400]}")
-        return "\n".join(lines)
-
-    def _format_summaries(self, summaries: List[Dict]) -> str:
-        """Format summaries for the prompt."""
-        if not summaries:
-            return ""
-        lines = []
-        for i, s in enumerate(summaries, 1):
-            content = s.get('content', s.get('summary', ''))
-            ts = s.get('timestamp', '')
-            if content:
-                lines.append(f"{i}) [{ts}] {content[:600]}")
-        return "\n".join(lines)
-
-    def _format_personal_notes(self, notes: List[Dict]) -> str:
-        """Format personal notes from Obsidian for the prompt."""
-        if not notes:
-            return ""
-        lines = []
-        for i, note in enumerate(notes, 1):
-            title = note.get('metadata', {}).get('title', 'Untitled')
-            content = note.get('content', '')[:500]
-            tags = note.get('metadata', {}).get('tags', '')
-            if content:
-                tag_str = f" [tags: {tags}]" if tags else ""
-                lines.append(f"{i}) {title}{tag_str}: {content}")
-        return "\n".join(lines)
-
-    def _format_dreams(self, dreams: List[Dict]) -> str:
-        """Format dreams for the prompt."""
-        if not dreams:
-            return ""
-        lines = []
-        for i, d in enumerate(dreams, 1):
-            content = d.get('content', d.get('dream', ''))
-            ts = d.get('timestamp', '')
-            if content:
-                lines.append(f"{i}) [{ts}] {content[:400]}")
-        return "\n".join(lines)
-
-    def _format_reflections(self, reflections: List[Dict]) -> str:
-        """Format reflections for the prompt."""
-        if not reflections:
-            return ""
-        lines = []
-        for i, r in enumerate(reflections, 1):
-            content = r.get('content', r.get('reflection', ''))
-            ts = r.get('timestamp', '')
-            if content:
-                lines.append(f"{i}) [{ts}] {content[:400]}")
-        return "\n".join(lines)
-
-    def _format_search_context(
-        self,
-        round_number: int,
-        query: str,
-        content: str
-    ) -> str:
-        """Format a single search round for context."""
-        return f"[Search Round {round_number}] Query: {query}\n{content}"
-
-    def _format_wolfram_context(
-        self,
-        round_number: int,
-        query: str,
-        content: str
-    ) -> str:
-        """Format a single Wolfram Alpha computation for context."""
-        return f"[Computation Round {round_number}] Query: {query}\n{content}"
-
-    def _format_sandbox_context(
-        self,
-        round_number: int,
-        purpose: str,
-        content: str
-    ) -> str:
-        """Format a single Python code execution for context."""
-        return f"[Code Execution Round {round_number}] Purpose: {purpose}\n{content}"
-
-    async def _execute_memory_search(self, query: str, collection: str) -> str:
-        """Execute raw semantic search against a ChromaDB collection.
-
-        For wiki_knowledge: falls back to the FAISS semantic search index
-        (40M Wikipedia vectors) when ChromaDB returns empty results.
-        """
-        from config.app_config import AGENTIC_MEMORY_SEARCH_LIMIT
-
-        if not self.chroma_store:
-            return "[Memory search unavailable]"
-
-        if collection not in self.VALID_MEMORY_COLLECTIONS:
-            return f"[Invalid collection: {collection}. Valid: {', '.join(sorted(self.VALID_MEMORY_COLLECTIONS))}]"
-
-        try:
-            results = self.chroma_store.query_collection(
-                collection_name=collection,
-                query_text=query,
-                n_results=AGENTIC_MEMORY_SEARCH_LIMIT,
-            )
-
-            # For wiki_knowledge: always prefer FAISS semantic search (40M vectors)
-            # over ChromaDB which has sparse/irrelevant legacy data.
-            if collection == "wiki_knowledge":
-                faiss_results = self._search_wiki_faiss(query, k=AGENTIC_MEMORY_SEARCH_LIMIT)
-                if faiss_results:
-                    # Track wiki titles for session enrichment
-                    from knowledge.wiki_tracker import WikiArticleTracker
-                    tracker = WikiArticleTracker.get_instance()
-                    for r in faiss_results:
-                        t = r.get("title", "")
-                        if t:
-                            tracker.track(t, r.get("text", "")[:500])
-                    logger.info(f"[AgenticSearch] wiki_knowledge using FAISS index "
-                                f"({len(faiss_results)} results)")
-                    return self._format_wiki_faiss_results(faiss_results)
-
-            if not results:
-                return f"[No results found in {collection} for: {query}]"
-
-            return self._format_memory_results(results, collection)
-
-        except Exception as e:
-            logger.warning(f"[AgenticSearch] Memory search failed: {e}")
-            return f"[Memory search error: {e}]"
-
-    def _search_wiki_faiss(self, query: str, k: int = 8) -> list[dict]:
-        """Search the FAISS Wikipedia index (40M vectors) as fallback for wiki_knowledge."""
-        try:
-            from knowledge.semantic_search import semantic_search_with_neighbors
-            return semantic_search_with_neighbors(query, k=k)
-        except Exception as e:
-            logger.warning(f"[AgenticSearch] FAISS wiki search failed: {e}")
-            return []
-
-    def _format_wiki_faiss_results(self, results: list[dict]) -> str:
-        """Format FAISS wiki search results for the agentic LLM."""
-        lines = []
-        for i, r in enumerate(results, 1):
-            title = r.get("title", "Unknown")
-            section = r.get("section", "")
-            text = r.get("text", "").strip()
-            score = r.get("similarity", 0.0)
-            header = f"[{i}] Wikipedia: {title}"
-            if section:
-                header += f" / {section}"
-            header += f" (score: {score:.3f})"
-            lines.append(f"{header}\n{text}")
-        return "\n\n".join(lines) if lines else "[No Wikipedia results found]"
-
-    def _format_memory_results(self, results: list, collection: str) -> str:
-        """Format ChromaDB results into readable text for the LLM."""
-        lines = []
-        for i, r in enumerate(results, 1):
-            content = r.get("content", "").strip()
-            score = r.get("relevance_score", 0.0)
-            meta = r.get("metadata", {})
-            doc_id = r.get("id", "")
-
-            header_parts = [f"[{i}]"]
-            if doc_id:
-                header_parts.append(f"(id: {doc_id})")
-            if collection == "reference_docs":
-                title = meta.get("title", "")
-                section = meta.get("section", "")
-                if title:
-                    header_parts.append(title)
-                if section:
-                    header_parts.append(f"({section})")
-            elif collection == "facts":
-                subject = meta.get("subject", "")
-                relation = meta.get("relation", "")
-                if subject and relation:
-                    header_parts.append(f"{subject} — {relation}")
-            elif collection in ("conversations", "summaries", "reflections"):
-                ts = meta.get("timestamp", "")
-                if ts:
-                    header_parts.append(ts[:19])
-
-            header_parts.append(f"(score: {score:.2f})")
-            header_parts.append(f"[{collection}]")
-            header = " ".join(header_parts)
-
-            if len(content) > 500:
-                content = content[:500] + "..."
-
-            lines.append(f"{header}\n{content}")
-
-        return "\n\n".join(lines)
-
-    def _format_memory_context(
-        self, round_num: int, collection: str, query: str, results: str
-    ) -> str:
-        """Format memory search results for accumulated context."""
-        return (
-            f"[MEMORY SEARCH — Round {round_num} — {collection}]\n"
-            f"Query: {query}\n"
-            f"Results:\n{results}"
-        )
-
     # ------------------------------------------------------------------
-    # Memory expansion execution
+    # Format delegation wrappers (moved to AgenticFormatter)
     # ------------------------------------------------------------------
 
-    def _execute_memory_expand(
-        self, memory_id: str, window: int = 3, collection: Optional[str] = None
-    ) -> dict:
-        """Run MemoryExpander.expand() and return the result dict."""
-        if not self.memory_expander:
-            return {"anchor_id": memory_id, "turns": [], "error": "Expander not available"}
-        try:
-            from config.app_config import EXPAND_MAX_WINDOW
-            window = max(1, min(window, EXPAND_MAX_WINDOW))
-            return self.memory_expander.expand(memory_id, window, collection)
-        except Exception as e:
-            logger.warning(f"[AgenticSearch] Memory expand failed: {e}")
-            return {"anchor_id": memory_id, "turns": [], "error": str(e)}
+    def _format_recent_conversations(self, conversations):
+        return self._formatter.format_recent_conversations(conversations)
 
-    def _format_expanded_results(self, result: dict) -> str:
-        """Format expand result dict into readable text for the LLM."""
-        error = result.get("error")
-        turns = result.get("turns", [])
-        collection = result.get("collection", "?")
-        method = result.get("expansion_method", "timestamp_window")
-        total = result.get("total_in_collection", 0)
+    def _format_memories(self, memories):
+        return self._formatter.format_memories(memories)
 
-        if method == "source_docs":
-            # Summary expansion — first turn is the summary anchor, rest are source conversations
-            anchor_turns = [t for t in turns if t.get("is_anchor")]
-            source_turns = [t for t in turns if not t.get("is_anchor")]
-            lines = [f"[Summary expanded to {len(source_turns)} source conversations]"]
-            if error:
-                lines.append(f"Note: {error}")
-            if anchor_turns:
-                lines.append(f"--- SUMMARY ---")
-                lines.append(anchor_turns[0].get("content", ""))
-            if source_turns:
-                lines.append(f"\n--- ORIGINAL CONVERSATIONS ({len(source_turns)}) ---")
-                for t in source_turns:
-                    ts = t.get("timestamp", "")[:19]
-                    tid = t.get("id", "")[:8]
-                    content = t.get("content", "")
-                    lines.append(f"[{tid}] {ts}")
-                    lines.append(content)
-                    lines.append("")
-        else:
-            lines = [f"[Expanded from {collection} | method: {method} | {len(turns)} turns shown / {total} total]"]
-            if error:
-                lines.append(f"Note: {error}")
-            for t in turns:
-                marker = "  <<<< TARGET" if t.get("is_anchor") else ""
-                ts = t.get("timestamp", "")[:19]
-                tid = t.get("id", "")[:8]
-                content = t.get("content", "")
-                lines.append(f"--- [{tid}] {ts}{marker} ---")
-                lines.append(content)
+    def _format_summaries(self, summaries):
+        return self._formatter.format_summaries(summaries)
 
-        return "\n".join(lines)
+    def _format_personal_notes(self, notes):
+        return self._formatter.format_personal_notes(notes)
 
-    def _format_expand_context(self, round_num: int, memory_id: str, results: str) -> str:
-        """Format expanded results for accumulated context."""
-        return (
-            f"[MEMORY EXPANSION — Round {round_num} — {memory_id[:8]}]\n"
-            f"{results}"
-        )
+    def _format_dreams(self, dreams):
+        return self._formatter.format_dreams(dreams)
 
-    # ------------------------------------------------------------------
-    # File access execution
-    # ------------------------------------------------------------------
+    def _format_reflections(self, reflections):
+        return self._formatter.format_reflections(reflections)
 
-    async def _execute_file_read(
-        self, filepath: str, start_line: Optional[int] = None, end_line: Optional[int] = None
-    ) -> str:
-        """Read a file via FileAccessManager."""
-        if not self.file_access_manager:
-            return "[File access not configured]"
-        try:
-            result = await self.file_access_manager.read_file(filepath, start_line, end_line)
-            return self.file_access_manager.format_read_for_prompt(result)
-        except Exception as e:
-            logger.warning(f"[AgenticSearch] File read failed: {e}")
-            return f"[File read error: {e}]"
+    def _format_search_context(self, round_number, query, content):
+        return self._formatter.format_search_context(round_number, query, content)
 
-    async def _execute_file_grep(
-        self, pattern: str, folder: Optional[str] = None, file_glob: Optional[str] = None
-    ) -> str:
-        """Grep files via FileAccessManager."""
-        if not self.file_access_manager:
-            return "[File access not configured]"
-        try:
-            result = await self.file_access_manager.grep_files(
-                pattern, folder, file_glob or "*.py"
-            )
-            return self.file_access_manager.format_grep_for_prompt(result)
-        except Exception as e:
-            logger.warning(f"[AgenticSearch] File grep failed: {e}")
-            return f"[File grep error: {e}]"
+    def _format_wolfram_context(self, round_number, query, content):
+        return self._formatter.format_wolfram_context(round_number, query, content)
 
-    async def _execute_file_list(
-        self, dirpath: str, recursive: bool = False
-    ) -> str:
-        """List directory via FileAccessManager."""
-        if not self.file_access_manager:
-            return "[File access not configured]"
-        try:
-            result = await self.file_access_manager.list_directory(dirpath, recursive)
-            return self.file_access_manager.format_list_for_prompt(result)
-        except Exception as e:
-            logger.warning(f"[AgenticSearch] File list failed: {e}")
-            return f"[File list error: {e}]"
+    def _format_sandbox_context(self, round_number, purpose, content):
+        return self._formatter.format_sandbox_context(round_number, purpose, content)
 
-    def _format_file_context(
-        self, round_num: int, operation: str, content: str
-    ) -> str:
-        """Format file access results for accumulated context."""
-        return (
-            f"[FILE ACCESS — Round {round_num}]\n"
-            f"Operation: {operation}\n"
-            f"Result:\n{content}"
-        )
+    async def _execute_memory_search(self, query, collection):
+        return await self._tool_executor._execute_memory_search(query, collection)
 
-    async def _execute_full_document_retrieval(self, title: str) -> str:
-        """Retrieve all chunks of a document by title, reassembled in order."""
-        if not self.chroma_store:
-            return "[Full document retrieval unavailable — no memory store]"
-        try:
-            from knowledge.reference_docs_manager import ReferenceDocsManager
-            manager = ReferenceDocsManager(chroma_store=self.chroma_store)
-            content = manager.get_full_document(title)
-            if content:
-                # Let _append_accumulated() handle budget trimming;
-                # only hard-cap truly massive documents (e.g. full textbooks)
-                max_chars = 60000
-                if len(content) > max_chars:
-                    content = content[:max_chars] + f"\n\n[... truncated at {max_chars} chars — document continues ...]"
-                # Check if fuzzy matching resolved to a different title
-                resolved = manager._fuzzy_resolve_title(title)
-                actual_title = resolved if resolved else title
-                return f"[Full Document: {actual_title}]\n{content}"
-            else:
-                titles = manager.list_document_titles()
-                if titles:
-                    return f"[No document found matching '{title}'. Available titles: {', '.join(titles[:20])}]"
-                return f"[No document found matching '{title}'. No documents in reference_docs collection.]"
-        except Exception as e:
-            logger.warning(f"[AgenticSearch] Full document retrieval failed: {e}")
-            return f"[Full document retrieval error: {e}]"
+    def _search_wiki_faiss(self, query, k=8):
+        return self._tool_executor._search_wiki_faiss(query, k)
 
-    def _format_full_document_context(
-        self, round_num: int, title: str, content: str
-    ) -> str:
-        """Format full document retrieval for accumulated context."""
-        return (
-            f"[FULL DOCUMENT — Round {round_num}]\n"
-            f"Title: {title}\n"
-            f"Content:\n{content}"
-        )
+    def _format_wiki_faiss_results(self, results):
+        return self._formatter.format_wiki_faiss_results(results)
 
-    async def _execute_git_stats(self, query: str) -> str:
-        """Execute a git stats query via GitStatsManager."""
-        if not self.git_stats_manager:
-            return "[Git stats not configured]"
-        try:
-            result = await self.git_stats_manager.execute_query(query)
-            return self.git_stats_manager.format_for_prompt(result)
-        except Exception as e:
-            logger.warning(f"[AgenticSearch] Git stats failed: {e}")
-            return f"[Git stats error: {e}]"
+    def _format_memory_results(self, results, collection):
+        return self._formatter.format_memory_results(results, collection)
 
-    def _format_git_stats_context(
-        self, round_num: int, query: str, content: str
-    ) -> str:
-        """Format git stats results for accumulated context."""
-        return (
-            f"[GIT STATS — Round {round_num}]\n"
-            f"Query: {query}\n"
-            f"Result:\n{content}"
-        )
+    def _format_memory_context(self, round_num, collection, query, results):
+        return self._formatter.format_memory_context(round_num, collection, query, results)
 
-    def _is_low_quality_result(
-        self,
-        search_result: Any,
-        query: str
-    ) -> Tuple[bool, str]:
-        """
-        Check if search results are too weak to be useful.
+    def _execute_memory_expand(self, memory_id, window=3, collection=None):
+        return self._tool_executor._execute_memory_expand(memory_id, window, collection)
 
-        Args:
-            search_result: WebSearchResult from web_search_manager
-            query: The search query that was executed
+    def _format_expanded_results(self, result):
+        return self._formatter.format_expanded_results(result)
 
-        Returns:
-            Tuple of (is_low_quality, issue_description)
-        """
-        # Handle WebSearchResult - access the .pages attribute
-        pages = getattr(search_result, 'pages', None) or []
+    def _format_expand_context(self, round_num, memory_id, results):
+        return self._formatter.format_expand_context(round_num, memory_id, results)
 
-        if not pages:
-            return True, "no results"
-        if len(pages) == 1:
-            return True, "only 1 result"
+    async def _execute_file_read(self, filepath, start_line=None, end_line=None):
+        return await self._tool_executor._execute_file_read(filepath, start_line, end_line)
 
-        # Extract query terms (filter stop words)
-        query_terms = [w for w in query.lower().split() if w not in _STOP_WORDS]
+    async def _execute_file_grep(self, pattern, folder=None, file_glob=None):
+        return await self._tool_executor._execute_file_grep(pattern, folder, file_glob)
 
-        if not query_terms:
-            return False, "ok"
+    async def _execute_file_list(self, dirpath, recursive=False):
+        return await self._tool_executor._execute_file_list(dirpath, recursive)
 
-        # Get top result content (check first 2000 chars for speed)
-        top = pages[0]
-        top_content = (
-            getattr(top, 'content', '') or
-            getattr(top, 'snippet', '') or
-            getattr(top, 'text', '') or
-            ''
-        ).lower()[:2000]
+    def _format_file_context(self, round_num, operation, content):
+        return self._formatter.format_file_context(round_num, operation, content)
 
-        # Fast substring check instead of set intersection
-        matches = sum(1 for term in query_terms if term in top_content)
+    async def _execute_full_document_retrieval(self, title):
+        return await self._tool_executor._execute_full_document_retrieval(title)
 
-        if matches < len(query_terms) * 0.3:
-            return True, "results don't match query terms"
+    def _format_full_document_context(self, round_num, title, content):
+        return self._formatter.format_full_document_context(round_num, title, content)
 
-        return False, "ok"
+    async def _execute_git_stats(self, query):
+        return await self._tool_executor._execute_git_stats(query)
 
-    def _generate_relaxation_suggestion(self, query: str) -> str:
-        """
-        Generate a suggestion for how to relax/broaden the query.
+    def _format_git_stats_context(self, round_num, query, content):
+        return self._formatter.format_git_stats_context(round_num, query, content)
 
-        Args:
-            query: The original search query
-
-        Returns:
-            A suggestion string for query reformulation
-        """
-        # Check for version numbers (e.g., "3.12", "v2.0.1")
-        if _VERSION_PATTERN.search(query):
-            return "Remove version numbers and try a more general query"
-
-        # Check for year/date specifics
-        if _YEAR_PATTERN.search(query):
-            return "Remove year specifics or try a broader time range"
-
-        # Check for very long queries (likely too specific)
-        if query.count(' ') > 5:  # Faster than split + len
-            return "Simplify to core subject + 1-2 keywords"
-
-        # Check for quoted exact phrases
-        if '"' in query:
-            return "Remove exact phrase quotes and search for individual terms"
-
-        # Check for technical jargon patterns
-        if _ERROR_PATTERN.search(query):
-            return "Try searching for the error message or symptom instead of the context"
-
-        # Default suggestion
-        return "Try broader category terms or synonyms"
-
-    async def _execute_wolfram(self, query: str) -> str:
-        """
-        Execute Wolfram Alpha query with fallback to web search.
-
-        Args:
-            query: The computation query
-
-        Returns:
-            Formatted result string for context
-        """
-        if not self.wolfram_manager:
-            logger.warning("[AgenticSearch] Wolfram Alpha not configured, falling back to web search")
-            # Fallback to web search for computation explanation
-            result = await self._execute_search([f"{query} calculation explanation"])
-            return await self._compress_results(result)
-
-        result = await self.wolfram_manager.query(query)
-
-        if result.success:
-            formatted = self.wolfram_manager.format_for_prompt(result)
-            logger.info(
-                f"[AgenticSearch] Wolfram query '{query[:40]}...' succeeded in {result.execution_time:.2f}s"
-            )
-            return formatted
-
-        # Fallback to web search on failure
-        logger.warning(f"[AgenticSearch] Wolfram failed ({result.error}), falling back to web search")
-        fallback_result = await self._execute_search([f"{query} explanation solution"])
-        return await self._compress_results(fallback_result)
+    async def _execute_wolfram(self, query):
+        return await self._tool_executor._execute_wolfram(query)

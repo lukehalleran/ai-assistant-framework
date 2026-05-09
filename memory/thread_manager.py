@@ -40,16 +40,12 @@ class ThreadManager:
         self.time_manager = time_manager
 
     def _now(self) -> datetime:
-        """Get current time from time_manager or datetime.now()"""
-        if self.time_manager and hasattr(self.time_manager, 'current'):
-            return self.time_manager.current()
-        return datetime.now()
+        from utils.time_manager import now_from
+        return now_from(self.time_manager)
 
     def _now_iso(self) -> str:
-        """Get current time as ISO string"""
-        if self.time_manager and hasattr(self.time_manager, 'current_iso'):
-            return self.time_manager.current_iso()
-        return self._now().isoformat()
+        from utils.time_manager import now_iso_from
+        return now_iso_from(self.time_manager)
 
     def get_thread_context(self) -> Optional[Dict]:
         """

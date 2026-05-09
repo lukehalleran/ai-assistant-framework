@@ -62,7 +62,7 @@ class CorpusManager:
                         if isinstance(entry.get("timestamp"), str):
                             try:
                                 entry["timestamp"] = datetime.fromisoformat(entry["timestamp"])
-                            except:
+                            except Exception:
                                 pass
 
                     # Enforce max_entries limit on load (trim oldest, keep newest)
@@ -383,7 +383,7 @@ class CorpusManager:
             if isinstance(ts, str):
                 try:
                     ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                except:
+                except Exception:
                     return datetime.min
             if isinstance(ts, datetime) and ts.tzinfo is not None:
                 # Convert to naive UTC for comparison

@@ -461,7 +461,7 @@ class FileProcessor:
         if hasattr(file, 'seek'):
             try:
                 file.seek(0)
-            except:
+            except Exception:
                 pass  # Not all file objects support seek
 
         # SECURITY: Process file in temporary directory

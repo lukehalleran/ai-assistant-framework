@@ -224,7 +224,7 @@ class ThreadStore:
         # Lazy staleness check — mark stale threads and persist
         active = []
         for thread in open_threads:
-            if thread.is_stale(stale_days):
+            if thread.is_stale(stale_days, deadline_grace_hours):
                 thread.mark_stale()
                 self._update_thread(thread)
             else:

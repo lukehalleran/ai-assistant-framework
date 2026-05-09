@@ -218,7 +218,7 @@ narrative_context:
 intent_classifier:
   enabled: true
   stm_refinement_threshold: 0.5
-  section_gating_enabled: true  # Phase 8: eval-driven section gating via _PROFILES
+  section_gating_enabled: true
 entity_facts:
   enabled: true
   per_turn_cap: 4
@@ -363,6 +363,41 @@ wiki_enrichment:
   shutdown_step_timeout_s: 30
   edge_relation_type: mentioned_alongside
   edge_default_weight: 0.5
+procedural_skills:
+  enabled: true
+  prompt_max_skills: 5
+  dedup_threshold: 0.85
+code_proposals:
+  enabled: true
+  collection: proposals
+  dedup_threshold: 0.7
+  max_per_session: 5
+  require_tests: true
+escalation_tracker:
+  enabled: true
+  threshold: 3
+  deescalation_window: 2
+cross_dedup:
+  enabled: true
+  duplicate_threshold: 0.92
+  contradiction_threshold: 0.85
+  max_docs_per_collection: 1000
+  on_shutdown: true
+user_profile:
+  ephemeral_relations:
+  - current_activity
+  - current_feeling
+  - current_mood
+  - emotional_state
+  - current_state
+  - status
+  - recent_activity
+  - feeling
+  - feels
+git_stats:
+  enabled: true
+  timeout_s: 10
+  max_output_lines: 50
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

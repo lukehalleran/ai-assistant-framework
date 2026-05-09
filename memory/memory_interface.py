@@ -79,7 +79,7 @@ class MemoryNode:
         if isinstance(tags, str):
             try:
                 tags = json.loads(tags)
-            except:
+            except Exception:
                 tags = []
 
         # Read type from top-level data (matches to_dict output), fall back to metadata for compatibility

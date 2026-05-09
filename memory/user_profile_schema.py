@@ -299,6 +299,8 @@ EPHEMERAL_RELATIONS: Set[str] = {
     "current_balance", "current_location", "current_version",
     "current_project",  # which project is active changes often
     "condition", "state_of_mind",
+    "appointment_time", "appointment", "appointment_date",
+    "plans_today", "plans_tonight", "schedule_today",
 }
 
 # Snapshot relations: keep until superseded, NOT expired by TTL.

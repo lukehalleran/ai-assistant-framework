@@ -271,7 +271,7 @@ Do NOT make up information not present in the summaries."""
                                         break
                                     elif line.startswith("start_date:"):
                                         timestamp = line.split(":", 1)[1].strip()
-                        except:
+                        except Exception:
                             pass
 
                     weekly_summaries.append({
@@ -401,7 +401,7 @@ Do NOT make up information not present in the summaries."""
                                 if line.startswith("date:"):
                                     timestamp = line.split(":", 1)[1].strip()
                                     break
-                    except:
+                    except Exception:
                         pass
 
                 daily_notes.append({

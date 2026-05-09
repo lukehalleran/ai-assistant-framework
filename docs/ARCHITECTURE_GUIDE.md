@@ -118,7 +118,9 @@ core/                    # Request orchestration, context pipeline, agentic loop
 ├── escalation_tracker.py# Crisis cooldown FSM (4 states)
 ├── response_planner.py  # Pre-answer planning + post-answer review gate
 ├── agentic/             # ReAct tool loop
-│   ├── controller.py    # Loop orchestration
+│   ├── controller.py    # Loop orchestration, prompt building, quality heuristics
+│   ├── tools.py         # ToolExecutor: dispatch routing + 10 execute methods
+│   ├── formatters.py    # AgenticFormatter: 17 pure formatting methods
 │   ├── types.py         # Tool definitions, state types
 │   └── protocols.py     # Native + XML tool calling
 └── prompt/              # Prompt assembly pipeline
@@ -914,7 +916,8 @@ instruction is skipped for these models to prevent instruction echoing.
 
 ## 12. Agentic Tool System
 
-**Files**: `core/agentic/controller.py`, `core/agentic/types.py`,
+**Files**: `core/agentic/controller.py`, `core/agentic/tools.py`,
+`core/agentic/formatters.py`, `core/agentic/types.py`,
 `core/agentic/protocols.py`
 
 When a query needs more than stored memory — real-time information,
@@ -1341,6 +1344,10 @@ Fast pre-check skips DB query if no completion signal in the message.
 **Resolution detection** (at shutdown): The extractor also checks if
 existing threads were addressed during the session. Resolved threads
 are marked as complete.
+
+**Staleness**: `is_stale(stale_days, deadline_grace_hours)` checks both
+time-based staleness (no reference in `stale_days`) and deadline-aware
+expiry (deadline date passed + grace period).
 
 **Priority scoring**: `TYPE_PRIORITY[type] × urgency × recency_decay`.
 Higher-priority, more-urgent, more-recent threads rank first.

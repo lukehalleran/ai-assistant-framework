@@ -363,7 +363,7 @@ class MemoryRetriever:
             } for r in results]
             if chroma_summaries:
                 return chroma_summaries
-        except:
+        except Exception:
             pass
 
         # Fallback to corpus manager
@@ -372,7 +372,7 @@ class MemoryRetriever:
                 corpus_summaries = self.corpus_manager.get_summaries(limit)
                 if corpus_summaries:
                     return corpus_summaries
-        except:
+        except Exception:
             pass
 
         return []
@@ -1050,7 +1050,7 @@ class MemoryRetriever:
             if isinstance(ts, str):
                 try:
                     return datetime.fromisoformat(ts)
-                except:
+                except Exception:
                     return datetime.min
             return ts if isinstance(ts, datetime) else datetime.min
 

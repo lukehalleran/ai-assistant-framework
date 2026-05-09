@@ -1068,7 +1068,7 @@ if __name__ == "__main__":
                     if isinstance(ts, str):
                         try:
                             ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                        except:
+                        except Exception:
                             continue
                     if isinstance(ts, datetime):
                         if ts.tzinfo is not None:

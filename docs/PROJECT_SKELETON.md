@@ -1023,7 +1023,9 @@ PROFILE_EPHEMERAL_MAX_HISTORY = 20       # Max historical entries per ephemeral 
 PROFILE_EPHEMERAL_RELATIONS = [          # Relations whose history gets pruned
     "current_feeling", "current_mood", "current_activity", "current_time",
     "is", "has", "was", "thinks", "needs", "plans", "wants", "likes",
-    "greeting", "expressed_feeling", "testing", ...
+    "greeting", "expressed_feeling", "testing",
+    "appointment_time", "appointment", "appointment_date",
+    "plans_today", "plans_tonight", "schedule_today", ...
 ]
 ```
 
@@ -1415,17 +1417,29 @@ else:
 - `BaseProtocolHandler`: Common interface for both
 - Enhanced `search_memory` tool guidance with per-collection descriptions **[ENHANCED 2026-03-20]**
 
-**core/agentic/controller.py** - Main controller
+**core/agentic/controller.py** - Main controller (orchestration, prompt building, model interaction, quality heuristics)
 - `AgenticSearchController`: Orchestrates the ReAct loop
   - `run_agentic_search(query, system_prompt, model_name, initial_terms)` → AsyncGenerator
   - Yields `ProgressEvent` for status updates, `str` for response chunks
   - Max 5 rounds of search before forcing synthesis
-  - Compresses accumulated context to fit token budget
+  - Delegates tool execution to `ToolExecutor`, formatting to `AgenticFormatter`
   - Budget-enforced accumulated context: `_append_accumulated()` trims oldest rounds when `accumulated_context` exceeds `context_budget_tokens` (default 8000) **[NEW 2026-03-28]**
   - Budget-aware final prompt: `_build_final_prompt()` trims low-value sections (dreams, reflections, docs, summaries) if total exceeds ceiling, preserving recent conversations and agentic results **[NEW 2026-03-28]**
   - Falls back gracefully on errors
   - `_compute_context_inventory(initial_context)` → Summarizes available context (collections, user profile, graph entities) for LLM awareness **[NEW 2026-03-20]**
   - Memory search diversity tracking: per-collection search counts prevent redundant queries **[NEW 2026-03-20]**
+
+**core/agentic/tools.py** - Tool execution **[NEW 2026-05]**
+- `ToolExecutor`: Dispatch routing + 10 execute methods
+  - `dispatch(decision, session)` → Routes to appropriate `_execute_*` method
+  - `_execute_web_search`, `_execute_wolfram`, `_execute_sandbox`, `_execute_memory_search`,
+    `_execute_memory_expand`, `_execute_file_read`, `_execute_file_grep`, `_execute_file_list`,
+    `_execute_git_stats`, `_execute_full_document`
+
+**core/agentic/formatters.py** - Formatting **[NEW 2026-05]**
+- `AgenticFormatter`: 17 pure formatting methods (no I/O, no state mutation)
+  - Context formatting: `_format_search_context`, `_format_wolfram_context`, `_format_memory_context`, `_format_expand_context`, `_format_file_context`, `_format_git_context`, etc.
+  - Prompt building helpers: iteration prompt sections, final prompt sections
 
 **ReAct Loop Flow**:
 ```
@@ -3148,7 +3162,8 @@ class OpenThread(BaseModel):
     # to_metadata() / from_metadata() → ChromaDB storage (flat primitives)
     # to_dict() / from_dict() → full JSON serialization
     # priority_score() → TYPE_PRIORITY * urgency * recency_decay
-    # is_stale(stale_days) → bool
+    # is_stale(stale_days, deadline_grace_hours) → bool
+    #   Checks time-based staleness AND deadline expiry (deadline_date + grace period)
     # mark_resolved() / mark_stale() → status transitions
 ```
 
@@ -4675,7 +4690,9 @@ daemon/
 │   ├── __init__.py            # Package exports
 │   ├── types.py               # Data structures (AgentState, SearchProtocol, etc.)
 │   ├── protocols.py           # Protocol detection and parsing
-│   └── controller.py          # AgenticSearchController (ReAct loop)
+│   ├── controller.py          # AgenticSearchController (orchestration, prompts, quality heuristics)
+│   ├── tools.py               # ToolExecutor (dispatch routing + 10 execute methods) [NEW 2026-05]
+│   └── formatters.py          # AgenticFormatter (17 pure formatting methods) [NEW 2026-05]
 │
 ├── processing/
 │   └── gate_system.py         # Multi-stage filtering
@@ -5090,8 +5107,8 @@ python main.py inspect-summaries
 | git_memory.py | Extract: Git commit history with metadata + conventional commit tagging [NEW 2026-01-27] |
 | git_memory_loader.py | Load: Backfill/incremental sync of git commits to PROCEDURAL ChromaDB [NEW 2026-01-27] |
 | procedural_skill.py | Data: ProceduralSkill dataclass + SkillCategory enum for adaptive workflows [NEW 2026-01-27] |
-| thread_models.py | Data: OpenThread Pydantic model + ThreadType/ThreadStatus enums + priority scoring [NEW 2026-03-20] |
-| thread_store.py | Store: ChromaDB-backed thread CRUD, priority ranking, staleness, cap enforcement [NEW 2026-03-20] |
+| thread_models.py | Data: OpenThread Pydantic model + ThreadType/ThreadStatus enums + priority scoring + deadline-aware staleness [NEW 2026-03-20] |
+| thread_store.py | Store: ChromaDB-backed thread CRUD, priority ranking, deadline-aware staleness, cap enforcement [NEW 2026-03-20] |
 | thread_extractor.py | Extract: LLM-based open thread extraction + resolution detection from conversations [NEW 2026-03-20] |
 | claim_tracker.py | Track: ClaimKey reverse index for staleness cascade when facts corrected [NEW 2026-03-25] |
 | fact_verification.py | Gate: Pre-storage fact verification (STORE/STORE_AND_FLAG/REJECT/SKIP) with LLM adjudication [NEW 2026-03-25] |

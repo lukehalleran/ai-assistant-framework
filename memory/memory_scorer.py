@@ -546,7 +546,7 @@ class MemoryScorer:
                 try:
                     from dateutil import parser
                     timestamp = parser.parse(timestamp)
-                except:
+                except Exception:
                     # If parsing fails, skip this memory
                     continue
 

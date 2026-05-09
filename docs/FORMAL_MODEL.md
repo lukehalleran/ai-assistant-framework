@@ -356,7 +356,7 @@ git_stats(q_nl):
     return {success, summary, output, commands_run}
 ```
 
-**Code**: `core/agentic/controller.py` -> `_execute_git_stats()`
+**Code**: `core/agentic/tools.py` -> `_execute_git_stats()`
 
 ---
 

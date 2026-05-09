@@ -312,10 +312,11 @@ class TestNativeProtocolParsing:
         mock_response.tool_calls = [tool_call]
         mock_response.content = None
 
-        decision = handler.parse_response(mock_response)
-        assert decision.wants_git_stats is True
-        assert decision.git_stats_query == "commits this week"
-        assert decision.git_stats_reason == "user asked"
+        decisions = handler.parse_response(mock_response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_git_stats is True
+        assert decisions[0].git_stats_query == "commits this week"
+        assert decisions[0].git_stats_reason == "user asked"
 
     def test_parse_git_stats_empty_query(self):
         from core.agentic.protocols import NativeToolsHandler
@@ -328,9 +329,10 @@ class TestNativeProtocolParsing:
         mock_response.tool_calls = [tool_call]
         mock_response.content = None
 
-        decision = handler.parse_response(mock_response)
-        assert decision.wants_git_stats is False
-        assert decision.wants_answer is True
+        decisions = handler.parse_response(mock_response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_git_stats is False
+        assert decisions[0].wants_answer is True
 
     def test_git_stats_in_tools_list(self):
         from core.agentic.protocols import NativeToolsHandler
@@ -358,9 +360,10 @@ class TestXMLProtocolParsing:
         handler = XMLMarkerHandler()
         text = "Let me check the repo. <git_stats>commits this week</git_stats>"
 
-        decision = handler.parse_response(text)
-        assert decision.wants_git_stats is True
-        assert decision.git_stats_query == "commits this week"
+        decisions = handler.parse_response(text)
+        assert len(decisions) == 1
+        assert decisions[0].wants_git_stats is True
+        assert decisions[0].git_stats_query == "commits this week"
 
     def test_parse_git_stats_xml_empty(self):
         from core.agentic.protocols import XMLMarkerHandler
@@ -368,9 +371,10 @@ class TestXMLProtocolParsing:
         handler = XMLMarkerHandler()
         text = "<git_stats>   </git_stats>"
 
-        decision = handler.parse_response(text)
-        # Empty query should not trigger git_stats
-        assert decision.wants_git_stats is False
+        decisions = handler.parse_response(text)
+        assert len(decisions) == 1
+        # Empty query should not trigger git_stats — falls through to wants_answer
+        assert decisions[0].wants_answer is True
 
 
 # ── Provenance Classification ──────────────────────────────────────

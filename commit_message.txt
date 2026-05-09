@@ -1,20 +1,22 @@
-feat: Phase 8 intent-conditioned section gating (eval-driven prompt optimization)
+refactor: Extract AgenticFormatter + ToolExecutor from controller, fix thread deadline expiry
 
-Phase 8 — Intent-Conditioned Section Gating:
-- intent_classifier.py: Updated _PROFILES retrieval counts based on eval data
-  (50 snapshots, 1799 pairs, two judge models). New retrieval override keys:
-  max_reference_docs, max_narrative, max_user_uploads, max_proactive.
-  CASUAL_SOCIAL gates 4 additional sections to 0 (~10K token savings).
-  TECHNICAL_HELP drops reflections. PROJECT_WORK reduces recent_conversation.
-  META_CONVERSATIONAL reduces memories 20→5, drops reflections.
-  Config flag PROMPT_SECTION_GATING_ENABLED strips Phase 8 keys when disabled.
-- builder.py: Added 4 new eff_max_* variables + max_narrative gate on
-  narrative_state. Parallel task launches use > 0 guards so max_X=0 skips
-  the async retrieval task entirely.
-- app_config.py + config.yaml: PROMPT_SECTION_GATING_ENABLED flag (default True),
-  env var override supported.
+Agentic controller decomposition (Phase 1 of god-object cleanup):
+- Extract AgenticFormatter (core/agentic/formatters.py, 256 lines)
+  17 pure stateless formatting methods for all result types
+- Extract ToolExecutor (core/agentic/tools.py, 856 lines)
+  Dispatch routing + execution for 10 tool types (web, wolfram,
+  sandbox, memory, files, git stats, full document)
+- Controller retains orchestration loop, prompt building, model
+  interaction, quality heuristics, and delegation wrappers
+- Controller: 2,189 → 1,243 lines
 
-Docs updated: PLAN.md, PROMPT_BUILDING_PIPELINE.md, QUICK_REFERENCE.md,
-ARCHITECTURE_GUIDE.md, PROJECT_SKELETON.md.
+Thread deadline expiry fix:
+- is_stale() now checks deadline_date + deadline_grace_hours (48h)
+  before falling back to time-since-reference check (14 days)
+- get_top_threads() passes deadline_grace_hours through to is_stale()
+- Previously deadline_grace_hours was loaded from config but never used
 
-Tests: 74 intent classifier + 246 eval = 320 passing, zero regressions.
+Ephemeral appointment facts:
+- Added appointment_time, appointment, appointment_date, plans_today,
+  plans_tonight, schedule_today to EPHEMERAL_RELATIONS (24h TTL)
+- Prevents one-off schedule mentions from persisting as permanent facts
