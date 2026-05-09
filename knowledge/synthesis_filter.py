@@ -2,7 +2,7 @@
 # knowledge/synthesis_filter.py
 
 Module Contract
-- Purpose: 8-stage filter pipeline that processes candidates from knowledge graph
+- Purpose: 7-stage filter pipeline that processes candidates from knowledge graph
   random walks and identifies genuinely novel, coherent cross-domain connections.
   Cheap stages run first, expensive stages (LLM) run last.
 - Class: SynthesisFilter(chroma_store, model_manager, synthesis_memory)
@@ -22,17 +22,16 @@ Module Contract
   - Stage 4: Novelty Gate -- Internal (~10ms, synthesis memory search)
   - Stage 5: Coherence Judge (~500ms-2s, two-pass LLM)
     - Pass 1: Structural coherence -- distinguishes structural isomorphisms from
-      loose analogies. LLM rates INVALID/WEAK/MODERATE/STRONG. Prompt focuses on
-      shared structural patterns (feedback loops, optimization curves, threshold
-      dynamics). System prompt: "Focus on whether a shared structural pattern
-      genuinely exists". Response format: Mechanism/Against/For/Rating.
-      max_tokens=250.
+      loose analogies. LLM rates INVALID/WEAK/MODERATE/STRONG. Prompt uses
+      de-jargon test + variable swap test. System prompt: "Most cross-domain
+      claims are surface metaphor ... When in doubt, rate WEAK."
+      Response format: De-jargon/Variable swap/Against/Rating. max_tokens=400.
     - Pass 2: Factual skeptic -- fires ONLY on MODERATE results from Pass 1.
       Checks for debunked science, fabricated mechanisms, false neural pathways.
       Binary PASS/FAIL. On FAIL, downgrades coherence to WEAK (rejection).
       Simplification is acceptable; only provably wrong claims fail.
   - Stage 6: Composite Scoring + Gates (multi-signal novelty composite)
-  - Stage 7: Synthesis Memory Storage (~10ms, ChromaDB write)
+  - Post-pipeline: Storage + provisional bridge creation (~10ms, ChromaDB write)
 - Audit integration: process_batch() stores composite-rejected candidates
   (pass all gates but fail Stage 6 composite threshold) via
   synthesis_memory.store_rejected_for_audit() for false-negative human review.
@@ -138,7 +137,7 @@ def _compute_template_similarity(claim: str) -> float:
 
 
 class SynthesisFilter:
-    """8-stage synthesis filter pipeline.
+    """7-stage synthesis filter pipeline.
 
     Args:
         chroma_store: MultiCollectionChromaStore for synthesis memory storage
@@ -175,7 +174,7 @@ class SynthesisFilter:
         """Run a single candidate through the full pipeline.
 
         Returns SynthesisResult with status ACCEPTED or REJECTED.
-        Accepted results are automatically stored in synthesis memory (Stage 7).
+        Accepted results are automatically stored in synthesis memory post-pipeline.
         """
         result = SynthesisResult(candidate=candidate)
 
@@ -204,7 +203,7 @@ class SynthesisFilter:
                     )
                 return result
 
-        # All stages passed -- store in synthesis memory (Stage 7)
+        # All stages passed -- store in synthesis memory (post-pipeline)
         result.status = CandidateStatus.ACCEPTED
         try:
             doc_id = self.memory.store_result(result)
@@ -520,7 +519,7 @@ class SynthesisFilter:
 
         if is_new_path:
             # Same insight, different path = convergence signal. Don't reject.
-            # Convergence update happens at storage time (Stage 7).
+            # Convergence update happens at storage time (post-pipeline).
             result.unique_paths = existing.unique_paths | {result.candidate.path_hash}
             source_key = f"{result.candidate.concept_a}|{result.candidate.concept_b}"
             result.unique_sources = existing.unique_sources | {source_key}

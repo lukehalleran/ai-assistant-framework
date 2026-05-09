@@ -1,5 +1,7 @@
 # Two-Step Generation with Thinking Blocks - Implementation Summary
 
+*Last verified: 2026-05-09*
+
 ## Overview
 Two-step generation where the LLM provides internal reasoning before delivering the final answer. The thinking block is logged for debugging but only the final answer is shown to users and stored in memory.
 
@@ -105,7 +107,7 @@ if not use_raw_mode:
 
 ### 4. Thinking Block Handling in `process_user_query()`
 
-**Location:** `core/orchestrator.py` at line ~1683
+**Location:** `core/orchestrator.py` at lines ~1835-1851
 
 1. **Full response accumulation** — Response is accumulated first, not streamed immediately
 2. **Thinking block parsing** (delegates to ResponseParser)
@@ -126,9 +128,12 @@ if not use_raw_mode:
 
 During streaming, `handlers.py`:
 1. Checks `ResponseParser.has_incomplete_thinking_block(final_output)` after each chunk
-2. Shows "Thinking..." indicator while thinking block is incomplete
-3. Once `</thinking>` arrives, switches to displaying final answer
-4. After streaming completes, re-parses to ensure clean storage
+2. Also checks `ResponseParser.likely_untagged_thinking(final_output)` to suppress untagged chain-of-thought before `parse_thinking_block()` can find a clean split point
+3. Shows "Thinking..." indicator while thinking block is incomplete
+4. Once `</thinking>` arrives, switches to displaying final answer
+5. After streaming completes, re-parses to ensure clean storage
+
+**Image limitation:** When images are present in the request, native reasoning is skipped in `generate_async()` because OpenRouter may not support both extended thinking and image input simultaneously. The system falls back to tag-based and heuristic parsing layers.
 
 ### 6. Test Suite (`test_thinking_blocks.py`)
 
@@ -138,7 +143,7 @@ Covers (tag-based parsing):
 - Thinking blocks with newlines
 - Empty responses, malformed tags
 
-Note: Heuristic detection (`_detect_untagged_thinking`) and `<output>` wrapper were verified via inline smoke tests during development but do not yet have dedicated test file coverage.
+Heuristic detection has dedicated test coverage in `tests/unit/test_thinking_heuristic.py` (23 test functions) covering `likely_untagged_thinking()` true positives, true negatives, length bail-outs, edge cases, and consistency with `_detect_untagged_thinking()`.
 
 ## How It Works
 
