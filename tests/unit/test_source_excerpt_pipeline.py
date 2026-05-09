@@ -211,8 +211,13 @@ class TestInlineProfileInstruction:
     """Anti-confabulation instruction appears in all prompt assembly paths."""
 
     def test_builder_includes_instruction(self):
-        """UnifiedPromptBuilder._assemble_prompt includes inline instruction."""
-        source_path = "core/prompt/builder.py"
+        """UnifiedPromptBuilder._assemble_prompt includes inline instruction.
+
+        The instruction lives in formatter.py (where _assemble_prompt was moved)
+        and builder.py delegates to it.
+        """
+        # Check formatter.py where the actual _assemble_prompt implementation lives
+        source_path = "core/prompt/formatter.py"
         with open(source_path) as f:
             source = f.read()
         assert ANTI_CONFAB_INSTRUCTION in source
@@ -283,8 +288,12 @@ class TestHelloTalkRegression:
         assert "move to Spain" in result
 
     def test_inline_instruction_present_in_builder_source(self):
-        """The anti-confabulation instruction guards the [USER PROFILE] section."""
-        with open("core/prompt/builder.py") as f:
+        """The anti-confabulation instruction guards the [USER PROFILE] section.
+
+        The instruction lives in formatter.py (where _assemble_prompt was moved)
+        and builder.py delegates to it.
+        """
+        with open("core/prompt/formatter.py") as f:
             source = f.read()
         # The instruction should appear right before user_profile injection
         assert "Stored facts" in source

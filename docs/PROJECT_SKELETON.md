@@ -325,11 +325,11 @@ PromptBuilder.build_prompt(context, memories)  →  final prompt
 4. Phrases like "told them what happened", "this situation", "that thing" → `recall` or `unclear`
 
 **Integration**:
-- Injected into prompt RIGHT BEFORE `[CURRENT USER QUERY]` (maximum attention window) via `builder.py:_assemble_prompt()`
+- Injected into prompt RIGHT BEFORE `[CURRENT USER QUERY]` (maximum attention window) via `formatter.py:_assemble_prompt()`
 - `Reference Type:` line rendered in `[SHORT-TERM CONTEXT SUMMARY]` section, with explicit WARNING directive when type is `recall`, `clarification`, `correction`, or `unclear` — instructs main response model not to fabricate patterns from single underlying events
 - `Resolved State:` line rendered when `temporal_facts` populated
 - Token manager preserves STM (priority=10, no token cost - metadata only)
-- Passed through: orchestrator → prompt_builder.build_prompt() → formatter._assemble_prompt()
+- Passed through: orchestrator → prompt_builder.build_prompt() → PromptFormatter._assemble_prompt()
 
 **Configuration**:
 - `USE_STM_PASS`: Enable/disable STM system (default: True)
@@ -1010,7 +1010,7 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
    - Update rules in prompt: when user updates/cancels/rescinds something, LLM reuses same relation name with new value
    - `_attach_source_excerpts()`: after extraction, keyword-matches each triple back to its source user message (200-char truncated) **[ENHANCED 2026-04-30]**
 
-3. **core/prompt/context_gatherer.py**:
+3. **core/prompt/gatherer_memory.py** (MemoryRetrievalMixin, composed via context_gatherer.py):
    - `get_user_profile_context(query, max_tokens=500)` → Calls UserProfile.get_context_injection()
 
 4. **core/prompt/formatter.py**:
@@ -1118,10 +1118,14 @@ Stage 3: Cross-encoder reranking
 
 **Architecture**:
 ```python
-UnifiedPromptBuilder (core/prompt/builder.py)
+UnifiedPromptBuilder (core/prompt/builder.py) — Thin orchestrator
     ↓
-├── ContextGatherer (context_gatherer.py) - Data collection
-├── PromptFormatter (formatter.py) - Text assembly
+├── ContextGatherer (context_gatherer.py) - Mixin compositor
+│   ├── WebSearchMixin (gatherer_web.py) - Web search retrieval
+│   ├── MemoryRetrievalMixin (gatherer_memory.py) - 17 memory retrieval methods
+│   └── KnowledgeRetrievalMixin (gatherer_knowledge.py) - 16 knowledge retrieval methods
+├── PromptFormatter (formatter.py) - 26-section assembly + feature inventory
+├── ContentHygiene (hygiene.py) - Dedup, caps, backfill
 ├── TokenManager (token_manager.py) - Budget management
 ├── LLMSummarizer (summarizer.py) - LLM operations
 └── Base utilities (base.py) - Common functions
@@ -1204,15 +1208,15 @@ Post-budget floors (Step 7.1) [ENHANCED 2026-03-28]:
 
 **Key Methods**:
 - `builder.py::build_prompt(user_input, config, ..., retrieval_overrides=None, weight_overrides=None)` → Complete context dict. Intent-driven overrides applied to all max_* retrieval counts and scorer weights. **[UPDATED 2026-02-15]**
-- `builder.py::_assemble_prompt(context, user_input)` → Format to string with headers
-- `builder.py::_hygiene_and_caps(context)` → Dedupe with semantic similarity (0.90 threshold)
-- `builder.py::_backfill_recent_conversations()` → Top-up after deduplication
+- `formatter.py::_assemble_prompt(context, user_input)` → Format to string with headers (737-line method, moved from builder.py) **[MOVED 2026-05]**
+- `hygiene.py::ContentHygiene._hygiene_and_caps(context)` → Dedupe with semantic similarity (0.90 threshold) **[MOVED 2026-05]**
+- `hygiene.py::ContentHygiene._backfill_recent_conversations()` → Top-up after deduplication **[MOVED 2026-05]**
 - `builder.py::_build_lightweight_context()` → Minimal context for small-talk
-- `builder.py::_build_feature_inventory(context)` → Compact 4-line inventory of enabled features + result counts **[NEW 2026-03-25]**
-- `builder.py::_staleness_prefix(item)` → Module-level helper: returns "[HISTORICAL — some claims outdated] " prefix for items with `staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD` **[NEW 2026-03-25]**
+- `formatter.py::_build_feature_inventory(context)` → Compact 4-line inventory of enabled features + result counts **[MOVED 2026-05]**
+- `formatter.py::_staleness_prefix(item)` → Module-level helper: returns "[HISTORICAL — some claims outdated] " prefix for items with `staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD` **[MOVED 2026-05]**
 - `builder.py::_llm_compress_oversized(context)` → Async pre-pass: LLM-compresses items >= 3x over token limit before middle-out. Parallel batch with per-item timeout. **[NEW 2026-03-26]**
 - `token_manager.py::_manage_token_budget(context)` → Budget enforcement
-- `context_gatherer.py::_get_summaries_separate()` → Hybrid recent+semantic retrieval
+- `gatherer_memory.py::_get_summaries_separate()` → Hybrid recent+semantic retrieval
 - `summarizer.py::_reflect_on_demand()` → Generate reflections if below threshold
 - `formatter.py::_sanitize_embedded_headers(text)` → Escape section headers in memory content **[NEW 2026-01-08]**
   - Prevents prompt pollution when conversations discuss prompt structure
@@ -2935,8 +2939,8 @@ Patterns across multiple time periods...
 - `memory/memory_consolidator.py` - `generate_narrative_context()`, Obsidian readers
 - `utils/daily_notes_generator.py` - `_trigger_narrative_refresh()` primary trigger
 - `memory/memory_storage.py` - `_maybe_regenerate_narrative()` secondary trigger
-- `core/prompt/context_gatherer.py` - `get_narrative_context()` retrieval
-- `core/prompt/builder.py` - Context gathering and assembly
+- `core/prompt/gatherer_knowledge.py` - `get_narrative_context()` retrieval (KnowledgeRetrievalMixin)
+- `core/prompt/builder.py` - Orchestration; `core/prompt/formatter.py` - Assembly
 - `core/prompt/token_manager.py` - Priority 8, 500 token cap
 - `core/orchestrator.py` - `_check_narrative_freshness()` startup check
 - `config/app_config.py` - `NARRATIVE_CONTEXT_*` settings
@@ -3082,11 +3086,11 @@ rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_
   - Verb phrases ("stopped being religious", "finishing grad school", "working remotely")
 - Duplicate edges strengthen weight (DiGraph, not MultiDiGraph)
 
-**Retrieval** (`context_gatherer.py:get_graph_context()`):
+**Retrieval** (`gatherer_knowledge.py:get_graph_context()`):
 - Extracts entities from query via alias resolution
 - BFS traversal from matched entities (depth from config)
 - Returns natural language sentences via `GraphEdge.to_natural_language()`
-- Prompt section: `[KNOWLEDGE GRAPH]` in `_assemble_prompt()` after `[PROPOSED FEATURES]`
+- Prompt section: `[KNOWLEDGE GRAPH]` in `formatter.py:_assemble_prompt()` after `[PROPOSED FEATURES]`
 - Runs as parallel task `graph_context` in `build_prompt()` alongside other retrieval tasks
 
 **Graph-Boosted Scoring** (`memory_scorer.py`):
@@ -3096,7 +3100,7 @@ rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_
 - Added to final_score alongside anchor_bonus, meta_bonus
 - Graph refs (`_graph_memory`, `_entity_resolver`) set/cleared by builder.py around gather
 
-**Graph-Driven Query Expansion** (`context_gatherer.py:_expand_query_with_graph()`):
+**Graph-Driven Query Expansion** (`gatherer_memory.py:_expand_query_with_graph()`):
 - Sync method called in `_get_semantic_memories()` before `get_memories()`
 - Extracts entities from query, calls `rank_expansion_candidates()` (depth=2, skips "user") [UPDATED 2026-03-15]
 - Candidates ranked by non-hub edge count (lateral connectivity), not name length
@@ -3213,7 +3217,7 @@ class ThreadExtractor:
 
 **Integration Points**:
 1. **Shutdown**: `ShutdownProcessor` step 6.5 — calls `ThreadExtractor.extract_threads()` then `ThreadExtractor.detect_resolutions()`, stores new threads and resolves completed ones
-2. **Context Gathering**: `context_gatherer.py:get_open_threads()` — retrieves surfaceable threads via `ThreadStore.get_surfaceable()`
+2. **Context Gathering**: `gatherer_knowledge.py:get_unresolved_threads()` — retrieves surfaceable threads via `MemoryCoordinator.get_unresolved_threads()`
 3. **Builder**: Parallel task `open_threads` in `build_prompt()` alongside other retrieval tasks
 4. **Prompt Section**: `[UNRESOLVED THREADS]` after `[KNOWLEDGE GRAPH]`, before `[USER PROFILE]`
 5. **Orchestrator**: First-message thread injection — on first message of session, top threads injected into context for proactive follow-up
@@ -3376,9 +3380,9 @@ generate_insights(query, max_insights=2) →
 
 **Integration Points**:
 1. **Init**: Created in `MemoryCoordinator.__init__()` when graph_memory + entity_resolver available
-2. **Retrieval**: `context_gatherer.py:get_proactive_insights()` → `context_surfacer.generate_insights()`
+2. **Retrieval**: `gatherer_knowledge.py:get_proactive_insights()` → `context_surfacer.generate_insights()`
 3. **Builder**: Parallel task `proactive_insights` in `build_prompt()` alongside other retrieval tasks
-4. **Prompt Section**: `[PROACTIVE INSIGHTS]` in `_assemble_prompt()` after `[UNRESOLVED THREADS]`, before `[USER PROFILE]`
+4. **Prompt Section**: `[PROACTIVE INSIGHTS]` in `formatter.py:_assemble_prompt()` after `[UNRESOLVED THREADS]`, before `[USER PROFILE]`
 
 **Configuration** (`config/app_config.py`, YAML section `proactive_surfacing`):
 ```python
@@ -3458,7 +3462,7 @@ if STALENESS_ENABLED:
     staleness_penalty = -min(base_penalty, STALENESS_MAX_PENALTY)  # capped at -0.4
 ```
 
-**Staleness Prompt Prefix** (in `builder.py:_staleness_prefix()`):
+**Staleness Prompt Prefix** (in `formatter.py:_staleness_prefix()`):
 - Items with `staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD` (0.6) get `[HISTORICAL -- some claims outdated]` prefix
 - Applied to summaries and reflections in prompt assembly
 
@@ -3469,7 +3473,7 @@ if STALENESS_ENABLED:
 2. **Summary Storage**: `shutdown_processor.py` extracts claims from each summary via `extract_claims_from_text()` and registers in ClaimIndex; stores `embedded_claims` in summary metadata
 3. **Contradiction Resolution**: `cross_deduplicator.py` calls `cascade_staleness()` for contradiction losers when `STALENESS_ENABLED` and `claim_index` available
 4. **Scoring**: `memory_scorer.py` reads `staleness_ratio` from metadata for penalty calculation
-5. **Prompt**: `builder.py:_staleness_prefix()` adds historical warning prefix to stale summaries/reflections
+5. **Prompt**: `formatter.py:_staleness_prefix()` adds historical warning prefix to stale summaries/reflections
 6. **Shutdown**: `shutdown_processor.py:_save_knowledge_graph()` saves ClaimIndex to disk
 
 **Configuration** (`config/app_config.py`, YAML section `staleness`):
@@ -3563,7 +3567,7 @@ IMPL_TRACKING_AUTO_COMPLETE = False
 ### 2.15g Session-Start Codebase Diff + Active Features Inventory **[NEW 2026-03-25]**
 **Purpose**: On session start, detect codebase changes since last session and provide a compact inventory of enabled features + result counts, so Daemon is aware of what has changed in the project.
 
-**Codebase Changes** (`context_gatherer.py:get_codebase_changes(since_datetime)`):
+**Codebase Changes** (`gatherer_knowledge.py:get_codebase_changes(since_datetime)`):
 - Runs `git log`, `git diff`, and `git status` to detect changes since `last_session_end_time`
 - Returns dict with:
   - `since_label`: human-readable time delta (e.g., "2 days ago")
@@ -3573,7 +3577,7 @@ IMPL_TRACKING_AUTO_COMPLETE = False
 - Gathered BEFORE small-talk fork in `build_prompt()` so even casual greetings get change awareness
 - File extension filter: `SESSION_DIFF_EXTENSIONS` (default: .py, .yaml, .yml, .json, .md, .txt, .toml)
 
-**Feature Inventory** (`builder.py:_build_feature_inventory(context)`):
+**Feature Inventory** (`formatter.py:_build_feature_inventory(context)`):
 - Compact 4-line summary of enabled features + result counts from current context
 - Shows: memory count, fact count, summary count, skill count, graph stats, thread count
 - Always included in prompt as `[ACTIVE FEATURES]` section
@@ -4076,7 +4080,7 @@ Query → Context Retrieval → Memory ID Tracking
 
 **Components**:
 
-**1. core/prompt/context_gatherer.py**:
+**1. core/prompt/gatherer_memory.py** (MemoryRetrievalMixin, composed via context_gatherer.py):
 - `memory_id_map` dict: Maps citation IDs to memory metadata (hybrid relative/absolute ID system)
 - Tracks during retrieval:
   - `MEM_RECENT_{idx}` → Recent conversation memories
@@ -4435,10 +4439,10 @@ PROMPT_MAX_USER_UPLOADS = 5
       - context_gatherer.get_facts(query, 30)
       - context_gatherer._get_summaries_separate() → {recent: 5, semantic: 5}
       - context_gatherer._get_reflections_separate() → {recent: 5, semantic: 5}
-      - _hygiene_and_caps() → Dedupe with semantic similarity
+      - ContentHygiene._hygiene_and_caps() → Dedupe with semantic similarity (hygiene.py)
       - _llm_compress_oversized() → LLM summary for items ≥3x over limit
       - token_manager._manage_token_budget()
-   c. _assemble_prompt(context, user_input) → Formatted string
+   c. PromptFormatter._assemble_prompt(context, user_input) → Formatted string (formatter.py)
 6. response_generator.generate_streaming_response(prompt)
    → "<thinking>Python is a general-purpose language...</thinking>\nPython is a high-level programming language."
 7. orchestrator._parse_thinking_block() → Extract final answer
@@ -4649,9 +4653,13 @@ daemon/
 │   ├── prompt.py             # Legacy unified prompt (deprecated)
 │   └── prompt/               # Modular prompt system (STM integrated)
 │       ├── __init__.py       # Public API and imports
-│       ├── builder.py        # Main UnifiedPromptBuilder
-│       ├── context_gatherer.py # Data collection + hybrid retrieval
-│       ├── formatter.py      # Text formatting
+│       ├── builder.py        # Thin orchestrator: parallel dispatch, intent overrides, budget
+│       ├── context_gatherer.py # Mixin compositor: init + properties (composes 3 gatherer mixins)
+│       ├── gatherer_web.py   # WebSearchMixin: web search retrieval + trigger logic [NEW 2026-05]
+│       ├── gatherer_memory.py # MemoryRetrievalMixin: 17 memory/summary/reflection/facts methods [NEW 2026-05]
+│       ├── gatherer_knowledge.py # KnowledgeRetrievalMixin: 16 knowledge retrieval methods [NEW 2026-05]
+│       ├── formatter.py      # 26-section assembly + feature inventory + staleness prefix
+│       ├── hygiene.py        # ContentHygiene: dedup, caps, backfill [NEW 2026-05]
 │       ├── token_manager.py  # Budget management
 │       ├── summarizer.py     # LLM summarization + on-demand reflections
 │       └── base.py          # Utilities and fallbacks
@@ -4999,7 +5007,7 @@ make -f build/Makefile.fast run
 1. Add to MemoryType enum in corpus_manager.py
 2. Create collection in multi_collection_chroma_store.py
 3. Add handling in memory_coordinator.py
-4. Update core/prompt/context_gatherer.py to retrieve new type
+4. Update the appropriate gatherer mixin (gatherer_memory.py or gatherer_knowledge.py) to retrieve new type
 5. Update core/prompt/formatter.py to format new type
 ```
 

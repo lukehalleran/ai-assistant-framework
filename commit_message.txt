@@ -1,22 +1,26 @@
-refactor: Extract AgenticFormatter + ToolExecutor from controller, fix thread deadline expiry
+refactor: Decompose 3 god objects (Phases 2-3), add behavioral pattern extraction
 
-Agentic controller decomposition (Phase 1 of god-object cleanup):
-- Extract AgenticFormatter (core/agentic/formatters.py, 256 lines)
-  17 pure stateless formatting methods for all result types
-- Extract ToolExecutor (core/agentic/tools.py, 856 lines)
-  Dispatch routing + execution for 10 tool types (web, wolfram,
-  sandbox, memory, files, git stats, full document)
-- Controller retains orchestration loop, prompt building, model
-  interaction, quality heuristics, and delegation wrappers
-- Controller: 2,189 → 1,243 lines
+Phase 2A — Move _assemble_prompt + helpers to formatter.py:
+- _assemble_prompt (737 lines), _build_feature_inventory, _staleness_prefix,
+  _is_multimodal_model, _load_upload_image moved to PromptFormatter
+- Old simpler _assemble_prompt renamed to _assemble_prompt_legacy
+- builder.py: 2,751 → 1,583 lines; formatter.py: 672 → 1,597 lines
 
-Thread deadline expiry fix:
-- is_stale() now checks deadline_date + deadline_grace_hours (48h)
-  before falling back to time-since-reference check (14 days)
-- get_top_threads() passes deadline_grace_hours through to is_stale()
-- Previously deadline_grace_hours was loaded from config but never used
+Phase 2B — Extract ContentHygiene (core/prompt/hygiene.py, 345 lines):
+- _hygiene_and_caps + _backfill_recent_conversations
+- Dedup, caps enforcement, cross-section dedup, semantic chunk stitching
 
-Ephemeral appointment facts:
-- Added appointment_time, appointment, appointment_date, plans_today,
-  plans_tonight, schedule_today to EPHEMERAL_RELATIONS (24h TTL)
-- Prevents one-off schedule mentions from persisting as permanent facts
+Phase 3 — Split ContextGatherer into domain mixins:
+- gatherer_web.py (216 lines) — WebSearchMixin: web trigger + retrieval
+- gatherer_memory.py (834 lines) — MemoryRetrievalMixin: 17 methods
+- gatherer_knowledge.py (963 lines) — KnowledgeRetrievalMixin: 16 methods
+- context_gatherer.py: 2,176 → 379 lines (init + properties + utilities)
+
+Behavioral pattern extraction (shutdown step 4.5):
+- New _extract_behavioral_patterns() detects cross-domain habits the user
+  exhibits but never states explicitly (e.g., codes at the gym)
+- Single gpt-4o-mini call per session, ~200 tokens output, max 3 patterns
+- Checks existing profile to avoid duplicating known habits
+- Config: behavioral_patterns.enabled in config.yaml
+
+All delegation wrappers preserve backward compatibility. No behavior changes.

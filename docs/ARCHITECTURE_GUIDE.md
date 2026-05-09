@@ -124,9 +124,13 @@ core/                    # Request orchestration, context pipeline, agentic loop
 │   ├── types.py         # Tool definitions, state types
 │   └── protocols.py     # Native + XML tool calling
 └── prompt/              # Prompt assembly pipeline
-    ├── builder.py       # 26-section assembly + parallel retrieval
-    ├── context_gatherer.py  # 18 async retrieval tasks
-    ├── formatter.py     # Section ordering + attention placement
+    ├── builder.py       # Thin orchestrator: parallel task dispatch, intent overrides, budget
+    ├── context_gatherer.py  # Mixin compositor: init + properties (composes 3 gatherer mixins)
+    ├── gatherer_web.py      # WebSearchMixin: web search retrieval + trigger logic
+    ├── gatherer_memory.py   # MemoryRetrievalMixin: 17 memory/summary/reflection/facts methods
+    ├── gatherer_knowledge.py # KnowledgeRetrievalMixin: 16 knowledge retrieval methods
+    ├── formatter.py     # 26-section assembly + attention ordering + feature inventory
+    ├── hygiene.py       # ContentHygiene: dedup, caps, backfill
     └── token_manager.py # Priority-based budget management
 
 memory/                  # 5-tier memory system
@@ -540,7 +544,7 @@ Before retrieval, queries are expanded using graph neighbors. This bridges
 vocabulary gaps — if the user asks about "my brother," expansion appends
 related entities (Auggie, Mom, Flapjack) to the search query.
 
-The expansion algorithm in `context_gatherer.py:_expand_query_with_graph()`:
+The expansion algorithm in `gatherer_memory.py:_expand_query_with_graph()`:
 
 1. Extract entity IDs from query via alias resolution
 2. BFS to depth 2 from matched entities (traverses through hubs like "user")
@@ -585,15 +589,17 @@ The `WikidataEntityMapper` embedding threshold was also raised from 0.60 to
 
 ## 7. Retrieval Pipeline
 
-**Files**: `core/prompt/builder.py`, `core/prompt/context_gatherer.py`,
-`memory/memory_retriever.py`
+**Files**: `core/prompt/builder.py` (task dispatch), `core/prompt/context_gatherer.py` (mixin compositor),
+`core/prompt/gatherer_memory.py` (memory retrieval), `core/prompt/gatherer_knowledge.py` (knowledge retrieval),
+`core/prompt/gatherer_web.py` (web search), `memory/memory_retriever.py`
 **Deep dive**: `MEMORY_SYSTEM.md`
 
 ### Parallel Retrieval Architecture
 
 When a prompt is being built, `builder.py` launches 18 async retrieval
-tasks via `asyncio.gather()` with a 30-second timeout. Each task fetches
-from a different source or collection:
+tasks via `asyncio.gather()` with a 30-second timeout. Each task is
+implemented across three gatherer mixins (composed by `context_gatherer.py`)
+and fetches from a different source or collection:
 
 | Task | Source | Count | Notes |
 |------|--------|-------|-------|
@@ -770,7 +776,7 @@ final_score:  0.805
 
 ## 10. Prompt Assembly
 
-**Files**: `core/prompt/builder.py`, `core/prompt/formatter.py`,
+**Files**: `core/prompt/formatter.py` (`_assemble_prompt()`), `core/prompt/hygiene.py` (`ContentHygiene`),
 `core/prompt/token_manager.py`
 
 ### 26 Conditional Sections
