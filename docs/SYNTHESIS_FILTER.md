@@ -1,7 +1,9 @@
 # Synthesis Filter Pipeline
 
+*Last verified: 2026-05-09*
+
 Operational guide for the knowledge synthesis system — candidate generation,
-8-stage filtering, convergence tracking, and calibration.
+7-stage filtering, convergence tracking, and calibration.
 
 For formal notation see `FORMAL_MODEL.md` Section 13. For config constants
 see `QUICK_REFERENCE.md` under "Knowledge Synthesis Filter Pipeline."
@@ -18,7 +20,7 @@ are stored but before the process exits.
 
 **The core idea:** Sample entities from the user's fact store (ChromaDB)
 and Wikipedia (FAISS index, 40M vectors), pair them across domains, use an
-LLM to articulate a connection, then run the candidate through an 8-stage
+LLM to articulate a connection, then run the candidate through a 7-stage
 filter that kills noise, rehashes, and pseudoscience. Only genuinely novel,
 coherent, cross-domain insights survive.
 
@@ -43,7 +45,7 @@ auto-halts if the human audit FP rate exceeds `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
 | `knowledge/synthesis_retriever.py` | RetrievalSynthesisGenerator: structural query extraction + FAISS search + adversarial evaluation (Tier 0) |
 | `knowledge/graph_walk_generator.py` | GraphWalkGenerator: biased Markov walks with hub dampening + cross-domain constraint (Tier 1) |
 | `knowledge/synthesis_generator.py` | SynthesisGenerator: cross-store sampling (ChromaDB facts + FAISS wiki) + LLM bridge articulation (Tier 2) |
-| `knowledge/synthesis_filter.py` | 8-stage filter pipeline + FAISS wiki novelty checks + template patterns + helpers |
+| `knowledge/synthesis_filter.py` | 7-stage filter pipeline + FAISS wiki novelty checks + template patterns + helpers |
 | `memory/synthesis_memory.py` | ChromaDB persistence (synthesis_results collection) + convergence tracking + provisional bridge creation + audit queue (human grading, FP/FN review) |
 | `config/app_config.py` | All `SYNTHESIS_*` constants (filter + generator + retrieval) |
 | `memory/shutdown_processor.py` | Integration point — runs all three generators then filter at shutdown |
@@ -130,7 +132,7 @@ ground truth to validate filter thresholds.
 
 Three generators produce candidates in parallel at shutdown, each with
 independent quotas. All emit `SynthesisCandidate` objects for the same
-8-stage filter pipeline.
+7-stage filter pipeline (plus post-pipeline storage in `process_candidate()`).
 
 ### Tier 0: RetrievalSynthesisGenerator (Retrieval-Based)
 
@@ -234,8 +236,10 @@ SynthesisFilter.process_candidate(candidate)
   ├── Stage 5: Coherence Judge      (~1-4s, 1-2 LLM calls)
   │     ├── Pass 1: Structural coherence
   │     └── Pass 2: Factual skeptic (MODERATE only)
-  ├── Stage 6: Composite Scoring    (~0ms, arithmetic)
-  └── Stage 7: Storage              (~10ms, ChromaDB write)
+  └── Stage 6: Composite Scoring    (~0ms, arithmetic)
+        │  (all 7 stages passed)
+        ▼
+  Post-pipeline: Storage + Bridge   (~10ms, ChromaDB write)
         │
         ▼
 SynthesisMemory.store_result(result)
@@ -282,10 +286,14 @@ nonsensically far (no embedding relationship).
 
 **Score:** Peaks at midpoint (0.55), drops toward edges.
 
-**Retrieval-aware scoring:** For candidates from `RetrievalSynthesisGenerator`,
-distance scoring is inverted — low distance (high semantic similarity) is
-*good*, because the retrieval pipeline already selected structurally relevant
-results. Standard generators penalize low distance as "trivially close."
+**Retrieval-aware scoring:** Retrieval candidates are identified by
+`walk_path[0] == "retrieval"`. For these candidates, distance scoring is
+inverted: `distance_score = max(0.1, 1.0 - dist)` — low distance (high
+semantic similarity) scores high, because the retrieval pipeline already
+selected structurally relevant results. Only the upper bound
+(`SYNTHESIS_DISTANCE_MAX`) is enforced; the lower bound is not applied.
+Standard generators use mid-range peak scoring and penalize low distance
+as "trivially close."
 
 **Example rejection:**
 ```
@@ -309,7 +317,9 @@ extracted by `_extract_faiss_similarity()`.
 **Retrieval-aware skip:** For candidates from `RetrievalSynthesisGenerator`,
 the claim-similarity sub-check is skipped. Retrieval candidates derive their
 claims from wiki content by design, so high claim similarity is expected and
-does not indicate a rehash.
+does not indicate a rehash. Note that the co-occurrence sub-check (Sub-check 2)
+and template specificity sub-check (Sub-check 3) still apply to retrieval
+candidates.
 
 **Example rejection:**
 ```
@@ -383,45 +393,46 @@ Distinguishes structural isomorphisms from loose analogies.
 
 **System prompt:**
 ```
-You evaluate cross-domain knowledge connections. Focus on whether a shared
-structural pattern genuinely exists, not on whether the domains seem related.
-Be skeptical of vague claims but generous toward specific structural parallels.
+You are a structural methods reviewer. Most cross-domain claims are surface
+metaphor dressed in academic vocabulary. Your job is to reject these. Only
+rate MODERATE when the structural mapping survives both the de-jargon test
+and variable swap test. When in doubt, rate WEAK.
 ```
 
 **User prompt:**
 ```
-Evaluate this claimed connection between two concepts.
+Evaluate whether this claimed cross-domain connection identifies a real
+structural isomorphism or is just surface-level pattern matching.
 
-Concept A: {concept_a}
-Concept B: {concept_b}
+Concept A (personal): {concept_a}
+Concept B (Wikipedia): {concept_b}
 Claimed connection: {claim}
 
-These concepts are from different domains — that is expected and desired.
-Your job is to evaluate the SPECIFIC MECHANISM or SHARED STRUCTURE described,
-not whether cross-domain connections are valid in general.
+Apply these tests:
 
-Key distinction: A connection that identifies a shared mathematical pattern,
-feedback loop, optimization curve, threshold dynamic, or structural
-isomorphism across domains is MODERATE or STRONG — even if the two systems
-operate through different physical substrates. Only rate WEAK if the
-connection is pure metaphor with no identifiable shared process.
+1. DE-JARGON TEST: Strip all field-specific nouns from the claim. Read only
+the verbs, constraints, and logic. Does any structural content remain, or
+does it collapse into 'both involve X' / 'can be seen as Y'?
 
-First, identify the specific mechanism or structural pattern claimed
-(e.g., negative feedback, diminishing returns, threshold collapse,
-competitive selection).
-Then, write one sentence on the strongest reason it might be WRONG.
-Then, write one sentence on what makes it genuinely insightful.
+2. VARIABLE SWAP TEST: If the two systems are truly isomorphic, changing a
+variable in Concept B's ruleset should predict what happens in Concept A's
+ruleset. Can you state one such prediction? If not, the mapping is cosmetic.
 
-Finally, choose exactly ONE rating:
-INVALID - Factually wrong, or pure wordplay with no shared process
-WEAK    - No specific shared mechanism; surface-level metaphor only
-MODERATE - Real shared structural pattern, even through different substrates
-STRONG  - Compelling connection; understanding one system predicts the other
+Rating criteria:
+- WEAK: Fails de-jargon test (no structural content without the vocabulary),
+  OR fails variable swap (no transferable predictions). Most connections are
+  WEAK. Broad thematic overlap ('both involve feedback', 'iterative process',
+  'can be viewed through the lens of') is WEAK.
+- MODERATE: Passes both tests. The mechanism maps structurally — changing a
+  parameter in one domain predicts behavior in the other. The connection
+  would survive peer review in a comparative methods paper.
+- STRONG: MODERATE plus the mapping generates non-obvious testable predictions.
+- INVALID: Concepts are misunderstood or the claim is incoherent.
 
-Format:
-Mechanism: <the specific shared pattern>
+Respond exactly in this format:
+De-jargon: <the claim stripped of field-specific nouns>
+Variable swap: <one concrete prediction, or 'NONE'>
 Against: <strongest criticism>
-For: <what makes it insightful>
 Rating: <INVALID|WEAK|MODERATE|STRONG>
 ```
 
@@ -434,11 +445,14 @@ doubt, rate WEAK." Result: coherence rejections rose from 3.6% to 44%,
 acceptance dropped from 67% to 30%, accepted claims now name transferable
 mechanisms.
 
-**Recalibrated prompt standards:**
-- **WEAK**: No mechanism named, vague bridging language ("both involve
-  feedback loops" without specifying *which* feedback loops).
-- **MODERATE**: Names a real mechanism and applies it concretely to both
-  domains. Generality is not a flaw if application is concrete.
+**Recalibrated prompt standards (de-jargon + variable swap tests):**
+- **WEAK**: Fails de-jargon test (structural content collapses without the
+  vocabulary) OR fails variable swap (no transferable predictions). Broad
+  thematic overlap like "both involve feedback" or "iterative process" is
+  WEAK.
+- **MODERATE**: Passes both tests. The mechanism maps structurally -- changing
+  a parameter in one domain predicts behavior in the other. Would survive
+  peer review in a comparative methods paper.
 - Additional generic bridge templates added to catch vacuous claims that
   previously slipped through as MODERATE.
 
@@ -456,27 +470,38 @@ Simplification is acceptable — only provably wrong claims fail.
 ```
 A cross-domain connection claims: {claim}
 
-Check ONLY whether the domain-specific facts are wrong or based on
-debunked science.
+Check ONLY whether the domain-specific facts are wrong or based on debunked science.
 
-Examples of what FAILS:
+Examples of what FAILS this check:
 - 'Left-brain people are more logical' (debunked lateralization myth)
-- 'Mirror neurons cause empathy' (oversimplified; function is disputed)
+- 'Mirror neurons cause empathy' (oversimplified; mirror neuron function is disputed)
+- ANY claim that mirror neurons cause a specific behavioral response (viewing
+  triggers, anticipatory responses, etc.) — mirror neuron function in humans
+  is not established
 - 'Mozart effect improves intelligence' (debunked)
 - Claiming a specific neural pathway, enzyme, or mechanism that doesn't exist
+- Applying deterministic chaos theory (butterfly effect, sensitivity to initial
+  conditions) to inherently stochastic systems like stock markets or weather —
+  chaos theory describes deterministic systems with sensitive dependence, not
+  systems driven by random external shocks
 
-Examples of what PASSES:
-- Feedback loops that genuinely exist in both domains, even if simplified
-- Structural parallels where both sides are real phenomena
-- Using well-established concepts (Wolff's law, PID control) correctly
+Examples of what PASSES this check:
+- Describing feedback loops that genuinely exist in both domains, even if simplified
+- Structural parallels where both sides are real phenomena, even if the
+  connection is approximate
+- Using well-established concepts (Wolff's law, PID control, diminishing
+  returns) correctly
+- Applying mathematical concepts (threshold dynamics, optimization curves)
+  where the math genuinely applies in both domains
 
-IMPORTANT: Simplification is expected. Only flag claims where a domain
-expert would say 'that mechanism is wrong or doesn't exist,' NOT 'that's
-a simplification.'
+IMPORTANT: Simplification is expected and acceptable. Only flag claims where
+a domain expert would say 'that specific mechanism is wrong or doesn't
+exist,' NOT 'that's a simplification of how it actually works.'
 
 Respond:
-PASS - Domain facts are real (even if simplified)
+PASS - The domain facts are real (even if simplified)
 FAIL - A specific claim is factually wrong or based on debunked science
+       (state which one)
 
 One sentence of reasoning, then PASS or FAIL on its own line.
 ```
@@ -512,9 +537,11 @@ novelty = 0.25 * (1 - claim_sim)           # claim novelty
 
 **Gate:** `composite >= 0.65` (`SYNTHESIS_COMPOSITE_MIN_SCORE`)
 
-### Stage 7: Storage + Provisional Bridge Creation
+### Post-Pipeline: Storage + Provisional Bridge Creation
 
-Accepted results stored in `synthesis_results` ChromaDB collection.
+Storage is not a formal pipeline stage -- it runs in `process_candidate()`
+after all 7 stages pass. Accepted results are stored in `synthesis_results`
+ChromaDB collection.
 If a similar insight already exists, convergence tracking is updated instead
 of creating a duplicate.
 
@@ -525,7 +552,9 @@ via `SynthesisMemory.create_bridge_edge()`. The edge is created with
 from `SYNTHESIS_BRIDGE_RELATION` (default: `"structural_parallel"`).
 Provisional bridges mature when rediscovered: subsequent `add_relation()`
 calls on the same edge increment the weight, eventually promoting the
-bridge from provisional to established.
+bridge from provisional to established. Bridge creation is wrapped in
+try-except and logged as non-fatal -- a failure to create the bridge edge
+does not affect the candidate's ACCEPTED status or storage.
 
 This requires `SynthesisFilter.__init__` to accept `graph_memory` and
 `entity_resolver` parameters.
@@ -590,8 +619,8 @@ composite = 0.30 * 0.66 + 0.40 * 0.9325 + 0.15 * 1.0 + 0.15 * 0.50
 ```
 - composite: 0.796 (>= 0.65 threshold) → PASS
 
-**Stage 7 — Storage:** Stored in `synthesis_results` collection. New insight,
-no convergence update needed.
+**Post-Pipeline — Storage:** Stored in `synthesis_results` collection. New
+insight, no convergence update needed.
 
 **Result:** ACCEPTED with composite 0.796.
 
@@ -783,6 +812,12 @@ YAML section: `synthesis_audit`
 All constants live in `config/app_config.py` under `SYNTHESIS_CFG` and
 `SYNTHESIS_GEN_CFG`. YAML path: `synthesis:` and `synthesis_generator:`.
 
+**Note:** The `novelty_weights` sub-section does not exist in `config.yaml` --
+novelty sub-weights (`SYNTHESIS_NOVELTY_W_CLAIM`, etc.) use hardcoded defaults
+from `app_config.py`. Similarly, `hub_degree_threshold` and `min_walk_domains`
+are not present in the `graph_walk:` YAML section and use `app_config.py`
+defaults.
+
 ### Filter Pipeline
 
 | Constant | Default | Stage | Purpose |
@@ -808,8 +843,8 @@ All constants live in `config/app_config.py` under `SYNTHESIS_CFG` and
 | `SYNTHESIS_NOVELTY_W_SPECIFICITY` | `0.25` | 6 | Novelty sub-weight |
 | `SYNTHESIS_NOVELTY_W_INTERNAL` | `0.20` | 6 | Novelty sub-weight |
 | `SYNTHESIS_COMPOSITE_MIN_SCORE` | `0.65` | 6 | Minimum composite gate (raised from 0.40) |
-| `SYNTHESIS_CONVERGENCE_STRONG_PATHS` | `3` | 7 | Paths for CONVERGING status |
-| `SYNTHESIS_CONVERGENCE_STRONG_SOURCES` | `2` | 7 | Sources for CONVERGING status |
+| `SYNTHESIS_CONVERGENCE_STRONG_PATHS` | `3` | post | Paths for CONVERGING status |
+| `SYNTHESIS_CONVERGENCE_STRONG_SOURCES` | `2` | post | Sources for CONVERGING status |
 | `SYNTHESIS_LOG_ALL_REJECTIONS` | `True` | — | Log every rejection |
 | `SYNTHESIS_DEFAULT_BATCH_SIZE` | `100` | — | Batch runner size |
 

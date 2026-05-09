@@ -7,7 +7,7 @@
 
 ---
 
-## Current Status (2026-05-05)
+## Current Status (2026-05-09)
 
 | Phase | Status | Notes |
 |-------|--------|-------|
@@ -17,7 +17,7 @@
 | Phase 4: Generation Harness | **COMPLETE** | 24 tests passing, dry-run verified against 13 snapshots |
 | Phase 5: Pairwise Judge Harness | **COMPLETE** | 25 tests passing, position randomization, blind judging |
 | Phase 6: Objective Checks | **COMPLETE** | 33 tests passing, 5 automated checks, run against 1849 responses |
-| Phase 7: Aggregation & Reporting | Not started | Depends on Phases 5 + 6 |
+| Phase 7: Aggregation & Reporting | **PARTIAL** | Aggregation logic integrated into Phase 5-6 runners; no dedicated module |
 | Phase 8: Prompt Policy & Shadow-Mode | **PARTIAL** | Intent-conditioned gating wired, shadow-mode deferred |
 
 ### Phase 1 Deliverables (Implemented)
@@ -37,8 +37,8 @@ eval/
 
 tests/test_eval/
   __init__.py
-  test_section_registry.py   # 28 tests
-  test_snapshots.py          # 14 tests
+  test_section_registry.py   # 29 tests
+  test_snapshots.py          # 13 tests
   test_replay_hash.py        # 14 tests
   test_no_store_generation.py # 17 tests
   test_persistence_guard.py  # 16 tests
@@ -55,8 +55,8 @@ eval/
 
 tests/test_eval/
   test_variants.py           # 36 tests
-  test_corpus.py             # 23 tests
-  test_utilization.py        # 16 tests
+  test_corpus.py             # 24 tests
+  test_utilization.py        # 15 tests
 ```
 
 **No production code modified.** All Phase 2 code reads from Phase 1 snapshots.
@@ -404,8 +404,8 @@ eval/
 
 tests/test_eval/
   test_variants.py           # 36 tests
-  test_corpus.py             # 23 tests
-  test_utilization.py        # 16 tests
+  test_corpus.py             # 24 tests
+  test_utilization.py        # 15 tests
 ```
 
 ### What Phase 2 Does
@@ -830,17 +830,12 @@ scorecards. Answer: "Is section X worth its token cost?"
 - Phase 5 (judge verdicts)
 - Phase 6 (objective checks)
 
-### Files (Likely)
+### Files
 
-```
-eval/
-  aggregation.py           # Score computation + statistical analysis
-  report.py                # Report generation (markdown, JSON)
-  templates/               # Report templates
-
-tests/test_eval/
-  test_aggregation.py
-```
+No dedicated aggregation module — functionality absorbed into Phase 5-6 runners:
+- `judge.py`: `aggregate_by_section()`, `format_section_report()` — per-section LOO win rates
+- `checks.py`: LOO check aggregation — per-section objective metric deltas
+- Output written to `eval/runs/<run_id>/judgments/` and `eval/runs/<run_id>/checks/`
 
 ### Scope
 

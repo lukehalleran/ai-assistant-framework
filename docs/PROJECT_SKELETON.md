@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-03-25
+**Last Updated**: 2026-05-09
 
 ---
 
@@ -58,7 +58,7 @@ USER QUERY
 RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 ```
 
-**Note**: Memory system fully refactored (Jan 2026). `memory/memory_coordinator.py` is now a thin orchestrator (~632 lines, down from 1,694) delegating to:
+**Note**: Memory system fully refactored (Jan 2026). `memory/memory_coordinator.py` is now a thin orchestrator (~551 lines, down from 1,694) delegating to:
 - `memory/memory_retriever.py` - Retrieval operations (incl. `get_semantic_top_memories`)
 - `memory/memory_storage.py` - Storage operations
 - `memory/memory_scorer.py` - Scoring and ranking
@@ -78,6 +78,11 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/fact_verification.py` - Pre-storage conflict detection (STORE/STORE_AND_FLAG/REJECT/SKIP) **[NEW 2026-03-25]**
 - `memory/context_surfacer.py` - Cross-domain proactive insight generation from knowledge graph **[NEW 2026-03-25]**
 - `memory/surfacing_models.py` - Pydantic models: DomainEntity, DomainCluster, CrossDomainCandidate, ProactiveInsight **[NEW 2026-03-25]**
+- `memory/code_proposal.py` - CodeProposal Pydantic model + ImplementationStep + enums **[NEW 2026-02-05]**
+- `memory/proposal_store.py` - ChromaDB-backed proposal storage with dedup, query, status lifecycle **[NEW 2026-02-05]**
+- `memory/truth_scorer.py` - Evidence-based truth scoring (confirmation/correction/contradiction) **[NEW 2026-03]**
+- `memory/user_profile_schema.py` - 5-layer relation categorization with embedding similarity + LLM fallback **[ENHANCED 2026-04]**
+- `memory/synthesis_memory.py` - Synthesis results persistence + convergence tracking + audit queue **[NEW 2026-03-28]**
 - `memory/surfacing_history.py` - JSON-backed novelty tracking for surfacing cooldowns **[NEW 2026-03-25]**
 - `knowledge/implementation_detector.py` - 4-stage proposal implementation tracking **[NEW 2026-03-25]**
 - `memory/memory_expander.py` - Temporal context expansion + summary drill-down for agentic tool; collection-aware char limits (long-form: 3000/2000 vs default 600/300) **[ENHANCED 2026-04-27]**
@@ -344,13 +349,13 @@ PromptBuilder.build_prompt(context, memories)  →  final prompt
 ---
 
 ### 2.3 memory/memory_coordinator.py (Thin Orchestrator)
-**Purpose**: Unified interface for all memory operations — thin delegation layer (~632 lines)
+**Purpose**: Unified interface for all memory operations — thin delegation layer (~551 lines)
 
 **Status**: Fully refactored (Jan 2026). All inline logic extracted to modular components. Acts as state-syncing orchestrator with ~24 delegation methods.
 
 **Architecture**:
 ```python
-MemoryCoordinator (memory_coordinator.py, ~632 lines)
+MemoryCoordinator (memory_coordinator.py, ~551 lines)
     ↓
 ├── MemoryRetriever (memory_retriever.py) - Retrieval + semantic top memories
 ├── MemoryScorer (memory_scorer.py) - Scoring and ranking
@@ -385,7 +390,7 @@ MemoryCoordinator (memory_coordinator.py, ~632 lines)
 **Hierarchical Memory**:
 - ⚠️ Parent-child relationships: **DISABLED** (caused retrieval bugs, intentionally deactivated)
 - Temporal decay: `1.0 / (1.0 + decay_rate * age_hours)`
-- Access count boosts truth score
+- Evidence-based truth scoring via TruthScorer (confirmation/correction/contradiction, replaces old access-count boosting)
 
 **Init**: Passes `memory_coordinator=self` to ShutdownProcessor, enabling pipeline-enriched proposal generation **[ENHANCED 2026-02-09]**
 - Creates `FactVerifier(chroma_store, model_manager)` when `FACT_VERIFICATION_ENABLED`, passes to MemoryStorage as `fact_verifier=` **[NEW 2026-03-25]**
@@ -3738,7 +3743,7 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 **File References**:
 - `knowledge/synthesis_models.py` — Data models (SynthesisCandidate, StageResult, SynthesisResult, enums)
 - `memory/synthesis_memory.py` — ChromaDB persistence + convergence tracking + provisional bridge creation
-- `knowledge/synthesis_filter.py` — 8-stage async filter pipeline (accepts graph_memory + entity_resolver)
+- `knowledge/synthesis_filter.py` — 7-stage async filter pipeline (accepts graph_memory + entity_resolver)
 - `knowledge/synthesis_retriever.py` — RetrievalSynthesisGenerator: structural query → FAISS → adversarial eval (Tier 0)
 - `knowledge/graph_walk_generator.py` — GraphWalkGenerator: hub-dampened Markov walks (Tier 1)
 - `knowledge/synthesis_generator.py` — SynthesisGenerator: cross-store candidate generation (Tier 2)
@@ -3785,6 +3790,87 @@ SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20          # Graph sparsity guard
 ```
 
 **Tests**: 18 unit tests in `tests/unit/test_synthesis_generator.py`, 6 calibration tests in `tests/test_synthesis_calibration.py`. Calibration fixtures: `tests/fixtures/calibration_candidates.json` (72 labeled candidates in 7 tiers).
+
+---
+
+### 2.15j Prompt Section Ablation & Eval System (eval/) **[NEW 2026-04]**
+**Purpose**: Systematic evaluation of prompt section contributions via ablation testing. Captures snapshots of live prompts, generates variants (sections removed/added/reordered), runs side-effect-free LLM generation, and judges quality impact.
+
+**Architecture (8 Phases)**:
+```
+Phase 1: Instrumentation — capture PromptSnapshot from live builder (gated by DAEMON_EVAL_CAPTURE env var)
+Phase 2: Variant generation (LOO, AOI, bundle, reorder) + query corpus + utilization analysis
+Phase 3: (not yet implemented) — snapshot collection automation
+Phase 4: Generation harness — batch (snapshot, variant) pairs through EvalGenerator with PersistenceGuard
+Phase 5: Pairwise judge — blind A/B comparison with position randomization, 5-criterion rubric
+Phase 6: Objective checks — automated quality checks (response length, thinking leak, profile grounding, citation validity, filler)
+Phase 7-8: (not yet implemented) — intent-conditioned gating, production deployment
+```
+
+**Key Components**:
+
+**eval/schema.py** — Pure data models (no Daemon imports)
+- `PromptSnapshot`, `SectionSnapshot`, `SnapshotLayer`, `PromptProvenance`
+- `EvalGenerationResult`, `PersistenceSnapshot`, `StoreFingerprint`
+- JSON roundtrip via orjson/stdlib, SHA-256 hashing (exact + normalized modes)
+
+**eval/section_registry.py** — 27-entry canonical section registry
+- Maps to `builder.py:_assemble_prompt()` sections
+- Categories: STRUCTURAL, SYSTEM, METADATA, RETRIEVED, GENERATED_CONTEXT
+- Helpers: `get_ablatable()`, `get_structurally_required()`, `match_header_to_key()`, `validate_registry_against_formatted_sections()`
+
+**eval/snapshots.py** — Capture and replay
+- `SnapshotCapture`: builds PromptSnapshot objects from live builder data
+- `SnapshotReplay`: reconstructs prompts from stored formatted_text with hash verification
+- `save_snapshot()` / `load_snapshot()`, `extract_sections_from_prompt()`
+
+**eval/no_store_generation.py** — Side-effect-free LLM generation
+- `EvalGenerator`: calls `ModelManager.generate_once()` directly, never orchestrator
+- `EvalGenerationConfig`: rejects any persistence flag set to True (structural safety)
+
+**eval/persistence_guard.py** — State fingerprinting
+- Fingerprints ChromaDB collections (counts) + JSON data files (size/mtime/sha256)
+- `before.assert_same_as(after)` raises on any mutation
+
+**eval/variants.py** — Variant generation (4 strategies)
+- LOO (leave-one-out): remove one ablatable section
+- AOI (add-one-in): start from skeleton, add one section back
+- Bundle: remove section groups (7 default bundles including auto-populated `all_retrieved`)
+- Reorder: move section to different assembly_order position
+
+**eval/corpus.py** — Query corpus
+- 27-query seed corpus (3 per IntentType), each tagged with tone level
+- `ExpectedBehavior.expected_sections_used` validated against registry keys
+- Intent + tone coverage gap detection
+
+**eval/utilization.py** — Utilization analysis
+- Per-section presence/nonempty rates, avg tokens, intent-specific breakdowns
+- always-empty/always-present/high-variance classifications
+
+**eval/harness.py** — Generation harness (Phase 4)
+- Plans (snapshot, variant) pairs, replays prompts, generates via EvalGenerator
+- `HarnessConfig` with model, temperature, RPM rate limiting
+- `RunManifest` with progress tracking and crash-recovery resume
+
+**eval/judge.py** — Pairwise judge (Phase 5)
+- Position randomization (deterministic per-pair MD5 hash)
+- 5-criterion rubric: accuracy, helpfulness, conciseness, tone, grounding
+- `BatchJudge` for batch execution with resume
+- `aggregate_by_section()` groups LOO verdicts by removed section
+
+**eval/checks.py** — Objective checks (Phase 6)
+- 5 checks: response_length, thinking_leak, profile_grounding, citation_validity, filler
+- Batch runner + LOO aggregation + report formatting, no LLM calls
+
+**CLI Runners**:
+- `python -m eval.run_phase2 --snapshot-dir eval/snapshots --output eval/phase2_output`
+- `python -m eval.run_phase4 --dry-run` (cost estimate), `--model`, `--run-id` (resume)
+- `python -m eval.run_phase5 --dry-run`, `--judge-model`, `--report-only`
+- `python -m eval.run_phase6 --gen-run <run_id> --output <dir>`
+
+**Config**: `DAEMON_EVAL_CAPTURE` (enable), `DAEMON_EVAL_CAPTURE_STRICT` (raise vs warn), `DAEMON_EVAL_SNAPSHOT_DIR` (output path)
+
+**Tests**: 246 tests across 11 files in `tests/test_eval/`, all passing.
 
 ---
 
@@ -4639,12 +4725,16 @@ daemon/
 ├── core/
 │   ├── orchestrator.py        # Main controller (tone, STM, coordinates subsystems)
 │   ├── response_parser.py     # Response parsing utilities (thinking blocks, XML stripping) [NEW 2026-01-23]
+│   ├── context_pipeline.py    # Query analysis pipeline (tone, topic, intent, STM) [NEW 2026-01-23]
 │   ├── stm_analyzer.py        # Short-term memory analyzer [NEW]
 │   ├── intent_classifier.py   # Regex-first query intent classifier (9 types) [NEW 2026-02-15]
 │   ├── response_generator.py  # LLM streaming + Best-of-N/Duel (FIXED)
 │   ├── best_of_handler.py     # Best-of orchestration (duel/ensemble/single) [NEW]
+│   ├── escalation_tracker.py  # EscalationTracker — crisis cooldown with response strategies [NEW 2026-02-13]
+│   ├── correction_detector.py # CorrectionDetector — pattern-based correction/confirmation detection [NEW 2026-03]
 │   ├── git_stats_manager.py   # GitStatsManager — read-only git repo stats for agentic loop [NEW 2026-03-29]
-│   ├── uncertainty_detector.py # UncertaintyDetector — keyword regex + semantic detection of "I don't know" responses [NEW 2026-04]
+│   ├── file_access_manager.py # FileAccessManager — filesystem access for agentic tools [NEW 2026-03-26]
+│   ├── uncertainty_detector.py # UncertaintyDetector — keyword regex + semantic "I don't know" detection [NEW 2026-04]
 │   ├── response_planner.py    # ResponsePlanner — pre-answer planning + post-answer review gate [NEW 2026-04]
 │   ├── competitive_scorer.py  # Judge-based response selection
 │   ├── dependencies.py        # Dependency injection setup
@@ -4662,10 +4752,11 @@ daemon/
 │       ├── hygiene.py        # ContentHygiene: dedup, caps, backfill [NEW 2026-05]
 │       ├── token_manager.py  # Budget management
 │       ├── summarizer.py     # LLM summarization + on-demand reflections
+│       ├── proposal_filter.py # Proposal prompt injection pipeline [NEW 2026-02-09]
 │       └── base.py          # Utilities and fallbacks
 │
 ├── memory/
-│   ├── memory_coordinator.py      # Thin orchestrator (~632 lines, delegates to components)
+│   ├── memory_coordinator.py      # Thin orchestrator (~551 lines, delegates to components)
 │   ├── shutdown_processor.py      # Session-end summaries, facts, reflections [NEW - EXTRACTED]
 │   ├── memory_scorer.py           # Scoring and ranking operations [NEW - REFACTORED]
 │   ├── memory_retriever.py        # Retrieval operations [NEW - REFACTORED]
@@ -4690,6 +4781,11 @@ daemon/
 │   ├── surfacing_models.py        # Pydantic models: DomainEntity, DomainCluster, ProactiveInsight [NEW 2026-03-25]
 │   ├── surfacing_history.py       # JSON-backed novelty tracking for proactive surfacing [NEW 2026-03-25]
 │   ├── synthesis_memory.py        # Synthesis results persistence + convergence tracking + audit queue [ENHANCED 2026-04-01]
+│   ├── code_proposal.py           # CodeProposal Pydantic model + ImplementationStep + enums [NEW 2026-02-05]
+│   ├── proposal_store.py          # ChromaDB-backed proposal storage with dedup + query [NEW 2026-02-05]
+│   ├── memory_expander.py         # MemoryExpander: temporal context expansion + summary drill-down [NEW 2026-03-26]
+│   ├── truth_scorer.py            # TruthScorer: evidence-based truth scoring (confirmation/correction) [NEW 2026-03]
+│   ├── user_profile_schema.py     # 5-layer relation categorization (direct/prefix/token/embedding/LLM) [ENHANCED 2026-04]
 │   ├── hybrid_retriever.py        # Query rewrite + semantic + keyword
 │   └── storage/
 │       └── multi_collection_chroma_store.py  # Vector DB
@@ -4725,6 +4821,8 @@ daemon/
 │   ├── health_check.py        # Docker/K8s health endpoint
 │   ├── conversation_logger.py # Conversation persistence
 │   ├── web_search_trigger.py  # Web/memory/knowledge search detection (LLM-first + heuristics) [ENHANCED 2026-03-31]
+│   ├── temporal_resolver.py   # Temporal resolution utilities [NEW 2026-04]
+│   ├── text_chunking.py       # Shared chunking: chunk_by_headers + chunk_by_size fallback [NEW 2026-03-30]
 │   ├── daily_notes_generator.py # Auto-generated daily summaries with monthly folder hierarchy [ENHANCED 2026-03-10]
 │   ├── weekly_notes_generator.py # Auto-generated weekly summaries with monthly folder hierarchy [ENHANCED 2026-03-10]
 │   ├── monthly_notes_generator.py # Auto-generated monthly summaries from daily notes [NEW 2026-03-10]
@@ -4744,13 +4842,23 @@ daemon/
 │   ├── git_memory_loader.py   # Git → PROCEDURAL ChromaDB loader [NEW 2026-01-27]
 │   ├── implementation_detector.py  # 4-stage proposal implementation detection [NEW 2026-03-25]
 │   ├── synthesis_models.py    # Synthesis pipeline data models [NEW 2026-03-28]
-│   ├── synthesis_filter.py    # 8-stage synthesis filter pipeline [NEW 2026-03-28]
-│   └── synthesis_generator.py # Cross-store sampling + LLM bridge articulation [NEW 2026-03-28]
+│   ├── synthesis_filter.py    # 7-stage synthesis filter pipeline [NEW 2026-03-28]
+│   ├── synthesis_generator.py # Cross-store sampling + LLM bridge articulation (Tier 2) [NEW 2026-03-28]
+│   ├── synthesis_retriever.py # RetrievalSynthesisGenerator: structural query + FAISS search (Tier 0) [NEW 2026-04-01]
+│   ├── graph_walk_generator.py # GraphWalkGenerator: biased Markov walk synthesis (Tier 1) [NEW 2026-04-01]
+│   ├── wikidata_models.py     # Pydantic models for Wikidata import [NEW 2026-04]
+│   ├── wikidata_resolver.py   # WikidataEntityMapper: personal <-> Wikidata entity resolution [NEW 2026-04]
+│   ├── wiki_enrichment.py     # Shutdown: tracked wiki articles -> graph nodes [NEW 2026-04]
+│   └── wiki_tracker.py        # Session-level Wikipedia article tracking [NEW 2026-04]
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)
 │   ├── handlers.py            # UI event handlers (streaming, agentic routing) [ENHANCED 2026-01]
-│   └── wizard.py              # First-run onboarding wizard [NEW 2025-12-11]
+│   ├── wizard.py              # First-run onboarding wizard [NEW 2025-12-11]
+│   └── tabs/                  # GUI tab modules [NEW 2026-04]
+│       ├── proposals.py       # Proposals tab (browse, filter, manage, generate code proposals)
+│       ├── settings.py        # Settings tab (model selection, feature toggles, personality)
+│       └── synthesis.py       # Synthesis tab (blind review queue, two-layer grading, audit stats)
 │
 ├── integrations/
 │   └── wikipedia_api.py       # Wikipedia API client
@@ -4766,8 +4874,8 @@ daemon/
 │   ├── wiki/                  # Wikipedia source data (102GB)
 │   └── pipeline/              # Wikipedia processing scripts (43GB)
 │
-├── tests/                     # All test files (148 files)
-│   ├── unit/                  # Unit tests (20+ files)
+├── tests/                     # All test files (152 files)
+│   ├── unit/                  # Unit tests (60+ files)
 │   │   ├── test_tone_detector.py
 │   │   ├── test_need_detection.py  # [NEW]
 │   │   ├── test_query_checker.py
@@ -4776,7 +4884,19 @@ daemon/
 │   │   ├── test_web_search_trigger.py   # [NEW 2025-12-22]
 │   │   ├── test_agentic_search.py       # [NEW 2026-01] 42 tests for agentic system
 │   │   ├── test_sandbox_manager.py      # [NEW 2026-01-22] 42 tests for E2B sandbox
-│   │   └── ...
+│   │   └── ... (60+ unit test files total)
+│   ├── test_eval/             # Eval system tests (246 tests) [NEW 2026-04]
+│   │   ├── test_section_registry.py     # Registry validation
+│   │   ├── test_snapshots.py            # Snapshot capture/replay
+│   │   ├── test_replay_hash.py          # Hash verification
+│   │   ├── test_no_store_generation.py  # Side-effect-free generation
+│   │   ├── test_persistence_guard.py    # State fingerprinting
+│   │   ├── test_variants.py             # LOO/AOI/bundle/reorder generation
+│   │   ├── test_corpus.py              # Query corpus validation
+│   │   ├── test_utilization.py          # Utilization analysis
+│   │   ├── test_harness.py              # Generation harness
+│   │   ├── test_judge.py                # Pairwise judge
+│   │   └── test_checks.py              # Objective checks
 │   ├── integration.bak/       # Backup integration tests
 │   ├── test_*.py             # Integration tests (50+ files)
 │   │   ├── test_integration_prompt_builder.py
@@ -4808,6 +4928,25 @@ daemon/
 │   ├── daemon_icon.png       # PNG icon
 │   └── splash.png            # PyInstaller splash screen
 │
+├── eval/                      # Prompt section ablation & eval system [NEW 2026-04]
+│   ├── schema.py              # Pure data models (PromptSnapshot, SectionSnapshot, etc.)
+│   ├── section_registry.py    # 27-entry canonical section registry
+│   ├── snapshots.py           # SnapshotCapture, SnapshotReplay, save/load
+│   ├── no_store_generation.py # Side-effect-free LLM generation via generate_once()
+│   ├── persistence_guard.py   # State fingerprinting (ChromaDB + JSON files)
+│   ├── variants.py            # VariantGenerator: LOO, AOI, bundle, reorder strategies
+│   ├── corpus.py              # CorpusManager: 27-query seed corpus (3 per IntentType)
+│   ├── utilization.py         # UtilizationAnalyzer: per-section presence/token analysis
+│   ├── harness.py             # GenerationHarness: batch (snapshot, variant) pair execution
+│   ├── judge.py               # PairwiseJudge: blind A/B judging with 5-criterion rubric
+│   ├── checks.py              # 5 automated objective checks (length, leak, grounding, citation, filler)
+│   ├── run_phase2.py          # CLI: variant generation + utilization report
+│   ├── run_phase4.py          # CLI: generation harness (dry-run, resume, cost estimate)
+│   ├── run_phase5.py          # CLI: pairwise judge (dry-run, resume, report-only)
+│   ├── run_phase6.py          # CLI: objective checks
+│   ├── snapshots/             # Saved snapshot JSON files (.gitignored)
+│   └── runs/                  # Generation + judgment results (.gitignored)
+│
 ├── docs/                      # Documentation
 │   ├── PROJECT_SKELETON.md   # This file
 │   ├── QUICK_REFERENCE.md    # Quick reference guide
@@ -4817,7 +4956,7 @@ daemon/
 │
 ├── daemon.spec                # PyInstaller spec file [NEW 2025-12-12]
 │
-└── build/                     # Build configuration
+└── build/                     # Build configuration (removed after build, not in tree)
     ├── Makefile.fast         # Fast profile
     ├── Makefile.balanced     # Balanced profile
     └── Makefile.max          # Maximum quality
@@ -4903,7 +5042,7 @@ except Exception as e:
 
 ### 8.1 Unit Tests
 - **Location**: `tests/unit/`
-- **Count**: 20+ test files
+- **Count**: 60+ test files
 - **Pattern**: Mock dependencies, test methods in isolation
 
 **Key Unit Test Files**:
@@ -4917,6 +5056,11 @@ except Exception as e:
 - `test_thread_models.py` - Thread data model validation, serialization, priority scoring **[NEW 2026-03-20]**
 - `test_thread_store.py` - Thread ChromaDB CRUD, status lifecycle, cap enforcement **[NEW 2026-03-20]**
 - `test_thread_extractor.py` - Thread LLM extraction, resolution detection **[NEW 2026-03-20]**
+
+### 8.1a Eval System Tests **[NEW 2026-04]**
+- **Location**: `tests/test_eval/`
+- **Count**: 246 tests across 11 test files
+- **Scope**: Registry validation, snapshot capture/replay, hash verification, side-effect-free generation, state fingerprinting, variant generation, query corpus, utilization analysis, generation harness, pairwise judge, objective checks
 
 ### 8.1b Retrieval Quality Benchmarks **[NEW 2026-02-17]**
 - **Location**: `tests/benchmarks/`
@@ -4962,8 +5106,8 @@ except Exception as e:
 **Last Full Run**: 2026-05-01
 
 **Test Collection**:
-- **Total tests**: 3,250+ tests across all files
-- **Total test files**: 152
+- **Total tests**: 3,559 tests across all files
+- **Total test files**: 173
 - **Unit tests**: 40+ files in `tests/unit/` (2097 tests)
 - **Integration/other tests**: 100+ files in `tests/` (1151 tests)
 
@@ -5078,7 +5222,7 @@ python main.py inspect-summaries
 | response_parser.py | Parse: extract thinking blocks, strip reflections/XML/prompt artifacts [NEW 2026-01-23] |
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
 | intent_classifier.py | Classify: regex-first query intent (9 types), produces weight/retrieval/gate overrides [NEW 2026-02-15] |
-| memory_coordinator.py | Hub: thin orchestrator (~632 lines) delegating to modular components [REFACTORED] |
+| memory_coordinator.py | Hub: thin orchestrator (~551 lines) delegating to modular components [REFACTORED] |
 | shutdown_processor.py | Shutdown: block summaries + fact extraction + procedural skills + reflections + user profile [NEW - EXTRACTED] |
 | memory_scorer.py | Scoring: calculate truth/importance, rank by composite score with temporal decay [NEW - REFACTORED] |
 | memory_retriever.py | Retrieval: get_memories pipeline with gating and ranking [NEW - REFACTORED] |
@@ -5126,7 +5270,7 @@ python main.py inspect-summaries
 | implementation_detector.py | Detect: 4-stage pipeline (file/code/git/LLM) for proposal implementation status [NEW 2026-03-25] |
 | synthesis_models.py | Data: SynthesisCandidate, SynthesisResult, CoherenceLevel, CandidateStatus models [NEW 2026-03-28] |
 | synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking + audit queue (two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`) [ENHANCED 2026-04-01] |
-| synthesis_filter.py | Filter: 8-stage async pipeline (text/domain/distance/novelty/two-pass coherence/scoring) [NEW 2026-03-28] |
+| synthesis_filter.py | Filter: 7-stage async pipeline (text/domain/distance/novelty/two-pass coherence/scoring) [NEW 2026-03-28] |
 | synthesis_generator.py | Generate: Cross-store sampling (facts via ChromaDB + wiki via FAISS) + LLM bridge articulation for synthesis candidates [NEW 2026-03-28] |
 
 ---
@@ -5551,11 +5695,16 @@ if IS_FROZEN:
 
 **End of Skeleton**
 
-This document compresses a ~50K line codebase by focusing on architecture, data flow, and patterns rather than implementation details.
+This document compresses a ~143K LOC codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2026-04-05
+**Last Updated**: 2026-05-09
 
-**Recent Changes** (2026-04-05):
+**Recent Changes** (2026-05-09):
+- **Eval System** (Section 2.15j) — Full prompt section ablation & eval system (Phases 1-2, 4-6). Snapshot capture, variant generation (LOO/AOI/bundle/reorder), side-effect-free generation harness, pairwise judge, objective checks. 246 tests.
+- **Missing Modules Added** — Documented eval/, gui/tabs/, and multiple missing files in core/, memory/, knowledge/, utils/ directories.
+- **Line Count Updates** — memory_coordinator.py updated from ~632 to ~551 lines; unit test count from 20+ to 60+; total test files 152.
+
+**Previous Changes** (2026-04-05):
 - **Thinking Leak Fix — Native API Reasoning** (Section 2.1.1, model_manager) — `generate_async()` and `generate_once()` now pass `extra_body={"reasoning": {"effort": "medium"}}` for models where `supports_reasoning()` returns True (Claude, DeepSeek-R1). Thinking arrives via `delta.reasoning_content` instead of being mixed into the text response.
 - **Thinking Leak Fix — Heuristic Fallback** (Section 2.1.1) — `_detect_untagged_thinking()` added to ResponseParser. Pattern-based detection of untagged chain-of-thought (meta-reasoning, instruction echoes, third-person user references). Requires ≥2 distinct pattern hits, ≥20 char remaining answer. Prevents false positives on legitimate responses.
 - **Thinking Leak Fix — Conditional Instruction** (orchestrator) — System prompt thinking instruction (`<thinking>` tags) now skipped for models with native reasoning support. Prevents instruction echoing that caused thinking leaks.

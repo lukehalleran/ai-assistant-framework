@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-04-01
+**Last Updated**: 2026-05-09
 
 ---
 
@@ -26,7 +26,7 @@ All major feature systems are built. The focus now shifts to: making what exists
 
 ### 1. Consolidation & Stabilization
 - **Status**: Primary focus — all features built, now harden
-- **Why**: Codebase at ~118K lines (incl. tests). Must be lean and reliable before scaling to batch synthesis workloads or shipping to users.
+- **Why**: Codebase at ~143K lines of code (444 files). Must be lean and reliable before scaling to batch synthesis workloads or shipping to users.
 - Use retrieval benchmark suite to ablate prompt sections — measure recall impact of removing each
 - Audit ChromaDB collections: do all 12 justify separate indexes? Can any be merged without retrieval regression?
 - Reduce prompt context sections (currently 14+) to minimum set that maintains quality
@@ -37,16 +37,16 @@ All major feature systems are built. The focus now shifts to: making what exists
 - Eliminate remaining calls to deprecated `prepare_prompt`
 
 ### 2. Rebuild Desktop Executable
-- **Status**: Stale — many features added since last working build
-- **Why**: PyInstaller spec (`daemon.spec`) hasn't been updated for new modules (wiki_enrichment, wiki_tracker, wikidata_models, synthesis_filter, claim_tracker, context_surfacer, implementation_detector, etc.). Hidden imports, data files, and bundled assets likely out of date.
-- Audit `daemon.spec` for missing hidden imports and data files
+- **Status**: v1.0.0 shipped 2026-04-08 — spec may need updates for modules added since then
+- **Why**: PyInstaller spec (`daemon.spec`) needs periodic updates for new modules. Hidden imports, data files, and bundled assets may drift as features are added.
+- Audit `daemon.spec` for missing hidden imports and data files added since v1.0.0
 - Test frozen build end-to-end: startup → wizard → chat → shutdown
 - Verify FAISS index + parquet files are handled correctly (large external data, not bundled)
 - Ensure `orjson` optional import fallback works in frozen context
 - Target: clean `pyinstaller daemon.spec --clean --noconfirm` producing a working `dist/Daemon/Daemon`
 
 ### 3. Wizard Dual-Channel (User vs Dev)
-- **Status**: Not started
+- **Status**: Complete — shipped with v1.0.0 (2026-04-08)
 - **Why**: Current wizard (`gui/wizard.py`) is a single onboarding flow. Users and developers need different setup paths — users care about API keys, data paths, and persona; devs need repo config, model selection, debug toggles, and feature flags.
 - Split wizard into two channels selectable at launch: "I'm a user" vs "I'm a developer"
 - **User channel**: API key setup, data directory, persona/name, privacy overview, optional Obsidian vault path
@@ -69,7 +69,7 @@ All major feature systems are built. The focus now shifts to: making what exists
 ## Medium-Term Goals (Next 1-3 Months)
 
 ### 5. Knowledge Synthesis Pipeline (Core Vision)
-- **Status**: Validated end-to-end. All three generators currently DISABLED in `config.yaml` pending grading validation — pipeline code is intact but not running at shutdown. See `docs/grading_plan.md` for the grading protocol that gates re-enablement.
+- **Status**: Validated end-to-end. All three generators currently DISABLED in `config.yaml` pending grading validation — pipeline code is intact but not running at shutdown. See `docs/grading_plan.md` for the grading protocol that gates re-enablement. The prompt eval system (Phases 1-2, 4-6) provides the ablation and judge infrastructure needed to validate generator output quality before re-enablement.
 - **This is the primary goal. Everything else supports this.**
 
 **Data Ingestion**:
@@ -83,7 +83,7 @@ All major feature systems are built. The focus now shifts to: making what exists
 - **Tier 2 — SynthesisGenerator**: Random personal-fact + wiki-article pairing with LLM bridge articulation. Fallback generator. Result: 2/15 accepted (13%) but insight quality lower than Tier 0. Currently disabled in config.yaml.
 
 **Multi-Stage Filtering** (validated):
-- 8-stage filter pipeline (`synthesis_filter.py`), calibration fixture with 72 labeled candidates
+- 7-stage filter pipeline (`synthesis_filter.py`), calibration fixture with 72 labeled candidates
 - IVFPQ threshold recalibration done (novelty, co-occurrence, composite thresholds adjusted for quantized distances)
 - Coherence judge recalibrated (`claude-opus-4.6`): WEAK = no mechanism named; MODERATE = names real mechanism concretely applied to both domains
 - End-to-end validation complete: 4/30 accepted (13%), rejection breakdown: composite 13, novelty 12, coherence 1
@@ -122,33 +122,81 @@ These systems are complete and working. Listed here for context, not as active w
 
 - **Memory system**: 6 types (episodic, semantic, procedural, summary, meta, fact), 12 ChromaDB collections, modular components with Protocol contracts, thin coordinator
 - **Multi-stage gating**: FAISS → Cosine → Cross-Encoder reranking
-- **Intent classification**: 9 types, regex-first, per-intent weight/retrieval/gate overrides, STM refinement
+- **Intent classification**: 9 types, regex-first, per-intent weight/retrieval/gate overrides, STM refinement, intent-conditioned section gating (eval-driven)
 - **Truth scoring**: Evidence-based (TruthScorer + CorrectionDetector), replaces access-count system
 - **Fact verification**: 4-stage gate (ephemeral → candidate → confirmation → LLM adjudication), no auto-deletion
+- **Fact extraction**: Source excerpt pipeline with anti-confabulation guardrails, user message snippets attached to extracted triples
 - **Memory staleness**: Claim tracker with reverse index, cascade staleness scoring, prompt prefixes for outdated items
 - **Cross-collection dedup**: Cosine duplicates + fact contradiction detection, dry-run default
 - **Escalation tracker**: 4-state emotional momentum (VALIDATE → GROUNDING → QUIET → GENTLE)
-- **User profile**: Append-only with temporal history, 12 categories, hybrid retrieval
+- **User profile**: Append-only with temporal history, 12 categories, hybrid retrieval, canonicalized relation namespace (safe aliases, ephemeral relations, 5-layer categorization)
 - **Temporal awareness**: Narrative context (3-tier: monthly/weekly/daily), temporal-aware recency decay
 - **Knowledge integration**: Obsidian vault (multimodal, mtime-based re-embedding), reference docs, git commits, procedural skills, Wikipedia (FAISS IVFPQ 40M vectors)
 - **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring, wiki enrichment at shutdown
 - **Proactive surfacing**: Cross-domain insight generation from knowledge graph, session-cached LLM calls, novelty-filtered
-- **Synthesis pipeline**: Cross-store candidate generation, 8-stage filter (`claude-opus-4.6` coherence judge), LLM bridge articulation, convergence tracking, human audit queue with two-layer grading and auto-halt. All three generators currently disabled pending grading validation (see `docs/grading_plan.md`)
+- **Synthesis pipeline**: Cross-store candidate generation, 7-stage filter (`claude-opus-4.6` coherence judge), LLM bridge articulation, convergence tracking, human audit queue with two-layer grading and auto-halt. All three generators currently disabled pending grading validation (see `docs/grading_plan.md`)
 - **Implementation tracking**: 4-stage proposal detection (file → grep → git → LLM), cooldown-gated
 - **Fast Mode**: Reduced retrieval for mobile/slow connections with progress keepalives
 - **PDF/DOCX support**: Full pipeline with table extraction (pdfplumber + python-docx), chunking with header detection
 - **Multi-provider LLM**: Duel mode, best-of-N, ensemble, fallback chains
 - **Code proposals**: LLM-generated, ChromaDB-stored, GUI management, shutdown integration
 - **Agentic search**: ReAct loop with Tavily + Wolfram Alpha + E2B sandbox, context inventory, collection diversity tracking, memory expansion tool, full-document retrieval tool, git stats tool, uncertainty fallback (auto-retry via agentic search when standard response indicates "I don't know")
+- **Response planning**: Pre-answer plan + post-answer review gate with silent agentic retry on low-confidence reviews
 - **Thread surfacing**: Proactive open-thread detection with resolution tracking
 - **Session awareness**: Codebase diff + active features inventory at session start
-- **Production**: PyInstaller desktop build (needs rebuild — Goal 2), Docker deployment, graceful shutdown
+- **Web search**: Tavily integration with WEB_N citation markers, broad news decomposition, semantic similarity trigger layer
+- **Prompt eval system**: Snapshot/replay infrastructure, variant generation (LOO/AOI/bundle/reorder), pairwise judge, objective checks, 246 tests (`eval/`)
+- **Production**: PyInstaller desktop build (v1.0.0 shipped 2026-04-08), Docker deployment, graceful shutdown
 - **Privacy**: All data local, API calls only for LLM generation, no telemetry
-- **Testing**: 2,900+ tests across 148 test files, retrieval quality benchmarks with 30 seed memories and 19 test cases
+- **Testing**: 3,559 tests across 173 test files, retrieval quality benchmarks with 30 seed memories and 19 test cases
 
 ---
 
-## Recent Completions
+## Recent Completions (April-May 2026)
+
+### God Object Decomposition — Phases 2-3 (2026-05-08)
+- Extracted `PromptFormatter`, `ContentHygiene`, `ContextGatherer` mixins from UnifiedPromptBuilder
+- Extracted `AgenticFormatter` + `ToolExecutor` from agentic controller
+- Behavioral pattern extraction (cross-turn habit detection at shutdown)
+
+### Phase 8 Intent-Conditioned Section Gating (2026-05-06)
+- Eval-driven prompt section filtering per query intent type
+- Sections gated based on ablation results from Phase 5/6 judge + objective checks
+
+### Prompt Eval System — Phases 1-2, 4-6 (2026-05-04)
+- Snapshot capture/replay, variant generation (LOO/AOI/bundle/reorder), pairwise judge harness, objective checks
+- 246 tests in `tests/test_eval/`, CLI runners for each phase
+- Infrastructure for validating synthesis generator re-enablement
+
+### Response Planning (2026-04-20)
+- `ResponsePlanner`: pre-answer plan (lightweight LLM ~200 tokens) + post-answer review gate
+- Silent agentic retry when review fails with confidence >= 0.90
+- Skips for CASUAL_SOCIAL intent and short queries to reduce LLM calls
+
+### Uncertainty Fallback (2026-04-18)
+- `UncertaintyDetector`: keyword regex + semantic embedding similarity detection of "I don't know" responses
+- Auto-retry via agentic search when standard response indicates uncertainty, 33 tests
+
+### Web Search Citations (2026-04-15)
+- `NumberedWebSource` with stable WEB_N IDs, citation marker validation/stripping in orchestrator
+- Broad news decomposition with source-aware facet queries, semantic similarity trigger layer
+
+### Profile Namespace Canonicalization (2026-04-12)
+- Safe relation aliases, ephemeral relations, snapshot relations, 5-layer categorization cascade
+- `canonicalize_profile_relation()` with value-aware job disambiguation, 26 tests
+
+### Source Excerpt Pipeline (2026-04-10)
+- Anti-confabulation guardrails: user message snippets attached to extracted facts
+- Profile context injection shows `(said: "...")` for grounded facts
+- System prompt instruction: never add specific names/apps/platforms not in stored facts
+
+### v1.0.0 Desktop Build + Wizard (2026-04-08)
+- PyInstaller desktop executable shipped
+- Wizard dual-channel (user vs dev) included in release
+
+---
+
+## Earlier Completions (January-March 2026)
 
 ### Synthesis Audit Queue (2026-04-01)
 - Human-in-the-loop blind grading of synthesis pipeline output
@@ -294,7 +342,7 @@ These systems are complete and working. Listed here for context, not as active w
 
 1. **The filter is the product.** Connection generation is cheap. Identifying which connections are novel and meaningful is the entire value proposition. Every infrastructure decision should be evaluated by whether it improves filtering quality.
 
-2. **No new features until consolidation targets are met.** The codebase is feature-complete. Every addition now is net-negative until the existing ~118K lines are trimmed and hardened. Removing a system that doesn't pull its weight is more valuable than adding a new one.
+2. **No new features until consolidation targets are met.** The codebase is feature-complete. Every addition now is net-negative until the existing ~143K lines are trimmed and hardened. Removing a system that doesn't pull its weight is more valuable than adding a new one.
 
 3. **Data over code.** The limiting factor is now graph density, not missing features. Effort spent populating the knowledge graph with real data has higher ROI than writing new code.
 

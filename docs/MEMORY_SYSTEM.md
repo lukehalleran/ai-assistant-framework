@@ -1,5 +1,7 @@
 # Memory System Operations Guide
 
+*Last verified: 2026-05-09*
+
 Operational guide for Daemon's 5-tier hierarchical memory system. Covers the
 full lifecycle from query to retrieval to storage, the scoring algorithm with
 concrete examples, fact extraction, truth/staleness tracking, shutdown
@@ -29,9 +31,9 @@ resolved, and stale information is penalized in ranking.
 ### Core Pipeline
 | File | Purpose |
 |------|---------|
-| `memory/memory_coordinator.py` | Thin orchestrator (~632 lines), creates all components, delegates to retriever/storage/shutdown |
+| `memory/memory_coordinator.py` | Thin orchestrator (~551 lines), creates all components, delegates to retriever/storage/shutdown |
 | `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks |
-| `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 7 additive bonuses/penalties) with intent overrides + graph boost |
+| `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 7 additive bonuses/penalties) with intent overrides, graph boost, size penalty |
 | `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion |
 | `core/prompt/builder.py` | UnifiedPromptBuilder: thin orchestrator for parallel task dispatch, intent overrides, budget |
 | `core/prompt/context_gatherer.py` | Mixin compositor (composes gatherer_web, gatherer_memory, gatherer_knowledge) |
@@ -63,7 +65,7 @@ resolved, and stale information is penalized in ranking.
 ### Shutdown & Consolidation
 | File | Purpose |
 |------|---------|
-| `memory/shutdown_processor.py` | 10-step session-end processing |
+| `memory/shutdown_processor.py` | 12-step session-end processing (Steps 1-8, with sub-steps 4.5, 6.5, 6.75, 6.8, 6.9) |
 | `memory/thread_manager.py` | Thread detection for conversation continuity |
 | `memory/thread_store.py` | ChromaDB-backed thread persistence + priority ranking + deadline-aware staleness + per-turn regex resolution |
 | `memory/thread_extractor.py` | LLM-based thread extraction + resolution detection |
@@ -188,26 +190,28 @@ MemoryStorage.store_interaction(query, response)
 ```
 ShutdownProcessor.process_shutdown_memory()
   │
-  ├─ Step 1: Block summaries (N=10 conversations per block)
+  ├─ Steps 1-2: Block summaries (N=10 conversations per block)
   │     LLM consolidation → micro-summary fallback
   │     Claim extraction → ClaimIndex registration
   │     Source doc IDs stored for expand_memory drill-down
   │
-  ├─ Step 2: Session fact extraction (rule-based, last 10 turns)
+  ├─ Step 3: Session fact extraction (rule-based, last 10 turns)
   │     Fact verification gate (REJECT/STORE/STORE_AND_FLAG)
   │     On STORE_AND_FLAG: mark conflicting facts as superseded
   │
-  ├─ Step 3: LLM fact extraction (neural triples)
+  ├─ Step 4: LLM fact extraction (neural triples)
   │     Batch verification before storage
   │
-  ├─ Step 4: Procedural skill extraction
-  ├─ Step 5: Code proposal generation
-  ├─ Step 6: Implementation tracking (lightweight file check)
+  ├─ Step 4.5: Behavioral pattern extraction (cross-turn habit detection)
   │
-  ├─ Step 7: Open thread processing
+  ├─ Step 5: Procedural skill extraction
+  ├─ Step 6: Code proposal generation
+  ├─ Step 6.5: Implementation tracking (lightweight file check)
+  │
+  ├─ Step 6.75: Open thread processing
   │     Detect resolutions → extract new → enforce cap
   │
-  ├─ Step 8: Synthesis dreaming (three-tier parallel generation)
+  ├─ Step 6.8: Synthesis dreaming (three-tier parallel generation)
   │     Auto-halt check: skips if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
   │     Tier 0: RetrievalSynthesisGenerator (structural query → FAISS → adversarial eval)
   │     Tier 1: GraphWalkGenerator (biased Markov walks, hub-dampened, cross-domain)
@@ -216,8 +220,16 @@ ShutdownProcessor.process_shutdown_memory()
   │     On acceptance: provisional bridge edge created (weight=0.0, status="provisional")
   │     Composite-rejected candidates stored for FN audit review
   │
-  ├─ Step 9: Knowledge graph save (JSON flush)
-  └─ Step 10: Cross-collection dedup (dry-run preview only)
+  ├─ Step 6.9: Wiki-to-graph enrichment (session wiki articles → graph nodes)
+  │
+  ├─ Step 7: Knowledge graph + alias + category cache save (JSON flush)
+  │
+  └─ Step 8: Cross-collection dedup
+        Mode depends on DAEMON_MODE:
+          Dev mode (default): dry_run=True — preview/log only, never auto-deletes
+          User mode: auto-executes deletions (CROSS_DEDUP_AUTO_EXECUTE=True)
+        Live deletions also available via GUI Preview/Run buttons in Status tab
+        Double-run guard: class-level _dedup_ran flag prevents running twice per process
 ```
 
 ---
@@ -246,13 +258,33 @@ topic:      0.00    # Disabled by default (config.yaml: 0.10)
 4. **Importance** — Stored importance score (default 0.5)
 5. **Continuity** — Token overlap with last exchange (+0.3 * overlap) + recency bonus (+0.1 if within 10 minutes)
 6. **Structural alignment** — `0.15 * density_alignment` where density_alignment measures numeric/operator density match between query and memory. Added as direct bonus, not through weighted sum
-7. **Penalties** — Analogy penalty (-0.1 for mathy queries matching analogies), size penalty (scales from 10KB+, caps at -1.0)
+7. **Penalties** — Analogy penalty (-0.1 for mathy queries matching analogies) + size penalty (see below)
 8. **Anchor bonus** — Salient token overlap with conversation context. Deictic queries ("explain that", "what about it") get +0.2 bonus or -0.15 penalty based on overlap
 9. **Tone adjustment** — Dismissive language in memory → truth reduced by 0.2
 10. **Topic match** — 1.0 exact, 0.5 unknown, 0.2 mismatch (usually weight=0.0)
 11. **Meta-conversational bonus** — +0.15 for episodic memories when query is about recall ("did we discuss...")
 12. **Graph proximity bonus** — +0.05 per knowledge graph neighbor mentioned in memory, capped at 0.15
 13. **Staleness penalty** — `staleness_ratio * STALENESS_WEIGHT`, 2x multiplier at >=0.8 ratio, reflections at 60% weight, capped at 0.4
+
+### Size Penalty (Large Document Demotion)
+
+Large documents (>10KB) that lack keyword relevance get a scaled penalty:
+
+```
+Threshold: LARGE_DOC_SIZE_THRESHOLD = 10,000 bytes
+Keyword check: if keyword_score > 0.3 → no penalty (document is keyword-relevant)
+Formula: penalty = -0.25 * (size_bytes / 10,000)
+Cap: -1.0 (prevents extreme penalties for very large docs)
+
+Examples:
+  5KB doc  → 0.0 (under threshold)
+  20KB doc, keyword_score=0.1 → -0.25 * 2.0 = -0.50
+  95KB doc, keyword_score=0.0 → -0.25 * 9.5 = -2.375 → capped at -1.0
+  20KB doc, keyword_score=0.5 → 0.0 (keyword-relevant, no penalty)
+```
+
+These constants are defined in `memory_scorer.py` (module-level, not in `app_config.py`):
+`LARGE_DOC_SIZE_THRESHOLD`, `LARGE_DOC_KEYWORD_THRESHOLD`, `LARGE_DOC_BASE_PENALTY`.
 
 **Final guardrail:** Deictic queries with low continuity AND low anchor overlap get a 15% penalty to prevent drift.
 
@@ -344,6 +376,30 @@ Fact: "Biscuit | is_a | golden retriever"
   → Store as node metadata: biscuit.metadata["is_a"] = "golden retriever"
 ```
 
+### Relation Normalization
+
+`entity_resolver.py` maps raw relation strings to canonical forms via
+`RELATION_SYNONYMS` (24 canonical forms with 90+ synonyms). This prevents
+duplicate edges from phrasing variations:
+
+```
+"lives in" / "resides in" / "based in"   → lives_in
+"works on" / "building" / "developing"   → works_on
+"likes" / "enjoys" / "loves" / "fond of" → likes
+"sibling of" / "brother of" / "sister of" → sibling_of
+"spouse of" / "married to" / "partner of" → spouse_of
+"speaks" / "fluent in"                    → speaks
+"born in" / "from" / "originally from"   → born_in
+"skilled at" / "good at" / "proficient in" → skilled_at
+```
+
+Unknown relations pass through with spaces replaced by underscores
+(e.g., "favorite color" becomes "favorite_color").
+
+Possessive alias patterns (`_POSSESSIVE_RE`) auto-detect phrases like
+"my cat", "my boss", "my brother" and register them as entity aliases
+during `learn_alias()` calls.
+
 ### Truth Score Lifecycle
 
 ```
@@ -377,6 +433,94 @@ When a fact is corrected, staleness cascades to summaries that embedded it:
 5. In prompt: items with staleness_ratio >= 0.6 get prefix
    "[HISTORICAL — PARTIALLY OUTDATED]"
 ```
+
+---
+
+## User Profile
+
+The `UserProfile` class (`memory/user_profile.py`) manages persistent user
+facts with append-only storage, categorized by life domain.
+
+### Relation Canonicalization
+
+Before storage, every relation name passes through
+`canonicalize_profile_relation(rel, value)` in `user_profile_schema.py`:
+
+1. `normalize_relation()` (from `entity_resolver.py`): spaces to underscores, synonym lookup
+2. `SAFE_RELATION_ALIASES` auto-merge: ~40 variant names map to canonical forms
+   (e.g., `pet` / `has_pet` / `owns_pet` all become `pet_name`)
+3. Value-aware disambiguation: `job` with value "quit" becomes `job_status`;
+   `job` with value "bartender" becomes `occupation`
+
+### Categorization Cascade
+
+`categorize_relation()` uses a 5-layer cascade to assign each relation to one
+of 12 `ProfileCategory` values (identity, education, career, projects, health,
+fitness, preferences, hobbies, study, finance, relationships, goals):
+
+1. **Direct lookup** — `RELATION_CATEGORY_MAP` (~60 entries, exact match)
+2. **Prefix lookup** — first underscore-delimited token checked against `_PREFIX_CATEGORY_MAP` (~50 entries)
+3. **Token overlap** — relation tokens scored against per-category keyword sets (`_CATEGORY_TOKENS`); requires >= 2 matching tokens
+4. **Embedding similarity** — `all-MiniLM-L6-v2` cosine similarity against per-category exemplar phrases (`_CATEGORY_EXEMPLARS`); threshold 0.30. Results cached persistently in `data/category_cache.json`
+5. **Default** — falls back to `PREFERENCES`. For batch/cleanup, `categorize_relation_deep()` adds an LLM micro-call (gpt-4o-mini, 10 tokens) before defaulting
+
+### Ephemeral vs Snapshot Relations
+
+- **`EPHEMERAL_RELATIONS`** — truly transient state (`current_feeling`, `current_activity`,
+  `plans_today`, `appointment_time`, etc.). Subject to aggressive TTL-based expiry
+  (`PROFILE_EPHEMERAL_TTL_HOURS`, default 24h). Historical entries pruned when
+  category exceeds `PROFILE_CATEGORY_SOFT_CAP` (default 200), keeping at most
+  `PROFILE_EPHEMERAL_MAX_HISTORY` (default 20) old entries per ephemeral relation.
+
+- **`SNAPSHOT_RELATIONS`** — measurements/states valid until explicitly changed
+  (`current_weight`, `current_bench`, `current_medication`). NOT expired by TTL;
+  kept until superseded by a new value.
+
+- **`SEMANTIC_RELATION_NEIGHBORS`** — related but distinct relations shown as
+  hints in LLM extraction prompts (e.g., `bench_max` hints: `current_bench`,
+  `previous_bench_max`, `goal_bench`). Never auto-merged.
+
+### Supersedes Chain
+
+Profile storage is append-only. When a user updates a fact:
+
+```
+Existing: occupation=bartender (is_current=True, fact_id="abc123")
+User says: "I quit my job"
+
+1. canonicalize_profile_relation("job", "quit") → "job_status"
+   Different canonical relation → Case 3 (new relation), not a supersede.
+
+User says: "I'm a software engineer now"
+1. canonicalize_profile_relation("job", "software engineer") → "occupation"
+2. Find existing is_current=True facts with relation="occupation"
+3. Mark old fact: is_current=False, truth_score reduced by correction penalty
+4. New fact: occupation=software engineer, supersedes="abc123", is_current=True
+```
+
+Old facts are never deleted. `is_current=False` facts serve as historical record
+and are excluded from active profile injection.
+
+### Temporal Resolution
+
+When a fact value contains relative temporal references ("tomorrow", "next Monday",
+"in 3 days"), `resolve_temporal_references()` from `utils/temporal_resolver.py`
+converts them to absolute dates at storage time:
+
+```
+Input:  "work tomorrow and the following day" (reference: 2026-03-12)
+Output: "work on Thu 2026-03-13 and Fri 2026-03-14"
+```
+
+This prevents facts from becoming semantically incorrect as time passes.
+
+### Profile Context Injection
+
+`get_context_injection()` formats facts for the `[USER PROFILE]` prompt section:
+- Facts grouped by category, filtered to `is_current=True`
+- Hybrid ranking: 2/3 semantic relevance (keyword overlap with query) + 1/3 recency
+- Timestamps shown as relative labels ("today", "3 days ago") via `format_relative_timestamp()`
+- Source excerpts appended as `(said: "...")` when available (80-char truncated)
 
 ---
 
@@ -481,7 +625,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | Old unrelated memories ranking high | Recency weight too low | Increase `recency` in `SCORE_WEIGHTS` |
 | Memories from wrong topic | Topic filtering disabled | Set `topic_match` weight > 0 |
 | Too many low-quality results | Gate threshold too low | Raise `GATE_REL_THRESHOLD` (default 0.18) |
-| Large docs drowning out small facts | Size penalty too weak | Lower size penalty threshold (default 10KB) |
+| Large docs drowning out small facts | Size penalty too weak | Lower `LARGE_DOC_SIZE_THRESHOLD` in `memory_scorer.py` (default 10KB) or raise `LARGE_DOC_BASE_PENALTY` (default -0.25) |
 
 ### Retrieval Missing Relevant Memories
 
@@ -563,5 +707,14 @@ The final prompt is assembled with these sections (in attention-optimized order)
 |----------|---------|---------|
 | `KNOWLEDGE_GRAPH_ENABLED` | True | Master toggle |
 | `KNOWLEDGE_GRAPH_MAX_DEPTH` | 2 | BFS traversal depth |
+| `GRAPH_SCORING_BOOST_ENABLED` | True | Enable graph-proximity bonus in scoring |
 | `GRAPH_SCORING_BOOST_CAP` | 0.15 | Max graph bonus per memory |
 | `GRAPH_QUERY_EXPANSION_MAX_TERMS` | 8 | Max neighbor names appended to query |
+
+### Profile Namespace
+| Constant | Default | Purpose |
+|----------|---------|---------|
+| `PROFILE_EPHEMERAL_RELATIONS` | list | Relations subject to TTL expiry (current_feeling, etc.) |
+| `PROFILE_EPHEMERAL_TTL_HOURS` | 24 | Hours before ephemeral facts expire |
+| `PROFILE_EPHEMERAL_MAX_HISTORY` | 20 | Max historical entries kept per ephemeral relation |
+| `PROFILE_CATEGORY_SOFT_CAP` | 200 | Max facts per category before pruning kicks in |
