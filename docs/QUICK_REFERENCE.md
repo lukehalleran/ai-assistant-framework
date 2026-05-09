@@ -367,7 +367,8 @@ gated_notes = [n for n in gated_notes if n.get("relevance_score", 0) >= PERSONAL
 ## Prompt Building
 
 ```python
-# core/prompt/builder.py
+# core/prompt/builder.py — Thin orchestrator (delegates assembly to formatter.py, hygiene to hygiene.py,
+# retrieval to gatherer_memory.py/gatherer_knowledge.py/gatherer_web.py via context_gatherer.py compositor)
 class UnifiedPromptBuilder:
     def build_prompt(query: str, memories: List[Dict], topics: List[str] = None, budget: int = 2048,
                      retrieval_overrides: Dict[str, int] = None, weight_overrides: Dict[str, float] = None) -> str:
@@ -745,7 +746,7 @@ async def _persist_uploads(orchestrator, files_result):
     Images also store is_image, media_type, image_path metadata.
     Upload images injected into note_images for multimodal model use."""
 
-# core/prompt/context_gatherer.py — Retrieval
+# core/prompt/gatherer_knowledge.py — Retrieval (KnowledgeRetrievalMixin)
 async def get_user_uploads(query, limit=5) -> List[Dict]:
     """Fetch from reference_docs, filter to type='user_upload' only."""
 async def get_reference_docs(query, limit) -> List[Dict]:
@@ -885,9 +886,9 @@ def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, 
 #   verb phrases ("stopped being religious"). Rejected → stored as subject-node metadata.
 # Duplicate edges strengthen weight (DiGraph, not MultiDiGraph).
 
-# Retrieval (context_gatherer.py):
-# get_graph_context() → BFS from query entities, returns natural language sentences
-# _expand_query_with_graph() → calls rank_expansion_candidates() (connectivity-ranked, junk-filtered)
+# Retrieval (gatherer_knowledge.py / gatherer_memory.py):
+# get_graph_context() → BFS from query entities, returns natural language sentences (gatherer_knowledge.py)
+# _expand_query_with_graph() → calls rank_expansion_candidates() (connectivity-ranked, junk-filtered) (gatherer_memory.py)
 
 # Scoring (memory_scorer.py):
 # graph_bonus = min(0.05 * graph_entity_matches, GRAPH_SCORING_BOOST_CAP)
@@ -1037,7 +1038,7 @@ class ContextSurfacer:
 # DomainEntity, DomainCluster, CrossDomainCandidate, ProactiveInsight
 
 # Integration:
-# context_gatherer.py → get_proactive_insights() → context_surfacer.generate_insights()
+# gatherer_knowledge.py → get_proactive_insights() → context_surfacer.generate_insights()
 # Prompt: [PROACTIVE INSIGHTS] after [UNRESOLVED THREADS]
 # Parallel task in build_prompt()
 
@@ -1120,8 +1121,8 @@ IMPL_TRACKING_COOLDOWN = 86400
 ## Session-Start Codebase Diff + Feature Inventory **[NEW 2026-03-24]**
 
 ```python
-# context_gatherer.py:get_codebase_changes() — git log/diff/status since last session
-# builder.py:_build_feature_inventory() — compact 4-line enabled features summary
+# gatherer_knowledge.py:get_codebase_changes() — git log/diff/status since last session
+# formatter.py:_build_feature_inventory() — compact 4-line enabled features summary
 
 # Prompt sections:
 # [CODEBASE CHANGES SINCE LAST SESSION] — first message only
@@ -1310,7 +1311,7 @@ new_type_results = await self.chroma_store.query(query, "new_type", limit)
 async def get_new_type(self, query, limit=10):
     return await self._retriever.get_new_type(query, limit)
 
-# 5. prompt_builder.py - add to prompt assembly
+# 5. prompt/formatter.py - add to prompt assembly
 new_type_mems = [m for m in memories if m.get('memory_type') == 'new_type']
 sections.append(self._format_memories(new_type_mems, budget * 0.05))
 ```
@@ -1393,7 +1394,7 @@ score = (
 ## Knowledge Sources (Prompt Sections)
 
 ```python
-# Prompt section hierarchy (in builder.py _assemble_prompt):
+# Prompt section hierarchy (in formatter.py _assemble_prompt):
 [RECENT CONVERSATION]          # Historical context
 [RELEVANT MEMORIES]            # Scored episodic memories
 [USER PROFILE]                 # Categorized user facts + source excerpts + anti-confabulation instruction
@@ -1974,7 +1975,7 @@ PROVENANCE_THINKING_MAX_CHARS = 4000     # Truncation limit for thinking block s
 #   enabled: true
 #   thinking_max_chars: 4000
 
-# context_gatherer.py fix: recent conversations now build content from Q/A
+# gatherer_memory.py fix: recent conversations now build content from Q/A
 # when the content field is empty (robustness for older corpus entries).
 
 # Tests: 21 unit tests in tests/unit/test_provenance.py

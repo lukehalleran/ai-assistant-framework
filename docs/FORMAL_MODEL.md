@@ -100,7 +100,7 @@ Before candidate generation, the search query is expanded using the knowledge gr
 
 Example: "what about my brother" -> "what about my brother Auggie Mom Flapjack"
 
-**Code**: `context_gatherer.py:_expand_query_with_graph()` -> `graph_utils.py:rank_expansion_candidates()`
+**Code**: `gatherer_memory.py:_expand_query_with_graph()` -> `graph_utils.py:rank_expansion_candidates()`
 
 ### 4.1 Candidate Generation
 
@@ -120,7 +120,7 @@ candidates : X x C -> P(D)
 - Proactive cross-domain insights
 - Web search (Tavily API, if triggered and available)
 
-**Code**: `builder.py:build_prompt()` launches all tasks; `context_gatherer.py` implements each.
+**Code**: `builder.py:build_prompt()` launches all tasks; retrieval methods split across `gatherer_memory.py`, `gatherer_knowledge.py`, and `gatherer_web.py` (composed via `context_gatherer.py`).
 
 ### 4.2 Gating
 
@@ -244,7 +244,7 @@ Sections near the end receive higher attention weight in transformer models. The
 
 Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 40,000 tokens (API) / 12,000 (local) with two-tier compression: heavily oversized items (≥3x over token limit) get LLM summary via `_llm_compress_oversized()` (async parallel batch, ~0.3-0.5s), while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle).
 
-**Code**: `prompt/builder.py` -> `_assemble_prompt()`
+**Code**: `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration)
 
 ---
 
@@ -775,16 +775,16 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | U | User model | `user_profile.py` |
 | E | Escalation FSM state | `escalation_tracker.py` |
 | X | Context space | `ContextResult` dataclass in `context_pipeline.py` |
-| P | Prompt space (26 sections) | `prompt/builder.py` -> `_assemble_prompt()` |
+| P | Prompt space (26 sections) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
 | A = R U T | Action space | Response or tool call |
 | phi | Context function (8 integer stages + 2 half-stages) | `context_pipeline.py` |
-| rho_iota | Retrieval function (18 parallel tasks, parameterized by intent) | `context_gatherer.py` + `memory_retriever.py` + `memory_scorer.py` |
+| rho_iota | Retrieval function (18 parallel tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |
 | sigma_iota | Scoring function (parameterized by intent + graph) | `memory_scorer.py` -> `rank_memories()` |
 | beta | Prompt construction (X x D* x iota x E -> P) | `prompt/builder.py` |
 | iota | Intent classification | `intent_classifier.py` |
 | delta | State transition (per-turn) | `memory_storage.py:store_interaction()` + `orchestrator.py` |
 | delta_shutdown | State transition (session-end) | `shutdown_processor.py` |
-| expand | Query expansion (graph-augmented) | `context_gatherer.py:_expand_query_with_graph()` + `graph_utils.py` |
+| expand | Query expansion (graph-augmented) | `gatherer_memory.py:_expand_query_with_graph()` + `graph_utils.py` |
 | mu | Memory expansion (temporal window / summary drill-down) | `memory/memory_expander.py` |
 | Pi | Provenance record (session_id, response_mode, prompt_hash, ...) | `memory_storage.py` + `gui/handlers.py` |
 | Sigma | Synthesis memory (accepted SynthesisResult set) | `synthesis_memory.py` (ChromaDB `synthesis_results`) |
