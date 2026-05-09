@@ -113,40 +113,24 @@ class MemoryStorage:
         self._thread_detect_fn = None  # Set by coordinator
 
     def _now(self) -> datetime:
-        """Get current time from time_manager or datetime.now()"""
-        if self.time_manager and hasattr(self.time_manager, 'current'):
-            return self.time_manager.current()
-        return datetime.now()
+        from utils.time_manager import now_from
+        return now_from(self.time_manager)
 
     def _now_iso(self) -> str:
-        """Get current time as ISO string"""
-        if self.time_manager and hasattr(self.time_manager, 'current_iso'):
-            return self.time_manager.current_iso()
-        return self._now().isoformat()
+        from utils.time_manager import now_iso_from
+        return now_iso_from(self.time_manager)
 
     def _calculate_truth_score(self, query: str, response: str) -> float:
-        """Calculate truth score using scorer or fallback"""
+        """Calculate truth score using scorer (falls back to 0.5 if no scorer)."""
         if self.scorer and hasattr(self.scorer, 'calculate_truth_score'):
             return self.scorer.calculate_truth_score(query, response)
-        # Fallback
-        score = 0.5
-        if len(response or "") > 200:
-            score += 0.1
-        if '?' in (query or ""):
-            score += 0.1
-        return min(score, 1.0)
+        return 0.5
 
     def _calculate_importance_score(self, content: str) -> float:
-        """Calculate importance score using scorer or fallback"""
+        """Calculate importance score using scorer (falls back to 0.5 if no scorer)."""
         if self.scorer and hasattr(self.scorer, 'calculate_importance_score'):
             return self.scorer.calculate_importance_score(content)
-        # Fallback
-        score = 0.5
-        if len(content or "") > 200:
-            score += 0.1
-        if '?' in content:
-            score += 0.1
-        return min(score, 1.0)
+        return 0.5
 
     def _is_file_error_response(self, response: str) -> bool:
         """
@@ -824,7 +808,7 @@ class MemoryStorage:
                 if isinstance(ts, str):
                     try:
                         ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    except:
+                    except Exception:
                         continue
                 if isinstance(ts, datetime):
                     # Handle timezone-aware datetimes

@@ -293,10 +293,11 @@ class TestXMLMarkerHandler:
 
         handler = XMLMarkerHandler()
         response = "I need more information. <search>latest SpaceX news</search>"
-        decision = handler.parse_response(response)
+        decisions = handler.parse_response(response)
 
-        assert decision.wants_search is True
-        assert decision.search_query == "latest SpaceX news"
+        assert len(decisions) == 1
+        assert decisions[0].wants_search is True
+        assert decisions[0].search_query == "latest SpaceX news"
 
     def test_parse_done_marker(self):
         """Test parsing done marker from response."""
@@ -304,9 +305,10 @@ class TestXMLMarkerHandler:
 
         handler = XMLMarkerHandler()
         response = "I have enough information now. <done/>"
-        decision = handler.parse_response(response)
+        decisions = handler.parse_response(response)
 
-        assert decision.is_done is True
+        assert len(decisions) == 1
+        assert decisions[0].is_done is True
 
     def test_parse_done_marker_with_space(self):
         """Test parsing done marker with space."""
@@ -314,9 +316,10 @@ class TestXMLMarkerHandler:
 
         handler = XMLMarkerHandler()
         response = "Done searching. <done />"
-        decision = handler.parse_response(response)
+        decisions = handler.parse_response(response)
 
-        assert decision.is_done is True
+        assert len(decisions) == 1
+        assert decisions[0].is_done is True
 
     def test_parse_no_markers(self):
         """Test parsing response without markers."""
@@ -324,19 +327,21 @@ class TestXMLMarkerHandler:
 
         handler = XMLMarkerHandler()
         response = "Here is the answer to your question..."
-        decision = handler.parse_response(response)
+        decisions = handler.parse_response(response)
 
-        assert decision.wants_answer is True
-        assert decision.partial_response == response
+        assert len(decisions) == 1
+        assert decisions[0].wants_answer is True
+        assert decisions[0].partial_response == response
 
     def test_parse_empty_response(self):
         """Test parsing empty response."""
         from core.agentic.protocols import XMLMarkerHandler
 
         handler = XMLMarkerHandler()
-        decision = handler.parse_response("")
+        decisions = handler.parse_response("")
 
-        assert decision.wants_answer is True
+        assert len(decisions) == 1
+        assert decisions[0].wants_answer is True
 
     def test_parse_multiline_search(self):
         """Test parsing multiline search query."""
@@ -344,10 +349,11 @@ class TestXMLMarkerHandler:
 
         handler = XMLMarkerHandler()
         response = "Let me search for that.\n<search>\nSpaceX Starship\nlaunch date 2026\n</search>"
-        decision = handler.parse_response(response)
+        decisions = handler.parse_response(response)
 
-        assert decision.wants_search is True
-        assert "SpaceX Starship" in decision.search_query
+        assert len(decisions) == 1
+        assert decisions[0].wants_search is True
+        assert "SpaceX Starship" in decisions[0].search_query
 
     def test_get_tools_returns_none(self):
         """XML handler should not return tools."""
@@ -386,11 +392,12 @@ class TestNativeToolsHandler:
         mock_tool_call.function.arguments = '{"query": "latest AI news", "reason": "need current info"}'
         mock_response.tool_calls = [mock_tool_call]
 
-        decision = handler.parse_response(mock_response)
+        decisions = handler.parse_response(mock_response)
 
-        assert decision.wants_search is True
-        assert decision.search_query == "latest AI news"
-        assert decision.search_reason == "need current info"
+        assert len(decisions) == 1
+        assert decisions[0].wants_search is True
+        assert decisions[0].search_query == "latest AI news"
+        assert decisions[0].search_reason == "need current info"
 
     def test_parse_done_tool_call(self):
         """Test parsing done_searching tool call."""
@@ -404,10 +411,11 @@ class TestNativeToolsHandler:
         mock_tool_call.function.arguments = '{"reason": "have enough info"}'
         mock_response.tool_calls = [mock_tool_call]
 
-        decision = handler.parse_response(mock_response)
+        decisions = handler.parse_response(mock_response)
 
-        assert decision.is_done is True
-        assert decision.done_reason == "have enough info"
+        assert len(decisions) == 1
+        assert decisions[0].is_done is True
+        assert decisions[0].done_reason == "have enough info"
 
     def test_parse_no_tool_calls(self):
         """Test parsing response without tool calls."""
@@ -419,10 +427,11 @@ class TestNativeToolsHandler:
         mock_response.tool_calls = None
         mock_response.content = "Here is the answer..."
 
-        decision = handler.parse_response(mock_response)
+        decisions = handler.parse_response(mock_response)
 
-        assert decision.wants_answer is True
-        assert decision.partial_response == "Here is the answer..."
+        assert len(decisions) == 1
+        assert decisions[0].wants_answer is True
+        assert decisions[0].partial_response == "Here is the answer..."
 
     def test_parse_dict_format(self):
         """Test parsing dict format response."""
@@ -439,10 +448,11 @@ class TestNativeToolsHandler:
             }]
         }
 
-        decision = handler.parse_response(response)
+        decisions = handler.parse_response(response)
 
-        assert decision.wants_search is True
-        assert decision.search_query == "test query"
+        assert len(decisions) == 1
+        assert decisions[0].wants_search is True
+        assert decisions[0].search_query == "test query"
 
     def test_get_tools(self):
         """Test that tools are returned."""
@@ -966,3 +976,291 @@ class TestIterationPromptWithInventory:
 
         assert "Context already gathered" in prompt
         assert "already searched 'facts' 3 times" in prompt
+
+
+# =============================================================================
+# Multi-Decision Parsing Tests
+# =============================================================================
+
+class TestNativeToolsMultiParse:
+    """Tests for NativeToolsHandler parsing multiple tool calls."""
+
+    def test_parse_multiple_tool_calls(self):
+        """Two tool calls in one response produce two SearchDecisions."""
+        from core.agentic.protocols import NativeToolsHandler
+
+        handler = NativeToolsHandler(memory_available=True)
+
+        mock_response = MagicMock()
+        tc1 = MagicMock()
+        tc1.function.name = "web_search"
+        tc1.function.arguments = '{"query": "SpaceX news"}'
+        tc2 = MagicMock()
+        tc2.function.name = "search_memory"
+        tc2.function.arguments = '{"query": "SpaceX", "collection": "wiki_knowledge"}'
+        mock_response.tool_calls = [tc1, tc2]
+
+        decisions = handler.parse_response(mock_response)
+        assert len(decisions) == 2
+        assert decisions[0].wants_search is True
+        assert decisions[0].search_query == "SpaceX news"
+        assert decisions[1].wants_memory_search is True
+        assert decisions[1].memory_query == "SpaceX"
+        assert decisions[1].memory_collection == "wiki_knowledge"
+
+    def test_parse_three_tool_calls(self):
+        """Three tool calls produce three SearchDecisions."""
+        from core.agentic.protocols import NativeToolsHandler
+
+        handler = NativeToolsHandler(memory_available=True)
+
+        mock_response = MagicMock()
+        tc1 = MagicMock()
+        tc1.function.name = "web_search"
+        tc1.function.arguments = '{"query": "GDP of France"}'
+        tc2 = MagicMock()
+        tc2.function.name = "search_memory"
+        tc2.function.arguments = '{"query": "France", "collection": "facts"}'
+        tc3 = MagicMock()
+        tc3.function.name = "wolfram_alpha"
+        tc3.function.arguments = '{"query": "GDP France 2025"}'
+        mock_response.tool_calls = [tc1, tc2, tc3]
+
+        decisions = handler.parse_response(mock_response)
+        assert len(decisions) == 3
+        assert decisions[0].wants_search is True
+        assert decisions[1].wants_memory_search is True
+        assert decisions[2].wants_wolfram is True
+
+    def test_malformed_tool_call_skipped(self):
+        """Malformed tool calls are skipped, valid ones kept."""
+        from core.agentic.protocols import NativeToolsHandler
+
+        handler = NativeToolsHandler()
+
+        mock_response = MagicMock()
+        tc_good = MagicMock()
+        tc_good.function.name = "web_search"
+        tc_good.function.arguments = '{"query": "test"}'
+        tc_bad = MagicMock()
+        tc_bad.function.name = "web_search"
+        tc_bad.function.arguments = '{"query": ""}'  # empty query
+        mock_response.tool_calls = [tc_good, tc_bad]
+
+        decisions = handler.parse_response(mock_response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_search is True
+
+    def test_single_tool_call_backward_compat(self):
+        """Single tool call returns a 1-element list."""
+        from core.agentic.protocols import NativeToolsHandler
+
+        handler = NativeToolsHandler()
+
+        mock_response = MagicMock()
+        tc = MagicMock()
+        tc.function.name = "web_search"
+        tc.function.arguments = '{"query": "test"}'
+        mock_response.tool_calls = [tc]
+
+        decisions = handler.parse_response(mock_response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_search is True
+
+
+class TestXMLMultiMarkerParsing:
+    """Tests for XMLMarkerHandler parsing multiple XML markers."""
+
+    def test_parse_search_and_memory(self):
+        """Two different markers in one response produce two decisions."""
+        from core.agentic.protocols import XMLMarkerHandler
+
+        handler = XMLMarkerHandler()
+        response = (
+            "Let me check both sources. "
+            "<search>SpaceX news</search> "
+            '<memory collection="wiki_knowledge">SpaceX history</memory>'
+        )
+        decisions = handler.parse_response(response)
+        assert len(decisions) == 2
+        # memory comes before search in the parser's iteration order
+        has_search = any(d.wants_search for d in decisions)
+        has_memory = any(d.wants_memory_search for d in decisions)
+        assert has_search
+        assert has_memory
+
+    def test_done_marker_overrides_tools(self):
+        """If <done/> is present, only the done signal is returned."""
+        from core.agentic.protocols import XMLMarkerHandler
+
+        handler = XMLMarkerHandler()
+        response = "<search>test query</search> <done/>"
+        decisions = handler.parse_response(response)
+        assert len(decisions) == 1
+        assert decisions[0].is_done is True
+
+    def test_two_search_markers(self):
+        """Two search markers produce two search decisions."""
+        from core.agentic.protocols import XMLMarkerHandler
+
+        handler = XMLMarkerHandler()
+        response = "<search>query one</search> <search>query two</search>"
+        decisions = handler.parse_response(response)
+        assert len(decisions) == 2
+        assert decisions[0].wants_search is True
+        assert decisions[1].wants_search is True
+        queries = {d.search_query for d in decisions}
+        assert "query one" in queries
+        assert "query two" in queries
+
+
+class TestToolResultType:
+    """Tests for the _ToolResult internal dataclass."""
+
+    def test_tool_result_defaults(self):
+        """Verify default values for optional fields."""
+        from core.agentic.types import _ToolResult, SearchDecision, ProgressEvent
+
+        tr = _ToolResult(
+            decision=SearchDecision(wants_search=True, search_query="test"),
+            round_data=None,
+            formatted_context="",
+            start_events=[],
+            end_events=[],
+        )
+        assert tr.memory_collection is None
+        assert tr.is_expand is False
+
+    def test_tool_result_with_memory_collection(self):
+        """Verify memory_collection tracking field."""
+        from core.agentic.types import _ToolResult, SearchDecision
+
+        tr = _ToolResult(
+            decision=SearchDecision(wants_memory_search=True),
+            round_data=None,
+            formatted_context="",
+            start_events=[],
+            end_events=[],
+            memory_collection="facts",
+        )
+        assert tr.memory_collection == "facts"
+
+
+class TestParallelDispatch:
+    """Tests for the parallel dispatch pattern in the controller."""
+
+    @pytest.fixture
+    def controller(self):
+        from core.agentic.controller import AgenticSearchController
+        mock_mm = MagicMock()
+        mock_wsm = MagicMock()
+        return AgenticSearchController(
+            model_manager=mock_mm,
+            web_search_manager=mock_wsm,
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_single_routes_web_search(self, controller):
+        """_dispatch_single routes web_search correctly."""
+        from core.agentic.types import SearchDecision, AgenticSearchSession
+
+        decision = SearchDecision(wants_search=True, search_query="test query")
+        session = AgenticSearchSession(query="test")
+
+        # Mock _execute_search
+        mock_result = MagicMock()
+        mock_result.pages = []
+        controller._execute_search = AsyncMock(return_value=mock_result)
+        controller._compress_results = AsyncMock(return_value="compressed")
+
+        tr = await controller._dispatch_single(
+            decision, 1, session, None, None
+        )
+        assert tr.round_data is not None
+        assert tr.round_data.request.query == "test query"
+        assert len(tr.start_events) == 1
+        assert tr.start_events[0].event_type == "searching"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_single_routes_memory_search(self, controller):
+        """_dispatch_single routes memory_search correctly."""
+        from core.agentic.types import SearchDecision, AgenticSearchSession
+
+        decision = SearchDecision(
+            wants_memory_search=True,
+            memory_query="user facts",
+            memory_collection="facts",
+        )
+        session = AgenticSearchSession(query="test")
+
+        controller._execute_memory_search = AsyncMock(return_value="results")
+
+        tr = await controller._dispatch_single(
+            decision, 1, session, None, None
+        )
+        assert tr.round_data is not None
+        assert "[Memory: facts]" in tr.round_data.request.query
+        assert tr.memory_collection == "facts"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_single_routes_git_stats(self, controller):
+        """_dispatch_single routes git_stats correctly."""
+        from core.agentic.types import SearchDecision, AgenticSearchSession
+
+        decision = SearchDecision(
+            wants_git_stats=True,
+            git_stats_query="commits this week",
+        )
+        session = AgenticSearchSession(query="test")
+
+        controller._execute_git_stats = AsyncMock(return_value="5 commits")
+
+        tr = await controller._dispatch_single(
+            decision, 1, session, None, None
+        )
+        assert tr.round_data is not None
+        assert "[Git Stats]" in tr.round_data.request.query
+
+    @pytest.mark.asyncio
+    async def test_dispatch_single_unrecognized_returns_empty(self, controller):
+        """Unrecognized decision returns empty _ToolResult."""
+        from core.agentic.types import SearchDecision, AgenticSearchSession
+
+        decision = SearchDecision()  # all False
+        session = AgenticSearchSession(query="test")
+
+        tr = await controller._dispatch_single(
+            decision, 1, session, None, None
+        )
+        assert tr.round_data is None
+        assert tr.formatted_context == ""
+
+    def test_update_relaxation_tracking_good_result(self, controller):
+        """Good search results reset relaxation counter."""
+        from core.agentic.types import (
+            SearchDecision, AgenticSearchSession, SearchRound,
+            SearchRequest, _ToolResult, ProgressEvent,
+        )
+
+        session = AgenticSearchSession(query="test")
+        session.low_quality_search_count = 2
+
+        mock_result = MagicMock()
+        mock_result.pages = [MagicMock(), MagicMock(), MagicMock()]
+        round_data = SearchRound(
+            round_number=1,
+            request=SearchRequest(query="test", round_number=1),
+            results=mock_result,
+        )
+        tr = _ToolResult(
+            decision=SearchDecision(wants_search=True, search_query="test"),
+            round_data=round_data,
+            formatted_context="",
+            start_events=[], end_events=[],
+        )
+
+        controller._is_low_quality_result = MagicMock(return_value=(False, None))
+        controller._update_relaxation_tracking(session, tr)
+
+        assert session.low_quality_search_count == 0
+        assert session.relaxation_hint is None

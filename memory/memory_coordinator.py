@@ -248,20 +248,12 @@ class MemoryCoordinator:
 
     # --------- time helpers (prefer TimeManager) ---------
     def _now(self):
-        try:
-            if self.time_manager is not None and hasattr(self.time_manager, "current"):
-                return self.time_manager.current()
-        except Exception as e:
-            logger.debug(f"[MemoryCoordinator] TimeManager.current() failed: {e}")
-        return datetime.now()
+        from utils.time_manager import now_from
+        return now_from(self.time_manager)
 
     def _now_iso(self):
-        try:
-            if self.time_manager is not None and hasattr(self.time_manager, "current_iso"):
-                return self.time_manager.current_iso()
-        except Exception as e:
-            logger.debug(f"[MemoryCoordinator] TimeManager.current_iso() failed: {e}")
-        return self._now().isoformat()
+        from utils.time_manager import now_iso_from
+        return now_iso_from(self.time_manager)
 
     @property
     def session_id(self) -> str:
@@ -316,31 +308,6 @@ class MemoryCoordinator:
 
 
 
-
-    # ---------------------------
-    # Thread detection
-    # ---------------------------
-
-    def get_thread_context(self) -> Optional[Dict]:
-        """
-        Retrieve thread context from the most recent conversation.
-        Delegates to ThreadManager.
-        """
-        return self.thread_manager.get_thread_context()
-
-    def _detect_topic_for_query(self, query: str) -> str:
-        """
-        Detect topic for a specific query string.
-        Delegates to ThreadManager.
-        """
-        return self.thread_manager.detect_topic_for_query(query)
-
-    def _detect_or_create_thread(self, query: str, is_heavy: bool) -> Dict:
-        """
-        Detect if current query continues immediate previous conversation.
-        Delegates to ThreadManager.
-        """
-        return self.thread_manager.detect_or_create_thread(query, is_heavy)
 
     # ---------------------------
     # Public API: store
@@ -405,14 +372,6 @@ class MemoryCoordinator:
         self.last_consolidation_time = self._storage.last_consolidation_time or datetime.now()
 
 
-    # --- inside class MemoryCoordinator ---
-    async def add_reflection(self, text: str, *, tags=None, source="reflection", timestamp=None) -> bool:
-        """Store a reflection memory.
-
-        Delegates to MemoryStorage component.
-        """
-        return await self._storage.add_reflection(text, tags=tags, source=source, timestamp=timestamp)
-
     async def get_reflections(self, limit: int = 2):
         """Fetch recent reflections.
 
@@ -426,15 +385,6 @@ class MemoryCoordinator:
         Delegates to MemoryRetriever component.
         """
         return await self._retriever.get_reflections_hybrid(query, limit)
-
-    # Optional: generic search by collection/type name (used by some callers)
-    async def search_by_type(self, type_name: str, query: str = "", limit: int = 5):
-        """Search by memory type.
-
-        Delegates to MemoryRetriever component.
-        """
-        return await self._retriever.search_by_type(type_name, query, limit)
-
 
     async def run_shutdown_reflection(self, session_conversations: list[dict] | None = None,
                                     session_summaries: list[dict | str] | None = None) -> bool:
@@ -461,53 +411,6 @@ class MemoryCoordinator:
         self._retriever.current_topic = self.current_topic
         self._retriever.conversation_context = list(self.conversation_context)
         return await self._retriever.get_memories(query, limit, topic_filter)
-
-    # ---------------------------
-    # Internals: gather (delegated to MemoryRetriever)
-    # ---------------------------
-
-    async def _get_meta_conversational_memories(
-        self, query: str, limit: int = 20, topic_filter: Optional[str] = None
-    ) -> List[Dict]:
-        """Delegates to MemoryRetriever."""
-        self._retriever.current_topic = self.current_topic
-        self._retriever.conversation_context = list(self.conversation_context)
-        return await self._retriever._get_meta_conversational_memories(query, limit, topic_filter)
-
-    def _get_recent_conversations(self, k: int = 5) -> List[Dict]:
-        """Delegates to MemoryRetriever."""
-        return self._retriever._get_recent_conversations(k)
-
-    def _parse_result(self, item: Dict, source: str, default_truth: float = 0.6) -> Dict:
-        """Delegates to MemoryRetriever."""
-        return self._retriever._parse_result(item, source, default_truth)
-
-    async def _get_semantic_memories(self, query: str, n_results: int = 30) -> List[Dict]:
-        """Delegates to MemoryRetriever."""
-        return await self._retriever._get_semantic_memories(query, n_results)
-
-    async def _fallback_semantic_search(self, query: str, n_results: int = 30) -> List[Dict]:
-        """Delegates to MemoryRetriever."""
-        return await self._retriever._fallback_semantic_search(query, n_results)
-
-    async def get_semantic_top_memories(self, query: str, limit: int = 10) -> List[Dict]:
-        """Delegates to MemoryRetriever."""
-        self._retriever.current_topic = self.current_topic
-        self._retriever.conversation_context = list(self.conversation_context)
-        return await self._retriever.get_semantic_top_memories(query, limit)
-
-    # ---------------------------
-    # Internals: ranker (delegated to MemoryScorer)
-    # ---------------------------
-
-    def _rank_memories(self, memories: List[Dict], current_query: str) -> List[Dict]:
-        """
-        Score each memory using the MemoryScorer component.
-        Delegates to self.scorer.rank_memories() for the actual scoring logic.
-        """
-        # Sync conversation context to scorer
-        self.scorer.conversation_context = list(self.conversation_context)
-        return self.scorer.rank_memories(memories, current_query)
 
     # ---------------------------
     # Shutdown processing

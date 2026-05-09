@@ -14,6 +14,8 @@ Module Contract
   - to_dict() / from_dict() for full JSON serialization (tests, export)
   - Status lifecycle: OPEN -> RESOLVED | STALE
   - Priority scoring: type_weight * urgency * recency_decay
+  - is_stale(stale_days, deadline_grace_hours): checks both time-since-reference
+    AND deadline_date + grace period for deadline-aware expiry
 - Side effects: None (pure data model)
 """
 
@@ -160,8 +162,21 @@ class OpenThread(BaseModel):
         recency_decay = max(0.1, 1.0 - (days_since / 14.0))
         return type_weight * self.urgency * recency_decay
 
-    def is_stale(self, stale_days: int = 14) -> bool:
-        """Check if thread has gone stale (no reference in stale_days)."""
+    def is_stale(self, stale_days: int = 14, deadline_grace_hours: int = 48) -> bool:
+        """Check if thread has gone stale (no reference in stale_days, or deadline passed)."""
+        # Deadline-aware: if deadline_date has passed + grace period, it's stale
+        if self.deadline_date:
+            try:
+                from datetime import datetime, timezone
+                deadline_dt = datetime.fromisoformat(self.deadline_date)
+                if deadline_dt.tzinfo is None:
+                    deadline_dt = deadline_dt.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                hours_past = (now - deadline_dt).total_seconds() / 3600.0
+                if hours_past >= deadline_grace_hours:
+                    return True
+            except (ValueError, TypeError):
+                pass  # Malformed date, fall through to time-based check
         days_since = (time.time() - self.last_referenced) / 86400.0
         return days_since >= stale_days
 

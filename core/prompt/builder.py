@@ -57,7 +57,7 @@ from datetime import datetime
 from utils.time_manager import TimeManager
 from utils.query_checker import analyze_query
 from memory.memory_consolidator import MemoryConsolidator
-from utils.logging_utils import get_logger, log_and_time
+from utils.logging_utils import get_logger
 
 # Import the modular components
 from .context_gatherer import (
@@ -67,7 +67,7 @@ from .context_gatherer import (
     PROMPT_MAX_RECENT_REFLECTIONS,
     PROMPT_MAX_SEMANTIC_REFLECTIONS
 )
-from .formatter import PromptFormatter, _parse_bool, _dedupe_keep_order, _truncate_list, _sanitize_embedded_headers
+from .formatter import PromptFormatter, _parse_bool, _dedupe_keep_order, _sanitize_embedded_headers
 from .summarizer import LLMSummarizer
 from .token_manager import TokenManager
 from .base import _FallbackMemoryCoordinator
@@ -160,8 +160,8 @@ def _maybe_capture_eval_snapshot(
 
     try:
         # Lazy import to avoid loading eval modules during normal operation
-        from eval.snapshots import SnapshotCapture, save_snapshot, extract_sections_from_prompt
-        from eval.schema import PromptProvenance, compute_hash
+        from eval.snapshots import SnapshotCapture, save_snapshot
+        from eval.schema import PromptProvenance
         from eval.section_registry import match_header_to_key
         from datetime import datetime, timezone
         import subprocess
