@@ -33,8 +33,13 @@ resolved, and stale information is penalized in ranking.
 | `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks |
 | `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 7 additive bonuses/penalties) with intent overrides + graph boost |
 | `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion |
-| `core/prompt/builder.py` | UnifiedPromptBuilder: parallel retrieval, token budgets, prompt assembly |
-| `core/prompt/context_gatherer.py` | 20+ parallel retrieval tasks, graph expansion, web search |
+| `core/prompt/builder.py` | UnifiedPromptBuilder: thin orchestrator for parallel task dispatch, intent overrides, budget |
+| `core/prompt/context_gatherer.py` | Mixin compositor (composes gatherer_web, gatherer_memory, gatherer_knowledge) |
+| `core/prompt/gatherer_web.py` | WebSearchMixin: web search retrieval + trigger logic |
+| `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin: 17 memory/summary/reflection/facts/profile retrieval methods |
+| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin: 16 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, codebase) |
+| `core/prompt/formatter.py` | PromptFormatter: `_assemble_prompt()` section assembly + `_build_feature_inventory()` + `_staleness_prefix` |
+| `core/prompt/hygiene.py` | ContentHygiene: `_hygiene_and_caps()` dedup + caps + `_backfill_recent_conversations()` |
 | `core/prompt/token_manager.py` | Budget enforcement, middle-out compression, priority ordering |
 | `processing/gate_system.py` | Multi-stage gating: cosine similarity + cross-encoder reranking |
 

@@ -26,9 +26,13 @@ The pipeline lives in `core/prompt/` and is orchestrated by
 
 | File | Purpose |
 |------|---------|
-| `core/prompt/builder.py` | Main orchestrator: parallel task dispatch, hygiene, budget, assembly |
-| `core/prompt/context_gatherer.py` | 18 retrieval methods (memory, graph, web, files, profile, threads) |
-| `core/prompt/formatter.py` | Section formatting, web search results, time context |
+| `core/prompt/builder.py` | Thin orchestrator (~1,583 lines): parallel task dispatch, intent overrides, budget, eval hooks. Delegates assembly to formatter and hygiene to ContentHygiene |
+| `core/prompt/context_gatherer.py` | Mixin compositor (~379 lines): init, properties, utilities. Composes WebSearchMixin + MemoryRetrievalMixin + KnowledgeRetrievalMixin |
+| `core/prompt/gatherer_web.py` | WebSearchMixin (~216 lines): `_get_web_search_results()`, `should_trigger_web_search()` |
+| `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin (~834 lines): 17 memory/summary/reflection/facts/profile retrieval methods |
+| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin (~963 lines): 16 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, semantic chunks, dreams, codebase) |
+| `core/prompt/formatter.py` | Section formatting + prompt assembly (~1,597 lines): `_assemble_prompt()` (737 lines), `_build_feature_inventory()`, `_staleness_prefix`, `_is_multimodal_model`, `_load_upload_image` |
+| `core/prompt/hygiene.py` | ContentHygiene (~345 lines): `_hygiene_and_caps()`, `_backfill_recent_conversations()` |
 | `core/prompt/token_manager.py` | Budget computation, priority trimming, middle-out compression |
 
 ---
@@ -105,7 +109,7 @@ Per-task timing is tracked and logged for bottleneck detection.
 
 ### Step 6 — Hygiene & Caps
 
-`_hygiene_and_caps(context, stm_summary)`:
+`ContentHygiene._hygiene_and_caps(context, stm_summary)` (in `hygiene.py`):
 
 - **Per-section dedup** (by content field or query+response)
 - **Cross-section dedup** (prevent duplicates across recent/memories/notes)
@@ -134,7 +138,7 @@ Restore critical sections that budget trimming may have removed:
 
 ### Step 8 — Final Assembly
 
-`_assemble_prompt()` arranges sections in attention-optimized order.
+`PromptFormatter._assemble_prompt()` (in `formatter.py`) arranges sections in attention-optimized order.
 
 ---
 
@@ -184,7 +188,7 @@ middle-out to everything before it. Query is always protected.
 
 ## Section Ordering in Final Prompt
 
-`_assemble_prompt()` arranges sections to exploit LLM recency bias —
+`PromptFormatter._assemble_prompt()` (in `formatter.py`) arranges sections to exploit LLM recency bias —
 high-attention items (user profile, time, query) placed last:
 
 1. `[RECENT CONVERSATION]` — session continuity (1-15 items)

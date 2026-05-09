@@ -383,15 +383,15 @@ class TestAgenticCitationMarkers:
 
     def test_format_recent_conversations_has_markers(self):
         """_format_recent_conversations should include [MEM_RECENT_N] markers."""
-        from core.agentic.controller import AgenticSearchController
+        from core.agentic.formatters import AgenticFormatter
 
-        ctrl = AgenticSearchController.__new__(AgenticSearchController)
+        fmt = AgenticFormatter()
         conversations = [
             {'timestamp': '2026-03-26T10:00', 'query': 'hello', 'response': 'hi'},
             {'timestamp': '2026-03-26T10:01', 'query': 'how are you', 'response': 'good'},
         ]
 
-        result = ctrl._format_recent_conversations(conversations)
+        result = fmt.format_recent_conversations(conversations)
 
         assert '[MEM_RECENT_1]' in result
         assert '[MEM_RECENT_2]' in result
@@ -399,15 +399,15 @@ class TestAgenticCitationMarkers:
 
     def test_format_memories_has_markers(self):
         """_format_memories should include [MEM_SEMANTIC_N] markers."""
-        from core.agentic.controller import AgenticSearchController
+        from core.agentic.formatters import AgenticFormatter
 
-        ctrl = AgenticSearchController.__new__(AgenticSearchController)
+        fmt = AgenticFormatter()
         memories = [
             {'timestamp': '2026-03-26T10:00', 'content': 'user likes Python'},
             {'timestamp': '2026-03-26T10:01', 'query': 'user age', 'response': '33'},
         ]
 
-        result = ctrl._format_memories(memories)
+        result = fmt.format_memories(memories)
 
         assert '[MEM_SEMANTIC_1]' in result
         assert '[MEM_SEMANTIC_2]' in result

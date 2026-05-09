@@ -373,6 +373,11 @@ code_proposals:
   dedup_threshold: 0.7
   max_per_session: 5
   require_tests: true
+behavioral_patterns:
+  enabled: true
+  min_turns: 3
+  max_patterns: 3
+
 escalation_tracker:
   enabled: true
   threshold: 3

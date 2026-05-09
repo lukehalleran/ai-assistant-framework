@@ -118,7 +118,7 @@ Each phase depends on the previous. No phase auto-modifies production behavior.
 ## Daemon Prompt Architecture (Reference)
 
 This section documents the actual prompt structure as of 2026-05-04, derived from
-reading `core/prompt/builder.py:_assemble_prompt()` (lines 1915-2552).
+reading `core/prompt/formatter.py:_assemble_prompt()` (moved from builder.py during Phase 2/3 god-object decomposition).
 
 ### System Prompt (Separate from Context)
 
@@ -362,7 +362,7 @@ verified. No regression in existing prompt builder tests (18 passed, 4 skipped).
 
 The builder hook captures post_hygiene only. For Phase 2, if raw_retrieval layer is
 needed (pre-hygiene context), a second hook would need to be added in `build_prompt()`
-before `_hygiene_and_caps()` is called (~line 1400 in builder.py). This was intentionally
+before `ContentHygiene._hygiene_and_caps()` is called (now in `hygiene.py`; call site in builder.py). This was intentionally
 deferred to keep Phase 1 production changes minimal.
 
 ---

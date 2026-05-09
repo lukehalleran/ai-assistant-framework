@@ -3,13 +3,24 @@
 
 Module Contract
 - Purpose: Text formatting and final prompt assembly from context dict into LLM-ready string.
+  Contains both the legacy simple assembler and the full-featured assembler moved from builder.py.
 - Class: PromptFormatter(token_manager, time_manager)
 - Key methods:
-  - _assemble_prompt(context, user_input, directives) -> str
-    Assembles all sections into final prompt string with emergency middle-out compression.
-    Section order: RECENT CONVERSATION → RELEVANT MEMORIES → SUMMARIES → REFLECTIONS →
-    BACKGROUND KNOWLEDGE → WEB SEARCH → RELEVANT INFORMATION → DREAMS → USER PROFILE →
-    TIME CONTEXT → CURRENT USER QUERY (with LAST EXCHANGE for coherence).
+  - _assemble_prompt(context, user_input, directives, system_prompt, **kwargs) -> str
+    Full-featured prompt assembler (moved from UnifiedPromptBuilder). Assembles all sections
+    into final prompt string with numbered entries, timestamp-first formatting, web citation IDs,
+    feature inventory, codebase changes, STM summary, and eval snapshot capture.
+    Section order: RECENT CONVERSATION → RELEVANT MEMORIES → RECENT SUMMARIES →
+    SEMANTIC SUMMARIES → RECENT REFLECTIONS → SEMANTIC REFLECTIONS → BACKGROUND KNOWLEDGE →
+    WEB SEARCH RESULTS → RELEVANT INFORMATION → DREAMS → USER'S PERSONAL NOTES →
+    USER UPLOADED ITEMS → DAEMON DOCUMENTATION → PROJECT COMMIT HISTORY →
+    ADAPTIVE WORKFLOWS → PROPOSED FEATURES → KNOWLEDGE GRAPH → UNRESOLVED THREADS →
+    PROACTIVE INSIGHTS → USER PROFILE → ACTIVE FEATURES → CODEBASE CHANGES →
+    TIME CONTEXT → TEMPORAL GROUNDING → STM SUMMARY → CURRENT USER QUERY.
+  - _assemble_prompt_legacy(context, user_input, directives) -> str
+    Original simpler assembler (may be deprecated). Uses emergency middle-out compression.
+  - _build_feature_inventory(context) -> str
+    Generates [ACTIVE FEATURES] section from config flags and context counts.
   - _format_memory(mem) -> str  [single memory → "timestamp: User: Q / Daemon: A" with tags; uses format_relative_timestamp for day labels]
   - _format_web_search_results(web_search_result, max_chars) -> str  [WebSearchResult → [WEB SEARCH RESULTS] section]
   - _load_directives() -> str  [loads core/system_prompt.txt with header stripping]
@@ -21,20 +32,28 @@ Module Contract
   - _sanitize_embedded_headers(text) -> str  [escapes [] prompt headers in memory content to ()]
   - _truncate_at_spurious_turns(text) -> str  [truncates at training data leakage markers]
   - _strip_prompt_artifacts  [alias to ResponseParser.strip_prompt_artifacts]
+  - _staleness_prefix(item) -> str  [staleness/resolution prefix for summaries/reflections]
+  - _is_multimodal_model(model_id) -> bool  [check if model supports multimodal input]
+  - _load_upload_image(image_path) -> Optional[dict]  [load persisted upload image as base64]
 - Dependencies:
   - core.response_parser.ResponseParser (strip_prompt_artifacts)
   - .token_manager.TokenManager (emergency middle-out compression)
   - utils.time_manager.TimeManager (time deltas) [optional]
   - utils.time_manager.format_relative_timestamp (relative day labels on timestamps)
+  - knowledge.web_search_manager.assign_web_ids (web citation ID assignment)
 - Side effects:
   - Logging of formatting actions and content statistics
   - Emergency whole-prompt compression when over token budget (protects [CURRENT USER QUERY])
+  - Eval snapshot capture (gated by DAEMON_EVAL_CAPTURE env var)
 """
 
 import os
 import re
+import base64
+import json
 from typing import Dict, List, Optional, Any, Iterable
 from datetime import datetime
+from pathlib import Path
 from utils.logging_utils import get_logger
 from core.response_parser import ResponseParser
 
@@ -88,6 +107,102 @@ def _truncate_list(items: List[Any], limit: int) -> List[Any]:
 
 # Alias for backward compatibility - delegates to ResponseParser
 _strip_prompt_artifacts = ResponseParser.strip_prompt_artifacts
+
+
+# Obsidian image loading for multimodal models
+try:
+    from config.app_config import (
+        MULTIMODAL_MODELS,
+    )
+except ImportError:
+    MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gemini"]
+
+
+def _staleness_prefix(item) -> str:
+    """Return a staleness or resolution prefix for summaries/reflections.
+
+    Priority:
+    1. If a resolution_note exists → [RESOLVED — <note>]
+    2. If staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD → [HISTORICAL — PARTIALLY OUTDATED]
+    """
+    try:
+        from config.app_config import STALENESS_ENABLED, STALENESS_HISTORICAL_THRESHOLD
+        if not STALENESS_ENABLED:
+            return ""
+        if isinstance(item, dict):
+            md = item.get("metadata", {}) or {}
+            # Check for explicit resolution note first (entity corrections)
+            resolution_note = md.get("resolution_note", "") or item.get("resolution_note", "")
+            if resolution_note:
+                return f"[RESOLVED — {resolution_note}] "
+            # Fall back to generic staleness prefix
+            ratio = float(md.get("staleness_ratio", 0) or item.get("staleness_ratio", 0) or 0)
+        else:
+            return ""
+        if ratio >= STALENESS_HISTORICAL_THRESHOLD:
+            return "[HISTORICAL — PARTIALLY OUTDATED] "
+    except Exception:
+        pass
+    return ""
+
+
+def _is_multimodal_model(model_id: str) -> bool:
+    """Check if a model ID corresponds to a multimodal-capable model."""
+    if not model_id:
+        return False
+    model_lower = model_id.lower()
+    return any(pattern.lower() in model_lower for pattern in MULTIMODAL_MODELS)
+
+
+def _load_upload_image(image_path: str) -> Optional[dict]:
+    """
+    Load a persisted upload image from disk as base64 for multimodal API calls.
+
+    Args:
+        image_path: Path to the image file on disk
+
+    Returns:
+        Dict with 'data', 'media_type', 'filename' keys, or None if loading fails
+    """
+    try:
+        path = Path(image_path)
+        if not path.exists() or not path.is_file():
+            logger.debug(f"[_load_upload_image] File not found: {image_path}")
+            return None
+
+        # Determine media type from extension
+        ext = path.suffix.lower()
+        media_types = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+        }
+        media_type = media_types.get(ext, 'application/octet-stream')
+
+        file_bytes = path.read_bytes()
+
+        # Compress if image exceeds API limit (5MB)
+        API_IMAGE_LIMIT = 4_500_000
+        if len(file_bytes) > API_IMAGE_LIMIT:
+            from utils.file_processor import FileProcessor
+            fp = FileProcessor()
+            file_bytes = fp._compress_image(file_bytes, ext, API_IMAGE_LIMIT)
+            # Compression may change format to JPEG
+            if ext not in ('.png',):
+                media_type = 'image/jpeg'
+            logger.info(f"[_load_upload_image] Compressed {image_path}: {path.stat().st_size//1024}KB → {len(file_bytes)//1024}KB")
+
+        data = base64.b64encode(file_bytes).decode('utf-8')
+        return {
+            'data': data,
+            'media_type': media_type,
+            'filename': path.name,
+        }
+    except Exception as e:
+        logger.warning(f"[_load_upload_image] Failed to load {image_path}: {e}")
+        return None
 
 
 def _truncate_at_spurious_turns(text: str) -> str:
@@ -430,12 +545,12 @@ class PromptFormatter:
             logger.warning(f"[FORMATTING] Error formatting web search results: {e}")
             return ""
 
-    def _assemble_prompt(self, context: Dict[str, Any], user_input: str, directives: str = "") -> str:
+    def _assemble_prompt_legacy(self, context: Dict[str, Any], user_input: str, directives: str = "") -> str:
         """
-        Assemble final prompt from context and user input.
+        Assemble final prompt from context and user input (legacy simple version).
 
-        This is the final step that converts the context dict into a formatted string
-        ready for the LLM. The prompt structure follows a consistent format:
+        This is the original simple assembler. For the full-featured version with
+        numbered entries, web citation IDs, feature inventory, etc., see _assemble_prompt().
 
         Section order (optimized for attention and token efficiency):
         1. Recent conversations (baseline context)
@@ -448,9 +563,6 @@ class PromptFormatter:
         8. Dreams (if enabled)
         9. Time context (temporal grounding) [MOVED from first position]
         10. User input (always last)
-
-        Note: This method may be deprecated in favor of UnifiedPromptBuilder._assemble_prompt
-        which has more detailed section ordering including STM and split recent/semantic sections.
         """
         sections = []
 
@@ -670,3 +782,816 @@ class PromptFormatter:
                 logger.warning(f"[EMERGENCY MIDDLE-OUT] Compression failed: {e}, using full prompt")
 
         return full_prompt
+
+    def _build_feature_inventory(self, context: Dict[str, Any]) -> str:
+        """Build a compact feature inventory showing which systems are active and what they returned.
+
+        Reads config flags and counts results from the context dict.
+        No retrieval needed — purely reads config flags and context dict counts.
+
+        Returns:
+            Compact multi-line string grouped by category, or empty string.
+        """
+        try:
+            from config import app_config as cfg
+
+            def _on_off(flag: bool) -> str:
+                return "ON" if flag else "OFF"
+
+            def _count(key: str, fallback=None) -> str:
+                """Get count annotation from context, e.g. '(3)' or ''."""
+                val = context.get(key, fallback)
+                if val is None:
+                    return ""
+                if isinstance(val, list):
+                    return f"({len(val)})" if val else "(0)"
+                if isinstance(val, str):
+                    return f"({len(val.split(chr(10)))})" if val.strip() else "(0)"
+                if isinstance(val, dict):
+                    total = sum(len(v) for v in val.values() if isinstance(v, list))
+                    return f"({total})" if total else "(0)"
+                return ""
+
+            lines = []
+
+            # Memory category
+            mem_parts = []
+            kg_enabled = getattr(cfg, 'KNOWLEDGE_GRAPH_ENABLED', False)
+            kg_ctx = context.get("graph_context", []) or []
+            mem_parts.append(f"knowledge_graph={_on_off(kg_enabled)}{f'({len(kg_ctx)} edges)' if kg_ctx else ''}")
+            mem_parts.append(f"fact_verification={_on_off(getattr(cfg, 'FACT_VERIFICATION_ENABLED', False))}")
+            mem_parts.append(f"truth_scorer={_on_off(getattr(cfg, 'TRUTH_SCORER_ENABLED', True))}")
+            mem_parts.append(f"dedup={_on_off(getattr(cfg, 'CROSS_DEDUP_ENABLED', False))}")
+            lines.append("Memory: " + " | ".join(mem_parts))
+
+            # Knowledge category
+            know_parts = []
+            git = context.get("git_commits", []) or []
+            know_parts.append(f"git_commits={_on_off(getattr(cfg, 'GIT_MEMORY_ENABLED', False))}{f'({len(git)})' if git else ''}")
+            notes = context.get("personal_notes", []) or []
+            know_parts.append(f"obsidian={_on_off(bool(notes))}{f'({len(notes)} notes)' if notes else ''}")
+            ref_docs = context.get("reference_docs", []) or []
+            know_parts.append(f"reference_docs={_on_off(getattr(cfg, 'REFERENCE_DOCS_AUTO_SEED', False))}{f'({len(ref_docs)})' if ref_docs else ''}")
+            web = context.get("web_search_results")
+            know_parts.append(f"web_search={_on_off(getattr(cfg, 'WEB_SEARCH_ENABLED', False))}{_count('web_search_results')}")
+            lines.append("Knowledge: " + " | ".join(know_parts))
+
+            # Proactive category
+            pro_parts = []
+            threads = context.get("unresolved_threads", []) or []
+            pro_parts.append(f"threads={_on_off(getattr(cfg, 'THREAD_SURFACING_ENABLED', False))}{f'({len(threads)} open)' if threads else ''}")
+            insights = context.get("proactive_insights", []) or []
+            pro_parts.append(f"insights={_on_off(getattr(cfg, 'PROACTIVE_SURFACING_ENABLED', False))}{f'({len(insights)})' if insights else ''}")
+            pro_parts.append(f"narrative={_on_off(getattr(cfg, 'NARRATIVE_CONTEXT_ENABLED', True) if hasattr(cfg, 'NARRATIVE_CONTEXT_ENABLED') else bool(context.get('narrative_state')))}")
+            lines.append("Proactive: " + " | ".join(pro_parts))
+
+            # Analysis category
+            ana_parts = []
+            ana_parts.append(f"intent={_on_off(getattr(cfg, 'INTENT_ENABLED', False))}")
+            ana_parts.append(f"escalation={_on_off(getattr(cfg, 'ESCALATION_ENABLED', False))}")
+            skills = context.get("procedural_skills", []) or []
+            ana_parts.append(f"skills={_on_off(getattr(cfg, 'PROCEDURAL_SKILLS_ENABLED', False))}{f'({len(skills)})' if skills else ''}")
+            lines.append("Analysis: " + " | ".join(ana_parts))
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.debug(f"[PromptFormatter] Feature inventory failed: {e}")
+            return ""
+
+    def _assemble_prompt(self, context: Dict[str, Any] = None, user_input: str = "",
+                        directives: str = "", system_prompt: str = "", **kwargs) -> str:
+        """
+        Assemble final prompt string from context with numbering and timestamp-first entries.
+
+        Section order (optimized for attention and token efficiency):
+        1. Recent conversations (baseline context)
+        2. Relevant memories (semantic hits)
+        3. Recent summaries (compressed recent history)
+        4. Semantic summaries (relevant compressed history)
+        5. Background knowledge (wiki)
+        6. Relevant information (semantic chunks)
+        7. Recent reflections (meta insights)
+        8. Semantic reflections (relevant meta insights)
+        9. Dreams (if enabled)
+        10. User profile (cheap, high attention, personalization)
+        11. Time context (cheap, high attention, temporal grounding)
+        12. STM summary (short-term context, maximum attention)
+        13. Current user query (always last)
+
+        Note: User profile and time context moved to positions 10-11 (from 4 and 1) to leverage
+        recency bias in LLM attention while keeping token cost minimal.
+        """
+        if context is None:
+            context = {}
+        if system_prompt and not directives:
+            directives = system_prompt
+
+        from datetime import datetime
+        logger.warning(f"PROMPT ASSEMBLY START: context has {len(context)} keys: {list(context.keys())}")
+        logger.warning(f"PROMPT ASSEMBLY START: recent_summaries={len(context.get('recent_summaries', []))}, semantic_summaries={len(context.get('semantic_summaries', []))}")
+        logger.warning(f"PROMPT ASSEMBLY START: stm_summary present = {context.get('stm_summary') is not None}, value = {context.get('stm_summary')}")
+
+        def mem_parts(mem: Dict[str, Any]) -> tuple[str, str]:
+            try:
+                # Memory field structure varies by source:
+                # - Hybrid retriever uses 'content' field
+                # - Corpus manager uses 'query'/'response' fields
+                # Try content field first (from hybrid retriever)
+                content_field = mem.get("content", "")
+
+                if content_field:
+                    # Content field has full conversation text
+                    content = content_field.strip()
+                else:
+                    # Fallback to query/response format
+                    q = str(mem.get("query", ""))
+                    r = str(mem.get("response", ""))
+
+                    # Build the content
+                    if q and r:
+                        content = f"User: {q.strip()}\nDaemon: {r.strip()}"
+                    elif r:
+                        content = f"Daemon: {r.strip()}"
+                    elif q:
+                        content = f"User: {q.strip()}"
+                    else:
+                        content = str(mem)
+
+                # Get timestamp (may be in root or metadata)
+                ts = mem.get("timestamp", "")
+                if not ts:
+                    ts = mem.get("metadata", {}).get("timestamp", "")
+
+                # Get tags
+                tags = mem.get("tags", [])
+                if isinstance(tags, str):
+                    tags = [t.strip() for t in tags.split(",") if t.strip()]
+                elif not tags:
+                    tags = []
+                tags_str = ", ".join(str(tag) for tag in tags) if tags else ""
+
+                # Format timestamp with relative day label to prevent temporal hallucinations
+                from utils.time_manager import format_relative_timestamp
+                if isinstance(ts, datetime):
+                    ts_str = format_relative_timestamp(ts)
+                elif ts:
+                    # Try parsing ISO string for relative formatting
+                    try:
+                        ts_str = format_relative_timestamp(datetime.fromisoformat(str(ts)))
+                    except (ValueError, TypeError):
+                        ts_str = str(ts)
+                else:
+                    ts_str = ""
+
+                # Add tags
+                if tags_str and content:
+                    content += f"\nTags: {{{tags_str}}}"
+
+                # Sanitize any embedded section headers to prevent prompt pollution
+                content = _sanitize_embedded_headers(content)
+
+                return content, ts_str
+            except (AttributeError, TypeError, KeyError):
+                return str(mem), ""
+
+        sections: list[str] = []
+
+        # Recent conversations
+        recent = context.get("recent_conversations", []) or []
+        logger.debug(f"[DEBUG RECENT] _assemble_prompt: Got {len(recent)} items in recent_conversations")
+        recent_lines: list[str] = []
+        for i, mem in enumerate(recent, start=1):
+            content, ts = mem_parts(mem)
+            if i <= 3 or i > len(recent) - 3:
+                logger.debug(f"[DEBUG RECENT] Item {i}: ts={ts}, content_preview={content[:100] if content else 'EMPTY'}...")
+            recent_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
+        if recent_lines:
+            logger.debug(f"[DEBUG RECENT] Adding [RECENT CONVERSATION] section with {len(recent_lines)} formatted entries")
+            sections.append(f"[RECENT CONVERSATION] n={len(recent_lines)}\n" + "\n\n".join(recent_lines))
+
+        # Relevant memories
+        memories = context.get("memories", []) or []
+        logger.warning(f"PROMPT BUILD: FINAL COUNT - Got {len(memories)} memories from context BEFORE ASSEMBLY")
+        memory_lines: list[str] = []
+        for i, mem in enumerate(memories, start=1):
+            content, ts = mem_parts(mem)
+            memory_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
+        if memory_lines:
+            sections.append(f"[RELEVANT MEMORIES] n={len(memory_lines)}\n" + "\n\n".join(memory_lines))
+            logger.warning(f"PROMPT BUILD: FINAL COUNT - [RELEVANT MEMORIES] section will contain {len(memory_lines)} memories")
+        else:
+            logger.warning("PROMPT BUILD: FINAL COUNT - No memories to display in [RELEVANT MEMORIES] section")
+
+        # Recent Summaries
+        recent_summaries = context.get("recent_summaries", []) or []
+        logger.warning(f"PROMPT ASSEMBLY: Got {len(recent_summaries)} recent summaries")
+        recent_sum_lines: list[str] = []
+        for i, s in enumerate(recent_summaries, start=1):
+            if isinstance(s, dict):
+                content = s.get("content", "") or str(s)
+                ts = s.get("timestamp", "")
+            else:
+                content = str(s)
+                ts = ""
+            if content:
+                content = _sanitize_embedded_headers(content)
+                prefix = _staleness_prefix(s)
+                recent_sum_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
+        if recent_sum_lines:
+            sections.append(f"[RECENT SUMMARIES] n={len(recent_sum_lines)}\n" + "\n\n".join(recent_sum_lines))
+            logger.warning(f"PROMPT ASSEMBLY: Added recent summaries section with {len(recent_sum_lines)} items")
+        else:
+            logger.warning("PROMPT ASSEMBLY: No recent summaries to add")
+
+        # Semantic Summaries
+        semantic_summaries = context.get("semantic_summaries", []) or []
+        semantic_sum_lines: list[str] = []
+        for i, s in enumerate(semantic_summaries, start=1):
+            if isinstance(s, dict):
+                content = s.get("content", "") or str(s)
+                ts = s.get("timestamp", "")
+            else:
+                content = str(s)
+                ts = ""
+            if content:
+                content = _sanitize_embedded_headers(content)
+                prefix = _staleness_prefix(s)
+                semantic_sum_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
+        if semantic_sum_lines:
+            sections.append(f"[SEMANTIC SUMMARIES] n={len(semantic_sum_lines)}\n" + "\n\n".join(semantic_sum_lines))
+
+        # Recent Reflections
+        recent_reflections = context.get("recent_reflections", []) or []
+        recent_refl_lines: list[str] = []
+        for i, r in enumerate(recent_reflections, start=1):
+            if isinstance(r, dict):
+                content = r.get("content", "") or str(r)
+                ts = r.get("timestamp", "")
+            else:
+                content = str(r)
+                ts = ""
+            if content:
+                content = _sanitize_embedded_headers(content)
+                prefix = _staleness_prefix(r)
+                recent_refl_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
+        if recent_refl_lines:
+            sections.append(f"[RECENT REFLECTIONS] n={len(recent_refl_lines)}\n" + "\n\n".join(recent_refl_lines))
+
+        # Semantic Reflections
+        semantic_reflections = context.get("semantic_reflections", []) or []
+        semantic_refl_lines: list[str] = []
+        for i, r in enumerate(semantic_reflections, start=1):
+            if isinstance(r, dict):
+                content = r.get("content", "") or str(r)
+                ts = r.get("timestamp", "")
+            else:
+                content = str(r)
+                ts = ""
+            if content:
+                content = _sanitize_embedded_headers(content)
+                prefix = _staleness_prefix(r)
+                semantic_refl_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
+        if semantic_refl_lines:
+            sections.append(f"[SEMANTIC REFLECTIONS] n={len(semantic_refl_lines)}\n" + "\n\n".join(semantic_refl_lines))
+
+        # Wiki content
+        wiki = context.get("wiki", []) or []
+        wiki_lines: list[str] = []
+        for i, w in enumerate(wiki, start=1):
+            if isinstance(w, dict):
+                content = w.get("content", "")
+                title = w.get("title", "")
+                block = f"**{title}**\n{content}" if title and content else (content or str(w))
+            else:
+                block = str(w)
+            wiki_lines.append(f"{i}) {block}")
+        if wiki_lines:
+            sections.append(f"[BACKGROUND KNOWLEDGE] n={len(wiki_lines)}\n" + "\n\n".join(wiki_lines))
+
+        # Web search results (real-time web content) — with [WEB_N] source IDs
+        web_search = context.get("web_search_results")
+        if web_search is not None:
+            try:
+                # Handle WebSearchResult object
+                if hasattr(web_search, 'has_results') and web_search.has_results:
+                    from knowledge.web_search_manager import assign_web_ids
+                    pages = web_search.pages
+                    from_cache = web_search.from_cache
+                    # Assign stable WEB_N IDs after dedupe
+                    numbered_sources, web_source_map = assign_web_ids(pages)
+                    # Store map for citation validation downstream
+                    context["_web_source_map"] = web_source_map
+                    ws_lines: list[str] = []
+                    for src in numbered_sources[:8]:  # Limit to 8 results
+                        content = src.content
+                        if content:
+                            if len(content) > 2000:
+                                content = content[:2000] + "..."
+                            ws_lines.append(f"[{src.source_id}] **{src.title}** ({src.url})\n{content}")
+                    if ws_lines:
+                        cache_note = " (cached)" if from_cache else ""
+                        citation_instruction = (
+                            "Cite web sources using [WEB_N] markers (e.g., 'According to Reuters [WEB_1]...'). "
+                            "Every factual claim from web sources MUST include a citation.\n"
+                        )
+                        sections.append(
+                            f"[WEB SEARCH RESULTS] n={len(ws_lines)}{cache_note}\n"
+                            f"{citation_instruction}"
+                            + "\n\n".join(ws_lines)
+                        )
+                        logger.info(f"[PROMPT ASSEMBLY] Added web search section with {len(ws_lines)} results, {len(web_source_map)} source IDs")
+            except Exception as e:
+                logger.warning(f"[PROMPT ASSEMBLY] Failed to format web search results: {e}")
+
+        # Semantic chunks
+        chunks = context.get("semantic_chunks", []) or []
+        sc_lines: list[str] = []
+        for i, c in enumerate(chunks, start=1):
+            if isinstance(c, dict):
+                content = c.get("filtered_content", "") or c.get("content", "")
+                title = c.get("title", "")
+                block = f"**{title}**\n{content}" if title and content else (content or str(c))
+            else:
+                block = str(c)
+            sc_lines.append(f"{i}) {block}")
+        if sc_lines:
+            sections.append(f"[RELEVANT INFORMATION] n={len(sc_lines)}\n" + "\n\n".join(sc_lines))
+
+        # Dreams
+        dreams = context.get("dreams", []) or []
+        dr_lines: list[str] = []
+        for i, d in enumerate(dreams, start=1):
+            if isinstance(d, dict):
+                content = d.get("content", "") or str(d)
+                ts = d.get("timestamp", "")
+            else:
+                content = str(d)
+                ts = ""
+            dr_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
+        if dr_lines:
+            sections.append(f"[DREAMS] n={len(dr_lines)}\n" + "\n\n".join(dr_lines))
+
+        # Personal Notes from Obsidian vault
+        personal_notes = context.get("personal_notes", []) or []
+        pn_lines: list[str] = []
+        note_images: list[dict] = []  # Collect images for multimodal models
+
+        for i, note in enumerate(personal_notes, start=1):
+            if isinstance(note, dict):
+                title = note.get("metadata", {}).get("title", "")
+                section = note.get("metadata", {}).get("section", "")
+                tags = note.get("metadata", {}).get("tags", "")
+                content = note.get("content", "")
+                image_data = note.get("image_data", [])  # Base64 encoded images
+                # Sanitize content to prevent embedded headers
+                content = _sanitize_embedded_headers(content) if content else ""
+            else:
+                title, section, tags, content = "", "", "", str(note)
+                image_data = []
+
+            if content:
+                # Build header: **Title** (Section) #tag1 #tag2
+                header_parts = []
+                if title:
+                    header_parts.append(f"**{title}**")
+                if section:
+                    header_parts.append(f"({section})")
+                if tags:
+                    # Convert comma-separated tags to hashtag format
+                    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+                    if tag_list:
+                        header_parts.append(" ".join(f"#{t}" for t in tag_list))
+
+                # Add relevance score so the LLM can see match strength
+                relevance = note.get("relevance_score", 0.0)
+                if relevance > 0:
+                    header_parts.append(f"[relevance: {relevance:.2f}]")
+
+                # Add image indicator if images are present
+                if image_data:
+                    header_parts.append(f"[{len(image_data)} image(s) attached]")
+                    # Collect images with context about which note they belong to
+                    for img in image_data:
+                        note_images.append({
+                            "note_index": i,
+                            "note_title": title,
+                            "note_section": section,
+                            "filename": img.get("filename", ""),
+                            "media_type": img.get("media_type", ""),
+                            "data": img.get("data", ""),
+                        })
+
+                header = " ".join(header_parts) if header_parts else ""
+                pn_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
+
+        if pn_lines:
+            sections.append(f"[USER'S PERSONAL NOTES] n={len(pn_lines)}\n" + "\n\n".join(pn_lines))
+
+        # Store images in context for multimodal API calls
+        if note_images:
+            context["note_images"] = note_images
+            total_data_size = sum(len(img.get("data", "")) for img in note_images)
+            logger.warning(f"[PromptBuilder] IMAGE DEBUG: {len(note_images)} images collected, total base64 size={total_data_size//1024}KB")
+        else:
+            # Check why no images
+            total_image_data = sum(len(note.get("image_data", [])) for note in personal_notes if isinstance(note, dict))
+            logger.warning(f"[PromptBuilder] IMAGE DEBUG: No images in note_images list. personal_notes has {len(personal_notes)} notes, total image_data entries={total_image_data}")
+
+        # User Uploaded Items (files and images uploaded during sessions)
+        user_uploads = context.get("user_uploads", []) or []
+        uu_lines: list[str] = []
+        upload_images: list[dict] = []  # Collect images for multimodal models
+
+        for i, upload in enumerate(user_uploads, start=1):
+            if isinstance(upload, dict):
+                meta = upload.get("metadata", {})
+                title = meta.get("title", "")
+                is_image = meta.get("is_image", False)
+                media_type = meta.get("media_type", "")
+                image_path = meta.get("image_path", "")
+                content = upload.get("content", "")
+                content = _sanitize_embedded_headers(content) if content else ""
+            else:
+                title, is_image, media_type, image_path, content = "", False, "", "", str(upload)
+
+            if content:
+                header_parts = []
+                if title:
+                    # Strip "upload:" prefix for cleaner display
+                    display_title = title[7:] if title.startswith("upload:") else title
+                    header_parts.append(f"**{display_title}**")
+                if is_image:
+                    header_parts.append(f"[image: {media_type}]")
+                    # Load persisted image for multimodal API calls
+                    if image_path:
+                        img_data = _load_upload_image(image_path)
+                        if img_data:
+                            upload_images.append({
+                                "note_index": 0,
+                                "note_title": f"Upload: {title}",
+                                "note_section": "",
+                                "filename": img_data.get("filename", ""),
+                                "media_type": img_data.get("media_type", ""),
+                                "data": img_data.get("data", ""),
+                            })
+                header = " ".join(header_parts) if header_parts else ""
+                uu_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
+
+        if uu_lines:
+            sections.append(f"[USER UPLOADED ITEMS] n={len(uu_lines)}\n" + "\n\n".join(uu_lines))
+
+        # Merge upload images into note_images for multimodal API calls
+        if upload_images:
+            existing_images = context.get("note_images", [])
+            existing_images.extend(upload_images)
+            context["note_images"] = existing_images
+            logger.debug(f"[PromptBuilder] Merged {len(upload_images)} upload images into note_images")
+
+        # Reference Documents (system docs, project outlines, etc.)
+        reference_docs = context.get("reference_docs", []) or []
+        rd_lines: list[str] = []
+        for i, doc in enumerate(reference_docs, start=1):
+            if isinstance(doc, dict):
+                title = doc.get("metadata", {}).get("title", "")
+                section = doc.get("metadata", {}).get("section", "")
+                file_type = doc.get("metadata", {}).get("file_type", "")
+                content = doc.get("content", "")
+                # Sanitize content to prevent embedded headers
+                content = _sanitize_embedded_headers(content) if content else ""
+            else:
+                title, section, file_type, content = "", "", "", str(doc)
+
+            if content:
+                # Build header: **Title** (Section) [type]
+                header_parts = []
+                if title:
+                    header_parts.append(f"**{title}**")
+                if section:
+                    header_parts.append(f"({section})")
+                if file_type:
+                    header_parts.append(f"[{file_type}]")
+                header = " ".join(header_parts) if header_parts else ""
+                rd_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
+
+        if rd_lines:
+            sections.append(f"[DAEMON DOCUMENTATION] n={len(rd_lines)}\n" + "\n\n".join(rd_lines))
+
+        # Git commit history (procedural memory)
+        git_commits = context.get("git_commits", []) or []
+        gc_lines: list[str] = []
+        for i, commit in enumerate(git_commits, start=1):
+            if isinstance(commit, dict):
+                content = commit.get("content", "")
+                meta = commit.get("metadata", {})
+                commit_hash = meta.get("commit_hash", "")
+                author = meta.get("author", "")
+                age = meta.get("age_relative", "")
+                tags = meta.get("tags", "")
+            else:
+                content = str(commit)
+                commit_hash, author, age, tags = "", "", "", ""
+
+            if content:
+                header_parts = []
+                if commit_hash:
+                    header_parts.append(f"[{commit_hash}]")
+                if author:
+                    header_parts.append(f"by {author}")
+                if age:
+                    header_parts.append(f"({age})")
+                if tags:
+                    tag_list = [t.strip() for t in tags.split(",") if t.strip() and t.strip() != "git-commit"]
+                    if tag_list:
+                        header_parts.append(" ".join(f"#{t}" for t in tag_list))
+                header = " ".join(header_parts) if header_parts else ""
+                gc_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
+
+        if gc_lines:
+            sections.append(f"[PROJECT COMMIT HISTORY] n={len(gc_lines)}\n" + "\n\n".join(gc_lines))
+
+        # Procedural skills (adaptive workflows)
+        proc_skills = context.get("procedural_skills", []) or []
+        sk_lines: list[str] = []
+        for i, skill in enumerate(proc_skills, start=1):
+            if isinstance(skill, dict):
+                meta = skill.get("metadata", {})
+                trigger = meta.get("trigger", "")
+                action = meta.get("action_pattern", "")
+                category = meta.get("category", "")
+                confidence = meta.get("confidence", "")
+                tags_raw = meta.get("tags_json", "")
+                created_at = meta.get("created_at", 0)
+            else:
+                trigger = str(skill)
+                action, category, confidence, tags_raw, created_at = "", "", "", "", 0
+
+            if trigger and action:
+                parts = []
+                if category:
+                    parts.append(f"[{category}]")
+                # Relative age from created_at epoch
+                if created_at:
+                    try:
+                        import time as _time
+                        age_secs = _time.time() - float(created_at)
+                        if age_secs < 3600:
+                            age_str = f"{int(age_secs / 60)} minutes ago"
+                        elif age_secs < 86400:
+                            age_str = f"{int(age_secs / 3600)} hours ago"
+                        else:
+                            age_str = f"{int(age_secs / 86400)} days ago"
+                        parts.append(f"({age_str})")
+                    except (ValueError, TypeError):
+                        pass
+                if confidence:
+                    try:
+                        parts.append(f"(conf={float(confidence):.0%})")
+                    except (ValueError, TypeError):
+                        pass
+                if tags_raw:
+                    try:
+                        tag_list = json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
+                        if tag_list:
+                            parts.append(" ".join(f"#{t}" for t in tag_list))
+                    except Exception:
+                        pass
+                header = " ".join(parts) if parts else ""
+                entry = f"{i}) {header}\nWHEN: {trigger}\nTHEN: {action}" if header else f"{i}) WHEN: {trigger}\nTHEN: {action}"
+                sk_lines.append(entry)
+
+        if sk_lines:
+            sections.append(f"[ADAPTIVE WORKFLOWS] n={len(sk_lines)}\n" + "\n\n".join(sk_lines))
+
+        # Proposed Features (code proposals surfaced for project-related queries)
+        proposed_features = context.get("proposed_features", [])
+        logger.info(f"[PROPOSED_FEATURES] _assemble_prompt: {len(proposed_features)} proposals in context")
+        pf_lines = []
+        for i, pf in enumerate(proposed_features, 1):
+            meta = pf.get("metadata", {})
+            title = meta.get("title", "Untitled")
+            ptype = meta.get("proposal_type", "feature")
+            priority = meta.get("priority", 5)
+            tags_raw = meta.get("tags_json", "[]")
+            reasoning = meta.get("reasoning", "")
+
+            try:
+                tag_list = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+            except Exception:
+                tag_list = []
+
+            tag_str = " ".join(f"#{t}" for t in tag_list) if tag_list else ""
+            header = f"[{ptype}] P{priority}"
+            if tag_str:
+                header += f" {tag_str}"
+            header += f" **{title}**"
+
+            entry = f"{i}) {header}"
+            if reasoning:
+                entry += f"\n   Rationale: {reasoning[:200]}"
+            pf_lines.append(entry)
+
+        if pf_lines:
+            sections.append(f"[PROPOSED FEATURES] n={len(pf_lines)}\n" + "\n\n".join(pf_lines))
+
+        # Knowledge Graph context (entity relationships)
+        graph_sentences = context.get("graph_context", []) or []
+        if graph_sentences:
+            graph_block = "\n".join(f"- {s}" for s in graph_sentences)
+            try:
+                from config.app_config import ENABLE_GRAPH_ATTRIBUTION
+                if ENABLE_GRAPH_ATTRIBUTION:
+                    sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)} (derived relationships)\n{graph_block}")
+                else:
+                    sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)}\n{graph_block}")
+            except ImportError:
+                sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)}\n{graph_block}")
+
+        # Unresolved threads (proactive surfacing)
+        unresolved_threads = context.get("unresolved_threads", []) or []
+        if unresolved_threads:
+            thread_lines = []
+            for t in unresolved_threads:
+                ttype = t.get("thread_type", "unfinished")
+                topic = t.get("topic", "")
+                summary = t.get("summary", "")
+                deadline = t.get("deadline_date")
+                line = f"- [{ttype}] {topic}: {summary}"
+                if deadline:
+                    line += f" (deadline: {deadline})"
+                thread_lines.append(line)
+            sections.append(f"[UNRESOLVED THREADS] n={len(thread_lines)}\n" + "\n".join(thread_lines))
+
+        # Proactive cross-domain insights
+        proactive_insights = context.get("proactive_insights", []) or []
+        if proactive_insights:
+            insight_block = "\n".join(f"- {s}" for s in proactive_insights)
+            sections.append(
+                f"[PROACTIVE INSIGHTS] n={len(proactive_insights)}\n"
+                "These are AI-generated insights based on relationship analysis. "
+                "Reference naturally when relevant, but clearly distinguish from user-provided facts.\n"
+                f"{insight_block}")
+
+        # User Profile (replaces semantic_facts + fresh_facts)
+        # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
+        user_profile = context.get("user_profile", "")
+        if user_profile and isinstance(user_profile, str):
+            # Count facts (each fact ends with [timestamp])
+            fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
+            sections.append(
+                f"[USER PROFILE] n={fact_count}\n"
+                "Stored facts — reference naturally but do not add names, apps, or details not written here.\n"
+                f"{user_profile}")
+
+        # Active Features Inventory (always present, compact)
+        feature_inventory = self._build_feature_inventory(context)
+        if feature_inventory:
+            sections.append(f"[ACTIVE FEATURES]\n{feature_inventory}")
+
+        # Codebase changes since last session (first message only)
+        codebase_changes = context.get("codebase_changes", {})
+        if codebase_changes:
+            cc_lines = []
+            since_label = codebase_changes.get("since_label", "last session")
+            committed = codebase_changes.get("committed", [])
+            uncommitted_mod = codebase_changes.get("uncommitted_modified", [])
+            uncommitted_new = codebase_changes.get("uncommitted_new", [])
+            if committed:
+                cc_lines.append(f"Committed ({len(committed)}):")
+                for c in committed:
+                    cc_lines.append(f"  - {c}")
+            if uncommitted_mod:
+                cc_lines.append(f"Modified uncommitted ({len(uncommitted_mod)}):")
+                for f in uncommitted_mod:
+                    cc_lines.append(f"  - {f}")
+            if uncommitted_new:
+                cc_lines.append(f"New untracked ({len(uncommitted_new)}):")
+                for f in uncommitted_new:
+                    cc_lines.append(f"  - {f}")
+            if cc_lines:
+                total = len(committed) + len(uncommitted_mod) + len(uncommitted_new)
+                sections.append(
+                    f"[CODEBASE CHANGES SINCE LAST SESSION] n={total} (since {since_label})\n"
+                    + "\n".join(cc_lines))
+
+        # Time context
+        # MOVED: Placed here (right before STM and query) for temporal grounding with high attention
+        time_ctx = self._get_time_context()
+        if time_ctx:
+            sections.append(f"[TIME CONTEXT]\n{time_ctx}")
+
+        # Temporal Grounding (Narrative Context) - synthesized life state for trajectory awareness
+        narrative_state = context.get("narrative_state", "")
+        if narrative_state and isinstance(narrative_state, str) and narrative_state.strip():
+            sections.append(f"[TEMPORAL GROUNDING]\n{narrative_state}")
+            logger.debug(f"[PROMPT ASSEMBLY] Added temporal grounding section ({len(narrative_state)} chars)")
+
+        # STM (Short-Term Memory) Summary - placed right before query for maximum attention
+        stm_summary = context.get("stm_summary")
+        logger.warning(f"STM RENDERING CHECK: stm_summary = {stm_summary}")
+        if stm_summary:
+            logger.warning("STM RENDERING: Rendering STM section before query")
+            stm_lines = []
+            stm_lines.append(f"Topic: {stm_summary.get('topic', 'unknown')}")
+            stm_lines.append(f"User Question: {stm_summary.get('user_question', '')}")
+            stm_lines.append(f"Intent: {stm_summary.get('intent', '')}")
+            stm_lines.append(f"Tone: {stm_summary.get('tone', 'neutral')}")
+
+            ref_type = stm_summary.get('reference_type', 'unclear')
+            stm_lines.append(f"Reference Type: {ref_type}")
+            if ref_type == 'recall':
+                stm_lines.append(
+                    "WARNING: The current message restates an event already in context. "
+                    "Do NOT count it as a separate occurrence and do NOT fabricate a "
+                    "pattern from a single underlying event."
+                )
+            elif ref_type == 'clarification':
+                stm_lines.append(
+                    "WARNING: The current message adds detail to an existing topic. "
+                    "Do NOT treat it as a new event."
+                )
+            elif ref_type == 'correction':
+                stm_lines.append(
+                    "WARNING: The user is correcting a prior assistant claim. "
+                    "Update your understanding; do not double down."
+                )
+            elif ref_type == 'unclear':
+                stm_lines.append(
+                    "WARNING: Reference is ambiguous. Before treating the current message "
+                    "as a new event, verify it is not already present in [RELEVANT MEMORIES] "
+                    "or [RECENT CONVERSATION]. Do NOT invent counts or patterns from a "
+                    "single underlying occurrence."
+                )
+
+            temporal_facts = stm_summary.get('temporal_facts', [])
+            if temporal_facts:
+                stm_lines.append(f"Resolved State: {' | '.join(temporal_facts)}")
+
+            open_threads = stm_summary.get('open_threads', [])
+            if open_threads:
+                stm_lines.append(f"Open Threads: {', '.join(open_threads)}")
+
+            constraints = stm_summary.get('constraints', [])
+            if constraints:
+                stm_lines.append(f"Constraints: {', '.join(constraints)}")
+
+            sections.append(f"[SHORT-TERM CONTEXT SUMMARY]\n" + "\n".join(stm_lines))
+            logger.warning(f"STM RENDERING: Added STM section before query")
+        else:
+            logger.warning("STM RENDERING: No stm_summary in context, skipping section")
+
+        # User input with last Q/A pair for coherence
+        if user_input:
+            query_section = f"[CURRENT USER QUERY]\n"
+
+            # Attach last Q/A pair for maximum coherence (high attention area)
+            recent = context.get("recent_conversations", [])
+            if recent and len(recent) > 0:
+                last_exchange = recent[0]  # First item is most recent (list ordered newest-first)
+                last_q = last_exchange.get("query", "")
+                last_a = last_exchange.get("response", "")
+                if last_q and last_a:
+                    query_section += f"[LAST EXCHANGE FOR CONTEXT]\n"
+                    query_section += f"User: {last_q}\n"
+                    query_section += f"Assistant: {last_a}\n\n"
+
+            query_section += f"[CURRENT QUERY]\n{user_input}"
+            sections.append(query_section)
+
+        # DEBUG: Check for duplicate section headers before returning
+        section_headers = [s.split('\n')[0] for s in sections if s]
+        header_counts = {}
+        for header in section_headers:
+            if header.startswith('['):
+                header_counts[header] = header_counts.get(header, 0) + 1
+
+        duplicates = {h: c for h, c in header_counts.items() if c > 1}
+        if duplicates:
+            logger.error(f"[DEBUG RECENT] DUPLICATE SECTIONS DETECTED: {duplicates}")
+            logger.error(f"[DEBUG RECENT] Total sections: {len(sections)}, section headers: {section_headers}")
+        else:
+            logger.debug(f"[DEBUG RECENT] No duplicate sections. Total sections: {len(sections)}")
+
+        final_prompt = "\n\n".join(sections)
+
+        # Count how many times "[RECENT CONVERSATION]" appears in final assembled prompt
+        recent_conv_count = final_prompt.count("[RECENT CONVERSATION]")
+        if recent_conv_count > 1:
+            logger.error(f"[DEBUG RECENT] FINAL PROMPT HAS {recent_conv_count} [RECENT CONVERSATION] HEADERS!")
+            # Find positions
+            matches = [(m.start(), m.end()) for m in re.finditer(r'\[RECENT CONVERSATION\]', final_prompt)]
+            logger.error(f"[DEBUG RECENT] Found at positions: {matches}")
+            for i, (start, end) in enumerate(matches):
+                context_start = max(0, start - 50)
+                context_end = min(len(final_prompt), end + 200)
+                logger.error(f"[DEBUG RECENT] Match {i+1} context: ...{final_prompt[context_start:context_end]}...")
+
+        # --- Eval snapshot hook (gated, read-only) ---
+        # Lazy import to avoid circular dependency (function lives in builder.py)
+        try:
+            from .builder import _maybe_capture_eval_snapshot
+            _maybe_capture_eval_snapshot(context, user_input, sections, final_prompt)
+        except ImportError:
+            pass
+
+        return final_prompt
