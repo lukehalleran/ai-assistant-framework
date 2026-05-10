@@ -13,6 +13,7 @@ Methods:
   - get_graph_context(query, max_sentences) -> List[str]
   - get_unresolved_threads(max_results) -> List[Dict]
   - get_proactive_insights(query, max_insights) -> List[str]
+  - get_visual_memories(query, max_images) -> Dict[str, Any]
   - get_codebase_changes(since_datetime) -> Dict
   - get_narrative_context() -> str
   - _get_wiki_content(query, limit) -> List[Dict]
@@ -610,6 +611,57 @@ class KnowledgeRetrievalMixin:
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get proactive insights: {e}")
             return []
+
+    async def get_visual_memories(self, query: str, max_images: int = 3) -> Dict[str, Any]:
+        """Retrieve CLIP-matched visual memories for the query.
+
+        Uses CLIP text→image search (primary) + ChromaDB text search (fallback)
+        to find relevant images from uploads and Obsidian notes.
+
+        Args:
+            query: Current user query
+            max_images: Maximum images to include for multimodal API
+
+        Returns:
+            Dict with text_results (captions for prompt section) and
+            images (base64 dicts for multimodal injection).
+        """
+        empty = {"text_results": [], "images": []}
+        try:
+            from config.app_config import VISUAL_MEMORY_ENABLED
+            if not VISUAL_MEMORY_ENABLED:
+                return empty
+
+            if not hasattr(self, '_visual_retriever') or self._visual_retriever is None:
+                from knowledge.clip_manager import get_clip_manager
+                from knowledge.visual_memory_store import VisualMemoryStore
+                from knowledge.visual_retrieval import VisualRetriever
+
+                clip = get_clip_manager()
+                chroma = getattr(self.memory_coordinator, 'chroma_store', None)
+                store = VisualMemoryStore(chroma_store=chroma)
+                self._visual_retriever = VisualRetriever(clip, store)
+
+            result = await self._visual_retriever.retrieve_visual_memories(
+                query, max_images=max_images
+            )
+
+            # Track in memory_id_map for citation
+            for i, tr in enumerate(result.get("text_results", []), start=1):
+                cid = f"VISUAL_{i}"
+                self.memory_id_map[cid] = {
+                    "type": "visual_memory",
+                    "content": tr.get("caption", "")[:500],
+                    "image_path": tr.get("image_path", ""),
+                    "relevance_score": tr.get("score", 0.0),
+                    "db_id": tr.get("doc_id", ""),
+                }
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Visual memory retrieval failed: {e}")
+            return empty
 
     async def get_codebase_changes(self, since_datetime) -> Dict[str, Any]:
         """Detect codebase file changes since last session via git.

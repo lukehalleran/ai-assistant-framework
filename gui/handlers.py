@@ -173,6 +173,33 @@ async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
                 except Exception as e:
                     logger.warning(f"[PERSIST] Failed to store image {img.filename}: {e}")
 
+        # CLIP-embed uploaded images for visual memory retrieval
+        try:
+            from config.app_config import VISUAL_MEMORY_ENABLED, VISUAL_MEMORY_INGEST_ON_UPLOAD
+            if VISUAL_MEMORY_ENABLED and VISUAL_MEMORY_INGEST_ON_UPLOAD:
+                from knowledge.clip_manager import get_clip_manager
+                from knowledge.visual_memory_store import VisualMemoryStore
+                from knowledge.visual_memory_pipeline import VisualMemoryPipeline
+
+                clip = get_clip_manager()
+                chroma = getattr(orchestrator, 'memory_coordinator', None)
+                chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
+                store = VisualMemoryStore(chroma_store=chroma_store)
+                model_mgr = getattr(orchestrator, 'model_manager', None)
+                resolver = getattr(chroma, 'entity_resolver', None) if chroma else None
+                pipeline = VisualMemoryPipeline(clip, store, model_manager=model_mgr, entity_resolver=resolver)
+
+                for img in files_result.images:
+                    if not img.error and img.file_path:
+                        try:
+                            await pipeline.ingest_image(
+                                img.file_path, source="upload", media_type=img.media_type or ""
+                            )
+                        except Exception as e:
+                            logger.warning(f"[PERSIST] Visual memory ingest failed for {img.filename}: {e}")
+        except ImportError:
+            pass  # Visual memory deps not installed
+
     except Exception as e:
         logger.error(f"[PERSIST] Upload persistence failed: {e}")
 

@@ -26,7 +26,7 @@ where:
 
 | Symbol | Name | Type | Code |
 |--------|------|------|------|
-| C_t | Corpus | P(D) — typed multiset of documents | ChromaDB (12 collections) + JSON corpus |
+| C_t | Corpus | P(D) — typed multiset of documents | ChromaDB (13 collections) + JSON corpus |
 | G_t | Knowledge Graph | (V, E) — directed labeled graph | `graph_memory.py` (NetworkX DiGraph) + `entity_resolver.py` (alias table) |
 | H_t | Conversation History | (Q x R)* — ordered sequence of past turns | Recent corpus entries + STM window |
 | Theta_t | Conversation Thread | {thread_id, depth, topic, is_heavy} | `thread_manager.py` |
@@ -108,13 +108,14 @@ Example: "what about my brother" -> "what about my brother Auggie Mom Flapjack"
 candidates : X x C -> P(D)
 ```
 
-18 parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
+19 parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
 - Conversations (recent by time + semantic by expanded query)
 - Facts (user profile: hybrid 2/3 semantic + 1/3 recent)
 - Summaries (recent + semantic, separate)
 - Reflections (recent + semantic, separate)
 - Wiki, personal notes, reference docs, user uploads
 - Git commits, procedural skills, code proposals
+- Visual memories (CLIP-matched image metadata)
 - Knowledge graph BFS traversal (separate from expansion)
 - Open threads (priority-ranked)
 - Proactive cross-domain insights
@@ -220,7 +221,7 @@ where P is the **prompt space** (system prompt + context + query, token-budgeted
 
 The token budget is **model-aware**: computed as `min(context_window * 0.25, ceiling)` clamped to `[floor, ceiling]`, with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps. Post-budget **floor guarantees** ensure critical sections survive trimming: recent conversations (min 5), summaries (min 10), reflections (min 10). The agentic controller enforces its own budget on accumulated search context (`context_budget_tokens` default 8000) and trims low-value sections from the final prompt if total exceeds ceiling.
 
-Assembly produces an ordered sequence of 26 conditional sections:
+Assembly produces an ordered sequence of 27 conditional sections:
 
 ```
 prompt = [
@@ -236,6 +237,7 @@ prompt = [
     [DREAMS]                                 // if enabled
     [USER'S PERSONAL NOTES]                  // if available (Obsidian vault, gated at 0.30)
     [USER UPLOADED ITEMS]                    // if available (files/images)
+    [VISUAL MEMORIES]                        // if available (CLIP-matched image metadata)
     [DAEMON DOCUMENTATION]                   // if available (reference docs from docs/)
     [PROJECT COMMIT HISTORY]                 // if available (git commits)
     [ADAPTIVE WORKFLOWS]                     // if available (procedural skills)
@@ -325,7 +327,7 @@ AGENT(q, s):
     return (r, s')
 ```
 
-**Key distinction**: Web search runs as one of the 18 parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
+**Key distinction**: Web search runs as one of the 19 parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
 
 ### 6.1 Memory Expansion (expand_memory)
 
@@ -359,7 +361,7 @@ Session-gated: `expand_count <= EXPAND_MAX_PER_SESSION` (default 3). Cached per 
 
 The agentic search controller is decomposed into three classes:
 - `AgenticSearchController` (`core/agentic/controller.py`) — main loop orchestration, prompt building, model interaction
-- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 11 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, full document, signal done)
+- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 12 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, full document, recall image, signal done)
 - `AgenticFormatter` (`core/agentic/formatters.py`) — pure stateless formatting for all result types (conversations, memories, web results, etc.)
 
 Protocol dispatch uses `detect_protocol()` (`core/agentic/protocols.py`) to choose between `NativeToolsHandler` (OpenAI/Anthropic function calling) and `XMLMarkerHandler` (local models using XML tags) based on model name. Both handlers parse responses into `SearchDecision` objects with a shared interface.
@@ -516,10 +518,10 @@ delta_shutdown(s):
 
 ## 9. Memory Types as a Typed Corpus
 
-The corpus C is a **typed multiset** partitioned across 12 ChromaDB collections in 7 categories:
+The corpus C is a **typed multiset** partitioned across 13 ChromaDB collections in 8 categories:
 
 ```
-C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U  C_meta  U  C_synthesis
+C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U  C_meta  U  C_synthesis  U  C_visual
 ```
 
 | Category | Collections | Characteristics |
@@ -531,6 +533,7 @@ C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U 
 | Reference | `obsidian_notes`, `reference_docs` | User notes + system docs. Protected from dedup. Gated at 0.30 threshold. |
 | Meta | `reflections`, `threads`, `proposals` | Session insights + open loops + code plans. Priority-scored (threads). |
 | Synthesis | `synthesis_results` | Cross-domain insights with convergence tracking. Produced by shutdown dreaming. |
+| Visual | `visual_memories` | CLIP-embedded image metadata for visual recall. |
 
 **Knowledge graph** G provides a secondary index over C_semantic. Nodes are entities, edges are relations extracted from facts. Objects with 4+ words are stored as node metadata (not nodes) to prevent junk.
 
@@ -779,9 +782,9 @@ Agent(q, s_t) =
     let x       = phi(q, s_t)                       in    // perceive
     let iota    = classify_intent(q, x.tone)         in    // interpret
     let q'      = expand(q, s_t.G)                   in    // expand (graph-augmented query)
-    let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (18 parallel retrievals)
+    let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (19 parallel retrievals)
     let pi_plan = plan(q, x) if should_plan(x)      in    // plan response (parallel with remember)
-    let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (26-section prompt + plan injection)
+    let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (27-section prompt + plan injection)
     let r       = generate_or_search(p)              in    // act (LLM + optional agentic loop)
     let r'      = review_or_retry(r, pi_plan)        in    // review (post-answer gate + optional retry)
     let Pi      = provenance(r', p, session)          in    // audit (provenance metadata)
@@ -800,7 +803,7 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | Q | Query space | User input strings |
 | R | Response space | Agent output strings |
 | S | State space | Distributed across all persistence |
-| C | Corpus (typed multiset, 12 collections) | ChromaDB + corpus JSON |
+| C | Corpus (typed multiset, 13 collections) | ChromaDB + corpus JSON |
 | G | Knowledge graph | `graph_memory.py` + `entity_resolver.py` |
 | H | Conversation history | Recent corpus + STM |
 | Theta | Conversation thread state | `thread_manager.py` |
@@ -808,10 +811,10 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | U | User model | `user_profile.py` |
 | E | Escalation FSM state | `escalation_tracker.py` |
 | X | Context space | `ContextResult` dataclass in `context_pipeline.py` |
-| P | Prompt space (26 sections) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
+| P | Prompt space (27 sections) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
 | A = R U T | Action space | Response or tool call |
 | phi | Context function (8 integer stages + 2 half-stages) | `context_pipeline.py` |
-| rho_iota | Retrieval function (18 parallel tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |
+| rho_iota | Retrieval function (19 parallel tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |
 | sigma_iota | Scoring function (parameterized by intent + graph) | `memory_scorer.py` -> `rank_memories()` |
 | beta | Prompt construction (X x D* x iota x E -> P) | `prompt/builder.py` |
 | iota | Intent classification | `intent_classifier.py` |

@@ -65,9 +65,9 @@ class TestRegistryIntegrity:
         assert s.structurally_required is False
 
     def test_registry_has_26_context_sections(self):
-        """Registry should have 26 context sections (matching builder output)."""
-        # system_prompt is entry 0 (separate), so 27 total
-        assert len(SECTION_REGISTRY) == 27
+        """Registry should have 27 context sections + system_prompt (matching builder output)."""
+        # system_prompt is entry 0 (separate), so 28 total
+        assert len(SECTION_REGISTRY) == 28
 
     def test_all_internal_keys_are_unique(self):
         """Internal keys should all be unique (enforced by dict but be explicit)."""

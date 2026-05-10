@@ -36,6 +36,7 @@ from core.agentic.types import (
     MEMORY_SEARCH_TOOL_DEFINITION,
     GIT_STATS_TOOL_DEFINITION,
     GET_FULL_DOCUMENT_TOOL_DEFINITION,
+    RECALL_IMAGE_TOOL_DEFINITION,
 )
 from core.agentic.protocols import (
     detect_protocol,
@@ -59,6 +60,7 @@ __all__ = [
     "MEMORY_SEARCH_TOOL_DEFINITION",
     "GIT_STATS_TOOL_DEFINITION",
     "GET_FULL_DOCUMENT_TOOL_DEFINITION",
+    "RECALL_IMAGE_TOOL_DEFINITION",
     # Protocols
     "detect_protocol",
     "BaseProtocolHandler",

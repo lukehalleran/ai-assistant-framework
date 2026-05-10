@@ -11,7 +11,7 @@ For formal notation see `FORMAL_MODEL.md`. For config constants see
 
 ## What the Pipeline Does
 
-Every user query triggers a full prompt build: 18 parallel async
+Every user query triggers a full prompt build: 19 parallel async
 retrievals across memory, knowledge graph, web search, files, and
 profile data. Results are filtered, deduplicated, scored, compressed
 to fit a token budget, and assembled into a final prompt string with
@@ -70,7 +70,7 @@ key_points, tone, avoid list, and strategy. The plan is injected into
 the system prompt before `_assemble_prompt()`. If the planner times out
 or fails, the prompt proceeds without a plan.
 
-### Step 4 — Parallel Retrieval (18 tasks, 30s timeout)
+### Step 4 — Parallel Retrieval (19 tasks, 30s timeout)
 
 All tasks execute simultaneously via `asyncio.wait()` (not `asyncio.gather`).
 Completed tasks survive a timeout — only the still-pending sections fall back
@@ -96,6 +96,7 @@ default to `[]` without affecting other sections.
 | graph_context | `get_graph_context()` | 12 sentences |
 | unresolved_threads | `get_unresolved_threads()` | 3 |
 | proactive_insights | `get_proactive_insights()` | 2 |
+| visual_memories | `get_visual_memories()` | varies |
 | web_search | `_get_web_search_results()` | 5 results |
 
 Per-task timing is tracked and logged for bottleneck detection.
@@ -203,20 +204,21 @@ high-attention items (user profile, time, query) placed last:
 10. `[DREAMS]` — synthesis insights, if enabled (up to 3; all generators currently disabled in config.yaml pending grading validation)
 11. `[USER'S PERSONAL NOTES]` — Obsidian vault (1-5)
 12. `[USER UPLOADED ITEMS]` — uploaded documents (1-5)
-13. `[DAEMON DOCUMENTATION]` — reference docs (1-5)
-14. `[PROJECT COMMIT HISTORY]` — git commits (varies)
-15. `[ADAPTIVE WORKFLOWS]` — procedural skills (1-5)
-16. `[PROPOSED FEATURES]` — code proposals (1-3)
-17. `[KNOWLEDGE GRAPH]` — entity relationships, natural language (up to 12 sentences)
-18. `[UNRESOLVED THREADS]` — open commitments/deadlines (1-3)
-19. `[PROACTIVE INSIGHTS]` — cross-domain connections (1-2)
-20. `[USER PROFILE]` — categorized facts with inline anti-confabulation instruction and source excerpts when available (high-attention zone)
-21. `[ACTIVE FEATURES]` — feature inventory (always)
-22. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
-23. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
-24. `[TEMPORAL GROUNDING]` — narrative context (if available)
-25. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available). Includes `Reference Type:` line (`new_event` / `recall` / `clarification` / `correction` / `unclear`) with explicit WARNING directive when type ≠ `new_event`. Also renders `Resolved State:` from `temporal_facts`, `Open Threads:` from `open_threads` (ongoing commitments/topics), and `Constraints:` from `constraints` (implicit/explicit response limits). STM internally injects last 2 daily notes from the Obsidian vault for cross-day recall disambiguation.
-26. `[CURRENT USER QUERY]` — always last, protected from compression
+13. `[VISUAL MEMORIES]` — CLIP-matched image metadata (if available)
+14. `[DAEMON DOCUMENTATION]` — reference docs (1-5)
+15. `[PROJECT COMMIT HISTORY]` — git commits (varies)
+16. `[ADAPTIVE WORKFLOWS]` — procedural skills (1-5)
+17. `[PROPOSED FEATURES]` — code proposals (1-3)
+18. `[KNOWLEDGE GRAPH]` — entity relationships, natural language (up to 12 sentences)
+19. `[UNRESOLVED THREADS]` — open commitments/deadlines (1-3)
+20. `[PROACTIVE INSIGHTS]` — cross-domain connections (1-2)
+21. `[USER PROFILE]` — categorized facts with inline anti-confabulation instruction and source excerpts when available (high-attention zone)
+22. `[ACTIVE FEATURES]` — feature inventory (always)
+23. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
+24. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
+25. `[TEMPORAL GROUNDING]` — narrative context (if available)
+26. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available). Includes `Reference Type:` line (`new_event` / `recall` / `clarification` / `correction` / `unclear`) with explicit WARNING directive when type ≠ `new_event`. Also renders `Resolved State:` from `temporal_facts`, `Open Threads:` from `open_threads` (ongoing commitments/topics), and `Constraints:` from `constraints` (implicit/explicit response limits). STM internally injects last 2 daily notes from the Obsidian vault for cross-day recall disambiguation.
+27. `[CURRENT USER QUERY]` — always last, protected from compression
 
 Items with `staleness_ratio >= 0.6` get `[HISTORICAL — PARTIALLY OUTDATED]` prefix.
 

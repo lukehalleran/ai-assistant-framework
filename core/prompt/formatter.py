@@ -13,7 +13,7 @@ Module Contract
     Section order: RECENT CONVERSATION → RELEVANT MEMORIES → RECENT SUMMARIES →
     SEMANTIC SUMMARIES → RECENT REFLECTIONS → SEMANTIC REFLECTIONS → BACKGROUND KNOWLEDGE →
     WEB SEARCH RESULTS → RELEVANT INFORMATION → DREAMS → USER'S PERSONAL NOTES →
-    USER UPLOADED ITEMS → DAEMON DOCUMENTATION → PROJECT COMMIT HISTORY →
+    USER UPLOADED ITEMS → VISUAL MEMORIES → DAEMON DOCUMENTATION → PROJECT COMMIT HISTORY →
     ADAPTIVE WORKFLOWS → PROPOSED FEATURES → KNOWLEDGE GRAPH → UNRESOLVED THREADS →
     PROACTIVE INSIGHTS → USER PROFILE → ACTIVE FEATURES → CODEBASE CHANGES →
     TIME CONTEXT → TEMPORAL GROUNDING → STM SUMMARY → CURRENT USER QUERY.
@@ -1247,6 +1247,43 @@ class PromptFormatter:
             existing_images.extend(upload_images)
             context["note_images"] = existing_images
             logger.debug(f"[PromptBuilder] Merged {len(upload_images)} upload images into note_images")
+
+        # Visual Memories (CLIP-matched images from personal collection)
+        visual_mems = context.get("visual_memories", {})
+        vm_text_results = visual_mems.get("text_results", []) if isinstance(visual_mems, dict) else []
+        vm_images = visual_mems.get("images", []) if isinstance(visual_mems, dict) else []
+
+        vm_lines: list[str] = []
+        for i, result in enumerate(vm_text_results, start=1):
+            caption = result.get("caption", "")
+            source = result.get("source", "")
+            score = result.get("score", 0.0)
+            entities = result.get("entity_ids", [])
+            header_parts = [f"[{source}]"]
+            if entities:
+                header_parts.append(f"entities: {', '.join(entities)}")
+            header_parts.append(f"[relevance: {score:.2f}]")
+            if caption:
+                vm_lines.append(f"{i}) {' '.join(header_parts)}\n{_sanitize_embedded_headers(caption)}")
+
+        if vm_lines:
+            vm_instruction = (
+                "These images were retrieved from your visual memory based on the current conversation. "
+                "You can SEE these images right now. When relevant, naturally reference what you observe "
+                "in them — describe details, recognize people or pets by name if you know them, and "
+                "connect what you see to the conversation. Treat these like your own memories of moments "
+                "you witnessed. Don't just list captions — look at the actual images and react to them."
+            )
+            sections.append(
+                f"[VISUAL MEMORIES] n={len(vm_lines)}\n{vm_instruction}\n\n" + "\n\n".join(vm_lines)
+            )
+
+        # Merge visual memory images into note_images for multimodal API calls
+        if vm_images:
+            existing_images = context.get("note_images", [])
+            existing_images.extend(vm_images)
+            context["note_images"] = existing_images
+            logger.debug(f"[PromptBuilder] Merged {len(vm_images)} visual memory images into note_images")
 
         # Reference Documents (system docs, project outlines, etc.)
         reference_docs = context.get("reference_docs", []) or []

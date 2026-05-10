@@ -149,6 +149,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             FILE_LIST_TOOL_DEFINITION,
             GIT_STATS_TOOL_DEFINITION,
             GET_FULL_DOCUMENT_TOOL_DEFINITION,
+            RECALL_IMAGE_TOOL_DEFINITION,
         )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
@@ -161,6 +162,7 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.file_list_tool = FILE_LIST_TOOL_DEFINITION
         self.git_stats_tool = GIT_STATS_TOOL_DEFINITION
         self.full_document_tool = GET_FULL_DOCUMENT_TOOL_DEFINITION
+        self.recall_image_tool = RECALL_IMAGE_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
         self.memory_available = memory_available
@@ -399,6 +401,20 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] get_full_document called without title")
                 return None
 
+        elif func_name == "recall_image":
+            query = args.get("query", "")
+            reason = args.get("reason")
+            if query:
+                logger.debug(f"[AgenticProtocol] Native tool recall_image: {query}")
+                return SearchDecision(
+                    wants_recall_image=True,
+                    recall_image_query=query,
+                    recall_image_reason=reason,
+                )
+            else:
+                logger.warning("[AgenticProtocol] recall_image called without query")
+                return None
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return None
@@ -428,6 +444,12 @@ class NativeToolsHandler(BaseProtocolHandler):
             tools.extend([self.file_read_tool, self.file_grep_tool, self.file_list_tool])
         if self.git_stats_available:
             tools.append(self.git_stats_tool)
+        # NOTE: recall_image tool deliberately excluded from iteration tools.
+        # Visual memories are already retrieved by the builder's parallel pipeline
+        # and included in the initial context. Adding recall_image here causes
+        # redundant agentic rounds that burn API credits. The tool dispatch and
+        # definition remain wired for future use when explicit image search is
+        # needed beyond what the builder retrieves.
         return tools
 
     def augment_system_prompt(self, system_prompt: str, max_rounds: int) -> str:
