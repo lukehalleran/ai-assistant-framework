@@ -110,6 +110,7 @@ class MultiCollectionChromaStore:
             'proposals': None,           # Goal-directed code change proposals
             'threads': None,             # Open threads (commitments, deadlines, questions)
             'synthesis_results': None,   # Cross-domain synthesis insights from graph walks
+            'visual_memories': None,     # CLIP-embedded image metadata for visual recall
         }
 
         self._initialize_collections()

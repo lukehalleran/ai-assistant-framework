@@ -561,7 +561,7 @@ class CorpusManager:
 
 # memory/storage/multi_collection_chroma_store.py
 class MultiCollectionChromaStore:
-    # Collections (12 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results
+    # Collections (13 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results, visual_memories
 
     async def add_memory(text: str, metadata: Dict, collection: str):
         """Embed text and store in ChromaDB collection"""
@@ -979,7 +979,7 @@ class ThreadExtractor:
 # Integration:
 # - Shutdown: step 6.5 in process_shutdown_memory() — extract new threads + resolve existing
 # - Prompt: [UNRESOLVED THREADS] section (after [KNOWLEDGE GRAPH])
-# - Collection: 'threads' in ChromaDB (12 total collections)
+# - Collection: 'threads' in ChromaDB (13 total collections)
 # - Builder: top threads retrieved via ThreadStore.get_top_threads() in build_prompt()
 
 # Config (app_config.py):
@@ -1310,6 +1310,14 @@ EXPAND_CONTEXT_CHAR_LIMIT = 300       # Char limit for context documents
 EXPAND_ANCHOR_CHAR_LIMIT_LONG = 3000  # Long-form collections (obsidian_notes, reference_docs)
 EXPAND_CONTEXT_CHAR_LIMIT_LONG = 2000 # Long-form context limit
 
+# Visual Memory [NEW 2026-05]
+VISUAL_MEMORY_ENABLED = False            # Toggle visual memory pipeline
+VISUAL_MEMORY_CLIP_MODEL = "ViT-B-32"   # OpenCLIP model for image/text embedding (512-dim)
+VISUAL_MEMORY_MAX_IMAGES = 3            # Max images returned per query
+VISUAL_MEMORY_CAPTION_MODEL = None      # Vision LLM for captions (None = default model)
+VISUAL_MEMORY_FAISS_PATH = "data/visual_faiss.index"  # CLIP vector index path
+VISUAL_MEMORY_DEDUP_ENABLED = True      # SHA-256 content dedup on ingestion
+
 # LLM Compression [NEW 2026-03-26]
 LLM_COMPRESSION_ENABLED = True         # Use LLM to compress heavily oversized items
 LLM_COMPRESSION_MODEL = "gpt-4o-mini"  # Model for compression calls
@@ -1473,6 +1481,7 @@ score = (
 [DREAMS]                       # 10. Synthesis insights (if enabled; all generators currently disabled)
 [USER'S PERSONAL NOTES]        # 11. Obsidian vault notes; post-filtered by PERSONAL_NOTES_GATE_THRESHOLD (0.30)
 [USER UPLOADED ITEMS]          # 12. Persisted user file/image uploads from reference_docs collection
+[VISUAL MEMORIES]              # 12b. CLIP-retrieved image memories with captions (hybrid text+vision search)
 [DAEMON DOCUMENTATION]         # 13. Self-knowledge: architecture docs, PROJECT_SKELETON
 [PROJECT COMMIT HISTORY]       # 14. Git commit history (procedural memory)
 [ADAPTIVE WORKFLOWS]           # 15. Reusable problem-solving patterns (WHEN/THEN)
@@ -1548,6 +1557,10 @@ python main.py git-backfill [LIMIT]          # Initial load (default: 200 commit
 python main.py git-update                    # Incremental sync since last backfill
 python main.py git-status                    # Show PROCEDURAL collection stats
 python main.py git-clear                     # Wipe collection and reset sync state
+
+# Visual Memory [NEW 2026-05]
+python scripts/backfill_visual_memory.py     # Re-index existing images into visual_memories + FAISS
+python scripts/backfill_visual_memory.py --dry-run  # Preview without writing
 
 # User Profile
 python main.py export-profile                # Export to data/user_profile_export.md
@@ -1703,7 +1716,7 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 
 ```python
 # core/agentic/controller.py — orchestration, prompt building, model interaction, quality heuristics
-# core/agentic/tools.py — ToolExecutor: dispatch routing + 10 execute methods
+# core/agentic/tools.py — ToolExecutor: dispatch routing + 11 execute methods
 # core/agentic/formatters.py — AgenticFormatter: 17 pure formatting methods
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
@@ -1756,6 +1769,9 @@ class SearchDecision:
     wants_git_stats: bool = False       # Git repository stats [NEW 2026-03-29]
     git_stats_query: Optional[str] = None
     git_stats_reason: Optional[str] = None
+    wants_recall_image: bool = False   # Visual memory recall [NEW 2026-05]
+    recall_image_query: Optional[str] = None
+    recall_image_reason: Optional[str] = None
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False
@@ -1883,8 +1899,8 @@ class MemoryExpander:
 
 
 # Protocol handlers (core/agentic/protocols.py)
-# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <done>
-# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (10 tool definitions)
+# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <recall_image>, <done>
+# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (11 tool definitions, including recall_image)
 ```
 
 ### Agentic Config Constants
@@ -1939,7 +1955,8 @@ Available Tools:
 7. <file_grep pattern="..." path="...">reason</file_grep> - Search file contents by regex [NEW 2026-03-26]
 8. <file_list path="...">reason</file_list> - List directory contents [NEW 2026-03-26]
 9. <git_stats>query</git_stats> - Git repository activity stats [NEW 2026-03-29]
-10. <done>reason</done> - Signal task complete
+10. <recall_image>query</recall_image> - Recall images from visual memory [NEW 2026-05]
+11. <done>reason</done> - Signal task complete
 
 Use Python for: multi-step computation, data analysis, visualization, custom algorithms
 Use Wolfram for: single-expression calculations, unit conversions, scientific data, equations
@@ -1948,6 +1965,7 @@ Use memory for: user facts, past conversations, personal notes, project history
 Use expand_memory for: see surrounding conversation turns or drill into summaries
 Use file_read/file_grep/file_list for: reading project files, searching code, listing directories
 Use git_stats for: commit counts, recent commits, contributors, files changed, branch activity
+Use recall_image for: recalling photos, screenshots, diagrams, or other images from past interactions
 """
 ```
 
@@ -2270,6 +2288,76 @@ GRAPH_WALK_MIN_DOMAINS = 2             # Min distinct domain categories per walk
 #   min_similarity: 0.25
 #   bridge_on_accept: true
 #   bridge_relation: structural_parallel
+```
+
+---
+
+## Visual Memory **[NEW 2026-05]**
+
+```python
+# knowledge/clip_manager.py — OpenCLIP ViT-B/32 singleton, lazy-loaded
+class CLIPManager:
+    """Singleton CLIP model for image/text embedding (512-dim vectors).
+    Lazy-loaded on first use — no GPU/model overhead until needed."""
+
+    def encode_image(image_path: str) -> np.ndarray:
+        """Load image, preprocess, return 512-dim L2-normalized CLIP embedding."""
+
+    def encode_text(text: str) -> np.ndarray:
+        """Tokenize text, return 512-dim L2-normalized CLIP embedding."""
+
+
+# knowledge/visual_memory_store.py — Dual storage: ChromaDB + FAISS FlatIP
+class VisualMemoryStore:
+    """Dual-index storage: ChromaDB 'visual_memories' collection (text metadata, captions)
+    + FAISS FlatIP index (CLIP 512-dim vectors). SHA-256 content dedup on ingestion."""
+
+    def add(image_path, clip_embedding, caption, metadata) -> str:
+        """Store image: FAISS vector + ChromaDB doc. Returns doc_id. Dedup by SHA-256."""
+
+    def search_by_clip(query_embedding, k=3) -> List[Dict]:
+        """FAISS inner-product search on CLIP vectors → top K image results."""
+
+    def search_by_text(query, k=3) -> List[Dict]:
+        """ChromaDB semantic search on captions/metadata."""
+
+
+# knowledge/visual_memory_pipeline.py — Ingestion pipeline
+class VisualMemoryPipeline:
+    """Ingestion: CLIP embed → vision LLM caption → entity tag → store."""
+
+    async def ingest_image(image_path, user_context=None) -> str:
+        """Full pipeline: CLIP encode → vision LLM caption → entity extraction → dual store."""
+
+
+# knowledge/visual_retrieval.py — Hybrid retrieval for prompt injection
+class VisualRetriever:
+    """Hybrid retrieval: CLIP text→image similarity + ChromaDB text search.
+    Returns results in note_images format for prompt builder."""
+
+    async def retrieve(query, max_images=3) -> List[Dict]:
+        """Hybrid search: CLIP text embedding vs stored image embeddings + ChromaDB caption search.
+        Merges and deduplicates results, returns note_images-compatible format."""
+
+
+# Integration:
+# - Collection: 'visual_memories' in ChromaDB (13 total collections)
+# - Prompt section: [VISUAL MEMORIES] (after [USER UPLOADED ITEMS])
+# - Agentic tool: recall_image — CLIP-based image recall in ReAct loop
+# - Backfill: scripts/backfill_visual_memory.py — re-index existing images
+
+# Config (app_config.py):
+VISUAL_MEMORY_ENABLED = False            # Toggle (disabled by default — requires OpenCLIP)
+VISUAL_MEMORY_CLIP_MODEL = "ViT-B-32"   # OpenCLIP model variant
+VISUAL_MEMORY_MAX_IMAGES = 3            # Max images per query
+VISUAL_MEMORY_CAPTION_MODEL = None      # Vision LLM (None = default model)
+VISUAL_MEMORY_FAISS_PATH = "data/visual_faiss.index"
+VISUAL_MEMORY_DEDUP_ENABLED = True      # SHA-256 content dedup
+
+# Tests: 60 tests across 3 files
+# tests/unit/test_clip_manager.py — CLIPManager singleton, encode_image, encode_text
+# tests/unit/test_visual_memory_store.py — dual storage, dedup, FAISS/ChromaDB search
+# tests/unit/test_visual_retrieval.py — hybrid retrieval, prompt format, agentic tool
 ```
 
 ---

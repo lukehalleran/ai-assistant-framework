@@ -89,6 +89,10 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/synthesis_memory.py` - Synthesis results persistence + convergence tracking + audit queue (grade_result, get_ungraded, get_graded, get_audit_stats, store_rejected_for_audit) **[ENHANCED 2026-04-01]**
 - `knowledge/synthesis_generator.py` - Cross-store sampling + LLM bridge articulation for synthesis candidates **[NEW 2026-03-28]**
 - `knowledge/synthesis_retriever.py` - RetrievalSynthesisGenerator: structural query extraction + FAISS search + adversarial eval (Tier 0) **[NEW 2026-04-01]**
+- `knowledge/clip_manager.py` - OpenCLIP singleton for CLIP image/text encoding **[NEW 2026-05]**
+- `knowledge/visual_memory_store.py` - Dual storage: ChromaDB + FAISS for visual memories **[NEW 2026-05]**
+- `knowledge/visual_memory_pipeline.py` - Image ingestion: CLIP embed → caption → entity tag → store **[NEW 2026-05]**
+- `knowledge/visual_retrieval.py` - CLIP text→image retrieval + base64 loading **[NEW 2026-05]**
 - `memory/memory_interface.py` - Protocol contracts
 
 The incomplete V2 `memory/coordinator.py` has been deleted.
@@ -1077,9 +1081,9 @@ PROFILE_EPHEMERAL_RELATIONS = [          # Relations whose history gets pruned
 ---
 
 ### 2.5 memory/storage/multi_collection_chroma_store.py (Vector Store)
-**Purpose**: Semantic search across 12 ChromaDB collections
+**Purpose**: Semantic search across 13 ChromaDB collections
 
-**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results
+**Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results, visual_memories
 
 **Key Methods**:
 - `add_memory(text, metadata, collection)` → Embed and store
@@ -1281,6 +1285,16 @@ Mood trending positive after resolving recent stressors...
 
 **Recurring Themes**
 Integration of technology into studies, self-care practices...
+
+[USER UPLOADED ITEMS] n=N
+1) [title: document.pdf] [uploaded: 2025-11-17]
+Content text...
+...
+
+[VISUAL MEMORIES] n=N [NEW 2026-05]
+1) [photo_collection] entities: Luna, backyard [relevance: 0.82]
+Caption describing the image content...
+...
 
 [KNOWLEDGE GRAPH] n=N [NEW 2026-03]
 Luke has brother Dillion
@@ -1505,6 +1519,7 @@ agentic_search:
 - `file_list` tool [NEW 2026-03-26]: List directory contents
 - `git_stats` tool [NEW 2026-03-29]: Read-only git repo stats (commit counts, files changed, contributors, branch activity) via keyword intent parsing + temporal windows, no LLM calls
 - `get_full_document` tool [NEW 2026-03-30]: Retrieve complete uploaded document by title with fuzzy matching. Reassembles all chunks in order, 60k char cap.
+- `recall_image` tool [NEW 2026-05]: CLIP text-to-image retrieval from visual memory. Returns matching image captions + base64 data for multimodal context injection.
 - `wiki_knowledge` added to `search_memory` valid collections [NEW 2026-03-30]: enables agentic search of pre-embedded Wikipedia corpus
 - FAISS Wikipedia fallback [NEW 2026-03-31]: `_search_wiki_faiss()` + `_format_wiki_faiss_results()` — when searching `wiki_knowledge`, always prefers FAISS semantic search (40M vectors, IVFPQ index) over sparse ChromaDB data
 
@@ -4849,7 +4864,11 @@ daemon/
 │   ├── wikidata_models.py     # Pydantic models for Wikidata import [NEW 2026-04]
 │   ├── wikidata_resolver.py   # WikidataEntityMapper: personal <-> Wikidata entity resolution [NEW 2026-04]
 │   ├── wiki_enrichment.py     # Shutdown: tracked wiki articles -> graph nodes [NEW 2026-04]
-│   └── wiki_tracker.py        # Session-level Wikipedia article tracking [NEW 2026-04]
+│   ├── wiki_tracker.py        # Session-level Wikipedia article tracking [NEW 2026-04]
+│   ├── clip_manager.py        # OpenCLIP singleton for CLIP image/text encoding [NEW 2026-05]
+│   ├── visual_memory_store.py # Dual storage: ChromaDB + FAISS for visual memories [NEW 2026-05]
+│   ├── visual_memory_pipeline.py # Image ingestion: CLIP embed → caption → entity tag → store [NEW 2026-05]
+│   └── visual_retrieval.py    # CLIP text→image retrieval + base64 loading [NEW 2026-05]
 │
 ├── gui/
 │   ├── launch.py              # Gradio web interface (async chunk processing, tag stripping)
@@ -4884,6 +4903,9 @@ daemon/
 │   │   ├── test_web_search_trigger.py   # [NEW 2025-12-22]
 │   │   ├── test_agentic_search.py       # [NEW 2026-01] 42 tests for agentic system
 │   │   ├── test_sandbox_manager.py      # [NEW 2026-01-22] 42 tests for E2B sandbox
+│   │   ├── test_clip_manager.py         # [NEW 2026-05] 16 tests for CLIP encoding
+│   │   ├── test_visual_memory_store.py  # [NEW 2026-05] 22 tests for visual memory storage
+│   │   ├── test_visual_memory_pipeline.py # [NEW 2026-05] 22 tests for image ingestion pipeline
 │   │   └── ... (60+ unit test files total)
 │   ├── test_eval/             # Eval system tests (246 tests) [NEW 2026-04]
 │   │   ├── test_section_registry.py     # Registry validation
@@ -4912,6 +4934,7 @@ daemon/
 │   ├── demo_*.py             # Demo scripts
 │   ├── debug_*.py            # Debug utilities
 │   ├── mutation_*.py         # Mutation testing
+│   ├── backfill_visual_memory.py  # Backfill visual memories from image directories [NEW 2026-05]
 │   ├── *.sh                  # Shell scripts
 │   └── ...
 │

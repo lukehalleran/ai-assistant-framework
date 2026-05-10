@@ -19,6 +19,7 @@ Public Types:
     - FILE_READ_TOOL_DEFINITION, FILE_GREP_TOOL_DEFINITION, FILE_LIST_TOOL_DEFINITION (file access tool schemas)
     - GET_FULL_DOCUMENT_TOOL_DEFINITION (full document retrieval tool schema)
     - GIT_STATS_TOOL_DEFINITION (git repository stats tool schema)
+    - RECALL_IMAGE_TOOL_DEFINITION (visual memory CLIP image search tool schema)
 
 SearchDecision Fields (extended for multi-tool support):
     - wants_search, search_query, search_reason (web search)
@@ -31,6 +32,7 @@ SearchDecision Fields (extended for multi-tool support):
     - wants_file_list, file_list_path, file_list_recursive, file_list_reason (file list)
     - wants_git_stats, git_stats_query, git_stats_reason (git repository stats)
     - wants_full_document, full_document_title, full_document_reason (full document retrieval)
+    - wants_recall_image, recall_image_query, recall_image_reason (CLIP visual memory search)
     - is_done, done_reason, wants_answer, partial_response
 
 Dependencies:
@@ -155,6 +157,10 @@ class SearchDecision:
     wants_full_document: bool = False
     full_document_title: Optional[str] = None
     full_document_reason: Optional[str] = None
+    # Visual memory recall (CLIP image search)
+    wants_recall_image: bool = False
+    recall_image_query: Optional[str] = None
+    recall_image_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -643,6 +649,36 @@ GIT_STATS_TOOL_DEFINITION = {
                 "reason": {
                     "type": "string",
                     "description": "Brief explanation of why this git query is needed."
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+
+RECALL_IMAGE_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "recall_image",
+        "description": (
+            "Search visual memory for images matching a description. "
+            "Returns relevant images from uploaded photos, Obsidian note diagrams, "
+            "and other personal images. Use when the user asks about visual content, "
+            "photos, diagrams, people, pets, or when visual context would help."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Natural language description of the image to find, "
+                        "e.g. 'my cat', 'the math diagram', 'family photo'"
+                    )
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why visual recall is needed."
                 }
             },
             "required": ["query"]
