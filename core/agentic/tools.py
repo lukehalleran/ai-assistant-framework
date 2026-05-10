@@ -118,6 +118,8 @@ class ToolExecutor:
             return await self._dispatch_full_document(decision, round_number)
         elif decision.wants_git_stats and decision.git_stats_query:
             return await self._dispatch_git_stats(decision, round_number)
+        elif decision.wants_recall_image and decision.recall_image_query:
+            return await self._dispatch_recall_image(decision, round_number)
         else:
             return _ToolResult(
                 decision=decision, round_data=None,
@@ -629,6 +631,47 @@ class ToolExecutor:
             end_events=end_events,
         )
 
+    async def _dispatch_recall_image(
+        self, decision: SearchDecision, round_number: int,
+    ) -> _ToolResult:
+        start_events = [ProgressEvent(
+            event_type="recalling_image",
+            message=f"Searching visual memory: {decision.recall_image_query}",
+            round_number=round_number,
+            metadata={"query": decision.recall_image_query, "reason": decision.recall_image_reason}
+        )]
+
+        start_time = time.time()
+        visual_result = await self._execute_recall_image(decision.recall_image_query)
+        duration = (time.time() - start_time) * 1000
+
+        round_data = SearchRound(
+            round_number=round_number,
+            request=SearchRequest(
+                query=f"[Visual Memory] {decision.recall_image_query}",
+                reason=decision.recall_image_reason,
+                round_number=round_number
+            ),
+            results=None,
+            duration_ms=duration
+        )
+        round_data.summary = visual_result.get("summary", "No visual memories found.")
+
+        end_events = [ProgressEvent(
+            event_type="recall_image_done",
+            message=f"Found {visual_result.get('count', 0)} visual memories",
+            round_number=round_number,
+            metadata={"duration_ms": duration, "count": visual_result.get("count", 0)}
+        )]
+
+        return _ToolResult(
+            decision=decision,
+            round_data=round_data,
+            formatted_context=visual_result.get("formatted", ""),
+            start_events=start_events,
+            end_events=end_events,
+        )
+
     # ------------------------------------------------------------------
     # Low-level execution methods
     # ------------------------------------------------------------------
@@ -854,3 +897,51 @@ Provide a focused summary with the most important information."""
         except Exception as e:
             logger.warning(f"[AgenticSearch] Git stats failed: {e}")
             return f"[Git stats error: {e}]"
+
+    async def _execute_recall_image(self, query: str) -> dict:
+        """Search visual memory for images matching the query."""
+        try:
+            from config.app_config import VISUAL_MEMORY_ENABLED
+            if not VISUAL_MEMORY_ENABLED:
+                return {"summary": "[Visual memory not enabled]", "formatted": "", "count": 0}
+
+            from knowledge.clip_manager import get_clip_manager
+            from knowledge.visual_memory_store import VisualMemoryStore
+            from knowledge.visual_retrieval import VisualRetriever
+
+            clip = get_clip_manager()
+            chroma = getattr(self, '_chroma_store', None)
+            if not chroma and self.memory_coordinator:
+                chroma = getattr(self.memory_coordinator, 'chroma_store', None)
+            store = VisualMemoryStore(chroma_store=chroma)
+            retriever = VisualRetriever(clip, store)
+
+            result = await retriever.retrieve_visual_memories(query, max_images=3)
+            text_results = result.get("text_results", [])
+
+            if not text_results:
+                return {"summary": "No matching visual memories found.", "formatted": "", "count": 0}
+
+            # Format for agentic context
+            lines = [f"[VISUAL MEMORY SEARCH] query: {query}"]
+            for i, r in enumerate(text_results, start=1):
+                caption = r.get("caption", "")
+                source = r.get("source", "")
+                score = r.get("score", 0.0)
+                entities = r.get("entity_ids", [])
+                parts = [f"[{source}]"]
+                if entities:
+                    parts.append(f"entities: {', '.join(entities)}")
+                parts.append(f"[relevance: {score:.2f}]")
+                lines.append(f"{i}) {' '.join(parts)}\n   {caption}")
+
+            formatted = "\n\n".join(lines)
+            summary = f"Found {len(text_results)} visual memories for '{query}'"
+
+            return {"summary": summary, "formatted": formatted, "count": len(text_results)}
+
+        except ImportError:
+            return {"summary": "[Visual memory dependencies not installed]", "formatted": "", "count": 0}
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] Visual memory recall failed: {e}")
+            return {"summary": f"[Visual memory error: {e}]", "formatted": "", "count": 0}

@@ -70,12 +70,12 @@ Python lines:           ~143,000 (incl. tests)
 Python files:           392
 Test files:             173
 Test functions:         3,559
-ChromaDB collections:   12
-Prompt sections:        26 (conditional)
+ChromaDB collections:   13
+Prompt sections:        27 (conditional)
 Intent types:           9
-Parallel retrieval:     18 async tasks
+Parallel retrieval:     19 async tasks
 Memory tiers:           5
-Agentic tools:          11
+Agentic tools:          12
 Gating latency:         ~200ms
 Config options:         180+
 ```
@@ -153,7 +153,7 @@ memory/                  # 5-tier memory system
 ├── memory_expander.py       # Temporal expansion for agentic tool
 ├── synthesis_memory.py      # Synthesis results + convergence
 └── storage/
-    └── multi_collection_chroma_store.py  # ChromaDB wrapper (12 collections)
+    └── multi_collection_chroma_store.py  # ChromaDB wrapper (13 collections)
 
 knowledge/               # External knowledge integration
 ├── web_search_manager.py      # Tavily API + caching + numbered web citations
@@ -176,7 +176,7 @@ knowledge/               # External knowledge integration
 
 eval/                    # Prompt section ablation & eval system
 ├── schema.py              # Pure data models (no Daemon imports)
-├── section_registry.py    # 27-entry canonical section registry
+├── section_registry.py    # 28-entry canonical section registry
 ├── snapshots.py           # Snapshot capture, replay, save/load
 ├── variants.py            # LOO, AOI, bundle, reorder variant generation
 ├── corpus.py              # 27-query seed corpus (3 per intent type)
@@ -216,7 +216,7 @@ User types: "How's my squat progress looking?"
     │     "squat" resolves to graph entity → neighbors: powerlifting, deadlift
     │     Expanded query: "How's my squat progress looking? powerlifting deadlift"
     │
-    ├─ 4. Parallel Retrieval (18 async tasks, 30s timeout)
+    ├─ 4. Parallel Retrieval (19 async tasks, 30s timeout)
     │     Recent conversations, semantic memories, facts, summaries,
     │     reflections, wiki, personal notes, graph context, threads,
     │     proactive insights, procedural skills, web search (if triggered)...
@@ -230,7 +230,7 @@ User types: "How's my squat progress looking?"
     │     continuity + structure + graph bonus − staleness penalty
     │     Intent FACTUAL_RECALL boosts truth weight to 0.30
     │
-    ├─ 7. Prompt Assembly (26 conditional sections)
+    ├─ 7. Prompt Assembly (27 conditional sections)
     │     Token-budgeted: priority-based trimming, middle-out compression,
     │     LLM compression for oversized items
     │     High-signal sections placed at end for transformer attention
@@ -465,7 +465,7 @@ Two additional collections serve as reference stores: `obsidian_notes`
 (user's personal notes, synced from Obsidian vault) and `reference_docs`
 (uploaded documents + auto-seeded docs/ directory).
 
-### 12 ChromaDB Collections
+### 13 ChromaDB Collections
 
 All persistent memory is stored in ChromaDB via
 `multi_collection_chroma_store.py`, which wraps the ChromaDB client and
@@ -488,6 +488,7 @@ auto-initialized on first use by `_initialize_collections()`.
 | Knowledge | `wiki_knowledge` | Yes | Never |
 | User content | `obsidian_notes`, `reference_docs` | Yes | Never |
 | Derived | `summaries`, `reflections`, `procedural`, `procedural_skills`, `proposals`, `threads`, `synthesis_results` | No | Yes |
+| Visual | `visual_memories` | No | No |
 
 Protected collections are never scanned by the cross-collection
 deduplicator. The `conversations` collection is additionally exempt
@@ -625,7 +626,7 @@ The `WikidataEntityMapper` embedding threshold was also raised from 0.60 to
 
 ### Parallel Retrieval Architecture
 
-When a prompt is being built, `builder.py` launches 18 async retrieval
+When a prompt is being built, `builder.py` launches 19 async retrieval
 tasks via `asyncio.gather()` with a 30-second timeout. Each task is
 implemented across three gatherer mixins (composed by `context_gatherer.py`)
 and fetches from a different source or collection:
@@ -808,9 +809,9 @@ final_score:  0.805
 **Files**: `core/prompt/formatter.py` (`_assemble_prompt()`), `core/prompt/hygiene.py` (`ContentHygiene`),
 `core/prompt/token_manager.py`
 
-### 26 Conditional Sections
+### 27 Conditional Sections
 
-The prompt is assembled from up to 26 sections, ordered by transformer
+The prompt is assembled from up to 27 sections, ordered by transformer
 attention patterns — high-signal, low-token sections are placed at the
 end for maximum attention weight:
 
@@ -827,6 +828,7 @@ end for maximum attention weight:
 [DREAMS]                           — if enabled
 [USER'S PERSONAL NOTES]            — if available (Obsidian, gated 0.30)
 [USER UPLOADED ITEMS]              — if files uploaded
+[VISUAL MEMORIES]                  — if available (CLIP-matched images)
 [DAEMON DOCUMENTATION]             — if available (reference docs)
 [PROJECT COMMIT HISTORY]           — if available (git)
 [ADAPTIVE WORKFLOWS]               — if available (procedural skills)
@@ -1012,18 +1014,19 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
   retry is silently discarded and the original stays visible.
 - This prevents the jarring UX of showing the same response twice.
 
-### 11 Tools (8 action + done_searching + file_read/file_grep/file_list as 3)
+### 12 Tools (9 action + done_searching + file_read/file_grep/file_list as 3)
 
 | Tool | Implementation | Key Feature |
 |------|---------------|-------------|
 | Web Search | Tavily API | Query decomposition, 72hr cache, daily credit tracking |
 | Wolfram Alpha | LLM API | Token bucket rate limiting, MD5 result cache |
 | Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across rounds) |
-| Memory Search | ChromaDB (12 collections) + FAISS (wiki vectors) | wiki_knowledge routes through FAISS; all other collections via ChromaDB |
+| Memory Search | ChromaDB (13 collections) + FAISS (wiki vectors) | wiki_knowledge routes through FAISS; all other collections via ChromaDB |
 | Memory Expansion | MemoryExpander | Summary drill-down via source_doc_ids, temporal neighbors. Collection-aware char limits: long-form (obsidian, reference_docs) use 3000/2000 vs default 600/300. |
 | Full Document | ReferenceDocsManager | Reassemble all chunks of an uploaded doc by title; fuzzy title matching |
 | File Read / File Grep / File List | Local filesystem | 3 separate tools, sandboxed to project directory |
 | Git Stats | GitStatsManager | Read-only local git commands: commit counts, contributors, files changed, diff stats. Keyword-based intent parsing with temporal phrase extraction. |
+| Recall Image | VisualRetriever | Search visual memory for CLIP-matched images by text query. |
 | Done Searching | Control signal | Model declares search complete, triggers final synthesis |
 
 ### ReAct Loop Structure
@@ -2157,7 +2160,7 @@ Arrows indicate "calls" or "data flows to."
        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ PromptBuilder                                                │
-│  ├─ ContextGatherer (18 parallel retrieval tasks)            │
+│  ├─ ContextGatherer (19 parallel retrieval tasks)            │
 │  │    ├─ MemoryRetriever (ChromaDB queries)                  │
 │  │    ├─ GraphMemory (BFS traversal + query expansion)       │
 │  │    ├─ WebSearchManager (Tavily API)                       │
@@ -2199,7 +2202,7 @@ Arrows indicate "calls" or "data flows to."
        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ Storage Layer                                                │
-│  ├─ MultiCollectionChromaStore (12 collections)              │
+│  ├─ MultiCollectionChromaStore (13 collections)              │
 │  ├─ CorpusManager (JSON persistence)                         │
 │  ├─ Knowledge Graph (data/knowledge_graph.json)              │
 │  ├─ Entity Aliases (data/entity_aliases.json)                │

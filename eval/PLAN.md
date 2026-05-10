@@ -28,7 +28,7 @@ eval/
   PLAN.md                  # This file
   README.md                # Phase 1 usage guide
   schema.py                # Pure data models (PromptSnapshot, SectionSnapshot, etc.)
-  section_registry.py      # 27-entry canonical section registry
+  section_registry.py      # 28-entry canonical section registry
   snapshots.py             # SnapshotCapture, SnapshotReplay, save/load
   no_store_generation.py   # EvalGenerator + EvalGenerationConfig
   persistence_guard.py     # PersistenceGuard + file/collection fingerprinting
@@ -94,7 +94,7 @@ tests/test_eval/
 
 ## Overview
 
-Daemon's prompt is assembled from 26 optional context sections, a separately-composed
+Daemon's prompt is assembled from 27 optional context sections, a separately-composed
 system prompt, and the user's query. The eval system answers: **which sections actually
 help, which hurt, and under what query conditions?**
 
@@ -161,20 +161,21 @@ is conditional — only emitted when its context field is non-empty.
 | 10 | `[DREAMS]` | `dreams` | retrieved |
 | 11 | `[USER'S PERSONAL NOTES]` | `personal_notes` | retrieved |
 | 12 | `[USER UPLOADED ITEMS]` | `user_uploads` | retrieved |
-| 13 | `[DAEMON DOCUMENTATION]` | `reference_docs` | retrieved |
-| 14 | `[PROJECT COMMIT HISTORY]` | `git_commits` | retrieved |
-| 15 | `[ADAPTIVE WORKFLOWS]` | `procedural_skills` | retrieved |
-| 16 | `[PROPOSED FEATURES]` | `proposed_features` | retrieved |
-| 17 | `[KNOWLEDGE GRAPH]` | `graph_context` | generated_context |
-| 18 | `[UNRESOLVED THREADS]` | `unresolved_threads` | generated_context |
-| 19 | `[PROACTIVE INSIGHTS]` | `proactive_insights` | generated_context |
-| 20 | `[USER PROFILE]` | `user_profile` | metadata |
-| 21 | `[ACTIVE FEATURES]` | (computed) | metadata |
-| 22 | `[CODEBASE CHANGES SINCE LAST SESSION]` | `codebase_changes` | metadata |
-| 23 | `[TIME CONTEXT]` | (computed) | structural |
-| 24 | `[TEMPORAL GROUNDING]` | `narrative_state` | generated_context |
-| 25 | `[SHORT-TERM CONTEXT SUMMARY]` | `stm_summary` | generated_context |
-| 26 | `[CURRENT USER QUERY]` | `user_input` | structural |
+| 13 | `[VISUAL MEMORIES]` | `visual_memories` | retrieved |
+| 14 | `[DAEMON DOCUMENTATION]` | `reference_docs` | retrieved |
+| 15 | `[PROJECT COMMIT HISTORY]` | `git_commits` | retrieved |
+| 16 | `[ADAPTIVE WORKFLOWS]` | `procedural_skills` | retrieved |
+| 17 | `[PROPOSED FEATURES]` | `proposed_features` | retrieved |
+| 18 | `[KNOWLEDGE GRAPH]` | `graph_context` | generated_context |
+| 19 | `[UNRESOLVED THREADS]` | `unresolved_threads` | generated_context |
+| 20 | `[PROACTIVE INSIGHTS]` | `proactive_insights` | generated_context |
+| 21 | `[USER PROFILE]` | `user_profile` | metadata |
+| 22 | `[ACTIVE FEATURES]` | (computed) | metadata |
+| 23 | `[CODEBASE CHANGES SINCE LAST SESSION]` | `codebase_changes` | metadata |
+| 24 | `[TIME CONTEXT]` | (computed) | structural |
+| 25 | `[TEMPORAL GROUNDING]` | `narrative_state` | generated_context |
+| 26 | `[SHORT-TERM CONTEXT SUMMARY]` | `stm_summary` | generated_context |
+| 27 | `[CURRENT USER QUERY]` | `user_input` | structural |
 
 Sections are joined with `"\n\n"`. Each section starts with its header and `n=` count.
 
@@ -288,7 +289,7 @@ Production code changes (minimal, gated):
 
 ### What Phase 1 Does
 
-1. **Section Registry** — canonical definition of all 26 prompt sections with:
+1. **Section Registry** — canonical definition of all 27 prompt sections with:
    - internal key, header text, source field, category
    - whether ablatable, structurally required, assembly order
    - validation that registry matches actual builder output
@@ -325,7 +326,7 @@ Production code changes (minimal, gated):
 
 ### Exit Criteria
 
-1. Section registry covers all 26 sections from actual builder output
+1. Section registry covers all 27 sections from actual builder output
 2. Snapshot capture saves both layers with structured + formatted content
 3. Snapshot stores system/config/model provenance
 4. Replay from post_hygiene produces matching exact hash (stable formatting)
@@ -1111,6 +1112,7 @@ Sections marked `eligible_for_ablation=True` can be dropped in Phase 2 variants.
 | `dreams` | No | Yes | Dream memories |
 | `personal_notes` | No | Yes | Obsidian vault content |
 | `user_uploads` | No | Yes | User-uploaded files |
+| `visual_memories` | No | Yes | CLIP-matched image metadata |
 | `reference_docs` | No | Yes | System/project docs |
 | `git_commits` | No | Yes | Procedural memory |
 | `procedural_skills` | No | Yes | Adaptive workflows |

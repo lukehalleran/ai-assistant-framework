@@ -298,6 +298,7 @@ PROMPT_MAX_USER_UPLOADS = _cfg_int("prompt_max_user_uploads", 5)
 PROMPT_MAX_GRAPH_SENTENCES = _cfg_int("prompt_max_graph_sentences", 12)
 PROMPT_MAX_SURFACED_THREADS = _cfg_int("prompt_max_surfaced_threads", 3)
 PROMPT_MAX_PROACTIVE_INSIGHTS = _cfg_int("prompt_max_proactive_insights", 2)
+PROMPT_MAX_VISUAL_MEMORIES = _cfg_int("prompt_max_visual_memories", 3)
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "0"))  # Off by default — blocks prompt build with LLM call
@@ -658,6 +659,7 @@ class UnifiedPromptBuilder:
             eff_max_reference_docs = _ro.get("max_reference_docs", PROMPT_MAX_REFERENCE_DOCS)
             eff_max_user_uploads = _ro.get("max_user_uploads", PROMPT_MAX_USER_UPLOADS)
             eff_max_proactive = _ro.get("max_proactive", PROMPT_MAX_PROACTIVE_INSIGHTS)
+            eff_max_visual_memories = _ro.get("max_visual_memories", PROMPT_MAX_VISUAL_MEMORIES)
             eff_max_personal_notes = _ro.get("max_personal_notes", PROMPT_MAX_PERSONAL_NOTES)
 
             if _ro:
@@ -788,6 +790,12 @@ class UnifiedPromptBuilder:
             if eff_max_proactive > 0:
                 tasks["proactive_insights"] = asyncio.create_task(
                     _timed_task("proactive_insights", self.context_gatherer.get_proactive_insights(user_input, eff_max_proactive))
+                )
+
+            # Visual memories (CLIP-based image search)
+            if eff_max_visual_memories > 0:
+                tasks["visual_memories"] = asyncio.create_task(
+                    _timed_task("visual_memories", self.context_gatherer.get_visual_memories(user_input, eff_max_visual_memories))
                 )
 
             # Web search (triggered based on query analysis, suppressed during crisis)
@@ -963,6 +971,7 @@ class UnifiedPromptBuilder:
                 "graph_context": gathered.get("graph_context", []),  # Knowledge graph relationships
                 "unresolved_threads": gathered.get("unresolved_threads", []),  # Proactive thread surfacing
                 "proactive_insights": gathered.get("proactive_insights", []),  # Cross-domain insights
+                "visual_memories": gathered.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
                 "codebase_changes": codebase_changes,  # Git changes since last session (first message only)
             }
@@ -1284,6 +1293,7 @@ class UnifiedPromptBuilder:
                 "graph_context": context.get("graph_context", []),  # Knowledge graph relationships
                 "unresolved_threads": context.get("unresolved_threads", []),  # Proactive thread surfacing
                 "proactive_insights": context.get("proactive_insights", []),  # Cross-domain insights
+                "visual_memories": context.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}

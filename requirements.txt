@@ -27,6 +27,9 @@ e2b-code-interpreter>=0.0.11
 spacy==3.8.7
 scikit-learn==1.6.1
 
+# Visual memory (CLIP cross-modal image search)
+open_clip_torch>=2.29.0
+
 # Knowledge graph
 networkx==3.6.1
 

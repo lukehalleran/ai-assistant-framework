@@ -1365,6 +1365,30 @@ WIKI_ENRICHMENT_ENABLED = bool(int(os.getenv(
 )))
 
 # --------------------------------------------------------------------
+# Visual Memory Configuration (CLIP-based cross-modal image search)
+# Enables text-to-image retrieval using OpenCLIP embeddings.
+# Images from uploads and Obsidian notes are CLIP-embedded at ingest,
+# stored in a FAISS FlatIP index, and retrieved by text query.
+# --------------------------------------------------------------------
+VISUAL_MEMORY_CFG = config.get("visual_memory", {})
+VISUAL_MEMORY_ENABLED: bool = bool(VISUAL_MEMORY_CFG.get("enabled", False))
+VISUAL_MEMORY_CLIP_MODEL: str = str(VISUAL_MEMORY_CFG.get("clip_model", "ViT-B-32"))
+VISUAL_MEMORY_CLIP_PRETRAINED: str = str(VISUAL_MEMORY_CFG.get("clip_pretrained", "openai"))
+VISUAL_MEMORY_MAX_IMAGES: int = int(VISUAL_MEMORY_CFG.get("max_images_prompt", 3))
+VISUAL_MEMORY_CAPTION_MODEL: str = str(VISUAL_MEMORY_CFG.get("caption_model", "gpt-4o-mini"))
+VISUAL_MEMORY_CAPTION_TIMEOUT: float = float(VISUAL_MEMORY_CFG.get("caption_timeout_s", 10.0))
+VISUAL_MEMORY_INDEX_PATH: str = str(VISUAL_MEMORY_CFG.get("index_path", "data/clip_index.faiss"))
+VISUAL_MEMORY_META_PATH: str = str(VISUAL_MEMORY_CFG.get("meta_path", "data/clip_metadata.json"))
+VISUAL_MEMORY_SIMILARITY_THRESHOLD: float = float(VISUAL_MEMORY_CFG.get("similarity_threshold", 0.20))
+VISUAL_MEMORY_INGEST_ON_UPLOAD: bool = bool(VISUAL_MEMORY_CFG.get("ingest_on_upload", True))
+VISUAL_MEMORY_INGEST_ON_OBSIDIAN_SYNC: bool = bool(VISUAL_MEMORY_CFG.get("ingest_on_obsidian_sync", True))
+
+# Environment variable overrides
+VISUAL_MEMORY_ENABLED = bool(int(os.getenv(
+    "VISUAL_MEMORY_ENABLED", "1" if VISUAL_MEMORY_ENABLED else "0"
+)))
+
+# --------------------------------------------------------------------
 # Final setup
 # --------------------------------------------------------------------
 

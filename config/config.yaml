@@ -68,7 +68,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: deepseek-v4
+  active: claude-opus-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -356,6 +356,16 @@ graph_walk:
   boundary_crossing_required: true
   min_bridge_edges: 40
   personal_return_bias: 2.0
+visual_memory:
+  enabled: true
+  clip_model: ViT-B-32
+  clip_pretrained: openai
+  max_images_prompt: 3
+  caption_model: gpt-4o-mini
+  caption_timeout_s: 10.0
+  similarity_threshold: 0.2
+  ingest_on_upload: true
+  ingest_on_obsidian_sync: true
 wiki_enrichment:
   enabled: true
   max_articles_per_session: 15
@@ -377,7 +387,6 @@ behavioral_patterns:
   enabled: true
   min_turns: 3
   max_patterns: 3
-
 escalation_tracker:
   enabled: true
   threshold: 3

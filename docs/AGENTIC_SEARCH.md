@@ -26,7 +26,7 @@ events to the UI in real time.
 | File | Purpose |
 |------|---------|
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics |
-| `core/agentic/tools.py` | ToolExecutor: dispatch routing + 10 execute methods (web, wolfram, memory, expand, files, git, sandbox, full-doc) |
+| `core/agentic/tools.py` | ToolExecutor: dispatch routing + 11 execute methods (web, wolfram, memory, expand, files, git, sandbox, full-doc, recall-image) |
 | `core/agentic/formatters.py` | AgenticFormatter: 17 pure formatting methods (context, results, prompts) |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing |
@@ -201,6 +201,17 @@ Truncation: Hard cap at 60k chars (budget enforcement handles the rest)
 On miss: Returns list of available document titles for self-correction
 Use case: User asks to "pull up" or "check" an uploaded PDF/DOCX/syllabus
           and search_memory only returned fragments
+```
+
+### recall_image
+
+Search visual memory for CLIP-matched images by text query.
+
+```
+Parameters: query (required), reason (optional)
+Dispatch: _dispatch_recall_image → _execute_recall_image → VisualRetriever
+Execution: Queries visual_memories ChromaDB collection using CLIP embeddings
+           matched against the text query. Returns image metadata and descriptions.
 ```
 
 ### done_searching

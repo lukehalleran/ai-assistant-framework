@@ -283,6 +283,17 @@ _register(SectionDef(
 ))
 
 _register(SectionDef(
+    internal_key="visual_memories",
+    header="[VISUAL MEMORIES]",
+    source_field="visual_memories",
+    category=SectionCategory.RETRIEVED,
+    eligible_for_ablation=True,
+    structurally_required=False,
+    assembly_order=27,
+    notes="CLIP-matched images from personal collection. Includes captions and entity tags.",
+))
+
+_register(SectionDef(
     internal_key="narrative_state",
     header="[TEMPORAL GROUNDING]",
     source_field="narrative_state",

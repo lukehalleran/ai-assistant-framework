@@ -825,6 +825,14 @@ class AgenticSearchController:
         # Hash prompt for provenance
         session.final_prompt_hash = hashlib.sha256(final_prompt.encode()).hexdigest()[:16]
 
+        # Extract images from initial context for multimodal models
+        _images = None
+        if initial_context and isinstance(initial_context, dict):
+            _note_images = initial_context.get("note_images", [])
+            if _note_images:
+                _images = _note_images
+                logger.info(f"[AgenticSearch] Passing {len(_images)} images to final response")
+
         # Stream the response
         try:
             # generate_async returns a coroutine that yields a stream
@@ -832,7 +840,8 @@ class AgenticSearchController:
                 prompt=final_prompt,
                 model_name=model_name,
                 system_prompt=system_prompt,
-                max_tokens=4096
+                max_tokens=4096,
+                images=_images,
             )
 
             # Handle different return types

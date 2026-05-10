@@ -73,11 +73,11 @@ resolved, and stale information is penalized in ranking.
 ### Storage Layer
 | File | Purpose |
 |------|---------|
-| `memory/storage/multi_collection_chroma_store.py` | ChromaDB wrapper: 12 collections, `add_to_collection`, `query_collection`, `get_by_id`, `update_metadata` |
+| `memory/storage/multi_collection_chroma_store.py` | ChromaDB wrapper: 13 collections, `add_to_collection`, `query_collection`, `get_by_id`, `update_metadata` |
 
 ---
 
-## 12 ChromaDB Collections
+## 13 ChromaDB Collections
 
 | Collection | Content | Protected | Deduped |
 |------------|---------|-----------|---------|
@@ -93,6 +93,7 @@ resolved, and stale information is penalized in ranking.
 | `proposals` | Goal-directed code change proposals | No | Yes |
 | `threads` | Open threads (commitments, deadlines) | No | Yes |
 | `synthesis_results` | Cross-domain synthesis insights (+ human audit: two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`) | No | Yes |
+| `visual_memories` | CLIP-embedded image metadata for visual recall | No | No |
 
 **Protected** = never scanned by cross-collection deduplicator.
 
@@ -598,6 +599,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 [DREAMS]                               ← synthesis insights (if enabled)
 [USER'S PERSONAL NOTES]                ← Obsidian vault
 [USER UPLOADED ITEMS]                  ← uploaded documents
+[VISUAL MEMORIES]                      ← CLIP-matched image metadata
 [DAEMON DOCUMENTATION]                 ← reference docs
 [PROJECT COMMIT HISTORY]               ← git commits
 [ADAPTIVE WORKFLOWS]                   ← procedural skills
