@@ -615,8 +615,9 @@ class KnowledgeRetrievalMixin:
     async def get_visual_memories(self, query: str, max_images: int = 3) -> Dict[str, Any]:
         """Retrieve CLIP-matched visual memories for the query.
 
-        Uses CLIP text→image search (primary) + ChromaDB text search (fallback)
-        to find relevant images from uploads and Obsidian notes.
+        Entity-gated: only retrieves when the query mentions an entity that has
+        stored images (e.g. "Flapjack" → cat photos). Prevents irrelevant images
+        from being injected into unrelated conversations.
 
         Args:
             query: Current user query
@@ -641,6 +642,31 @@ class KnowledgeRetrievalMixin:
                 chroma = getattr(self.memory_coordinator, 'chroma_store', None)
                 store = VisualMemoryStore(chroma_store=chroma)
                 self._visual_retriever = VisualRetriever(clip, store)
+
+            # Entity-gated retrieval: only search when query mentions an entity
+            # that has stored images (associative recall, not broad CLIP matching).
+            # If no images have entity tags yet, skip retrieval entirely to prevent
+            # irrelevant images from leaking into unrelated conversations.
+            visual_entities = self._visual_retriever._store.get_visual_entity_ids()
+            if not visual_entities:
+                logger.debug(
+                    "[ContextGatherer] Visual memory skipped: no entities tagged on stored images"
+                )
+                return empty
+
+            query_lower = query.lower()
+            query_words = set(query_lower.split())
+            # Check if any visual entity appears in query (word match or substring)
+            entity_match = any(
+                eid in query_words or eid in query_lower
+                for eid in visual_entities
+            )
+            if not entity_match:
+                logger.debug(
+                    f"[ContextGatherer] Visual memory skipped: no entity match "
+                    f"(visual entities: {len(visual_entities)})"
+                )
+                return empty
 
             result = await self._visual_retriever.retrieve_visual_memories(
                 query, max_images=max_images

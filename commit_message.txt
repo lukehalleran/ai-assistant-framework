@@ -1,20 +1,22 @@
-fix: gate visual memory by model vision support and query intent
+feat: Pydantic config validation, entity-gated visual memory, retrieval scoring fixes
 
-Problem: non-vision models (DeepSeek, GLM) received image data in API
-calls, causing 404 "No endpoints found that support image input". Also,
-casual greetings like "hey brother" triggered unnecessary CLIP image
-retrieval.
+Three changes:
 
-Model gating:
-- Added ModelManager.supports_vision(model_name) — True for GPT-4o+,
-  Claude, Gemini; False for DeepSeek, GLM, local models
-- generate_async() silently drops images when active model lacks vision
-  support, preventing API errors
+1. Pydantic config schema validation (config/schema.py)
+   - 44 section-level models with range validators, cross-field checks, type coercion
+   - Fails fast at startup with actionable errors (field path + expected + actual)
+   - All existing imports unchanged; validates after YAML load, before constant extraction
+   - 44 unit tests
 
-Intent gating:
-- CASUAL_SOCIAL, EMOTIONAL_SUPPORT, META_CONVERSATIONAL intent profiles
-  now set max_visual_memories=0 — skips CLIP retrieval entirely for
-  greetings, emotional queries, and meta-conversation
+2. Entity-gated visual memory retrieval
+   - Images only retrieved when query mentions an entity with stored photos
+   - Prevents irrelevant images from leaking into unrelated conversations
+   - Profile-aware backfill script (scripts/backfill_visual_entities.py) re-captions
+     images with entity context so vision LLM outputs proper names
+   - Fixed MIME type detection (detect from bytes, not metadata) fixing API 400 errors
+   - Updated [VISUAL MEMORIES] instruction to tell model to ignore off-topic images
 
-Docs updated: CLAUDE.md, ARCHITECTURE_GUIDE, PROJECT_SKELETON,
-PROMPT_BUILDING_PIPELINE, FORMAL_MODEL
+3. Memory retrieval scoring fix (CASUAL_SOCIAL)
+   - Rebalanced weights: relevance 0.20->0.35, recency 0.35->0.20
+   - Wired gate_threshold_override from intent classifier to actual gate system (was dead code)
+   - Fixes: recent but irrelevant memories no longer outrank topically relevant ones

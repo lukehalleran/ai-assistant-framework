@@ -145,7 +145,13 @@ class VisualRetriever:
                 return None
 
             b64 = base64.b64encode(img_bytes).decode("utf-8")
-            media_type = result.get("media_type", "image/png")
+            # Detect actual media type from bytes (compression outputs JPEG)
+            if img_bytes[:3] == b'\xff\xd8\xff':
+                media_type = "image/jpeg"
+            elif img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+                media_type = "image/png"
+            else:
+                media_type = result.get("media_type", "image/jpeg")
             filename = os.path.basename(image_path)
             caption = result.get("caption", "")
 
