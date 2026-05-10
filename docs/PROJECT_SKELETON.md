@@ -1835,6 +1835,7 @@ from config.app_config import config
 - `generate(prompt, model_alias, stream)` → async response
 - `generate_once(prompt, model_name, system_prompt, max_tokens, temperature, top_p)` → single-shot generation. Handles list-of-content-blocks responses (e.g. Anthropic extended thinking) by extracting text blocks. Passes `extra_body={"reasoning": {"effort": "medium"}}` for reasoning models **[ENHANCED 2026-04-05]**
 - `generate_async(prompt, raw, images, **kwargs)` → async streaming. Passes `extra_body={"reasoning": {"effort": "medium"}}` for reasoning models so thinking arrives via `delta.reasoning_content` (API-level separation) **[ENHANCED 2026-04-05]**
+- `supports_vision(model_name)` → bool - Returns True if model supports image/vision input (GPT-4o+, Claude, Gemini). False for text-only (DeepSeek, GLM). `generate_async()` silently drops images for non-vision models **[NEW 2026-05-10]**
 - `supports_reasoning(model_name)` → bool - Returns True if model may return extended thinking content (Anthropic Claude, DeepSeek-R1). Used by generate_async/generate_once to enable native reasoning, and by orchestrator to skip prompt-based thinking instruction **[ENHANCED 2026-04-05]**
 - `_get_client(provider)` → Provider-specific client
 - `_map_alias_to_model(alias)` → e.g., "sonnet-4.6" → "anthropic/claude-sonnet-4.6" **[NEW 2026-03-10]**
