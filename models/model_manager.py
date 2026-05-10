@@ -15,6 +15,7 @@ Module Contract
   - load_model(), load_openai_model(), switch_model(), get_active_model_name(), get_embedder()
   - truncate_prompt(): ensures local prompts fit context window
   - supports_tools(): checks if a model supports function/tool calling
+  - supports_vision(model_name): returns True if model supports image/vision input (GPT-4o+, Claude, Gemini; False for DeepSeek, GLM). generate_async() silently drops images for non-vision models [NEW 2026-05-10]
   - supports_reasoning(model_name): returns True if model may return extended thinking/reasoning content (Anthropic Claude, DeepSeek-R1) [NEW 2026-03-26]
   - generate_once(): handles list-of-content-blocks responses (Anthropic extended thinking) by extracting text blocks [ENHANCED 2026-03-26]
   - generate_async() and generate_once(): pass extra_body={"reasoning": {"effort": "medium"}} for
@@ -814,6 +815,42 @@ class ModelManager:
             logger.error(f"[generate_once] Model '{target_model}' is not recognized.")
             raise ValueError(f"[ModelManager] Model '{target_model}' is not recognized as a local or registered API model.")
 
+    def supports_vision(self, model_name: str = None) -> bool:
+        """Check if a model supports image/vision input.
+
+        Args:
+            model_name: Model name to check. Uses active model if None.
+
+        Returns:
+            bool: True if model supports multimodal image input
+        """
+        target_model = model_name or self.active_model_name
+        if not target_model:
+            return False
+
+        # Local models don't support vision
+        if target_model in self.models:
+            return False
+
+        if target_model in self.api_models:
+            full_model = self.api_models[target_model].lower()
+
+            # Models known to support vision/image input
+            vision_capable_patterns = [
+                "gpt-4o", "gpt-4.1", "gpt-5",
+                "claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
+                "gemini",
+            ]
+            # Explicitly exclude text-only models
+            text_only_patterns = [
+                "deepseek", "glm",
+            ]
+            if any(pattern in full_model for pattern in text_only_patterns):
+                return False
+            return any(pattern in full_model for pattern in vision_capable_patterns)
+
+        return False
+
     def supports_tools(self, model_name: str = None) -> bool:
         """
         Check if a model supports function/tool calling.
@@ -985,6 +1022,12 @@ class ModelManager:
         logger.debug(f"[generate_async] Active model: {target_model}")
         logger.debug(f"[generate_async] Registered OpenAI models: {self.api_models}")
         logger.debug(f"[generate_async] Registered local models: {self.models}")
+
+        # Drop images for models that don't support vision input
+        if images and not self.supports_vision(target_model):
+            logger.warning(f"[generate_async] Dropping {len(images)} images — {target_model} does not support vision input")
+            images = None
+
         if images:
             total_size = sum(len(img.get("data", "")) for img in images)
             logger.warning(f"[generate_async] {len(images)} images included for multimodal processing, total base64={total_size//1024}KB")

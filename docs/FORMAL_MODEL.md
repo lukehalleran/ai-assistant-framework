@@ -533,7 +533,7 @@ C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U 
 | Reference | `obsidian_notes`, `reference_docs` | User notes + system docs. Protected from dedup. Gated at 0.30 threshold. |
 | Meta | `reflections`, `threads`, `proposals` | Session insights + open loops + code plans. Priority-scored (threads). |
 | Synthesis | `synthesis_results` | Cross-domain insights with convergence tracking. Produced by shutdown dreaming. |
-| Visual | `visual_memories` | CLIP-embedded image metadata for visual recall. |
+| Visual | `visual_memories` | CLIP-embedded image metadata for visual recall. Intent-gated (disabled for casual/emotional/meta). Images dropped for non-vision models. |
 
 **Knowledge graph** G provides a secondary index over C_semantic. Nodes are entities, edges are relations extracted from facts. Objects with 4+ words are stored as node metadata (not nodes) to prevent junk.
 
