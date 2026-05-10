@@ -133,7 +133,7 @@ _PROFILES: Dict[IntentType, dict] = {
     },
     IntentType.CASUAL_SOCIAL: {
         "weights": {
-            "relevance": 0.20, "recency": 0.35, "truth": 0.10,
+            "relevance": 0.35, "recency": 0.20, "truth": 0.10,
             "importance": 0.05, "continuity": 0.25, "structure": 0.05,
         },
         "retrieval": {

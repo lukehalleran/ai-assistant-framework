@@ -290,6 +290,21 @@ class VisualMemoryStore:
             self.load()
         return image_hash in self._hash_set
 
+    def get_visual_entity_ids(self) -> set:
+        """Return the set of entity IDs that have at least one stored image.
+
+        Used for entity-gated retrieval: only run CLIP search when the query
+        mentions an entity that has visual memories.
+        """
+        if not self._loaded:
+            self.load()
+        ids: set = set()
+        for m in self._metadata:
+            for eid in m.get("entity_ids", []):
+                if eid:
+                    ids.add(eid.lower())
+        return ids
+
     def get_stats(self) -> Dict[str, Any]:
         """Return collection statistics."""
         if not self._loaded:

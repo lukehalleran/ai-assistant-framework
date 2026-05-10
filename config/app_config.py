@@ -166,6 +166,10 @@ logger.info("Loading configuration...")
 config = load_yaml_config("config.yaml")
 config = ensure_config_defaults(config)
 
+# Validate config against Pydantic schema (fail-fast on startup)
+from config.schema import validate_config
+config = validate_config(config)
+
 # Extract commonly used values
 VERSION = config.get("daemon", {}).get("version")
 DEFAULT_DATA_DIR = config.get("daemon", {}).get("data_dir")

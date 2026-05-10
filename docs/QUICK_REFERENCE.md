@@ -1317,6 +1317,13 @@ VISUAL_MEMORY_MAX_IMAGES = 3            # Max images returned per query
 VISUAL_MEMORY_CAPTION_MODEL = None      # Vision LLM for captions (None = default model)
 VISUAL_MEMORY_FAISS_PATH = "data/visual_faiss.index"  # CLIP vector index path
 VISUAL_MEMORY_DEDUP_ENABLED = True      # SHA-256 content dedup on ingestion
+# Retrieval: entity-gated (only fires when query mentions an entity with stored images)
+# Backfill: scripts/backfill_visual_entities.py (profile-aware re-captioning + entity tagging)
+
+# Config Schema Validation [NEW 2026-05-10]
+# config/schema.py — Pydantic v2 validation for config.yaml (44 section models)
+# Validates at startup after YAML load, before constant extraction
+# validate_config(config) → returns dict unchanged or sys.exit(1) with errors
 
 # LLM Compression [NEW 2026-03-26]
 LLM_COMPRESSION_ENABLED = True         # Use LLM to compress heavily oversized items

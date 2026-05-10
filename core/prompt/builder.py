@@ -676,6 +676,21 @@ class UnifiedPromptBuilder:
                 scorer._graph_memory = getattr(self.memory_coordinator, 'graph_memory', None)
                 scorer._entity_resolver = getattr(self.memory_coordinator, 'entity_resolver', None)
 
+            # Apply intent-driven gate threshold override (cleared after gather)
+            _gate_override = kwargs.get('_gate_threshold_override')
+            _saved_gate_threshold = None
+            _gate_obj = None
+            if _gate_override is not None:
+                # Access the gate system (triggers lazy init via property)
+                _gs = self.context_gatherer.gate_system
+                if _gs is not None:
+                    # MultiStageGateSystem wraps CosineSimilarityGateSystem as .gate_system
+                    _gate_obj = getattr(_gs, 'gate_system', _gs)
+                    if hasattr(_gate_obj, 'cosine_threshold'):
+                        _saved_gate_threshold = _gate_obj.cosine_threshold
+                        _gate_obj.cosine_threshold = _gate_override
+                        logger.info(f"[BUILD_PROMPT] Gate threshold override: {_saved_gate_threshold:.3f} -> {_gate_override:.3f}")
+
             # Step 3: Launch parallel data gathering tasks with per-task timing
             tasks = {}
             task_timings = {}
@@ -856,6 +871,9 @@ class UnifiedPromptBuilder:
                 if scorer:
                     scorer._graph_memory = None
                     scorer._entity_resolver = None
+                # Restore gate threshold (set before gather)
+                if _saved_gate_threshold is not None and _gate_obj is not None:
+                    _gate_obj.cosine_threshold = _saved_gate_threshold
 
             # Step 3: Post-fetch processing
 
@@ -1371,9 +1389,11 @@ class UnifiedPromptBuilder:
         # Extract intent overrides (if intent classifier ran)
         retrieval_overrides = {}
         weight_overrides = {}
+        gate_threshold_override = None
         if hasattr(context, 'intent') and context.intent is not None:
             retrieval_overrides = context.intent.retrieval_overrides or {}
             weight_overrides = context.intent.weight_overrides or {}
+            gate_threshold_override = getattr(context.intent, 'gate_threshold_override', None)
 
         # Extract intent type for web search gating
         _intent_type = None
@@ -1397,6 +1417,7 @@ class UnifiedPromptBuilder:
             weight_overrides=weight_overrides,
             intent_type=_intent_type,
             _suppress_reference_docs=context.has_files,
+            _gate_threshold_override=gate_threshold_override,
         )
 
     async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None,
