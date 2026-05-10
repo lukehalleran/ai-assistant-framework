@@ -127,6 +127,7 @@ _PROFILES: Dict[IntentType, dict] = {
             "max_dreams": 3,
             "max_reflections": 8,   # eval: KEEP for emotional (50%/100%)
             "max_narrative": 5,     # eval: KEEP (100%/50%)
+            "max_visual_memories": 0,
         },
         "gate": 0.35,
     },
@@ -145,6 +146,7 @@ _PROFILES: Dict[IntentType, dict] = {
             "max_narrative": 0,         # eval: DROP (27%/33%)
             "max_user_uploads": 0,      # eval: DROP (25%/40%)
             "max_proactive": 0,         # eval: low-impact (29%/14%)
+            "max_visual_memories": 0,   # no images for greetings/chat
         },
         "gate": 0.65,
     },
@@ -180,6 +182,7 @@ _PROFILES: Dict[IntentType, dict] = {
             "max_summaries": 5,         # reduced from 10
             "max_reflections": 0,       # eval: DROP (0%/0% for meta)
             "max_reference_docs": 15,   # eval: KEEP? (100%/33%)
+            "max_visual_memories": 0,
         },
         "gate": 0.30,
     },

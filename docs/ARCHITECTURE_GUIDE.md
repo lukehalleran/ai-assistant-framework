@@ -652,7 +652,10 @@ and fetches from a different source or collection:
 | User profile | UserProfile | 3000 tokens | Categorized facts |
 
 All retrieval counts are overridable per-intent. CASUAL_SOCIAL reduces
-most limits; EMOTIONAL_SUPPORT increases recent conversation retrieval.
+most limits (including `max_visual_memories=0` to skip image retrieval
+for greetings); EMOTIONAL_SUPPORT and META_CONVERSATIONAL also disable
+visual memories. Image passing is further gated by `supports_vision()` —
+non-vision models (DeepSeek, GLM) never receive image data.
 
 ### Small-Talk Short Circuit
 
@@ -2241,6 +2244,10 @@ Arrows indicate "calls" or "data flows to."
 - `generate_once_with_tools(prompt, tools, tool_choice)` — For agentic
   workflows. Returns raw completion with `response.tool_calls`.
 - `supports_tools(model_name)` — Whether the model supports function calling.
+- `supports_vision(model_name)` — Whether the model supports image/vision
+  input (GPT-4o+, Claude, Gemini). Returns False for text-only models
+  (DeepSeek, GLM). `generate_async()` silently drops images for non-vision
+  models to prevent API errors.
 - `supports_reasoning(model_name)` — Whether the model may return extended
   thinking blocks (Claude, DeepSeek-R1). Used by generate_async/generate_once
   to enable native reasoning, and by orchestrator to skip prompt-based
