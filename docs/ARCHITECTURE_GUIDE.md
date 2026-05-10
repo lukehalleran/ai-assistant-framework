@@ -831,7 +831,7 @@ end for maximum attention weight:
 [DREAMS]                           — if enabled
 [USER'S PERSONAL NOTES]            — if available (Obsidian, gated 0.30)
 [USER UPLOADED ITEMS]              — if files uploaded
-[VISUAL MEMORIES]                  — if available (CLIP-matched images)
+[VISUAL MEMORIES]                  — if available (entity-gated CLIP retrieval)
 [DAEMON DOCUMENTATION]             — if available (reference docs)
 [PROJECT COMMIT HISTORY]           — if available (git)
 [ADAPTIVE WORKFLOWS]               — if available (procedural skills)

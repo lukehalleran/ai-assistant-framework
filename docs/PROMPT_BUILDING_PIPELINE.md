@@ -204,7 +204,7 @@ high-attention items (user profile, time, query) placed last:
 10. `[DREAMS]` — synthesis insights, if enabled (up to 3; all generators currently disabled in config.yaml pending grading validation)
 11. `[USER'S PERSONAL NOTES]` — Obsidian vault (1-5)
 12. `[USER UPLOADED ITEMS]` — uploaded documents (1-5)
-13. `[VISUAL MEMORIES]` — CLIP-matched image metadata (if available; intent-gated: disabled for CASUAL_SOCIAL, EMOTIONAL_SUPPORT, META_CONVERSATIONAL; model-gated: images dropped for non-vision models)
+13. `[VISUAL MEMORIES]` — CLIP-matched image metadata (if available; entity-gated: only retrieves when query mentions an entity with stored images; model-gated: images dropped for non-vision models)
 14. `[DAEMON DOCUMENTATION]` — reference docs (1-5)
 15. `[PROJECT COMMIT HISTORY]` — git commits (varies)
 16. `[ADAPTIVE WORKFLOWS]` — procedural skills (1-5)
