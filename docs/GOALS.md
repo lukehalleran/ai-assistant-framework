@@ -258,7 +258,7 @@ These systems are complete and working. Listed here for context, not as active w
 - 3-tier agentic trigger in `gui/handlers.py`: keyword heuristic → knowledge graph entity match → LLM fallback
 - Memory keyword list (20 phrases): "do you remember", "my notes", "search your memory", etc.
 - Entity match via `extract_graph_entities()`: queries mentioning known entities (Flapjack, Auggie, etc.) auto-route to agentic memory search
-- LLM `needs_memory_search` field added to `WebSearchDecision` — piggybacks on existing web search trigger call (zero extra cost)
+- LLM `needs_memory_search` field added to `WebSearchDecision` — piggybacks on existing web search trigger call (zero extra cost). Memory search takes priority over web search when LLM returns both.
 - Fixed casual skip filter: `'no'` prefix was matching `'now'` (startswith bug); entity/keyword checks now run before skip filter
 - `skip_initial_search=True` for memory queries — skips web search, ReAct loop goes straight to `search_memory` tool
 

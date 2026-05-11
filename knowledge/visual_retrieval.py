@@ -82,20 +82,34 @@ class VisualRetriever:
         # Merge + deduplicate by image_path, boost entity matches
         merged = self._merge_results(clip_results, text_results, query=query)
 
-        # Entity hard-filter: when multiple entities match, prioritize results
-        # that contain the entity being *asked about* (not just mentioned).
-        # Strategy: if target_entities provided, keep only images matching at
-        # least one target entity. If that leaves nothing, fall back to all.
+        # Entity hard-filter: keep only images matching at least one target entity.
+        # When CLIP can't rank the target above other images (e.g. 8 Flapjack
+        # images outrank 2 Paczki images because CLIP just sees "cat"), fall
+        # back to direct entity lookup from metadata.
         if target_entities and len(merged) > 0:
             filtered = [
                 r for r in merged
                 if {e.lower() for e in r.get("entity_ids", [])} & target_entities
             ]
+            # CLIP missed the target — fetch directly by entity tag
+            if not filtered:
+                filtered = self._store.get_by_entity(target_entities)
+                if filtered:
+                    logger.info(
+                        f"[VisualRetrieval] Entity direct lookup: {len(filtered)} results "
+                        f"for {target_entities} (CLIP missed them)"
+                    )
             if filtered:
                 merged = filtered
                 logger.info(
                     f"[VisualRetrieval] Entity filter: {len(filtered)} results "
                     f"match target entities {target_entities}"
+                )
+            else:
+                # Target entity has no images at all
+                merged = []
+                logger.warning(
+                    f"[VisualRetrieval] Entity filter: 0 results for {target_entities}"
                 )
 
         # Build text_results for prompt section (all results)

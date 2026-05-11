@@ -730,7 +730,7 @@ Side effects: None (pure computation, no LLM calls)
 **Key Types**:
 ```python
 class IntentType(str, Enum):
-    FACTUAL_RECALL       # "What's my dog's name?"
+    FACTUAL_RECALL       # "What's my dog's name?", "do you see X", "show me X"
     TEMPORAL_RECALL      # "What happened last week?"
     EMOTIONAL_SUPPORT    # "I feel so sad"
     CASUAL_SOCIAL        # "hey", "thanks", "bye"
@@ -1451,7 +1451,7 @@ else:
   - Budget-enforced accumulated context: `_append_accumulated()` trims oldest rounds when `accumulated_context` exceeds `context_budget_tokens` (default 8000) **[NEW 2026-03-28]**
   - Budget-aware final prompt: `_build_final_prompt()` trims low-value sections (dreams, reflections, docs, summaries) if total exceeds ceiling, preserving recent conversations and agentic results **[NEW 2026-03-28]**
   - Falls back gracefully on errors
-  - `_compute_context_inventory(initial_context)` → Summarizes available context (collections, user profile, graph entities) for LLM awareness **[NEW 2026-03-20]**
+  - `_compute_context_inventory(initial_context)` → Summarizes available context (user profile, summaries, memories, notes, docs, dreams, visual memories, git commits, knowledge graph, threads, proactive insights) for LLM awareness **[ENHANCED 2026-05-11]**
   - Memory search diversity tracking: per-collection search counts prevent redundant queries **[NEW 2026-03-20]**
 
 **core/agentic/tools.py** - Tool execution **[NEW 2026-05]**
@@ -1549,7 +1549,7 @@ agentic_search:
       - Tier 1: Keyword heuristic — computation keywords (`calculate`, `solve`, etc.) OR memory keywords (`do you remember`, `my notes`, `search your memory`, etc.)
       - Tier 1b: Knowledge keywords [NEW 2026-03-31] — encyclopedic/wiki intent (`explain in depth`, `how does`, `what is the difference between`, `consult wikipedia`, etc.). Only fires for substantive queries (4+ words) when no computation/memory trigger matched.
       - Tier 2: Entity match — `extract_graph_entities()` checks query against knowledge graph alias index; if known entity found (e.g., "Flapjack", "Auggie"), triggers memory search
-      - Tier 3: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call; `needs_memory_search` or `needs_knowledge_search` fields catch structurally obvious recall/encyclopedic queries the keywords missed
+      - Tier 3: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call; `needs_memory_search` or `needs_knowledge_search` fields catch structurally obvious recall/encyclopedic queries the keywords missed. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
     - Casual skip filter (< 5 words, "nice"/"thanks"/etc.) only applies when no keyword/entity/knowledge trigger fired
     - `skip_initial_search=True` for computation, memory, and knowledge queries (skips Round 1 web search)
     - Routes through `AgenticSearchController.run_agentic_search()`
@@ -2155,15 +2155,16 @@ WebSearchDecision(
 
 **Heuristic Detection** (Fallback - Multi-Signal Scoring):
 1. **Strong recency keywords** (+0.4): "latest", "current", "today", "right now", "breaking"
-2. **Moderate recency keywords** (+0.2): "recent", "new", "update", "now"
+2. **Moderate recency keywords** (+0.2): "recent", "new", "now"
 3. **Explicit search requests** (+0.5): "search for", "look up", "find out about"
-4. **News/events keywords** (+0.3): "news", "happening", "announced", "released"
-5. **Fast-changing topics** (+0.25): sports scores, stock prices, weather, elections
+4. **News/events keywords** (+0.3): "news", "happening", "announced", "released" (note: "update"/"updates" removed — too broad for personal-context queries)
+5. **Fast-changing topics** (+0.25): sports scores, stock prices, weather, elections (note: "update"/"patch" removed — too broad)
 6. **Year patterns** (+0.15): "2024", "2025", "2026", "this year"
 
 **Suppression Rules**:
 - Static/timeless queries: definitions, how-to, history → No search
 - Suppression keywords: "always", "generally", "in theory"
+- Visual/perception queries: "do you see", "can you see", "do you recognize", "what do you see" → Suppressed (personal recall, not web)
 - Crisis levels HIGH/MEDIUM → Search suppressed
 
 **Key Functions**:

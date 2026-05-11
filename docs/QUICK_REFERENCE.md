@@ -274,7 +274,7 @@ ESCALATION_DEESCALATION_WINDOW = 2  # Consecutive calm before gentle ends
 ```python
 # core/intent_classifier.py — Regex-first query intent classification (no LLM calls)
 class IntentType(str, Enum):
-    FACTUAL_RECALL       # "What's my dog's name?"
+    FACTUAL_RECALL       # "What's my dog's name?", "do you see X", "show me X"
     TEMPORAL_RECALL      # "What happened last week?"
     EMOTIONAL_SUPPORT    # "I feel so sad"
     CASUAL_SOCIAL        # "hey", "thanks", "bye"
@@ -1714,7 +1714,7 @@ class MemoryConsolidator:
 1. **Keyword heuristic** (0ms): computation keywords OR memory keywords ("do you remember", "my notes", etc.)
 1b. **Knowledge keywords** (0ms) [NEW 2026-03-31]: encyclopedic/wiki intent (`explain in depth`, `how does`, `consult wikipedia`, etc.) — fires for 4+ word queries when no computation/memory trigger matched
 2. **Entity match** (0ms): `extract_graph_entities()` checks query against knowledge graph aliases; known entities (e.g. "Flapjack") trigger memory search
-3. **LLM fallback**: piggybacks on `analyze_for_web_search_llm()`; `needs_memory_search` or `needs_knowledge_search` fields in `WebSearchDecision` catch structural recall/encyclopedic queries
+3. **LLM fallback**: piggybacks on `analyze_for_web_search_llm()`; `needs_memory_search` or `needs_knowledge_search` fields in `WebSearchDecision` catch structural recall/encyclopedic queries. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
 
 Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/entity/knowledge trigger fired.
 `skip_initial_search=True` for computation, memory, and knowledge queries.
