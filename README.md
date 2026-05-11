@@ -543,9 +543,3 @@ See [config/app_config.py](config/app_config.py) for the full list of 180+ confi
 - Wikipedia FAISS index + metadata: ~14.5GB (optional, [download from HuggingFace](https://huggingface.co/datasets/PaczkiLives/daemon-wiki-faiss))
 - Logs: ~1MB/day
 
----
-
-## TODO
-
-- [ ] Add GitHub Actions CI workflow (fast test subset)
-- [ ] Update GitHub repo description: *"Local-first AI assistant framework with persistent memory, RAG, knowledge graph retrieval, agentic tools, evals, Docker, and desktop packaging."*
