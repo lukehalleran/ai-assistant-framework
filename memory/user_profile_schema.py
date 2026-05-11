@@ -65,6 +65,12 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "location": ProfileCategory.IDENTITY,
     "lives_in": ProfileCategory.IDENTITY,
     "timezone": ProfileCategory.IDENTITY,
+    "belief": ProfileCategory.IDENTITY,
+    "belief_system": ProfileCategory.IDENTITY,
+    "religious_transition": ProfileCategory.IDENTITY,
+    "self_perception": ProfileCategory.IDENTITY,
+    "self_assessment": ProfileCategory.IDENTITY,
+    "height": ProfileCategory.IDENTITY,
 
     # Education
     "degree": ProfileCategory.EDUCATION,
@@ -73,6 +79,7 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "gpa": ProfileCategory.EDUCATION,
     "courses_taken": ProfileCategory.EDUCATION,
     "certification": ProfileCategory.EDUCATION,
+    "university": ProfileCategory.EDUCATION,
 
     # Career
     "works_at": ProfileCategory.CAREER,
@@ -87,12 +94,17 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "job_status": ProfileCategory.CAREER,
     "internship_application_status": ProfileCategory.CAREER,
     "internship_priority": ProfileCategory.CAREER,
+    "hourly_wage": ProfileCategory.CAREER,
 
     # Projects
     "project_name": ProfileCategory.PROJECTS,
     "tech_stack": ProfileCategory.PROJECTS,
     "project_status": ProfileCategory.PROJECTS,
     "building": ProfileCategory.PROJECTS,
+    "lines_of_code": ProfileCategory.PROJECTS,
+    "python_lines_of_code": ProfileCategory.PROJECTS,
+    "total_lines_added": ProfileCategory.PROJECTS,
+    "article_count": ProfileCategory.PROJECTS,
 
     # Health
     "condition": ProfileCategory.HEALTH,
@@ -100,6 +112,21 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "supplement": ProfileCategory.HEALTH,
     "symptom": ProfileCategory.HEALTH,
     "sleep_pattern": ProfileCategory.HEALTH,
+    "feeling": ProfileCategory.HEALTH,
+    "feelings": ProfileCategory.HEALTH,
+    "meal": ProfileCategory.HEALTH,
+    "meal_choice": ProfileCategory.HEALTH,
+    "meal_situation": ProfileCategory.HEALTH,
+    "caloric_intake": ProfileCategory.HEALTH,
+    "caffeine_intake": ProfileCategory.HEALTH,
+    "drank_alcohol": ProfileCategory.HEALTH,
+    "alcohol_consumption": ProfileCategory.HEALTH,
+    "energy_level": ProfileCategory.HEALTH,
+    "beverage": ProfileCategory.HEALTH,
+    "headache": ProfileCategory.HEALTH,
+    "blood_pressure": ProfileCategory.HEALTH,
+    "kratom_dose": ProfileCategory.HEALTH,
+    "kratom_effects": ProfileCategory.HEALTH,
 
     # Fitness
     "squat_max": ProfileCategory.FITNESS,
@@ -108,6 +135,8 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "ohp_max": ProfileCategory.FITNESS,
     "body_weight": ProfileCategory.FITNESS,
     "fitness_goal": ProfileCategory.FITNESS,
+    "foam_roller_use": ProfileCategory.FITNESS,
+    "barbell_curl_estimate": ProfileCategory.FITNESS,
 
     # Preferences
     "prefers": ProfileCategory.PREFERENCES,
@@ -117,6 +146,9 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "favorite_beer": ProfileCategory.PREFERENCES,
     "favorite_video_game": ProfileCategory.PREFERENCES,
     "formatting_preference": ProfileCategory.PREFERENCES,
+    "opinion": ProfileCategory.PREFERENCES,
+    "dislike": ProfileCategory.PREFERENCES,
+    "drink_preference": ProfileCategory.PREFERENCES,
 
     # Hobbies
     "hobby": ProfileCategory.HOBBIES,
@@ -137,18 +169,30 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "insurance": ProfileCategory.FINANCE,
     "budget": ProfileCategory.FINANCE,
     "financial_goal": ProfileCategory.FINANCE,
+    "spending_on_deepseek": ProfileCategory.FINANCE,
+    "fafsa_filed": ProfileCategory.FINANCE,
+    "need_to_refile": ProfileCategory.FINANCE,
+    "credit_card_debt": ProfileCategory.FINANCE,
 
     # Relationships
     "family_member": ProfileCategory.RELATIONSHIPS,
     "friend": ProfileCategory.RELATIONSHIPS,
     "manager": ProfileCategory.RELATIONSHIPS,
     "reports_to": ProfileCategory.RELATIONSHIPS,
+    "dinner_with": ProfileCategory.RELATIONSHIPS,
+    "matches_on_bumble": ProfileCategory.RELATIONSHIPS,
+    "matches_on_dating_app": ProfileCategory.RELATIONSHIPS,
+    "dating_app_usage": ProfileCategory.RELATIONSHIPS,
+    "language_exchange": ProfileCategory.RELATIONSHIPS,
 
     # Goals
     "goal": ProfileCategory.GOALS,
     "plan": ProfileCategory.GOALS,
     "wants_to": ProfileCategory.GOALS,
     "intends_to": ProfileCategory.GOALS,
+    "priority": ProfileCategory.GOALS,
+    "main_priority": ProfileCategory.GOALS,
+    "aspiration": ProfileCategory.GOALS,
 }
 
 @dataclass
@@ -376,6 +420,11 @@ _PREFIX_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     # Finance
     "financial": ProfileCategory.FINANCE, "budget": ProfileCategory.FINANCE,
     "insurance": ProfileCategory.FINANCE, "paycheck": ProfileCategory.FINANCE,
+    "spending": ProfileCategory.FINANCE, "fafsa": ProfileCategory.FINANCE,
+    # Health (nutrition / substance)
+    "meal": ProfileCategory.HEALTH, "caloric": ProfileCategory.HEALTH,
+    "food": ProfileCategory.HEALTH, "kratom": ProfileCategory.HEALTH,
+    "energy": ProfileCategory.HEALTH, "caffeine": ProfileCategory.HEALTH,
     # Hobbies
     "pet": ProfileCategory.HOBBIES, "hobby": ProfileCategory.HOBBIES,
     "game": ProfileCategory.HOBBIES, "video": ProfileCategory.HOBBIES,
@@ -384,6 +433,8 @@ _PREFIX_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     # Identity
     "nickname": ProfileCategory.IDENTITY, "birthday": ProfileCategory.IDENTITY,
     "timezone": ProfileCategory.IDENTITY, "location": ProfileCategory.IDENTITY,
+    "belief": ProfileCategory.IDENTITY, "religious": ProfileCategory.IDENTITY,
+    "self": ProfileCategory.IDENTITY,
     # Education
     "school": ProfileCategory.EDUCATION, "degree": ProfileCategory.EDUCATION,
     "program": ProfileCategory.EDUCATION,
@@ -403,6 +454,8 @@ _CATEGORY_TOKENS: Dict[ProfileCategory, Set[str]] = {
         "supplement", "dosage", "vitamin", "anxiety", "depression", "fatigue",
         "sick", "illness", "pain", "doctor", "diagnosis", "prescription",
         "nap", "insomnia", "apnea", "disorder", "mental", "vyvanse", "vryalar",
+        "meal", "food", "drink", "energy", "caffeine", "alcohol", "headache",
+        "blood", "pressure", "kratom", "feeling",
     },
     ProfileCategory.STUDY: {
         "homework", "study", "exam", "midterm", "final", "course", "lecture",
@@ -417,6 +470,7 @@ _CATEGORY_TOKENS: Dict[ProfileCategory, Set[str]] = {
     ProfileCategory.PROJECTS: {
         "project", "tech", "stack", "codebase", "feature", "code", "build",
         "deploy", "refactor", "bug", "test", "api", "daemon", "repo",
+        "lines", "nodes", "edges", "tool",
     },
     ProfileCategory.GOALS: {
         "goal", "plan", "want", "intend", "upcoming", "future", "aspire",
@@ -430,17 +484,21 @@ _CATEGORY_TOKENS: Dict[ProfileCategory, Set[str]] = {
     ProfileCategory.FINANCE: {
         "financial", "money", "budget", "insurance", "paycheck", "debt",
         "expense", "cost", "credit", "saving", "income", "rent",
+        "fafsa", "loan", "tuition", "spending", "wage",
     },
     ProfileCategory.HOBBIES: {
         "pet", "hobby", "game", "interest", "cat", "dog", "kitten",
         "music", "movie", "book", "sport", "play", "craft",
+        "concert", "album", "band", "travel", "trip", "vacation",
     },
     ProfileCategory.PREFERENCES: {
         "favorite", "likes", "prefers", "dislikes", "preference", "opinion",
+        "dislike", "prefer",
     },
     ProfileCategory.IDENTITY: {
         "name", "called", "location", "lives", "nickname", "birthday",
         "age", "timezone", "born", "gender", "pronouns",
+        "belief", "religious", "personality", "self", "height",
     },
     ProfileCategory.EDUCATION: {
         "school", "degree", "gpa", "program", "university", "college",
@@ -662,12 +720,7 @@ def categorize_relation(relation: str) -> ProfileCategory:
     """
     relation_lower = relation.lower().strip()
 
-    # Check persistent cache first (covers Layer 4+5 results from prior runs)
-    cached = _category_cache.get(relation_lower)
-    if cached is not None:
-        return cached
-
-    # Layer 1: Direct lookup (fastest, most reliable)
+    # Layer 1: Direct lookup (fastest, most reliable — always authoritative)
     if relation_lower in RELATION_CATEGORY_MAP:
         return RELATION_CATEGORY_MAP[relation_lower]
 
@@ -676,6 +729,11 @@ def categorize_relation(relation: str) -> ProfileCategory:
     prefix = tokens[0] if tokens else ""
     if prefix in _PREFIX_CATEGORY_MAP:
         return _PREFIX_CATEGORY_MAP[prefix]
+
+    # Check persistent cache (covers Layer 3/4/5 results from prior runs)
+    cached = _category_cache.get(relation_lower)
+    if cached is not None:
+        return cached
 
     # Layer 3: Token overlap scoring
     rel_tokens = {t for t in tokens if len(t) > 2}

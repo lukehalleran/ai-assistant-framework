@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-05-09
+**Last Updated**: 2026-05-11
 
 ---
 
@@ -961,8 +961,10 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
 - `SCHEMA_VERSION = "2.0"` — auto-migration from 1.0
 - `ProfileCategory` enum: 12 life domains (identity, education, career, projects, health, fitness, preferences, hobbies, study, finance, relationships, goals)
 - `ProfileFact` dataclass: relation, value, category, confidence, timestamp, source_excerpt, **fact_id** (UUID), **is_current** (bool), **supersedes** (fact_id of replaced fact)
-- `RELATION_CATEGORY_MAP`: 40+ predefined relation→category mappings
-- `categorize_relation(relation)`: Direct lookup + heuristic fallbacks (pattern matching)
+- `RELATION_CATEGORY_MAP`: ~100 predefined relation→category mappings (direct lookup)
+- `_PREFIX_CATEGORY_MAP`: ~60 prefix→category mappings (first underscore-delimited token)
+- `_CATEGORY_TOKENS`: ~30 category keyword sets for token overlap scoring
+- `categorize_relation(relation)`: 6-layer cascade (direct lookup → prefix → cache → token overlap → embedding similarity → default PREFERENCES)
 
 **user_profile.py**:
 - `UserProfile` class: Persistent manager for categorized user facts
@@ -994,7 +996,7 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
 
 **Ephemeral Pruning** (prevents unbounded growth of temporal facts):
 - When category size exceeds `PROFILE_CATEGORY_SOFT_CAP` (default: 50)
-- Only prunes relations listed in `PROFILE_EPHEMERAL_RELATIONS` (current_feeling, is, has, thinks, etc.)
+- Ephemeral detection uses 4 layers: config list, exact-match set (`meal`, `drank_alcohol`, `meeting_with`, etc.), prefix patterns (`scheduled_`, `signed_up_`, `meeting_with_`, `current_`, `recent_`, etc.), suffix patterns (`_appointment`, `_meeting`, `_intake`, `_consumption`, etc.)
 - Keeps at most `PROFILE_EPHEMERAL_MAX_HISTORY` (default: 20) historical entries per ephemeral relation
 - Non-ephemeral relations (name, squat_max, etc.) are never pruned
 
@@ -5721,7 +5723,7 @@ if IS_FROZEN:
 
 This document compresses a ~143K LOC codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2026-05-09
+**Last Updated**: 2026-05-11
 
 **Recent Changes** (2026-05-09):
 - **Eval System** (Section 2.15j) — Full prompt section ablation & eval system (Phases 1-2, 4-6). Snapshot capture, variant generation (LOO/AOI/bundle/reorder), side-effect-free generation harness, pairwise judge, objective checks. 246 tests.

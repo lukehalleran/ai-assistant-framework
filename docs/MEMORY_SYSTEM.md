@@ -1,6 +1,6 @@
 # Memory System Operations Guide
 
-*Last verified: 2026-05-09*
+*Last verified: 2026-05-11*
 
 Operational guide for Daemon's 5-tier hierarchical memory system. Covers the
 full lifecycle from query to retrieval to storage, the scoring algorithm with
@@ -459,19 +459,24 @@ Before storage, every relation name passes through
 of 12 `ProfileCategory` values (identity, education, career, projects, health,
 fitness, preferences, hobbies, study, finance, relationships, goals):
 
-1. **Direct lookup** — `RELATION_CATEGORY_MAP` (~60 entries, exact match)
-2. **Prefix lookup** — first underscore-delimited token checked against `_PREFIX_CATEGORY_MAP` (~50 entries)
-3. **Token overlap** — relation tokens scored against per-category keyword sets (`_CATEGORY_TOKENS`); requires >= 2 matching tokens
-4. **Embedding similarity** — `all-MiniLM-L6-v2` cosine similarity against per-category exemplar phrases (`_CATEGORY_EXEMPLARS`); threshold 0.30. Results cached persistently in `data/category_cache.json`
-5. **Default** — falls back to `PREFERENCES`. For batch/cleanup, `categorize_relation_deep()` adds an LLM micro-call (gpt-4o-mini, 10 tokens) before defaulting
+1. **Direct lookup** — `RELATION_CATEGORY_MAP` (~100 entries, exact match)
+2. **Prefix lookup** — first underscore-delimited token checked against `_PREFIX_CATEGORY_MAP` (~60 entries)
+3. **Cache check** — persistent `data/category_cache.json` checked before heavier layers
+4. **Token overlap** — relation tokens scored against per-category keyword sets (`_CATEGORY_TOKENS`, ~30 categories with keyword sets); requires >= 2 matching tokens
+5. **Embedding similarity** — `all-MiniLM-L6-v2` cosine similarity against per-category exemplar phrases; threshold 0.40. Results cached persistently in `data/category_cache.json`
+6. **Default** — falls back to `PREFERENCES`. For batch/cleanup, `categorize_relation_deep()` adds an LLM micro-call (gpt-4o-mini, 10 tokens) before defaulting
 
 ### Ephemeral vs Snapshot Relations
 
 - **`EPHEMERAL_RELATIONS`** — truly transient state (`current_feeling`, `current_activity`,
-  `plans_today`, `appointment_time`, etc.). Subject to aggressive TTL-based expiry
-  (`PROFILE_EPHEMERAL_TTL_HOURS`, default 24h). Historical entries pruned when
-  category exceeds `PROFILE_CATEGORY_SOFT_CAP` (default 200), keeping at most
-  `PROFILE_EPHEMERAL_MAX_HISTORY` (default 20) old entries per ephemeral relation.
+  `plans_today`, `appointment_time`, etc.). Detection uses 4 layers: config list,
+  exact-match set (`meal`, `drank_alcohol`, `meeting_with`, etc.), prefix patterns
+  (`scheduled_`, `signed_up_`, `meeting_with_`, `current_`, `recent_`, etc.), and
+  suffix patterns (`_appointment`, `_meeting`, `_intake`, `_consumption`, etc.).
+  Subject to aggressive TTL-based expiry (`PROFILE_EPHEMERAL_TTL_HOURS`, default 24h).
+  Historical entries pruned when category exceeds `PROFILE_CATEGORY_SOFT_CAP`
+  (default 200), keeping at most `PROFILE_EPHEMERAL_MAX_HISTORY` (default 20)
+  old entries per ephemeral relation.
 
 - **`SNAPSHOT_RELATIONS`** — measurements/states valid until explicitly changed
   (`current_weight`, `current_bench`, `current_medication`). NOT expired by TTL;

@@ -1268,12 +1268,12 @@ class PromptFormatter:
 
         if vm_lines:
             vm_instruction = (
-                "These images were retrieved from your visual memory based on the current conversation. "
-                "You can SEE these images right now. Only reference an image if it is directly relevant "
-                "to the current topic — if it seems off-topic or tangentially related, ignore it entirely. "
-                "When an image IS relevant, naturally reference what you observe: describe details, "
-                "recognize people or pets by name if you know them, and connect what you see to the "
-                "conversation. Treat these like your own memories of moments you witnessed."
+                "These images were retrieved from your visual memory. "
+                "IMPORTANT: Do NOT mention, describe, or comment on any image unless the user's query "
+                "explicitly asks about photos, images, or the specific subject shown. "
+                "A casual greeting or unrelated question means IGNORE all images completely. "
+                "When an image IS directly relevant to what the user asked, naturally reference what "
+                "you observe and connect it to the conversation."
             )
             sections.append(
                 f"[VISUAL MEMORIES] n={len(vm_lines)}\n{vm_instruction}\n\n" + "\n\n".join(vm_lines)

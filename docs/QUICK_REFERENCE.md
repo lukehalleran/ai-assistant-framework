@@ -1488,7 +1488,7 @@ score = (
 [DREAMS]                       # 10. Synthesis insights (if enabled; all generators currently disabled)
 [USER'S PERSONAL NOTES]        # 11. Obsidian vault notes; post-filtered by PERSONAL_NOTES_GATE_THRESHOLD (0.30)
 [USER UPLOADED ITEMS]          # 12. Persisted user file/image uploads from reference_docs collection
-[VISUAL MEMORIES]              # 12b. CLIP-retrieved image memories with captions (hybrid text+vision search)
+[VISUAL MEMORIES]              # 12b. CLIP-retrieved image memories with captions (entity-gated via extract_graph_entities + intent-proximity disambiguation)
 [DAEMON DOCUMENTATION]         # 13. Self-knowledge: architecture docs, PROJECT_SKELETON
 [PROJECT COMMIT HISTORY]       # 14. Git commit history (procedural memory)
 [ADAPTIVE WORKFLOWS]           # 15. Reusable problem-solving patterns (WHEN/THEN)
@@ -2340,12 +2340,24 @@ class VisualMemoryPipeline:
 # knowledge/visual_retrieval.py — Hybrid retrieval for prompt injection
 class VisualRetriever:
     """Hybrid retrieval: CLIP text→image similarity + ChromaDB text search.
+    Entity hard-filtering via target_entities parameter.
     Returns results in note_images format for prompt builder."""
 
-    async def retrieve(query, max_images=3) -> List[Dict]:
+    async def retrieve(query, max_images=3, target_entities=None) -> List[Dict]:
         """Hybrid search: CLIP text embedding vs stored image embeddings + ChromaDB caption search.
-        Merges and deduplicates results, returns note_images-compatible format."""
+        Merges and deduplicates results. When target_entities provided, hard-filters
+        to images tagged with at least one target entity (falls back to all on empty).
+        Returns note_images-compatible format."""
 
+
+# Entity-gated retrieval (gatherer_knowledge.py:get_visual_memories):
+#   A. Filter junk caption artifacts from stored entity IDs (_VISUAL_JUNK_IDS)
+#   B. Entity resolution via extract_graph_entities() (alias-aware)
+#   C. Substring fallback for visual-only entities not in graph
+#   D. Multi-entity disambiguation via intent-proximity (_VISUAL_INTENT_WORDS)
+#   E. Pass target_entities to VisualRetriever for hard-filtering
+# Short messages (<=5 words) without intent override suppress retrieval.
+# Prompt instruction: do not mention images unless user explicitly asks.
 
 # Integration:
 # - Collection: 'visual_memories' in ChromaDB (13 total collections)
@@ -2420,6 +2432,6 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-**Last verified**: 2026-05-09
+**Last verified**: 2026-05-11
 
 This document provides instant lookup for critical functions and patterns.
