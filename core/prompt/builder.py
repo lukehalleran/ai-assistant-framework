@@ -660,6 +660,11 @@ class UnifiedPromptBuilder:
             eff_max_user_uploads = _ro.get("max_user_uploads", PROMPT_MAX_USER_UPLOADS)
             eff_max_proactive = _ro.get("max_proactive", PROMPT_MAX_PROACTIVE_INSIGHTS)
             eff_max_visual_memories = _ro.get("max_visual_memories", PROMPT_MAX_VISUAL_MEMORIES)
+            # Defensive fallback: if no intent overrides available (intent=None),
+            # suppress visual memory for very short messages (likely casual greetings)
+            if not _ro and len(user_input.split()) <= 5:
+                eff_max_visual_memories = 0
+                logger.debug("[BUILD_PROMPT] No intent overrides + short message — suppressing visual memory")
             eff_max_personal_notes = _ro.get("max_personal_notes", PROMPT_MAX_PERSONAL_NOTES)
 
             if _ro:

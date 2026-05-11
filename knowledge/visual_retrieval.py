@@ -7,10 +7,13 @@ Module Contract
   results ready for prompt injection (text section + multimodal images).
 - Class: VisualRetriever(clip_manager, visual_store)
 - Key methods:
-  - retrieve_visual_memories(query, k=5, max_images=3) -> dict:
+  - retrieve_visual_memories(query, k=5, max_images=3, target_entities=None) -> dict:
     Async. Returns {"text_results": [...], "images": [...]}.
     text_results: captions + metadata for [VISUAL MEMORIES] prompt section.
     images: base64 image dicts matching existing note_images format for multimodal API.
+    When target_entities is provided (set of lowercase entity IDs), results are
+    hard-filtered to only include images tagged with at least one target entity.
+    Falls back to unfiltered results if filtering leaves nothing.
 - Dependencies:
   - knowledge.clip_manager.CLIPManager (text encoding)
   - knowledge.visual_memory_store.VisualMemoryStore (search)
@@ -46,12 +49,18 @@ class VisualRetriever:
         query: str,
         k: int = 5,
         max_images: int = 3,
+        target_entities: set[str] | None = None,
     ) -> Dict[str, Any]:
         """
         Retrieve visual memories matching the query.
 
         Uses CLIP text→image search as primary signal, with ChromaDB text search
         as fallback/complement. Results are deduplicated and ranked by score.
+
+        When target_entities is provided, results are hard-filtered to only include
+        images tagged with at least one of the target entities. This prevents
+        entity confusion when multiple entity names appear in the query
+        (e.g. "I asked about Paczki but got Flapjack").
 
         Returns:
             {
@@ -70,8 +79,24 @@ class VisualRetriever:
         # ChromaDB text search (fallback/complement)
         text_results = self._store.search_by_text(query, k=k)
 
-        # Merge + deduplicate by image_path
-        merged = self._merge_results(clip_results, text_results)
+        # Merge + deduplicate by image_path, boost entity matches
+        merged = self._merge_results(clip_results, text_results, query=query)
+
+        # Entity hard-filter: when multiple entities match, prioritize results
+        # that contain the entity being *asked about* (not just mentioned).
+        # Strategy: if target_entities provided, keep only images matching at
+        # least one target entity. If that leaves nothing, fall back to all.
+        if target_entities and len(merged) > 0:
+            filtered = [
+                r for r in merged
+                if {e.lower() for e in r.get("entity_ids", [])} & target_entities
+            ]
+            if filtered:
+                merged = filtered
+                logger.info(
+                    f"[VisualRetrieval] Entity filter: {len(filtered)} results "
+                    f"match target entities {target_entities}"
+                )
 
         # Build text_results for prompt section (all results)
         text_section = []
@@ -111,8 +136,9 @@ class VisualRetriever:
         self,
         clip_results: List[Dict],
         text_results: List[Dict],
+        query: str = "",
     ) -> List[Dict[str, Any]]:
-        """Merge CLIP + text results, dedup by image_path, rank by best score."""
+        """Merge CLIP + text results, dedup by image_path, boost entity matches."""
         seen = {}
 
         for r in clip_results:
@@ -124,6 +150,21 @@ class VisualRetriever:
             path = r.get("image_path", "")
             if path and path not in seen:
                 seen[path] = r
+
+        # Entity-aware scoring: boost results that match entities in the query
+        if query:
+            query_tokens = {t.lower() for t in query.split() if len(t) > 2}
+            for path, r in seen.items():
+                entity_ids = {e.lower() for e in r.get("entity_ids", [])}
+                matched = query_tokens & entity_ids
+                if matched:
+                    # Strong boost for entity match — names matter more than visual similarity
+                    r["score"] = r.get("score", 0) + 0.3 * len(matched)
+                    # Also check caption for query entity mentions
+                caption_lower = r.get("caption", "").lower()
+                for token in query_tokens:
+                    if token in caption_lower and token not in entity_ids:
+                        r["score"] = r.get("score", 0) + 0.1
 
         # Sort by score descending
         merged = sorted(seen.values(), key=lambda x: x.get("score", 0), reverse=True)

@@ -22,6 +22,14 @@ Methods:
   - _get_semantic_chunks(query, k, max_results) -> List[Dict]
   - _get_dreams(limit) -> List[Dict]
 
+Visual memory retrieval (get_visual_memories) uses a multi-step entity-gated pipeline:
+  A. Filter junk caption artifacts from stored entity IDs (_VISUAL_JUNK_IDS)
+  B. Resolve query entities via extract_graph_entities() (alias-aware)
+  C. Substring fallback for visual-only entities not in the knowledge graph
+  D. Multi-entity disambiguation via visual-intent proximity (_VISUAL_INTENT_WORDS)
+     or sentence-tail heuristic when no intent keywords present
+  E. Pass target_entities to VisualRetriever for hard-filtering results
+
 Depends on self.memory_coordinator, self.obsidian_manager, self.reference_docs_manager,
 self.time_manager, self.memory_id_map, self.gate_system, self.token_manager,
 self.model_manager (set by ContextGatherer.__init__).
@@ -45,6 +53,33 @@ try:
     _MEM_CFG = (_APP_CFG.get("memory") or {})
 except (ImportError, AttributeError):
     _MEM_CFG = {}
+
+
+# ---------------------------------------------------------------------------
+# Visual memory entity resolution constants
+# ---------------------------------------------------------------------------
+
+# Caption artifacts that are not real entities — filtered at retrieval time.
+_VISUAL_JUNK_IDS = frozenset({
+    # Colors
+    "black", "white", "gray", "grey", "brown", "orange", "blue", "red",
+    "green", "yellow",
+    # Descriptors
+    "warm", "cold", "soft", "dark", "light",
+    # Quantifiers
+    "one", "two", "three", "several", "many", "few",
+    # Hedges
+    "possibly", "likely", "probably", "apparently",
+    # Generic scene words
+    "sections", "support", "area", "side", "part", "background",
+    "image", "photo", "picture", "scene", "moment",
+})
+
+# Keywords indicating the user wants to *see* something.
+_VISUAL_INTENT_WORDS = frozenset({
+    "show", "see", "photo", "photos", "picture", "pictures",
+    "image", "images", "look", "pic", "pics",
+})
 
 
 def _cfg_int(key: str, default_val: int) -> int:
@@ -654,22 +689,115 @@ class KnowledgeRetrievalMixin:
                 )
                 return empty
 
-            query_lower = query.lower()
-            query_words = set(query_lower.split())
-            # Check if any visual entity appears in query (word match or substring)
-            entity_match = any(
-                eid in query_words or eid in query_lower
-                for eid in visual_entities
-            )
-            if not entity_match:
+            # --- Step A: Clean visual entity set (filter junk caption artifacts) ---
+            clean_visual = {
+                eid for eid in visual_entities
+                if len(eid) >= 4 and eid not in _VISUAL_JUNK_IDS
+            }
+            if not clean_visual:
+                logger.debug("[ContextGatherer] Visual memory skipped: all entity IDs are junk")
+                return empty
+
+            # --- Step B: Entity resolution via knowledge graph aliases ---
+            mc = self.memory_coordinator
+            graph = getattr(mc, "graph_memory", None)
+            resolver = getattr(mc, "entity_resolver", None)
+
+            if resolver:
+                from memory.graph_utils import extract_graph_entities
+                query_entities = extract_graph_entities(query, resolver, graph_memory=graph)
+                matched_entities = query_entities & clean_visual
+            else:
+                matched_entities = set()
+
+            # --- Step C: Substring fallback (for visual-only entities not in graph) ---
+            if not matched_entities:
+                query_lower = query.lower()
+                query_words = set(query_lower.split())
+                matched_entities = {
+                    eid for eid in clean_visual
+                    if eid in query_words or eid in query_lower
+                }
+
+            if not matched_entities:
                 logger.debug(
                     f"[ContextGatherer] Visual memory skipped: no entity match "
-                    f"(visual entities: {len(visual_entities)})"
+                    f"(clean visual entities: {len(clean_visual)})"
                 )
                 return empty
 
+            # --- Step D: Multi-entity disambiguation via visual-intent proximity ---
+            if len(matched_entities) > 1:
+                import re
+                query_lower = query.lower()
+                words = query_lower.split()
+
+                # Find positions of visual-intent keywords
+                intent_positions = [
+                    i for i, w in enumerate(words)
+                    if re.sub(r'[^\w]', '', w) in _VISUAL_INTENT_WORDS
+                ]
+
+                if intent_positions:
+                    # Score each entity by minimum distance to any intent word
+                    entity_scores: dict[str, int] = {}
+                    for eid in matched_entities:
+                        # Find word positions where entity or its alias appears
+                        eid_positions = [
+                            i for i, w in enumerate(words)
+                            if eid in re.sub(r'[^\w]', '', w.lower())
+                        ]
+                        # Check aliases too (e.g. "Coco" in text resolved to "flapjack")
+                        if not eid_positions and resolver:
+                            for i, w in enumerate(words):
+                                clean_w = re.sub(r'[^\w]', '', w.lower())
+                                if len(clean_w) > 2 and resolver.resolve(clean_w) == eid:
+                                    eid_positions.append(i)
+
+                        if eid_positions:
+                            entity_scores[eid] = min(
+                                abs(ep - ip)
+                                for ep in eid_positions
+                                for ip in intent_positions
+                            )
+                        else:
+                            entity_scores[eid] = 999
+
+                    if entity_scores:
+                        best_dist = min(entity_scores.values())
+                        focused = {eid for eid, d in entity_scores.items() if d <= best_dist + 2}
+                        if focused and focused != matched_entities:
+                            logger.debug(
+                                f"[ContextGatherer] Visual entity focus (intent proximity): "
+                                f"{matched_entities} → {focused}"
+                            )
+                            matched_entities = focused
+                else:
+                    # No visual-intent words — fall back to sentence-tail heuristic
+                    segments = re.split(r'[.!?]+', query_lower)
+                    tail = " ".join(s.strip() for s in segments[-2:] if s.strip())
+                    tail_entities = set()
+                    for eid in matched_entities:
+                        if eid in tail:
+                            tail_entities.add(eid)
+                        elif resolver:
+                            for w in tail.split():
+                                if resolver.resolve(re.sub(r'[^\w]', '', w)) == eid:
+                                    tail_entities.add(eid)
+                                    break
+                    if tail_entities and tail_entities != matched_entities:
+                        logger.debug(
+                            f"[ContextGatherer] Visual entity focus (tail): "
+                            f"{matched_entities} → {tail_entities}"
+                        )
+                        matched_entities = tail_entities
+
+            logger.debug(
+                f"[ContextGatherer] Visual memory entity matches: {matched_entities}"
+            )
+
             result = await self._visual_retriever.retrieve_visual_memories(
-                query, max_images=max_images
+                query, max_images=max_images, target_entities=matched_entities
             )
 
             # Track in memory_id_map for citation

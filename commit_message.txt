@@ -1,22 +1,20 @@
-feat: Pydantic config validation, entity-gated visual memory, retrieval scoring fixes
+fix: visual memory entity resolution, profile fact staleness & categorization cleanup
 
-Three changes:
+Visual memory retrieval replaced naive substring matching with proper entity
+resolution via extract_graph_entities(), fixing wrong-entity photo pulls (e.g.
+asking about Paczki but getting Flapjack). Added junk entity filtering for
+caption artifacts (colors, quantifiers, hedges), visual-intent proximity
+disambiguation for multi-entity queries, and target_entities hard-filtering
+in VisualRetriever. Short messages (≤5 words) without intent override now
+suppress visual retrieval entirely. Hardened [VISUAL MEMORIES] prompt
+instruction to prevent LLM from commenting on irrelevant images.
 
-1. Pydantic config schema validation (config/schema.py)
-   - 44 section-level models with range validators, cross-field checks, type coercion
-   - Fails fast at startup with actionable errors (field path + expected + actual)
-   - All existing imports unchanged; validates after YAML load, before constant extraction
-   - 44 unit tests
+Profile ephemeral detection expanded with new prefixes (scheduled_, signed_up_,
+meeting_with_), suffixes (_appointment, _meeting, _intake, _consumption), and
+exact matches (meal, drank_alcohol) — fixes stale event facts (career center,
+job fair) leaking into prompt months after they occurred.
 
-2. Entity-gated visual memory retrieval
-   - Images only retrieved when query mentions an entity with stored photos
-   - Prevents irrelevant images from leaking into unrelated conversations
-   - Profile-aware backfill script (scripts/backfill_visual_entities.py) re-captions
-     images with entity context so vision LLM outputs proper names
-   - Fixed MIME type detection (detect from bytes, not metadata) fixing API 400 errors
-   - Updated [VISUAL MEMORIES] instruction to tell model to ignore off-topic images
-
-3. Memory retrieval scoring fix (CASUAL_SOCIAL)
-   - Rebalanced weights: relevance 0.20->0.35, recency 0.35->0.20
-   - Wired gate_threshold_override from intent classifier to actual gate system (was dead code)
-   - Fixes: recent but irrelevant memories no longer outrank topically relevant ones
+Profile categorization hardened: fixed cache-before-Layer-1 priority bug in
+categorize_relation(), added ~40 direct lookup entries, ~12 prefix mappings,
+~30 category tokens. Ran cleanup: 654 facts recategorized, 29 merged, 51
+expired. Preferences category reduced from 428 to 54 current facts (87%).
