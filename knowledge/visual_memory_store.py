@@ -305,6 +305,32 @@ class VisualMemoryStore:
                     ids.add(eid.lower())
         return ids
 
+    def get_by_entity(self, entity_ids: set[str]) -> List[Dict[str, Any]]:
+        """Return all images tagged with any of the given entity IDs.
+
+        Direct metadata lookup — bypasses CLIP similarity scoring entirely.
+        Used when entity resolution identifies the target but CLIP ranks
+        those images too low (e.g. minority entity in the collection).
+        """
+        if not self._loaded:
+            self.load()
+        entity_ids_lower = {e.lower() for e in entity_ids}
+        results = []
+        for meta in self._metadata:
+            meta_eids = {e.lower() for e in meta.get("entity_ids", [])}
+            if meta_eids & entity_ids_lower:
+                results.append({
+                    "doc_id": meta.get("doc_id", ""),
+                    "image_path": meta.get("image_path", ""),
+                    "caption": meta.get("caption", ""),
+                    "source": meta.get("source", ""),
+                    "entity_ids": meta.get("entity_ids", []),
+                    "media_type": meta.get("media_type", ""),
+                    "timestamp": meta.get("timestamp", ""),
+                    "score": 1.0,  # entity match = maximum relevance
+                })
+        return results
+
     def get_stats(self) -> Dict[str, Any]:
         """Return collection statistics."""
         if not self._loaded:

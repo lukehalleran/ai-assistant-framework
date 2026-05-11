@@ -44,7 +44,7 @@ Agentic search activates when ALL conditions are met:
 3. At least one trigger fires in `gui/handlers.py`:
    - Keyword heuristic: computation, memory, or knowledge keywords detected
    - Entity match: query mentions known knowledge graph entity
-   - LLM trigger: `should_search=True`, `needs_memory_search=True`, or `needs_knowledge_search=True`
+   - LLM trigger: `should_search=True`, `needs_memory_search=True`, or `needs_knowledge_search=True`. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
 
 The controller is lazy-initialized on first use via the orchestrator's
 `agentic_controller` property.
@@ -337,6 +337,11 @@ Context already gathered by retrieval pipeline:
 - [USER PROFILE]: N categorized facts
 - [RECENT SUMMARIES]: N session summaries
 - [RELEVANT MEMORIES]: N conversation memories
+- [VISUAL MEMORIES]: N images already retrieved
+- [PROJECT COMMIT HISTORY]: N commits
+- [KNOWLEDGE GRAPH]: N relationship sentences
+- [UNRESOLVED THREADS]: N open threads
+- [PROACTIVE INSIGHTS]: N insights
 ...
 Do NOT re-search for information already covered above.
 ```

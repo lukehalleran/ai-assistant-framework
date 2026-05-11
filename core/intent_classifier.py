@@ -266,6 +266,15 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
         r"\b(what('?s| is) (his|her|their) (name|age|job|birthday))\b",
         IntentType.FACTUAL_RECALL, 0.85,
     )
+    # Visual/perception recall: "do you see X", "can you see X", "show me X"
+    _add(
+        r"\b(do you|can you)\s+(see|recognize|identify)\b",
+        IntentType.FACTUAL_RECALL, 0.85,
+    )
+    _add(
+        r"\b(show|pull up)\s+me\b",
+        IntentType.FACTUAL_RECALL, 0.80,
+    )
     _add(
         r"\b(who (is|was)|where (do|did) i|when (did|do|is) (i|my))\b",
         IntentType.FACTUAL_RECALL, 0.80,

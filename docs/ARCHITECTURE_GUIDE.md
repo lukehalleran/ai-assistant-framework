@@ -396,7 +396,7 @@ pipeline serves all query types; only the parameters change.
 
 | Intent | Example Patterns | Key Behavior |
 |--------|-----------------|--------------|
-| FACTUAL_RECALL | "what's my X", "do you remember" | Boost truth weight (0.30), increase fact retrieval |
+| FACTUAL_RECALL | "what's my X", "do you remember", "do you see X", "show me X" | Boost truth weight (0.30), increase fact retrieval |
 | TEMPORAL_RECALL | "last week", "history of", "progression" | Boost recency (0.40), reshape decay curve around temporal anchor |
 | EMOTIONAL_SUPPORT | Crisis keywords, "I feel" | Boost continuity (0.20), increase recent conversation retrieval |
 | CASUAL_SOCIAL | "hi", "ok", "thanks", short queries | Reduce all retrieval limits, lightweight response |
@@ -983,7 +983,9 @@ The agentic gate in `gui/handlers.py` decides whether to enter the loop:
    auto-route to agentic memory search
 3. **LLM fallback** — Piggybacks on the web search trigger LLM call (zero
    extra cost). The `WebSearchDecision` model includes a
-   `needs_memory_search` field
+   `needs_memory_search` field. Memory search takes priority over web
+   search: if the LLM returns both `should_search=True` and
+   `needs_memory_search=True`, the query is routed to memory (not web).
 
 If any tier triggers, the request routes through the agentic controller.
 Memory-only queries set `skip_initial_search=True` to skip the initial
