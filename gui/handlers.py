@@ -15,7 +15,7 @@ Module Contract
       - Tier 1: Keyword heuristic (instant) — computation keywords OR memory keywords ("do you remember", "my notes", etc.)
       - Tier 1b: Knowledge keywords (instant) [NEW 2026-03-31] — encyclopedic/wiki intent ("explain in depth", "how does", "consult wikipedia", etc.), 4+ words, no computation/memory trigger
       - Tier 2: Entity match (instant) — query mentions a known entity from the knowledge graph (e.g., "Flapjack", "Auggie")
-      - Tier 3: LLM fallback — piggybacks on web search trigger LLM call; returns needs_memory_search and needs_knowledge_search fields
+      - Tier 3: LLM fallback — piggybacks on web search trigger LLM call; returns needs_memory_search and needs_knowledge_search fields. Memory search takes priority: if LLM returns both should_search and needs_memory_search, the query is routed to memory (not web).
     - Casual skip filter only applies when no keyword/entity/knowledge trigger fired
     - skip_initial_search=True for computation, memory, and knowledge queries (skips Round 1 web search)
     - Streaming hides thinking via has_incomplete_thinking_block() (tags) + likely_untagged_thinking() (heuristic)
@@ -684,19 +684,21 @@ async def handle_submit(
                     should_use_agentic = getattr(trigger_decision, 'should_search', False)
                     search_terms = getattr(trigger_decision, 'search_terms', []) or []
 
-                    # LLM-based memory search fallback: if web search not needed but
-                    # LLM detected memory/recall intent, enter agentic for search_memory tool
-                    if not should_use_agentic and getattr(trigger_decision, 'needs_memory_search', False):
+                    # Memory/knowledge search takes priority over web search —
+                    # if LLM says both should_search AND needs_memory_search, the query
+                    # is personal recall, not a web query (e.g. "do you see Paczki?")
+                    if getattr(trigger_decision, 'needs_memory_search', False):
                         logger.debug("[Handle Submit] Agentic triggered - LLM detected memory search intent")
                         should_use_agentic = True
-                        needs_memory = True  # skip initial web search
-                        search_terms = []
+                        needs_memory = True
+                        search_terms = []  # clear web search terms
 
                     # LLM-based knowledge search fallback: encyclopedic/wiki queries
-                    if not should_use_agentic and getattr(trigger_decision, 'needs_knowledge_search', False):
-                        logger.debug("[Handle Submit] Agentic triggered - LLM detected knowledge search intent")
-                        should_use_agentic = True
-                        needs_knowledge = True  # skip initial web search
+                    elif getattr(trigger_decision, 'needs_knowledge_search', False):
+                        if not should_use_agentic:
+                            logger.debug("[Handle Submit] Agentic triggered - LLM detected knowledge search intent")
+                            should_use_agentic = True
+                        needs_knowledge = True
                         search_terms = []
 
                     logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, needs_memory={needs_memory}, needs_knowledge={needs_knowledge}, terms={search_terms}")

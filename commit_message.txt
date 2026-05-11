@@ -5,16 +5,32 @@ resolution via extract_graph_entities(), fixing wrong-entity photo pulls (e.g.
 asking about Paczki but getting Flapjack). Added junk entity filtering for
 caption artifacts (colors, quantifiers, hedges), visual-intent proximity
 disambiguation for multi-entity queries, and target_entities hard-filtering
-in VisualRetriever. Short messages (≤5 words) without intent override now
-suppress visual retrieval entirely. Hardened [VISUAL MEMORIES] prompt
-instruction to prevent LLM from commenting on irrelevant images.
+in VisualRetriever with direct metadata fallback when CLIP can't rank minority
+entities above the similarity threshold. Short messages (<=5 words) without
+intent override now suppress visual retrieval entirely. Hardened [VISUAL
+MEMORIES] prompt instruction to prevent LLM from commenting on irrelevant
+images.
 
 Profile ephemeral detection expanded with new prefixes (scheduled_, signed_up_,
 meeting_with_), suffixes (_appointment, _meeting, _intake, _consumption), and
-exact matches (meal, drank_alcohol) — fixes stale event facts (career center,
+exact matches (meal, drank_alcohol) -- fixes stale event facts (career center,
 job fair) leaking into prompt months after they occurred.
 
 Profile categorization hardened: fixed cache-before-Layer-1 priority bug in
 categorize_relation(), added ~40 direct lookup entries, ~12 prefix mappings,
 ~30 category tokens. Ran cleanup: 654 facts recategorized, 29 merged, 51
 expired. Preferences category reduced from 428 to 54 current facts (87%).
+
+Pipeline trace fixes: added visual/perception FACTUAL_RECALL patterns to
+intent classifier ("do you see X", "show me X"), removed overly broad
+"update"/"updates" from web search NEWS_KEYWORDS, added visual query
+suppression patterns. Memory search now takes priority over web search when
+LLM detects recall intent. Agentic context inventory expanded with 5 missing
+sections (visual memories, git commits, knowledge graph, threads, insights)
+to prevent redundant re-searching of already-retrieved content.
+
+README rewritten for recruiter readability: added TL;DR, "Best Code to
+Review" section, Engineering Highlights, Privacy & Safety section, current
+refactor target note. Reordered for fast scan. Added GitHub Actions CI
+workflow (fast test subset, excludes slow/benchmark/semantic markers).
+Anonymized personal examples.

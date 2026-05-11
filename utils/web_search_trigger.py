@@ -35,6 +35,7 @@ Legacy Heuristic Detection (fallback):
 2. Pattern matching for news/event queries
 3. Entity detection for fast-changing topics (stocks, weather, sports scores)
 4. Explicit search requests ("search for", "look up online")
+5. Suppression patterns for personal/visual queries ("do you see", "can you see", etc.)
 """
 
 import asyncio
@@ -233,7 +234,7 @@ EXPLICIT_SEARCH_PHRASES: Tuple[str, ...] = (
 NEWS_KEYWORDS: Set[str] = {
     "news", "headline", "headlines", "story", "stories",
     "reported", "reports", "announced", "announcement",
-    "update", "updates", "press release", "breaking",
+    "press release", "breaking",
     "coverage", "article", "articles",
 }
 
@@ -255,7 +256,7 @@ FAST_CHANGING_TOPICS: Set[str] = {
 
     # Tech/Product
     "release date", "launch date", "availability",
-    "version", "update", "patch", "beta", "alpha",
+    "version", "beta", "alpha",
 
     # Events
     "election", "vote", "voting", "poll", "polls",
@@ -296,6 +297,10 @@ SUPPRESSION_PATTERNS: Tuple[str, ...] = (
     # Memory/context queries
     "remember when", "do you remember", "recall",
     "we talked about", "you mentioned", "earlier",
+
+    # Visual/perception queries (personal recall, not web)
+    "do you see", "can you see",
+    "do you recognize", "what do you see",
 
     # Emotional/therapeutic
     "feeling", "I feel", "I'm feeling", "i am feeling",

@@ -946,6 +946,27 @@ class AgenticSearchController:
         if dreams:
             lines.append(f"- [RECENT DREAMS]: {len(dreams)} dream entries")
 
+        visual_mems = initial_context.get('visual_memories', {})
+        vm_count = len(visual_mems.get('text_results', [])) if isinstance(visual_mems, dict) else 0
+        if vm_count:
+            lines.append(f"- [VISUAL MEMORIES]: {vm_count} images already retrieved")
+
+        git_commits = initial_context.get('git_commits', [])
+        if git_commits:
+            lines.append(f"- [PROJECT COMMIT HISTORY]: {len(git_commits)} commits")
+
+        graph_context = initial_context.get('graph_context', [])
+        if graph_context:
+            lines.append(f"- [KNOWLEDGE GRAPH]: {len(graph_context)} relationship sentences")
+
+        threads = initial_context.get('unresolved_threads', [])
+        if threads:
+            lines.append(f"- [UNRESOLVED THREADS]: {len(threads)} open threads")
+
+        insights = initial_context.get('proactive_insights', [])
+        if insights:
+            lines.append(f"- [PROACTIVE INSIGHTS]: {len(insights)} insights")
+
         if not lines:
             return ""
 
