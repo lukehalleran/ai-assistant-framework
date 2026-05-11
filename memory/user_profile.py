@@ -388,17 +388,30 @@ class UserProfile:
         "_taken", "_left", "_duration", "_activity",
         "_time", "_deadline", "_variant", "_feeling",
         "_experience", "_plans", "_event",
+        "_appointment", "_meeting", "_reschedule",
+        "_intake", "_consumption",
     )
     # Prefix patterns that indicate ephemeral/transient facts
     _EPHEMERAL_PREFIXES = (
         "current_", "recent_", "upcoming_", "last_", "next_",
         "time_", "waiting_", "took_", "woke_",
+        "scheduled_", "signed_up_", "needs_reschedule",
+        "meeting_with_", "needs_meeting",
     )
+    # Exact-match relations that are always ephemeral (one-time events)
+    _EPHEMERAL_EXACT = frozenset({
+        "meeting", "activities", "meeting_with",
+        "energy_level", "activity_preference",
+        "meal", "meal_choice", "drank_alcohol",
+    })
 
     def _is_ephemeral_relation(self, relation: str) -> bool:
         """Check if a relation is ephemeral (transient state, not stable identity)."""
         # Explicit list from config
         if relation in set(app_config.PROFILE_EPHEMERAL_RELATIONS):
+            return True
+        # Exact match for known ephemeral one-time event relations
+        if relation in self._EPHEMERAL_EXACT:
             return True
         # Pattern matching
         if any(relation.startswith(p) for p in self._EPHEMERAL_PREFIXES):

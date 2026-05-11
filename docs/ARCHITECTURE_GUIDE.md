@@ -9,7 +9,7 @@ Read this document to understand **how the system works as a whole**. For
 deep dives into specific subsystems, see the cross-references to companion
 docs throughout.
 
-**Last Updated**: 2026-05-09
+**Last Updated**: 2026-05-11
 
 **Related docs**:
 - `README.md` — external audience, feature highlights, getting started
@@ -654,8 +654,13 @@ and fetches from a different source or collection:
 All retrieval counts are overridable per-intent. CASUAL_SOCIAL reduces
 most limits (including `max_visual_memories=0` to skip image retrieval
 for greetings); EMOTIONAL_SUPPORT and META_CONVERSATIONAL also disable
-visual memories. Image passing is further gated by `supports_vision()` —
-non-vision models (DeepSeek, GLM) never receive image data.
+visual memories. Short messages (<=5 words) without intent override
+suppress visual memory retrieval. Visual retrieval uses entity resolution
+via `extract_graph_entities()` with junk entity filtering (`_VISUAL_JUNK_IDS`)
+and intent-proximity disambiguation (`_VISUAL_INTENT_WORDS`) for multi-entity
+queries. Results are hard-filtered by `target_entities` in `VisualRetriever`.
+Image passing is further gated by `supports_vision()` — non-vision models
+(DeepSeek, GLM) never receive image data.
 
 ### Small-Talk Short Circuit
 
@@ -2312,11 +2317,21 @@ The `UserProfile` maintains categorized user facts with temporal history:
 ### 12 Fact Categories
 
 Health, career, fitness, education, relationships, hobbies, finance,
-goals, projects, identity, location, preferences.
+goals, projects, identity, study, preferences.
 
 Each category stores facts as key-value pairs with timestamps. The
 profile is append-only — updates add new timestamped entries, old entries
 are preserved for temporal history.
+
+### Relation Categorization
+
+`categorize_relation()` uses a 6-layer cascade: direct lookup (~100
+entries), prefix lookup (~60 entries), persistent cache, token overlap
+(~30 category keyword sets), embedding similarity (all-MiniLM-L6-v2,
+threshold 0.40), default to PREFERENCES. Ephemeral detection uses
+config list + exact-match set + prefix patterns (`scheduled_`,
+`signed_up_`, `meeting_with_`, etc.) + suffix patterns (`_appointment`,
+`_meeting`, `_intake`, `_consumption`, etc.).
 
 ### Hybrid Retrieval
 
