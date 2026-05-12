@@ -159,6 +159,16 @@ class AgenticFormatter:
             f"Result:\n{content}"
         )
 
+    def format_fetch_url_context(
+        self, round_num: int, url: str, content: str
+    ) -> str:
+        """Format fetched URL content for accumulated context."""
+        return (
+            f"[FETCHED URL — Round {round_num}]\n"
+            f"URL: {url}\n"
+            f"Content:\n{content}"
+        )
+
     def format_memory_results(self, results: list, collection: str) -> str:
         """Format ChromaDB results into readable text for the LLM."""
         lines = []

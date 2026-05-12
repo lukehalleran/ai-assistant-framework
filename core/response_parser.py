@@ -95,6 +95,16 @@ class ResponseParser:
         return cleaned.lstrip('\n').strip() if cleaned != text else text
 
     @staticmethod
+    @staticmethod
+    def _count_sentence_pattern_hits(text: str) -> int:
+        """Count distinct sentence-level thinking patterns in text (no line anchoring)."""
+        hits = set()
+        for j, pat in enumerate(ResponseParser._THINKING_SENTENCE_PATTERNS):
+            if pat.search(text):
+                hits.add(j)
+        return len(hits)
+
+    @staticmethod
     def _detect_untagged_thinking(response: str) -> Tuple[str, str]:
         """Heuristic fallback: detect untagged thinking dumped before the real answer.
 
@@ -102,15 +112,30 @@ class ResponseParser:
         distinct patterns are found in a prefix, everything from the first
         match through a double-newline gap is treated as thinking.
 
+        Also handles single-paragraph thinking via sentence-level patterns.
+
         Returns (thinking, answer) or ("", "") if nothing detected.
         """
         if not response or len(response) < 80:
             return "", ""
 
         lines = response.split('\n')
+
+        # --- Single-paragraph detection (1-2 lines) ---
+        # When the LLM dumps thinking as one paragraph, line-anchored patterns
+        # won't work. Fall back to sentence-level scanning.
         if len(lines) < 3:
+            hits = ResponseParser._count_sentence_pattern_hits(response)
+            if hits >= ResponseParser._HEURISTIC_MIN_HITS:
+                # Try to split at a double-newline boundary
+                parts = response.split('\n\n', 1)
+                if len(parts) == 2 and len(parts[1].strip()) >= 20:
+                    return parts[0].strip(), parts[1].strip()
+                # Entire block is thinking, no answer follows
+                return response.strip(), ""
             return "", ""
 
+        # --- Multi-line detection ---
         # Find spans of lines that match heuristic patterns
         hit_patterns: set = set()
         last_hit_line = -1
@@ -125,7 +150,16 @@ class ResponseParser:
                     last_hit_line = i
                     break  # one pattern per line is enough
 
+        # Also try sentence-level patterns on the full text
         if len(hit_patterns) < ResponseParser._HEURISTIC_MIN_HITS:
+            sentence_hits = ResponseParser._count_sentence_pattern_hits(response)
+            if sentence_hits >= ResponseParser._HEURISTIC_MIN_HITS:
+                # Treat everything as thinking (no clean split point found)
+                # Try to split at blank-line gap
+                parts = response.split('\n\n', 1)
+                if len(parts) == 2 and len(parts[1].strip()) >= 20:
+                    return parts[0].strip(), parts[1].strip()
+                return response.strip(), ""
             return "", ""
 
         # Extend the boundary to the next blank-line gap after the last hit,
@@ -157,11 +191,13 @@ class ResponseParser:
     # Each pattern is a compiled regex.  If >=HEURISTIC_MIN_HITS of these
     # appear in a *prefix* of the response (before the real answer), we
     # treat everything up to (and including) the last match as thinking.
+    #
+    # LINE-ANCHORED: require (?:^|\n) — for multi-line text
     _THINKING_HEURISTIC_PATTERNS = [
         # Meta-reasoning about what to do / how to respond
-        re.compile(r"(?:^|\n)\s*(?:I should |I need to |Let me think|Let me (?:consider|check|look)|I'll )", re.IGNORECASE),
+        re.compile(r"(?:^|\n)\s*(?:I should |I need to |Let me think|Let me (?:consider|check|look|fire|try)|I'll )", re.IGNORECASE),
         # Third-person references to the user in internal reasoning
-        re.compile(r"(?:^|\n)\s*(?:He'?s saying|She'?s saying|They'?re saying|The user is |The user (?:wants|asked|said|seems))", re.IGNORECASE),
+        re.compile(r"(?:^|\n)\s*(?:He'?s (?:saying|clarifying|asking|telling)|She'?s (?:saying|clarifying|asking|telling)|They'?re (?:saying|clarifying|asking|telling)|The user is |The user (?:wants|asked|said|seems))", re.IGNORECASE),
         # Planning / strategy language
         re.compile(r"(?:^|\n)\s*(?:What would (?:actually )?be useful|How should I |I could mention|I (?:shouldn't|should not) )", re.IGNORECASE),
         # System prompt instruction echo (tail end of the thinking instruction)
@@ -170,6 +206,23 @@ class ResponseParser:
         re.compile(r"(?:^|\n)\s*(?:This is (?:a casual|just a)|not asking me to|flagging that)", re.IGNORECASE),
         # Bullet-style reasoning about approach
         re.compile(r"(?:^|\n)\s*-\s+(?:Explicitly |Temporal |Source |Emotional |Deciding )", re.IGNORECASE),
+        # Tool dispatch planning (reasoning about which tool to use)
+        re.compile(r"(?:^|\n)\s*(?:(?:so )?(?:this time )?I should (?:actually )?invoke|(?:so )?I should (?:actually )?(?:use|call|fire|invoke)|the (?:tool|query) (?:that |which )?(?:worked|didn't|wasn't))", re.IGNORECASE),
+        # Referring to "the previous attempt/response/search"
+        re.compile(r"(?:in|from) the previous (?:attempt|response|search|try|query)", re.IGNORECASE),
+    ]
+
+    # SENTENCE-LEVEL: no line-anchor — catches thinking dumped as a single paragraph.
+    # Scanned separately via _count_sentence_pattern_hits().
+    _THINKING_SENTENCE_PATTERNS = [
+        # Third-person user references mid-sentence
+        re.compile(r"(?:The user (?:wants|asked|said|seems|is asking|is telling)|He'?s (?:saying|clarifying|asking|telling)|She'?s (?:saying|clarifying|asking|telling))", re.IGNORECASE),
+        # Meta-reasoning about tools / strategy
+        re.compile(r"(?:I should (?:actually )?(?:invoke|use|call|fire|try)|Let me (?:fire|try|invoke|use))", re.IGNORECASE),
+        # Referring to previous attempts
+        re.compile(r"(?:in the previous (?:attempt|response|search|try|query)|(?:the tool|the query) (?:that |which )?(?:worked|didn't|wasn't))", re.IGNORECASE),
+        # Internal planning language not addressed to user
+        re.compile(r"(?:this time I should|so I should|I need to (?:adjust|fix|change|rethink))", re.IGNORECASE),
     ]
     _HEURISTIC_MIN_HITS = 2  # need at least 2 distinct patterns to trigger
 
@@ -186,6 +239,12 @@ class ResponseParser:
         """
         if not response or len(response) < 60:
             return False
+
+        # Try sentence-level patterns first (handles single-paragraph thinking)
+        if ResponseParser._count_sentence_pattern_hits(response) >= ResponseParser._HEURISTIC_MIN_HITS:
+            return True
+
+        # Fall back to line-anchored patterns for multi-line text
         lines = response.split('\n')
         if len(lines) < 2:
             return False

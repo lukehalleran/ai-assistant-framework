@@ -299,6 +299,12 @@ Config: `GRAPH_QUERY_EXPANSION_ENABLED`, `GRAPH_QUERY_EXPANSION_MAX_TERMS`
 
 Failures (no API key, rate limit, timeout) return `None` silently.
 
+In agentic mode, the `fetch_url` tool provides direct URL content retrieval
+via `WebSearchManager._tavily_extract()`. URLs detected in user messages are
+auto-fetched in Round 1. If a web_search query contains a URL, it is
+auto-rerouted to fetch_url. Fetched content is registered in `web_source_map`
+for `[WEB_N]` citation tracking.
+
 ---
 
 ## Small-Talk Fast Path

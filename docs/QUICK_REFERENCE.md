@@ -1710,28 +1710,30 @@ class MemoryConsolidator:
 
 ## Agentic Search & Tools [NEW 2026-01-22, ENHANCED 2026-03-31]
 
-**Agentic Gate** (gui/handlers.py) — 4-tier trigger before ReAct loop:
-1. **Keyword heuristic** (0ms): computation keywords OR memory keywords ("do you remember", "my notes", etc.)
-1b. **Knowledge keywords** (0ms) [NEW 2026-03-31]: encyclopedic/wiki intent (`explain in depth`, `how does`, `consult wikipedia`, etc.) — fires for 4+ word queries when no computation/memory trigger matched
+**Agentic Gate** (gui/handlers.py) — 5-tier trigger before ReAct loop:
+1. **Keyword heuristic** (0ms): computation keywords OR memory keywords ("do you remember", "my notes", etc.) OR web search keywords ("web search", "search for", "search online", "look up") [NEW 2026-05]. Explicit search keywords bypass intent veto.
+1b. **URL detection** (0ms) [NEW 2026-05]: `http://`/`https://` in query triggers agentic mode with `initial_urls` for auto-fetch
+1c. **Knowledge keywords** (0ms) [NEW 2026-03-31]: encyclopedic/wiki intent (`explain in depth`, `how does`, `consult wikipedia`, etc.) — fires for 4+ word queries when no computation/memory trigger matched
 2. **Entity match** (0ms): `extract_graph_entities()` checks query against knowledge graph aliases; known entities (e.g. "Flapjack") trigger memory search
 3. **LLM fallback**: piggybacks on `analyze_for_web_search_llm()`; `needs_memory_search` or `needs_knowledge_search` fields in `WebSearchDecision` catch structural recall/encyclopedic queries. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
 
 Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/entity/knowledge trigger fired.
-`skip_initial_search=True` for computation, memory, and knowledge queries.
+`skip_initial_search=True` for computation, memory, and knowledge queries. When Tier 1 fires without LLM-generated search terms, initial search is also skipped.
 
 **Post-generation trigger** [NEW 2026-04]: If standard response is uncertain ("I don't know"), `UncertaintyDetector` (`core/uncertainty_detector.py`) retries via agentic search. Keyword regex (~18 patterns) + semantic embedding layer. Config: `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD`, `UNCERTAINTY_MAX_LENGTH`.
 
 ```python
 # core/agentic/controller.py — orchestration, prompt building, model interaction, quality heuristics
-# core/agentic/tools.py — ToolExecutor: dispatch routing + 11 execute methods
-# core/agentic/formatters.py — AgenticFormatter: 17 pure formatting methods
+# core/agentic/tools.py — ToolExecutor: dispatch routing + 12 execute methods
+# core/agentic/formatters.py — AgenticFormatter: 18 pure formatting methods
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
     Delegates tool execution to ToolExecutor, formatting to AgenticFormatter."""
 
     async def run_agentic_search(query: str, system_prompt: str, model_name: str,
                                    initial_search_terms: List[str], initial_context=None,
-                                   crisis_level=None, skip_initial_search=False) -> AsyncGenerator[Union[ProgressEvent, str], None]:
+                                   crisis_level=None, skip_initial_search=False,
+                                   initial_urls: List[str] = None) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Main loop:
         1. Build prompt with gathered context + tool instructions
@@ -1779,6 +1781,9 @@ class SearchDecision:
     wants_recall_image: bool = False   # Visual memory recall [NEW 2026-05]
     recall_image_query: Optional[str] = None
     recall_image_reason: Optional[str] = None
+    wants_fetch_url: bool = False      # Fetch URL content [NEW 2026-05]
+    fetch_url: Optional[str] = None
+    fetch_url_reason: Optional[str] = None
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False
@@ -1808,6 +1813,11 @@ class AgenticSearchSession:
 # GIT_STATS_TOOL_DEFINITION — Git repository activity stats [NEW 2026-03-29]
 # Function name: "git_stats", single param: query (str, required)
 # Natural-language intent parsing → safe git subcommands (log, shortlog, diff, status, etc.)
+
+# FETCH_URL_TOOL_DEFINITION — Fetch web page content by URL [NEW 2026-05]
+# Function name: "fetch_url", params: url (str, required), reason (str, optional)
+# Calls WebSearchManager._tavily_extract([url]); result registered in web_source_map for [WEB_N] citations
+# Gated on web_search_manager.is_available(); auto-triggered for URLs in user messages
 
 # core/git_stats_manager.py [NEW 2026-03-29]
 class GitStatsManager:
@@ -1906,8 +1916,9 @@ class MemoryExpander:
 
 
 # Protocol handlers (core/agentic/protocols.py)
-# XMLMarkerHandler - for local models: <search>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <recall_image>, <done>
-# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (11 tool definitions, including recall_image)
+# XMLMarkerHandler - for local models: <search>, <fetch_url>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <recall_image>, <done>
+#   Alias patterns: <web_search>/<web_search query="..."> → <search>, <search_memory query="..."> → <memory>
+# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (12 tool definitions, including fetch_url and recall_image)
 ```
 
 ### Agentic Config Constants
@@ -1963,11 +1974,13 @@ Available Tools:
 8. <file_list path="...">reason</file_list> - List directory contents [NEW 2026-03-26]
 9. <git_stats>query</git_stats> - Git repository activity stats [NEW 2026-03-29]
 10. <recall_image>query</recall_image> - Recall images from visual memory [NEW 2026-05]
-11. <done>reason</done> - Signal task complete
+11. <fetch_url url="...">reason</fetch_url> - Fetch web page content by URL [NEW 2026-05]
+12. <done>reason</done> - Signal task complete
 
 Use Python for: multi-step computation, data analysis, visualization, custom algorithms
 Use Wolfram for: single-expression calculations, unit conversions, scientific data, equations
 Use search for: current events, recent news, real-time data, general facts
+Use fetch_url for: reading a specific URL the user provided or that appeared in search results
 Use memory for: user facts, past conversations, personal notes, project history
 Use expand_memory for: see surrounding conversation turns or drill into summaries
 Use file_read/file_grep/file_list for: reading project files, searching code, listing directories

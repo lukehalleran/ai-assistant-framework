@@ -1,36 +1,55 @@
-fix: visual memory entity resolution, profile fact staleness & categorization cleanup
+feat: add fetch_url agentic tool, fix shutdown double-run, harden thinking detection
 
-Visual memory retrieval replaced naive substring matching with proper entity
-resolution via extract_graph_entities(), fixing wrong-entity photo pulls (e.g.
-asking about Paczki but getting Flapjack). Added junk entity filtering for
-caption artifacts (colors, quantifiers, hedges), visual-intent proximity
-disambiguation for multi-entity queries, and target_entities hard-filtering
-in VisualRetriever with direct metadata fallback when CLIP can't rank minority
-entities above the similarity threshold. Short messages (<=5 words) without
-intent override now suppress visual retrieval entirely. Hardened [VISUAL
-MEMORIES] prompt instruction to prevent LLM from commenting on irrelevant
-images.
+New agentic tool: fetch_url — reads web page content directly by URL via
+Tavily extract API (up to 10K chars). Solves the gap where web_search finds
+pages but can't read them. Full wiring: types.py (SearchDecision fields,
+FETCH_URL_TOOL_DEFINITION, XML prompt instructions), protocols.py (native
+tool parsing, XML marker pattern, factory param), tools.py (dispatch +
+execute via _tavily_extract, URL reroute from web_search, citation
+registration), formatters.py (format_fetch_url_context), controller.py
+(_dispatch_single routing, Round 1 auto-fetch for URLs in user messages).
 
-Profile ephemeral detection expanded with new prefixes (scheduled_, signed_up_,
-meeting_with_), suffixes (_appointment, _meeting, _intake, _consumption), and
-exact matches (meal, drank_alcohol) -- fixes stale event facts (career center,
-job fair) leaking into prompt months after they occurred.
+Agentic gate improvements:
+- Tier 1 web search keywords ("web search", "search for", "search online",
+  etc.) bypass LLM trigger for instant agentic activation
+- URL detection (http/https) in user messages triggers agentic mode and
+  auto-fetches as Round 1 instead of web search
+- Explicit search keywords bypass META_CONVERSATIONAL/CASUAL_SOCIAL intent
+  veto so mixed casual+search messages work
+- Skip initial search when Tier 1 fires without LLM-generated terms, letting
+  the agentic loop decide (fetch_url vs web_search)
 
-Profile categorization hardened: fixed cache-before-Layer-1 priority bug in
-categorize_relation(), added ~40 direct lookup entries, ~12 prefix mappings,
-~30 category tokens. Ran cleanup: 654 facts recategorized, 29 merged, 51
-expired. Preferences category reduced from 428 to 54 current facts (87%).
+XML marker alias patterns: <web_search>query</web_search>,
+<web_search query="...">, <search_memory query="..."> now parsed correctly
+by XMLMarkerHandler instead of leaking as raw text. Covers attribute-style
+hallucinated formats from models using native tool names as XML tags.
 
-Pipeline trace fixes: added visual/perception FACTUAL_RECALL patterns to
-intent classifier ("do you see X", "show me X"), removed overly broad
-"update"/"updates" from web search NEWS_KEYWORDS, added visual query
-suppression patterns. Memory search now takes priority over web search when
-LLM detects recall intent. Agentic context inventory expanded with 5 missing
-sections (visual memories, git commits, knowledge graph, threads, insights)
-to prevent redundant re-searching of already-retrieved content.
+Thinking leak defense:
+- Sentence-level patterns (_THINKING_SENTENCE_PATTERNS) catch single-paragraph
+  thinking dumps that line-anchored patterns miss ("The user wants me to...",
+  "Let me fire...", "in the previous attempt...")
+- _count_sentence_pattern_hits() scans without line boundaries
+- _detect_untagged_thinking() handles 1-2 line text via sentence patterns
+- likely_untagged_thinking() tries sentence patterns before line patterns
+- Agentic path: final output now runs untagged thinking detection + stripping
+- Stuck thinking recovery: if streaming ends while showing "Thinking...",
+  parses accumulated output and yields whatever answer text exists
+- Enhanced path: _strip_leaked_xml_markers() applied to display and storage
 
-README rewritten for recruiter readability: added TL;DR, "Best Code to
-Review" section, Engineering Highlights, Privacy & Safety section, current
-refactor target note. Reordered for fast scan. Added GitHub Actions CI
-workflow (fast test subset, excludes slow/benchmark/semantic markers).
-Anonymized personal examples.
+Shutdown fix: _shutdown_requested flag checked in main.py finally block to
+prevent signal handler's shutdown tasks from running twice (was causing
+OSError EROFS when filesystem went read-only during duplicate LLM calls).
+
+Bug fixes:
+- controller.py _dispatch_single was missing wants_fetch_url and
+  wants_recall_image routing (LLM emitted fetch_url 7x but silently dropped)
+- controller.py _is_low_quality_result and _generate_relaxation_suggestion
+  restored (deleted during refactor but still referenced)
+- handlers.py _re UnboundLocalError: local `import re as _re` at line 887
+  shadowed module-level import, crashing agentic URL extraction every time
+- System prompt updated: Daemon can now fetch URLs and see images
+
+76 new tests in tests/unit/test_fetch_url.py covering SearchDecision fields,
+tool definition, XML/native parsing, alias patterns, dispatch routing, URL
+reroute, execute with mocked Tavily, formatter, XML marker stripping,
+sentence-level thinking detection, and handler URL detection.

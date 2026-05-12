@@ -20,6 +20,7 @@ Public Types:
     - GET_FULL_DOCUMENT_TOOL_DEFINITION (full document retrieval tool schema)
     - GIT_STATS_TOOL_DEFINITION (git repository stats tool schema)
     - RECALL_IMAGE_TOOL_DEFINITION (visual memory CLIP image search tool schema)
+    - FETCH_URL_TOOL_DEFINITION (direct URL content fetching tool schema)
 
 SearchDecision Fields (extended for multi-tool support):
     - wants_search, search_query, search_reason (web search)
@@ -33,6 +34,7 @@ SearchDecision Fields (extended for multi-tool support):
     - wants_git_stats, git_stats_query, git_stats_reason (git repository stats)
     - wants_full_document, full_document_title, full_document_reason (full document retrieval)
     - wants_recall_image, recall_image_query, recall_image_reason (CLIP visual memory search)
+    - wants_fetch_url, fetch_url, fetch_url_reason (direct URL content fetching)
     - is_done, done_reason, wants_answer, partial_response
 
 Dependencies:
@@ -104,6 +106,7 @@ class SearchDecision:
     - wants_file_read/grep/list: File access tools
     - wants_git_stats: Git repository stats
     - wants_full_document: Full document retrieval
+    - wants_fetch_url: Direct URL content fetching
 
     Terminal flags:
     - is_done: Model signals it has enough information
@@ -161,6 +164,10 @@ class SearchDecision:
     wants_recall_image: bool = False
     recall_image_query: Optional[str] = None
     recall_image_reason: Optional[str] = None
+    # URL fetching (direct page content retrieval)
+    wants_fetch_url: bool = False
+    fetch_url: Optional[str] = None
+    fetch_url_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -280,6 +287,8 @@ class AgenticSearchSession:
             return "git_stats"
         if query.startswith("[Full Document]"):
             return "full_document"
+        if query.startswith("[Fetch URL]"):
+            return "fetch_url"
         return "web_search"
 
 
@@ -686,6 +695,33 @@ RECALL_IMAGE_TOOL_DEFINITION = {
     }
 }
 
+FETCH_URL_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "fetch_url",
+        "description": (
+            "Fetch the content of a web page by its URL. "
+            "Use when the user provides a specific URL to visit, or when you need "
+            "to read the actual content of a page (e.g., a GitHub repo, article, docs). "
+            "Web search finds pages; fetch_url reads them."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The full URL to fetch (must start with http:// or https://)"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this URL needs to be fetched."
+                }
+            },
+            "required": ["url"]
+        }
+    }
+}
+
 # System prompt injection for local models
 AGENTIC_SYSTEM_PROMPT_INJECTION = """
 [AGENTIC TOOLS ENABLED]
@@ -754,6 +790,12 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
     Use after search_memory returns a fragment from reference_docs and you need the whole document.
     Example: <get_full_document title="upload:ISYE_6501_Syllabus.pdf">need full assignment schedule</get_full_document>
 
+12. **Fetch URL**: <fetch_url url="https://example.com">reason</fetch_url>
+    Fetch and read the content of a specific web page by URL.
+    Use when the user provides a link, or when you need to read a page directly.
+    Web search finds pages; fetch_url reads them.
+    Example: <fetch_url url="https://github.com/user/repo">user asked me to check their repo</fetch_url>
+
 **Tool Selection Guidelines:**
 | Task Type | Best Tool |
 |-----------|-----------|
@@ -776,6 +818,12 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | See context around a memory hit | Expand Memory |
 | Git repository activity, commit counts | Git Stats |
 | Full uploaded document (syllabus, PDF, etc.) | Get Full Document |
+| Read a specific URL (GitHub, article, docs) | Fetch URL |
+
+**IMPORTANT — fetch_url vs search:**
+When you know a specific URL (from profile facts, memory, or the user's message), use fetch_url to read it directly.
+Do NOT use search to find a page when you already have its URL. Search finds pages; fetch_url reads them.
+Example: if user profile says github_url=https://github.com/user/repo, use <fetch_url url="https://github.com/user/repo">reading user's repo</fetch_url>
 
 You can use tools up to {max_rounds} times total. Be specific with queries.
 You may use multiple tools in a single response when the queries are independent (e.g., <search>...</search> and <memory>...</memory> together).

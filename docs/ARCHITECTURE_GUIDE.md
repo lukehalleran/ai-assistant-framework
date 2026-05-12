@@ -75,7 +75,7 @@ Prompt sections:        27 (conditional)
 Intent types:           9
 Parallel retrieval:     19 async tasks
 Memory tiers:           5
-Agentic tools:          12
+Agentic tools:          13
 Gating latency:         ~200ms
 Config options:         180+
 ```
@@ -120,8 +120,8 @@ core/                    # Request orchestration, context pipeline, agentic loop
 ├── response_planner.py  # Pre-answer planning + post-answer review gate
 ├── agentic/             # ReAct tool loop
 │   ├── controller.py    # Loop orchestration, prompt building, quality heuristics
-│   ├── tools.py         # ToolExecutor: dispatch routing + 10 execute methods
-│   ├── formatters.py    # AgenticFormatter: 17 pure formatting methods
+│   ├── tools.py         # ToolExecutor: dispatch routing + 12 execute methods
+│   ├── formatters.py    # AgenticFormatter: 18 pure formatting methods
 │   ├── types.py         # Tool definitions, state types
 │   └── protocols.py     # Native + XML tool calling
 └── prompt/              # Prompt assembly pipeline
@@ -976,8 +976,11 @@ ReAct (Reason + Act) loop.
 The agentic gate in `gui/handlers.py` decides whether to enter the loop:
 
 1. **Keyword heuristic** (instant) — 20+ computation keywords ("calculate",
-   "compute") and memory keywords ("do you remember", "my notes",
-   "search your memory")
+   "compute"), memory keywords ("do you remember", "my notes",
+   "search your memory"), and web search keywords ("web search",
+   "search for", "search online", "look up"). URL detection
+   (`http://`/`https://`) also triggers agentic mode. Explicit search
+   keywords bypass intent veto.
 2. **Entity match** (instant) — Query terms checked against knowledge
    graph alias index. Mentions of known entities (Flapjack, Auggie, etc.)
    auto-route to agentic memory search
@@ -1024,11 +1027,12 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
   retry is silently discarded and the original stays visible.
 - This prevents the jarring UX of showing the same response twice.
 
-### 12 Tools (9 action + done_searching + file_read/file_grep/file_list as 3)
+### 13 Tools (10 action + done_searching + file_read/file_grep/file_list as 3)
 
 | Tool | Implementation | Key Feature |
 |------|---------------|-------------|
 | Web Search | Tavily API | Query decomposition, 72hr cache, daily credit tracking |
+| Fetch URL | Tavily Extract API | Read web page content by URL; auto-fetch URLs in user messages; results registered in web_source_map for `[WEB_N]` citations |
 | Wolfram Alpha | LLM API | Token bucket rate limiting, MD5 result cache |
 | Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across rounds) |
 | Memory Search | ChromaDB (13 collections) + FAISS (wiki vectors) | wiki_knowledge routes through FAISS; all other collections via ChromaDB |
@@ -1043,6 +1047,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
 
 ```
 Round 1 (automatic):
+  Auto-fetch any URLs detected in user message (initial_urls → fetch_url)
   Execute initial web search (unless skip_initial_search)
   Compress results, check quality
   If low quality → generate relaxation hint for next round
@@ -1050,7 +1055,7 @@ Round 1 (automatic):
 Rounds 2–N (model-driven, max 5):
   1. Build iteration prompt with [TIME CONTEXT] + accumulated context + context inventory
   2. LLM generates thought + tool selection
-  3. Parse decision: wants_search / wants_code / wants_memory / wants_end
+  3. Parse decision: wants_search / wants_fetch_url / wants_code / wants_memory / wants_end
   4. Execute selected tool, capture observation
   5. Append observation to accumulated context
   6. Budget enforcement: trim oldest rounds if over context_budget_tokens
@@ -1087,10 +1092,15 @@ The controller supports multiple LLM calling conventions:
 Protocol is auto-detected from model name via `detect_protocol()`.
 
 Supported tool names (native / XML marker):
-`web_search` / `<web_search>`, `wolfram` / `<wolfram>`,
-`code_sandbox` / `<code_sandbox>`, `search_memory` / `<search_memory>`,
-`expand_memory` / `<expand_memory>`, `file_operation` / `<file_operation>`,
-`git_stats` / `<git_stats>`.
+`web_search` / `<web_search>`, `fetch_url` / `<fetch_url>`,
+`wolfram` / `<wolfram>`, `code_sandbox` / `<code_sandbox>`,
+`search_memory` / `<search_memory>`, `expand_memory` / `<expand_memory>`,
+`file_operation` / `<file_operation>`, `git_stats` / `<git_stats>`,
+`recall_image` / `<recall_image>`.
+
+XML alias patterns: `<web_search>query</web_search>` and
+`<web_search query="...">` are accepted as aliases for `<search>`.
+`<search_memory query="...">` is accepted as an alias for `<memory>`.
 
 ### Budget Enforcement
 
