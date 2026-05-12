@@ -235,6 +235,7 @@ class AgenticSearchController:
         initial_context: Optional[Dict[str, Any]] = None,
         crisis_level: Optional[str] = None,
         skip_initial_search: bool = False,
+        initial_urls: Optional[List[str]] = None,
     ) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Execute the agentic search loop.
@@ -250,6 +251,7 @@ class AgenticSearchController:
             initial_context: Optional pre-gathered context
             crisis_level: Current crisis/tone level
             skip_initial_search: If True, skip Round 1 web search (for computation-only queries)
+            initial_urls: Optional list of URLs extracted from the user message to fetch directly
 
         Yields:
             ProgressEvent: Status updates for UI
@@ -274,6 +276,7 @@ class AgenticSearchController:
         memory_available = self.chroma_store is not None
         file_access_available = self.file_access_manager is not None and self.file_access_manager.is_available()
         git_stats_available = self.git_stats_manager is not None and self.git_stats_manager.is_available()
+        fetch_url_available = self.web_search_manager is not None and self.web_search_manager.is_available()
         handler = get_protocol_handler(
             protocol,
             wolfram_available=wolfram_available,
@@ -281,6 +284,7 @@ class AgenticSearchController:
             memory_available=memory_available,
             file_access_available=file_access_available,
             git_stats_available=git_stats_available,
+            fetch_url_available=fetch_url_available,
         )
 
         # Augment system prompt for agentic mode
@@ -299,8 +303,63 @@ class AgenticSearchController:
                 # Continue without sandbox - will fall back gracefully
 
         try:
-            # === ROUND 1: Automatic search with trigger terms (unless skipped) ===
-            if skip_initial_search:
+            # === ROUND 1: URL fetch or automatic search with trigger terms ===
+            if initial_urls:
+                # User message contains URLs — fetch them directly instead of searching
+                session.state = AgentState.SEARCHING
+                logger.info(f"[AgenticSearch] Round 1: fetching {len(initial_urls)} URL(s) from user message")
+
+                for i, url in enumerate(initial_urls[:3]):  # Cap at 3 URLs
+                    yield ProgressEvent(
+                        event_type="fetching_url",
+                        message=f"Fetching: {url}",
+                        round_number=1,
+                        metadata={"url": url}
+                    )
+
+                start_time = time.time()
+                fetch_tasks = [
+                    self._tool_executor._execute_fetch_url(url)
+                    for url in initial_urls[:3]
+                ]
+                fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+                fetch_duration = (time.time() - start_time) * 1000
+
+                # Build accumulated context from fetched pages
+                fetch_context_parts = []
+                for url, result in zip(initial_urls[:3], fetch_results):
+                    if isinstance(result, Exception):
+                        content = f"[Error fetching {url}: {result}]"
+                    else:
+                        content = result
+                    fetch_context_parts.append(
+                        self._formatter.format_fetch_url_context(1, url, content)
+                    )
+
+                first_round = SearchRound(
+                    round_number=1,
+                    request=SearchRequest(
+                        query=f"[Fetch URL] {initial_urls[0]}",
+                        round_number=1
+                    ),
+                    results=None,
+                    duration_ms=fetch_duration
+                )
+                first_round.summary = "\n\n".join(
+                    r if not isinstance(r, Exception) else f"[Error: {r}]"
+                    for r in fetch_results
+                )
+                session.rounds.append(first_round)
+                session.accumulated_context = "\n\n".join(fetch_context_parts)
+
+                yield ProgressEvent(
+                    event_type="url_fetched",
+                    message=f"Fetched {len(initial_urls[:3])} URL(s)",
+                    round_number=1,
+                    metadata={"duration_ms": fetch_duration}
+                )
+
+            elif skip_initial_search:
                 # Skip Round 1 web search for computation-only queries
                 logger.info("[AgenticSearch] Skipping initial search (computation-only mode)")
                 session.accumulated_context = ""
@@ -607,6 +666,10 @@ class AgenticSearchController:
             return await self._dispatch_full_document(decision, round_number)
         elif decision.wants_git_stats and decision.git_stats_query:
             return await self._dispatch_git_stats(decision, round_number)
+        elif decision.wants_recall_image and decision.recall_image_query:
+            return await self._tool_executor._dispatch_recall_image(decision, round_number)
+        elif decision.wants_fetch_url and decision.fetch_url:
+            return await self._tool_executor._dispatch_fetch_url(decision, round_number)
         else:
             return _ToolResult(
                 decision=decision, round_data=None,
@@ -1197,6 +1260,23 @@ What would you like to do?""")
 
     def _format_reflections(self, reflections):
         return self._formatter.format_reflections(reflections)
+
+    def _is_low_quality_result(self, result, query: str):
+        """Check if search result is low quality (empty, irrelevant, or sparse)."""
+        if result is None:
+            return True, "no results returned"
+        pages = getattr(result, 'pages', []) if result else []
+        if not pages:
+            return True, "empty results"
+        if len(pages) < 2:
+            return True, "very few results"
+        return False, ""
+
+    def _generate_relaxation_suggestion(self, query: str) -> str:
+        """Generate a suggestion for query relaxation."""
+        if len(query.split()) > 6:
+            return "Try a shorter, more focused query"
+        return "Try alternative phrasing or broader terms"
 
     def _format_search_context(self, round_number, query, content):
         return self._formatter.format_search_context(round_number, query, content)

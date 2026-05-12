@@ -122,6 +122,27 @@ async def wait_for_pending_storage(timeout: float = 10.0):
         logger.warning(f"[SHUTDOWN] Storage tasks timed out after {timeout}s, {len(_pending_storage_tasks)} may be incomplete")
 
 
+import re as _re
+
+# Regex to strip leaked XML tool-call markers from enhanced-mode LLM output.
+# Covers both agentic-style markers (<search>, <memory>, etc.) and hallucinated
+# variants the LLM may produce (<search_memory>, <web_search>, etc.).
+_LEAKED_XML_TOOL_RE = _re.compile(
+    r'</?(?:search|memory|wolfram|python|expand_memory|get_full_document|git_stats|'
+    r'recall_image|search_memory|web_search|fetch_url|tool_call|function_call)'
+    r'(?:\s[^>]*)?>',
+    _re.IGNORECASE
+)
+
+
+def _strip_leaked_xml_markers(text: str) -> str:
+    """Remove leaked XML tool-call markers from enhanced-mode output."""
+    cleaned = _LEAKED_XML_TOOL_RE.sub('', text)
+    # Collapse runs of blank lines left after stripping
+    cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
+
+
 async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
     """
     Persist uploaded documents and images to ChromaDB reference_docs collection.
@@ -573,6 +594,8 @@ async def handle_submit(
         needs_knowledge = False
         _matched_entities = set()
 
+        needs_web_search = False
+
         # --- Tier 1: Keyword heuristics (instant, no LLM) ---
         # Only unambiguous computation terms — avoid common English words
         # that trigger false positives (e.g. "I mean", "expand on that", "plot of the movie")
@@ -584,6 +607,17 @@ async def handle_submit(
             'simplify', 'differentiate', 'integrate',
         ]
         needs_computation = any(kw in _lower for kw in _computation_keywords)
+
+        # Explicit web search / URL fetch keywords — bypass LLM trigger
+        _web_search_keywords = [
+            'web search', 'search the web', 'search for', 'search online',
+            'google ', 'look it up', 'fetch the', 'fetch url',
+            'go to http', 'check out http', 'visit http',
+        ]
+        _has_url = 'http://' in _lower or 'https://' in _lower
+        if _has_url or any(kw in _lower for kw in _web_search_keywords):
+            needs_web_search = True
+            logger.debug("[Handle Submit] Tier 1: explicit web search/URL keyword detected")
 
         _memory_keywords = [
             'documentation', 'daemon docs', 'architecture',
@@ -641,7 +675,7 @@ async def handle_submit(
 
         # Casual skip filter: only applies when no keyword/entity trigger fired
         _search_words = {'search', 'look', 'find', 'news', 'latest', 'current', 'today', 'recent', '2026', '2025', 'what is', 'who is', 'how does', 'tell me about'}
-        _has_search_signal = any(w in _lower for w in _search_words) or '?' in user_text
+        _has_search_signal = any(w in _lower for w in _search_words) or '?' in user_text or _has_url
         _skip_patterns = [
             len(_words) < 5 and not _has_search_signal,
             len(_words) < 10 and not _has_search_signal,
@@ -653,13 +687,13 @@ async def handle_submit(
             )),
             all(w in ['yes', 'no', 'ok', 'okay', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank', 'you', 'lol', 'haha', 'true', 'right', 'fair', 'same'] for w in _words),
         ]
-        if not needs_computation and not needs_memory and not needs_knowledge and any(_skip_patterns):
+        if not needs_computation and not needs_memory and not needs_knowledge and not needs_web_search and any(_skip_patterns):
             logger.debug("[Handle Submit] Agentic skipped - casual/short message")
             should_use_agentic = False
             search_terms = []
         else:
 
-            if needs_computation or needs_memory or needs_knowledge:
+            if needs_computation or needs_memory or needs_knowledge or needs_web_search:
                 should_use_agentic = True
                 search_terms = []  # No initial web search needed, tools handle it
 
@@ -671,6 +705,8 @@ async def handle_submit(
                     triggered_modes.append("memory")
                 if needs_knowledge:
                     triggered_modes.append("knowledge")
+                if needs_web_search:
+                    triggered_modes.append("web_search")
                 logger.debug(f"[Handle Submit] Agentic triggered - modes: {', '.join(triggered_modes)}")
             else:
                 # Check if web search, memory search, or knowledge search should be triggered using LLM-first trigger
@@ -710,7 +746,12 @@ async def handle_submit(
                     search_terms = []
 
         # --- Intent-based veto: skip agentic for casual/meta queries even if keyword matched ---
-        if should_use_agentic:
+        # Exception: if the message contains an explicit search/fetch keyword, don't veto —
+        # the user may be mixing casual talk with a real search request.
+        _has_explicit_search_keyword = any(kw in _lower for kw in [
+            'search', 'look up', 'fetch', 'check out', 'go to', 'visit', 'pull up',
+        ]) or _has_url
+        if should_use_agentic and not _has_explicit_search_keyword:
             _intent_info = raw_context.get("intent") if raw_context else None
             if _intent_info:
                 _intent_type = getattr(_intent_info, 'intent_type', None) if not isinstance(_intent_info, dict) else _intent_info.get('intent_type')
@@ -735,6 +776,12 @@ async def handle_submit(
                 initial_terms = search_terms if search_terms else []
                 logger.debug(f"[Handle Submit] Agentic initial terms: {initial_terms}")
 
+                # Extract URLs from the user message for direct fetch
+                import re as _re_url
+                _url_pattern = _re_url.compile(r'https?://[^\s<>"\')\]]+')
+                _extracted_urls = _url_pattern.findall(user_text)
+                logger.debug(f"[Handle Submit] Extracted URLs: {_extracted_urls}")
+
                 # Run agentic search loop with RAG context
                 agentic_response = ""
                 logger.debug(f"[Handle Submit] Starting agentic loop with RAG context keys: {list(raw_context.keys())}")
@@ -749,7 +796,8 @@ async def handle_submit(
                     model_name=model_name,
                     initial_search_terms=initial_terms,
                     initial_context=raw_context,
-                    skip_initial_search=needs_computation or needs_memory or needs_knowledge,
+                    skip_initial_search=needs_computation or needs_memory or needs_knowledge or (needs_web_search and not initial_terms and not _extracted_urls),
+                    initial_urls=_extracted_urls if _extracted_urls else None,
                 )
 
                 async def _agentic_next():
@@ -831,14 +879,24 @@ async def handle_submit(
                 # Final output from agentic search - strip thinking blocks
                 final_output = agentic_response
                 thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
+                # Also try untagged thinking detection
+                if not thinking_part:
+                    untagged_thinking, untagged_answer = ResponseParser._detect_untagged_thinking(final_output)
+                    if untagged_thinking:
+                        thinking_part = untagged_thinking
+                        final_answer = untagged_answer
                 display_output = final_answer if final_answer else final_output
+                # If entire response was thinking (no answer), don't show it
+                if thinking_part and not final_answer:
+                    display_output = ""
                 display_output = ResponseParser.strip_thinking_tag_leaks(display_output)
+                display_output = _strip_leaked_xml_markers(display_output)
 
                 # Append web sources footer if [WEB_N] citations present
                 _web_map = getattr(agentic_controller, '_current_web_source_map', None) or {}
                 if _web_map:
-                    import re as _re
-                    _cited_ids = set(_re.findall(r'\[WEB_(\d+)\]', display_output))
+                    import re as _re_cite
+                    _cited_ids = set(_re_cite.findall(r'\[WEB_(\d+)\]', display_output))
                     if _cited_ids:
                         _footer_lines = []
                         for _n in sorted(_cited_ids, key=int):
@@ -912,6 +970,10 @@ async def handle_submit(
                 }
                 # Yield final response with debug record (response was already streamed
                 # chunk-by-chunk during the loop, so only one yield needed here)
+                # If display_output is empty (entire response was thinking/reasoning), show fallback
+                if not display_output.strip():
+                    display_output = "I processed your request but my response was caught by the thinking filter. Let me try again — could you rephrase or retry?"
+                    logger.warning("[Handle Submit] Agentic response was entirely thinking content, showing fallback")
                 logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
                 yield {"role": "assistant", "content": display_output, "debug": debug_record}
                 logger.debug("[Handle Submit] Agentic final response yielded")
@@ -1025,6 +1087,7 @@ async def handle_submit(
                         display_output = (m.group(2).strip() if m else final_answer)
                     except (IndexError, AttributeError):
                         display_output = final_answer
+                    display_output = _strip_leaked_xml_markers(display_output)
                     yield {"role": "assistant", "content": display_output}
             else:
                 # No thinking block detected, stream normally
@@ -1035,6 +1098,21 @@ async def handle_submit(
                     display_output = (m.group(2).strip() if m else final_output)
                 except (IndexError, AttributeError):
                     display_output = final_output
+                display_output = _strip_leaked_xml_markers(display_output)
+                yield {"role": "assistant", "content": display_output}
+
+        # After streaming completes, if we're still showing "Thinking..." the user
+        # sees nothing. Parse the accumulated output and yield whatever we have.
+        if thinking_started and not thinking_complete and final_output.strip():
+            thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
+            recovered = final_answer if final_answer else final_output
+            # Strip thinking tags/content if they leaked
+            recovered = ResponseParser.strip_thinking_tag_leaks(recovered)
+            recovered = _strip_leaked_xml_markers(recovered)
+            if recovered.strip():
+                display_output = recovered.strip()
+                final_output = display_output
+                logger.info(f"[Handle Submit] Recovered from stuck thinking state, output_len={len(display_output)}")
                 yield {"role": "assistant", "content": display_output}
 
         # After streaming completes, parse thinking block for logging and storage
@@ -1074,6 +1152,10 @@ async def handle_submit(
             final_output = final_answer_stream if final_answer_stream else final_output
             # Sync display_output so final yield doesn't show stale thinking-polluted content
             display_output = final_output
+
+        # Strip leaked XML tool markers (LLM sometimes hallucinates tool-call XML in enhanced mode)
+        final_output = _strip_leaked_xml_markers(final_output)
+        display_output = _strip_leaked_xml_markers(display_output)
 
         # ── Uncertainty Fallback: retry via agentic search if response is uncertain ──
         _uncertainty_retry_done = False

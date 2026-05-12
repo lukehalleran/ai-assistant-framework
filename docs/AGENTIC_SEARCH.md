@@ -13,9 +13,9 @@ details see `PROMPT_BUILDING_PIPELINE.md`.
 
 When a user query needs external information, Daemon can enter a
 multi-round ReAct (Reasoning + Acting) loop where the LLM iteratively
-decides which tools to call — web search, memory search, Wolfram Alpha,
-Python sandbox, file access, memory expansion, git stats, or full-document
-retrieval — until it has enough
+decides which tools to call — web search, URL fetch, memory search, Wolfram Alpha,
+Python sandbox, file access, memory expansion, git stats, full-document
+retrieval, or image recall — until it has enough
 context to answer. The loop is budget-enforced and streams progress
 events to the UI in real time.
 
@@ -26,8 +26,8 @@ events to the UI in real time.
 | File | Purpose |
 |------|---------|
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics |
-| `core/agentic/tools.py` | ToolExecutor: dispatch routing + 11 execute methods (web, wolfram, memory, expand, files, git, sandbox, full-doc, recall-image) |
-| `core/agentic/formatters.py` | AgenticFormatter: 17 pure formatting methods (context, results, prompts) |
+| `core/agentic/tools.py` | ToolExecutor: dispatch routing + 12 execute methods (web, fetch-url, wolfram, memory, expand, files, git, sandbox, full-doc, recall-image) |
+| `core/agentic/formatters.py` | AgenticFormatter: 18 pure formatting methods (context, results, prompts) |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
@@ -42,9 +42,11 @@ Agentic search activates when ALL conditions are met:
 1. `use_agentic_search=True` passed to `process_user_query()`
 2. Config: `agentic_search.enabled = true`
 3. At least one trigger fires in `gui/handlers.py`:
-   - Keyword heuristic: computation, memory, or knowledge keywords detected
+   - Keyword heuristic: computation, memory, knowledge, or web search keywords detected ("web search", "search for", "search online", "look up")
+   - URL detection: `http://` or `https://` in query triggers agentic mode with auto-fetch
    - Entity match: query mentions known knowledge graph entity
    - LLM trigger: `should_search=True`, `needs_memory_search=True`, or `needs_knowledge_search=True`. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
+   - Explicit search keywords bypass intent veto; skip initial search when Tier 1 fires without LLM-generated terms
 
 The controller is lazy-initialized on first use via the orchestrator's
 `agentic_controller` property.
@@ -74,6 +76,10 @@ Entry point: `run_agentic_search()` — async generator yielding
 Unless `skip_initial_search=True`, uses `initial_search_terms` from the
 LLM trigger for the first web search. Results are compressed and
 accumulated. Low-quality detection may suggest query relaxation.
+
+If `initial_urls` are provided (URLs detected in the user message),
+Round 1 auto-fetches each URL via `fetch_url` before any web search.
+If a web search query contains a URL, it is auto-rerouted to `fetch_url`.
 
 ### Rounds 2-N — Model-Driven Iteration
 
@@ -113,6 +119,19 @@ Search the web for current information.
 Parameters: query (required), reason (optional)
 Execution: WebSearchManager.search() with STANDARD depth
 Fallback: None — empty results trigger relaxation hints
+```
+
+### fetch_url
+
+Fetch and read web page content by URL.
+
+```
+Parameters: url (required), reason (optional)
+Execution: WebSearchManager._tavily_extract([url])
+Citations: Result registered in web_source_map for [WEB_N] citation tracking
+Availability: Gated on web_search_manager.is_available() (requires Tavily API key)
+Auto-trigger: URLs detected in user messages are auto-fetched in Round 1
+URL reroute: If a web_search query contains a URL, it is auto-rerouted here
 ```
 
 ### wolfram_alpha
@@ -246,6 +265,7 @@ For models without native tool support. Markers embedded in text:
 
 ```
 <search>query here</search>
+<fetch_url url="https://example.com">reason</fetch_url>
 <wolfram>2+2</wolfram>
 <python purpose="calculate">code here</python>
 <memory collection="facts">query here</memory>
@@ -254,14 +274,20 @@ For models without native tool support. Markers embedded in text:
 <file_grep pattern="regex" folder="src/" glob="*.py"/>
 <file_list path="/path/to/dir" recursive="true"/>
 <git_stats>commits this week</git_stats>
+<recall_image>query</recall_image>
 <done/>
 ```
+
+**XML Alias Patterns**: `XMLMarkerHandler` also accepts these aliases:
+- `<web_search>query</web_search>` and `<web_search query="...">` as aliases for `<search>`
+- `<search_memory query="...">` as an alias for `<memory>`
 
 Parsed by `XMLMarkerHandler` using regex. `<done/>` is checked first
 and returns immediately if present. Remaining markers are collected
 in order: python -> wolfram -> memory -> expand_memory ->
 get_full_document -> file_read -> file_grep -> git_stats ->
-file_list -> search -> implicit answer (if no markers found).
+file_list -> fetch_url -> recall_image -> search -> implicit answer
+(if no markers found).
 
 ### System Prompt Augmentation
 
@@ -370,6 +396,8 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `listing_files` / `files_listed` | File list |
 | `retrieving_document` / `document_retrieved` | Full document retrieval |
 | `querying_git` / `git_stats_done` | Git stats |
+| `fetching_url` / `url_fetched` | URL content fetch |
+| `recalling_image` / `image_recalled` | Visual memory recall |
 | `synthesizing` | Starting final generation |
 | `done` | Session complete (suppressed in GUI after response starts) |
 | `error` | Error occurred |

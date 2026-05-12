@@ -61,9 +61,16 @@ def _detect_untagged_thinking(response: str) -> Tuple[str, str]:
 - Conversational meta-analysis: "This is a casual...", "not asking me to..."
 - Bullet-style reasoning: "- Explicitly...", "- Temporal..."
 
+**Sentence-level patterns** (`_THINKING_SENTENCE_PATTERNS`, NEW 2026-05):
+- Catches single-paragraph thinking where multi-line heuristic fails
+- `_count_sentence_pattern_hits()` scores sentence-level indicators within
+  the first paragraph
+- Enables detection when the model dumps chain-of-thought as a single
+  dense paragraph without blank-line breaks
+
 **Guards:**
 - Requires `_HEURISTIC_MIN_HITS = 2` distinct patterns to trigger (prevents false positives)
-- Response must be ≥80 chars and ≥3 lines
+- Response must be ≥80 chars and ≥3 lines (multi-line path) or sentence-level patterns hit threshold (single-paragraph path)
 - Remaining answer must be ≥20 chars (won't strip entire response)
 - Splits at first blank line after last pattern hit
 
@@ -205,6 +212,9 @@ The answer to 2 + 2 is 4.
 | API | `extra_body={"reasoning": {"effort": "medium"}}` | Claude, DeepSeek-R1 — thinking never reaches text body |
 | Tags | `parse_thinking_block()` | `<thinking>`, `<think>`, `<output>` wrappers |
 | Heuristic | `_detect_untagged_thinking()` | Models that ignore tag instruction and dump reasoning as plain text |
+| Sentence | `_count_sentence_pattern_hits()` | Single-paragraph chain-of-thought without blank-line breaks |
+| Agentic | `_detect_untagged_thinking()` on final output | Thinking leak in agentic path final generation |
+| Streaming | `_strip_leaked_xml_markers()` + stuck recovery | XML marker fragments and stuck thinking state after streaming ends |
 | Cleanup | `strip_thinking_tag_leaks()` | Partial/malformed tags (e.g., `/think>`, `<|think|>`) |
 
 ## Backward Compatibility

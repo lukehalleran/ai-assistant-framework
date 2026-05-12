@@ -1307,7 +1307,10 @@ if __name__ == "__main__":
             # Gather session buffers, if your logger tracks them
             session_convos = []
             session_summaries = []
-            if orchestrator:
+            if _shutdown_requested:
+                # Signal handler already ran shutdown tasks — skip to cleanup
+                print("[Shutdown] Tasks already completed by signal handler, skipping.")
+            elif orchestrator:
                 # If your conversation logger exposes a buffer of [{'query','response'}, ...]
                 try:
                     logger_obj = getattr(orchestrator, "conversation_logger", None)

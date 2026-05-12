@@ -99,6 +99,19 @@ class ToolExecutor:
     ) -> _ToolResult:
         """Route a single SearchDecision to the appropriate dispatch method."""
         if decision.wants_search and decision.search_query:
+            # If the search query contains a URL, reroute to fetch_url
+            import re as _re
+            q = decision.search_query.strip()
+            _url_match = _re.search(r'(https?://[^\s<>"\')\]]+)', q)
+            if _url_match:
+                url = _url_match.group(1)
+                logger.info(f"[ToolExecutor] Rerouting URL from web_search to fetch_url: {url}")
+                decision = SearchDecision(
+                    wants_fetch_url=True,
+                    fetch_url=url,
+                    fetch_url_reason=decision.search_reason,
+                )
+                return await self._dispatch_fetch_url(decision, round_number)
             return await self._dispatch_web_search(decision, round_number, crisis_level)
         elif decision.wants_wolfram and decision.wolfram_query:
             return await self._dispatch_wolfram(decision, round_number)
@@ -120,6 +133,8 @@ class ToolExecutor:
             return await self._dispatch_git_stats(decision, round_number)
         elif decision.wants_recall_image and decision.recall_image_query:
             return await self._dispatch_recall_image(decision, round_number)
+        elif decision.wants_fetch_url and decision.fetch_url:
+            return await self._dispatch_fetch_url(decision, round_number)
         else:
             return _ToolResult(
                 decision=decision, round_data=None,
@@ -672,6 +687,49 @@ class ToolExecutor:
             end_events=end_events,
         )
 
+    async def _dispatch_fetch_url(
+        self, decision: SearchDecision, round_number: int,
+    ) -> _ToolResult:
+        start_events = [ProgressEvent(
+            event_type="fetching_url",
+            message=f"Fetching: {decision.fetch_url}",
+            round_number=round_number,
+            metadata={"url": decision.fetch_url, "reason": decision.fetch_url_reason}
+        )]
+
+        start_time = time.time()
+        fetch_result = await self._execute_fetch_url(decision.fetch_url)
+        duration = (time.time() - start_time) * 1000
+
+        round_data = SearchRound(
+            round_number=round_number,
+            request=SearchRequest(
+                query=f"[Fetch URL] {decision.fetch_url}",
+                reason=decision.fetch_url_reason,
+                round_number=round_number
+            ),
+            results=None,
+            duration_ms=duration
+        )
+        round_data.summary = fetch_result
+
+        end_events = [ProgressEvent(
+            event_type="url_fetched",
+            message=f"Fetched content from URL",
+            round_number=round_number,
+            metadata={"duration_ms": duration}
+        )]
+
+        return _ToolResult(
+            decision=decision,
+            round_data=round_data,
+            formatted_context=self.formatter.format_fetch_url_context(
+                round_number, decision.fetch_url, fetch_result
+            ),
+            start_events=start_events,
+            end_events=end_events,
+        )
+
     # ------------------------------------------------------------------
     # Low-level execution methods
     # ------------------------------------------------------------------
@@ -897,6 +955,40 @@ Provide a focused summary with the most important information."""
         except Exception as e:
             logger.warning(f"[AgenticSearch] Git stats failed: {e}")
             return f"[Git stats error: {e}]"
+
+    async def _execute_fetch_url(self, url: str) -> str:
+        """Fetch page content from a URL via Tavily extract API.
+
+        Also registers the fetched page in the web source map for [WEB_N] citations.
+        """
+        if not self.web_search_manager:
+            return "[Web search manager not configured — cannot fetch URLs]"
+        try:
+            pages = await self.web_search_manager._tavily_extract([url])
+            if not pages:
+                return f"[Could not fetch content from {url}]"
+            page = pages[0]
+            title = page.title or url
+            content = page.content or page.snippet or ""
+            if not content:
+                return f"[Page at {url} returned no extractable content]"
+
+            # Register in web source map for citation tracking
+            try:
+                from knowledge.web_search_manager import assign_web_ids
+                numbered, source_map = assign_web_ids(pages)
+                self._current_web_source_map.update(source_map)
+                # Use the assigned WEB_N id in the output
+                if numbered:
+                    web_id = numbered[0].web_id
+                    return f"[{web_id}] Title: {title}\nURL: {url}\n\n{content}"
+            except Exception:
+                pass  # Citation registration is non-critical
+
+            return f"Title: {title}\nURL: {url}\n\n{content}"
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] URL fetch failed for {url}: {e}")
+            return f"[URL fetch error: {e}]"
 
     async def _execute_recall_image(self, query: str) -> dict:
         """Search visual memory for images matching the query."""

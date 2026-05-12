@@ -27,6 +27,7 @@ Supported Tools:
     - file_list / <file_list>: List directory contents
     - git_stats / <git_stats>: Git repository activity stats
     - get_full_document / <get_full_document>: Retrieve complete uploaded document by title
+    - fetch_url / <fetch_url>: Fetch web page content by URL
     - signal_done / <done>: Signal task completion
 
 Dependencies:
@@ -136,7 +137,7 @@ class NativeToolsHandler(BaseProtocolHandler):
     Parses tool_calls from LLM response to detect search, Wolfram, and sandbox requests.
     """
 
-    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False):
+    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, fetch_url_available: bool = False):
         from core.agentic.types import (
             SEARCH_TOOL_DEFINITION,
             DONE_TOOL_DEFINITION,
@@ -150,6 +151,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             GIT_STATS_TOOL_DEFINITION,
             GET_FULL_DOCUMENT_TOOL_DEFINITION,
             RECALL_IMAGE_TOOL_DEFINITION,
+            FETCH_URL_TOOL_DEFINITION,
         )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
@@ -163,11 +165,13 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.git_stats_tool = GIT_STATS_TOOL_DEFINITION
         self.full_document_tool = GET_FULL_DOCUMENT_TOOL_DEFINITION
         self.recall_image_tool = RECALL_IMAGE_TOOL_DEFINITION
+        self.fetch_url_tool = FETCH_URL_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
         self.memory_available = memory_available
         self.file_access_available = file_access_available
         self.git_stats_available = git_stats_available
+        self.fetch_url_available = fetch_url_available
 
     def parse_response(self, response: Any) -> List[SearchDecision]:
         """
@@ -415,6 +419,20 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] recall_image called without query")
                 return None
 
+        elif func_name == "fetch_url":
+            url = args.get("url", "")
+            reason = args.get("reason")
+            if url:
+                logger.debug(f"[AgenticProtocol] Native tool fetch_url: {url}")
+                return SearchDecision(
+                    wants_fetch_url=True,
+                    fetch_url=url,
+                    fetch_url_reason=reason,
+                )
+            else:
+                logger.warning("[AgenticProtocol] fetch_url called without url")
+                return None
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return None
@@ -444,6 +462,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             tools.extend([self.file_read_tool, self.file_grep_tool, self.file_list_tool])
         if self.git_stats_available:
             tools.append(self.git_stats_tool)
+        if self.fetch_url_available:
+            tools.append(self.fetch_url_tool)
         # NOTE: recall_image tool deliberately excluded from iteration tools.
         # Visual memories are already retrieved by the builder's parallel pipeline
         # and included in the initial context. Adding recall_image here causes
@@ -471,6 +491,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             tool_list.extend(["file_read", "file_grep", "file_list"])
         if self.git_stats_available:
             tool_list.append("git_stats")
+        if self.fetch_url_available:
+            tool_list.append("fetch_url")
         tool_list.append("done_searching")
 
         tools_str = ", ".join(tool_list)
@@ -483,12 +505,19 @@ class NativeToolsHandler(BaseProtocolHandler):
             "individual triples (name=X, age=33). Diversify across collections. "
             "Use web_search for external/current events. Use both when needed."
         ) if self.memory_available else ""
+        fetch_url_guidance = (
+            " IMPORTANT: When you know a specific URL (from profile facts, conversation, "
+            "or the user's message), use fetch_url to read it directly — do NOT web_search for it. "
+            "web_search finds pages; fetch_url reads them. "
+            "Example: if you know the user's GitHub is https://github.com/user/repo, "
+            "call fetch_url(url='https://github.com/user/repo'), don't search for 'user GitHub repo'."
+        ) if self.fetch_url_available else ""
         addition = (
             f"\n\n[AGENTIC TOOLS MODE]\n"
             f"You have access to {tools_str} tools. "
             f"Use web_search for current info, wolfram_alpha for quick math/science computations, "
             f"execute_python for multi-step calculations and data analysis "
-            f"(up to {max_rounds} tool uses total).{memory_guidance} "
+            f"(up to {max_rounds} tool uses total).{memory_guidance}{fetch_url_guidance} "
             "You may call multiple tools in a single step when the queries are independent "
             "(e.g., web_search AND search_memory simultaneously). "
             "Use done_searching when you have enough information to answer."
@@ -505,7 +534,13 @@ class XMLMarkerHandler(BaseProtocolHandler):
     """
 
     # Regex patterns for marker detection
-    SEARCH_PATTERN = re.compile(r'<search>(.*?)</search>', re.DOTALL | re.IGNORECASE)
+    # Primary: <search>query</search>
+    # Aliases: <web_search>query</web_search>, <web_search query="...">..., <search query="...">...
+    SEARCH_PATTERN = re.compile(r'<(?:search|web_search)>(.*?)</(?:search|web_search)>', re.DOTALL | re.IGNORECASE)
+    SEARCH_ATTR_PATTERN = re.compile(r'<(?:search|web_search)\s+query=["\']([^"\']+)["\']\s*/?>', re.DOTALL | re.IGNORECASE)
+    # Primary: <memory>query</memory>
+    # Alias: <search_memory>query</search_memory>, <search_memory query="...">...
+    MEMORY_ATTR_PATTERN = re.compile(r'<search_memory\s+query=["\']([^"\']+)["\']\s*/?>', re.DOTALL | re.IGNORECASE)
     WOLFRAM_PATTERN = re.compile(r'<wolfram>(.*?)</wolfram>', re.DOTALL | re.IGNORECASE)
     DONE_PATTERN = re.compile(r'<done\s*/?>', re.IGNORECASE)
     # Python sandbox pattern with optional purpose attribute
@@ -538,6 +573,11 @@ class XMLMarkerHandler(BaseProtocolHandler):
     # Git stats pattern: <git_stats>query</git_stats>
     GIT_STATS_PATTERN = re.compile(
         r'<git_stats>(.*?)</git_stats>',
+        re.DOTALL | re.IGNORECASE
+    )
+    # Fetch URL pattern: <fetch_url url="https://example.com">reason</fetch_url>
+    FETCH_URL_PATTERN = re.compile(
+        r'<fetch_url\s+url=["\']([^"\']+)["\']\s*>(.*?)</fetch_url>',
         re.DOTALL | re.IGNORECASE
     )
     # Get full document pattern: <get_full_document title="doc title">reason</get_full_document>
@@ -678,6 +718,18 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     git_stats_query=query,
                 ))
 
+        # Check for fetch_url markers
+        for fetch_url_match in self.FETCH_URL_PATTERN.finditer(text):
+            url = fetch_url_match.group(1).strip()
+            reason = fetch_url_match.group(2).strip() or None
+            if url:
+                logger.debug(f"[AgenticProtocol] XML fetch_url marker found: {url}")
+                decisions.append(SearchDecision(
+                    wants_fetch_url=True,
+                    fetch_url=url,
+                    fetch_url_reason=reason,
+                ))
+
         # Check for file list markers
         for file_list_match in self.FILE_LIST_PATTERN.finditer(text):
             dirpath = file_list_match.group(1).strip()
@@ -690,7 +742,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     file_list_recursive=recursive.lower() == "true",
                 ))
 
-        # Check for search markers
+        # Check for search markers (content-style: <search>query</search> or <web_search>query</web_search>)
         for search_match in self.SEARCH_PATTERN.finditer(text):
             query = search_match.group(1).strip()
             if query:
@@ -698,6 +750,26 @@ class XMLMarkerHandler(BaseProtocolHandler):
                 decisions.append(SearchDecision(
                     wants_search=True,
                     search_query=query
+                ))
+
+        # Check for attribute-style search markers (<web_search query="..."> or <search query="...">)
+        for search_attr_match in self.SEARCH_ATTR_PATTERN.finditer(text):
+            query = search_attr_match.group(1).strip()
+            if query:
+                logger.debug(f"[AgenticProtocol] XML search attr marker found: {query}")
+                decisions.append(SearchDecision(
+                    wants_search=True,
+                    search_query=query
+                ))
+
+        # Check for attribute-style memory markers (<search_memory query="...">)
+        for memory_attr_match in self.MEMORY_ATTR_PATTERN.finditer(text):
+            query = memory_attr_match.group(1).strip()
+            if query:
+                logger.debug(f"[AgenticProtocol] XML search_memory attr marker found: {query}")
+                decisions.append(SearchDecision(
+                    wants_memory_search=True,
+                    memory_query=query,
                 ))
 
         # No markers found - model wants to answer
@@ -740,6 +812,7 @@ def get_protocol_handler(
     memory_available: bool = False,
     file_access_available: bool = False,
     git_stats_available: bool = False,
+    fetch_url_available: bool = False,
 ) -> BaseProtocolHandler:
     """
     Factory function to get appropriate protocol handler.
@@ -751,6 +824,7 @@ def get_protocol_handler(
         memory_available: Whether ChromaDB memory search is available
         file_access_available: Whether file access manager is configured
         git_stats_available: Whether git stats manager is configured
+        fetch_url_available: Whether web search manager supports URL extraction
 
     Returns:
         Protocol handler instance
@@ -762,6 +836,7 @@ def get_protocol_handler(
             memory_available=memory_available,
             file_access_available=file_access_available,
             git_stats_available=git_stats_available,
+            fetch_url_available=fetch_url_available,
         )
     else:
         return XMLMarkerHandler()

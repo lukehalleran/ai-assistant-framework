@@ -1433,12 +1433,13 @@ else:
 - `MEMORY_SEARCH_TOOL_DEFINITION`: Tool schema for searching ChromaDB collections from ReAct loop **[NEW 2026-03-20]**
 - `FILE_READ_TOOL_DEFINITION`, `FILE_GREP_TOOL_DEFINITION`, `FILE_LIST_TOOL_DEFINITION`: File access tool schemas **[NEW 2026-03-26]**
 - `GIT_STATS_TOOL_DEFINITION`: Git repository stats tool schema **[NEW 2026-03-29]**
+- `FETCH_URL_TOOL_DEFINITION`: Fetch URL content tool schema **[NEW 2026-05]**
 - `AGENTIC_SYSTEM_PROMPT_INJECTION`: Instructions for local models to use XML markers
 
 **core/agentic/protocols.py** - Protocol detection and parsing
 - `detect_protocol(model_name)` → `SearchProtocol` (native for gpt/claude, XML for local)
 - `NativeToolsHandler`: Parses OpenAI/Anthropic tool_calls from response
-- `XMLMarkerHandler`: Parses `<search>query</search>` and `<done/>` from local model output
+- `XMLMarkerHandler`: Parses `<search>query</search>`, `<fetch_url url="...">`, and `<done/>` from local model output. XML alias patterns: `<web_search>`/`<web_search query="...">` → `<search>`, `<search_memory query="...">` → `<memory>` **[ENHANCED 2026-05]**
 - `BaseProtocolHandler`: Common interface for both
 - Enhanced `search_memory` tool guidance with per-collection descriptions **[ENHANCED 2026-03-20]**
 
@@ -1455,15 +1456,15 @@ else:
   - Memory search diversity tracking: per-collection search counts prevent redundant queries **[NEW 2026-03-20]**
 
 **core/agentic/tools.py** - Tool execution **[NEW 2026-05]**
-- `ToolExecutor`: Dispatch routing + 10 execute methods
+- `ToolExecutor`: Dispatch routing + 12 execute methods
   - `dispatch(decision, session)` → Routes to appropriate `_execute_*` method
-  - `_execute_web_search`, `_execute_wolfram`, `_execute_sandbox`, `_execute_memory_search`,
+  - `_execute_web_search`, `_execute_fetch_url`, `_execute_wolfram`, `_execute_sandbox`, `_execute_memory_search`,
     `_execute_memory_expand`, `_execute_file_read`, `_execute_file_grep`, `_execute_file_list`,
-    `_execute_git_stats`, `_execute_full_document`
+    `_execute_git_stats`, `_execute_full_document`, `_execute_recall_image`
 
 **core/agentic/formatters.py** - Formatting **[NEW 2026-05]**
-- `AgenticFormatter`: 17 pure formatting methods (no I/O, no state mutation)
-  - Context formatting: `_format_search_context`, `_format_wolfram_context`, `_format_memory_context`, `_format_expand_context`, `_format_file_context`, `_format_git_context`, etc.
+- `AgenticFormatter`: 18 pure formatting methods (no I/O, no state mutation)
+  - Context formatting: `_format_search_context`, `_format_fetch_url_context`, `_format_wolfram_context`, `_format_memory_context`, `_format_expand_context`, `_format_file_context`, `_format_git_context`, etc.
   - Prompt building helpers: iteration prompt sections, final prompt sections
 
 **ReAct Loop Flow**:
@@ -1522,6 +1523,7 @@ agentic_search:
 - `git_stats` tool [NEW 2026-03-29]: Read-only git repo stats (commit counts, files changed, contributors, branch activity) via keyword intent parsing + temporal windows, no LLM calls
 - `get_full_document` tool [NEW 2026-03-30]: Retrieve complete uploaded document by title with fuzzy matching. Reassembles all chunks in order, 60k char cap.
 - `recall_image` tool [NEW 2026-05]: CLIP text-to-image retrieval from visual memory. Returns matching image captions + base64 data for multimodal context injection.
+- `fetch_url` tool [NEW 2026-05]: Fetch web page content by URL via Tavily extract API. Auto-triggered for URLs in user messages (Round 1). URL reroute: web_search queries containing URLs auto-reroute here. Results registered in `web_source_map` for `[WEB_N]` citation tracking. Gated on `web_search_manager.is_available()`.
 - `wiki_knowledge` added to `search_memory` valid collections [NEW 2026-03-30]: enables agentic search of pre-embedded Wikipedia corpus
 - FAISS Wikipedia fallback [NEW 2026-03-31]: `_search_wiki_faiss()` + `_format_wiki_faiss_results()` — when searching `wiki_knowledge`, always prefers FAISS semantic search (40M vectors, IVFPQ index) over sparse ChromaDB data
 
@@ -4814,8 +4816,8 @@ daemon/
 │   ├── types.py               # Data structures (AgentState, SearchProtocol, etc.)
 │   ├── protocols.py           # Protocol detection and parsing
 │   ├── controller.py          # AgenticSearchController (orchestration, prompts, quality heuristics)
-│   ├── tools.py               # ToolExecutor (dispatch routing + 10 execute methods) [NEW 2026-05]
-│   └── formatters.py          # AgenticFormatter (17 pure formatting methods) [NEW 2026-05]
+│   ├── tools.py               # ToolExecutor (dispatch routing + 12 execute methods) [NEW 2026-05]
+│   └── formatters.py          # AgenticFormatter (18 pure formatting methods) [NEW 2026-05]
 │
 ├── processing/
 │   └── gate_system.py         # Multi-stage filtering
@@ -4910,6 +4912,7 @@ daemon/
 │   │   ├── test_clip_manager.py         # [NEW 2026-05] 16 tests for CLIP encoding
 │   │   ├── test_visual_memory_store.py  # [NEW 2026-05] 22 tests for visual memory storage
 │   │   ├── test_visual_memory_pipeline.py # [NEW 2026-05] 22 tests for image ingestion pipeline
+│   │   ├── test_fetch_url.py             # [NEW 2026-05] 76 tests for fetch_url agentic tool
 │   │   └── ... (60+ unit test files total)
 │   ├── test_eval/             # Eval system tests (246 tests) [NEW 2026-04]
 │   │   ├── test_section_registry.py     # Registry validation
