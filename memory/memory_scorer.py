@@ -84,13 +84,31 @@ def _is_deictic_followup(q: str) -> bool:
     return any(h in ql for h in DEICTIC_HINTS)
 
 
+def _stem(word: str) -> str:
+    """Minimal suffix strip for overlap matching.
+
+    Handles the common mismatches: anxious/anxiety, deployed/deployment,
+    features/feature, etc.  Deliberately simple — full stemming (Porter)
+    is too aggressive for code symbols like ``asyncio``.
+    """
+    if len(word) <= 4:
+        return word
+    for suffix in ("ment", "tion", "sion", "ness", "ious", "eous",
+                   "ity", "ies", "ing", "ous", "ive", "ful",
+                   "ure", "ated", "ting", "ted", "ed", "ly", "er", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[:-len(suffix)]
+    return word
+
+
 def _salient_tokens(text: str, k: int = 12) -> Set[str]:
-    """Extract most salient tokens from text."""
+    """Extract most salient tokens from text (stemmed for overlap matching)."""
     toks = re.findall(r"[a-zA-Z0-9\+\-\*/=\^()]+", (text or "").lower())
     toks = [t for t in toks if t not in STOPWORDS and len(t) > 1]
     freq: Dict[str, int] = {}
     for t in toks:
-        freq[t] = freq.get(t, 0) + 1
+        stemmed = _stem(t)
+        freq[stemmed] = freq.get(stemmed, 0) + 1
     return {t for t, _ in sorted(freq.items(), key=lambda x: (-x[1], -len(x[0])))[:k]}
 
 
@@ -316,7 +334,13 @@ class MemoryScorer:
         # the recency decay curve for TEMPORAL_RECALL queries).
         temporal_anchor = weights.pop('_temporal_anchor_hours', None)
 
-        now = datetime.now()
+        # Use time_manager's reference time when available (testability +
+        # consistency between temporal-anchor and active-day-decay paths).
+        if (self.time_manager is not None
+                and hasattr(self.time_manager, 'current')):
+            now = self.time_manager.current()
+        else:
+            now = datetime.now()
         last_10m = now - timedelta(minutes=10)
 
         is_deictic = _is_deictic_followup(current_query)
@@ -377,13 +401,32 @@ class MemoryScorer:
             age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
 
             if temporal_anchor and temporal_anchor > 0:
-                # Temporal-aware decay: gentle within window, standard outside.
-                # Overrides both time_manager and fallback paths.
-                if age_hours <= temporal_anchor:
-                    recency = 1.0 - (age_hours / temporal_anchor) * 0.3
+                # Two-regime temporal decay based on anchor size:
+                #
+                # Small anchor (<=48h, "today"/"yesterday"):
+                #   Flat plateau inside window, steep dropoff outside.
+                #   All memories within the window score ~1.0 (recency≈equal,
+                #   let relevance/truth/importance differentiate).
+                #
+                # Large anchor (>48h, "last week"/"last month"):
+                #   Peak near anchor, penalize too-recent. User asked about
+                #   a specific past period, not right now.
+                if temporal_anchor <= 48:
+                    # Small anchor: flat plateau within window
+                    if age_hours <= temporal_anchor:
+                        recency = 1.0 - (age_hours / temporal_anchor) * 0.15
+                    else:
+                        hours_past = age_hours - temporal_anchor
+                        recency = 0.85 / (1.0 + RECENCY_DECAY_RATE * hours_past)
                 else:
-                    hours_past = age_hours - temporal_anchor
-                    recency = 0.7 / (1.0 + RECENCY_DECAY_RATE * hours_past)
+                    # Large anchor: peak near anchor, penalize too-recent
+                    # floor scales with anchor: 0.45 at 168h+
+                    floor = max(0.45, 1.0 - (temporal_anchor / 300.0))
+                    if age_hours <= temporal_anchor:
+                        recency = floor + (1.0 - floor) * (age_hours / temporal_anchor)
+                    else:
+                        hours_past = age_hours - temporal_anchor
+                        recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * hours_past)
             elif (self.time_manager is not None and
                   hasattr(self.time_manager, 'calculate_active_day_decay')):
                 recency = self.time_manager.calculate_active_day_decay(ts, RECENCY_DECAY_RATE)
@@ -401,13 +444,25 @@ class MemoryScorer:
             # 5) continuity (overlap + recency)
             # Include content for non Q/A memories (summaries/reflections)
             blob = (m.get('query', '') + ' ' + m.get('response', '') + ' ' + m.get('content', '')).lower()
-            m_toks = set(re.findall(r"[a-zA-Z0-9\+\-\*/=\^()]+", blob))
+            m_raw_toks = re.findall(r"[a-zA-Z0-9\+\-\*/=\^()]+", blob)
+            m_toks = {_stem(t) for t in m_raw_toks if len(t) > 1}
             continuity = 0.0
             if ts >= last_10m:
                 continuity += 0.1
             if cq_salient:
                 overlap = len(cq_salient & m_toks) / max(1, len(cq_salient))
                 continuity += 0.3 * overlap
+
+            # 5b) tag-keyword bonus: if query tokens match memory tags
+            tags_raw = m.get('tags', (md.get('tags', '')))
+            if tags_raw and cq_salient:
+                if isinstance(tags_raw, str):
+                    tag_set = {_stem(t.strip().lower()) for t in tags_raw.split(',') if t.strip()}
+                else:
+                    tag_set = {_stem(t.lower()) for t in tags_raw}
+                tag_hits = len(cq_salient & tag_set)
+                if tag_hits:
+                    continuity += 0.15 * min(tag_hits, 3) / 3.0
 
             # 6) structural alignment
             m_density = _num_op_density(blob)

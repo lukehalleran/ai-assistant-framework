@@ -1,6 +1,6 @@
 # Memory System Operations Guide
 
-*Last verified: 2026-05-11*
+*Last verified: 2026-05-13*
 
 Operational guide for Daemon's 5-tier hierarchical memory system. Covers the
 full lifecycle from query to retrieval to storage, the scoring algorithm with
@@ -254,10 +254,10 @@ topic:      0.00    # Disabled by default (config.yaml: 0.10)
 ### Step-by-Step
 
 1. **Base relevance** — Embedding similarity from ChromaDB query + collection boost
-2. **Recency decay** — Active-day aware: `1/(1 + decay_rate * age_hours)`. Temporal anchor override for TEMPORAL_RECALL queries reshapes the curve
+2. **Recency decay** — Uses `time_manager.current()` for consistent reference time. Active-day aware: `1/(1 + decay_rate * age_hours)`. Temporal anchor override for TEMPORAL_RECALL queries uses a two-regime decay: small anchors (<=48h, e.g. "today"/"yesterday") get a flat plateau inside the window so relevance/truth differentiate; large anchors (>48h, e.g. "last week") peak near the anchor and penalize too-recent memories
 3. **Truth score** — `TruthScorer.compute_effective_truth(metadata)`: stored score + time decay from last confirmation
 4. **Importance** — Stored importance score (default 0.5)
-5. **Continuity** — Token overlap with last exchange (+0.3 * overlap) + recency bonus (+0.1 if within 10 minutes)
+5. **Continuity** — Token overlap with last exchange (+0.3 * overlap) + recency bonus (+0.1 if within 10 minutes). Tokens are stemmed via `_stem()` (minimal suffix stripping for common mismatches like anxious/anxiety, deployed/deployment). Tag-keyword bonus: if query stems match memory tags, adds up to +0.15 to continuity (scales with number of tag hits, capped at 3)
 6. **Structural alignment** — `0.15 * density_alignment` where density_alignment measures numeric/operator density match between query and memory. Added as direct bonus, not through weighted sum
 7. **Penalties** — Analogy penalty (-0.1 for mathy queries matching analogies) + size penalty (see below)
 8. **Anchor bonus** — Salient token overlap with conversation context. Deictic queries ("explain that", "what about it") get +0.2 bonus or -0.15 penalty based on overlap
@@ -311,13 +311,15 @@ final_score:  0.805
 
 The IntentClassifier detects query intent and overrides scoring weights:
 
-| Intent | Key Override | Effect |
-|--------|-------------|--------|
-| FACTUAL_RECALL | truth=0.30 | Prioritize confirmed facts |
-| TEMPORAL_RECALL | recency=0.40, `_temporal_anchor_hours` | Reshape decay curve around time window |
-| EMOTIONAL_SUPPORT | continuity=0.20 | Prioritize recent conversation flow |
-| TECHNICAL_HELP | relevance=0.45 | Prioritize semantic match |
-| CASUAL_SOCIAL | recency=0.35 | Prioritize recent over deep |
+| Intent | Key Overrides | Effect |
+|--------|--------------|--------|
+| FACTUAL_RECALL | relevance=0.40, recency=0.05, truth=0.30, continuity=0.10 | Prioritize confirmed facts, suppress recency |
+| TEMPORAL_RECALL | recency=0.40, continuity=0.20, `_temporal_anchor_hours` | Reshape decay curve around time window |
+| EMOTIONAL_SUPPORT | recency=0.15, continuity=0.40, truth=0.10 | Prioritize conversation flow over recency |
+| TECHNICAL_HELP | relevance=0.40, recency=0.10, continuity=0.20 | Prioritize semantic match, lower recency |
+| CREATIVE_EXPLORATION | recency=0.10, continuity=0.20, importance=0.15 | Suppress recency, favor importance/continuity |
+| PROJECT_WORK | relevance=0.40, recency=0.10, truth=0.20, continuity=0.15 | Prioritize relevance+truth, lower recency |
+| CASUAL_SOCIAL | recency=0.20, continuity=0.25 | Balanced recent + conversational flow |
 
 ---
 

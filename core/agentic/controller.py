@@ -292,6 +292,16 @@ class AgenticSearchController:
             system_prompt, self.max_rounds
         )
 
+        # Inject tool health summary so the LLM never confabulates about
+        # its own capabilities (e.g. claiming FAISS works when drive is
+        # disconnected).
+        tool_health = self._tool_executor.get_tool_health()
+        augmented_system_prompt += (
+            f"\n\n[TOOL STATUS — DO NOT LIE ABOUT THESE]\n{tool_health}\n"
+            "If a tool is UNAVAILABLE, you MUST tell the user it is unavailable "
+            "when asked. Never claim a tool is working if its status says otherwise."
+        )
+
         # Create persistent sandbox session if available (for variable persistence across turns)
         sandbox_session = None
         if sandbox_available:
@@ -1072,6 +1082,12 @@ You are in round {round_number} of up to {self.max_rounds} search rounds."""]
                         "for broader coverage."
                     )
 
+        # Inject tool health so the LLM knows what's actually working
+        tool_health = self._tool_executor.get_tool_health()
+        parts.append(
+            f"[TOOL STATUS — report these accurately, never claim a tool works if it says UNAVAILABLE]\n{tool_health}"
+        )
+
         parts.append("""Based on the search results above:
 1. If you have enough information to fully answer the question, signal you're done and answer.
 2. If you need more specific information, request another search with a focused query.
@@ -1194,6 +1210,12 @@ What would you like to do?""")
         # Add the query
         parts.append(f"[CURRENT USER QUERY — RESPOND TO THIS]\n{query}")
 
+        # Tool health — so the LLM never confabulates about its own capabilities
+        tool_health = self._tool_executor.get_tool_health()
+        parts.append(
+            f"[TOOL STATUS — report these accurately, never claim a tool works if it says UNAVAILABLE]\n{tool_health}"
+        )
+
         # Instructions
         has_web = bool(session.accumulated_context)
         citation_line = (
@@ -1205,7 +1227,8 @@ What would you like to do?""")
 - Use your memories, facts, and personal notes to personalize the response
 {citation_line}
 - Note any uncertainties or conflicting information
-- Focus on answering the user's specific question""")
+- Focus on answering the user's specific question
+- If asked about tool status, ONLY report what [TOOL STATUS] says — do NOT rely on prior conversation""")
 
         # Budget enforcement: if assembled prompt is too large, trim low-value sections
         # while preserving recent conversations and agentic search results.

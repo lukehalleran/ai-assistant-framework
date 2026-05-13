@@ -1457,6 +1457,7 @@ else:
 
 **core/agentic/tools.py** - Tool execution **[NEW 2026-05]**
 - `ToolExecutor`: Dispatch routing + 12 execute methods
+  - `get_tool_health()` → Returns diagnostic string of tool availability (web search, FAISS, sandbox, etc.)
   - `dispatch(decision, session)` → Routes to appropriate `_execute_*` method
   - `_execute_web_search`, `_execute_fetch_url`, `_execute_wolfram`, `_execute_sandbox`, `_execute_memory_search`,
     `_execute_memory_expand`, `_execute_file_read`, `_execute_file_grep`, `_execute_file_list`,
@@ -4851,7 +4852,7 @@ daemon/
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
-│   ├── semantic_search.py     # FAISS IVFPQ Wikipedia search (zero-copy parquet metadata) [ENHANCED 2026-03-31]
+│   ├── semantic_search.py     # FAISS IVFPQ Wikipedia search (zero-copy parquet metadata); is_faiss_available() guard [ENHANCED 2026-05]
 │   ├── topic_manager.py       # Topic-specific utilities
 │   ├── web_search_manager.py  # Tavily API + caching [NEW 2025-12-22]
 │   ├── wolfram_manager.py     # Wolfram Alpha LLM API [NEW 2026-01-22]
@@ -4942,6 +4943,7 @@ daemon/
 │   ├── debug_*.py            # Debug utilities
 │   ├── mutation_*.py         # Mutation testing
 │   ├── backfill_visual_memory.py  # Backfill visual memories from image directories [NEW 2026-05]
+│   ├── benchmark_retrieval.py # Retrieval quality & latency benchmark runner [NEW 2026-05]
 │   ├── *.sh                  # Shell scripts
 │   └── ...
 │
@@ -4982,6 +4984,7 @@ daemon/
 │   ├── QUICK_REFERENCE.md    # Quick reference guide
 │   ├── BUILD_GUIDE.md        # Desktop executable build guide [NEW 2025-12-12]
 │   ├── DOCKER_README.md      # Docker setup
+│   ├── BENCHMARK_METRICS.md  # Retrieval benchmark metrics tracking [NEW 2026-05]
 │   └── ...
 │
 ├── daemon.spec                # PyInstaller spec file [NEW 2025-12-12]

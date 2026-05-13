@@ -9,7 +9,7 @@ Read this document to understand **how the system works as a whole**. For
 deep dives into specific subsystems, see the cross-references to companion
 docs throughout.
 
-**Last Updated**: 2026-05-11
+**Last Updated**: 2026-05-13
 
 **Related docs**:
 - `README.md` — external audience, feature highlights, getting started
@@ -396,26 +396,31 @@ pipeline serves all query types; only the parameters change.
 
 | Intent | Example Patterns | Key Behavior |
 |--------|-----------------|--------------|
-| FACTUAL_RECALL | "what's my X", "do you remember", "do you see X", "show me X" | Boost truth weight (0.30), increase fact retrieval |
-| TEMPORAL_RECALL | "last week", "history of", "progression" | Boost recency (0.40), reshape decay curve around temporal anchor |
-| EMOTIONAL_SUPPORT | Crisis keywords, "I feel" | Boost continuity (0.20), increase recent conversation retrieval |
-| CASUAL_SOCIAL | "hi", "ok", "thanks", short queries | Reduce all retrieval limits, lightweight response |
-| TECHNICAL_HELP | "fix", "bug", "how do I", code references | Boost relevance (0.45), increase procedural skill retrieval |
-| CREATIVE_EXPLORATION | "brainstorm", "imagine", "what if" | Balanced weights, wider retrieval |
+| FACTUAL_RECALL | "what's my X", "do you remember", "do you see X", "show me X" | Boost truth (0.30), relevance (0.40), lower recency (0.05) |
+| TEMPORAL_RECALL | "last week", "history of", "progression" | Boost recency (0.40), continuity (0.20), reshape decay curve around temporal anchor |
+| EMOTIONAL_SUPPORT | Crisis keywords, "I feel" | Boost continuity (0.40), lower recency (0.15), increase recent conversation retrieval |
+| CASUAL_SOCIAL | "hi", "ok", "thanks", short queries | Boost continuity (0.25), reduce all retrieval limits, lightweight response |
+| TECHNICAL_HELP | "fix", "bug", "how do I", code references | Boost relevance (0.40), continuity (0.20), lower recency (0.10), increase procedural skill retrieval |
+| CREATIVE_EXPLORATION | "brainstorm", "imagine", "what if" | Boost continuity (0.20), importance (0.15), lower recency (0.10), wider retrieval |
 | META_CONVERSATIONAL | "tell me about yourself", "your capabilities" | Boost meta bonus for episodic memories |
-| PROJECT_WORK | "let's build", "add feature", file refs | Standard weights, include git commits and proposals |
+| PROJECT_WORK | "let's build", "add feature", file refs | Boost relevance (0.40), continuity (0.15), lower recency (0.10), include git commits and proposals |
 | GENERAL | Fallback | Default weights, no overrides |
 
 ### How Intent Drives the System
 
 Each intent maps to a profile with three override sets:
 
-**Weight overrides** reshape the scoring function. FACTUAL_RECALL boosts
-truth to 0.30 (from default 0.20) so confirmed facts rank higher.
+**Weight overrides** reshape the scoring function. The general pattern is
+lowered recency and raised continuity: five intents (FACTUAL_RECALL,
+TECHNICAL_HELP, CREATIVE_EXPLORATION, PROJECT_WORK, TEMPORAL_RECALL via
+anchor) lower recency from the default 0.25, while five intents
+(EMOTIONAL_SUPPORT 0.40, CASUAL_SOCIAL 0.25, TEMPORAL_RECALL 0.20,
+TECHNICAL_HELP 0.20, CREATIVE_EXPLORATION 0.20) raise continuity from
+the default 0.10. FACTUAL_RECALL boosts truth to 0.30 and drops recency
+to 0.05 so confirmed facts rank higher regardless of age.
 TEMPORAL_RECALL boosts recency to 0.40 and injects a `_temporal_anchor_hours`
-parameter that reshapes the recency decay curve — memories within the
-time window get gentle decay (1.0 → 0.7), memories outside get standard
-exponential decay.
+parameter that reshapes the recency decay curve (see two-regime decay
+in section 9).
 
 **Retrieval overrides** adjust how many items each parallel retrieval task
 fetches. CASUAL_SOCIAL reduces max memories to 3, reflections/reference_docs/
@@ -759,13 +764,21 @@ structure:  0.05    # Numeric/operator density alignment
 
 1. **Base relevance** — Embedding similarity + per-collection boost
    (facts +0.15, summaries +0.10, semantic +0.05, wiki +0.05)
-2. **Recency decay** — `1/(1 + decay_rate * age_hours)`, with temporal
-   anchor override for TEMPORAL_RECALL
+2. **Recency decay** — Two-regime temporal decay when a temporal anchor
+   is present. Small anchors (<=48h, e.g. "today"/"yesterday"): flat
+   plateau inside window, steep dropoff outside. Large anchors (>48h,
+   e.g. "last week"/"last month"): peak near anchor, penalize too-recent.
+   Without anchor: `time_manager.calculate_active_day_decay()` if available,
+   else `1/(1 + decay_rate * age_hours)`. Age is computed from
+   `time_manager.current()` when available (testability + consistency).
 3. **Truth score** — `TruthScorer.compute_effective_truth(metadata)`:
    stored score + time decay from last confirmation
 4. **Importance** — Stored importance score (default 0.5)
-5. **Continuity** — Token overlap with last exchange (+0.3) + recency
-   bonus (+0.1 if within 10 minutes)
+5. **Continuity** — Stemmed token overlap with current query (+0.3,
+   using `_stem()` for suffix-stripped matching: anxious/anxiety,
+   deployed/deployment, etc.) + recency bonus (+0.1 if within 10 min)
+   + tag-keyword bonus (+0.15 max: query tokens matched against memory
+   tags, scaled by `min(hits, 3)/3`)
 6. **Structural alignment** — Numeric/operator density match between
    query and memory
 7. **Penalties** — Analogy penalty (-0.1), size penalty (scales from 10KB+)
@@ -784,11 +797,15 @@ structure:  0.05    # Numeric/operator density alignment
 ### Temporal-Aware Recency
 
 For TEMPORAL_RECALL queries with a detected time window (e.g., "last
-week"), the classifier extracts a temporal anchor in hours. The recency
-decay curve is reshaped:
+week"), the classifier extracts a temporal anchor in hours. The decay
+curve uses two regimes depending on anchor size:
 
-- Within window: gentle decay (1.0 → 0.7)
-- Outside window: standard exponential decay from 0.7
+- **Small anchor** (<=48h, "today"/"yesterday"): Flat plateau inside
+  window (1.0 → 0.85), steep dropoff outside. All memories within the
+  window score nearly equal — relevance/truth/importance differentiate.
+- **Large anchor** (>48h, "last week"/"last month"): Peak near the
+  anchor time, penalize too-recent. The floor scales with anchor size
+  (0.45 at 168h+). User asked about a specific past period, not now.
 
 This makes memories from the target time period rank much higher than
 they would with standard decay.
@@ -1078,6 +1095,22 @@ what topics are already covered.
 `memory_search_counts` tracks how many times each ChromaDB collection
 has been searched within a session. After 2+ searches of the same
 collection, hints steer the LLM toward under-explored collections.
+
+### Tool Health & `[TOOL STATUS]`
+
+`ToolExecutor.get_tool_health()` (`core/agentic/tools.py`) returns a
+per-tool AVAILABLE / UNAVAILABLE / DISABLED summary. The controller
+injects this as a `[TOOL STATUS]` section into every agentic prompt
+(system prompt, iteration prompt, and final synthesis prompt) so the LLM
+never confabulates about its own capabilities. Checked backends:
+
+- **web_search** — `web_search_manager.is_available()` (Tavily API key)
+- **wiki_knowledge (FAISS)** — `semantic_search.is_faiss_available()`
+  (checks index file + metadata parquet existence without triggering a
+  full load; reports UNAVAILABLE when the external drive is disconnected)
+- **memory_search (ChromaDB)** — chroma_store presence
+- **wolfram / file_access / git_stats / expand_memory / recall_image** —
+  manager presence or config flag
 
 ### Protocol Support
 

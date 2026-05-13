@@ -85,6 +85,76 @@ class ToolExecutor:
         # Web source map for citation tracking across rounds
         self._current_web_source_map = {}
 
+    def get_tool_health(self) -> str:
+        """Return a status summary of tool backends for the agentic system prompt.
+
+        Reports which tools are available, degraded, or unavailable so the LLM
+        never confabulates about its own capabilities.
+        """
+        lines = []
+
+        # Web search
+        if self.web_search_manager and self.web_search_manager.is_available():
+            lines.append("web_search: AVAILABLE")
+        else:
+            lines.append("web_search: UNAVAILABLE (no API key or Tavily client error)")
+
+        # FAISS Wikipedia index
+        try:
+            from knowledge.semantic_search import is_faiss_available
+            if is_faiss_available():
+                lines.append("wiki_knowledge (FAISS 41M vectors): AVAILABLE")
+            else:
+                lines.append(
+                    "wiki_knowledge (FAISS 41M vectors): UNAVAILABLE "
+                    "(index files not found — drive may be disconnected). "
+                    "Only sparse ChromaDB wiki_knowledge is available as fallback."
+                )
+        except Exception:
+            lines.append("wiki_knowledge (FAISS): UNAVAILABLE (import error)")
+
+        # Memory / ChromaDB
+        if self.chroma_store:
+            lines.append("memory_search (ChromaDB): AVAILABLE")
+        else:
+            lines.append("memory_search (ChromaDB): UNAVAILABLE")
+
+        # Wolfram
+        if self.wolfram_manager:
+            lines.append("wolfram: AVAILABLE")
+        else:
+            lines.append("wolfram: UNAVAILABLE")
+
+        # File access
+        if self.file_access_manager:
+            lines.append("file_access: AVAILABLE")
+        else:
+            lines.append("file_access: UNAVAILABLE")
+
+        # Git stats
+        if self.git_stats_manager:
+            lines.append("git_stats: AVAILABLE")
+        else:
+            lines.append("git_stats: UNAVAILABLE")
+
+        # Memory expander
+        if self.memory_expander:
+            lines.append("expand_memory: AVAILABLE")
+        else:
+            lines.append("expand_memory: UNAVAILABLE")
+
+        # Visual memory
+        try:
+            from config.app_config import VISUAL_MEMORY_ENABLED
+            if VISUAL_MEMORY_ENABLED:
+                lines.append("recall_image: AVAILABLE")
+            else:
+                lines.append("recall_image: DISABLED")
+        except Exception:
+            lines.append("recall_image: DISABLED")
+
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------
     # Dispatch router
     # ------------------------------------------------------------------
@@ -847,6 +917,28 @@ Provide a focused summary with the most important information."""
                     logger.info(f"[AgenticSearch] wiki_knowledge using FAISS index "
                                 f"({len(faiss_results)} results)")
                     return self.formatter.format_wiki_faiss_results(faiss_results)
+                else:
+                    # FAISS returned nothing — check if the index is actually available
+                    from knowledge.semantic_search import is_faiss_available
+                    if not is_faiss_available():
+                        faiss_warning = (
+                            "[⚠ FAISS WIKIPEDIA INDEX UNAVAILABLE — the 41M-vector "
+                            "index could not be loaded (drive may be disconnected or "
+                            "files missing). Results below are from the sparse ChromaDB "
+                            "wiki_knowledge collection only. DO NOT tell the user that "
+                            "Wikipedia/FAISS search is working — it is NOT. If the user "
+                            "asked whether Wikipedia search works, tell them it is "
+                            "currently unavailable.]\n\n"
+                        )
+                        logger.warning("[AgenticSearch] FAISS index unavailable for "
+                                       "wiki_knowledge search — falling back to ChromaDB")
+                    else:
+                        faiss_warning = ""
+                    if not results:
+                        if faiss_warning:
+                            return faiss_warning + f"[No results found in {collection} for: {query}]"
+                        return f"[No results found in {collection} for: {query}]"
+                    return faiss_warning + self.formatter.format_memory_results(results, collection)
 
             if not results:
                 return f"[No results found in {collection} for: {query}]"

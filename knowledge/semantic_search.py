@@ -341,6 +341,20 @@ def semantic_search_with_neighbors(query: str, k: int = 8) -> List[Dict[str, Any
     return get_index().search(query, k=k)
 
 
+def is_faiss_available() -> bool:
+    """Check whether the FAISS index is loaded or loadable.
+
+    Returns True only if the index file and metadata parquet both exist
+    on disk and the faiss library is importable.  Does NOT trigger a
+    full load — just checks prerequisites.
+    """
+    idx = get_index()
+    if idx.loaded:
+        return True
+    # Not loaded yet — check if the files exist
+    return bool(faiss and os.path.exists(INDEX_PATH) and os.path.exists(META_PATH))
+
+
 # Optional: admin hook to force reload at runtime (if you update files on disk)
 def reload_semantic_resources() -> None:
     """Force a full reload of embedder, FAISS index, and metadata."""

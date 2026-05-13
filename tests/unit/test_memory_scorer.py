@@ -535,11 +535,15 @@ def _make_ranked_memory(age_hours, relevance=0.5, truth_score=0.5, importance=0.
 
 
 def test_temporal_anchor_reshapes_decay_within_window():
-    """Memories within the temporal window get gentle decay (1.0 → 0.7)."""
+    """Large-anchor temporal decay peaks near the anchor age.
+
+    For "last week" (168h), a 168h-old memory is the best temporal match
+    and should outscore a 84h-old memory on recency.
+    """
     scorer = MemoryScorer()
     overrides = {"_temporal_anchor_hours": 168, "recency": 0.40, "relevance": 0.20}
 
-    mem_edge = _make_ranked_memory(age_hours=168)   # at window edge
+    mem_edge = _make_ranked_memory(age_hours=168)   # at window edge (peak)
     mem_mid = _make_ranked_memory(age_hours=84)     # halfway through window
 
     result = scorer.rank_memories(
@@ -547,17 +551,15 @@ def test_temporal_anchor_reshapes_decay_within_window():
         weight_overrides=overrides,
     )
 
-    # mem_mid should score higher (younger within window)
-    assert result[0] is mem_mid
-    assert result[1] is mem_edge
+    # mem_edge should score higher — it's at the anchor (peak recency=1.0)
+    # mem_mid is only halfway to the anchor (recency ~0.73)
+    assert result[0] is mem_edge
+    assert result[1] is mem_mid
 
-    # Both should have reasonable recency contribution (not buried)
-    # At 168h: recency = 0.70, At 84h: recency = 0.85
-    # With recency weight 0.40, contribution is >= 0.28 for edge
     edge_score = mem_edge['final_score']
     mid_score = mem_mid['final_score']
-    assert mid_score > edge_score
-    assert edge_score > 0  # not buried
+    assert edge_score > mid_score
+    assert mid_score > 0  # not buried
 
 
 def test_temporal_anchor_decays_outside_window():
@@ -593,8 +595,12 @@ def test_no_temporal_anchor_uses_standard_decay():
     assert mem_recent['final_score'] > mem_old['final_score']
 
 
-def test_temporal_anchor_recent_still_scores_highest():
-    """Very recent memories still score highest even with temporal anchor."""
+def test_temporal_anchor_recent_penalized_for_large_anchor():
+    """For large anchors, too-recent memories get penalized.
+
+    "What happened last week?" should rank the 168h-old memory above the
+    1h-old memory because the user asked about the past, not right now.
+    """
     scorer = MemoryScorer()
     overrides = {"_temporal_anchor_hours": 168, "recency": 0.40, "relevance": 0.20}
 
@@ -606,6 +612,6 @@ def test_temporal_anchor_recent_still_scores_highest():
         weight_overrides=overrides,
     )
 
-    # 1h old: recency ≈ 0.998, 168h old: recency = 0.700
-    # Recent should still be first
-    assert mem_1h['final_score'] > mem_168h['final_score']
+    # 1h: recency ≈ 0.45 (too recent for "last week")
+    # 168h: recency = 1.0 (perfect match for "last week")
+    assert mem_168h['final_score'] > mem_1h['final_score']

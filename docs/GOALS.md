@@ -113,6 +113,7 @@ All major feature systems are built. The focus now shifts to: making what exists
 - Prune low-value entries over time (decay + consolidation)
 - Improve fact extraction precision (reduce false triples)
 - Monitor retrieval benchmark scores for regression after any scoring/weight changes
+- **Current benchmark baseline** (2026-05-13, 30 seeds + 19 cases): Recall@1: 0.58, Recall@3: 1.00, Recall@10: 1.00, MRR: 0.79. 100% of correct memories in top 3 (rank distribution: 57% rank 1, 43% rank 2-3). Intent accuracy: 100% (19/19). Technical help MRR improved from 0.375 to 0.750. Temporal recall MRR improved from 0.115 to 1.000.
 
 ---
 
@@ -298,6 +299,7 @@ These systems are complete and working. Listed here for context, not as active w
 ### Retrieval Quality Benchmarks (2026-02-17)
 - `tests/benchmarks/` — End-to-end suite with real embeddings (all-MiniLM-L6-v2)
 - 30 seed memories + 19 test cases across all 9 intent types, recall@K and MRR
+- Latest results (2026-05-13): Recall@1: 0.58, Recall@3: 1.00, MRR: 0.79, intent accuracy: 100% (19/19)
 
 ### Wizard Test Env Fix (2026-02-17)
 - `tests/test_wizard.py` — Fixed env var poisoning via try/finally save/restore

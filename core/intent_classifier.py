@@ -96,8 +96,8 @@ class IntentResult:
 _PROFILES: Dict[IntentType, dict] = {
     IntentType.FACTUAL_RECALL: {
         "weights": {
-            "relevance": 0.40, "recency": 0.10, "truth": 0.30,
-            "importance": 0.05, "continuity": 0.05, "structure": 0.10,
+            "relevance": 0.40, "recency": 0.05, "truth": 0.30,
+            "importance": 0.05, "continuity": 0.10, "structure": 0.10,
         },
         "retrieval": {
             "max_mems": 20, "max_recent": 5, "max_summaries": 5,
@@ -119,8 +119,8 @@ _PROFILES: Dict[IntentType, dict] = {
     },
     IntentType.EMOTIONAL_SUPPORT: {
         "weights": {
-            "relevance": 0.25, "recency": 0.30, "truth": 0.10,
-            "importance": 0.05, "continuity": 0.25, "structure": 0.05,
+            "relevance": 0.25, "recency": 0.15, "truth": 0.10,
+            "importance": 0.05, "continuity": 0.40, "structure": 0.05,
         },
         "retrieval": {
             "max_recent": 20, "max_mems": 10, "max_facts": 5,
@@ -152,8 +152,8 @@ _PROFILES: Dict[IntentType, dict] = {
     },
     IntentType.TECHNICAL_HELP: {
         "weights": {
-            "relevance": 0.45, "recency": 0.15, "truth": 0.20,
-            "importance": 0.05, "continuity": 0.05, "structure": 0.10,
+            "relevance": 0.40, "recency": 0.10, "truth": 0.15,
+            "importance": 0.05, "continuity": 0.20, "structure": 0.10,
         },
         "retrieval": {
             "max_skills": 8, "max_mems": 10, "max_wiki": 5,
@@ -164,8 +164,8 @@ _PROFILES: Dict[IntentType, dict] = {
     },
     IntentType.CREATIVE_EXPLORATION: {
         "weights": {
-            "relevance": 0.30, "recency": 0.15, "truth": 0.10,
-            "importance": 0.15, "continuity": 0.15, "structure": 0.15,
+            "relevance": 0.30, "recency": 0.10, "truth": 0.10,
+            "importance": 0.15, "continuity": 0.20, "structure": 0.15,
         },
         "retrieval": {
             "max_mems": 15, "max_reflections": 8,
@@ -188,8 +188,8 @@ _PROFILES: Dict[IntentType, dict] = {
     },
     IntentType.PROJECT_WORK: {
         "weights": {
-            "relevance": 0.40, "recency": 0.15, "truth": 0.25,
-            "importance": 0.05, "continuity": 0.05, "structure": 0.10,
+            "relevance": 0.40, "recency": 0.10, "truth": 0.20,
+            "importance": 0.05, "continuity": 0.15, "structure": 0.10,
         },
         "retrieval": {
             "max_skills": 8, "max_git_commits": 15,
