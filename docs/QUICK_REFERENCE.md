@@ -147,10 +147,16 @@ class MemoryScorer:
         Falls back to _intent_weight_overrides if no explicit param.
         + staleness_penalty  # staleness_ratio * STALENESS_WEIGHT, 2x at 80%+, capped 0.4 [NEW 2026-03-25]
 
-        Temporal-aware decay [NEW 2026-02-17]:
-        If '_temporal_anchor_hours' in weight_overrides (set by IntentClassifier for TEMPORAL_RECALL),
-        recency uses gentle curve (1.0→0.7) within window, standard decay outside.
-        Temporal anchor takes priority over time_manager and standard fallback.
+        Token overlap: _salient_tokens() and memory-side tokens are stemmed via _stem()
+        (minimal suffix strip: -ment, -tion, -ing, etc.) to catch anxious/anxiety-type mismatches.
+        Tag-keyword bonus: +0.15 max to continuity when query tokens match memory tags.
+        Uses time_manager.current() instead of datetime.now() for testable time reference.
+
+        Two-regime temporal decay [UPDATED 2026-05]:
+        Small anchors (<=48h, "today"/"yesterday"): flat plateau inside window (~1.0),
+        steep dropoff outside. Large anchors (>48h, "last week"/"last month"): peak near
+        anchor, penalizes too-recent. Temporal anchor takes priority over time_manager
+        and standard fallback.
         """
 
     def calculate_truth_score(query, response) -> float:
@@ -1428,11 +1434,14 @@ logger.error(f"Error occurred: {e}")
 # Recency decay (standard)
 recency = 1.0 / (1.0 + 0.05 * age_hours)
 
-# Temporal-aware recency decay (TEMPORAL_RECALL only) [NEW 2026-02-17]
-# Within window (e.g., 168h for "last week"):
-recency = 1.0 - (age_hours / temporal_anchor) * 0.3  # gentle 1.0→0.7
-# Outside window:
-recency = 0.7 / (1.0 + 0.05 * (age_hours - temporal_anchor))
+# Two-regime temporal decay [UPDATED 2026-05]
+# Small anchor (<=48h, "today"/"yesterday") — flat plateau:
+recency = 1.0 - (age_hours / temporal_anchor) * 0.15  # within window
+recency = 0.85 / (1.0 + 0.05 * (age_hours - temporal_anchor))  # outside
+# Large anchor (>48h, "last week"/"last month") — peak at anchor:
+floor = max(0.45, 1.0 - temporal_anchor / 300.0)
+recency = floor + (1.0 - floor) * (age_hours / temporal_anchor)  # within window
+recency = 1.0 / (1.0 + 0.05 * (age_hours - temporal_anchor))    # outside
 
 # Truth (evidence-based via TruthScorer) [UPDATED 2026-03]
 # Initial: user_stated=0.85, corrected=0.90, llm_extracted=0.70, inferred=0.65
@@ -1440,8 +1449,9 @@ recency = 0.7 / (1.0 + 0.05 * (age_hours - temporal_anchor))
 # Time decay: truth -= (weeks_since_confirmed * 0.02), floor 0.30
 truth = TruthScorer.compute_effective_truth(metadata)
 
-# Continuity score
+# Continuity score (tokens stemmed via _stem() for overlap matching)
 continuity = (0.1 if age < 10min else 0) + (0.3 * token_overlap_ratio)
+# + tag-keyword bonus: 0.15 * min(tag_hits, 3) / 3.0 when query stems match memory tags
 
 # Structural alignment
 alignment = 1.0 - min(1.0, abs(query_density - memory_density) * 3.0)
@@ -1724,7 +1734,7 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 
 ```python
 # core/agentic/controller.py — orchestration, prompt building, model interaction, quality heuristics
-# core/agentic/tools.py — ToolExecutor: dispatch routing + 12 execute methods
+# core/agentic/tools.py — ToolExecutor: dispatch routing + 12 execute methods + get_tool_health()
 # core/agentic/formatters.py — AgenticFormatter: 18 pure formatting methods
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
@@ -1738,12 +1748,19 @@ class AgenticSearchController:
         Main loop:
         1. Build prompt with gathered context + tool instructions
         1b. Compute context inventory (summarize RAG-gathered sections) [ENHANCED 2026-03-23]
+        1c. Inject [TOOL STATUS] via ToolExecutor.get_tool_health() [NEW 2026-05]
         2. Call LLM for decision (search/wolfram/memory/git_stats/done)
         3. Execute tool if requested (via ToolExecutor), add result to context
         3b. Track memory_search_counts per collection (diversity enforcement) [ENHANCED 2026-03-23]
         4. Repeat until done or max_turns reached
         5. Yield AgenticEvent for each stage (thinking/searching/computed/done)
         """
+
+    # ToolExecutor.get_tool_health() → "[TOOL STATUS]" prompt section [NEW 2026-05]
+    # Reports per-tool availability: web_search, wiki_knowledge (FAISS), memory_search (ChromaDB),
+    # wolfram, file_access, git_stats, expand_memory, visual_memory, fetch_url.
+    # Uses knowledge.semantic_search.is_faiss_available() for FAISS index status.
+    # Injected into agentic system prompt + iteration prompts + final prompt.
 
     # Budget-enforced context accumulation [NEW 2026-03-28]
     def _append_accumulated(session, new_context) -> None:
@@ -2411,6 +2428,14 @@ pytest -m "not benchmark"
 # test_retrieval_quality.py: parametrized pytest cases + structural validation
 # report_generator.py: markdown report grouped by intent type
 # tests/fixtures/retrieval_benchmarks.yaml: seed memories + test case definitions
+
+# scripts/benchmark_retrieval.py — Full benchmark runner [NEW 2026-05]
+# Metrics: Recall@1/3/10, MRR (aggregate + per-intent), Precision@10,
+#   intent classification accuracy, per-component retrieval latency (p50/p90/p95),
+#   cold vs warm embedding latency, full prompt build latency
+# History: data/benchmark_history.json (append-only, tracks runs over time)
+# Docs: docs/BENCHMARK_METRICS.md (metric definitions + interpretation guide)
+# Usage: python scripts/benchmark_retrieval.py
 ```
 
 ---

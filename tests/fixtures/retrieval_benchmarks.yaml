@@ -411,10 +411,10 @@ test_cases:
       - mem_conv_redis
     top_k: 10
     min_recall: 1.0
-    expected_score_order:
-      - mem_conv_greeting
-      - mem_conv_dog
-    description: "Recent memories should rank highest; greeting (1h) before dog (2h)"
+    description: >
+      Both recent memories (1h, 2h) should surface in top 10.
+      Strict recency ordering not asserted because multi-factor scoring
+      lets truth/importance override a 1h recency gap.
 
   - id: temporal_last_week
     query: "What happened last week?"

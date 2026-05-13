@@ -1,6 +1,6 @@
 # Formal Model: Daemon RAG Agent
 
-**Last verified against codebase**: 2026-05-09
+**Last verified against codebase**: 2026-05-13
 
 ## 1. Primitive Sets
 
@@ -154,7 +154,7 @@ sigma_iota(d, x) = SUM_i w_i(iota) * f_i(d, x)  +  SUM_j b_j(d, x, G)  +  SUM_k 
 | recency(d) | 0.25 | Time decay (see temporal curves below) |
 | truth(d) | 0.20 | Evidence-based reliability via TruthScorer.compute_effective_truth() (see truth decay below) |
 | importance(d) | 0.05 | Content-based importance in [0,1] |
-| continuity(d, Theta) | 0.10 | Thread continuity score (recent 10-min window) |
+| continuity(d, Theta) | 0.10 | Stemmed token overlap + recency bonus + tag-keyword bonus (see continuity formula below) |
 | topic_match(d, x) | 0.00 | Disabled by default. 1.0 (exact) / 0.5 (neutral) / 0.2 (different) |
 
 **Structure score** (direct additive bonus, not in weight dict):
@@ -184,13 +184,40 @@ structure = 0.15 * density_alignment
 
 **Temporal-aware recency** (when intent = TEMPORAL_RECALL with anchor window alpha hours):
 
+Two-regime decay based on anchor size:
+
 ```
-recency(d) =
-  { 1.0 - (age/alpha) * 0.3           if age <= alpha     (gentle decay within window)
-  { 0.7 / (1 + lambda*(age - alpha))   if age > alpha      (standard decay from 0.7)
+Small anchor (alpha <= 48h, e.g. "today"/"yesterday"):
+  recency(d) =
+    { 1.0 - (age/alpha) * 0.15                          if age <= alpha   (flat plateau, ~1.0 to 0.85)
+    { 0.85 / (1 + lambda*(age - alpha))                  if age > alpha    (steep dropoff outside window)
+
+Large anchor (alpha > 48h, e.g. "last week"/"last month"):
+  floor = max(0.45, 1.0 - alpha/300)
+  recency(d) =
+    { floor + (1.0 - floor) * (age/alpha)                if age <= alpha   (ramp up toward anchor)
+    { 1.0 / (1 + lambda*(age - alpha))                   if age > alpha    (standard decay)
 ```
 
+The small-anchor regime keeps all memories within the window at near-equal recency (~0.85–1.0), letting relevance/truth/importance differentiate. The large-anchor regime peaks near the anchor and penalizes too-recent memories since the user asked about a specific past period.
+
 Default recency (no temporal anchor): `recency(d) = 1.0 / (1.0 + 0.05 * age_hours)`
+
+**Continuity formula** (stemmed token overlap + recency + tag-keyword bonus):
+
+```
+continuity(d, x) =
+    recency_bonus                               // +0.1 if d.timestamp within last 10 minutes
+  + 0.3 * |stemmed(salient(x.query)) ∩ stemmed(tokens(d))| / |stemmed(salient(x.query))|
+  + tag_bonus
+
+tag_bonus = 0.15 * min(tag_hits, 3) / 3        // capped at +0.15
+  where tag_hits = |stemmed(salient(x.query)) ∩ stemmed(d.tags)|
+```
+
+Stemming uses a lightweight suffix-strip (`_stem()`) rather than full Porter to avoid mangling code symbols. `salient()` extracts top-12 frequency-ranked non-stopword tokens.
+
+**Code**: `memory_scorer.py` steps 5 + 5b
 
 **Truth decay** (TruthScorer, computed at read time, never persisted):
 
@@ -553,7 +580,21 @@ iota : Q x tone -> IntentResult = (type, confidence, w_override, r_override, g_o
 
 **9 intent types**: FACTUAL_RECALL, TEMPORAL_RECALL, EMOTIONAL_SUPPORT, CASUAL_SOCIAL, TECHNICAL_HELP, CREATIVE_EXPLORATION, META_CONVERSATIONAL, PROJECT_WORK, GENERAL.
 
-Each intent type has a corresponding entry in the `_PROFILES` dict (`intent_classifier.py`) specifying concrete overrides. For example, FACTUAL_RECALL boosts truth weight (0.30 vs default 0.20) and relevance (0.40 vs 0.35) while cutting recency (0.10 vs 0.25); CASUAL_SOCIAL zeroes out wiki, skills, proposals, git, and reference docs retrieval counts; TEMPORAL_RECALL boosts recency weight (0.40) and threads a `_temporal_anchor_hours` key to reshape the scorer's decay curve. GENERAL uses all defaults unchanged.
+Each intent type has a corresponding entry in the `_PROFILES` dict (`intent_classifier.py`) specifying concrete overrides. Current weight vectors (relevance / recency / truth / importance / continuity / structure):
+
+| Intent | rel | rec | truth | imp | cont | struct | Gate | Key behavior |
+|--------|-----|-----|-------|-----|------|--------|------|--------------|
+| FACTUAL_RECALL | 0.40 | 0.05 | 0.30 | 0.05 | 0.10 | 0.10 | 0.45 | Max truth + relevance, minimal recency |
+| TEMPORAL_RECALL | 0.20 | 0.40 | 0.10 | 0.05 | 0.20 | 0.05 | 0.30 | Recency-dominant, two-regime anchor decay |
+| EMOTIONAL_SUPPORT | 0.25 | 0.15 | 0.10 | 0.05 | 0.40 | 0.05 | 0.35 | Continuity-dominant, more reflections |
+| CASUAL_SOCIAL | 0.35 | 0.20 | 0.10 | 0.05 | 0.25 | 0.05 | 0.65 | Minimal retrieval, tight gate |
+| TECHNICAL_HELP | 0.40 | 0.10 | 0.15 | 0.05 | 0.20 | 0.10 | 0.40 | Relevance + continuity, more skills/docs |
+| CREATIVE_EXPLORATION | 0.30 | 0.10 | 0.10 | 0.15 | 0.20 | 0.15 | 0.35 | Balanced with high importance + structure |
+| META_CONVERSATIONAL | 0.30 | 0.20 | 0.15 | 0.15 | 0.10 | 0.10 | 0.30 | History-oriented, no reflections |
+| PROJECT_WORK | 0.40 | 0.10 | 0.20 | 0.05 | 0.15 | 0.10 | 0.40 | Code-focused, more skills/git/proposals |
+| GENERAL | (defaults) | | | | | | (default) | No overrides |
+
+CASUAL_SOCIAL zeroes out wiki, skills, proposals, git, and reference docs retrieval counts; TEMPORAL_RECALL threads a `_temporal_anchor_hours` key to reshape the scorer's decay curve. GENERAL uses all defaults unchanged.
 
 where:
 - **w_override** is a subset of R^6 overriding the weight vector [w_relevance, w_recency, w_truth, w_importance, w_continuity, w_topic_match]

@@ -26,7 +26,7 @@ events to the UI in real time.
 | File | Purpose |
 |------|---------|
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics |
-| `core/agentic/tools.py` | ToolExecutor: dispatch routing + 12 execute methods (web, fetch-url, wolfram, memory, expand, files, git, sandbox, full-doc, recall-image) |
+| `core/agentic/tools.py` | ToolExecutor: dispatch routing + 12 execute methods (web, fetch-url, wolfram, memory, expand, files, git, sandbox, full-doc, recall-image) + `get_tool_health()` status summary |
 | `core/agentic/formatters.py` | AgenticFormatter: 18 pure formatting methods (context, results, prompts) |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing |
@@ -170,6 +170,11 @@ wiki_knowledge: ChromaDB is queried first (like all collections). Then FAISS
                 additionally attempted. If FAISS returns results, they are
                 preferred over the ChromaDB results. If FAISS is unavailable
                 or returns nothing, the ChromaDB results are used as fallback.
+                When FAISS is unavailable (checked via is_faiss_available() in
+                knowledge/semantic_search.py — file-existence check, no full load),
+                a prominent warning is prepended to the result telling the LLM
+                that the 41M-vector index could not be loaded and instructing it
+                NOT to claim Wikipedia/FAISS search is working.
 ```
 
 ### expand_memory
@@ -295,6 +300,29 @@ file_list -> fetch_url -> recall_image -> search -> implicit answer
   guide, query reformulation strategies, and tool selection guidelines
 - **Native models**: Minimal augmentation — tool list, memory guidance,
   done signal instruction
+
+### Tool Health Injection
+
+`ToolExecutor.get_tool_health()` probes each tool backend and returns a
+multi-line status summary (AVAILABLE / UNAVAILABLE / DISABLED per tool).
+Checked backends: web_search, wiki_knowledge (FAISS), memory_search
+(ChromaDB), wolfram, file_access, git_stats, expand_memory, recall_image.
+
+The status block is injected at three points under the header
+`[TOOL STATUS — DO NOT LIE ABOUT THESE]`:
+
+1. **System prompt** (`run_agentic_search`) — appended after protocol
+   augmentation, with an instruction that the LLM must report tool status
+   accurately and never claim a tool works if its status says UNAVAILABLE.
+2. **Iteration prompt** (`_build_iteration_prompt`) — appended before the
+   "What would you like to do?" decision instruction.
+3. **Final prompt** (`_build_final_prompt`) — appended after the query,
+   with an instruction to only report what `[TOOL STATUS]` says when asked.
+
+The FAISS availability check (`is_faiss_available()` in
+`knowledge/semantic_search.py`) tests file existence of the index and
+metadata parquet without triggering a full load. If the singleton is
+already loaded it returns immediately.
 
 ---
 

@@ -18,9 +18,13 @@ class BenchmarkResult:
     intent_expected: str
     intent_actual: str
     intent_confidence: float
+    has_retrieval_requirement: bool
     recall_at_k: float
+    recall_at_1: float
+    recall_at_3: float
     precision_at_k: float
     mrr: float
+    rank_positions: List[int]
     false_retrievals: List[str]
     order_violations: List[str]
     retrieved_ids: List[str]
@@ -34,9 +38,13 @@ class BenchmarkResult:
             "intent_expected": self.intent_expected,
             "intent_actual": self.intent_actual,
             "intent_confidence": self.intent_confidence,
+            "has_retrieval_requirement": self.has_retrieval_requirement,
             "recall_at_k": self.recall_at_k,
+            "recall_at_1": self.recall_at_1,
+            "recall_at_3": self.recall_at_3,
             "precision_at_k": self.precision_at_k,
             "mrr": self.mrr,
+            "rank_positions": self.rank_positions,
             "false_retrievals": self.false_retrievals,
             "order_violations": self.order_violations,
             "retrieved_ids": self.retrieved_ids,
@@ -116,18 +124,26 @@ class RetrievalBenchmark:
 
         retrieved_set = set(retrieved_ids)
 
-        # 6. Compute recall@K
+        has_retrieval_requirement = bool(must_retrieve)
+
+        # 6. Compute recall@K at multiple cutoffs
         if must_retrieve:
             hits = must_retrieve & retrieved_set
             recall_at_k = len(hits) / len(must_retrieve)
+            recall_at_1 = len(must_retrieve & set(retrieved_ids[:1])) / len(must_retrieve)
+            recall_at_3 = len(must_retrieve & set(retrieved_ids[:3])) / len(must_retrieve)
         else:
-            recall_at_k = 1.0  # no requirements = trivially satisfied
+            # No retrieval requirement — metrics are meaningless for this case.
+            # Use 0.0 (not 1.0) so aggregation can filter these out.
+            recall_at_k = 0.0
+            recall_at_1 = 0.0
+            recall_at_3 = 0.0
 
         # 7. Compute precision@K (fraction of retrieved that were expected)
         if must_retrieve and retrieved_ids:
             precision_at_k = len(must_retrieve & retrieved_set) / len(retrieved_ids)
         else:
-            precision_at_k = 1.0 if not must_retrieve else 0.0
+            precision_at_k = 0.0
 
         # 8. Compute MRR (mean reciprocal rank of first must_retrieve hit)
         mrr = 0.0
@@ -136,6 +152,15 @@ class RetrievalBenchmark:
                 if rid in must_retrieve:
                     mrr = 1.0 / (i + 1)
                     break
+
+        # 8b. Record rank positions for all expected items (1-indexed)
+        rank_positions: List[int] = []
+        if must_retrieve:
+            for expected_id in sorted(must_retrieve):
+                if expected_id in retrieved_ids:
+                    rank_positions.append(retrieved_ids.index(expected_id) + 1)
+                else:
+                    rank_positions.append(-1)  # not found
 
         # 9. Check negative assertions
         false_retrievals = list(must_not_retrieve & retrieved_set)
@@ -173,8 +198,8 @@ class RetrievalBenchmark:
                 f"Confidence: {intent_result.confidence:.2f} < {conf_min:.2f}"
             )
 
-        # Recall check
-        if recall_at_k < min_recall:
+        # Recall check (only when there are retrieval requirements)
+        if has_retrieval_requirement and recall_at_k < min_recall:
             passed = False
             missing = must_retrieve - retrieved_set
             failure_reasons.append(
@@ -201,9 +226,13 @@ class RetrievalBenchmark:
             intent_expected=test_case.get("expected_intent", ""),
             intent_actual=intent_result.intent.value,
             intent_confidence=intent_result.confidence,
+            has_retrieval_requirement=has_retrieval_requirement,
             recall_at_k=recall_at_k,
+            recall_at_1=recall_at_1,
+            recall_at_3=recall_at_3,
             precision_at_k=precision_at_k,
             mrr=mrr,
+            rank_positions=rank_positions,
             false_retrievals=false_retrievals,
             order_violations=order_violations,
             retrieved_ids=retrieved_ids,

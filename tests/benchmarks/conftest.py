@@ -51,6 +51,9 @@ class MockTimeManager:
     def __init__(self, reference_time: datetime):
         self._ref = reference_time
 
+    def current(self) -> datetime:
+        return self._ref
+
     def calculate_active_day_decay(self, timestamp, decay_rate):
         if isinstance(timestamp, str):
             timestamp = datetime.fromisoformat(timestamp)
