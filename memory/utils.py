@@ -11,7 +11,8 @@ from typing import List, Dict, Any
 
 def format_recent_conversations(
     entries: List[Dict],
-    id_prefix: str = "recent"
+    id_prefix: str = "recent",
+    base_relevance: float = 0.9,
 ) -> List[Dict]:
     """
     Format raw corpus entries into standardized memory format.
@@ -19,6 +20,8 @@ def format_recent_conversations(
     Args:
         entries: Raw entries from corpus_manager.get_recent_memories()
         id_prefix: Prefix for generated IDs
+        base_relevance: Relevance score to assign (0.9 default, lower for
+            temporal queries where semantic scores should dominate)
 
     Returns:
         List of formatted memory dicts with standardized structure
@@ -40,7 +43,7 @@ def format_recent_conversations(
             'timestamp': ts,
             'source': 'corpus',
             'collection': 'recent',
-            'relevance_score': 0.9,  # fresh bias
+            'relevance_score': base_relevance,
             'metadata': {
                 'timestamp': ts.isoformat() if isinstance(ts, datetime) else str(ts),
                 'truth_score': e.get('truth_score', 0.6),
