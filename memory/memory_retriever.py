@@ -998,8 +998,51 @@ class MemoryRetriever:
         else:
             recent_limit = min(limit * 15, 150)
 
-        # Get recent episodic memories
-        very_recent = self._get_recent_conversations(k=recent_limit)
+        # Get recent episodic memories — time-filtered for wider temporal
+        # windows (>2 days) to avoid flooding with irrelevant recent entries.
+        # Short windows ("earlier today", "yesterday") keep the standard
+        # recency-ordered corpus pull since their targets ARE recent.
+        if temporal_days > 2:
+            now = (self.time_manager.current()
+                   if self.time_manager and hasattr(self.time_manager, 'current')
+                   else datetime.now())
+            buffer_hours = int(temporal_days * 24 * 1.5)
+            cutoff = now - timedelta(hours=buffer_hours)
+
+            raw_entries = self.corpus_manager._get_episodic_sorted()
+            filtered = []
+            for entry in raw_entries:
+                ts = entry.get('timestamp')
+                if isinstance(ts, str):
+                    try:
+                        ts = datetime.fromisoformat(ts)
+                    except (ValueError, TypeError):
+                        continue
+                if isinstance(ts, datetime) and ts >= cutoff:
+                    filtered.append(entry)
+                    if len(filtered) >= recent_limit:
+                        break
+
+            corpus_rel = 0.5 if temporal_days > 2 else 0.9
+            very_recent = format_recent_conversations(
+                filtered, base_relevance=corpus_rel
+            )
+
+            # Fallback: if window is too narrow, supplement with recent
+            if len(very_recent) < 5:
+                fallback = self._get_recent_conversations(k=min(10, recent_limit))
+                seen = {m.get('id') for m in very_recent}
+                for m in fallback:
+                    if m.get('id') not in seen:
+                        very_recent.append(m)
+                        seen.add(m.get('id'))
+
+            logger.debug(
+                f"[MemoryRetriever] Temporal meta path: {len(very_recent)} "
+                f"corpus entries within {buffer_hours}h"
+            )
+        else:
+            very_recent = self._get_recent_conversations(k=recent_limit)
 
         # ENTITY-AWARE RETRIEVAL: If query mentions specific entities (names like "Graham"),
         # also do semantic search to find older memories about those entities
