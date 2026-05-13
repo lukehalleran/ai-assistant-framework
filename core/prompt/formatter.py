@@ -1186,7 +1186,14 @@ class PromptFormatter:
                 pn_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
 
         if pn_lines:
-            sections.append(f"[USER'S PERSONAL NOTES] n={len(pn_lines)}\n" + "\n\n".join(pn_lines))
+            pn_header = f"[USER'S PERSONAL NOTES] n={len(pn_lines)}\n"
+            if note_images:
+                pn_header += (
+                    "Note: Images below were retrieved from the user's personal notes as context. "
+                    "Do NOT comment on, describe, or ask about these images unless the user's "
+                    "current message explicitly asks about them or their subject matter.\n\n"
+                )
+            sections.append(pn_header + "\n\n".join(pn_lines))
 
         # Store images in context for multimodal API calls
         if note_images:
