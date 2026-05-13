@@ -2,118 +2,85 @@
 
 Tracks Daemon's retrieval quality and latency over time. Updated by running `python scripts/benchmark_retrieval.py`. Full history in `data/benchmark_history.json`.
 
-All quality metrics computed over the 13 retrieval cases only (6 intent-only cases excluded from recall/precision/MRR). Intent accuracy computed over all 19.
+All quality metrics computed over retrieval cases only (intent-only cases excluded from recall/precision/MRR). Intent accuracy computed over all cases.
 
 ## Current Metrics (2026-05-13)
 
-### Quality (n=13 retrieval cases)
+### Quality (n=72 retrieval cases, 93 seed memories)
 
 | Metric | Value |
 |--------|-------|
-| Recall@1 | **0.58** |
-| Recall@3 | **1.00** |
+| Recall@1 | **0.39** |
+| Recall@3 | **0.65** |
 | Recall@10 | **1.00** |
-| Precision@10 | **0.11** |
-| MRR | **0.79** |
-| Intent accuracy | **100%** (19/19) |
-| Cases passed | **19/19** |
+| MRR | **0.58** |
+| Intent accuracy | **100%** (96/96) |
+| Cases passed | **96/96** |
 
-### Rank Distribution (n=14 expected items)
+### Rank Distribution (n=86 expected items)
 
 | Bucket | Count | Pct |
 |--------|------:|----:|
-| Rank 1 (top) | 8 | 57% |
-| Rank 2-3 | 6 | 43% |
-| Rank 4-5 | 0 | 0% |
-| Rank 6-10 | 0 | 0% |
+| Rank 1 (top) | 33 | 38% |
+| Rank 2-3 | 28 | 33% |
+| Rank 4-5 | 11 | 13% |
+| Rank 6-10 | 14 | 16% |
 | Rank 11+ | 0 | 0% |
 
-100% of correct memories in top 3.
+71% of correct memories in top 3. 100% in top 10.
 
 ### Latency
 
 | Component | p50 | p90 | p95 |
 |-----------|-----|-----|-----|
-| Retrieval + scoring | 23.9ms | 26.7ms | 27.7ms |
-| ChromaDB lookup | 8.6ms | 9.2ms | 9.3ms |
-| Prompt build | 767ms | 1,480ms | 1,601ms |
+| Retrieval + scoring | 25.5ms | 28.9ms | 31.1ms |
+| ChromaDB lookup | 8.6ms | 9.3ms | 9.5ms |
+| Prompt build | 891ms | 1,907ms | 2,165ms |
 
 ### Quality by Intent
 
-| Intent | R@1 | R@3 | R@10 | MRR | Pass |
-|--------|-----|-----|------|-----|------|
-| temporal_recall | 0.75 | 1.00 | 1.00 | 1.000 | 2/2 |
-| factual_recall | 0.67 | 1.00 | 1.00 | 0.778 | 3/3 |
-| project_work | 0.50 | 1.00 | 1.00 | 0.750 | 2/2 |
-| creative_exploration | 0.50 | 1.00 | 1.00 | 0.750 | 2/2 |
-| emotional_support | 0.50 | 1.00 | 1.00 | 0.750 | 2/2 |
-| technical_help | 0.50 | 1.00 | 1.00 | 0.750 | 2/2 |
-| casual_social | -- | -- | -- | -- | 2/2 |
-| meta_conversational | -- | -- | -- | -- | 2/2 |
-| general | -- | -- | -- | -- | 2/2 |
+| Intent | R@1 | R@3 | R@10 | MRR | Cases |
+|--------|-----|-----|------|-----|-------|
+| project_work | 0.50 | 0.80 | 1.00 | 0.692 | 10 |
+| technical_help | 0.40 | 0.90 | 1.00 | 0.658 | 10 |
+| emotional_support | 0.45 | 0.65 | 1.00 | 0.634 | 10 |
+| factual_recall | 0.47 | 0.68 | 1.00 | 0.609 | 19 |
+| temporal_recall | 0.44 | 0.50 | 1.00 | 0.532 | 8 |
+| meta_conversational | 0.14 | 0.36 | 1.00 | 0.454 | 7 |
+| creative_exploration | 0.12 | 0.50 | 1.00 | 0.362 | 8 |
+| casual_social | -- | -- | -- | -- | 8 |
+| general | -- | -- | -- | -- | 8 |
 
-`--` = intent-only test (no retrieval requirement).
-
-### Per-Case Detail
-
-| Case | R@1 | R@3 | MRR | Ranks |
-|------|-----|-----|-----|-------|
-| factual_dogs_name | 1.00 | 1.00 | 1.000 | [1] |
-| factual_language_preference | 1.00 | 1.00 | 1.000 | [1] |
-| temporal_recent_today | 0.50 | 1.00 | 1.000 | [2, 1] |
-| temporal_last_week | 1.00 | 1.00 | 1.000 | [1] |
-| emotional_stressed_at_work | 1.00 | 1.00 | 1.000 | [1] |
-| technical_segfault_debug | 1.00 | 1.00 | 1.000 | [1] |
-| creative_dashboard_ideas | 1.00 | 1.00 | 1.000 | [1] |
-| project_auth_status | 1.00 | 1.00 | 1.000 | [1] |
-| emotional_anxious_cant_sleep | 0.00 | 1.00 | 0.500 | [2] |
-| technical_python_async | 0.00 | 1.00 | 0.500 | [2] |
-| creative_new_features | 0.00 | 1.00 | 0.500 | [2] |
-| project_api_update | 0.00 | 1.00 | 0.500 | [2] |
-| factual_sister_birthday | 0.00 | 1.00 | 0.333 | [3] |
+**Weakest areas:** creative_exploration (MRR=0.36, R@1=0.12) and meta_conversational (MRR=0.45). Creative queries use vague language that embeds close to many memories. Meta queries route through a special corpus path that the benchmark doesn't fully exercise.
 
 ## Historical Metrics
 
 ### Quality Over Time
 
-| Date | R@1 | R@3 | R@10 | MRR | Note |
-|------|-----|-----|------|-----|------|
-| 2026-05-12 | -- | -- | 1.00 | 0.52 | Baseline (R@1/R@3 not yet tracked) |
-| 2026-05-13 (temporal fix) | 0.50 | 0.69 | 1.00 | 0.66 | Two-regime temporal decay + metric bug fixes |
-| 2026-05-13 (scoring tuning) | **0.58** | **1.00** | **1.00** | **0.79** | Stemming + tag bonus + weight rebalance |
+| Date | Corpus | R@1 | R@3 | R@10 | MRR | Note |
+|------|--------|-----|-----|------|-----|------|
+| 2026-05-12 | n=13 | -- | -- | 1.00 | 0.52 | Baseline |
+| 2026-05-13 | n=13 | 0.58 | 1.00 | 1.00 | 0.79 | Temporal fix + scoring tuning |
+| 2026-05-13 | **n=72** | **0.39** | **0.65** | **1.00** | **0.58** | Expanded corpus with hard negatives |
 
-### Rank Distribution Over Time
+### How Misleading Was n=13?
 
-| Date | Rank 1 | Rank 2-3 | Rank 4-5 | Rank 6-10 | Rank 11+ |
-|------|--------|----------|----------|-----------|----------|
-| 2026-05-13 (temporal fix) | 7 (50%) | 3 (21%) | 2 (14%) | 2 (14%) | 0 (0%) |
-| 2026-05-13 (scoring tuning) | **8 (57%)** | **6 (43%)** | **0 (0%)** | **0 (0%)** | **0 (0%)** |
+| Metric | n=13 | n=72 | Overstatement |
+|--------|------|------|---------------|
+| Recall@1 | 0.58 | 0.39 | +49% |
+| Recall@3 | 1.00 | 0.65 | +54% |
+| MRR | 0.79 | 0.58 | +36% |
 
-### Tuning Set Progress
+The n=13 corpus had zero hard negatives and mostly single-item retrieval. It tested "can the scorer find a needle in 30 memories" — not "can it pick the right needle from 5 similar needles in 93 memories."
 
-| Case | Rank (baseline) | Rank (tuned) | MRR (baseline) | MRR (tuned) |
-|------|-----------------|--------------|----------------|-------------|
-| factual_sister_birthday | 7 | **3** | 0.143 | **0.333** |
-| emotional_anxious_cant_sleep | 8 | **2** | 0.125 | **0.500** |
-| technical_python_async | 4 | **2** | 0.250 | **0.500** |
-| creative_new_features | 5 | **2** | 0.200 | **0.500** |
-| project_api_update | 3 | **2** | 0.333 | **0.500** |
+## Test Corpus
 
-### What Changed (2026-05-13)
-
-**Temporal decay fix** (memory_scorer.py):
-- Scorer now uses `time_manager.current()` instead of `datetime.now()` for age calculation
-- Two-regime decay: small anchors (<=48h) use flat plateau, large anchors (>48h) peak at anchor age
-
-**Stemming** (memory_scorer.py):
-- `_stem()` suffix stripper so "anxious"/"anxiety", "deployed"/"deployment" match in token overlap
-- Applied to both query tokens and memory tokens
-
-**Tag-keyword bonus** (memory_scorer.py):
-- If stemmed query tokens match stemmed memory tags, adds up to +0.15 to continuity score
-
-**Weight rebalancing** (intent_classifier.py):
-- Shifted weight from recency → continuity across 5 intents to stop recent irrelevant memories outranking older relevant ones
+93 seed memories + 96 test cases in `tests/fixtures/retrieval_benchmarks.yaml`:
+- 72 retrieval cases across 7 intent types (8-19 per intent)
+- 24 intent-only cases (casual_social, meta_conversational, general)
+- Hard negatives: family disambiguation, pet disambiguation, Python subtopic discrimination, project component discrimination, emotional state discrimination
+- Multi-item retrieval: queries expecting 2-3 memories
+- Cross-collection: queries targeting summaries or conversations
 
 ## How to Run
 
@@ -124,9 +91,3 @@ python scripts/benchmark_retrieval.py
 Results saved to:
 - `data/benchmark_results.json` — full latest run with per-case detail
 - `data/benchmark_history.json` — append-only summary history
-
-## Test Corpus
-
-30 seed memories + 19 test cases in `tests/fixtures/retrieval_benchmarks.yaml`:
-- 13 retrieval cases (have `must_retrieve` assertions) across 6 intent types
-- 6 intent-only cases (casual_social, meta_conversational, general) — test classification only

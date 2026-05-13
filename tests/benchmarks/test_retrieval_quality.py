@@ -36,7 +36,7 @@ class TestRetrievalQuality:
 
     @pytest.mark.parametrize(
         "case_index",
-        range(21),  # max expected cases; actual count checked at runtime
+        range(100),  # max expected cases; actual count checked at runtime
     )
     async def test_retrieval_case(self, retrieval_env, benchmark_config, case_index):
         """Run a single benchmark case and assert quality metrics."""
@@ -92,8 +92,8 @@ class TestBenchmarkStructure:
     def test_seed_memories_loaded(self, retrieval_env):
         """Verify the fixture seeded the expected number of memories."""
         seed_count = len(retrieval_env["seed_memories"])
-        assert seed_count >= 25, (
-            f"Expected >= 25 seed memories, got {seed_count}"
+        assert seed_count >= 80, (
+            f"Expected >= 80 seed memories, got {seed_count}"
         )
 
         # Verify ChromaDB has entries

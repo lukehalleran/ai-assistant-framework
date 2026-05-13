@@ -228,6 +228,450 @@ seed_memories:
     tags: "personal,cooking,casual"
 
   # =========================================================================
+  # NEW CONVERSATIONS — hard negatives and disambiguation targets
+  # =========================================================================
+
+  # --- Family disambiguation: brother vs sister ---
+  - id: mem_conv_brother_job
+    marker: "Mike works at the hospital"
+    collection: conversations
+    also_in_corpus: true
+    query: "What does my brother do for work?"
+    response: "Your brother Mike works at the hospital as an emergency room nurse. He switched from paramedic work about two years ago."
+    timestamp_offset_hours: -50
+    truth_score: 0.85
+    importance_score: 0.6
+    tags: "personal,family,brother"
+
+  - id: mem_conv_sister_gift
+    marker: "Sarah loves those handmade candles"
+    collection: conversations
+    also_in_corpus: true
+    query: "What should I get Sarah for her birthday?"
+    response: "Sarah loves those handmade candles from the farmers market. She also mentioned wanting a new yoga mat."
+    timestamp_offset_hours: -140
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "personal,family,sister,gift"
+
+  - id: mem_conv_mom_visit
+    marker: "Mom is flying in from Portland"
+    collection: conversations
+    also_in_corpus: true
+    query: "When is my mom visiting?"
+    response: "Your mom is flying in from Portland on the 20th and staying for a week. She wants to see Biscuit and meet your coworkers."
+    timestamp_offset_hours: -100
+    truth_score: 0.75
+    importance_score: 0.6
+    tags: "personal,family,mom,travel"
+
+  - id: mem_conv_dad_retirement
+    marker: "Dad retired from the school district"
+    collection: conversations
+    also_in_corpus: true
+    query: "Tell me about my dad"
+    response: "Your dad retired from the school district last spring. He has been volunteering at the community garden and building birdhouses."
+    timestamp_offset_hours: -500
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "personal,family,dad"
+
+  # --- Pet disambiguation: dog vs cat ---
+  - id: mem_conv_cat
+    marker: "adopted a tabby cat named Mochi"
+    collection: conversations
+    also_in_corpus: true
+    query: "Tell me about the new cat"
+    response: "I adopted a tabby cat named Mochi from the shelter last month. She is very shy but starting to warm up to Biscuit."
+    timestamp_offset_hours: -30
+    truth_score: 0.85
+    importance_score: 0.6
+    tags: "pets,cat,personal"
+
+  - id: mem_conv_dog_vet
+    marker: "Biscuit had her annual checkup"
+    collection: conversations
+    also_in_corpus: true
+    query: "How did the vet visit go?"
+    response: "Biscuit had her annual checkup at the vet and everything looks great. She is a healthy weight and her joints are fine."
+    timestamp_offset_hours: -18
+    truth_score: 0.8
+    importance_score: 0.5
+    tags: "pets,dog,vet,personal"
+
+  - id: mem_conv_cat_mochi_hiding
+    marker: "Mochi keeps hiding under the couch"
+    collection: conversations
+    also_in_corpus: true
+    query: "How is the cat adjusting?"
+    response: "Mochi keeps hiding under the couch when visitors come over, but she sleeps on the bed now. The vet said that is normal for rescue cats."
+    timestamp_offset_hours: -14
+    truth_score: 0.7
+    importance_score: 0.4
+    tags: "pets,cat,behavior,personal"
+
+  # --- Python subtopic discrimination ---
+  - id: mem_conv_python_types
+    marker: "Pydantic for runtime validation"
+    collection: conversations
+    also_in_corpus: true
+    query: "How should I handle type hints in Python?"
+    response: "For Python type hints I recommend using Pydantic for runtime validation. The combination of dataclasses and typing module gives you good static analysis too."
+    timestamp_offset_hours: -20
+    truth_score: 0.85
+    importance_score: 0.6
+    tags: "technical,python,types"
+
+  - id: mem_conv_python_testing
+    marker: "pytest parametrize decorator"
+    collection: conversations
+    also_in_corpus: true
+    query: "What testing framework do you recommend for Python?"
+    response: "I use pytest with the parametrize decorator for table-driven tests. Combined with fixtures and conftest files it handles everything I need."
+    timestamp_offset_hours: -60
+    truth_score: 0.8
+    importance_score: 0.5
+    tags: "technical,python,testing"
+
+  - id: mem_conv_python_packaging
+    marker: "pyproject.toml with hatchling"
+    collection: conversations
+    also_in_corpus: true
+    query: "How should I package my Python project?"
+    response: "I switched to using pyproject.toml with hatchling as the build backend. It is much cleaner than the old setup.py approach."
+    timestamp_offset_hours: -300
+    truth_score: 0.75
+    importance_score: 0.4
+    tags: "technical,python,packaging"
+
+  - id: mem_conv_python_web
+    marker: "FastAPI with SQLAlchemy ORM"
+    collection: conversations
+    also_in_corpus: true
+    query: "What web framework are you using?"
+    response: "The backend uses FastAPI with SQLAlchemy ORM for the database layer. We picked it over Django because of the async support and automatic docs."
+    timestamp_offset_hours: -80
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "technical,python,web,fastapi"
+
+  # --- Project component discrimination ---
+  - id: mem_conv_project_dashboard
+    marker: "React dashboard charts"
+    collection: conversations
+    also_in_corpus: true
+    query: "How is the dashboard going?"
+    response: "The React dashboard charts are rendering properly now. I fixed the tooltip positioning bug and added the export to CSV feature."
+    timestamp_offset_hours: -10
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "project,dashboard,frontend"
+
+  - id: mem_conv_project_db_migration
+    marker: "Alembic migration for the users table"
+    collection: conversations
+    also_in_corpus: true
+    query: "Did you finish the database migration?"
+    response: "I wrote the Alembic migration for the users table to add the two-factor authentication columns. It ran cleanly in staging."
+    timestamp_offset_hours: -15
+    truth_score: 0.8
+    importance_score: 0.7
+    tags: "project,database,migration"
+
+  - id: mem_conv_project_ci
+    marker: "GitHub Actions pipeline takes 12 minutes"
+    collection: conversations
+    also_in_corpus: true
+    query: "The CI build is really slow"
+    response: "The GitHub Actions pipeline takes 12 minutes because of the Docker layer caching issue. I think we can cut it to 5 minutes by splitting the test stages."
+    timestamp_offset_hours: -40
+    truth_score: 0.75
+    importance_score: 0.5
+    tags: "project,ci,devops"
+
+  - id: mem_conv_project_deploy
+    marker: "Kubernetes cluster on DigitalOcean"
+    collection: conversations
+    also_in_corpus: true
+    query: "Where are we deploying the app?"
+    response: "We are running on a Kubernetes cluster on DigitalOcean. The staging environment mirrors production with two replicas."
+    timestamp_offset_hours: -350
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "project,deploy,kubernetes"
+
+  # --- Emotional state disambiguation ---
+  - id: mem_conv_work_burnout
+    marker: "thought about quitting honestly"
+    collection: conversations
+    also_in_corpus: true
+    query: "Work has been really getting to me"
+    response: "I have thought about quitting honestly. The long hours and constant context switching are wearing me down. I feel like I never have time to think."
+    timestamp_offset_hours: -25
+    truth_score: 0.7
+    importance_score: 0.8
+    tags: "emotional,work,burnout"
+
+  - id: mem_conv_social_anxiety
+    marker: "crowded party made me freeze up"
+    collection: conversations
+    also_in_corpus: true
+    query: "I had a bad time at the party"
+    response: "That crowded party made me freeze up. I just stood in the corner and could not make small talk. Social situations have been harder lately."
+    timestamp_offset_hours: -55
+    truth_score: 0.7
+    importance_score: 0.7
+    tags: "emotional,anxiety,social"
+
+  - id: mem_conv_relationship_worry
+    marker: "girlfriend Emma seems distant"
+    collection: conversations
+    also_in_corpus: true
+    query: "Something is off with my relationship"
+    response: "My girlfriend Emma seems distant lately. She has been working long hours too but we barely talk in the evenings anymore."
+    timestamp_offset_hours: -35
+    truth_score: 0.7
+    importance_score: 0.7
+    tags: "emotional,relationship,personal"
+
+  - id: mem_conv_good_therapy_session
+    marker: "therapist suggested journaling"
+    collection: conversations
+    also_in_corpus: true
+    query: "Therapy went really well today"
+    response: "My therapist suggested journaling before bed to help with the racing thoughts. I feel like I finally have a concrete strategy for the insomnia."
+    timestamp_offset_hours: -8
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "emotional,therapy,wellbeing"
+
+  # --- Temporal + activity disambiguation ---
+  - id: mem_conv_saturday_run
+    marker: "ran a 5K at the park on Saturday"
+    collection: conversations
+    also_in_corpus: true
+    query: "How was your run this weekend?"
+    response: "I went running at the park on Saturday morning and did a 5K. My pace was 5:45 per kilometer which is a new personal best."
+    timestamp_offset_hours: -52
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "personal,fitness,running"
+
+  - id: mem_conv_sunday_cooking
+    marker: "risotto from scratch on Sunday"
+    collection: conversations
+    also_in_corpus: true
+    query: "What did you cook this weekend?"
+    response: "I made risotto from scratch on Sunday using arborio rice and mushrooms. It took forever to get the consistency right but it was worth it."
+    timestamp_offset_hours: -44
+    truth_score: 0.6
+    importance_score: 0.3
+    tags: "personal,cooking,weekend"
+
+  - id: mem_conv_yesterday_meeting
+    marker: "sprint retrospective was tense"
+    collection: conversations
+    also_in_corpus: true
+    query: "How was the meeting yesterday?"
+    response: "The sprint retrospective was tense. The team lead called out the missed deliverables and there was some finger pointing."
+    timestamp_offset_hours: -27
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "work,meeting,personal"
+
+  - id: mem_conv_last_month_trip
+    marker: "road trip to Big Sur"
+    collection: conversations
+    also_in_corpus: true
+    query: "Tell me about the trip last month"
+    response: "The road trip to Big Sur was amazing. We drove the coastal highway and stopped at McWay Falls. The weather was perfect for once."
+    timestamp_offset_hours: -650
+    truth_score: 0.6
+    importance_score: 0.5
+    tags: "personal,travel,vacation"
+
+  # --- Technical solution disambiguation ---
+  - id: mem_conv_docker_debug
+    marker: "Docker container kept exiting with code 137"
+    collection: conversations
+    also_in_corpus: true
+    query: "My Docker container keeps crashing"
+    response: "The Docker container kept exiting with code 137 which means it ran out of memory. I increased the memory limit in docker-compose and added a health check."
+    timestamp_offset_hours: -22
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "technical,docker,debugging"
+
+  - id: mem_conv_git_rebase
+    marker: "interactive rebase to squash"
+    collection: conversations
+    also_in_corpus: true
+    query: "How do I clean up my git history?"
+    response: "Use interactive rebase to squash your work-in-progress commits. Run git rebase -i HEAD~5 and change pick to squash for the ones you want to combine."
+    timestamp_offset_hours: -90
+    truth_score: 0.8
+    importance_score: 0.5
+    tags: "technical,git,workflow"
+
+  - id: mem_conv_sql_optimization
+    marker: "composite index on created_at and user_id"
+    collection: conversations
+    also_in_corpus: true
+    query: "The database query is really slow"
+    response: "Adding a composite index on created_at and user_id brought the query time from 800ms down to 12ms. The query planner was doing a full table scan before."
+    timestamp_offset_hours: -110
+    truth_score: 0.85
+    importance_score: 0.6
+    tags: "technical,sql,optimization"
+
+  - id: mem_conv_cors_fix
+    marker: "CORS preflight was blocking"
+    collection: conversations
+    also_in_corpus: true
+    query: "The frontend can't reach the backend"
+    response: "The CORS preflight was blocking the requests. I added the allowed origins to the FastAPI middleware and the OPTIONS handler. Works now in all browsers."
+    timestamp_offset_hours: -70
+    truth_score: 0.8
+    importance_score: 0.5
+    tags: "technical,cors,web"
+
+  # --- Hobby and interest expansion ---
+  - id: mem_conv_jazz_album
+    marker: "Kind of Blue by Miles Davis"
+    collection: conversations
+    also_in_corpus: true
+    query: "What albums have you been listening to?"
+    response: "I keep coming back to Kind of Blue by Miles Davis. Also been getting into Kamasi Washington. His saxophone work is incredible."
+    timestamp_offset_hours: -85
+    truth_score: 0.7
+    importance_score: 0.4
+    tags: "personal,music,jazz,albums"
+
+  - id: mem_conv_reading
+    marker: "reading Dune by Frank Herbert"
+    collection: conversations
+    also_in_corpus: true
+    query: "What are you reading right now?"
+    response: "I have been reading Dune by Frank Herbert. The worldbuilding is amazing but the political intrigue is what keeps me hooked."
+    timestamp_offset_hours: -130
+    truth_score: 0.6
+    importance_score: 0.4
+    tags: "personal,reading,books"
+
+  - id: mem_conv_podcast
+    marker: "Lex Fridman podcast episode about AI"
+    collection: conversations
+    also_in_corpus: true
+    query: "Any good podcasts lately?"
+    response: "I listened to a Lex Fridman podcast episode about AI alignment. It really made me think about the long-term implications of what we are building."
+    timestamp_offset_hours: -150
+    truth_score: 0.6
+    importance_score: 0.4
+    tags: "personal,podcast,ai"
+
+  - id: mem_conv_guitar
+    marker: "learning fingerpicking patterns"
+    collection: conversations
+    also_in_corpus: true
+    query: "How is the guitar going?"
+    response: "I have been learning fingerpicking patterns. Travis picking is hard but I can play a slow version of Dust in the Wind now."
+    timestamp_offset_hours: -200
+    truth_score: 0.65
+    importance_score: 0.4
+    tags: "personal,music,guitar,hobby"
+
+  # --- Health and fitness expansion ---
+  - id: mem_conv_back_pain
+    marker: "lower back pain from sitting"
+    collection: conversations
+    also_in_corpus: true
+    query: "My back has been hurting"
+    response: "The lower back pain from sitting all day got worse. I ordered a standing desk converter and my physical therapist recommended some stretches."
+    timestamp_offset_hours: -16
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "health,pain,personal"
+
+  - id: mem_conv_diet_change
+    marker: "cutting out processed sugar"
+    collection: conversations
+    also_in_corpus: true
+    query: "I am trying to eat healthier"
+    response: "I have been cutting out processed sugar for two weeks now. The first few days were rough but my energy levels are much more stable."
+    timestamp_offset_hours: -65
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "health,diet,personal"
+
+  - id: mem_conv_sleep_tracker
+    marker: "sleep tracker shows 6.2 hours average"
+    collection: conversations
+    also_in_corpus: true
+    query: "How has your sleep been?"
+    response: "My sleep tracker shows 6.2 hours average this week. The deep sleep percentage is low. I think the late night coding sessions are the culprit."
+    timestamp_offset_hours: -9
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "health,sleep,personal"
+
+  # --- Work and career ---
+  - id: mem_conv_promotion
+    marker: "senior engineer promotion review"
+    collection: conversations
+    also_in_corpus: true
+    query: "When is your promotion review?"
+    response: "The senior engineer promotion review is in March. My manager said the main thing I need to demonstrate is more cross-team impact."
+    timestamp_offset_hours: -170
+    truth_score: 0.75
+    importance_score: 0.7
+    tags: "work,career,promotion"
+
+  - id: mem_conv_coworker_conflict
+    marker: "disagreement with James about the architecture"
+    collection: conversations
+    also_in_corpus: true
+    query: "What happened with your coworker?"
+    response: "I had a disagreement with James about the architecture. He wants a monorepo but I think separate services make more sense for our team size."
+    timestamp_offset_hours: -32
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "work,conflict,personal"
+
+  - id: mem_conv_standup_routine
+    marker: "morning standup at 9:30"
+    collection: conversations
+    also_in_corpus: true
+    query: "What does your morning look like at work?"
+    response: "We have our morning standup at 9:30. After that I usually have about two hours of focus time before the meetings start piling up."
+    timestamp_offset_hours: -28
+    truth_score: 0.65
+    importance_score: 0.3
+    tags: "work,routine,personal"
+
+  # --- Living situation ---
+  - id: mem_conv_apartment
+    marker: "lease is up in June"
+    collection: conversations
+    also_in_corpus: true
+    query: "Are you moving?"
+    response: "My lease is up in June and the landlord is raising rent by 15 percent. I have been looking at places closer to downtown but everything is expensive."
+    timestamp_offset_hours: -180
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "personal,housing,apartment"
+
+  - id: mem_conv_rainy_commute
+    marker: "commute in the rain takes an extra 20 minutes"
+    collection: conversations
+    also_in_corpus: true
+    query: "How was your commute?"
+    response: "The commute in the rain takes an extra 20 minutes because of the flooding on Oak Street. I might start taking the bus on rainy days."
+    timestamp_offset_hours: -4
+    truth_score: 0.6
+    importance_score: 0.3
+    tags: "personal,commute,weather"
+
+  # =========================================================================
   # SUMMARIES — seeded in ChromaDB 'summaries' collection only
   # =========================================================================
 
@@ -258,6 +702,62 @@ seed_memories:
     importance_score: 0.5
     tags: "summary,weekly"
 
+  # --- New summaries for hard negative testing ---
+
+  - id: mem_sum_pets
+    marker: "adopted Mochi the tabby cat"
+    collection: summaries
+    content: "Luke adopted Mochi the tabby cat from a local shelter. He also took Biscuit the golden retriever for her annual vet checkup. Both pets are adjusting well to living together."
+    timestamp_offset_hours: -36
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "summary,pets"
+
+  - id: mem_sum_emotional_week
+    marker: "burnout from long work hours"
+    collection: summaries
+    content: "Luke experienced burnout from long work hours and considered quitting. He attended a therapy session and started journaling. His therapist recommended strategies for managing insomnia and racing thoughts."
+    timestamp_offset_hours: -30
+    truth_score: 0.75
+    importance_score: 0.7
+    tags: "summary,emotional,therapy"
+
+  - id: mem_sum_project_infra
+    marker: "Kubernetes deployment and CI pipeline"
+    collection: summaries
+    content: "Project infrastructure work included optimizing the GitHub Actions CI pipeline from 12 to 5 minutes, Kubernetes deployment on DigitalOcean, and database migrations for two-factor authentication."
+    timestamp_offset_hours: -50
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "summary,project,infrastructure"
+
+  - id: mem_sum_health_focus
+    marker: "standing desk and sleep tracking"
+    collection: summaries
+    content: "Luke focused on health improvements this week: ordered a standing desk for back pain, began cutting processed sugar from his diet, and started sleep tracking showing 6.2 hours average."
+    timestamp_offset_hours: -20
+    truth_score: 0.75
+    importance_score: 0.5
+    tags: "summary,health"
+
+  - id: mem_sum_family_updates
+    marker: "brother Mike works as ER nurse"
+    collection: summaries
+    content: "Family updates: Luke's brother Mike works as an ER nurse, sister Sarah is turning 30 with a surprise party planned, mom is visiting from Portland on the 20th, and dad retired from the school district."
+    timestamp_offset_hours: -180
+    truth_score: 0.8
+    importance_score: 0.6
+    tags: "summary,family"
+
+  - id: mem_sum_hobbies
+    marker: "Miles Davis and fingerpicking guitar"
+    collection: summaries
+    content: "Luke's hobbies this month included listening to Miles Davis and Kamasi Washington jazz albums, learning fingerpicking guitar patterns, reading Dune by Frank Herbert, and cooking risotto from scratch."
+    timestamp_offset_hours: -100
+    truth_score: 0.7
+    importance_score: 0.4
+    tags: "summary,hobbies"
+
   # =========================================================================
   # REFLECTIONS — seeded in ChromaDB 'reflections' collection only
   # =========================================================================
@@ -280,9 +780,28 @@ seed_memories:
     importance_score: 0.6
     tags: "reflection,stress,wellbeing"
 
+  # --- New reflections ---
+
+  - id: mem_refl_relationships
+    marker: "investing more energy in personal relationships"
+    collection: reflections
+    content: "Luke has been investing more energy in personal relationships recently. The tension with his girlfriend and the coworker disagreement suggest he is navigating complex interpersonal dynamics alongside technical work."
+    timestamp_offset_hours: -40
+    truth_score: 0.7
+    importance_score: 0.6
+    tags: "reflection,relationships"
+
+  - id: mem_refl_health_awareness
+    marker: "proactive approach to physical health"
+    collection: reflections
+    content: "Luke is taking a more proactive approach to physical health. Between the standing desk for back pain, diet changes, sleep tracking, and regular gym sessions, he is building sustainable health habits."
+    timestamp_offset_hours: -15
+    truth_score: 0.7
+    importance_score: 0.5
+    tags: "reflection,health"
+
   # =========================================================================
   # FACTS — seeded in ChromaDB 'facts' collection only
-  # (tested via get_facts(), not get_memories())
   # =========================================================================
 
   - id: mem_fact_dog
@@ -321,6 +840,107 @@ seed_memories:
     importance_score: 0.3
     tags: "fact,preference"
 
+  # --- New facts for disambiguation ---
+
+  - id: mem_fact_cat
+    marker: "tabby cat named Mochi"
+    collection: facts
+    content: "Luke adopted a tabby cat named Mochi from the shelter"
+    timestamp_offset_hours: -30
+    truth_score: 0.90
+    importance_score: 0.6
+    tags: "fact,pets,cat"
+
+  - id: mem_fact_brother
+    marker: "brother Mike is an ER nurse"
+    collection: facts
+    content: "Luke's brother Mike is an emergency room nurse at the hospital"
+    timestamp_offset_hours: -50
+    truth_score: 0.90
+    importance_score: 0.5
+    tags: "fact,family,brother"
+
+  - id: mem_fact_girlfriend
+    marker: "girlfriend's name is Jess"
+    collection: facts
+    content: "Luke's girlfriend is named Jess"
+    timestamp_offset_hours: -35
+    truth_score: 0.85
+    importance_score: 0.5
+    tags: "fact,relationship"
+
+  - id: mem_fact_apartment_june
+    marker: "lease expires in June"
+    collection: facts
+    content: "Luke's apartment lease expires in June with a 15 percent rent increase"
+    timestamp_offset_hours: -180
+    truth_score: 0.80
+    importance_score: 0.5
+    tags: "fact,housing"
+
+  - id: mem_fact_web_framework
+    marker: "uses FastAPI for backend"
+    collection: facts
+    content: "Luke uses FastAPI for the backend web framework"
+    timestamp_offset_hours: -80
+    truth_score: 0.90
+    importance_score: 0.5
+    tags: "fact,technical,framework"
+
+  - id: mem_fact_promotion_march
+    marker: "promotion review in March"
+    collection: facts
+    content: "Luke has a senior engineer promotion review scheduled for March"
+    timestamp_offset_hours: -170
+    truth_score: 0.80
+    importance_score: 0.6
+    tags: "fact,career,promotion"
+
+  - id: mem_fact_reads_dune
+    marker: "currently reading Dune"
+    collection: facts
+    content: "Luke is currently reading Dune by Frank Herbert"
+    timestamp_offset_hours: -130
+    truth_score: 0.75
+    importance_score: 0.3
+    tags: "fact,reading,books"
+
+  - id: mem_fact_sleep_hours
+    marker: "averages 6.2 hours of sleep"
+    collection: facts
+    content: "Luke averages 6.2 hours of sleep per night based on his sleep tracker"
+    timestamp_offset_hours: -9
+    truth_score: 0.80
+    importance_score: 0.5
+    tags: "fact,health,sleep"
+
+  - id: mem_fact_therapist
+    marker: "sees a therapist regularly"
+    collection: facts
+    content: "Luke sees a therapist and was recommended journaling for insomnia"
+    timestamp_offset_hours: -8
+    truth_score: 0.80
+    importance_score: 0.5
+    tags: "fact,health,therapy"
+
+  - id: mem_fact_gym_frequency
+    marker: "goes to the gym three times a week"
+    collection: facts
+    content: "Luke goes to the gym three times a week doing bench press, squats, and deadlifts"
+    timestamp_offset_hours: -24
+    truth_score: 0.85
+    importance_score: 0.5
+    tags: "fact,fitness,gym"
+
+  - id: mem_fact_coworker_james
+    marker: "coworker James prefers monorepo"
+    collection: facts
+    content: "Luke's coworker James advocates for a monorepo architecture"
+    timestamp_offset_hours: -32
+    truth_score: 0.75
+    importance_score: 0.4
+    tags: "fact,work,coworker"
+
   # =========================================================================
   # PROCEDURAL SKILLS — seeded in ChromaDB 'procedural_skills' collection
   # =========================================================================
@@ -343,6 +963,53 @@ seed_memories:
     importance_score: 0.6
     tags: "skill,python,async"
 
+  # --- New procedural skills ---
+
+  - id: mem_skill_docker
+    marker: "docker-compose memory limits"
+    collection: procedural_skills
+    content: "Docker troubleshooting: 1) Exit code 137 means OOM - increase memory limits in docker-compose 2) Add health checks for auto-restart 3) Use multi-stage builds to reduce image size"
+    timestamp_offset_hours: -22
+    truth_score: 0.85
+    importance_score: 0.6
+    tags: "skill,docker,devops"
+
+  - id: mem_skill_sql_indexing
+    marker: "composite index covers the WHERE clause"
+    collection: procedural_skills
+    content: "SQL query optimization: 1) Check EXPLAIN output for full table scans 2) Add composite index that covers the WHERE clause columns in order 3) Verify index is used with EXPLAIN ANALYZE after creation"
+    timestamp_offset_hours: -110
+    truth_score: 0.85
+    importance_score: 0.6
+    tags: "skill,sql,optimization"
+
+  - id: mem_skill_git_workflow
+    marker: "squash commits before merging"
+    collection: procedural_skills
+    content: "Git workflow best practices: 1) Feature branches from main 2) Squash commits before merging with interactive rebase 3) Write conventional commit messages 4) Use git bisect for regression hunting"
+    timestamp_offset_hours: -90
+    truth_score: 0.85
+    importance_score: 0.5
+    tags: "skill,git,workflow"
+
+  - id: mem_skill_cors
+    marker: "CORS middleware configuration"
+    collection: procedural_skills
+    content: "CORS troubleshooting: 1) Add allowed origins to CORS middleware configuration 2) Handle OPTIONS preflight requests 3) Check browser dev tools Network tab for blocked requests 4) Test with curl to isolate browser vs server issues"
+    timestamp_offset_hours: -70
+    truth_score: 0.85
+    importance_score: 0.5
+    tags: "skill,cors,web"
+
+  - id: mem_skill_pytest
+    marker: "conftest.py for shared fixtures"
+    collection: procedural_skills
+    content: "Python testing workflow: 1) Use conftest.py for shared fixtures 2) parametrize for table-driven tests 3) Mock external dependencies with unittest.mock 4) Run with -x flag to stop on first failure during debugging"
+    timestamp_offset_hours: -60
+    truth_score: 0.85
+    importance_score: 0.5
+    tags: "skill,python,testing"
+
 
 # ===========================================================================
 # TEST CASES
@@ -353,10 +1020,11 @@ seed_memories:
 
 test_cases:
 
-  # -------------------------------------------------------------------------
+  # =========================================================================
   # FACTUAL_RECALL — truth-weighted, high relevance
   # Weights: relevance=0.40, recency=0.10, truth=0.30
-  # -------------------------------------------------------------------------
+  # ~10 cases: basic recall, family disambiguation, pet disambiguation
+  # =========================================================================
 
   - id: factual_dogs_name
     query: "What is my dog's name?"
@@ -391,14 +1059,106 @@ test_cases:
       - mem_conv_family
     must_not_retrieve:
       - mem_conv_math
+      - mem_conv_cooking
     top_k: 10
     min_recall: 1.0
     description: "Should retrieve family conversation about sister turning 30"
 
-  # -------------------------------------------------------------------------
+  - id: factual_brother_job
+    query: "What is my brother's job?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_brother_job
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve brother Mike's ER nurse job"
+
+  - id: factual_cat_name
+    query: "What is my cat's name?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_cat
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve Mochi the tabby cat"
+
+  - id: factual_girlfriend_name
+    query: "What is my girlfriend Emma's job situation?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_relationship_worry
+    must_not_retrieve:
+      - mem_conv_math
+    top_k: 15
+    min_recall: 1.0
+    description: "Should retrieve the relationship conversation mentioning girlfriend"
+
+  - id: factual_web_framework
+    query: "What is my backend web framework?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_python_web
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve FastAPI conversation"
+
+  - id: factual_apartment_lease
+    query: "When is my lease up?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_apartment
+    must_not_retrieve:
+      - mem_conv_weather
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve apartment lease info"
+
+  - id: factual_mom_visit
+    query: "When is my mom visiting?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_mom_visit
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve mom's Portland visit"
+
+  - id: factual_promotion_date
+    query: "When is my promotion review?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_promotion
+    must_not_retrieve:
+      - mem_conv_coworker_conflict
+      - mem_conv_standup_routine
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve promotion review info, not other work memories"
+
+  # =========================================================================
   # TEMPORAL_RECALL — recency-weighted
   # Weights: relevance=0.20, recency=0.40
-  # -------------------------------------------------------------------------
+  # ~8 cases: today, yesterday, this week, last month
+  # =========================================================================
 
   - id: temporal_recent_today
     query: "What did we talk about earlier today?"
@@ -423,19 +1183,90 @@ test_cases:
     must_retrieve:
       - mem_sum_week1
     must_not_retrieve: []
-    top_k: 25
+    top_k: 40
     min_recall: 1.0
     description: >
       Temporal-aware recency decay reshapes the curve so 168h-old
       weekly summary scores recency=0.70 instead of 0.106, ensuring it
-      surfaces in results (previously buried below everything at rank 20+).
-      Uses top_k=25 to validate summaries appear; the key improvement is
-      scoring, not filtering. Uses "What happened" to avoid meta routing.
+      surfaces in results. Uses top_k=40 to account for 93 seeds.
 
-  # -------------------------------------------------------------------------
+  - id: temporal_yesterday_events
+    query: "What did we discuss yesterday?"
+    expected_intent: temporal_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_yesterday_meeting
+    must_not_retrieve:
+      - mem_conv_last_month_trip
+      - mem_conv_redis
+    top_k: 30
+    min_recall: 1.0
+    description: "Should retrieve the sprint retro from ~27h ago, not month-old content"
+
+  - id: temporal_this_weekend
+    query: "What did we talk about last week about running?"
+    expected_intent: temporal_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_saturday_run
+    must_not_retrieve:
+      - mem_conv_last_month_trip
+    top_k: 30
+    min_recall: 1.0
+    description: "Should retrieve the Saturday 5K run (~52h ago), not the Big Sur trip from last month"
+
+  - id: temporal_last_month
+    query: "What did we talk about last month?"
+    expected_intent: temporal_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_last_month_trip
+    must_not_retrieve: []
+    top_k: 25
+    min_recall: 1.0
+    description: "Should surface the Big Sur trip memory (~650h ago) for last month queries"
+
+  - id: temporal_recent_therapy
+    query: "What did my therapist say the other day?"
+    expected_intent: temporal_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_good_therapy_session
+    must_not_retrieve:
+      - mem_conv_last_month_trip
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve recent therapy session mentioning journaling"
+
+  - id: temporal_how_long_gym
+    query: "How long have I been going to the gym?"
+    expected_intent: temporal_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_gym
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 15
+    min_recall: 1.0
+    description: "Temporal query about gym history"
+
+  - id: temporal_progression_health
+    query: "What have I been doing for my health over time?"
+    expected_intent: temporal_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_sum_health_focus
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 40
+    min_recall: 1.0
+    description: "Should surface health-focused summary for progression query"
+
+  # =========================================================================
   # EMOTIONAL_SUPPORT — continuity-weighted, empathetic content
   # Weights: relevance=0.25, recency=0.30, continuity=0.25
-  # -------------------------------------------------------------------------
+  # ~10 cases: work stress vs health anxiety vs social anxiety disambiguation
+  # =========================================================================
 
   - id: emotional_stressed_at_work
     query: "I feel really stressed and overwhelmed with work right now"
@@ -463,10 +1294,114 @@ test_cases:
     min_recall: 1.0
     description: "Should retrieve anxiety conversation, not unrelated content"
 
-  # -------------------------------------------------------------------------
+  - id: emotional_burnout_quitting
+    query: "I feel like I can't handle work anymore and want to quit"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.80
+    must_retrieve:
+      - mem_conv_work_burnout
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve burnout/quitting conversation"
+
+  - id: emotional_social_situation
+    query: "I feel so anxious in social situations and can't cope"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.80
+    must_retrieve:
+      - mem_conv_social_anxiety
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve social anxiety at party"
+
+  - id: emotional_relationship_struggling
+    query: "I'm struggling with my relationship and feeling lonely"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_relationship_worry
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve girlfriend distance concern"
+
+  - id: emotional_therapy_progress
+    query: "I'm feeling hopeless but therapy is finally helping me"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_good_therapy_session
+    must_not_retrieve:
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should surface the therapy session with journaling recommendation"
+
+  - id: emotional_health_worry
+    query: "I'm scared about my health and can't stop worrying"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_anxiety
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve health anxiety conversation"
+
+  - id: emotional_feeling_better_now
+    query: "I'm feeling sad but a bit better today, thanks for being there"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_feeling_better
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_redis
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve the feeling better conversation for continuity"
+
+  - id: emotional_sleep_and_anxiety
+    query: "I can't sleep because of all the anxiety about everything"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.80
+    must_retrieve:
+      - mem_conv_anxiety
+      - mem_conv_good_therapy_session
+    must_not_retrieve:
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Multi-item: should retrieve both anxiety and therapy sessions related to sleep/anxiety"
+
+  - id: emotional_work_conflict_stress
+    query: "I feel exhausted from all the conflict at work"
+    expected_intent: emotional_support
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_coworker_conflict
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve coworker conflict memory for work-specific exhaustion"
+
+  # =========================================================================
   # CASUAL_SOCIAL — gate=0.65, minimal retrieval
   # Weights: relevance=0.20, recency=0.35, continuity=0.25
-  # -------------------------------------------------------------------------
+  # ~8 cases: greetings, thanks, short pleasantries
+  # =========================================================================
 
   - id: casual_thanks
     query: "Thanks!"
@@ -492,10 +1427,79 @@ test_cases:
     min_recall: 0.0
     description: "Morning greeting should not surface old technical content"
 
-  # -------------------------------------------------------------------------
+  - id: casual_goodbye
+    query: "See you later!"
+    expected_intent: casual_social
+    expected_confidence_min: 0.40
+    must_retrieve: []
+    must_not_retrieve:
+      - mem_conv_debug
+      - mem_conv_sql_optimization
+    top_k: 5
+    min_recall: 0.0
+    description: "Farewell should not surface technical memories"
+
+  - id: casual_hey_sup
+    query: "Hey!"
+    expected_intent: casual_social
+    expected_confidence_min: 0.90
+    must_retrieve: []
+    must_not_retrieve:
+      - mem_conv_anxiety
+      - mem_conv_work_burnout
+    top_k: 5
+    min_recall: 0.0
+    description: "Short greeting should not surface emotional content"
+
+  - id: casual_nice_response
+    query: "Nice!"
+    expected_intent: casual_social
+    expected_confidence_min: 0.90
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 5
+    min_recall: 0.0
+    description: "One-word positive response validates intent classification"
+
+  - id: casual_yeah_ok
+    query: "Yeah okay"
+    expected_intent: casual_social
+    expected_confidence_min: 0.40
+    must_retrieve: []
+    must_not_retrieve:
+      - mem_conv_debug
+      - mem_conv_docker_debug
+    top_k: 5
+    min_recall: 0.0
+    description: "Casual agreement should not surface debugging memories"
+
+  - id: casual_lol
+    query: "Haha"
+    expected_intent: casual_social
+    expected_confidence_min: 0.90
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 5
+    min_recall: 0.0
+    description: "Laughter validates intent classification"
+
+  - id: casual_good_night
+    query: "Good night!"
+    expected_intent: casual_social
+    expected_confidence_min: 0.90
+    must_retrieve: []
+    must_not_retrieve:
+      - mem_conv_sleep_tracker
+      - mem_conv_anxiety
+    top_k: 5
+    min_recall: 0.0
+    description: "Bedtime greeting should not surface sleep or anxiety content"
+
+  # =========================================================================
   # TECHNICAL_HELP — relevance-heavy, skills-oriented
   # Weights: relevance=0.45, truth=0.20, recency=0.15
-  # -------------------------------------------------------------------------
+  # ~10 cases: debugging discrimination, Python subtopics, DevOps
+  # =========================================================================
 
   - id: technical_segfault_debug
     query: "How do I debug a segmentation fault in my C program?"
@@ -505,9 +1509,10 @@ test_cases:
       - mem_conv_debug
     must_not_retrieve:
       - mem_conv_cooking
+      - mem_conv_math
     top_k: 10
     min_recall: 1.0
-    description: "Should retrieve C debugging conversation with valgrind advice"
+    description: "Should retrieve C debugging with valgrind"
 
   - id: technical_python_async
     query: "How should I structure my async Python code?"
@@ -522,10 +1527,115 @@ test_cases:
     min_recall: 1.0
     description: "Should retrieve async/await conversation"
 
-  # -------------------------------------------------------------------------
+  - id: technical_docker_crash
+    query: "How do I fix a Docker container that keeps crashing with OOM?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_docker_debug
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve Docker OOM fix"
+
+  - id: technical_slow_query
+    query: "How can I optimize a slow SQL query?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_sql_optimization
+    must_not_retrieve:
+      - mem_conv_debug
+      - mem_conv_docker_debug
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve SQL index optimization, not C or Docker debugging"
+
+  - id: technical_cors_issue
+    query: "How do I fix CORS errors in my web app?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_cors_fix
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve CORS preflight fix"
+
+  - id: technical_python_testing
+    query: "How should I write tests in Python with pytest?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_python_testing
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve pytest conversation"
+
+  - id: technical_type_hints
+    query: "How should I handle type checking and validation in Python?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_python_types
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve Pydantic/type hints"
+
+  - id: technical_git_history
+    query: "How do I squash messy git commits with rebase?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_git_rebase
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve interactive rebase advice"
+
+  - id: technical_python_packaging
+    query: "How should I set up the build system for my Python package?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_python_packaging
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve pyproject.toml/hatchling"
+
+  - id: technical_back_pain
+    query: "How can I fix my back pain from sitting all day?"
+    expected_intent: technical_help
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_back_pain
+    must_not_retrieve:
+      - mem_conv_debug
+      - mem_conv_docker_debug
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve standing desk / PT advice for back pain"
+
+  # =========================================================================
   # CREATIVE_EXPLORATION — broad retrieval, idea-oriented
   # Weights: relevance=0.30, importance=0.15, continuity=0.15
-  # -------------------------------------------------------------------------
+  # ~8 cases: dashboard ideas, product features, brainstorming
+  # =========================================================================
 
   - id: creative_dashboard_ideas
     query: "Let us brainstorm creative ideas for improving the dashboard"
@@ -549,12 +1659,85 @@ test_cases:
     min_recall: 1.0
     description: "Should retrieve product ideation conversation"
 
-  # -------------------------------------------------------------------------
+  - id: creative_ux_improvements
+    query: "Let's think about creative ways to improve the user experience"
+    expected_intent: creative_exploration
+    expected_confidence_min: 0.65
+    must_retrieve:
+      - mem_conv_brainstorm
+    must_not_retrieve:
+      - mem_conv_sql_optimization
+      - mem_conv_debug
+    top_k: 10
+    min_recall: 1.0
+    description: "UX ideation should surface dashboard brainstorm, not technical debugging"
+
+  - id: creative_api_design
+    query: "What if we redesigned the API to be more developer-friendly?"
+    expected_intent: creative_exploration
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_api
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "API redesign brainstorm should surface existing API work"
+
+  - id: creative_architecture_ideas
+    query: "Let's explore different architecture possibilities for scaling our Kubernetes deployment"
+    expected_intent: creative_exploration
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_project_deploy
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 25
+    min_recall: 1.0
+    description: "Architecture brainstorm should surface Kubernetes deployment context"
+
+  - id: creative_weekend_plans
+    query: "Help me brainstorm ideas for what to do this weekend, like hiking"
+    expected_intent: creative_exploration
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_weekend
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 20
+    min_recall: 1.0
+    description: "Weekend planning should surface past weekend activities for ideas"
+
+  - id: creative_gift_brainstorm
+    query: "Help me brainstorm gift ideas for my sister Sarah"
+    expected_intent: creative_exploration
+    expected_confidence_min: 0.65
+    must_retrieve:
+      - mem_conv_sister_gift
+    must_not_retrieve:
+      - mem_conv_debug
+      - mem_conv_cooking
+    top_k: 20
+    min_recall: 1.0
+    description: "Gift brainstorm should surface Sarah's preferences"
+
+  - id: creative_dinner_ideas
+    query: "Brainstorm some creative dinner ideas like homemade pasta with sauce"
+    expected_intent: creative_exploration
+    expected_confidence_min: 0.60
+    must_retrieve:
+      - mem_conv_cooking
+    must_not_retrieve: []
+    top_k: 25
+    min_recall: 1.0
+    description: "Dinner ideation should surface pasta/cooking memory"
+
+  # =========================================================================
   # META_CONVERSATIONAL — episodic/summary content
   # Weights: relevance=0.30, recency=0.20, importance=0.15
-  # Note: get_memories() routes meta queries to a special retrieval path
-  # that pulls from corpus, so we relax retrieval assertions.
-  # -------------------------------------------------------------------------
+  # ~8 cases: broad memory queries, self-knowledge
+  # =========================================================================
 
   - id: meta_about_me
     query: "What do you remember about me and my life?"
@@ -576,10 +1759,71 @@ test_cases:
     min_recall: 0.0
     description: "Meta query about hobbies; validates intent classification"
 
-  # -------------------------------------------------------------------------
+  - id: meta_family_knowledge
+    query: "What do you know about my family?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.80
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Meta family query; validates intent classification"
+
+  - id: meta_work_knowledge
+    query: "What do you remember about my job and career?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.80
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Meta career query; validates intent classification"
+
+  - id: meta_health_knowledge
+    query: "What do you know about my health?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.80
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Meta health query; validates intent classification"
+
+  - id: meta_pet_knowledge
+    query: "What do you remember about my pets?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.80
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Meta pets query; validates intent classification"
+
+  - id: meta_project_knowledge
+    query: "What do you know about the project I am working on?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.80
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Meta project query; validates intent classification"
+
+  - id: meta_emotional_history
+    query: "What do you remember about how I have been feeling?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.80
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Meta emotional state query; validates intent classification"
+
+  # =========================================================================
   # PROJECT_WORK — code/feature/PR oriented
   # Weights: relevance=0.40, truth=0.25, recency=0.15
-  # -------------------------------------------------------------------------
+  # ~10 cases: component discrimination, infra vs app code
+  # =========================================================================
 
   - id: project_auth_status
     query: "Let's add rate limiting to the authentication module"
@@ -589,9 +1833,10 @@ test_cases:
       - mem_conv_project_auth
     must_not_retrieve:
       - mem_conv_cooking
+      - mem_conv_math
     top_k: 10
     min_recall: 1.0
-    description: "Should retrieve auth module rate limiting conversation"
+    description: "Should retrieve auth module rate limiting"
 
   - id: project_api_update
     query: "Update the API endpoint deployment in server.py"
@@ -601,14 +1846,120 @@ test_cases:
       - mem_conv_api
     must_not_retrieve:
       - mem_conv_cooking
+      - mem_conv_math
     top_k: 10
     min_recall: 1.0
-    description: "Should retrieve API endpoint deployment conversation"
+    description: "Should retrieve API deployment conversation"
 
-  # -------------------------------------------------------------------------
+  - id: project_dashboard_charts
+    query: "Let's work on the dashboard chart rendering"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_project_dashboard
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve React dashboard"
+
+  - id: project_database_migration
+    query: "Let's add the two-factor auth columns to the users table"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_project_db_migration
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve Alembic migration for 2FA"
+
+  - id: project_ci_optimization
+    query: "Let's work on speeding up the CI pipeline"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_project_ci
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve GitHub Actions CI conversation"
+
+  - id: project_caching_layer
+    query: "Let's implement the Redis caching layer for the backend"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_redis
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve Redis caching conversation"
+
+  - id: project_kubernetes_deploy
+    query: "Let's work on the Kubernetes deployment on DigitalOcean"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_project_deploy
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve Kubernetes/DigitalOcean deploy"
+
+  - id: project_fastapi_backend
+    query: "Let's work on the FastAPI backend routes"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_python_web
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve FastAPI/SQLAlchemy backend conversation"
+
+  - id: project_cors_middleware
+    query: "Let's add CORS middleware to the FastAPI app"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_cors_fix
+    must_not_retrieve:
+      - mem_conv_cooking
+      - mem_conv_math
+    top_k: 10
+    min_recall: 1.0
+    description: "Should retrieve CORS fix conversation for middleware work"
+
+  - id: project_full_stack_status
+    query: "Let's work on the full project: update the API, dashboard, and deploy"
+    expected_intent: project_work
+    expected_confidence_min: 0.55
+    must_retrieve:
+      - mem_conv_api
+      - mem_conv_project_dashboard
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 15
+    min_recall: 1.0
+    description: "Multi-item: broad project review should surface both API and dashboard"
+
+  # =========================================================================
   # GENERAL — fallback intent, no strict retrieval requirements
   # Default weights, no overrides
-  # -------------------------------------------------------------------------
+  # ~8 cases: ambiguous statements, observations
+  # =========================================================================
 
   - id: general_autumn_thoughts
     query: "The colors of autumn are quite beautiful this year"
@@ -629,3 +1980,276 @@ test_cases:
     top_k: 10
     min_recall: 0.0
     description: "Ambiguous statement with no clear intent pattern"
+
+  - id: general_time_flies
+    query: "Time really flies when you are focused on something"
+    expected_intent: general
+    expected_confidence_min: 0.0
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Philosophical observation with no specific intent"
+
+  - id: general_coffee_preference
+    query: "I think oat milk is better than almond milk in coffee"
+    expected_intent: general
+    expected_confidence_min: 0.0
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Casual opinion that does not match any strong intent pattern"
+
+  - id: general_interesting_fact
+    query: "Apparently octopuses have three hearts and blue blood"
+    expected_intent: general
+    expected_confidence_min: 0.0
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Random fact sharing with no retrieval need"
+
+  - id: general_weather_musing
+    query: "The rain has a certain calming quality to it"
+    expected_intent: general
+    expected_confidence_min: 0.0
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Reflective weather observation"
+
+  - id: general_music_thought
+    query: "There is something timeless about acoustic instruments"
+    expected_intent: general
+    expected_confidence_min: 0.0
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Abstract music observation"
+
+  - id: general_cooking_musing
+    query: "Homemade food just hits different than takeout"
+    expected_intent: general
+    expected_confidence_min: 0.0
+    must_retrieve: []
+    must_not_retrieve: []
+    top_k: 10
+    min_recall: 0.0
+    description: "Casual food opinion"
+
+  # =========================================================================
+  # MULTI-ITEM AND CROSS-COLLECTION RETRIEVAL
+  # These test queries that should find multiple related memories
+  # =========================================================================
+
+  - id: multi_all_pets
+    query: "What do you know about my dog Biscuit and my cat Mochi?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_dog
+      - mem_conv_cat
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_redis
+    top_k: 30
+    min_recall: 1.0
+    description: "Multi-item: should retrieve both Biscuit (dog) and Mochi (cat) memories"
+
+  - id: multi_all_family
+    query: "What do you know about my sister Sarah and my brother Mike?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_family
+      - mem_conv_brother_job
+    must_not_retrieve: []
+    top_k: 40
+    min_recall: 1.0
+    description: "Multi-item: should retrieve sister Sarah AND brother Mike"
+
+  - id: multi_python_overview
+    query: "What do you know about all the Python topics we discussed?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_python
+      - mem_conv_async
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 30
+    min_recall: 1.0
+    description: "Multi-item: should retrieve both data science and async Python conversations"
+
+  - id: multi_health_summary
+    query: "What do you know about my health situation?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_back_pain
+      - mem_conv_sleep_tracker
+    must_not_retrieve:
+      - mem_conv_math
+    top_k: 15
+    min_recall: 1.0
+    description: "Multi-item: should retrieve back pain AND sleep tracking"
+
+  - id: multi_emotional_journey
+    query: "What do you know about my emotional struggles?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_stress
+      - mem_conv_anxiety
+    must_not_retrieve:
+      - mem_conv_math
+    top_k: 15
+    min_recall: 1.0
+    description: "Multi-item: should surface work stress AND health anxiety"
+
+  - id: multi_project_components
+    query: "What do you know about the different parts of my project?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_api
+      - mem_conv_project_auth
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 15
+    min_recall: 1.0
+    description: "Multi-item: should retrieve API and auth module conversations"
+
+  - id: multi_fitness_activities
+    query: "What do you know about my gym workouts and my 5K running?"
+    expected_intent: meta_conversational
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_gym
+      - mem_conv_saturday_run
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 40
+    min_recall: 1.0
+    description: "Multi-item: should retrieve gym workouts AND Saturday 5K run"
+
+  # =========================================================================
+  # CROSS-COLLECTION RETRIEVAL
+  # Queries that should find content in summaries AND/OR conversations
+  # =========================================================================
+
+  - id: cross_pet_summary_or_conv
+    query: "What is my dog's breed?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_dog
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Cross-collection: dog breed should come from conversation"
+
+  - id: cross_project_summary
+    query: "What is my project's infrastructure setup?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_project_deploy
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 15
+    min_recall: 1.0
+    description: "Cross-collection: should find Kubernetes deploy info from conversation or summary"
+
+  # =========================================================================
+  # NEGATIVE FILTERING — queries that should NOT surface specific distractors
+  # =========================================================================
+
+  - id: negative_sleep_not_anxiety
+    query: "What is my average sleep duration?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_sleep_tracker
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Sleep duration query should retrieve tracker data"
+
+  - id: negative_music_not_coding
+    query: "What is my favorite jazz album?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.70
+    must_retrieve:
+      - mem_conv_jazz_album
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Specific jazz album query should get Kind of Blue"
+
+  - id: negative_cooking_not_diet
+    query: "What was my risotto recipe? I told you about it"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.50
+    must_retrieve:
+      - mem_conv_sunday_cooking
+    must_not_retrieve:
+      - mem_conv_debug
+    top_k: 10
+    min_recall: 1.0
+    description: "Risotto recipe query should get Sunday cooking"
+
+  - id: negative_work_meeting_not_promotion
+    query: "What did I tell you about the sprint retrospective?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.50
+    must_retrieve:
+      - mem_conv_yesterday_meeting
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 10
+    min_recall: 1.0
+    description: "Sprint retro should get the tense meeting"
+
+  - id: negative_back_not_gym
+    query: "What did I tell you my physical therapist recommended for my back?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.50
+    must_retrieve:
+      - mem_conv_back_pain
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 15
+    min_recall: 1.0
+    description: "PT recommendation should get back pain memory"
+
+  - id: negative_guitar_not_jazz
+    query: "What is my fingerpicking guitar song I told you about?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.50
+    must_retrieve:
+      - mem_conv_guitar
+    must_not_retrieve: []
+    top_k: 20
+    min_recall: 1.0
+    description: "Guitar progress should get fingerpicking"
+
+  - id: negative_reading_not_podcast
+    query: "What is my current book I mentioned reading?"
+    expected_intent: factual_recall
+    expected_confidence_min: 0.50
+    must_retrieve:
+      - mem_conv_reading
+    must_not_retrieve:
+      - mem_conv_cooking
+    top_k: 15
+    min_recall: 1.0
+    description: "Book query should get Dune"
