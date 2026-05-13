@@ -388,6 +388,14 @@ class MemoryScorer:
             if collection_key in COLLECTION_BOOSTS:
                 rel += COLLECTION_BOOSTS[collection_key]
 
+            # Cap inflated corpus relevance for large temporal windows.
+            # Corpus entries get a flat 0.9 regardless of query match,
+            # drowning out semantically-scored ChromaDB results for
+            # "last week" / "last month" queries.  Short windows
+            # ("earlier today") benefit from the corpus recency bias.
+            if temporal_anchor and temporal_anchor > 48 and m.get('source') == 'corpus':
+                rel = min(rel, 0.5)
+
             # 2) recency with decay (using active days)
             ts = m.get('timestamp')
             if isinstance(ts, str):
@@ -401,29 +409,32 @@ class MemoryScorer:
             age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
 
             if temporal_anchor and temporal_anchor > 0:
-                # Two-regime temporal decay based on anchor size:
+                # Two-regime temporal decay based on anchor size.
                 #
                 # Small anchor (<=48h, "today"/"yesterday"):
-                #   Flat plateau inside window, steep dropoff outside.
-                #   All memories within the window score ~1.0 (recency≈equal,
-                #   let relevance/truth/importance differentiate).
+                #   In-window: flat plateau (1.0→0.85).
+                #   Grace zone (up to +50% past anchor): gentle taper.
+                #   Past grace: steep dropoff.
                 #
                 # Large anchor (>48h, "last week"/"last month"):
-                #   Peak near anchor, penalize too-recent. User asked about
-                #   a specific past period, not right now.
+                #   Sqrt ramp from floor to 1.0 (faster rise, peaks at
+                #   anchor).  Past-anchor: standard decay.
                 if temporal_anchor <= 48:
-                    # Small anchor: flat plateau within window
+                    grace_limit = temporal_anchor * 1.5
                     if age_hours <= temporal_anchor:
                         recency = 1.0 - (age_hours / temporal_anchor) * 0.15
+                    elif age_hours <= grace_limit:
+                        grace_frac = (age_hours - temporal_anchor) / (grace_limit - temporal_anchor)
+                        recency = 0.85 - grace_frac * 0.15
                     else:
-                        hours_past = age_hours - temporal_anchor
-                        recency = 0.85 / (1.0 + RECENCY_DECAY_RATE * hours_past)
+                        hours_past = age_hours - grace_limit
+                        recency = 0.70 / (1.0 + RECENCY_DECAY_RATE * hours_past)
                 else:
-                    # Large anchor: peak near anchor, penalize too-recent
-                    # floor scales with anchor: 0.45 at 168h+
-                    floor = max(0.45, 1.0 - (temporal_anchor / 300.0))
+                    floor = max(0.60, 1.0 - (temporal_anchor / 500.0))
                     if age_hours <= temporal_anchor:
-                        recency = floor + (1.0 - floor) * (age_hours / temporal_anchor)
+                        # Sqrt ramp: rises faster for early-window memories
+                        frac = age_hours / temporal_anchor
+                        recency = floor + (1.0 - floor) * (frac ** 0.5)
                     else:
                         hours_past = age_hours - temporal_anchor
                         recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * hours_past)
