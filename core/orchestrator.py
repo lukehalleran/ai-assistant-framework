@@ -1434,26 +1434,46 @@ The user is processing/analyzing, open to engagement.
         _t_start = time.perf_counter()
 
         # Step 1: Build context via ContextPipeline
+        _t_ctx = time.perf_counter()
         context = await self.build_context(
             user_input=user_input,
             files=files,
             use_raw_mode=use_raw_mode,
         )
+        _ctx_elapsed = time.perf_counter() - _t_ctx
 
         # Step 2: Raw mode returns early
         if use_raw_mode:
             return context.file_context or user_input, None
 
         # Step 3: Build full prompt (with optional raw context for agentic search)
+        _t_build = time.perf_counter()
         result = await self.build_full_prompt(
             context=context,
             use_raw_mode=use_raw_mode,
             return_raw_context=return_context,
         )
+        _build_elapsed = time.perf_counter() - _t_build
 
+        duration = time.perf_counter() - _t_start
         if self.logger:
-            duration = time.perf_counter() - _t_start
             self.logger.info(f"[PREPARE_PROMPT] Completed in {duration:.2f}s (via ContextPipeline)")
+
+        # Stash phase timings on instance for debug_info consumption
+        self._last_phase_timings = {
+            "context_pipeline": round(_ctx_elapsed, 3),
+            "prompt_build": round(_build_elapsed, 3),
+            "prepare_total": round(duration, 3),
+        }
+        # Extract per-task timings from prompt_ctx (stashed by builder)
+        if return_context and isinstance(result, tuple) and len(result) >= 3:
+            _pctx = result[2] or {}
+            self._last_task_timings = _pctx.pop("_task_timings", {})
+            self._last_gather_elapsed = _pctx.pop("_gather_elapsed", 0.0)
+            _pctx.pop("_build_time", None)
+        else:
+            self._last_task_timings = {}
+            self._last_gather_elapsed = 0.0
 
         return result
 
@@ -1628,17 +1648,28 @@ The user is processing/analyzing, open to engagement.
                 self.logger.info(f"[Orchestrator] Target model for response: {model_name}")
 
             # --- Build Prompt (NEW: via ContextPipeline) ---
+            import time as _time_mod
+            _t_ctx_start = _time_mod.perf_counter()
             context = await self.build_context(
                 user_input=user_input,
                 files=files,
                 use_raw_mode=use_raw_mode,
                 personality=personality,
             )
+            _t_ctx_elapsed = _time_mod.perf_counter() - _t_ctx_start
+
+            _t_build_start = _time_mod.perf_counter()
             prompt, system_prompt, prompt_ctx = await self.build_full_prompt(
                 context=context,
                 use_raw_mode=use_raw_mode,
                 return_raw_context=True,  # Get prompt context for images
             )
+            _t_build_elapsed = _time_mod.perf_counter() - _t_build_start
+
+            # Extract per-task timings stashed by builder
+            _task_timings = prompt_ctx.pop("_task_timings", {}) if prompt_ctx else {}
+            _gather_elapsed = prompt_ctx.pop("_gather_elapsed", 0.0) if prompt_ctx else 0.0
+            _builder_time = prompt_ctx.pop("_build_time", 0.0) if prompt_ctx else 0.0
 
             # Extract images for multimodal models
             note_images = prompt_ctx.get("note_images", []) if prompt_ctx else []
@@ -1680,6 +1711,7 @@ The user is processing/analyzing, open to engagement.
 
             # --- Generate Response ---
             # (model_name already determined earlier for image loading)
+            _t_gen_start = _time_mod.perf_counter()
 
             # --- Agentic Search Check ---
             # If agentic search is requested and available, check if we should use it
@@ -1746,6 +1778,13 @@ The user is processing/analyzing, open to engagement.
                             "agentic_search_used": True,
                         })
                         debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
+                        debug_info["phase_timings"] = {
+                            "context_pipeline": round(_t_ctx_elapsed, 3),
+                            "prompt_build": round(_t_build_elapsed, 3),
+                            "llm_generation": round(debug_info["duration"] - _t_ctx_elapsed - _t_build_elapsed, 3),
+                        }
+                        debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
+                        debug_info["gather_elapsed"] = round(_gather_elapsed, 3)
 
                         return full_response.strip(), debug_info
 
@@ -1832,6 +1871,8 @@ The user is processing/analyzing, open to engagement.
                     full_response += (chunk + " ")
                 full_response = full_response.strip()
 
+            _t_gen_elapsed = _time_mod.perf_counter() - _t_gen_start
+
             # --- Parse thinking block and extract final answer ---
             thinking_part, final_answer = ResponseParser.parse_thinking_block(full_response)
             # Strip XML-like wrappers (e.g., <result> … </result>) from final answer
@@ -1872,6 +1913,7 @@ The user is processing/analyzing, open to engagement.
                 self.escalation_tracker.record_response(answer_for_storage)
 
             # --- Store Interaction ---
+            _t_store_start = _time_mod.perf_counter()
             if self.memory_system and not use_raw_mode:
                 try:
                     await self.memory_system.store_interaction(
@@ -1882,6 +1924,7 @@ The user is processing/analyzing, open to engagement.
                     )
                 except Exception as e:
                     self.logger.error(f"[Orchestrator] CRITICAL: Failed to store interaction - data loss: {e}")
+            _t_store_elapsed = _time_mod.perf_counter() - _t_store_start
             # Use instance logger
             if self.logger:
                 self.logger.debug("[orchestrator] Persisted exchange; considering consolidation")
@@ -1945,6 +1988,16 @@ The user is processing/analyzing, open to engagement.
                 "citations_enabled": self.enable_citations,
             })
             debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
+
+            # Phase-level timing for interpretability
+            debug_info["phase_timings"] = {
+                "context_pipeline": round(_t_ctx_elapsed, 3),
+                "prompt_build": round(_t_build_elapsed, 3),
+                "llm_generation": round(_t_gen_elapsed, 3),
+                "memory_store": round(_t_store_elapsed, 3),
+            }
+            debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
+            debug_info["gather_elapsed"] = round(_gather_elapsed, 3)
 
             # Return only the final answer (thinking block removed)
             return answer_for_storage, debug_info

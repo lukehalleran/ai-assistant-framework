@@ -650,6 +650,52 @@ def launch_gui(orchestrator, force_wizard=False):
         }
 
     # ---- Debug Trace helpers ----
+    def _format_timing_waterfall(rec):
+        """Render a timing waterfall for a debug record."""
+        phase = rec.get('phase_timings') or {}
+        tasks = rec.get('task_timings') or {}
+        gather = rec.get('gather_elapsed', 0.0)
+        if not phase and not tasks:
+            return ""
+
+        lines = ["**Timing Waterfall**\n"]
+
+        # Phase-level bar chart
+        total = phase.get('total_wall', 0.0)
+        if total > 0:
+            lines.append(f"`Total: {total:.2f}s`\n")
+            # Fixed-order phases
+            phase_order = [
+                ("context_pipeline", "Context Pipeline"),
+                ("prompt_build", "Prompt Build"),
+                ("llm_streaming", "LLM Streaming"),
+                ("agentic_loop", "Agentic Loop"),
+                ("prepare_prompt", "Prepare Prompt"),
+            ]
+            for key, label in phase_order:
+                val = phase.get(key, 0.0)
+                if val > 0 and key not in ("total_wall", "prepare_prompt"):
+                    pct = (val / total * 100) if total else 0
+                    bar_len = max(1, int(pct / 2))
+                    bar = "\u2588" * bar_len
+                    lines.append(f"  `{label:<18s} {val:6.2f}s  ({pct:4.1f}%)` {bar}")
+
+        # Per-task breakdown (top 8, sorted by duration)
+        if tasks:
+            sorted_tasks = sorted(tasks.items(), key=lambda x: x[1], reverse=True)
+            lines.append(f"\n**Retrieval Tasks** (gather: {gather:.2f}s)\n")
+            for name, dur in sorted_tasks[:8]:
+                if dur >= 0.01:
+                    bar_len = max(1, int(dur * 10))  # 1 char per 100ms
+                    bar = "\u2592" * min(bar_len, 40)
+                    lines.append(f"  `{name:<22s} {dur:5.2f}s` {bar}")
+            remaining = sorted_tasks[8:]
+            if remaining:
+                rest_sum = sum(d for _, d in remaining)
+                lines.append(f"  `{'... +' + str(len(remaining)) + ' more':<22s} {rest_sum:5.2f}s`")
+
+        return "\n".join(lines) + "\n\n"
+
     def _format_debug_entries(entries):
         if not entries:
             return "No debug entries yet. Submit a message in Chat."
@@ -686,6 +732,9 @@ def launch_gui(orchestrator, force_wizard=False):
             segment = f"### #{i} — Mode: {mode}  Model: {model}\n"
             if tok_line:
                 segment += f"{tok_line}\n\n"
+
+            # Timing waterfall (shows phase + task breakdown)
+            segment += _format_timing_waterfall(rec)
 
             # Show the System Prompt exactly once at the top (below token line),
             # using the most recent value so it stays current across queries.

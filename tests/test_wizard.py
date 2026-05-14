@@ -260,13 +260,13 @@ class TestWizardFlow:
         assert complete is False
 
     @pytest.mark.asyncio
-    async def test_wizard_intro_advances_to_api_key(self, mock_orchestrator):
-        """INTRO step should advance to API_KEY."""
+    async def test_wizard_intro_advances_to_mode(self, mock_orchestrator):
+        """INTRO step should advance to MODE."""
         state = WizardState(step=WizardStep.INTRO)
         response, new_state, complete = await process_wizard_message("continue", state, mock_orchestrator)
 
-        assert new_state.step == WizardStep.API_KEY
-        assert "openrouter" in response.lower() or "api key" in response.lower()
+        assert new_state.step == WizardStep.MODE
+        assert "personal" in response.lower() or "developer" in response.lower()
         assert complete is False
 
     @pytest.mark.asyncio
@@ -284,8 +284,8 @@ class TestWizardFlow:
         assert complete is False
 
     @pytest.mark.asyncio
-    async def test_wizard_tavily_key_valid_advances_to_style(self, mock_orchestrator):
-        """Valid Tavily key should advance to STYLE."""
+    async def test_wizard_tavily_key_valid_advances_to_wolfram(self, mock_orchestrator):
+        """Valid Tavily key should advance to WOLFRAM_KEY."""
         state = WizardState(step=WizardStep.TAVILY_KEY)
         with patch('gui.wizard.write_tavily_key_to_env', return_value=True):
             response, new_state, complete = await process_wizard_message(
@@ -294,18 +294,18 @@ class TestWizardFlow:
                 mock_orchestrator
             )
 
-        assert new_state.step == WizardStep.STYLE
-        assert "style" in response.lower() or "talk" in response.lower()
+        assert new_state.step == WizardStep.WOLFRAM_KEY
+        assert "wolfram" in response.lower() or "web search" in response.lower() or "computation" in response.lower()
         assert complete is False
 
     @pytest.mark.asyncio
-    async def test_wizard_tavily_key_skip_advances_to_style(self, mock_orchestrator):
-        """Skipping Tavily key should advance to STYLE."""
+    async def test_wizard_tavily_key_skip_advances_to_wolfram(self, mock_orchestrator):
+        """Skipping Tavily key should advance to WOLFRAM_KEY."""
         state = WizardState(step=WizardStep.TAVILY_KEY)
         response, new_state, complete = await process_wizard_message("skip", state, mock_orchestrator)
 
-        assert new_state.step == WizardStep.STYLE
-        assert "style" in response.lower() or "talk" in response.lower()
+        assert new_state.step == WizardStep.WOLFRAM_KEY
+        assert "wolfram" in response.lower() or "later" in response.lower()
         assert complete is False
 
     @pytest.mark.asyncio
@@ -351,13 +351,13 @@ class TestWizardFlow:
         assert complete is False
 
     @pytest.mark.asyncio
-    async def test_wizard_pronouns_advances_to_background(self, mock_orchestrator):
-        """Pronouns entry should advance to BACKGROUND."""
+    async def test_wizard_pronouns_advances_to_obsidian(self, mock_orchestrator):
+        """Pronouns entry should advance to OBSIDIAN."""
         state = WizardState(step=WizardStep.PRONOUNS)
         response, new_state, complete = await process_wizard_message("they/them", state, mock_orchestrator)
 
-        assert new_state.step == WizardStep.BACKGROUND
-        assert "anything" in response.lower() or "background" in response.lower()
+        assert new_state.step == WizardStep.OBSIDIAN
+        assert "obsidian" in response.lower() or "vault" in response.lower()
         assert new_state.collected_data['pronouns'] == 'they/them'
         assert complete is False
 

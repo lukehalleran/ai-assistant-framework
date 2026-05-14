@@ -1226,7 +1226,7 @@ PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
 PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
 PROMPT_TOKEN_BUDGET_CEILING = 16000   # Maximum budget
 # PROMPT_MIN_RECENT_FLOOR = 5  — defined in core/prompt/builder.py (not app_config.py)
-PROMPT_MAX_MEMS = int(os.getenv("PROMPT_MAX_MEMS", "30"))
+PROMPT_MAX_MEMS = int(os.getenv("PROMPT_MAX_MEMS", "15"))
 
 # Decay & scoring
 RECENCY_DECAY_RATE = float(os.getenv("RECENCY_DECAY_RATE", "0.05"))
@@ -1235,6 +1235,8 @@ TRUTH_SCORE_MAX = 1.0
 
 # Gating threshold
 GATE_COSINE_THRESHOLD = float(os.getenv("GATE_COSINE_THRESHOLD", "0.45"))
+# NOTE: context_gatherer.py defaults to 0.45, but gate_system.py defaults to 0.50.
+# The env var GATE_COSINE_THRESHOLD overrides both when set.
 
 # Collection boosts
 COLLECTION_BOOSTS = {
@@ -1661,13 +1663,14 @@ class TagGenerator:
         9. Fallback to heuristics if LLM fails
         """
 
-# Tag Vocabulary (100+ tags across 6 categories):
+# Tag Vocabulary (100+ tags across 7 categories):
 # 1. Life domains (17): work, study, health, exercise, sleep, social, family, ...
 # 2. Activities (18): coding, programming, learning, reading, writing, debugging, ...
 # 3. Emotions (23): stress, anxiety, happy, motivated, tired, focused, overwhelmed, ...
 # 4. Productivity (15): productive, deep-work, flow-state, breakthrough, blocked, ...
 # 5. Topics (23): ai, programming, python, math, philosophy, psychology, ...
 # 6. Meta (16): crisis, decision, reflection, planning, insight, follow-up, ...
+# 7. Events (16): appointment, meeting, interview, presentation, deadline, celebration, ...
 
 # Tag format (Obsidian-compatible):
 # - Lowercase with hyphens (e.g., deep-work, mental-health)
@@ -2422,7 +2425,7 @@ pytest -m "not benchmark"
 ```
 
 ```python
-# tests/benchmarks/ — 30 seed memories + 19 test cases across all 9 intent types
+# tests/benchmarks/ — 93 seed memories + 96 test cases across all 9 intent types
 # conftest.py: session-scoped ChromaDB + CorpusManager + MockTimeManager fixtures
 # retrieval_benchmark.py: BenchmarkResult + RetrievalBenchmark harness (recall@K, MRR)
 # test_retrieval_quality.py: parametrized pytest cases + structural validation

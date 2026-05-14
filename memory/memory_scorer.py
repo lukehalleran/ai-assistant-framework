@@ -610,9 +610,8 @@ class MemoryScorer:
             timestamp = mem_dict.get('timestamp') or mem_dict.get('metadata', {}).get('timestamp')
             if isinstance(timestamp, str):
                 try:
-                    from dateutil import parser
-                    timestamp = parser.parse(timestamp)
-                except Exception:
+                    timestamp = datetime.fromisoformat(timestamp)
+                except (ValueError, TypeError):
                     # If parsing fails, skip this memory
                     continue
 

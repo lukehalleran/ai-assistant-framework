@@ -65,7 +65,7 @@ resolved, and stale information is penalized in ranking.
 ### Shutdown & Consolidation
 | File | Purpose |
 |------|---------|
-| `memory/shutdown_processor.py` | 12-step session-end processing (Steps 1-8, with sub-steps 4.5, 6.5, 6.75, 6.8, 6.9) |
+| `memory/shutdown_processor.py` | 13-step session-end processing (Steps 1-8, with sub-steps 4.5, 6.5, 6.75, 6.8, 6.9) |
 | `memory/thread_manager.py` | Thread detection for conversation continuity |
 | `memory/thread_store.py` | ChromaDB-backed thread persistence + priority ranking + deadline-aware staleness + per-turn regex resolution |
 | `memory/thread_extractor.py` | LLM-based thread extraction + resolution detection |
@@ -304,7 +304,7 @@ graph_bonus:  0.05                    (1 neighbor "powerlifting" mentioned)
 staleness:    0.00                    (no stale claims)
 penalties:    0.00
 ─────────────────────────────────────
-final_score:  0.805
+final_score:  0.800
 ```
 
 ### Intent-Driven Weight Overrides
@@ -407,8 +407,8 @@ during `learn_alias()` calls.
 
 ```
 Initial:     0.70  (source: llm_extracted)
-             0.85  (source: user_stated)
-             0.90  (source: corrected)
+             0.80  (source: user_stated)
+             0.85  (source: corrected)
 
 Confirmation: +0.08 (user restates the fact)
 Correction:   -0.25 (user contradicts the fact, sharp penalty)

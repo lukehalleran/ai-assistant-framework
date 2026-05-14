@@ -26,12 +26,12 @@ The pipeline lives in `core/prompt/` and is orchestrated by
 
 | File | Purpose |
 |------|---------|
-| `core/prompt/builder.py` | Thin orchestrator (~1,583 lines): parallel task dispatch, intent overrides, budget, eval hooks. Delegates assembly to formatter and hygiene to ContentHygiene |
+| `core/prompt/builder.py` | Thin orchestrator (~1,624 lines): parallel task dispatch, intent overrides, budget, eval hooks. Delegates assembly to formatter and hygiene to ContentHygiene |
 | `core/prompt/context_gatherer.py` | Mixin compositor (~379 lines): init, properties, utilities. Composes WebSearchMixin + MemoryRetrievalMixin + KnowledgeRetrievalMixin |
 | `core/prompt/gatherer_web.py` | WebSearchMixin (~216 lines): `_get_web_search_results()`, `should_trigger_web_search()` |
 | `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin (~834 lines): 17 memory/summary/reflection/facts/profile retrieval methods |
-| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin (~963 lines): 16 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, semantic chunks, dreams, codebase) |
-| `core/prompt/formatter.py` | Section formatting + prompt assembly (~1,597 lines): `_assemble_prompt()` (737 lines), `_build_feature_inventory()`, `_staleness_prefix`, `_is_multimodal_model`, `_load_upload_image` |
+| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin (~1,169 lines): 16 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, semantic chunks, dreams, codebase) |
+| `core/prompt/formatter.py` | Section formatting + prompt assembly (~1,642 lines): `_assemble_prompt()` (~780 lines), `_build_feature_inventory()`, `_staleness_prefix`, `_is_multimodal_model`, `_load_upload_image` |
 | `core/prompt/hygiene.py` | ContentHygiene (~345 lines): `_hygiene_and_caps()`, `_backfill_recent_conversations()` |
 | `core/prompt/token_manager.py` | Budget computation, priority trimming, middle-out compression |
 
@@ -163,10 +163,10 @@ Model-aware = 25% of context window
 |----------|----------|
 | 10 | stm_summary (metadata, never trimmed) |
 | 9 | user_profile |
-| 8 | narrative_state (capped at 500 tokens) |
+| 8 | narrative_state (capped at 500 tokens), web_search_results |
 | 7 | recent_conversations, graph_context, unresolved_threads |
 | 6 | semantic_chunks, personal_notes, user_uploads |
-| 5 | reference_docs, memories, web_search_results |
+| 5 | reference_docs, memories |
 | 4 | procedural_skills, facts |
 | 3 | summaries, proposed_features, git_commits, proactive_insights |
 | 2 | reflections, dreams, codebase_changes |
@@ -318,10 +318,12 @@ If `query_analysis.is_small_talk = True`, returns minimal context:
 
 ```python
 # Token budget
-PROMPT_TOKEN_BUDGET_DEFAULT = 40000
+# Token budget (active values from config/app_config.py)
+PROMPT_TOKEN_BUDGET_DEFAULT = 15000
 PROMPT_TOKEN_BUDGET_LOCAL = 12000
 PROMPT_TOKEN_BUDGET_FLOOR = 8000
-PROMPT_TOKEN_BUDGET_CEILING = 60000
+PROMPT_TOKEN_BUDGET_CEILING = 16000
+# Note: builder.py import-failure fallbacks use 40000/60000
 
 # Retrieval limits
 PROMPT_MAX_RECENT = 15

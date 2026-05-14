@@ -46,11 +46,11 @@ All major feature systems are built. The focus now shifts to: making what exists
 - Target: clean `pyinstaller daemon.spec --clean --noconfirm` producing a working `dist/Daemon/Daemon`
 
 ### 3. Wizard Dual-Channel (User vs Dev)
-- **Status**: Complete — shipped with v1.0.0 (2026-04-08)
+- **Status**: Partial — user/dev routing shipped with v1.0.0 (2026-04-08), dev-channel features incomplete
 - **Why**: Current wizard (`gui/wizard.py`) is a single onboarding flow. Users and developers need different setup paths — users care about API keys, data paths, and persona; devs need repo config, model selection, debug toggles, and feature flags.
 - Split wizard into two channels selectable at launch: "I'm a user" vs "I'm a developer"
 - **User channel**: API key setup, data directory, persona/name, privacy overview, optional Obsidian vault path
-- **Dev channel**: All user steps plus: model provider selection, feature flag toggles (synthesis, graph walks, wiki enrichment, etc.), debug/logging level, benchmark suite intro, config.yaml deep-edit
+- **Dev channel** (planned, not yet implemented): All user steps plus: model provider selection, feature flag toggles (synthesis, graph walks, wiki enrichment, etc.), debug/logging level, benchmark suite intro, config.yaml deep-edit. Currently dev channel only adds E2B key setup.
 - Shared: both channels write to the same `config.yaml` — dev channel just exposes more knobs
 - Consider making dev channel accessible from GUI settings tab post-wizard (not just first-run)
 

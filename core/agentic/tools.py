@@ -902,7 +902,7 @@ Provide a focused summary with the most important information."""
                 n_results=AGENTIC_MEMORY_SEARCH_LIMIT,
             )
 
-            # For wiki_knowledge: always prefer FAISS semantic search (40M vectors)
+            # For wiki_knowledge: always prefer FAISS semantic search (41M vectors)
             # over ChromaDB which has sparse/irrelevant legacy data.
             if collection == "wiki_knowledge":
                 faiss_results = self._search_wiki_faiss(query, k=AGENTIC_MEMORY_SEARCH_LIMIT)
@@ -950,7 +950,7 @@ Provide a focused summary with the most important information."""
             return f"[Memory search error: {e}]"
 
     def _search_wiki_faiss(self, query: str, k: int = 8) -> list[dict]:
-        """Search the FAISS Wikipedia index (40M vectors) as fallback for wiki_knowledge."""
+        """Search the FAISS Wikipedia index (41M vectors) as fallback for wiki_knowledge."""
         try:
             from knowledge.semantic_search import semantic_search_with_neighbors
             return semantic_search_with_neighbors(query, k=k)

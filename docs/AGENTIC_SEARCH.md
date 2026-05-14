@@ -26,7 +26,7 @@ events to the UI in real time.
 | File | Purpose |
 |------|---------|
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics |
-| `core/agentic/tools.py` | ToolExecutor: dispatch routing + 12 execute methods (web, fetch-url, wolfram, memory, expand, files, git, sandbox, full-doc, recall-image) + `get_tool_health()` status summary |
+| `core/agentic/tools.py` | ToolExecutor: 12 dispatch methods + 10 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary |
 | `core/agentic/formatters.py` | AgenticFormatter: 18 pure formatting methods (context, results, prompts) |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing |
@@ -166,7 +166,7 @@ Valid collections: reference_docs, facts, conversations, summaries,
                    procedural, procedural_skills
 Diversity: Per-collection search counts tracked; hints injected after 2+ searches
 wiki_knowledge: ChromaDB is queried first (like all collections). Then FAISS
-                semantic search (40M Wikipedia vectors, ~2 GB IVFPQ index) is
+                semantic search (41M Wikipedia vectors, ~2 GB IVFPQ index) is
                 additionally attempted. If FAISS returns results, they are
                 preferred over the ChromaDB results. If FAISS is unavailable
                 or returns nothing, the ChromaDB results are used as fallback.
@@ -425,7 +425,7 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `retrieving_document` / `document_retrieved` | Full document retrieval |
 | `querying_git` / `git_stats_done` | Git stats |
 | `fetching_url` / `url_fetched` | URL content fetch |
-| `recalling_image` / `image_recalled` | Visual memory recall |
+| `recalling_image` / `recall_image_done` | Visual memory recall |
 | `synthesizing` | Starting final generation |
 | `done` | Session complete (suppressed in GUI after response starts) |
 | `error` | Error occurred |

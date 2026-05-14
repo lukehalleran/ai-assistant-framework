@@ -380,6 +380,8 @@ async def handle_submit(
 
     # Use merged_input (user text + file contents) so file content appears in the prompt.
     # Still pass files for context pipeline's file_context detection (has_files flag).
+    import time as _time_mod
+    _t_prepare_start = _time_mod.perf_counter()
     prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
         user_input=merged_input,
         files=files,
@@ -397,6 +399,7 @@ async def handle_submit(
             progress_idx += 1
 
     prep_result = await prepare_task
+    _t_prepare_elapsed = _time_mod.perf_counter() - _t_prepare_start
 
     # Unpack result - always expect 3 values now
     full_prompt, system_prompt, raw_context = prep_result
@@ -954,6 +957,19 @@ async def handle_submit(
                 except Exception as e:
                     logger.debug(f"[Handlers] Could not get agentic provenance: {e}")
 
+                # Collect timing data for agentic path
+                _agentic_phase = getattr(orchestrator, '_last_phase_timings', {})
+                _agentic_tasks = getattr(orchestrator, '_last_task_timings', {})
+                _agentic_gather = getattr(orchestrator, '_last_gather_elapsed', 0.0)
+                _agentic_handler_timings = {
+                    "prepare_prompt": round(_t_prepare_elapsed, 3),
+                    "agentic_loop": round(_time_mod.perf_counter() - _t_prepare_start - _t_prepare_elapsed, 3),
+                    "total_wall": round(_time_mod.perf_counter() - _t_prepare_start, 3),
+                }
+                if _agentic_phase:
+                    _agentic_handler_timings["context_pipeline"] = _agentic_phase.get("context_pipeline", 0.0)
+                    _agentic_handler_timings["prompt_build"] = _agentic_phase.get("prompt_build", 0.0)
+
                 debug_record = {
                     'mode': 'agentic-search',
                     'query': user_text,
@@ -967,6 +983,9 @@ async def handle_submit(
                     'citations': citations,
                     'citations_enabled': getattr(orchestrator, 'enable_citations', False),
                     'provenance': _agentic_prov,
+                    'phase_timings': _agentic_handler_timings,
+                    'task_timings': {k: round(v, 3) for k, v in _agentic_tasks.items()} if _agentic_tasks else {},
+                    'gather_elapsed': round(_agentic_gather, 3),
                 }
                 # Yield final response with debug record (response was already streamed
                 # chunk-by-chunk during the loop, so only one yield needed here)
@@ -1031,6 +1050,7 @@ async def handle_submit(
 
         # Streaming path (duel mode handled above, old best-of code removed)
         logger.info(f"[Handle Submit] >>> Starting streaming with model={model_name}")
+        _t_stream_start = _time_mod.perf_counter()
         thinking_started = False
         thinking_complete = False
         chunk_count = 0
@@ -1116,6 +1136,7 @@ async def handle_submit(
                 yield {"role": "assistant", "content": display_output}
 
         # After streaming completes, parse thinking block for logging and storage
+        _t_stream_elapsed = _time_mod.perf_counter() - _t_stream_start
         logger.info(f"[Handle Submit] <<< Streaming done, {chunk_count} chunks, output_len={len(final_output)}")
 
         # Handle empty response from API (model returned no content)
@@ -1441,6 +1462,20 @@ async def handle_submit(
                     _enh_prov["final_prompt_hash"] = _ap.get("final_prompt_hash", "")
             except Exception:
                 pass
+        # Collect timing data for interpretability
+        _phase_timings = getattr(orchestrator, '_last_phase_timings', {})
+        _task_timings = getattr(orchestrator, '_last_task_timings', {})
+        _gather_elapsed = getattr(orchestrator, '_last_gather_elapsed', 0.0)
+        _handler_timings = {
+            "prepare_prompt": round(_t_prepare_elapsed, 3),
+            "llm_streaming": round(_t_stream_elapsed, 3),
+            "total_wall": round(_t_prepare_elapsed + _t_stream_elapsed, 3),
+        }
+        # Merge orchestrator phase breakdown into handler timings
+        if _phase_timings:
+            _handler_timings["context_pipeline"] = _phase_timings.get("context_pipeline", 0.0)
+            _handler_timings["prompt_build"] = _phase_timings.get("prompt_build", 0.0)
+
         debug_record = {
             'mode': _enh_mode,
             'query': user_text,
@@ -1454,6 +1489,9 @@ async def handle_submit(
             'citations': citations,
             'citations_enabled': getattr(orchestrator, 'enable_citations', False),
             'provenance': _enh_prov,
+            'phase_timings': _handler_timings,
+            'task_timings': {k: round(v, 3) for k, v in _task_timings.items()} if _task_timings else {},
+            'gather_elapsed': round(_gather_elapsed, 3),
         }
         yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
         debug_emitted = True

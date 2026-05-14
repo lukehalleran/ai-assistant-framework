@@ -1,7 +1,7 @@
 """
 Canonical section registry for Daemon's prompt assembly.
 
-Built by inspecting core/prompt/builder.py:_assemble_prompt() (lines 1915-2552).
+Built by inspecting core/prompt/formatter.py:_assemble_prompt() (lines 862-1642).
 Each entry maps to exactly one sections.append() call in that method.
 
 The registry is the source of truth for:
@@ -48,7 +48,7 @@ class SectionDef:
 
 
 # ---------------------------------------------------------------------------
-# Canonical registry — order matches _assemble_prompt() in builder.py
+# Canonical registry — order matches _assemble_prompt() in formatter.py
 # ---------------------------------------------------------------------------
 
 SECTION_REGISTRY: Dict[str, SectionDef] = {}
