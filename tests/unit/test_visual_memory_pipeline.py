@@ -32,8 +32,17 @@ def _mock_store():
 
 
 def _mock_model_manager():
-    """Create a mock ModelManager with async generate_once."""
+    """Create a mock ModelManager with async generate_async."""
     mm = MagicMock()
+    # Track calls for assertion
+    mm._generate_async_calls = []
+
+    async def _fake_generate_async(*args, **kwargs):
+        mm._generate_async_calls.append({"args": args, "kwargs": kwargs})
+        async def _gen():
+            yield "A fluffy orange cat sitting on a windowsill."
+        return _gen()
+    mm.generate_async = _fake_generate_async
     mm.generate_once = AsyncMock(return_value="A fluffy orange cat sitting on a windowsill.")
     return mm
 
@@ -138,7 +147,7 @@ class TestCaptionGeneration:
         pipeline = VisualMemoryPipeline(_mock_clip(), store, model_manager=mm)
 
         await pipeline.ingest_image(img_path)
-        mm.generate_once.assert_called_once()
+        assert len(mm._generate_async_calls) == 1
 
         caption = store.add_image.call_args[1]["caption"]
         assert "fluffy orange cat" in caption
@@ -151,7 +160,7 @@ class TestCaptionGeneration:
 
         await pipeline.ingest_image(img_path, media_type="image/png")
 
-        call_kwargs = mm.generate_once.call_args[1]
+        call_kwargs = mm._generate_async_calls[0]["kwargs"]
         assert "images" in call_kwargs
         assert len(call_kwargs["images"]) == 1
         assert call_kwargs["images"][0]["media_type"] == "image/png"

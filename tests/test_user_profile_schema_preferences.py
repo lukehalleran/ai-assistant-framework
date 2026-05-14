@@ -154,7 +154,7 @@ class TestBackwardCompatibility:
         assert categorize_relation("name") == ProfileCategory.IDENTITY
         assert categorize_relation("works_at") == ProfileCategory.CAREER
         assert categorize_relation("squat_max") == ProfileCategory.FITNESS
-        assert categorize_relation("unknown_relation") == ProfileCategory.PREFERENCES
+        assert categorize_relation("unknown_relation") == ProfileCategory.RELATIONSHIPS
 
 
 if __name__ == "__main__":

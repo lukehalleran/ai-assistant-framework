@@ -161,21 +161,21 @@ is conditional — only emitted when its context field is non-empty.
 | 10 | `[DREAMS]` | `dreams` | retrieved |
 | 11 | `[USER'S PERSONAL NOTES]` | `personal_notes` | retrieved |
 | 12 | `[USER UPLOADED ITEMS]` | `user_uploads` | retrieved |
-| 13 | `[VISUAL MEMORIES]` | `visual_memories` | retrieved |
-| 14 | `[DAEMON DOCUMENTATION]` | `reference_docs` | retrieved |
-| 15 | `[PROJECT COMMIT HISTORY]` | `git_commits` | retrieved |
-| 16 | `[ADAPTIVE WORKFLOWS]` | `procedural_skills` | retrieved |
-| 17 | `[PROPOSED FEATURES]` | `proposed_features` | retrieved |
-| 18 | `[KNOWLEDGE GRAPH]` | `graph_context` | generated_context |
-| 19 | `[UNRESOLVED THREADS]` | `unresolved_threads` | generated_context |
-| 20 | `[PROACTIVE INSIGHTS]` | `proactive_insights` | generated_context |
-| 21 | `[USER PROFILE]` | `user_profile` | metadata |
-| 22 | `[ACTIVE FEATURES]` | (computed) | metadata |
-| 23 | `[CODEBASE CHANGES SINCE LAST SESSION]` | `codebase_changes` | metadata |
-| 24 | `[TIME CONTEXT]` | (computed) | structural |
-| 25 | `[TEMPORAL GROUNDING]` | `narrative_state` | generated_context |
-| 26 | `[SHORT-TERM CONTEXT SUMMARY]` | `stm_summary` | generated_context |
-| 27 | `[CURRENT USER QUERY]` | `user_input` | structural |
+| 13 | `[DAEMON DOCUMENTATION]` | `reference_docs` | retrieved |
+| 14 | `[PROJECT COMMIT HISTORY]` | `git_commits` | retrieved |
+| 15 | `[ADAPTIVE WORKFLOWS]` | `procedural_skills` | retrieved |
+| 16 | `[PROPOSED FEATURES]` | `proposed_features` | retrieved |
+| 17 | `[KNOWLEDGE GRAPH]` | `graph_context` | generated_context |
+| 18 | `[UNRESOLVED THREADS]` | `unresolved_threads` | generated_context |
+| 19 | `[PROACTIVE INSIGHTS]` | `proactive_insights` | generated_context |
+| 20 | `[USER PROFILE]` | `user_profile` | metadata |
+| 21 | `[ACTIVE FEATURES]` | (computed) | metadata |
+| 22 | `[CODEBASE CHANGES SINCE LAST SESSION]` | `codebase_changes` | metadata |
+| 23 | `[TIME CONTEXT]` | (computed) | structural |
+| 24 | `[TEMPORAL GROUNDING]` | `narrative_state` | generated_context |
+| 25 | `[SHORT-TERM CONTEXT SUMMARY]` | `stm_summary` | generated_context |
+| 26 | `[CURRENT USER QUERY]` | `user_input` | structural |
+| 27 | `[VISUAL MEMORIES]` | `visual_memories` | retrieved |
 
 Sections are joined with `"\n\n"`. Each section starts with its header and `n=` count.
 

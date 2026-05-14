@@ -1326,6 +1326,11 @@ class UnifiedPromptBuilder:
             logger.info(f"Prompt built in {build_time:.2f}s")
             logger.warning(f"RETURNING CONTEXT: memories count = {len(prompt_ctx.get('memories', []))}")
 
+            # Attach timing metadata for interpretability (underscore-prefixed to avoid collision)
+            prompt_ctx["_task_timings"] = dict(task_timings)
+            prompt_ctx["_gather_elapsed"] = locals().get('_gather_elapsed', 0.0)
+            prompt_ctx["_build_time"] = build_time
+
             return prompt_ctx
 
         except Exception as e:

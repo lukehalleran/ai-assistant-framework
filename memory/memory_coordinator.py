@@ -549,3 +549,54 @@ class MemoryCoordinator:
         except Exception as e:
             logger.debug(f"[MemoryCoordinator] get_unresolved_threads failed: {e}")
             return []
+
+    # ---------------------------
+    # Delegation methods for sub-components
+    # ---------------------------
+
+    def _parse_result(self, item: Dict, source: str, default_truth: float = 0.6) -> Dict:
+        """Delegates to MemoryRetriever."""
+        return self._retriever._parse_result(item, source, default_truth)
+
+    def _rank_memories(self, memories: List[Dict], current_query: str,
+                       current_topic: Optional[str] = None,
+                       is_meta_conversational: bool = False,
+                       weight_overrides: Optional[Dict] = None) -> List[Dict]:
+        """Delegates to MemoryScorer."""
+        return self.scorer.rank_memories(
+            memories, current_query, current_topic,
+            is_meta_conversational, weight_overrides,
+        )
+
+    async def add_reflection(self, text: str, **kwargs) -> bool:
+        """Delegates to MemoryStorage."""
+        return await self._storage.add_reflection(text, **kwargs)
+
+    def get_thread_context(self) -> Optional[Dict]:
+        """Delegates to ThreadManager."""
+        return self.thread_manager.get_thread_context()
+
+    def _detect_or_create_thread(self, query: str, is_heavy: bool) -> Dict:
+        """Delegates to ThreadManager."""
+        return self.thread_manager.detect_or_create_thread(query, is_heavy)
+
+    async def get_semantic_top_memories(self, query: str, limit: int = 10) -> List[Dict]:
+        """Delegates to MemoryRetriever."""
+        return await self._retriever.get_semantic_top_memories(query, limit)
+
+    async def search_by_type(self, type_name: str, query: str = "", limit: int = 5) -> List[Dict]:
+        """Delegates to MemoryRetriever."""
+        return await self._retriever.search_by_type(type_name, query, limit)
+
+    def _get_recent_conversations(self, k: int = 5) -> List[Dict]:
+        """Delegates to MemoryRetriever."""
+        return self._retriever._get_recent_conversations(k)
+
+    async def _get_semantic_memories(self, query: str, n_results: int = 30) -> List[Dict]:
+        """Delegates to MemoryRetriever."""
+        return await self._retriever._get_semantic_memories(query, n_results)
+
+    async def _get_meta_conversational_memories(self, query: str, limit: int = 20,
+                                                 topic_filter: Optional[str] = None) -> List[Dict]:
+        """Delegates to MemoryRetriever."""
+        return await self._retriever._get_meta_conversational_memories(query, limit, topic_filter)

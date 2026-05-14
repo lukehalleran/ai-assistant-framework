@@ -271,7 +271,7 @@ orchestrator:
 |------|-----------|----------|
 | **Raw** | User toggled raw mode | Skip memory, go straight to LLM |
 | **Duel** | `BEST_OF_DUEL_MODE` + 2 generators + 1 judge | Two models generate in parallel, judge picks winner |
-| **Agentic** | 3-tier gate triggers | ReAct loop with web search, code sandbox, memory search |
+| **Agentic** | 4-tier gate triggers | ReAct loop with web search, code sandbox, memory search |
 | **Enhanced** | Default | Full retrieval pipeline + streaming generation |
 
 The agentic gate runs before enhanced mode. If any of the three tiers
@@ -988,7 +988,7 @@ When a query needs more than stored memory — real-time information,
 computation, or deeper memory exploration — Daemon enters a multi-round
 ReAct (Reason + Act) loop.
 
-### Triggering: 3-Tier Gate
+### Triggering: 4-Tier Gate
 
 The agentic gate in `gui/handlers.py` decides whether to enter the loop:
 
@@ -998,6 +998,8 @@ The agentic gate in `gui/handlers.py` decides whether to enter the loop:
    "search for", "search online", "look up"). URL detection
    (`http://`/`https://`) also triggers agentic mode. Explicit search
    keywords bypass intent veto.
+1b. **Knowledge keywords** (instant, added 2026-03-31) — Domain-specific
+   keywords for reference docs and knowledge base queries.
 2. **Entity match** (instant) — Query terms checked against knowledge
    graph alias index. Mentions of known entities (Flapjack, Auggie, etc.)
    auto-route to agentic memory search

@@ -150,14 +150,14 @@ sigma_iota(d, x) = SUM_i w_i(iota) * f_i(d, x)  +  SUM_j b_j(d, x, G)  +  SUM_k 
 
 | Factor f_i | Default weight | Definition |
 |-----------|---------------|------------|
-| relevance(d, x) + collection_boost | 0.35 | Embedding similarity + per-collection bonus (config.yaml active values: facts +0.10, summaries +0.10, conversations +0.30, semantic +0.05, wiki +0.05) |
+| relevance(d, x) + collection_boost | 0.35 | Embedding similarity + per-collection bonus (config.yaml active values: facts +0.15, summaries +0.10, conversations +0.00, semantic +0.05, wiki +0.05) |
 | recency(d) | 0.25 | Time decay (see temporal curves below) |
 | truth(d) | 0.20 | Evidence-based reliability via TruthScorer.compute_effective_truth() (see truth decay below) |
 | importance(d) | 0.05 | Content-based importance in [0,1] |
 | continuity(d, Theta) | 0.10 | Stemmed token overlap + recency bonus + tag-keyword bonus (see continuity formula below) |
 | topic_match(d, x) | 0.00 | Disabled by default. 1.0 (exact) / 0.5 (neutral) / 0.2 (different) |
 
-**Structure score** (direct additive bonus, not in weight dict):
+**Structure score** (direct additive bonus, not multiplied by the weight dict; note: `SCORE_WEIGHTS` in `app_config.py` contains a legacy `"structure": 0.05` entry but `rank_memories()` does not use it — the structure term is added directly):
 
 ```
 structure = 0.15 * density_alignment
@@ -193,7 +193,7 @@ Small anchor (alpha <= 48h, e.g. "today"/"yesterday"):
     { 0.85 / (1 + lambda*(age - alpha))                  if age > alpha    (steep dropoff outside window)
 
 Large anchor (alpha > 48h, e.g. "last week"/"last month"):
-  floor = max(0.45, 1.0 - alpha/300)
+  floor = max(0.60, 1.0 - alpha/500)
   recency(d) =
     { floor + (1.0 - floor) * (age/alpha)                if age <= alpha   (ramp up toward anchor)
     { 1.0 / (1 + lambda*(age - alpha))                   if age > alpha    (standard decay)

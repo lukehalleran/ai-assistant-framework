@@ -5,7 +5,7 @@
 ## Overview
 Two-step generation where the LLM provides internal reasoning before delivering the final answer. The thinking block is logged for debugging but only the final answer is shown to users and stored in memory.
 
-Three layers of thinking separation exist (defense in depth):
+Three core layers of thinking separation exist, plus four operational layers (defense in depth, 7 total — see table below):
 1. **Native API reasoning** — for Claude/DeepSeek-R1, thinking is separated at the OpenRouter API level via `extra_body={"reasoning": {"effort": "medium"}}`. Thinking arrives in `delta.reasoning_content`, not in the text response.
 2. **Tag-based parsing** — `<thinking>`/`<think>`/`<output>` tags parsed by `ResponseParser.parse_thinking_block()`
 3. **Heuristic fallback** — `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning patterns, instruction echoes)
@@ -214,7 +214,7 @@ The answer to 2 + 2 is 4.
 | Heuristic | `_detect_untagged_thinking()` | Models that ignore tag instruction and dump reasoning as plain text |
 | Sentence | `_count_sentence_pattern_hits()` | Single-paragraph chain-of-thought without blank-line breaks |
 | Agentic | `_detect_untagged_thinking()` on final output | Thinking leak in agentic path final generation |
-| Streaming | `_strip_leaked_xml_markers()` + stuck recovery | XML marker fragments and stuck thinking state after streaming ends |
+| Streaming | `strip_thinking_tag_leaks()` + stuck recovery | XML marker fragments and stuck thinking state after streaming ends |
 | Cleanup | `strip_thinking_tag_leaks()` | Partial/malformed tags (e.g., `/think>`, `<|think|>`) |
 
 ## Backward Compatibility

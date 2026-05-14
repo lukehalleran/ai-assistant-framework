@@ -87,7 +87,7 @@ class TestExtractAndStore:
                 "thread_type": "deadline",
                 "urgency": 0.8,
                 "resolution_hint": "User confirms they studied",
-                "deadline_date": "2026-03-31",
+                "deadline_date": "2027-03-31",
             },
             {
                 "topic": "Call doctor",
@@ -237,7 +237,7 @@ class TestPromptAssembly:
                     "thread_type": "deadline",
                     "topic": "Study for exam",
                     "summary": "User needs to study for exam next Tuesday",
-                    "deadline_date": "2026-03-31",
+                    "deadline_date": "2027-03-31",
                     "urgency": 0.8,
                 },
                 {

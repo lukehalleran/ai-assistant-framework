@@ -814,12 +814,12 @@ class TestEphemeralSkip:
                     "subject": "user", "predicate": "emotional_state",
                     "object": "calm", "timestamp": "2026-02-13T00:00:00",
                 }),
-                _make_doc("f3", "user sleep_condition poor last night", "facts", {
-                    "subject": "user", "predicate": "sleep_condition",
+                _make_doc("f3", "user current_feeling poor last night", "facts", {
+                    "subject": "user", "predicate": "current_feeling",
                     "object": "poor", "timestamp": "2026-02-12T00:00:00",
                 }),
-                _make_doc("f4", "user sleep_condition good tonight", "facts", {
-                    "subject": "user", "predicate": "sleep_condition",
+                _make_doc("f4", "user current_feeling good tonight", "facts", {
+                    "subject": "user", "predicate": "current_feeling",
                     "object": "good", "timestamp": "2026-02-13T00:00:00",
                 }),
             ],

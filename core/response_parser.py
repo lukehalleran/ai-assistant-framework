@@ -95,7 +95,6 @@ class ResponseParser:
         return cleaned.lstrip('\n').strip() if cleaned != text else text
 
     @staticmethod
-    @staticmethod
     def _count_sentence_pattern_hits(text: str) -> int:
         """Count distinct sentence-level thinking patterns in text (no line anchoring)."""
         hits = set()
