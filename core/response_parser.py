@@ -27,7 +27,10 @@ Module Contract:
 """
 
 import re
+import logging
 from typing import Tuple
+
+logger = logging.getLogger("response_parser")
 
 
 class ResponseParser:
@@ -147,7 +150,6 @@ class ResponseParser:
                     if first_hit_line < 0:
                         first_hit_line = i
                     last_hit_line = i
-                    break  # one pattern per line is enough
 
         # Also try sentence-level patterns on the full text
         if len(hit_patterns) < ResponseParser._HEURISTIC_MIN_HITS:
@@ -170,11 +172,12 @@ class ResponseParser:
                 break
             split_line = i + 1
 
-        # Require that the remaining answer is at least 20 chars
-        # (guard against stripping the entire response)
+        # Require that the remaining answer is at least 20 chars.
+        # If answer is too short but patterns were strong, treat as all-thinking.
         answer = '\n'.join(lines[split_line:]).strip()
         if len(answer) < 20:
-            return "", ""
+            # Entire response is thinking (no real answer follows)
+            return response.strip(), ""
 
         thinking = '\n'.join(lines[first_hit_line:split_line]).strip()
         return thinking, answer
@@ -194,7 +197,7 @@ class ResponseParser:
     # LINE-ANCHORED: require (?:^|\n) — for multi-line text
     _THINKING_HEURISTIC_PATTERNS = [
         # Meta-reasoning about what to do / how to respond
-        re.compile(r"(?:^|\n)\s*(?:I should |I need to |Let me think|Let me (?:consider|check|look|fire|try)|I'll )", re.IGNORECASE),
+        re.compile(r"(?:^|\n)\s*(?:I should |I need to |Let me think|Let me (?:consider|check|look|fire|try|search|pull|gather|find|get|figure)|I'll )", re.IGNORECASE),
         # Third-person references to the user in internal reasoning
         re.compile(r"(?:^|\n)\s*(?:He'?s (?:saying|clarifying|asking|telling)|She'?s (?:saying|clarifying|asking|telling)|They'?re (?:saying|clarifying|asking|telling)|The user is |The user (?:wants|asked|said|seems))", re.IGNORECASE),
         # Planning / strategy language
@@ -209,6 +212,8 @@ class ResponseParser:
         re.compile(r"(?:^|\n)\s*(?:(?:so )?(?:this time )?I should (?:actually )?invoke|(?:so )?I should (?:actually )?(?:use|call|fire|invoke)|the (?:tool|query) (?:that |which )?(?:worked|didn't|wasn't))", re.IGNORECASE),
         # Referring to "the previous attempt/response/search"
         re.compile(r"(?:in|from) the previous (?:attempt|response|search|try|query)", re.IGNORECASE),
+        # Self-referential: "I suggested" / "I mentioned" (reasoning about own prior output)
+        re.compile(r"(?:^|\n)\s*(?:This is the .{5,30}query I (?:suggested|mentioned|recommended)|I (?:suggested|mentioned|recommended) (?:earlier|before|previously))", re.IGNORECASE),
     ]
 
     # SENTENCE-LEVEL: no line-anchor — catches thinking dumped as a single paragraph.
@@ -217,11 +222,11 @@ class ResponseParser:
         # Third-person user references mid-sentence
         re.compile(r"(?:The user (?:wants|asked|said|seems|is asking|is telling)|He'?s (?:saying|clarifying|asking|telling)|She'?s (?:saying|clarifying|asking|telling))", re.IGNORECASE),
         # Meta-reasoning about tools / strategy
-        re.compile(r"(?:I should (?:actually )?(?:invoke|use|call|fire|try)|Let me (?:fire|try|invoke|use))", re.IGNORECASE),
+        re.compile(r"(?:I should (?:actually )?(?:invoke|use|call|fire|try)|Let me (?:fire|try|invoke|use|search|pull|gather|find|get|figure))", re.IGNORECASE),
         # Referring to previous attempts
         re.compile(r"(?:in the previous (?:attempt|response|search|try|query)|(?:the tool|the query) (?:that |which )?(?:worked|didn't|wasn't))", re.IGNORECASE),
         # Internal planning language not addressed to user
-        re.compile(r"(?:this time I should|so I should|I need to (?:adjust|fix|change|rethink))", re.IGNORECASE),
+        re.compile(r"(?:this time I should|so I should|I need to (?:adjust|fix|change|rethink|gather|find|search|pull|get|figure))", re.IGNORECASE),
     ]
     _HEURISTIC_MIN_HITS = 2  # need at least 2 distinct patterns to trigger
 
@@ -309,6 +314,13 @@ class ResponseParser:
         thinking, answer = ResponseParser._detect_untagged_thinking(response)
         if thinking and answer:
             return thinking, ResponseParser.strip_thinking_tag_leaks(answer)
+        if thinking and not answer:
+            # Entire response is thinking with no actual answer — don't leak it.
+            logger.warning(
+                f"[ResponseParser] Entire response detected as thinking "
+                f"({len(thinking)} chars), no answer found — suppressing"
+            )
+            return thinking, ""
 
         # Nothing detected — strip any leaked partial tags
         cleaned = ResponseParser.strip_thinking_tag_leaks(response)

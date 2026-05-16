@@ -1833,7 +1833,7 @@ Secure Python execution in ephemeral Firecracker microVMs:
 6.5M+ articles (40M+ vectors) semantically indexed with FAISS:
 
 - Pipeline: download dump → parse XML → chunk (512 tokens) →
-  embed (all-MiniLM-L6-v2) → build FAISS IVFPQ index
+  embed (BAAI/bge-small-en-v1.5) → build FAISS IVFPQ index
 - IVFPQ compression: 48 subquantizers × 8 bits = 48 bytes/vector
   (~32x reduction from 1536-byte float32), index fits in ~2 GB RAM
 - Zero-copy metadata: parquet file read on-demand per query via
@@ -2102,7 +2102,7 @@ Key test counts by subsystem:
 - **30 seed memories** with realistic content (fitness PRs, relationships,
   project notes, emotional conversations)
 - **19 test cases** across all 9 intent types
-- **Real embeddings** via all-MiniLM-L6-v2 (not mocks)
+- **Real embeddings** via BAAI/bge-small-en-v1.5 (not mocks)
 - **Metrics**: recall@K and Mean Reciprocal Rank (MRR)
 - **Runtime**: ~5 seconds
 
@@ -2304,7 +2304,7 @@ Arrows indicate "calls" or "data flows to."
   thinking blocks (Claude, DeepSeek-R1). Used by generate_async/generate_once
   to enable native reasoning, and by orchestrator to skip prompt-based
   thinking instruction.
-- `get_embedder()` — Cached SentenceTransformer singleton (all-MiniLM-L6-v2).
+- `get_embedder()` — Cached SentenceTransformer singleton (BAAI/bge-small-en-v1.5).
 
 ### Error Classification
 
@@ -2374,7 +2374,7 @@ are preserved for temporal history.
 
 `categorize_relation()` uses a 6-layer cascade: direct lookup (~100
 entries), prefix lookup (~60 entries), persistent cache, token overlap
-(~30 category keyword sets), embedding similarity (all-MiniLM-L6-v2,
+(~30 category keyword sets), embedding similarity (BAAI/bge-small-en-v1.5,
 threshold 0.40), default to PREFERENCES. Ephemeral detection uses
 config list + exact-match set + prefix patterns (`scheduled_`,
 `signed_up_`, `meeting_with_`, etc.) + suffix patterns (`_appointment`,
