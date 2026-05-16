@@ -144,3 +144,61 @@ class TestBenchmarkStructure:
                     f"Case {case['id']}: must_not_retrieve references "
                     f"unknown seed ID '{ref_id}'"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Real-data benchmark tests (sampled from production ChromaDB)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.benchmark
+class TestRealDataRetrievalQuality:
+    """Retrieval quality benchmarks using real sampled data."""
+
+    @pytest.mark.parametrize("case_index", range(100))
+    async def test_real_data_case(self, real_retrieval_env, real_benchmark_config, case_index):
+        """Run a single real-data benchmark case."""
+        test_cases = real_benchmark_config["test_cases"]
+        if case_index >= len(test_cases):
+            pytest.skip(f"Case index {case_index} exceeds {len(test_cases)} cases")
+
+        test_case = test_cases[case_index]
+        case_id = test_case["id"]
+
+        harness = RetrievalBenchmark(
+            retriever=real_retrieval_env["retriever"],
+            scorer=real_retrieval_env["scorer"],
+            intent_classifier=real_retrieval_env["intent_classifier"],
+            seed_memories=real_retrieval_env["seed_memories"],
+        )
+
+        result = await harness.run_case(test_case)
+        record_benchmark_result(result.to_dict())
+
+        if not result.passed:
+            details = "; ".join(result.failure_reasons)
+            pytest.fail(
+                f"[{case_id}] {details}\n"
+                f"  Retrieved: {result.retrieved_ids}\n"
+                f"  Intent: {result.intent_actual} "
+                f"(conf={result.intent_confidence:.2f})"
+            )
+
+
+@pytest.mark.benchmark
+class TestRealDataStructure:
+    """Validate real-data benchmark infrastructure."""
+
+    def test_seed_memories_loaded(self, real_retrieval_env):
+        """Verify real-data seeds were loaded."""
+        seed_count = len(real_retrieval_env["seed_memories"])
+        assert seed_count >= 20, f"Expected >= 20 seeds, got {seed_count}"
+
+    def test_must_retrieve_references_valid(self, real_benchmark_config):
+        """Verify must_retrieve IDs reference actual seed memories."""
+        seed_ids = {m["id"] for m in real_benchmark_config["seed_memories"]}
+        for case in real_benchmark_config["test_cases"]:
+            for ref_id in (case.get("must_retrieve") or []):
+                assert ref_id in seed_ids, (
+                    f"Case {case['id']}: must_retrieve references "
+                    f"unknown seed ID '{ref_id}'"
+                )

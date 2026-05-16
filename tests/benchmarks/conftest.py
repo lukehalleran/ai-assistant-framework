@@ -186,6 +186,134 @@ def retrieval_env(seeded_stores, reference_time, benchmark_config):
 
 
 # ---------------------------------------------------------------------------
+# Real-data benchmark fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def real_benchmark_config():
+    """Load real-data benchmark YAML (sampled from production ChromaDB)."""
+    yaml_path = Path(__file__).parent.parent / "fixtures" / "retrieval_benchmarks_real.yaml"
+    if not yaml_path.exists():
+        pytest.skip("Real-data benchmark YAML not found — run scripts/sample_real_benchmark.py first")
+    with open(yaml_path, "r") as f:
+        return yaml.safe_load(f)
+
+
+@pytest.fixture(scope="session")
+def real_reference_time():
+    """Reference time for real-data benchmarks."""
+    return datetime(2026, 5, 15, 12, 0, 0)
+
+
+@pytest.fixture(scope="session")
+def real_seeded_stores(real_benchmark_config, real_reference_time, tmp_path_factory):
+    """Seed ChromaDB with real sampled memories."""
+    from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+    from memory.corpus_manager import CorpusManager
+    from memory.memory_storage import _clean_reflection_for_embedding
+
+    chroma_dir = str(tmp_path_factory.mktemp("chroma_real"))
+    corpus_dir = tmp_path_factory.mktemp("corpus_real")
+    corpus_file = str(corpus_dir / "corpus_real.json")
+
+    chroma_store = MultiCollectionChromaStore(persist_directory=chroma_dir)
+    corpus_mgr = CorpusManager(corpus_file=corpus_file)
+
+    seed_memories = real_benchmark_config["seed_memories"]
+    id_mapping: Dict[str, str] = {}
+
+    for mem in seed_memories:
+        abs_ts = real_reference_time + timedelta(hours=mem["timestamp_offset_hours"])
+        ts_iso = abs_ts.isoformat()
+
+        if mem.get("query") and mem.get("response"):
+            chroma_content = f"User: {mem['query']}\nAssistant: {mem['response']}"
+        else:
+            chroma_content = mem.get("content", "")
+
+        # Clean reflection text for embedding (strip boilerplate headers)
+        if mem["collection"] == "reflections":
+            chroma_content = _clean_reflection_for_embedding(chroma_content)
+
+        metadata = {
+            "timestamp": ts_iso,
+            "truth_score": float(mem.get("truth_score", 0.6)),
+            "importance_score": float(mem.get("importance_score", 0.5)),
+            "tags": mem.get("tags", ""),
+            "benchmark_id": mem["id"],
+            "type": mem.get("memory_type", "episodic"),
+        }
+
+        if mem.get("query"):
+            metadata["query"] = mem["query"]
+        if mem.get("response"):
+            metadata["response"] = mem["response"]
+
+        doc_id = chroma_store.add_to_collection(
+            mem["collection"],
+            chroma_content,
+            metadata,
+        )
+        id_mapping[mem["id"]] = doc_id
+
+        if mem.get("also_in_corpus") and mem.get("query") and mem.get("response"):
+            corpus_mgr.add_entry(
+                query=mem["query"],
+                response=mem["response"],
+                tags=(mem.get("tags", "").split(",") if mem.get("tags") else []),
+                timestamp=abs_ts,
+            )
+
+    return {
+        "chroma_store": chroma_store,
+        "corpus_manager": corpus_mgr,
+        "id_mapping": id_mapping,
+        "seed_memories": seed_memories,
+    }
+
+
+@pytest.fixture(scope="session")
+def real_retrieval_env(real_seeded_stores, real_reference_time, real_benchmark_config):
+    """Retrieval environment wired with real sampled data."""
+    from memory.memory_retriever import MemoryRetriever
+    from memory.memory_scorer import MemoryScorer
+    from core.intent_classifier import IntentClassifier
+
+    chroma_store = real_seeded_stores["chroma_store"]
+    corpus_mgr = real_seeded_stores["corpus_manager"]
+
+    time_mgr = MockTimeManager(real_reference_time)
+
+    scorer = MemoryScorer(
+        time_manager=time_mgr,
+        conversation_context=deque(maxlen=50),
+    )
+
+    retriever = MemoryRetriever(
+        corpus_manager=corpus_mgr,
+        chroma_store=chroma_store,
+        gate_system=None,
+        scorer=scorer,
+        hybrid_retriever=None,
+        time_manager=time_mgr,
+    )
+
+    intent_classifier = IntentClassifier()
+
+    return {
+        "retriever": retriever,
+        "scorer": scorer,
+        "intent_classifier": intent_classifier,
+        "chroma_store": chroma_store,
+        "corpus_manager": corpus_mgr,
+        "id_mapping": real_seeded_stores["id_mapping"],
+        "seed_memories": real_seeded_stores["seed_memories"],
+        "test_cases": real_benchmark_config["test_cases"],
+        "reference_time": real_reference_time,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Session summary hook
 # ---------------------------------------------------------------------------
 

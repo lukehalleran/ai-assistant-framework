@@ -7,7 +7,7 @@ Module Contract
   - MemoryRetriever(corpus_manager, chroma_store, gate_system, scorer, hybrid_retriever, time_manager)
   - get_memories(query, limit, topic_filter) -> List[Dict]  [main pipeline]
   - get_semantic_top_memories(query, limit) -> List[Dict]  [gated semantic across collections]
-  - get_facts(query, limit) -> List[Dict]  [semantic + recency-ranked facts]
+  - get_facts(query, limit) -> List[Dict]  [semantic-primary ranked facts with confidence/recency tiebreak]
   - get_recent_facts(limit) -> List[Dict]
   - get_reflections(limit) -> List[Dict]  [corpus-first, semantic fallback]
   - get_reflections_hybrid(query, limit) -> List[Dict]  [n/3 recent + 2n/3 semantic]
@@ -302,7 +302,12 @@ class MemoryRetriever:
             return []
 
     async def get_facts(self, query: str, limit: int = 8) -> List[Dict]:
-        """Retrieve semantic facts relevant to query."""
+        """Retrieve semantic facts relevant to query.
+
+        Scoring: semantic relevance (from ChromaDB) is the primary signal.
+        Confidence and recency are secondary factors that break ties, not
+        override semantic ordering.
+        """
         results: List[Dict] = []
         try:
             coll = self.chroma_store.collections.get("facts")
@@ -312,7 +317,7 @@ class MemoryRetriever:
                 raw = self.chroma_store.query_collection(
                     "facts",
                     query_text=query or "",
-                    n_results=min(max(1, limit), coll.count()),
+                    n_results=min(max(1, limit * 2), coll.count()),
                 ) or []
 
                 if not isinstance(raw, list):
@@ -329,6 +334,7 @@ class MemoryRetriever:
                         "id": item.get("id"),
                         "content": content,
                         "confidence": float(meta.get("confidence", 0.6)),
+                        "relevance_score": float(item.get("relevance_score") or 0.0),
                         "source": meta.get("source", "facts"),
                         "timestamp": meta.get("timestamp"),
                         "tags": meta.get("tags", []),
@@ -346,6 +352,7 @@ class MemoryRetriever:
                         "id": item.get("id"),
                         "content": content,
                         "confidence": float(meta.get("confidence", 0.6)),
+                        "relevance_score": 0.0,
                         "source": meta.get("source", "facts"),
                         "timestamp": meta.get("timestamp"),
                         "metadata": meta,
@@ -354,19 +361,47 @@ class MemoryRetriever:
         except Exception as e:
             logger.debug(f"[Facts] retrieval error: {e}", exc_info=True)
 
-        # Rank by confidence + light recency
+        # Rank with semantic relevance as primary signal.
+        # Old formula: 0.7*confidence + 0.3*recency (destroyed semantic order)
+        # New formula: 0.60*semantic + 0.20*confidence + 0.20*recency
+        # Semantic floor: if relevance < 0.30, cap recency contribution at 0.05
+        # so irrelevant-but-recent facts can't dominate.
+        _SEMANTIC_FLOOR = 0.30
+        _W_SEMANTIC = 0.60
+        _W_CONFIDENCE = 0.20
+        _W_RECENCY = 0.20
+
         def _score(x: Dict) -> float:
+            sem = float(x.get("relevance_score", 0.0))
+
             ts = x.get("timestamp")
-            rec = 1.0
+            rec = 0.5  # neutral default
             try:
                 if isinstance(ts, str):
                     ts = datetime.fromisoformat(ts)
                 if ts:
-                    age_h = (datetime.now() - ts).total_seconds() / 3600.0
-                    rec = 1.0 / (1.0 + 0.05 * max(0.0, age_h))
-            except (ValueError, TypeError, AttributeError) as e:
-                logger.debug(f"[MemoryRetriever] Recency scoring failed for timestamp '{ts}': {e}")
-            return 0.7 * float(x.get("confidence", 0.6)) + 0.3 * rec
+                    now = datetime.now()
+                    # Strip timezone if present to avoid naive/aware mismatch
+                    if hasattr(ts, 'tzinfo') and ts.tzinfo is not None:
+                        ts = ts.replace(tzinfo=None)
+                    age_h = max(0.0, (now - ts).total_seconds() / 3600.0)
+                    rec = 1.0 / (1.0 + 0.05 * age_h)
+            except (ValueError, TypeError, AttributeError):
+                pass
+
+            conf = float(x.get("confidence", 0.6))
+
+            # Semantic floor: if relevance is too low, recency can't rescue
+            if sem < _SEMANTIC_FLOOR:
+                rec_weight = 0.05
+            else:
+                rec_weight = _W_RECENCY
+
+            return (
+                _W_SEMANTIC * sem
+                + _W_CONFIDENCE * conf
+                + rec_weight * rec
+            )
 
         results.sort(key=_score, reverse=True)
         return results[:limit]

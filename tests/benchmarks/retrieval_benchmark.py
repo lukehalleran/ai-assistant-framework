@@ -53,26 +53,53 @@ class BenchmarkResult:
         }
 
 
+def _normalize_content(text: str) -> str:
+    """Normalize content for comparison: lowercase, collapse whitespace."""
+    import re
+    return re.sub(r'\s+', ' ', text.lower().strip())
+
+
+def _content_hash(text: str) -> str:
+    """Stable hash of normalized content."""
+    import hashlib
+    return hashlib.sha256(_normalize_content(text).encode()).hexdigest()[:16]
+
+
 def _identify_memory(memory: Dict, seed_memories: List[Dict]) -> Optional[str]:
     """
-    Map a returned memory to its seed memory ID using benchmark_id metadata
-    or marker substring matching.
+    Map a returned memory to its seed memory ID.
+
+    Match order (most to least reliable):
+      1. benchmark_id in metadata (ChromaDB entries that preserve metadata)
+      2. content_hash match (stable across retrieval methods that strip metadata)
+      3. marker substring (corpus entries that embed content differently)
     """
-    # Try metadata benchmark_id first (ChromaDB entries)
-    bid = (memory.get("metadata") or {}).get("benchmark_id")
+    meta = memory.get("metadata") or {}
+
+    # 1. Metadata benchmark_id (most reliable — set at seed time)
+    bid = meta.get("benchmark_id")
     if bid:
         return bid
 
-    # Fall back to marker substring matching (corpus entries)
+    # 2. Content hash match (works even when metadata is stripped)
+    mem_content = memory.get("content", "")
+    if mem_content:
+        mem_hash = _content_hash(mem_content)
+        for seed in seed_memories:
+            seed_hash = seed.get("content_hash", "")
+            if seed_hash and seed_hash == mem_hash:
+                return seed["id"]
+
+    # 3. Marker substring match (fallback for corpus entries)
     text = " ".join([
-        memory.get("content", ""),
+        mem_content,
         memory.get("query", ""),
         memory.get("response", ""),
     ]).lower()
 
     for seed in seed_memories:
         marker = seed.get("marker", "")
-        if marker and marker.lower() in text:
+        if marker and len(marker) > 5 and marker.lower() in text:
             return seed["id"]
 
     return None
@@ -107,10 +134,25 @@ class RetrievalBenchmark:
         self.scorer._intent_weight_overrides = intent_result.weight_overrides or None
         try:
             # 3. Run retrieval through the real pipeline
-            memories = await self.retriever.get_memories(
-                query=query,
-                limit=top_k,
-            )
+            #    Use retrieval_method to route to the correct retriever method
+            method = test_case.get("retrieval_method", "get_memories")
+            if method == "get_facts":
+                memories = await self.retriever.get_facts(
+                    query=query, limit=top_k,
+                )
+            elif method == "get_summaries_hybrid":
+                memories = self.retriever.get_summaries_hybrid(
+                    query=query, limit=top_k,
+                )
+            elif method == "get_reflections_hybrid":
+                memories = await self.retriever.get_reflections_hybrid(
+                    query=query, limit=top_k,
+                )
+            else:
+                memories = await self.retriever.get_memories(
+                    query=query,
+                    limit=top_k,
+                )
         finally:
             # 4. Always clear weight overrides
             self.scorer._intent_weight_overrides = None

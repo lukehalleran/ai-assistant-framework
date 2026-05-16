@@ -13,7 +13,7 @@ temporal_recent_today,temporal_recall,True,1.0,0.5,1.0,1.0,"[2, 1]","['mem_conv_
 temporal_last_week,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_sum_week1', 'mem_conv_diet_change', 'mem_conv_weather', 'mem_conv_anxiety', 'mem_conv_weekend']",True
 temporal_yesterday_events,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_yesterday_meeting', 'mem_sum_recent', 'mem_conv_dog_vet', 'mem_conv_relationship_worry', 'mem_conv_back_pain']",True
 temporal_this_weekend,temporal_recall,True,1.0,0.0,1.0,0.5,[2],"['mem_conv_anxiety', 'mem_conv_saturday_run', 'mem_conv_cat', 'mem_conv_podcast', 'mem_conv_sister_gift']",True
-temporal_last_month,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_last_month_trip', 'mem_conv_dad_retirement', 'mem_conv_anxiety', 'mem_conv_cat', 'mem_conv_redis']",True
+temporal_last_month,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_last_month_trip', 'mem_conv_dad_retirement', 'mem_conv_anxiety', 'mem_conv_cat', 'mem_conv_project_deploy']",True
 temporal_recent_therapy,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_good_therapy_session', 'mem_conv_dog', 'mem_conv_back_pain', 'mem_conv_python', 'mem_conv_project_auth']",True
 temporal_how_long_gym,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_gym', 'mem_conv_diet_change', 'mem_conv_sleep_tracker', 'mem_conv_work_burnout', 'mem_conv_stress']",True
 temporal_progression_health,temporal_recall,True,1.0,0.0,1.0,0.5,[2],"['mem_conv_diet_change', 'mem_sum_health_focus', 'mem_refl_health_awareness', 'mem_conv_work_burnout', 'mem_conv_stress']",True

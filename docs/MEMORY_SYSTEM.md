@@ -34,7 +34,7 @@ resolved, and stale information is penalized in ranking.
 | `memory/memory_coordinator.py` | Thin orchestrator (~551 lines), creates all components, delegates to retriever/storage/shutdown |
 | `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks |
 | `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 7 additive bonuses/penalties) with intent overrides, graph boost, size penalty |
-| `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion |
+| `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion, reflection embedding cleanup |
 | `core/prompt/builder.py` | UnifiedPromptBuilder: thin orchestrator for parallel task dispatch, intent overrides, budget |
 | `core/prompt/context_gatherer.py` | Mixin compositor (composes gatherer_web, gatherer_memory, gatherer_knowledge) |
 | `core/prompt/gatherer_web.py` | WebSearchMixin: web search retrieval + trigger logic |
@@ -84,7 +84,7 @@ resolved, and stale information is penalized in ranking.
 | `conversations` | Raw Q/A turns | Yes | Never |
 | `facts` | Extracted triples (user + entity) | No | Yes |
 | `summaries` | Compressed conversation blocks | No | Yes |
-| `reflections` | Session-end reflections | No | Yes |
+| `reflections` | Session-end reflections (embedded with boilerplate stripped) | No | Yes |
 | `wiki_knowledge` | Wikipedia content | Yes | Never |
 | `obsidian_notes` | User's personal notes | Yes | Never |
 | `reference_docs` | Uploaded docs + auto-seeded docs/ | Yes | Never |
@@ -320,6 +320,25 @@ The IntentClassifier detects query intent and overrides scoring weights:
 | CREATIVE_EXPLORATION | recency=0.10, continuity=0.20, importance=0.15 | Suppress recency, favor importance/continuity |
 | PROJECT_WORK | relevance=0.40, recency=0.10, truth=0.20, continuity=0.15 | Prioritize relevance+truth, lower recency |
 | CASUAL_SOCIAL | recency=0.20, continuity=0.25 | Balanced recent + conversational flow |
+
+### Fact Retrieval Ranking
+
+`MemoryRetriever.get_facts()` uses a separate scoring formula from the
+main `MemoryScorer.rank_memories()` pipeline. Facts are ranked with
+semantic relevance as the primary signal:
+
+```
+score = 0.60 * semantic + 0.20 * confidence + 0.20 * recency
+
+Semantic floor: if relevance_score < 0.30, recency weight drops to 0.05
+→ prevents irrelevant-but-recent facts from dominating relevant older ones
+
+Candidate pool: limit * 2 pulled from ChromaDB, top `limit` returned after ranking
+```
+
+This replaced an earlier formula (`0.7*confidence + 0.3*recency`) that
+ignored the ChromaDB semantic similarity score entirely, causing facts to
+be ranked primarily by extraction confidence rather than query relevance.
 
 ---
 

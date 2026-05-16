@@ -103,9 +103,9 @@ core/                         # Request orchestration
 memory/                       # Memory system
 ├── memory_coordinator.py     # Thin orchestrator
 ├── shutdown_processor.py     # Session-end processing
-├── memory_storage.py         # Persistence + graph ingestion
+├── memory_storage.py         # Persistence + graph ingestion + reflection embedding cleanup
 ├── memory_scorer.py          # Scoring with intent overrides + graph boost
-├── memory_retriever.py
+├── memory_retriever.py       # Retrieval + semantic-primary fact ranking
 ├── fact_extractor.py         # Dual-budget fact extraction (user + entity)
 ├── llm_fact_extractor.py     # LLM-assisted extraction with relation reuse
 ├── truth_scorer.py           # Evidence-based truth (confirmation/correction/contradiction)
