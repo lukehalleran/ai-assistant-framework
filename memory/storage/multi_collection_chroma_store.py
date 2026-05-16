@@ -90,7 +90,7 @@ class MultiCollectionChromaStore:
         )
 
         # Single, shared embedder for this store instance
-        model_name = os.getenv("CHROMA_ST_MODEL", "all-MiniLM-L6-v2")
+        model_name = os.getenv("CHROMA_ST_MODEL", "BAAI/bge-small-en-v1.5")
         device = os.getenv("CHROMA_DEVICE", "cpu")  # set to "cuda" if desired
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=model_name, device=device

@@ -40,6 +40,7 @@ Module Contract
 """
 
 import os
+import re
 import uuid
 import asyncio
 import logging
@@ -58,6 +59,88 @@ logger = get_logger("memory_retriever")
 # Graceful Threshold Fallback Configuration
 GATING_MIN_RESULTS = 5           # Minimum results before relaxing threshold
 GATING_RELAXED_MULTIPLIER = 0.7  # Relaxation multiplier (70% of original threshold)
+
+# ---------------------------------------------------------------------------
+# Query reformulation for embedding lookup
+# ---------------------------------------------------------------------------
+# Meta-framing prefixes that dilute embedding similarity.  Stripped so the
+# embedding model sees topical content, not conversational scaffolding.
+# Order matters — longer / more specific patterns first.
+
+_META_PREFIX_PATTERNS = [
+    # "what did we discuss/talk about/chat about"
+    re.compile(
+        r"^what\s+(?:did|do)\s+(?:we|you)\s+(?:discuss|talk\s+about|chat\s+about)\s*",
+        re.IGNORECASE,
+    ),
+    # "what do you know/remember/recall about"
+    re.compile(
+        r"^what\s+(?:do|did)\s+you\s+(?:know|remember|recall)\s+about\s*",
+        re.IGNORECASE,
+    ),
+    # "do you remember/recall [noun]"
+    re.compile(r"^do\s+you\s+(?:remember|recall)\s+", re.IGNORECASE),
+    # "help me brainstorm / let's explore / let us think about"
+    re.compile(
+        r"^(?:help\s+me\s+|let'?s\s+|let\s+us\s+)"
+        r"(?:brainstorm|explore|think\s+about|come\s+up\s+with)\s*",
+        re.IGNORECASE,
+    ),
+    # "let's explore/discuss/talk about"
+    re.compile(
+        r"^(?:let'?s\s+|let\s+us\s+)(?:explore|think\s+about|discuss|talk\s+about)\s*",
+        re.IGNORECASE,
+    ),
+    # "what if we [verb]"
+    re.compile(r"^what\s+if\s+we\s+", re.IGNORECASE),
+    # "how long/much have I been"
+    re.compile(
+        r"^how\s+(?:long|much)\s+have\s+(?:I|we)\s+been\s*",
+        re.IGNORECASE,
+    ),
+    # "what have I been doing for/about"
+    re.compile(
+        r"^what\s+have\s+(?:I|we)\s+been\s+(?:doing|working\s+on)"
+        r"(?:\s+(?:for|about|with|on))?\s*",
+        re.IGNORECASE,
+    ),
+    # "tell me about / talk to me about"
+    re.compile(r"^(?:tell\s+me|talk\s+to\s+me)\s+about\s*", re.IGNORECASE),
+]
+
+# Temporal phrases — already handled by temporal anchor, just noise for embeddings.
+_TEMPORAL_NOISE_RE = re.compile(
+    r"\b(?:yesterday|last\s+night|earlier\s+today|this\s+morning"
+    r"|last\s+week|last\s+month|the\s+other\s+day"
+    r"|a\s+few\s+(?:days|weeks|months)\s+ago"
+    r"|over\s+time|recently|lately)\b",
+    re.IGNORECASE,
+)
+
+# Deictic / context-dependent queries — must NOT reformulate; they need
+# recent-context anchor logic, not semantic noun search.
+_DEICTIC_ONLY_RE = re.compile(
+    r"^(?:what\s+about\s+that|explain\s+that|what\s+did\s+you\s+mean"
+    r"|tell\s+me\s+more|go\s+on|continue"
+    r"|can\s+you\s+help\s*(?:me)?"
+    r"|do\s+you\s+remember)\s*\??$",
+    re.IGNORECASE,
+)
+
+# Leading filler after prefix stripping.
+_LEADING_FILLER_RE = re.compile(
+    r"^\s*(?:about|for|with|on|in|the|a|an|and|some|any|creative|innovative)\s+",
+    re.IGNORECASE,
+)
+
+_REFORMULATION_STOPWORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "can", "i", "me", "my", "we", "our",
+    "you", "your", "it", "its", "and", "but", "or", "not", "no", "so",
+    "if", "to", "of", "in", "on", "at", "by", "for", "with", "about",
+    "from", "like", "just", "also", "very", "really", "some", "any",
+})
 
 
 class MemoryRetriever:
@@ -112,6 +195,63 @@ class MemoryRetriever:
         # Fallback to content hash
         content = f"{memory.get('query', '')}__{memory.get('response', '')}"
         return f"hash:{hash(content)}__{content[:30]}__{content[-30:]}"
+
+    # ------------------------------------------------------------------
+    # Query reformulation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _reformulate_for_embedding(query: str) -> str:
+        """
+        Strip meta framing from a query for better embedding similarity.
+
+        Returns a content-focused ``retrieval_query`` for semantic lookup.
+        The original query should still be used for scoring, continuity,
+        tag overlap, temporal handling, and display.
+
+        Falls back to the original query when stripping leaves nothing
+        meaningful or the query is deictic / context-dependent.
+        """
+        if not query or len(query) < 8:
+            return query
+
+        stripped = query.strip()
+
+        # Deictic / context-dependent — needs anchor logic, not noun search
+        if _DEICTIC_ONLY_RE.match(stripped):
+            return query
+
+        result = stripped
+
+        # 1. Strip meta-framing prefix
+        for pattern in _META_PREFIX_PATTERNS:
+            result = pattern.sub("", result, count=1)
+
+        # NOTE: temporal phrases ("last week", "yesterday") are NOT stripped.
+        # They're handled by the temporal anchor for scoring, but still
+        # provide useful context for the embedding model.
+
+        # 2. Remove leading filler words left after stripping
+        result = _LEADING_FILLER_RE.sub("", result)
+
+        # 3. Clean up punctuation and whitespace
+        result = re.sub(r"[?\s]+$", "", result)
+        result = re.sub(r"\s{2,}", " ", result).strip()
+
+        # 4. Guardrail — must have meaningful content remaining.
+        #    MiniLM-L6-v2 produces poor embeddings for very short queries.
+        #    Require ≥3 content words so reformulation only fires when
+        #    there's enough topical signal to improve over the original.
+        if len(result) < 3:
+            return query
+        content_words = [
+            w for w in result.split()
+            if len(w) > 2 and w.lower() not in _REFORMULATION_STOPWORDS
+        ]
+        if len(content_words) < 3:
+            return query
+
+        return result
 
     def _parse_result(self, item: Dict, source: str, default_truth: float = 0.6) -> Dict:
         """Parse a result from ChromaDB into a standardized memory format."""
@@ -711,6 +851,7 @@ class MemoryRetriever:
                 "metadata": {
                     "timestamp": m.get("timestamp", datetime.now()),
                     "truth_score": m.get('truth_score', 0.5),
+                    "type": (m.get("metadata") or {}).get("type", ""),
                     "original_memory": m
                 }
             } for m in memories]
@@ -743,10 +884,28 @@ class MemoryRetriever:
         from utils.query_checker import is_meta_conversational, _is_heavy_topic_heuristic
         from memory.memory_scorer import _is_deictic_followup
 
-        # Check for meta-conversational query
-        if is_meta_conversational(query):
+        # Check for meta-conversational query — but skip when the query
+        # is a retrospective temporal query ("yesterday", "last night").
+        # These match meta markers ("did we") but are better served by the
+        # normal pipeline with temporal window reranking.
+        query_lower = query.lower()
+        is_retrospective_temporal = (
+            self.scorer
+            and getattr(self.scorer, '_intent_weight_overrides', None)
+            and '_temporal_anchor_hours' in (self.scorer._intent_weight_overrides or {})
+            and any(m in query_lower for m in ('yesterday', 'last night'))
+        )
+        if is_meta_conversational(query) and not is_retrospective_temporal:
             logger.debug(f"[MemoryRetriever] Detected meta-conversational query: {query[:50]}...")
             return await self._get_meta_conversational_memories(query, limit, topic_filter)
+
+        # Two-query design: retrieval_query for embedding lookup,
+        # original query for scoring / continuity / display.
+        retrieval_query = self._reformulate_for_embedding(query)
+        if retrieval_query != query:
+            logger.info(
+                f"[QueryReformulation] '{query[:60]}' → '{retrieval_query[:60]}'"
+            )
 
         # Dynamic configuration
         query_lower = query.lower()
@@ -772,10 +931,10 @@ class MemoryRetriever:
         if is_gym_health_query:
             topic_filter = None
 
-        # Gather from both sources
+        # Gather from both sources — semantic uses retrieval_query
         tasks = [
             asyncio.to_thread(self._get_recent_conversations, k=cfg['recent_count']),
-            self._get_semantic_memories(query, n_results=cfg['semantic_count'])
+            self._get_semantic_memories(retrieval_query, n_results=cfg['semantic_count'])
         ]
         very_recent, semantic = await asyncio.gather(*tasks)
 
@@ -799,12 +958,12 @@ class MemoryRetriever:
                 very_recent = filtered_recent
                 semantic = filtered_semantic
 
-        # Combine with gating
+        # Combine with gating — uses retrieval_query for cosine comparison
         combined = await self._combine_memories(
             very_recent=very_recent,
             semantic=semantic,
             hierarchical=hierarchical,
-            query=query,
+            query=retrieval_query,
             config={'max_memories': max(limit * 2, 30)},
             bypass_gate=is_gym_health_query
         )
@@ -821,6 +980,11 @@ class MemoryRetriever:
             )
         else:
             ranked = sorted(combined, key=lambda x: x.get('relevance_score', 0.5), reverse=True)
+
+        # Temporal window reranking for retrospective queries ("yesterday",
+        # "last night").  Prioritizes memories from the referenced time period
+        # over too-recent memories that would otherwise dominate on raw recency.
+        ranked = self._maybe_temporal_window_rerank(ranked, query)
 
         # Graceful threshold filtering with 3-stage fallback
         is_deictic = _is_deictic_followup(query)
@@ -846,12 +1010,168 @@ class MemoryRetriever:
                 )
                 accepted = ranked[:GATING_MIN_RESULTS]
 
+        # Cross-encoder reranking: rescore top candidates using query-document
+        # pair scoring.  This runs AFTER the multi-factor scorer so it sees
+        # all memories including episodic (which bypass the gate filter).
+        # The cross-encoder can discriminate "related" from "best answer".
+        top_memories = self._maybe_cross_encoder_rerank(accepted[:limit], query)
+
         # Update truth scores
-        top_memories = accepted[:limit]
         if self.scorer:
             self.scorer.update_truth_scores_on_access(top_memories)
 
         return top_memories
+
+    # ------------------------------------------------------------------
+    # Cross-encoder reranking
+    # ------------------------------------------------------------------
+
+    _cross_encoder = None  # Lazy-loaded singleton
+
+    def _maybe_cross_encoder_rerank(
+        self, memories: List[Dict], query: str
+    ) -> List[Dict]:
+        """
+        Rerank top memories using a cross-encoder that scores query-document
+        pairs.  Unlike the gate filter (which episodic memories bypass), this
+        sees ALL memories and can push the correct answer above recency traps.
+
+        Blends cross-encoder score with the existing final_score to avoid
+        completely overriding multi-factor scoring.
+        """
+        if not memories or len(memories) < 2:
+            return memories
+
+        # Only rerank the top N to keep latency bounded (~15ms for 15 items).
+        # Items beyond this cutoff keep their scorer-assigned rank.
+        RERANK_TOP_N = 15
+        if len(memories) > RERANK_TOP_N:
+            to_rerank = memories[:RERANK_TOP_N]
+            tail = memories[RERANK_TOP_N:]
+        else:
+            to_rerank = memories
+            tail = []
+
+        # Lazy-load cross-encoder (once per process)
+        if MemoryRetriever._cross_encoder is None:
+            try:
+                from sentence_transformers import CrossEncoder
+                MemoryRetriever._cross_encoder = CrossEncoder(
+                    "cross-encoder/ms-marco-MiniLM-L-6-v2"
+                )
+                logger.info("[CrossEncoderRerank] Loaded cross-encoder/ms-marco-MiniLM-L-6-v2")
+            except Exception as e:
+                logger.debug(f"[CrossEncoderRerank] Not available: {e}")
+                MemoryRetriever._cross_encoder = False  # Don't retry
+                return memories
+
+        if MemoryRetriever._cross_encoder is False:
+            return memories
+
+        try:
+            # Build query-document pairs
+            def _mem_text(m: Dict) -> str:
+                content = (m.get('content') or '').strip()
+                if content:
+                    return content[:500]
+                q = (m.get('query') or '').strip()
+                r = (m.get('response') or '').strip()
+                return f"{q} {r}"[:500]
+
+            pairs = [[query, _mem_text(m)] for m in to_rerank]
+            scores = MemoryRetriever._cross_encoder.predict(pairs)
+
+            # Normalize cross-encoder scores to [0, 1]
+            min_s, max_s = float(min(scores)), float(max(scores))
+            spread = max_s - min_s if max_s > min_s else 1.0
+            norm_scores = [(float(s) - min_s) / spread for s in scores]
+
+            # Blend: 60% original final_score + 40% cross-encoder
+            for m, ce_score in zip(to_rerank, norm_scores):
+                original = m.get('final_score', 0.5)
+                m['final_score'] = 0.60 * original + 0.40 * ce_score
+                m['cross_encoder_score'] = ce_score
+
+            reranked = sorted(to_rerank, key=lambda x: x.get('final_score', 0), reverse=True)
+
+            logger.debug(
+                f"[CrossEncoderRerank] Reranked {len(to_rerank)} memories, "
+                f"top={reranked[0].get('metadata', {}).get('benchmark_id', '?')}"
+            )
+            return reranked + tail
+
+        except Exception as e:
+            logger.warning(f"[CrossEncoderRerank] Failed: {e}")
+            return memories
+
+    # ------------------------------------------------------------------
+    # Temporal window reranking
+    # ------------------------------------------------------------------
+
+    _RETROSPECTIVE_MARKERS = frozenset(["yesterday", "last night"])
+
+    def _maybe_temporal_window_rerank(
+        self, ranked: List[Dict], query: str
+    ) -> List[Dict]:
+        """
+        For retrospective temporal queries (e.g. "yesterday"), move memories
+        within the referenced time window ahead of too-recent memories.
+
+        Only triggers when:
+          - A temporal anchor ≤ 48h exists (small-window query)
+          - The query contains a clearly retrospective marker
+        """
+        if not self.scorer or not getattr(self.scorer, '_intent_weight_overrides', None):
+            return ranked
+
+        anchor = (self.scorer._intent_weight_overrides or {}).get(
+            '_temporal_anchor_hours'
+        )
+        if not anchor or anchor > 48:
+            return ranked
+
+        query_lower = query.lower()
+        if not any(m in query_lower for m in self._RETROSPECTIVE_MARKERS):
+            return ranked
+
+        # Reference time (must match scorer)
+        if self.time_manager and hasattr(self.time_manager, 'current'):
+            now = self.time_manager.current()
+        else:
+            now = datetime.now()
+
+        window_start = anchor * 0.5
+        window_end = anchor * 2.0
+
+        in_window: List[Dict] = []
+        out_window: List[Dict] = []
+        for m in ranked:
+            ts = m.get('timestamp')
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except Exception:
+                    out_window.append(m)
+                    continue
+            if not isinstance(ts, datetime):
+                out_window.append(m)
+                continue
+
+            age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
+            if window_start <= age_hours <= window_end:
+                in_window.append(m)
+            else:
+                out_window.append(m)
+
+        if not in_window:
+            return ranked
+
+        logger.debug(
+            f"[TemporalWindowRerank] anchor={anchor}h, "
+            f"window=[{window_start:.0f}h, {window_end:.0f}h], "
+            f"in_window={len(in_window)}, out={len(out_window)}"
+        )
+        return in_window + out_window
 
     async def get_semantic_top_memories(self, query: str, limit: int = 10) -> List[Dict]:
         """
@@ -868,8 +1188,11 @@ class MemoryRetriever:
             logger.debug(f"[MemoryRetriever][Semantic] Detected meta-conversational query, routing to specialized retrieval: {query[:50]}...")
             return await self._get_meta_conversational_memories(query, limit, topic_filter=None)
 
+        # Reformulate for embedding — semantic search + gating see retrieval_query
+        retrieval_query = self._reformulate_for_embedding(query)
+
         try:
-            raw = await self._get_semantic_memories(query, n_results=max(30, limit * 3))
+            raw = await self._get_semantic_memories(retrieval_query, n_results=max(30, limit * 3))
         except Exception as e:
             logger.warning(f"[MemoryRetriever] Semantic memory retrieval failed: {e}")
             raw = []
@@ -910,9 +1233,9 @@ class MemoryRetriever:
                 m['pre_gated'] = True
             return out
 
-        # Run gate and pick top-k by gate score
+        # Run gate and pick top-k by gate score — uses retrieval_query
         try:
-            filtered = await self.gate_system.filter_memories(query, chunks)
+            filtered = await self.gate_system.filter_memories(retrieval_query, chunks)
         except Exception as e:
             logger.warning(f"[MemoryRetriever] Gate system filtering failed: {e}")
             filtered = chunks[:limit]
@@ -1049,11 +1372,19 @@ class MemoryRetriever:
         from processing.gate_system import _extract_query_entities, _entity_match_boost
         query_entities = _extract_query_entities(query)
 
+        # Two-query design: reformulated query for semantic lookup,
+        # original query for entity extraction and scoring.
+        retrieval_query = self._reformulate_for_embedding(query)
+        if retrieval_query != query:
+            logger.info(
+                f"[QueryReformulation][Meta] '{query[:60]}' → '{retrieval_query[:60]}'"
+            )
+
         entity_matches = []
         if query_entities:
             logger.info(f"[MemoryRetriever] Meta-conversational query mentions entities: {query_entities}")
             # Do semantic search to find entity-related memories
-            semantic_results = await self._get_semantic_memories(query, n_results=100)
+            semantic_results = await self._get_semantic_memories(retrieval_query, n_results=100)
 
             # Filter and boost memories that contain the mentioned entities
             for mem in semantic_results:

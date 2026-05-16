@@ -1125,6 +1125,10 @@ async def handle_submit(
         # sees nothing. Parse the accumulated output and yield whatever we have.
         if thinking_started and not thinking_complete and final_output.strip():
             thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
+            # If entire response is thinking (no answer), don't leak it
+            if thinking_part and not final_answer:
+                logger.warning("[Handle Submit] Entire response was thinking — suppressing")
+                final_answer = ""
             recovered = final_answer if final_answer else final_output
             # Strip thinking tags/content if they leaked
             recovered = ResponseParser.strip_thinking_tag_leaks(recovered)
@@ -1169,8 +1173,13 @@ async def handle_submit(
         thinking_part_stream, final_answer_stream = ResponseParser.parse_thinking_block(final_output)
         if thinking_part_stream:
             logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK FROM STREAM]\n{thinking_part_stream}")
-            # Update final_output to only include the final answer for storage
-            final_output = final_answer_stream if final_answer_stream else final_output
+            # Update final_output to only include the final answer for storage.
+            # If entire response was thinking, don't fall back to raw thinking.
+            if final_answer_stream:
+                final_output = final_answer_stream
+            elif not final_answer_stream:
+                logger.warning("[Handle Submit] Post-stream: entire response was thinking — suppressing")
+                final_output = ""
             # Sync display_output so final yield doesn't show stale thinking-polluted content
             display_output = final_output
 
@@ -1423,6 +1432,10 @@ async def handle_submit(
         _think_final, _answer_final = ResponseParser.parse_thinking_block(_resp_for_debug)
         if _think_final and _answer_final:
             _resp_for_debug = _answer_final
+        elif _think_final and not _answer_final:
+            # Entire response is thinking — suppress rather than display
+            logger.warning("[Handle Submit] Safety net: entire response was thinking — suppressing")
+            _resp_for_debug = ""
         _resp_for_debug = ResponseParser.strip_thinking_tag_leaks(_resp_for_debug)
 
         # Truncate at spurious turn markers (training data leakage) for display
@@ -1552,7 +1565,11 @@ async def handle_submit(
                 thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
                 if thinking_part:
                     logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK]\n{thinking_part}")
-                response_to_store = final_answer if final_answer else final_output
+                # Don't store raw thinking if entire response was thinking
+                if thinking_part and not final_answer:
+                    response_to_store = ""
+                else:
+                    response_to_store = final_answer if final_answer else final_output
 
                 # Truncate at spurious turn markers (training data leakage)
                 try:

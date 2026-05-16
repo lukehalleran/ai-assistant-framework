@@ -1,0 +1,29 @@
+{
+  "old_model": "all-MiniLM-L6-v2",
+  "new_model": "BAAI/bge-small-en-v1.5",
+  "embedding_dimension": 384,
+  "migrated_at": "2026-05-15T17:49:23.999232",
+  "backup_path": "data/chroma_minilm_backup_20260515_174233",
+  "source_path": "data/chroma_db_v4",
+  "target_path": "data/chroma_bge_tmp",
+  "collections": {
+    "conversations": 5218,
+    "facts": 2794,
+    "obsidian_notes": 2895,
+    "procedural": 208,
+    "procedural_skills": 1041,
+    "proposals": 269,
+    "reference_docs": 991,
+    "reflections": 599,
+    "summaries": 169,
+    "synthesis_results": 33,
+    "threads": 342,
+    "visual_memories": 0,
+    "wiki_knowledge": 1584
+  },
+  "verification": {
+    "counts_match": true,
+    "id_spot_checks": "24/24"
+  },
+  "total_documents": 16143
+}

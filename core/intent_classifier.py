@@ -479,6 +479,17 @@ class IntentClassifier:
             days = extract_temporal_window(query_stripped)
             if days > 0:
                 result.weight_overrides["_temporal_anchor_hours"] = days * 24
+            else:
+                # Timeline/progression query (e.g., "how long have I...",
+                # "over time").  No specific time window — topical relevance
+                # matters more than raw recency, and summaries/reflections
+                # are more useful than individual conversations.
+                result.weight_overrides.update({
+                    "relevance": 0.35,
+                    "recency": 0.05,
+                    "continuity": 0.40,
+                    "_timeline_mode": True,
+                })
 
         logger.debug(
             f"Classified '{query_stripped[:40]}...' → {result.intent.value} "

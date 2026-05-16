@@ -334,6 +334,10 @@ class MemoryScorer:
         # the recency decay curve for TEMPORAL_RECALL queries).
         temporal_anchor = weights.pop('_temporal_anchor_hours', None)
 
+        # Pop timeline mode flag — gives summaries/reflections a bonus
+        # for progression queries like "how long" / "over time".
+        timeline_mode = weights.pop('_timeline_mode', False)
+
         # Use time_manager's reference time when available (testability +
         # consistency between temporal-anchor and active-day-decay paths).
         if (self.time_manager is not None
@@ -550,6 +554,15 @@ class MemoryScorer:
                         base_penalty *= STALENESS_REFLECTION_WEIGHT_FACTOR
                     staleness_penalty = -min(base_penalty, STALENESS_MAX_PENALTY)
 
+            # Timeline bonus: summaries/reflections are more useful for
+            # progression queries ("how long", "over time") because they
+            # aggregate across multiple interactions.
+            timeline_bonus = 0.0
+            if timeline_mode:
+                src = m.get('source', m.get('collection', ''))
+                if src in ('summaries', 'reflections'):
+                    timeline_bonus = 0.15
+
             m['final_score'] = (
                 weights.get('relevance', 0.35) * rel +
                 weights.get('recency', 0.25) * recency +
@@ -562,6 +575,7 @@ class MemoryScorer:
                 meta_bonus +
                 graph_bonus +
                 staleness_penalty +
+                timeline_bonus +
                 penalty
             )
 

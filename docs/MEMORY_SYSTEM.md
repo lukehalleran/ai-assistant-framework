@@ -465,7 +465,7 @@ fitness, preferences, hobbies, study, finance, relationships, goals):
 2. **Prefix lookup** — first underscore-delimited token checked against `_PREFIX_CATEGORY_MAP` (~60 entries)
 3. **Cache check** — persistent `data/category_cache.json` checked before heavier layers
 4. **Token overlap** — relation tokens scored against per-category keyword sets (`_CATEGORY_TOKENS`, ~30 categories with keyword sets); requires >= 2 matching tokens
-5. **Embedding similarity** — `all-MiniLM-L6-v2` cosine similarity against per-category exemplar phrases; threshold 0.40. Results cached persistently in `data/category_cache.json`
+5. **Embedding similarity** — `BAAI/bge-small-en-v1.5` cosine similarity against per-category exemplar phrases; threshold 0.40. Results cached persistently in `data/category_cache.json`
 6. **Default** — falls back to `PREFERENCES`. For batch/cleanup, `categorize_relation_deep()` adds an LLM micro-call (gpt-4o-mini, 10 tokens) before defaulting
 
 ### Ephemeral vs Snapshot Relations

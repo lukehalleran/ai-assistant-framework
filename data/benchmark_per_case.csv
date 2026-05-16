@@ -1,0 +1,97 @@
+case_id,intent,has_retrieval,recall_at_k,recall_at_1,recall_at_3,mrr,rank_positions,retrieved_top5,passed
+factual_dogs_name,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_dog', 'mem_conv_cat', 'mem_conv_dog_vet', 'mem_conv_python', 'mem_conv_brother_job']",True
+factual_language_preference,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_python', 'mem_conv_python_types', 'mem_conv_python_testing', 'mem_conv_python_web', 'mem_conv_debug']",True
+factual_sister_birthday,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_family', 'mem_conv_mom_visit', 'mem_conv_dog', 'mem_conv_project_auth', 'mem_conv_brother_job']",True
+factual_brother_job,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_brother_job', 'mem_conv_dog', 'mem_conv_python', 'mem_conv_cat', 'mem_conv_stress']",True
+factual_cat_name,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_cat', 'mem_conv_dog', 'mem_conv_cat_mochi_hiding', 'mem_conv_dog_vet', 'mem_conv_brother_job']",True
+factual_girlfriend_name,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_relationship_worry', 'mem_conv_dog', 'mem_conv_stress', 'mem_conv_brother_job', 'mem_conv_cat']",True
+factual_web_framework,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_python_web', 'mem_conv_cors_fix', 'mem_conv_api', 'mem_conv_project_auth', 'mem_conv_python']",True
+factual_apartment_lease,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_apartment', 'mem_conv_project_auth', 'mem_conv_mom_visit', 'mem_conv_cat', 'mem_conv_api']",True
+factual_mom_visit,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_mom_visit', 'mem_conv_dog_vet', 'mem_conv_cat', 'mem_conv_stress', 'mem_conv_good_therapy_session']",True
+factual_promotion_date,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_promotion', 'mem_conv_project_auth', 'mem_conv_stress', 'mem_conv_mom_visit', 'mem_conv_api']",True
+temporal_recent_today,temporal_recall,True,1.0,0.5,1.0,1.0,"[2, 1]","['mem_conv_greeting', 'mem_conv_dog', 'mem_conv_project_auth', 'mem_conv_stress', 'mem_conv_python']",True
+temporal_last_week,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_sum_week1', 'mem_conv_diet_change', 'mem_conv_weather', 'mem_conv_anxiety', 'mem_conv_weekend']",True
+temporal_yesterday_events,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_yesterday_meeting', 'mem_sum_recent', 'mem_conv_dog_vet', 'mem_conv_relationship_worry', 'mem_conv_back_pain']",True
+temporal_this_weekend,temporal_recall,True,1.0,0.0,1.0,0.5,[2],"['mem_conv_anxiety', 'mem_conv_saturday_run', 'mem_conv_cat', 'mem_conv_podcast', 'mem_conv_sister_gift']",True
+temporal_last_month,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_last_month_trip', 'mem_conv_dad_retirement', 'mem_conv_anxiety', 'mem_conv_cat', 'mem_conv_redis']",True
+temporal_recent_therapy,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_good_therapy_session', 'mem_conv_dog', 'mem_conv_back_pain', 'mem_conv_python', 'mem_conv_project_auth']",True
+temporal_how_long_gym,temporal_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_gym', 'mem_conv_diet_change', 'mem_conv_sleep_tracker', 'mem_conv_work_burnout', 'mem_conv_stress']",True
+temporal_progression_health,temporal_recall,True,1.0,0.0,1.0,0.5,[2],"['mem_conv_diet_change', 'mem_sum_health_focus', 'mem_refl_health_awareness', 'mem_conv_work_burnout', 'mem_conv_stress']",True
+emotional_stressed_at_work,emotional_support,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_stress', 'mem_conv_work_burnout', 'mem_conv_feeling_better', 'mem_conv_good_therapy_session', 'mem_conv_greeting']",True
+emotional_anxious_cant_sleep,emotional_support,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_anxiety', 'mem_conv_sleep_tracker', 'mem_conv_good_therapy_session', 'mem_conv_stress', 'mem_conv_greeting']",True
+emotional_burnout_quitting,emotional_support,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_work_burnout', 'mem_conv_stress', 'mem_conv_good_therapy_session', 'mem_conv_feeling_better', 'mem_conv_anxiety']",True
+emotional_social_situation,emotional_support,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_social_anxiety', 'mem_conv_anxiety', 'mem_conv_stress', 'mem_conv_feeling_better', 'mem_conv_work_burnout']",True
+emotional_relationship_struggling,emotional_support,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_relationship_worry', 'mem_conv_feeling_better', 'mem_conv_work_burnout', 'mem_conv_stress', 'mem_conv_good_therapy_session']",True
+emotional_therapy_progress,emotional_support,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_good_therapy_session', 'mem_conv_feeling_better', 'mem_conv_back_pain', 'mem_conv_work_burnout', 'mem_conv_stress']",True
+emotional_health_worry,emotional_support,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_anxiety', 'mem_conv_stress', 'mem_conv_back_pain', 'mem_conv_good_therapy_session', 'mem_conv_feeling_better']",True
+emotional_feeling_better_now,emotional_support,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_feeling_better', 'mem_conv_stress', 'mem_conv_good_therapy_session', 'mem_conv_greeting', 'mem_conv_back_pain']",True
+emotional_sleep_and_anxiety,emotional_support,True,1.0,0.5,1.0,1.0,"[1, 3]","['mem_conv_anxiety', 'mem_conv_stress', 'mem_conv_good_therapy_session', 'mem_conv_greeting', 'mem_conv_sleep_tracker']",True
+emotional_work_conflict_stress,emotional_support,True,1.0,0.0,0.0,0.125,[8],"['mem_conv_stress', 'mem_conv_work_burnout', 'mem_conv_back_pain', 'mem_conv_feeling_better', 'mem_conv_good_therapy_session']",True
+casual_thanks,casual_social,False,0.0,0.0,0.0,0.0,[],"['mem_conv_feeling_better', 'mem_conv_greeting', 'mem_conv_stress', 'mem_conv_good_therapy_session']",True
+casual_good_morning,casual_social,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_feeling_better', 'mem_conv_good_therapy_session', 'mem_conv_stress']",True
+casual_goodbye,casual_social,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_feeling_better', 'mem_conv_stress', 'mem_conv_project_auth']",True
+casual_hey_sup,casual_social,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_feeling_better', 'mem_conv_stress', 'mem_conv_good_therapy_session']",True
+casual_nice_response,casual_social,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_feeling_better', 'mem_conv_good_therapy_session', 'mem_conv_stress']",True
+casual_yeah_ok,casual_social,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_feeling_better', 'mem_conv_stress', 'mem_conv_api']",True
+casual_lol,casual_social,False,0.0,0.0,0.0,0.0,[],"['mem_conv_stress', 'mem_conv_feeling_better', 'mem_conv_good_therapy_session', 'mem_conv_greeting']",True
+casual_good_night,casual_social,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_feeling_better', 'mem_conv_good_therapy_session', 'mem_conv_stress']",True
+technical_segfault_debug,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_debug', 'mem_conv_greeting', 'mem_conv_stress', 'mem_conv_python', 'mem_conv_project_auth']",True
+technical_python_async,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_async', 'mem_conv_python_types', 'mem_conv_python', 'mem_conv_greeting', 'mem_conv_project_auth']",True
+technical_docker_crash,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_docker_debug', 'mem_conv_debug', 'mem_conv_greeting', 'mem_conv_stress', 'mem_conv_project_dashboard']",True
+technical_slow_query,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_sql_optimization', 'mem_conv_greeting', 'mem_conv_project_auth', 'mem_conv_stress', 'mem_conv_python']",True
+technical_cors_issue,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_cors_fix', 'mem_conv_project_dashboard', 'mem_conv_greeting', 'mem_conv_project_auth', 'mem_conv_api']",True
+technical_python_testing,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_python_testing', 'mem_conv_python_types', 'mem_conv_python', 'mem_conv_greeting', 'mem_conv_api']",True
+technical_type_hints,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_python_types', 'mem_conv_python_testing', 'mem_conv_python', 'mem_conv_greeting', 'mem_conv_project_auth']",True
+technical_git_history,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_git_rebase', 'mem_conv_greeting', 'mem_conv_stress', 'mem_conv_project_auth', 'mem_conv_api']",True
+technical_python_packaging,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_python_packaging', 'mem_conv_python_types', 'mem_conv_python_testing', 'mem_conv_python', 'mem_conv_project_auth']",True
+technical_back_pain,technical_help,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_back_pain', 'mem_conv_greeting', 'mem_conv_good_therapy_session', 'mem_conv_feeling_better', 'mem_conv_stress']",True
+creative_dashboard_ideas,creative_exploration,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_brainstorm', 'mem_conv_project_dashboard', 'mem_conv_stress', 'mem_conv_project_auth', 'mem_conv_greeting']",True
+creative_new_features,creative_exploration,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_brainstorm', 'mem_conv_project_auth', 'mem_conv_python', 'mem_conv_greeting', 'mem_conv_stress']",True
+creative_ux_improvements,creative_exploration,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_brainstorm', 'mem_conv_work_burnout', 'mem_conv_good_therapy_session', 'mem_conv_stress', 'mem_conv_feeling_better']",True
+creative_api_design,creative_exploration,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_api', 'mem_conv_brainstorm', 'mem_conv_project_auth', 'mem_conv_python', 'mem_conv_stress']",True
+creative_architecture_ideas,creative_exploration,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_project_deploy', 'mem_conv_project_auth', 'mem_conv_api', 'mem_conv_greeting', 'mem_conv_stress']",True
+creative_weekend_plans,creative_exploration,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_weekend', 'mem_conv_brainstorm', 'mem_conv_greeting', 'mem_conv_good_therapy_session', 'mem_conv_stress']",True
+creative_gift_brainstorm,creative_exploration,True,1.0,0.0,1.0,0.5,[2],"['mem_conv_family', 'mem_conv_sister_gift', 'mem_conv_brainstorm', 'mem_conv_dog', 'mem_conv_greeting']",True
+creative_dinner_ideas,creative_exploration,True,1.0,0.0,0.0,0.045454545454545456,[22],"['mem_conv_brainstorm', 'mem_conv_good_therapy_session', 'mem_conv_stress', 'mem_conv_project_auth', 'mem_conv_greeting']",True
+meta_about_me,meta_conversational,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_dog', 'mem_conv_stress', 'mem_conv_python', 'mem_conv_feeling_better']",True
+meta_hobbies,meta_conversational,False,0.0,0.0,0.0,0.0,[],"['mem_conv_work_burnout', 'mem_conv_feeling_better', 'mem_conv_stress', 'mem_conv_good_therapy_session', 'mem_conv_anxiety']",True
+meta_family_knowledge,meta_conversational,False,0.0,0.0,0.0,0.0,[],"['mem_conv_brother_job', 'mem_conv_dog', 'mem_conv_stress', 'mem_conv_cat', 'mem_conv_anxiety']",True
+meta_work_knowledge,meta_conversational,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_dog', 'mem_conv_stress', 'mem_conv_python', 'mem_conv_feeling_better']",True
+meta_health_knowledge,meta_conversational,False,0.0,0.0,0.0,0.0,[],"['mem_conv_anxiety', 'mem_conv_back_pain', 'mem_conv_feeling_better', 'mem_conv_dog_vet', 'mem_conv_stress']",True
+meta_pet_knowledge,meta_conversational,False,0.0,0.0,0.0,0.0,[],"['mem_conv_dog', 'mem_conv_greeting', 'mem_conv_stress', 'mem_conv_python', 'mem_conv_feeling_better']",True
+meta_project_knowledge,meta_conversational,False,0.0,0.0,0.0,0.0,[],"['mem_conv_stress', 'mem_conv_python', 'mem_conv_project_auth', 'mem_conv_work_burnout', 'mem_conv_brainstorm']",True
+meta_emotional_history,meta_conversational,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_stress', 'mem_conv_dog', 'mem_conv_python', 'mem_conv_feeling_better']",True
+project_auth_status,project_work,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_project_auth', 'mem_conv_project_db_migration', 'mem_conv_greeting', 'mem_conv_api', 'mem_conv_python']",True
+project_api_update,project_work,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_api', 'mem_conv_project_auth', 'mem_conv_greeting', 'mem_conv_project_dashboard', 'mem_conv_python']",True
+project_dashboard_charts,project_work,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_project_dashboard', 'mem_conv_brainstorm', 'mem_conv_stress', 'mem_conv_greeting', 'mem_conv_api']",True
+project_database_migration,project_work,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_project_db_migration', 'mem_conv_sql_optimization', 'mem_conv_project_auth', 'mem_conv_api', 'mem_conv_brainstorm']",True
+project_ci_optimization,project_work,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_project_ci', 'mem_conv_project_auth', 'mem_conv_stress', 'mem_conv_greeting', 'mem_conv_python']",True
+project_caching_layer,project_work,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_redis', 'mem_conv_python_web', 'mem_conv_greeting', 'mem_conv_project_auth', 'mem_conv_api']",True
+project_kubernetes_deploy,project_work,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_project_deploy', 'mem_conv_api', 'mem_conv_project_auth', 'mem_conv_stress', 'mem_conv_greeting']",True
+project_fastapi_backend,project_work,True,1.0,0.0,1.0,0.5,[2],"['mem_conv_cors_fix', 'mem_conv_python_web', 'mem_conv_api', 'mem_conv_project_auth', 'mem_conv_greeting']",True
+project_cors_middleware,project_work,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_cors_fix', 'mem_conv_python_web', 'mem_conv_project_auth', 'mem_conv_greeting', 'mem_conv_api']",True
+project_full_stack_status,project_work,True,1.0,0.5,1.0,1.0,"[1, 3]","['mem_conv_api', 'mem_conv_brainstorm', 'mem_conv_project_dashboard', 'mem_conv_project_auth', 'mem_conv_project_deploy']",True
+general_autumn_thoughts,general,False,0.0,0.0,0.0,0.0,[],"['mem_conv_python', 'mem_conv_stress', 'mem_conv_good_therapy_session', 'mem_conv_feeling_better', 'mem_conv_project_dashboard']",True
+general_patience,general,False,0.0,0.0,0.0,0.0,[],"['mem_conv_feeling_better', 'mem_conv_greeting', 'mem_conv_brainstorm', 'mem_conv_back_pain', 'mem_conv_work_burnout']",True
+general_time_flies,general,False,0.0,0.0,0.0,0.0,[],"['mem_conv_stress', 'mem_conv_work_burnout', 'mem_conv_relationship_worry', 'mem_conv_good_therapy_session', 'mem_conv_greeting']",True
+general_coffee_preference,general,False,0.0,0.0,0.0,0.0,[],"['mem_conv_python', 'mem_conv_back_pain', 'mem_conv_dog', 'mem_conv_good_therapy_session', 'mem_conv_cat']",True
+general_interesting_fact,general,False,0.0,0.0,0.0,0.0,[],"['mem_conv_greeting', 'mem_conv_stress', 'mem_conv_feeling_better', 'mem_conv_work_burnout', 'mem_conv_good_therapy_session']",True
+general_weather_musing,general,False,0.0,0.0,0.0,0.0,[],"['mem_conv_rainy_commute', 'mem_conv_stress', 'mem_conv_feeling_better', 'mem_conv_greeting', 'mem_conv_work_burnout']",True
+general_music_thought,general,False,0.0,0.0,0.0,0.0,[],"['mem_conv_feeling_better', 'mem_conv_async', 'mem_conv_python_types', 'mem_conv_greeting', 'mem_conv_good_therapy_session']",True
+general_cooking_musing,general,False,0.0,0.0,0.0,0.0,[],"['mem_conv_stress', 'mem_conv_work_burnout', 'mem_conv_greeting', 'mem_conv_good_therapy_session', 'mem_conv_relationship_worry']",True
+multi_all_pets,meta_conversational,True,1.0,0.5,1.0,1.0,"[2, 1]","['mem_conv_dog', 'mem_conv_cat', 'mem_conv_cat_mochi_hiding', 'mem_conv_dog_vet', 'mem_conv_greeting']",True
+multi_all_family,meta_conversational,True,1.0,0.5,0.5,1.0,"[1, 31]","['mem_conv_brother_job', 'mem_conv_dog', 'mem_conv_stress', 'mem_conv_greeting', 'mem_conv_project_auth']",True
+multi_python_overview,meta_conversational,True,1.0,0.5,0.5,1.0,"[12, 1]","['mem_conv_python', 'mem_conv_python_types', 'mem_conv_greeting', 'mem_conv_dog', 'mem_conv_stress']",True
+multi_health_summary,meta_conversational,True,1.0,0.0,0.5,0.5,"[2, 9]","['mem_conv_anxiety', 'mem_conv_back_pain', 'mem_conv_stress', 'mem_conv_feeling_better', 'mem_conv_work_burnout']",True
+multi_emotional_journey,meta_conversational,True,1.0,0.5,1.0,1.0,"[1, 2]","['mem_conv_anxiety', 'mem_conv_stress', 'mem_conv_feeling_better', 'mem_conv_work_burnout', 'mem_conv_good_therapy_session']",True
+multi_project_components,meta_conversational,True,1.0,0.0,0.5,0.5,"[8, 2]","['mem_conv_python', 'mem_conv_project_auth', 'mem_conv_stress', 'mem_conv_brainstorm', 'mem_conv_gym']",True
+multi_fitness_activities,meta_conversational,True,1.0,0.5,0.5,1.0,"[1, 27]","['mem_conv_gym', 'mem_conv_dog', 'mem_conv_stress', 'mem_conv_project_auth', 'mem_conv_python']",True
+cross_pet_summary_or_conv,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_dog', 'mem_conv_cat', 'mem_conv_dog_vet', 'mem_conv_python', 'mem_conv_python_types']",True
+cross_project_summary,factual_recall,True,1.0,0.0,0.0,0.2,[5],"['mem_conv_python_packaging', 'mem_conv_project_auth', 'mem_conv_python', 'mem_conv_api', 'mem_conv_project_deploy']",True
+negative_sleep_not_anxiety,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_sleep_tracker', 'mem_conv_anxiety', 'mem_conv_good_therapy_session', 'mem_conv_project_auth', 'mem_conv_sql_optimization']",True
+negative_music_not_coding,factual_recall,True,1.0,0.0,1.0,0.5,[2],"['mem_conv_music', 'mem_conv_jazz_album', 'mem_conv_dog', 'mem_conv_python', 'mem_conv_cat']",True
+negative_cooking_not_diet,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_sunday_cooking', 'mem_conv_cat', 'mem_conv_stress', 'mem_conv_good_therapy_session', 'mem_conv_greeting']",True
+negative_work_meeting_not_promotion,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_yesterday_meeting', 'mem_conv_project_auth', 'mem_conv_stress', 'mem_conv_gym', 'mem_conv_good_therapy_session']",True
+negative_back_not_gym,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_back_pain', 'mem_conv_good_therapy_session', 'mem_conv_gym', 'mem_conv_feeling_better', 'mem_conv_dog_vet']",True
+negative_guitar_not_jazz,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_guitar', 'mem_conv_dog', 'mem_conv_music', 'mem_conv_cat', 'mem_conv_project_auth']",True
+negative_reading_not_podcast,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_reading', 'mem_conv_cat', 'mem_conv_good_therapy_session', 'mem_conv_stress', 'mem_conv_sql_optimization']",True

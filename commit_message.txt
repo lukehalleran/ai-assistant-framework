@@ -1,57 +1,28 @@
-docs: comprehensive audit and correction of all documentation against code
+retrieval breakthrough: BGE embedding migration + cross-encoder reranking
 
-Documentation audit (27 issues fixed across 11 docs + 2 code files):
+Overall MRR 0.626 → 0.915 (+46%), R@1 0.43 → 0.81, all 96 benchmarks passing.
 
-CLAUDE.md:
-- Request flow diagram: removed dead UncertaintyDetector/review_answer steps,
-  added ResponseParser/CorrectionDetector, moved agentic search before generation
-- Removed "visual memory" from disabled list (config has it enabled)
-- Added 13 missing files to module structure (3 core/prompt, 10 memory)
+Changes:
+- Migrate embedding model from all-MiniLM-L6-v2 to BAAI/bge-small-en-v1.5
+- Add cross-encoder post-scoring reranker (ms-marco-MiniLM-L-6-v2, top-15)
+  Blends 60% multi-factor score + 40% cross-encoder pair score
+- Timeline mode weights for anchorless TEMPORAL_RECALL (relevance=0.35,
+  recency=0.05, continuity=0.40) + summary bonus (+0.15)
+- Temporal window reranking for retrospective queries (yesterday/last night)
+- Skip meta-conversational bypass for retrospective temporal queries
+- Query reformulation infrastructure (conservative, 3-word minimum)
+- Fix thinking block leak: detect all-thinking responses with no answer
+- Expand heuristic patterns for DeepSeek V4 thinking style
+- Fix _gate_memories type forwarding (episodic bypass was broken)
+- Add per-case CSV output and aggregate metrics to benchmark harness
+- Daily backup script + systemd timer
+- Embedding migration script (side-by-side, ID-preserving, with manifest)
 
-FORMAL_MODEL.md:
-- Temporal anchor floor formula: 0.45/300 → 0.60/500 (matches memory_scorer.py)
-- Collection boosts: facts 0.10→0.15, conversations 0.30→0.00 (matches app_config.py)
-- Clarified structure weight is direct additive, legacy SCORE_WEIGHTS entry unused
-
-MEMORY_SYSTEM.md:
-- Truth scorer initial scores: user_stated 0.85→0.80, corrected 0.90→0.85
-- Shutdown step count: 12→13
-- Scoring example arithmetic: 0.805→0.800 (actual sum of components)
-
-PROMPT_BUILDING_PIPELINE.md:
-- Token budget: 40000/60000→15000/16000 (active config, noted builder.py fallbacks)
-- Web search priority: 5→8 (matches token_manager.py)
-- File line counts updated (builder.py, gatherer_knowledge.py, formatter.py)
-
-QUICK_REFERENCE.md:
-- PROMPT_MAX_MEMS default: 30→15
-- Tag categories: 6→7 (added events)
-- Benchmark fixtures: 30 seeds/19 cases→93/96
-- Added GATE_COSINE_THRESHOLD discrepancy note (0.45 vs 0.50 in codebase)
-
-AGENTIC_SEARCH.md:
-- Execute method count: "12 execute"→"10 execute helpers"
-- Image recall event: image_recalled→recall_image_done
-- FAISS vector count standardized to 41M
-
-ARCHITECTURE_GUIDE.md:
-- Agentic gate: 3-Tier→4-Tier (added Tier 1b knowledge keywords)
-
-THINKING_BLOCKS_IMPLEMENTATION.md:
-- Layer count: clarified "3 core + 4 operational (7 total)"
-- Fixed non-existent function ref: _strip_leaked_xml_markers→strip_thinking_tag_leaks
-
-GOALS.md:
-- Wizard dual-channel: "Complete"→"Partial" (dev-channel features not implemented)
-
-eval/PLAN.md:
-- Section assembly order table corrected (visual_memories 13→27, shifted rest)
-- Restored missing stm_summary row
-
-eval/section_registry.py:
-- _assemble_prompt location: builder.py:1915-2552→formatter.py:862-1642
-
-Code fixes:
-- multi_collection_chroma_store.py: docstring 12→13 collections, added visual_memories
-- response_parser.py: removed duplicate @staticmethod decorator
-- core/agentic/tools.py: FAISS comments standardized to 41M vectors
+Per-intent MRR gains:
+  technical_help:       0.717 → 1.000
+  creative_exploration: 0.362 → 0.938
+  project_work:         0.692 → 0.950
+  factual_recall:       0.672 → 0.932
+  emotional_support:    0.634 → 0.912
+  temporal_recall:      0.591 → 0.854
+  meta_conversational:  0.211 → 0.400
