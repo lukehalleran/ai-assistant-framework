@@ -128,6 +128,11 @@ class MemoryRetriever:
     async def get_semantic_top_memories(query, limit=10) -> List[Dict]:
         """Top memories with meta-conversational routing and gating."""
 
+    async def get_facts(query, limit=8) -> List[Dict]:
+        """Semantic-primary fact ranking: 0.60*semantic + 0.20*confidence + 0.20*recency.
+        Semantic floor: relevance < 0.30 caps recency weight at 0.05.
+        Pulls limit*2 candidates for better selection."""
+
     async def get_skills(query, limit=5) -> List[Dict]:
         """Hybrid retrieval (1/3 recent + 2/3 semantic) from procedural_skills collection."""
 
@@ -2425,13 +2430,19 @@ pytest -m "not benchmark"
 ```
 
 ```python
-# tests/benchmarks/ — 93 seed memories + 96 test cases across all 9 intent types
-# conftest.py: session-scoped ChromaDB + CorpusManager + MockTimeManager fixtures
+# tests/benchmarks/ — Two suites: synth (93 seeds + 96 cases) + real (64 cases from production ChromaDB)
+# conftest.py: session-scoped ChromaDB + CorpusManager + MockTimeManager fixtures;
+#   real_benchmark_config, real_seeded_stores, real_retrieval_env for real-data suite
 # retrieval_benchmark.py: BenchmarkResult + RetrievalBenchmark harness (recall@K, MRR)
+#   Content-hash identity matching (_content_hash, _normalize_content)
+#   Per-collection retrieval routing via retrieval_method field
 # test_retrieval_quality.py: parametrized pytest cases + structural validation
+#   TestRealDataRetrievalQuality + TestRealDataStructure test classes [NEW 2026-05-16]
 # report_generator.py: markdown report grouped by intent type
-# tests/fixtures/retrieval_benchmarks.yaml: seed memories + test case definitions
+# tests/fixtures/retrieval_benchmarks.yaml: synth seed memories + test case definitions
+# tests/fixtures/retrieval_benchmarks_real.yaml: 64 real-data cases [NEW 2026-05-16]
 
+# scripts/sample_real_benchmark.py — Sample real data from production ChromaDB [NEW 2026-05-16]
 # scripts/benchmark_retrieval.py — Full benchmark runner [NEW 2026-05]
 # Metrics: Recall@1/3/10, MRR (aggregate + per-intent), Precision@10,
 #   intent classification accuracy, per-component retrieval latency (p50/p90/p95),
@@ -2439,6 +2450,11 @@ pytest -m "not benchmark"
 # History: data/benchmark_history.json (append-only, tracks runs over time)
 # Docs: docs/BENCHMARK_METRICS.md (metric definitions + interpretation guide)
 # Usage: python scripts/benchmark_retrieval.py
+
+# Current scores (2026-05-16):
+#   Synth: MRR=0.9149, R@1=0.8056, R@3=0.9236, R@topK=1.0000
+#   Real:  MRR=0.8766, R@1=0.8413, R@3=0.8730, R@topK=1.0000
+#   Combined: MRR=0.8970, R@1=0.8222, R@3=0.9000, R@topK=1.0000
 ```
 
 ---

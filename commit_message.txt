@@ -1,28 +1,28 @@
-retrieval breakthrough: BGE embedding migration + cross-encoder reranking
+real-data benchmark + fact ranking fix + reflection embedding cleanup
 
-Overall MRR 0.626 → 0.915 (+46%), R@1 0.43 → 0.81, all 96 benchmarks passing.
+Add real-data retrieval benchmark (64 cases sampled from production
+ChromaDB) alongside existing synthetic benchmark. Fix two
+collection-specific ranking bugs exposed by real-data testing.
 
-Changes:
-- Migrate embedding model from all-MiniLM-L6-v2 to BAAI/bge-small-en-v1.5
-- Add cross-encoder post-scoring reranker (ms-marco-MiniLM-L-6-v2, top-15)
-  Blends 60% multi-factor score + 40% cross-encoder pair score
-- Timeline mode weights for anchorless TEMPORAL_RECALL (relevance=0.35,
-  recency=0.05, continuity=0.40) + summary bonus (+0.15)
-- Temporal window reranking for retrospective queries (yesterday/last night)
-- Skip meta-conversational bypass for retrospective temporal queries
-- Query reformulation infrastructure (conservative, 3-word minimum)
-- Fix thinking block leak: detect all-thinking responses with no answer
-- Expand heuristic patterns for DeepSeek V4 thinking style
-- Fix _gate_memories type forwarding (episodic bypass was broken)
-- Add per-case CSV output and aggregate metrics to benchmark harness
-- Daily backup script + systemd timer
-- Embedding migration script (side-by-side, ID-preserving, with manifest)
+Fact ranking: get_facts() was re-sorting ChromaDB results by
+0.7*confidence + 0.3*recency, destroying semantic ordering. New
+formula: 0.60*semantic + 0.20*confidence + 0.20*recency with a
+semantic floor (relevance < 0.30 caps recency at 0.05). This alone
+fixed 17 of 24 real-data ranking failures.
 
-Per-intent MRR gains:
-  technical_help:       0.717 → 1.000
-  creative_exploration: 0.362 → 0.938
-  project_work:         0.692 → 0.950
-  factual_recall:       0.672 → 0.932
-  emotional_support:    0.634 → 0.912
-  temporal_recall:      0.591 → 0.854
-  meta_conversational:  0.211 → 0.400
+Reflection embedding: all reflections started with identical
+boilerplate ("### What went well - The assistant effectively...")
+causing BGE-small to map them to nearly the same vector.
+_clean_reflection_for_embedding() strips 16+ boilerplate patterns
+before embedding, preserving original markdown in metadata. Fixed
+remaining 7 of 24 failures.
+
+Benchmark harness: content-hash identity matching replaces fragile
+prefix/marker matching. Per-collection retrieval routing via
+retrieval_method field. Real-data sampler script for reproducible
+benchmark generation from production data.
+
+Results (160/160 passing, 0 regressions):
+  Synth:    MRR=0.9149  R@1=0.81  R@3=0.92  R@topK=1.00
+  Real:     MRR=0.8766  R@1=0.84  R@3=0.87  R@topK=1.00
+  Combined: MRR=0.8970  R@1=0.82  R@3=0.90  R@topK=1.00

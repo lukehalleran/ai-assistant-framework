@@ -136,9 +136,9 @@ core/                    # Request orchestration, context pipeline, agentic loop
 
 memory/                  # 5-tier memory system
 ├── memory_coordinator.py    # Thin orchestrator (~551 lines)
-├── memory_retriever.py      # Parallel ChromaDB retrieval
+├── memory_retriever.py      # Parallel ChromaDB retrieval + semantic-primary fact ranking
 ├── memory_scorer.py         # 12-step composite scoring
-├── memory_storage.py        # Persistence + fact extraction + graph ingestion
+├── memory_storage.py        # Persistence + fact extraction + graph ingestion + reflection embedding cleanup
 ├── shutdown_processor.py    # 12-step session-end pipeline
 ├── graph_memory.py          # NetworkX knowledge graph
 ├── entity_resolver.py       # Alias resolution + relation normalization
@@ -1776,6 +1776,12 @@ meta-reflection about the session — what was discussed, what stood out,
 what patterns emerged. This is stored in the `reflections` collection
 for future context.
 
+Before embedding, `_clean_reflection_for_embedding()` strips boilerplate
+headers and prefixes (e.g., "### What went well", "The assistant effectively...")
+that would otherwise cause embedding collapse — all reflections mapping to
+similar vectors. The original markdown is preserved in `original_text` metadata
+for display purposes.
+
 ---
 
 ## 23. Knowledge Sources
@@ -2073,7 +2079,7 @@ tests/
 ├── unit/           # Component tests (most test files here)
 ├── test_eval/      # Eval system tests (246 tests)
 ├── benchmarks/     # Retrieval quality (real embeddings)
-└── fixtures/       # Seed data (30 memories, 72 synthesis candidates)
+└── fixtures/       # Seed data (93 synth memories, 64 real-data cases, 72 synthesis candidates)
 ```
 
 **Last full run**: 2026-05-01 — 3248 passed, 5 wizard-only failures (pre-existing).
@@ -2097,14 +2103,16 @@ Key test counts by subsystem:
 
 ### Retrieval Quality Benchmarks
 
-`tests/benchmarks/` provides an end-to-end retrieval quality suite:
+`tests/benchmarks/` provides an end-to-end retrieval quality suite with two data sources:
 
-- **30 seed memories** with realistic content (fitness PRs, relationships,
-  project notes, emotional conversations)
-- **19 test cases** across all 9 intent types
-- **Real embeddings** via BAAI/bge-small-en-v1.5 (not mocks)
+- **Synthetic suite**: 93 seed memories + 96 test cases across all 9 intent types
+- **Real-data suite**: 64 cases sampled from production ChromaDB via `scripts/sample_real_benchmark.py`
+- **Real embeddings** via BAAI/bge-small-en-v1.5 + cross-encoder reranking (not mocks)
+- **Identity matching**: Content-hash based (`_content_hash`, `_normalize_content`)
+  with per-collection retrieval routing via `retrieval_method` field
 - **Metrics**: recall@K and Mean Reciprocal Rank (MRR)
-- **Runtime**: ~5 seconds
+- **Current scores** (2026-05-16): Synth MRR=0.9149, R@1=0.81 | Real MRR=0.8766, R@1=0.84 | Combined MRR=0.8970
+- **Runtime**: ~12 seconds
 
 Run: `pytest tests/benchmarks/ -m benchmark -v`
 Exclude: `pytest -m "not benchmark"`

@@ -3,12 +3,13 @@
 Memory storage module.
 
 Module Contract
-- Purpose: Implements the MemoryStorageProtocol contract for persisting memories. Handles storage of conversations, facts, and summaries to both corpus and ChromaDB.
+- Purpose: Implements the MemoryStorageProtocol contract for persisting memories. Handles storage of conversations, facts, reflections, and summaries to both corpus and ChromaDB.
 - Inputs:
   - store_interaction(query, response, tags=?, session_id=?, provenance=?) -> Optional[str]
     - session_id: optional session identifier for audit trail [NEW 2026-03-26]
     - provenance: optional dict with response_mode, thinking_block (truncated to PROVENANCE_THINKING_MAX_CHARS), cited_ids, model_name, prompt_hash, agentic_summary [NEW 2026-03-26]
   - store_fact(fact_dict) -> bool
+  - add_reflection(text, tags=?, source=?, timestamp=?) -> bool
   - consolidate_if_needed() -> bool
 - Outputs:
   - Stored memories in corpus JSON and ChromaDB collections
@@ -22,6 +23,9 @@ Module Contract
     fact_scope, entity_type, user_connection, source_excerpt through to ChromaDB metadata [NEW 2026-03]
   - Thread metadata forwarding: store_interaction() propagates thread_id and thread_depth
     from thread_info to ChromaDB conversation metadata [NEW 2026-03]
+  - Reflection embedding cleanup: _clean_reflection_for_embedding() strips boilerplate
+    headers/prefixes (16+ patterns) before embedding to prevent vector collapse across
+    reflections. Original text preserved in metadata for display [NEW 2026-05]
 - Dependencies:
   - memory.corpus_manager (JSON persistence)
   - memory.storage.multi_collection_chroma_store (vector storage)
@@ -55,6 +59,80 @@ def _get_graph_enabled():
         return KNOWLEDGE_GRAPH_ENABLED
     except ImportError:
         return False
+
+
+def _clean_reflection_for_embedding(text: str) -> str:
+    """
+    Strip boilerplate headers/prefixes from reflection text for embedding.
+
+    Session reflections typically start with identical markdown structure:
+      ### What went well
+      - The assistant effectively...
+      ### What could improve
+      - ...
+
+    This causes embedding collapse (all reflections map to similar vectors).
+    Stripping the boilerplate lets the embedding model focus on the
+    substantive, differentiating content.
+
+    The original markdown is preserved in metadata for display.
+    """
+    if not text:
+        return text
+
+    lines = text.split("\n")
+    cleaned = []
+
+    _SKIP_PREFIXES = (
+        "### what went well",
+        "### what could improve",
+        "### what could be improved",
+        "### areas for improvement",
+        "### summary",
+        "### overall",
+    )
+    _SKIP_STARTS = (
+        "the assistant effectively",
+        "the assistant provided",
+        "the assistant demonstrated",
+        "the assistant acknowledged",
+        "the assistant recognized",
+        "the assistant successfully",
+        "the assistant showed",
+        "the assistant maintained",
+        "the assistant helped",
+        "there was a lack of",
+        "there was effective",
+        "clear acknowledgment of",
+        "overall, the conversation",
+        "overall, the assistant",
+        "in summary,",
+        "the conversation was",
+    )
+
+    for line in lines:
+        stripped = line.strip().lstrip("•*- ")
+        lower = stripped.lower()
+
+        # Skip markdown headers
+        if lower.startswith("#"):
+            lower_no_hash = lower.lstrip("# ").strip()
+            if any(lower_no_hash.startswith(p.lstrip("# ")) for p in _SKIP_PREFIXES):
+                continue
+
+        # Skip empty lines
+        if len(stripped) < 5:
+            continue
+
+        # Skip boilerplate sentence openings
+        if any(lower.startswith(s) for s in _SKIP_STARTS):
+            continue
+
+        cleaned.append(stripped)
+
+    result = " ".join(cleaned)
+    # Fall back to original if cleaning removed everything
+    return result if len(result) > 20 else text
 
 
 class MemoryStorage:
@@ -361,14 +439,19 @@ class MemoryStorage:
             logger.debug(f"[MemoryStorage] Traceback:\n{traceback.format_exc()}")
 
         # 2) Chroma (semantic)
+        # Clean reflection text for embedding: strip boilerplate headers/prefixes
+        # that cause embedding collapse across reflections. Original markdown
+        # is preserved in metadata for display.
         try:
             if hasattr(self.chroma_store, "add_to_collection"):
+                embedding_text = _clean_reflection_for_embedding(text)
                 md = {
                     "timestamp": ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
                     "type": "reflection",
                     "tags": ",".join(tags),
                     "source": source,
                     "importance_score": 0.7,
+                    "original_text": text[:2000],  # preserve for display
                 }
                 # Ensure collection exists
                 if (getattr(self.chroma_store, "collections", None) is not None
@@ -378,7 +461,7 @@ class MemoryStorage:
                         self.chroma_store.create_collection("reflections")
                     except Exception:
                         pass
-                self.chroma_store.add_to_collection("reflections", text, md)
+                self.chroma_store.add_to_collection("reflections", embedding_text, md)
         except Exception as e:
             logger.debug(f"[MemoryStorage] Chroma add_to_collection failed: {e}")
 
