@@ -500,6 +500,43 @@ class DaemonOrchestrator:
                     f"with resolution for '{display_name}'"
                 )
 
+    def _apply_content_attributions(self, attributions: list) -> None:
+        """Apply retroactive attribution to the most recent shared content.
+
+        When user says "it's by X", find the most recent conversation with
+        content_type metadata and update its content_attribution field.
+        """
+        chroma_store = None
+        if self.memory_system and hasattr(self.memory_system, 'chroma_store'):
+            chroma_store = self.memory_system.chroma_store
+        if not chroma_store:
+            return
+
+        try:
+            # Get recent conversations and find the most recent with content_type
+            recent = chroma_store.get_recent("conversations", limit=10)
+            for item in (recent or []):
+                md = item.get("metadata", {}) or {}
+                if md.get("content_type") and not md.get("content_attribution"):
+                    doc_id = item.get("id")
+                    if not doc_id:
+                        continue
+                    # Apply the first attribution event
+                    updates = {}
+                    for attr_event in attributions:
+                        if attr_event.attribution_type in ("artist", "author"):
+                            updates["content_attribution"] = attr_event.value
+                        elif attr_event.attribution_type == "title":
+                            updates["content_title"] = attr_event.value
+                    if updates:
+                        chroma_store.update_metadata("conversations", doc_id, updates)
+                        self.logger.info(
+                            f"[ContentAttribution] Updated {doc_id} with {updates}"
+                        )
+                    return  # Only update the most recent unattributed content
+        except Exception as e:
+            self.logger.debug(f"[ContentAttribution] Failed (non-fatal): {e}")
+
     # ---------- STM Helper Methods ----------
     def _compute_topic_similarity(self, topic1: str, topic2: str) -> float:
         """
@@ -1977,6 +2014,15 @@ The user is processing/analyzing, open to engagement.
                         self._cascade_entity_resolution(entity_corrections)
                 except Exception as e:
                     self.logger.debug(f"[Orchestrator] Entity correction detection failed (non-fatal): {e}")
+
+            # --- Retroactive content attribution ---
+            if self.correction_detector:
+                try:
+                    attributions = self.correction_detector.detect_attributions(user_input)
+                    if attributions:
+                        self._apply_content_attributions(attributions)
+                except Exception as e:
+                    self.logger.debug(f"[Orchestrator] Attribution detection failed (non-fatal): {e}")
 
             # Summaries now run on shutdown; skip mid-session consolidation
             debug_info.update({

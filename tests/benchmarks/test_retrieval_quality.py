@@ -154,7 +154,7 @@ class TestBenchmarkStructure:
 class TestRealDataRetrievalQuality:
     """Retrieval quality benchmarks using real sampled data."""
 
-    @pytest.mark.parametrize("case_index", range(100))
+    @pytest.mark.parametrize("case_index", range(250))
     async def test_real_data_case(self, real_retrieval_env, real_benchmark_config, case_index):
         """Run a single real-data benchmark case."""
         test_cases = real_benchmark_config["test_cases"]
@@ -191,7 +191,7 @@ class TestRealDataStructure:
     def test_seed_memories_loaded(self, real_retrieval_env):
         """Verify real-data seeds were loaded."""
         seed_count = len(real_retrieval_env["seed_memories"])
-        assert seed_count >= 20, f"Expected >= 20 seeds, got {seed_count}"
+        assert seed_count >= 50, f"Expected >= 50 seeds, got {seed_count}"
 
     def test_must_retrieve_references_valid(self, real_benchmark_config):
         """Verify must_retrieve IDs reference actual seed memories."""

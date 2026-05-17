@@ -210,7 +210,7 @@ def real_seeded_stores(real_benchmark_config, real_reference_time, tmp_path_fact
     """Seed ChromaDB with real sampled memories."""
     from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
     from memory.corpus_manager import CorpusManager
-    from memory.memory_storage import _clean_reflection_for_embedding
+    from memory.memory_storage import _extract_reflection_retrieval_text
 
     chroma_dir = str(tmp_path_factory.mktemp("chroma_real"))
     corpus_dir = tmp_path_factory.mktemp("corpus_real")
@@ -231,9 +231,9 @@ def real_seeded_stores(real_benchmark_config, real_reference_time, tmp_path_fact
         else:
             chroma_content = mem.get("content", "")
 
-        # Clean reflection text for embedding (strip boilerplate headers)
+        # Generate retrieval text for reflections (topic-dense, no boilerplate)
         if mem["collection"] == "reflections":
-            chroma_content = _clean_reflection_for_embedding(chroma_content)
+            chroma_content = _extract_reflection_retrieval_text(chroma_content)
 
         metadata = {
             "timestamp": ts_iso,
@@ -330,7 +330,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         intent = r.get("intent_expected", "unknown")
         by_intent.setdefault(intent, []).append(r)
 
-    header = f"{'Intent':<25} {'Cases':>5} {'Pass':>5} {'Fail':>5} {'Avg Recall':>10} {'Avg MRR':>8}"
+    header = f"{'Intent':<25} {'Cases':>5} {'Retr':>5} {'Pass':>5} {'Fail':>5} {'Avg Recall':>10} {'Avg MRR':>8}"
     terminalreporter.write_line(header)
     terminalreporter.write_line("-" * len(header))
 
@@ -341,10 +341,13 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         failed = len(cases) - passed
         total_pass += passed
         total_fail += failed
-        avg_recall = sum(c.get("recall_at_k", 0) for c in cases) / max(len(cases), 1)
-        avg_mrr = sum(c.get("mrr", 0) for c in cases) / max(len(cases), 1)
+        ret_only = [c for c in cases if c.get("has_retrieval_requirement")]
+        n_ret = len(ret_only)
+        # Compute MRR over retrieval cases only (excludes intent-only zeros)
+        avg_recall = sum(c.get("recall_at_k", 0) for c in ret_only) / max(n_ret, 1) if ret_only else 0.0
+        avg_mrr = sum(c.get("mrr", 0) for c in ret_only) / max(n_ret, 1) if ret_only else 0.0
         terminalreporter.write_line(
-            f"{intent:<25} {len(cases):>5} {passed:>5} {failed:>5} {avg_recall:>10.3f} {avg_mrr:>8.3f}"
+            f"{intent:<25} {len(cases):>5} {n_ret:>5} {passed:>5} {failed:>5} {avg_recall:>10.3f} {avg_mrr:>8.3f}"
         )
 
     terminalreporter.write_line("-" * len(header))
