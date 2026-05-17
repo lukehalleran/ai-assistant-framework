@@ -60,6 +60,19 @@ class EntityCorrectionEvent(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0, description="Detection confidence")
 
 
+class AttributionEvent(BaseModel):
+    """An event indicating the user is attributing previously shared content.
+
+    Example: "It's by The Narcissist Cookbook" → attributes the most recent
+    unattributed shared content (lyrics, poem, etc.) to this artist.
+    """
+
+    attribution_type: str = Field(..., description="'artist', 'author', 'title', or 'source'")
+    value: str = Field(..., description="The attributed name/title")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Detection confidence")
+    raw_text: str = Field("", description="Truncated user message")
+
+
 # ------------------------------------------------------------------
 # Correction patterns
 # ------------------------------------------------------------------
@@ -115,6 +128,24 @@ _ENTITY_STOPWORDS = frozenset({
     "i", "it", "he", "she", "they", "we", "the", "that", "this",
     "who", "what", "my", "your", "our", "but", "and", "not", "no",
 })
+
+# ------------------------------------------------------------------
+# Attribution patterns (for shared content provenance)
+# ------------------------------------------------------------------
+
+# Each tuple: (compiled regex, confidence, attribution_type)
+_ATTRIBUTION_PATTERNS = [
+    # "it's by X" / "that's by X" / "that is by X"
+    (re.compile(r"\b(?:it'?s|that'?s|that\s+(?:was|is))\s+by\s+(.{3,60}?)(?:\.|,|;|\n|$)", re.I), 0.90, "artist"),
+    # "the song/poem is called X" / "it's called X"
+    (re.compile(r"\b(?:it'?s|that'?s|the\s+(?:song|poem|piece|track))\s+(?:is\s+)?called\s+['\"]?(.{3,60}?)['\"]?(?:\.|,|;|\n|$)", re.I), 0.85, "title"),
+    # "that was X's song/poem/piece"
+    (re.compile(r"\bthat\s+(?:was|is)\s+(.{3,40}?)['']s\s+(?:song|poem|piece|work|track)", re.I), 0.85, "artist"),
+    # "by an artist who performs as X" / "by an artist called X"
+    (re.compile(r"\bartist\s+(?:who\s+)?(?:performs|goes)\s+(?:as|by)\s+(.{3,60}?)(?:\.|,|;|\n|$)", re.I), 0.90, "artist"),
+    # "the artist is X" / "the poet is X"
+    (re.compile(r"\bthe\s+(?:artist|poet|author|band|singer)\s+is\s+(.{3,60}?)(?:\.|,|;|\n|$)", re.I), 0.85, "artist"),
+]
 
 # Minimum confidence to emit an event
 _MIN_CONFIDENCE = 0.6
@@ -236,6 +267,45 @@ class CorrectionDetector:
             logger.info(
                 "[CorrectionDetector] Detected %d entity correction(s): %s",
                 len(events), ", ".join(e.entity_name for e in events),
+            )
+
+        return events
+
+    def detect_attributions(
+        self, user_message: str
+    ) -> List["AttributionEvent"]:
+        """Detect when user attributes previously shared content to an artist/author.
+
+        Examples:
+            "It's by The Narcissist Cookbook" → artist attribution
+            "the song is called Ananke" → title attribution
+            "by an artist who performs as the nassaricts cookbook" → artist attribution
+
+        Returns:
+            List of AttributionEvent for detected attributions.
+        """
+        if not user_message:
+            return []
+
+        events: List[AttributionEvent] = []
+
+        for pattern, confidence, attr_type in _ATTRIBUTION_PATTERNS:
+            m = pattern.search(user_message)
+            if m and confidence >= _MIN_CONFIDENCE:
+                value = m.group(1).strip().rstrip(".,;")
+                if len(value) > 2:
+                    events.append(AttributionEvent(
+                        attribution_type=attr_type,
+                        value=value,
+                        confidence=confidence,
+                        raw_text=user_message[:200],
+                    ))
+                    break  # Take the first (highest priority) match
+
+        if events:
+            logger.info(
+                "[CorrectionDetector] Detected attribution: %s=%s",
+                events[0].attribution_type, events[0].value,
             )
 
         return events

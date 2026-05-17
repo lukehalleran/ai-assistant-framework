@@ -135,6 +135,430 @@ def _clean_reflection_for_embedding(text: str) -> str:
     return result if len(result) > 20 else text
 
 
+# ---------------------------------------------------------------------------
+# Reflection retrieval text generation (v2)
+# ---------------------------------------------------------------------------
+
+# Boilerplate patterns to strip entirely from retrieval text
+_REFLECTION_BOILERPLATE_HEADERS = {
+    "what went well", "what could improve", "what could be improved",
+    "areas for improvement", "summary", "overall", "what to improve",
+    "high-level insights", "key insights",
+}
+
+_REFLECTION_BOILERPLATE_STARTS = (
+    "the assistant effectively",
+    "the assistant provided",
+    "the assistant demonstrated",
+    "the assistant acknowledged",
+    "the assistant recognized",
+    "the assistant successfully",
+    "the assistant showed",
+    "the assistant maintained",
+    "the assistant helped",
+    "the assistant offered",
+    "the assistant asked",
+    "the assistant displayed",
+    "the assistant was",
+    "the assistant initially",
+    "the assistant could",
+    "the assistant should",
+    "the conversation was",
+    "the conversation focused",
+    "the conversation maintained",
+    "the conversation showed",
+    "there was a lack",
+    "there was effective",
+    "there was a missed",
+    "clear acknowledgment",
+    "clear communication",
+    "overall, the conversation",
+    "overall, the assistant",
+    "overall, the session",
+    "in summary,",
+    "in future conversations",
+    "in future interactions",
+    "this session showed",
+    "this session demonstrated",
+    "it maintained a",
+    "it effectively",
+    "responses were generally",
+    "responses were well",
+)
+
+# Generic filler phrases to remove from within lines
+_REFLECTION_FILLER = (
+    "which helped in building rapport",
+    "which helped in maintaining",
+    "which helped to maintain",
+    "which helped create a deeper connection",
+    "demonstrating adaptability to user preferences",
+    "contributing to a positive conversational flow",
+    "promoting a positive interaction",
+    "allowing for an engaging dialogue",
+    "maintaining clarity about",
+    "which can help in building",
+    "indicating a need for",
+    "particularly when the user",
+)
+
+
+def _extract_reflection_retrieval_text(text: str) -> str:
+    """
+    Generate a compact, topic-dense retrieval text from reflection markdown.
+
+    Unlike _clean_reflection_for_embedding (which just strips headers),
+    this function aggressively extracts only the distinguishing content:
+    specific topics, entities, actions, decisions, and states.
+
+    Returns a structured retrieval document optimized for embedding search.
+    """
+    if not text:
+        return ""
+
+    # Handle single-line format (YAML serialization collapses newlines).
+    # Re-split on markdown headers and bullet markers that appear mid-line.
+    normalized = text
+    # Split "### Header" markers back to newlines
+    normalized = re.sub(r'\s*(###\s+)', r'\n\1', normalized)
+    # Split header line from its content: "### What went well - content" → header + content
+    normalized = re.sub(
+        r'(###\s+(?:What\s+(?:went\s+well|to\s+improve|could\s+(?:improve|be\s+improved))'
+        r'|Areas?\s+for\s+improvement|Summary|Overall|High-level\s+insights|Key\s+insights))'
+        r'\s*[-–—]\s*',
+        r'\1\n- ',
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    # Split " - " bullet points that follow a period or end of sentence
+    normalized = re.sub(r'(?<=[.!?])\s+- ', r'\n- ', normalized)
+
+    lines = normalized.split("\n")
+    substantive = []
+    entities = set()
+    topics = set()
+
+    for line in lines:
+        stripped = line.strip().lstrip("•*-# ")
+        if len(stripped) < 10:
+            continue
+        lower = stripped.lower()
+
+        # Skip headers
+        if line.strip().startswith("#"):
+            header_text = line.strip().lstrip("# ").lower().strip()
+            if any(header_text.startswith(h) for h in _REFLECTION_BOILERPLATE_HEADERS):
+                continue
+
+        # Skip boilerplate sentence starts
+        if any(lower.startswith(s) for s in _REFLECTION_BOILERPLATE_STARTS):
+            # But still extract specific nouns/entities from these lines
+            _extract_specifics(stripped, entities, topics)
+            continue
+
+        # Remove filler phrases from the line
+        cleaned_line = stripped
+        for filler in _REFLECTION_FILLER:
+            cleaned_line = cleaned_line.replace(filler, "")
+        cleaned_line = re.sub(r'\s+', ' ', cleaned_line).strip()
+
+        if len(cleaned_line) > 10:
+            substantive.append(cleaned_line)
+            _extract_specifics(cleaned_line, entities, topics)
+
+    # Clean up entities: remove fragments and possessives
+    entities = _clean_entities(entities)
+
+    # Clean up topics: remove duplicates, substrings, and trim
+    topics = _dedupe_topics(topics)
+
+    # Build retrieval text as natural language (not structured format).
+    # Embedding models perform better with natural text than key-value pairs.
+    # Prepend entities/topics as a brief context line, then substantive content.
+    parts = []
+
+    # Brief context prefix with entities and topics (helps disambiguation)
+    context_tokens = []
+    for e in sorted(entities)[:5]:
+        context_tokens.append(e)
+    for t in sorted(topics)[:4]:
+        # Only add topics that aren't already covered by entities
+        if not any(t.lower() in e.lower() or e.lower() in t.lower() for e in context_tokens):
+            context_tokens.append(t)
+    if context_tokens:
+        parts.append(" ".join(context_tokens[:6]))
+
+    if substantive:
+        content = " ".join(substantive)
+        if len(content) > 500:
+            content = content[:500]
+        parts.append(content)
+
+    result = " ".join(parts)
+    return result if len(result) > 20 else _clean_reflection_for_embedding(text)
+
+
+def _clean_entities(entities: set) -> set:
+    """Remove fragment entities and normalize possessives."""
+    result = set()
+    for e in entities:
+        # Skip fragments starting with 's or possessive leftovers
+        if e.startswith("s ") or e.startswith("'s"):
+            continue
+        # Remove trailing 's from possessives: "Auggie's" → "Auggie"
+        if e.endswith("'s"):
+            e = e[:-2]
+        # Skip very short or common
+        if len(e) < 3 or e.lower() in _COMMON_WORDS or e in _HEADER_WORDS:
+            continue
+        result.add(e)
+    return result
+
+
+def _dedupe_topics(topics: set) -> set:
+    """Remove duplicate/substring topics, trim to reasonable length."""
+    # Trim each topic
+    trimmed = set()
+    for t in topics:
+        t = t.strip().rstrip(".,;)")
+        if len(t) > 50:
+            t = t[:50]
+        if len(t) > 4:
+            trimmed.add(t)
+
+    # Remove substrings (keep the longer version)
+    result = set()
+    sorted_topics = sorted(trimmed, key=len, reverse=True)
+    for t in sorted_topics:
+        # Check if this topic is a substring of any already-kept topic
+        if not any(t.lower() in kept.lower() for kept in result):
+            result.add(t)
+
+    return result
+
+
+def _extract_specifics(text: str, entities: set, topics: set):
+    """
+    Extract specific nouns, entities, and topics from a line.
+    Looks for capitalized words, quoted terms, technical terms, and
+    specific patterns that indicate real content vs generic language.
+    """
+    # Capitalized proper nouns (3+ chars, not sentence-start, not common)
+    words = text.split()
+    for i, word in enumerate(words):
+        clean = word.strip(".,!?\"'()[]{}:;-")
+        if len(clean) < 3:
+            continue
+        # Proper nouns: capitalized, not at sentence start, not common
+        if (i > 0 and clean[0].isupper() and clean.lower() not in _COMMON_WORDS
+                and not clean.isupper() and clean not in _HEADER_WORDS):
+            entities.add(clean)
+
+    # Multi-word proper nouns: "Auggie's name" → extract "Auggie"
+    for m in re.finditer(r"(?<!\w')(?<!\w)\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]+)*)\b", text):
+        term = m.group(1).strip()
+        if len(term) > 2 and term.lower() not in _COMMON_WORDS and term not in _HEADER_WORDS:
+            entities.add(term)
+
+    # Quoted terms
+    for m in re.finditer(r'"([^"]{3,40})"', text):
+        entities.add(m.group(1))
+    for m in re.finditer(r"'([^']{3,30})'", text):
+        term = m.group(1)
+        if term.lower() not in _COMMON_WORDS:
+            entities.add(term)
+
+    # Technical/specific terms (patterns)
+    tech_patterns = [
+        r'\b(FAISS|ChromaDB|LLM|API|RAG|NLP|ML|AI|GPU|CPU|OMSA|SVM|GAN|BGE|IVF)\b',
+        r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b',  # CamelCase
+        r'\b\w+\.py\b',  # Python files
+        r'\b(?:Python|JavaScript|TypeScript|React|FastAPI|Django|Flask|Gradio)\b',
+    ]
+    for pattern in tech_patterns:
+        for m in re.finditer(pattern, text):
+            entities.add(m.group(0))
+
+    # Parenthetical specifics: "e.g., X and Y" or "(e.g., X)"
+    for m in re.finditer(r'\(e\.g\.,?\s*([^)]{5,80})\)', text):
+        content = m.group(1).strip()
+        topics.add(content)
+    for m in re.finditer(r'e\.g\.,?\s+([^,.\n)]{5,60})', text):
+        content = m.group(1).strip().rstrip(")")
+        if len(content) > 4:
+            topics.add(content)
+
+    # Topic extraction: "regarding X", "about X", "related to X"
+    topic_patterns = [
+        r'(?:regarding|about|around|concerning|related to|involving)\s+(?:the\s+)?(?:user\'?s?\s+)?([^,.\n]{5,60})',
+        r'(?:topics?\s+(?:like|such as|including))\s+([^,.\n]{5,60})',
+        r'(?:discussed|mentioned|explored|addressed)\s+([^,.\n]{5,60})',
+        r'(?:such as|like)\s+(?:the\s+)?([^,.\n]{5,50})',
+    ]
+    for pattern in topic_patterns:
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            topic = m.group(1).strip().rstrip(".,;)")
+            if len(topic) > 4 and topic.lower() not in _COMMON_WORDS:
+                topics.add(topic)
+
+
+# Words that appear in headers/boilerplate but should not be extracted as entities.
+# Includes capitalized verbs/adjectives common in reflection bullet points.
+_HEADER_WORDS = frozenset({
+    "What", "Went", "Well", "Could", "Improve", "Areas", "Improvement",
+    "Summary", "Overall", "Insights", "High", "Key", "Level",
+    "Technical", "Effective", "Suggestions", "Response", "However",
+    "Additionally", "Furthermore", "Moreover", "Particularly",
+    "Specifically", "Generally", "Sometimes", "Perhaps",
+    # Capitalized verbs/adjectives common at bullet starts
+    "Prioritize", "Prioritizing", "Incorporate", "Incorporating",
+    "Confirming", "Confirmed", "Regularly", "Summarize", "Summarizing",
+    "Structure", "Structured", "Maintaining", "Maintained",
+    "Avoiding", "Addressed", "Continued", "Continuing",
+    "Providing", "Recognizing", "Acknowledged", "Acknowledging",
+    "Encouraging", "Encouraged", "Discussing", "Discussed",
+    "Exploring", "Explored", "Clarifying", "Clarified",
+    "Balancing", "Balanced", "Tracking", "Tracked",
+    "Responding", "Responded", "Supporting", "Supported",
+    "Adapting", "Adapted", "Engaging", "Engaged",
+    "Offering", "Offered", "Checking", "Checked",
+    "Validating", "Validated", "Reviewing", "Reviewed",
+    "Proactive", "Contextual", "Personalization", "Personalized",
+    "Awareness", "Always", "Never", "Often", "Rarely",
+    "Sometimes", "Consider", "Ensure", "Focus",
+    # Generic reflection evaluation words
+    "Strengths", "Weaknesses", "Opportunities", "Challenges",
+    "Progress", "Growth", "Development", "Achievement",
+})
+
+
+def extract_reflection_metadata(text: str) -> dict:
+    """
+    Extract structured metadata from a reflection for storage and retrieval.
+
+    Returns dict with: primary_topic, secondary_topics, entities, themes,
+    emotional_tone, project_area.
+    """
+    entities = set()
+    topics = set()
+
+    for line in text.split("\n"):
+        stripped = line.strip().lstrip("•*- ")
+        lower = stripped.lower()
+        # Skip headers
+        if stripped.startswith("#"):
+            continue
+        # Skip boilerplate
+        if any(lower.lstrip("# ").startswith(s) for s in _REFLECTION_BOILERPLATE_STARTS):
+            continue
+        if len(stripped) > 10:
+            _extract_specifics(stripped, entities, topics)
+
+    # Clean entities
+    entities = _clean_entities(entities)
+
+    # Detect emotional tone
+    emotional_tone = _detect_reflection_tone(text)
+
+    # Detect project area
+    project_area = _detect_project_area(text)
+
+    # Clean and dedupe topics
+    topics = _dedupe_topics(topics)
+
+    # Primary topic = longest/most specific topic found
+    sorted_topics = sorted(topics, key=len, reverse=True)
+    primary_topic = sorted_topics[0] if sorted_topics else ""
+    secondary_topics = sorted_topics[1:5] if len(sorted_topics) > 1 else []
+
+    # Themes (high-level categories)
+    themes = _detect_themes(text)
+
+    return {
+        "primary_topic": primary_topic[:100],
+        "secondary_topics": ",".join(secondary_topics)[:200],
+        "entities": ",".join(sorted(entities)[:10])[:200],
+        "themes": ",".join(sorted(themes)[:5])[:100],
+        "emotional_tone": emotional_tone,
+        "project_area": project_area,
+    }
+
+
+def _detect_reflection_tone(text: str) -> str:
+    """Detect the emotional tone of a reflection."""
+    lower = text.lower()
+    tones = []
+    if any(w in lower for w in ("anxiety", "anxious", "worried", "stress", "overwhelm")):
+        tones.append("anxious")
+    if any(w in lower for w in ("happy", "excited", "proud", "accomplish", "breakthrough")):
+        tones.append("positive")
+    if any(w in lower for w in ("frustrated", "stuck", "confused", "difficult")):
+        tones.append("frustrated")
+    if any(w in lower for w in ("sad", "lonely", "grief", "loss", "miss")):
+        tones.append("sad")
+    if any(w in lower for w in ("calm", "balanced", "stable", "grounded")):
+        tones.append("calm")
+    if any(w in lower for w in ("productive", "focused", "progress", "momentum")):
+        tones.append("productive")
+    return ",".join(tones) if tones else "neutral"
+
+
+def _detect_project_area(text: str) -> str:
+    """Detect project/domain area from reflection text."""
+    lower = text.lower()
+    if any(w in lower for w in ("daemon", "rag", "retrieval", "chromadb", "embedding")):
+        return "daemon"
+    if any(w in lower for w in ("school", "course", "study", "homework", "lecture", "omsa", "exam")):
+        return "academic"
+    if any(w in lower for w in ("health", "medication", "doctor", "sleep", "exercise", "gym")):
+        return "health"
+    if any(w in lower for w in ("work", "job", "career", "interview", "internship")):
+        return "career"
+    if any(w in lower for w in ("family", "brother", "sister", "mom", "dad", "partner")):
+        return "relationships"
+    return ""
+
+
+def _detect_themes(text: str) -> set:
+    """Detect high-level themes from reflection content."""
+    lower = text.lower()
+    themes = set()
+    theme_keywords = {
+        "technical": ("code", "programming", "api", "system", "architecture", "bug", "test"),
+        "emotional": ("feeling", "emotion", "anxiety", "stress", "happy", "sad", "cope"),
+        "academic": ("study", "course", "lecture", "exam", "homework", "school", "grade"),
+        "health": ("health", "sleep", "exercise", "medication", "diet", "pain", "doctor"),
+        "social": ("friend", "family", "relationship", "partner", "conversation", "empathy"),
+        "productivity": ("goal", "progress", "deadline", "task", "plan", "schedule", "focus"),
+        "creative": ("idea", "brainstorm", "explore", "experiment", "novel", "design"),
+    }
+    for theme, keywords in theme_keywords.items():
+        if any(k in lower for k in keywords):
+            themes.add(theme)
+    return themes
+
+
+# Common words to exclude from entity/topic extraction
+_COMMON_WORDS = frozenset({
+    "the", "this", "that", "these", "those", "they", "them", "their",
+    "what", "which", "where", "when", "who", "whom", "whose", "why", "how",
+    "about", "above", "after", "again", "against", "also", "although",
+    "because", "before", "between", "both", "could", "would", "should",
+    "does", "have", "having", "here", "there", "very", "more", "most",
+    "some", "such", "than", "then", "from", "into", "with", "without",
+    "been", "being", "each", "every", "well", "good", "better", "best",
+    "user", "assistant", "conversation", "response", "responses",
+    "session", "interaction", "interactions", "future", "overall",
+    "effectively", "particularly", "specifically", "generally",
+    "however", "moreover", "furthermore", "additionally", "provide",
+    "provided", "providing", "demonstrated", "maintained", "showed",
+    "helped", "included", "discussed", "addressed", "offered",
+    "needs", "need", "important", "helpful", "relevant", "appropriate",
+    "clear", "effective", "positive", "negative", "better", "improved",
+    "true", "false", "none", "null", "undefined",
+})
+
+
 class MemoryStorage:
     """
     Memory storage operations.
@@ -343,6 +767,19 @@ class MemoryStorage:
             if session_id:
                 raw_metadata["session_id"] = session_id
 
+            # Content type detection (lyrics, poems, code, quotes, etc.)
+            try:
+                from core.content_type_detector import detect_content_type
+                ct = detect_content_type(query)
+                if ct.content_type:
+                    raw_metadata["content_type"] = ct.content_type
+                    if ct.title_hint:
+                        raw_metadata["content_title"] = ct.title_hint
+                    if ct.attribution_hint:
+                        raw_metadata["content_attribution"] = ct.attribution_hint
+            except Exception:
+                pass  # Non-fatal — content type detection is best-effort
+
             # Provenance metadata (audit trail)
             if provenance and isinstance(provenance, dict):
                 try:
@@ -439,12 +876,13 @@ class MemoryStorage:
             logger.debug(f"[MemoryStorage] Traceback:\n{traceback.format_exc()}")
 
         # 2) Chroma (semantic)
-        # Clean reflection text for embedding: strip boilerplate headers/prefixes
-        # that cause embedding collapse across reflections. Original markdown
+        # Generate topic-dense retrieval text for embedding. Original markdown
         # is preserved in metadata for display.
         try:
             if hasattr(self.chroma_store, "add_to_collection"):
-                embedding_text = _clean_reflection_for_embedding(text)
+                embedding_text = _extract_reflection_retrieval_text(text)
+                # Extract structured metadata for entity/topic overlap scoring
+                refl_meta = extract_reflection_metadata(text)
                 md = {
                     "timestamp": ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
                     "type": "reflection",
@@ -452,6 +890,12 @@ class MemoryStorage:
                     "source": source,
                     "importance_score": 0.7,
                     "original_text": text[:2000],  # preserve for display
+                    "primary_topic": refl_meta.get("primary_topic", ""),
+                    "secondary_topics": refl_meta.get("secondary_topics", ""),
+                    "entities": refl_meta.get("entities", ""),
+                    "themes": refl_meta.get("themes", ""),
+                    "emotional_tone": refl_meta.get("emotional_tone", ""),
+                    "project_area": refl_meta.get("project_area", ""),
                 }
                 # Ensure collection exists
                 if (getattr(self.chroma_store, "collections", None) is not None

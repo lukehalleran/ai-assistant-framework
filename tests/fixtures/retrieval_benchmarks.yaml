@@ -1743,81 +1743,101 @@ test_cases:
     query: "What do you remember about me and my life?"
     expected_intent: meta_conversational
     expected_confidence_min: 0.80
-    must_retrieve: []
-    must_not_retrieve: []
+    must_retrieve:
+      - mem_conv_dog
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_redis
     top_k: 10
-    min_recall: 0.0
-    description: "Meta query about user; validates intent classification"
+    min_recall: 1.0
+    description: "Meta query about user; broad personal recall should include pets"
 
   - id: meta_hobbies
     query: "What do you know about my hobbies and interests?"
     expected_intent: meta_conversational
     expected_confidence_min: 0.80
-    must_retrieve: []
-    must_not_retrieve: []
+    must_retrieve:
+      - mem_conv_feeling_better
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_redis
     top_k: 10
-    min_recall: 0.0
-    description: "Meta query about hobbies; validates intent classification"
+    min_recall: 1.0
+    description: "Meta hobby recall; broad query"
 
   - id: meta_family_knowledge
     query: "What do you know about my family?"
     expected_intent: meta_conversational
     expected_confidence_min: 0.80
-    must_retrieve: []
-    must_not_retrieve: []
+    must_retrieve:
+      - mem_conv_brother_job
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_redis
     top_k: 10
-    min_recall: 0.0
-    description: "Meta family query; validates intent classification"
+    min_recall: 1.0
+    description: "Meta family recall; should find brother/sister/dad/mom"
 
   - id: meta_work_knowledge
     query: "What do you remember about my job and career?"
     expected_intent: meta_conversational
     expected_confidence_min: 0.80
-    must_retrieve: []
-    must_not_retrieve: []
+    must_retrieve:
+      - mem_conv_stress
+    must_not_retrieve:
+      - mem_conv_cooking
     top_k: 10
-    min_recall: 0.0
-    description: "Meta career query; validates intent classification"
+    min_recall: 1.0
+    description: "Meta career recall; stress/burnout are work-adjacent"
 
   - id: meta_health_knowledge
     query: "What do you know about my health?"
     expected_intent: meta_conversational
     expected_confidence_min: 0.80
-    must_retrieve: []
-    must_not_retrieve: []
+    must_retrieve:
+      - mem_conv_back_pain
+    must_not_retrieve:
+      - mem_conv_math
     top_k: 10
-    min_recall: 0.0
-    description: "Meta health query; validates intent classification"
+    min_recall: 1.0
+    description: "Meta health recall; back_pain is health-specific"
 
   - id: meta_pet_knowledge
     query: "What do you remember about my pets?"
     expected_intent: meta_conversational
     expected_confidence_min: 0.80
-    must_retrieve: []
-    must_not_retrieve: []
+    must_retrieve:
+      - mem_conv_dog
+    must_not_retrieve:
+      - mem_conv_math
+      - mem_conv_redis
     top_k: 10
-    min_recall: 0.0
-    description: "Meta pets query; validates intent classification"
+    min_recall: 1.0
+    description: "Meta pet recall; should find dog/cat memories"
 
   - id: meta_project_knowledge
     query: "What do you know about the project I am working on?"
     expected_intent: meta_conversational
     expected_confidence_min: 0.80
-    must_retrieve: []
-    must_not_retrieve: []
+    must_retrieve:
+      - mem_conv_project_auth
+    must_not_retrieve:
+      - mem_conv_cooking
     top_k: 10
-    min_recall: 0.0
-    description: "Meta project query; validates intent classification"
+    min_recall: 1.0
+    description: "Meta project recall; auth is project-specific"
 
   - id: meta_emotional_history
     query: "What do you remember about how I have been feeling?"
     expected_intent: meta_conversational
     expected_confidence_min: 0.80
-    must_retrieve: []
-    must_not_retrieve: []
+    must_retrieve:
+      - mem_conv_stress
+    must_not_retrieve:
+      - mem_conv_math
     top_k: 10
-    min_recall: 0.0
-    description: "Meta emotional state query; validates intent classification"
+    min_recall: 1.0
+    description: "Meta emotional recall; stress/anxiety/feelings"
 
   # =========================================================================
   # PROJECT_WORK — code/feature/PR oriented

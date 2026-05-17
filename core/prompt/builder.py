@@ -1470,6 +1470,23 @@ class UnifiedPromptBuilder:
             # Add memory ID map for citations
             context["memory_id_map"] = self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
 
+            # Ambiguity detection: check if short user message references a phrase
+            # that appears in multiple sessions (prevents content conflation)
+            try:
+                from core.ambiguity_detector import AmbiguityDetector
+                ambiguity = AmbiguityDetector.detect(
+                    user_input,
+                    context.get("recent_conversations", []),
+                )
+                if ambiguity.is_ambiguous:
+                    context["disambiguation_notes"] = [ambiguity.disambiguation_note]
+                    logger.info(
+                        f"[AmbiguityDetector] Detected: '{ambiguity.ambiguous_phrase}' "
+                        f"in {len(ambiguity.matching_entries)} entries across sessions"
+                    )
+            except Exception as e:
+                logger.debug(f"[AmbiguityDetector] Detection failed (non-fatal): {e}")
+
             return context
         except Exception as e:
             logger.warning(f"Lightweight context building failed: {e}")

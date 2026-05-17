@@ -12,7 +12,10 @@ Module Contract
   - process_shutdown_memory(session_conversations, topic, **kwargs) -> Dict[str, Any]
     Main entry: runs all consolidation phases and returns results summary.
   - run_shutdown_reflection(session_conversations, topic, session_context) -> Optional[str]
-    Generates and persists session-end reflections.
+    Generates topic-specific session reflections with entity-rich content
+    (SESSION TOPIC, KEY ENTITIES, WHAT HAPPENED, PATTERNS & INSIGHTS).
+    Stored as retrieval text via _extract_reflection_retrieval_text() for embedding,
+    with structured metadata (primary_topic, entities, themes, emotional_tone, project_area).
 - Internal phases (called by process_shutdown_memory):
   - _generate_block_summaries(entries, conversations, topic) — fixed-size block summaries
   - _store_summary(summary_text, N, b, start, end, block) — persists with source_doc_ids backlinks,
@@ -1723,12 +1726,22 @@ JSON:"""
                 sum_texts.append(s.strip())
 
         prompt = (
-            "You are a neutral QA reviewer for an AI assistant session.\n"
-            "Return three sections (3\u20136 bullets each):\n"
-            "1) What went well\n"
-            "2) What to improve\n"
-            "3) High-level insights (durable heuristics to carry forward)\n"
-            "Avoid praise; be specific and actionable.\n\n"
+            "You are a session reviewer for an AI assistant.\n"
+            "Produce a reflection with these sections:\n\n"
+            "1) SESSION TOPIC: One line stating the primary topic/domain discussed "
+            "(e.g., \"OMSA homework on regression\", \"Daemon retrieval benchmarks\", "
+            "\"anxiety about work deadlines\").\n\n"
+            "2) KEY ENTITIES: List specific names, projects, tools, people, places, "
+            "or concepts mentioned (e.g., \"FAISS, Auggie, Georgia Tech, ChromaDB\"). "
+            "Do NOT list generic words like \"the user\" or \"the assistant\".\n\n"
+            "3) WHAT HAPPENED: 3-5 bullets describing specific events, decisions, "
+            "breakthroughs, or problems from this session. Use concrete nouns and "
+            "names. Do NOT write generic assistant-evaluation language like "
+            "\"the assistant effectively\" or \"demonstrated understanding\".\n\n"
+            "4) PATTERNS & INSIGHTS: 2-3 bullets on durable observations to carry "
+            "forward. Be specific about what and why.\n\n"
+            "Keep it concise and fact-dense. Every bullet should contain at least "
+            "one specific noun, name, or concrete detail.\n\n"
         )
         if sum_texts:
             sum_use = sum_texts if REFLECTION_MAX_SUMMARIES <= 0 else sum_texts[:REFLECTION_MAX_SUMMARIES]

@@ -4,7 +4,7 @@
 
 Daemon is a production-grade conversational RAG system with a 5-tier hierarchical memory architecture. Features multi-stage semantic gating, crisis-aware tone detection, multi-provider LLM support, knowledge graph, synthesis dreaming, visual memory, and agentic search.
 
-**Stats:** ~143K lines across 444 files (392 Python), 173 test files, 3,559 tests. Last full run: 2026-05-01 (3248 passed, 5 wizard-only failures).
+**Stats:** ~143K lines across 450+ files (395+ Python), 177 test files, 3,600+ tests. Last full run: 2026-05-17 (2417 unit + 305 benchmark passed, 0 failures).
 
 ## Critical Rules
 
@@ -76,8 +76,10 @@ core/                         # Request orchestration
 ├── context_pipeline.py       # Query analysis (tone, topic, intent, STM)
 ├── intent_classifier.py      # Regex-first, 9 types, drives retrieval/scoring
 ├── escalation_tracker.py     # Crisis cooldown strategies
-├── correction_detector.py    # Pattern-based correction/confirmation
+├── correction_detector.py    # Pattern-based correction/confirmation + content attribution
 ├── uncertainty_detector.py   # "I don't know" detection → agentic retry
+├── content_type_detector.py  # Regex detection of shared content (lyrics, poems, code, quotes)
+├── ambiguity_detector.py     # Cross-session phrase ambiguity detection → disambiguation notes
 ├── response_planner.py       # Pre-answer plan + post-answer review gate
 ├── git_stats_manager.py      # Read-only git repo stats (agentic tool)
 ├── response_generator.py
@@ -88,13 +90,13 @@ core/                         # Request orchestration
 │   ├── types.py              # SearchDecision, tool definitions
 │   └── protocols.py          # Native tools + XML parsing
 └── prompt/                   # Modular prompt system
-    ├── builder.py            # Thin orchestrator
+    ├── builder.py            # Thin orchestrator + ambiguity detection wiring
     ├── base.py               # Base utilities + fallback classes
     ├── context_gatherer.py   # Mixin compositor
     ├── gatherer_web.py       # Web search
     ├── gatherer_memory.py    # Conversations, summaries, reflections, facts, profile
     ├── gatherer_knowledge.py # Notes, docs, wiki, git, graph, threads, insights
-    ├── formatter.py          # Section assembly + feature inventory
+    ├── formatter.py          # Section assembly + session boundaries + content object rendering
     ├── hygiene.py            # Dedup, caps, backfill
     ├── proposal_filter.py    # Code proposal retrieval + filtering
     ├── summarizer.py         # LLM dynamic compression
@@ -102,10 +104,10 @@ core/                         # Request orchestration
 
 memory/                       # Memory system
 ├── memory_coordinator.py     # Thin orchestrator
-├── shutdown_processor.py     # Session-end processing
-├── memory_storage.py         # Persistence + graph ingestion + reflection embedding cleanup
+├── shutdown_processor.py     # Session-end processing + topic-specific reflection generation
+├── memory_storage.py         # Persistence + graph ingestion + reflection retrieval text + content type metadata
 ├── memory_scorer.py          # Scoring with intent overrides + graph boost
-├── memory_retriever.py       # Retrieval + semantic-primary fact ranking
+├── memory_retriever.py       # Retrieval + reflection v2 subsystem + semantic-primary fact ranking
 ├── fact_extractor.py         # Dual-budget fact extraction (user + entity)
 ├── llm_fact_extractor.py     # LLM-assisted extraction with relation reuse
 ├── truth_scorer.py           # Evidence-based truth (confirmation/correction/contradiction)

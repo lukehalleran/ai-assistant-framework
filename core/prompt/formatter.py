@@ -146,6 +146,89 @@ def _staleness_prefix(item) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Session boundary detection for conversation rendering
+# ---------------------------------------------------------------------------
+
+def _detect_session_boundary(
+    ts_prev: Optional[datetime], ts_current: Optional[datetime], gap_hours: float = 2.0
+) -> bool:
+    """
+    Detect whether two consecutive conversation entries cross a session boundary.
+
+    A boundary exists when:
+    - ts_prev is None (first entry starts a session)
+    - Dates differ (different calendar day)
+    - Time gap exceeds gap_hours
+
+    Used to insert visual session markers in [RECENT CONVERSATION] so the LLM
+    can distinguish which content belongs to which session.
+    """
+    if ts_prev is None:
+        return True
+    if ts_current is None:
+        return False
+    try:
+        # Normalize to naive datetimes for comparison
+        prev = ts_prev.replace(tzinfo=None) if hasattr(ts_prev, 'tzinfo') and ts_prev.tzinfo else ts_prev
+        curr = ts_current.replace(tzinfo=None) if hasattr(ts_current, 'tzinfo') and ts_current.tzinfo else ts_current
+        # Different calendar day = new session
+        if prev.date() != curr.date():
+            return True
+        # Large time gap = new session
+        gap = abs((prev - curr).total_seconds()) / 3600.0
+        if gap >= gap_hours:
+            return True
+    except (AttributeError, TypeError):
+        return False
+    return False
+
+
+def _format_session_header(ts: datetime) -> str:
+    """
+    Format a session boundary header with relative day label.
+
+    Examples:
+        --- Session: Today (Sat, May 17) ---
+        --- Session: Yesterday (Fri, May 16) ---
+        --- Session: 3 days ago (Wed, May 14) ---
+    """
+    try:
+        from utils.time_manager import format_relative_timestamp
+        rel = format_relative_timestamp(ts)
+        # rel looks like "2026-05-17 11:41 (today)" — extract the day label
+        # and the date for the header
+        day_name = ts.strftime("%a, %b %-d")
+        if "(today)" in rel.lower():
+            return f"--- Session: Today ({day_name}) ---"
+        elif "(yesterday)" in rel.lower():
+            return f"--- Session: Yesterday ({day_name}) ---"
+        else:
+            # Extract "N days ago" from the relative label
+            import re
+            m = re.search(r'\((\d+\s+days?\s+ago)\)', rel, re.IGNORECASE)
+            if m:
+                return f"--- Session: {m.group(1).capitalize()} ({day_name}) ---"
+            return f"--- Session: {day_name} ---"
+    except Exception:
+        return f"--- Session: {ts.strftime('%Y-%m-%d') if ts else 'Unknown'} ---"
+
+
+def _parse_entry_timestamp(mem: dict) -> Optional[datetime]:
+    """Extract a datetime from a conversation entry's timestamp field."""
+    ts = mem.get("timestamp", "")
+    if not ts:
+        ts = (mem.get("metadata") or {}).get("timestamp", "")
+    if isinstance(ts, datetime):
+        return ts
+    if ts:
+        try:
+            return datetime.fromisoformat(str(ts))
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
 def _is_multimodal_model(model_id: str) -> bool:
     """Check if a model ID corresponds to a multimodal-capable model."""
     if not model_id:
@@ -948,6 +1031,28 @@ class PromptFormatter:
                 if tags_str and content:
                     content += f"\nTags: {{{tags_str}}}"
 
+                # Render shared content objects with provenance markers
+                md = mem.get("metadata", {}) or {}
+                content_type = md.get("content_type", "") or mem.get("content_type", "")
+                if content_type:
+                    type_labels = {
+                        "poem": "Poem", "lyrics": "Song lyrics",
+                        "code": "Code", "quote": "Quote",
+                        "message": "Shared message", "dream": "Dream",
+                    }
+                    label = type_labels.get(content_type, content_type.capitalize())
+                    title = md.get("content_title", "") or mem.get("content_title", "")
+                    attr = md.get("content_attribution", "") or mem.get("content_attribution", "")
+                    parts = [f"[SHARED — {label}"]
+                    if title:
+                        parts[0] += f' "{title}"'
+                    if ts_str:
+                        parts[0] += f", {ts_str}"
+                    if attr:
+                        parts[0] += f", by {attr}"
+                    parts[0] += "]"
+                    content = parts[0] + "\n" + content
+
                 # Sanitize any embedded section headers to prevent prompt pollution
                 content = _sanitize_embedded_headers(content)
 
@@ -957,18 +1062,28 @@ class PromptFormatter:
 
         sections: list[str] = []
 
-        # Recent conversations
+        # Recent conversations — with session boundary markers
         recent = context.get("recent_conversations", []) or []
         logger.debug(f"[DEBUG RECENT] _assemble_prompt: Got {len(recent)} items in recent_conversations")
         recent_lines: list[str] = []
+        prev_ts: Optional[datetime] = None
         for i, mem in enumerate(recent, start=1):
-            content, ts = mem_parts(mem)
+            content, ts_str = mem_parts(mem)
             if i <= 3 or i > len(recent) - 3:
-                logger.debug(f"[DEBUG RECENT] Item {i}: ts={ts}, content_preview={content[:100] if content else 'EMPTY'}...")
-            recent_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
+                logger.debug(f"[DEBUG RECENT] Item {i}: ts={ts_str}, content_preview={content[:100] if content else 'EMPTY'}...")
+
+            # Insert session boundary marker when sessions change
+            entry_ts = _parse_entry_timestamp(mem)
+            if _detect_session_boundary(prev_ts, entry_ts):
+                if entry_ts:
+                    recent_lines.append(_format_session_header(entry_ts))
+            if entry_ts:
+                prev_ts = entry_ts
+
+            recent_lines.append(f"{i}) {ts_str}: {content}" if ts_str else f"{i}) {content}")
         if recent_lines:
-            logger.debug(f"[DEBUG RECENT] Adding [RECENT CONVERSATION] section with {len(recent_lines)} formatted entries")
-            sections.append(f"[RECENT CONVERSATION] n={len(recent_lines)}\n" + "\n\n".join(recent_lines))
+            logger.debug(f"[DEBUG RECENT] Adding [RECENT CONVERSATION] section with {len([l for l in recent_lines if not l.startswith('---')])} formatted entries")
+            sections.append(f"[RECENT CONVERSATION] n={len([l for l in recent_lines if not l.startswith('---')])}\n" + "\n\n".join(recent_lines))
 
         # Relevant memories
         memories = context.get("memories", []) or []
@@ -1584,6 +1699,11 @@ class PromptFormatter:
             logger.warning(f"STM RENDERING: Added STM section before query")
         else:
             logger.warning("STM RENDERING: No stm_summary in context, skipping section")
+
+        # Disambiguation notes (injected just before user query for maximum attention)
+        disambiguation = context.get("disambiguation_notes", []) or []
+        if disambiguation:
+            sections.append("\n".join(disambiguation))
 
         # User input with last Q/A pair for coherence
         if user_input:
