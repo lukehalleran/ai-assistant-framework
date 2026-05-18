@@ -2,7 +2,7 @@
 # utils/file_processor.py
 
 Module Contract
-- Purpose: Normalize supported file uploads (txt/csv/py/docx/pdf/images) into text and
+- Purpose: Normalize supported file uploads (txt/md/json/yaml/yml/log/html/xml/csv/py/docx/xlsx/pdf/images) into text and
   structured data for prompt augmentation.
 - Data classes:
   - ProcessedFile: per-file result (filename, extension, content_text, file_path, is_image,
@@ -16,11 +16,12 @@ Module Contract
   - get_supported_extensions() -> List[str]
 - Internal methods:
   - _process_image_file(file, basename, ext) -> ProcessedFile  [base64 encode + persist to uploads/]
-  - _process_text_file(file) -> ProcessedFile  [txt/py/md plain text extraction]
-  - _process_single_file(file) -> tuple[str, int]  [legacy: docx/pdf/csv/txt routing]
+  - _process_text_file(file) -> ProcessedFile  [txt/md/json/yaml/log/html/xml/py/xlsx/docx/pdf/csv extraction]
+  - _process_single_file(file) -> tuple[str, int]  [extension routing: plain text, code-fenced, xlsx/docx/pdf/csv]
   - _read_file_bytes(file) -> bytes  [handles both file objects and paths]
   - _extract_pdf_with_tables(path) -> str  [pdfplumber table extraction as markdown]
   - _extract_docx_with_tables(path) -> str  [python-docx table extraction as markdown]
+  - _extract_xlsx(path, basename) -> str  [openpyxl sheet-per-table extraction as markdown]
   - _sanitize_csv_cell(value) -> Any  [CSV formula injection protection]
 - Security features:
   - Path traversal protection (validates filenames against traversal patterns)
@@ -29,7 +30,7 @@ Module Contract
   - Temporary directory isolation for safe processing
   - Extension allowlist validation (FILE_UPLOAD_ALLOWED_EXTENSIONS)
 - Dependencies:
-  - python-docx (DOCX extraction with tables), docx2txt (fallback), pdfplumber (PDF + tables)
+  - python-docx (DOCX extraction with tables), docx2txt (fallback), pdfplumber (PDF + tables), openpyxl (XLSX)
   - pandas (CSV), pathlib, base64, tempfile
   - config.app_config (FILE_UPLOAD_* constants)
 - Side effects:
@@ -476,12 +477,31 @@ class FileProcessor:
 
             # Process based on extension
             try:
-                if file_ext == '.txt':
+                if file_ext in ('.txt', '.md', '.log'):
                     result = safe_path.read_text(encoding='utf-8')
 
                 elif file_ext == '.py':
                     content = safe_path.read_text(encoding='utf-8')
                     result = f"```python\n{content}\n```"
+
+                elif file_ext == '.json':
+                    content = safe_path.read_text(encoding='utf-8')
+                    result = f"```json\n{content}\n```"
+
+                elif file_ext in ('.yaml', '.yml'):
+                    content = safe_path.read_text(encoding='utf-8')
+                    result = f"```yaml\n{content}\n```"
+
+                elif file_ext == '.html':
+                    content = safe_path.read_text(encoding='utf-8')
+                    result = f"```html\n{content}\n```"
+
+                elif file_ext == '.xml':
+                    content = safe_path.read_text(encoding='utf-8')
+                    result = f"```xml\n{content}\n```"
+
+                elif file_ext == '.xlsx':
+                    result = self._extract_xlsx(safe_path, basename)
 
                 elif file_ext == '.docx':
                     result = self._extract_docx_with_tables(safe_path)
@@ -616,6 +636,28 @@ class FileProcessor:
                         break
 
         return '\n\n'.join(parts)
+
+    @staticmethod
+    def _extract_xlsx(path: Path, basename: str = "spreadsheet") -> str:
+        """Extract text from XLSX, rendering each sheet as a markdown table."""
+        import openpyxl
+
+        wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+        parts = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows = []
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c).strip() if c is not None else '' for c in row]
+                rows.append('| ' + ' | '.join(cells) + ' |')
+            if rows:
+                # Add sheet heading + header separator after first row
+                parts.append(f"### {sheet_name}")
+                header_sep = '| ' + ' | '.join('---' for _ in row) + ' |'
+                rows.insert(1, header_sep)
+                parts.append('\n'.join(rows))
+        wb.close()
+        return '\n\n'.join(parts) if parts else f"[No data extracted from {basename}]"
 
     def _sanitize_csv_cell(self, value: Any) -> Any:
         """

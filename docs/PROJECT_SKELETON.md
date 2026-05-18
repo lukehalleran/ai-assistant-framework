@@ -221,7 +221,7 @@ Side effects: May call LLM for tone detection, query rewriting, STM analysis
 **Pipeline Stages**:
 1. **Topic Extraction** - Extract topics via TopicManager
 2. **Tone Detection** - Detect emotional state via analyze_emotional_context
-3. **File Processing** - Extract text from PDF/DOCX/CSV via FileProcessor
+3. **File Processing** - Extract text from uploaded files (PDF/DOCX/XLSX/CSV/JSON/YAML/HTML/XML/MD/TXT/LOG/PY) via FileProcessor
 4. **Heavy Topic Check** - Check for sensitive content via QueryChecker
 4.5. **Intent Classification** - Regex-first query intent via IntentClassifier (no LLM) **[NEW 2026-02-15]**
 5. **Query Rewriting** - Rewrite for better retrieval (LLM)

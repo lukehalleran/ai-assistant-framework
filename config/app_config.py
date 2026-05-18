@@ -787,7 +787,7 @@ FILE_UPLOAD_MAX_SIZE = int(config.get("security", {}).get("file_upload_max_size"
 # Maximum total size across all files in a single request (50MB default)
 FILE_UPLOAD_MAX_TOTAL_SIZE = int(config.get("security", {}).get("file_upload_max_total_size", 50 * 1024 * 1024))
 # Allowed file extensions for upload
-FILE_UPLOAD_ALLOWED_EXTENSIONS = list(config.get("security", {}).get("file_upload_allowed_extensions", ['.txt', '.docx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']))
+FILE_UPLOAD_ALLOWED_EXTENSIONS = list(config.get("security", {}).get("file_upload_allowed_extensions", ['.txt', '.md', '.json', '.yaml', '.yml', '.log', '.html', '.xml', '.docx', '.xlsx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']))
 # CSV formula prefixes to escape (prevent formula injection)
 FILE_UPLOAD_CSV_FORMULA_PREFIXES = tuple(config.get("security", {}).get("file_upload_csv_formula_prefixes", ['=', '+', '-', '@', '\t', '\r', '\n']))
 

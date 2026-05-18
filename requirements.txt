@@ -12,9 +12,8 @@ sentencepiece==0.2.0
 chromadb==1.0.7
 faiss-cpu==1.11.0
 
-# LLM providers
+# LLM providers (Anthropic models accessed via OpenAI-compatible API, no SDK needed)
 openai==1.90.0
-anthropic==0.52.1
 tiktoken==0.9.0
 
 # Web search (Tavily API)
@@ -30,6 +29,9 @@ scikit-learn==1.6.1
 # Visual memory (CLIP cross-modal image search)
 open_clip_torch>=2.29.0
 
+# Image processing (used by file_processor, clip_manager, visual_retrieval)
+Pillow>=10.0.0
+
 # Knowledge graph
 networkx==3.6.1
 
@@ -38,8 +40,13 @@ numpy==2.3.1
 pandas==2.2.3
 pyarrow==20.0.0
 
+# JSON (fast serializer, used by graph_memory and eval with stdlib fallback)
+orjson>=3.9.0
+
 # Document processing
 docx2txt==0.9
+python-docx>=1.1.0
+openpyxl>=3.1.0
 pdfplumber>=0.11.0
 lxml==5.4.0
 
