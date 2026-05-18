@@ -11,6 +11,7 @@ Module Contract
 """
 from typing import Callable, Optional
 import logging
+import os
 import time
 import inspect
 import functools
@@ -48,11 +49,17 @@ def configure_logging(
     # File handler (optional)
     if file_path:
         try:
-            # Truncate once at startup to start a fresh session log,
-            # then attach a file handler in append mode for stability.
-            open(file_path, "w", encoding="utf-8").close()
+            # Rotate existing log instead of truncating — preserves debug
+            # data from prior runs (critical when app restarts mid-session).
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                mtime = os.path.getmtime(file_path)
+                ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(mtime))
+                base, ext = os.path.splitext(file_path)
+                rotated = f"{base}_{ts}{ext}"
+                # Avoid overwriting if rotated name already exists
+                if not os.path.exists(rotated):
+                    os.rename(file_path, rotated)
         except Exception:
-            # If truncate fails, we will still attempt to attach handler
             pass
         try:
             fh = logging.FileHandler(file_path, mode="a", encoding="utf-8")
