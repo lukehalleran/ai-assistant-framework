@@ -1071,7 +1071,7 @@ def launch_gui(orchestrator, force_wizard=False):
                 model_status = gr.Markdown(visible=True)
 
                 with gr.Row():
-                    files = gr.File(file_types=[".txt", ".docx", ".csv", ".py", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"], file_count="multiple", label="Files & Images")
+                    files = gr.File(file_types=[".txt", ".md", ".json", ".yaml", ".yml", ".log", ".html", ".xml", ".docx", ".xlsx", ".csv", ".py", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"], file_count="multiple", label="Files & Images")
                     use_raw = gr.Checkbox(label="Bypass Memory (Raw GPT)", value=False)
                     enable_citations = gr.Checkbox(label="Enable Memory Citations", value=False, info="Show which memories Claude references")
                     fast_mode = gr.Checkbox(label="⚡ Fast Mode", value=False, info="Reduced context for mobile/slow connections (~2x faster)")

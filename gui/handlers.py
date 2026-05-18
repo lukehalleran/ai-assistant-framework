@@ -10,7 +10,7 @@ Module Contract
 - Behavior:
   - RAW mode: send directly through orchestrator.process_user_query(use_raw_mode=True)
   - DUEL mode: If BEST_OF_DUEL_MODE enabled, two models compete + judge picks winner. Builds provenance with response_mode="best-of-duel". Runs BEFORE agentic check.
-  - AGENTIC: If agentic_search.enabled and query triggers search, computation, memory recall, OR knowledge search, route through AgenticSearchController
+  - AGENTIC: If agentic_search.enabled and query triggers search, computation, memory recall, OR knowledge search, route through AgenticSearchController. Uses merged_input (user text + file content) as query so uploaded file content is visible to the agentic loop.
     - 4-tier agentic gate [ENHANCED 2026-03-31]:
       - Tier 1: Keyword heuristic (instant) — computation keywords OR memory keywords ("do you remember", "my notes", etc.)
       - Tier 1b: Knowledge keywords (instant) [NEW 2026-03-31] — encyclopedic/wiki intent ("explain in depth", "how does", "consult wikipedia", etc.), 4+ words, no computation/memory trigger
@@ -270,7 +270,7 @@ async def handle_submit(
         return
 
     # Process files using security-hardened FileProcessor
-    # Supports .txt, .csv, .py, .docx files and .png, .jpg, .jpeg, .gif, .webp images
+    # Supports .txt, .md, .json, .yaml, .yml, .log, .html, .xml, .csv, .py, .docx, .xlsx, .pdf files and .png, .jpg, .jpeg, .gif, .webp images
     file_names = [file.name for file in files] if files else []
     files_result = await file_processor.process_files_structured(user_text, files or [])
     merged_input = files_result.text_content
@@ -794,7 +794,7 @@ async def handle_submit(
                 # a heartbeat progress message so the browser WebSocket stays alive
                 # and the final response is actually delivered to the UI.
                 _agentic_gen = agentic_controller.run_agentic_search(
-                    query=user_text,
+                    query=merged_input,
                     system_prompt=system_prompt,
                     model_name=model_name,
                     initial_search_terms=initial_terms,
@@ -1237,7 +1237,7 @@ async def handle_submit(
 
                             _retry_response = ""
                             async for item in _retry_agentic.run_agentic_search(
-                                query=user_text,
+                                query=merged_input,
                                 system_prompt=_retry_system,
                                 model_name=model_name,
                                 initial_search_terms=[],
@@ -1345,7 +1345,7 @@ async def handle_submit(
 
                                 _review_response = ""
                                 async for item in _review_agentic.run_agentic_search(
-                                    query=user_text,
+                                    query=merged_input,
                                     system_prompt=_review_system,
                                     model_name=model_name,
                                     initial_search_terms=[],

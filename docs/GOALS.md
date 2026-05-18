@@ -282,6 +282,13 @@ These systems are complete and working. Listed here for context, not as active w
 - `pdfplumber`-based text extraction in `file_processor.py` with page headers for multi-page PDFs
 - `.pdf` added to `FILE_UPLOAD_ALLOWED_EXTENSIONS`
 
+### Extended File Upload Support (2026-05-18)
+- Added 8 new file types: `.md`, `.json`, `.yaml`/`.yml`, `.log`, `.html`, `.xml`, `.xlsx`
+- XLSX via `openpyxl` (sheet-per-markdown-table); JSON/YAML/HTML/XML code-fenced; MD/TXT/LOG plain text
+- Full requirements.txt and daemon.spec audit: added `Pillow`, `orjson`, `python-docx`, `openpyxl`; removed unused `anthropic`; added missing hiddenimports and collect_submodules for all project packages
+- Fixed agentic search file upload bug: uploaded file content now passed via `merged_input` (was using `user_text`)
+- Added `tests/conftest.py` to cap torch/numpy threads at half CPU cores during test runs
+
 ### Fast Mode (2026-03-10)
 - Mobile-friendly reduced retrieval: fewer candidates, fewer context items, progress keepalive messages
 - Toggled via GUI checkbox, reduces retrieval limits in context_gatherer + hybrid_retriever

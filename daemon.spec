@@ -14,7 +14,7 @@ Key decisions:
 - NO UPX: Disabled to avoid breaking torch/numpy DLLs
 - EXTERNAL DATA NOT BUNDLED: Wiki/FAISS data (100GB+) is optional
 
-Updated: 2026-03-27 (added personality prompts, docs/, networkx)
+Updated: 2026-05-18 (full audit — added missing hiddenimports, collect_submodules for project packages)
 Based on audit results (2025-12-12):
 - Total startup: ~12-17s (splash screen essential)
 - Heaviest imports: sentence_transformers (4.1s), torch (1.8s)
@@ -69,6 +69,12 @@ try:
     datas += collect_data_files('en_core_web_sm')
 except Exception:
     print("Warning: Could not collect en_core_web_sm data files")
+
+# spaCy core (lang data files)
+try:
+    datas += collect_data_files('spacy')
+except Exception:
+    print("Warning: Could not collect spacy data files")
 
 # Sentence transformers
 try:
@@ -127,6 +133,24 @@ except Exception:
 # Transformers
 try:
     datas += collect_data_files('transformers')
+except Exception:
+    pass
+
+# Pydantic v2 schema files
+try:
+    datas += collect_data_files('pydantic')
+except Exception:
+    pass
+
+# FAISS native libraries
+try:
+    datas += collect_data_files('faiss')
+except Exception:
+    pass
+
+# OpenCLIP model configs (if visual memory enabled)
+try:
+    datas += collect_data_files('open_clip')
 except Exception:
     pass
 
@@ -212,6 +236,7 @@ hiddenimports = [
     'anyio',
     'anyio._backends',
     'anyio._backends._asyncio',
+    'requests',
 
     # Tavily web search
     'tavily',
@@ -231,7 +256,43 @@ hiddenimports = [
     'pkg_resources.py2_warn',
     'pkg_resources._vendor',
 
-    # Our modules
+    # LLM providers
+    'openai',
+
+    # Data processing
+    'pandas',
+    'pyarrow',
+    'pyarrow.parquet',
+    'orjson',
+
+    # Document processing
+    'docx',
+    'docx2txt',
+    'openpyxl',
+    'pdfplumber',
+    'lxml',
+
+    # Image processing
+    'PIL',
+    'PIL.Image',
+
+    # NLP / ML
+    'yaml',
+    'dotenv',
+    'sklearn',
+    'sklearn.metrics',
+    'sklearn.metrics.pairwise',
+
+    # Vector search
+    'faiss',
+
+    # Visual memory (disabled by default but imported lazily)
+    'open_clip',
+
+    # Code sandbox (lazy import)
+    'e2b_code_interpreter',
+
+    # Our modules (top-level entry points)
     'utils.bootstrap',
     'utils.startup',
     'config.app_config',
@@ -242,36 +303,23 @@ hiddenimports = [
     'memory.memory_coordinator',
 ]
 
-# Collect all submodules from complex packages
-try:
-    hiddenimports += collect_submodules('chromadb')
-except Exception:
-    pass
+# Collect all submodules from complex third-party packages
+for pkg in ['chromadb', 'gradio', 'sentence_transformers', 'tiktoken',
+            'transformers', 'networkx', 'pydantic', 'sklearn', 'openai']:
+    try:
+        hiddenimports += collect_submodules(pkg)
+    except Exception:
+        pass
 
-try:
-    hiddenimports += collect_submodules('gradio')
-except Exception:
-    pass
-
-try:
-    hiddenimports += collect_submodules('sentence_transformers')
-except Exception:
-    pass
-
-try:
-    hiddenimports += collect_submodules('tiktoken')
-except Exception:
-    pass
-
-try:
-    hiddenimports += collect_submodules('transformers')
-except Exception:
-    pass
-
-try:
-    hiddenimports += collect_submodules('networkx')
-except Exception:
-    pass
+# Collect all submodules from our own packages (catches lazy imports
+# inside functions that PyInstaller's static analysis cannot trace)
+for pkg in ['core', 'core.prompt', 'core.agentic', 'memory', 'memory.storage',
+            'knowledge', 'models', 'processing', 'utils', 'gui', 'gui.tabs',
+            'config', 'eval', 'integrations']:
+    try:
+        hiddenimports += collect_submodules(pkg)
+    except Exception:
+        pass
 
 # =============================================================================
 # EXCLUDES (reduce bundle size, prevent accidental inclusion)

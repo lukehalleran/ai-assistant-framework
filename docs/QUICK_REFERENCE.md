@@ -751,6 +751,9 @@ class FileProcessor:
         Documents: text extracted, security validated (path traversal, size limits, CSV sanitization)
         PDF: pdfplumber with table extraction — tables rendered as markdown pipe tables
         DOCX: python-docx with table extraction — tables rendered as markdown pipe tables
+        XLSX: openpyxl — each sheet rendered as a markdown table with heading
+        JSON/YAML/HTML/XML: read as plain text, wrapped in code fences
+        MD/TXT/LOG: read as plain text
         """
 
 # gui/handlers.py — Upload persistence (fire-and-forget background task)
@@ -766,7 +769,7 @@ async def get_reference_docs(query, limit) -> List[Dict]:
     """Fetch from reference_docs, filter OUT type='user_upload'."""
 
 # Config (app_config.py):
-FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.docx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']  # .pdf added [2026-03-10]
+FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.md', '.json', '.yaml', '.yml', '.log', '.html', '.xml', '.docx', '.xlsx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']  # expanded [2026-05-18]
 FILE_UPLOAD_IMAGE_DIR = "data/uploads"
 PROMPT_MAX_USER_UPLOADS = 5
 ```

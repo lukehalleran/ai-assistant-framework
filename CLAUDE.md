@@ -194,7 +194,7 @@ processing/
 utils/
 ├── tone_detector.py          # Crisis detection (250+ keywords)
 ├── web_search_trigger.py     # Keyword + semantic + LLM trigger detection
-├── file_processor.py         # PDF/DOCX upload + table extraction
+├── file_processor.py         # File upload (PDF/DOCX/XLSX/CSV/JSON/YAML/HTML/XML/MD/TXT/LOG/PY) + table extraction
 ├── text_chunking.py          # chunk_by_headers + chunk_by_size fallback
 └── bootstrap.py              # Frozen executable setup
 ```
