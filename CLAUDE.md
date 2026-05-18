@@ -196,7 +196,9 @@ utils/
 ├── web_search_trigger.py     # Keyword + semantic + LLM trigger detection
 ├── file_processor.py         # File upload (PDF/DOCX/XLSX/CSV/JSON/YAML/HTML/XML/MD/TXT/LOG/PY) + table extraction
 ├── text_chunking.py          # chunk_by_headers + chunk_by_size fallback
-└── bootstrap.py              # Frozen executable setup
+├── bootstrap.py              # Frozen executable setup
+├── fs_snapshot.py            # Filesystem manifest for agent session safety
+└── destructive_op_guard.py   # Git command classifier (blocks destructive ops)
 ```
 
 ## Important Patterns
@@ -208,6 +210,14 @@ utils/
 - **Graceful degradation:** LLM→micro-summaries, semantic→keyword, API→stubs
 - **Thinking leak defense:** 3-layer (API reasoning params → `<thinking>` tags → heuristic detection)
 - **Anti-confabulation:** Source excerpts on profile facts, inline warnings at all profile injection points
+
+## Agent Session Safety
+
+Before agent edits: `bash scripts/agent_session_start.sh`
+After agent edits: `bash scripts/agent_session_audit.sh`
+Use `scripts/safe_git.sh` instead of raw `git` for destructive-capable operations.
+
+Agents may **not** run `git restore`, `git reset --hard`, `git clean`, `git push`, or `rm -rf` without explicit human unlock. See `docs/AGENT_SAFETY.md` for full details.
 
 ## Testing
 
