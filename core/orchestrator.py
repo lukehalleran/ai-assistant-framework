@@ -48,6 +48,9 @@ from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
 from core.best_of_handler import BestOfHandler
 from core.escalation_tracker import EscalationTracker
 from core.correction_detector import CorrectionDetector, CorrectionEvent
+from core.citation_extractor import extract_citations as _ext_extract_citations, expand_citation_range as _ext_expand_citation_range
+from core.tone_instructions import get_tone_instructions as _ext_get_tone_instructions, get_response_instructions as _ext_get_response_instructions, get_session_headers_instructions as _ext_get_session_headers_instructions
+from core.truth_event_handler import get_recent_profile_facts as _ext_get_recent_profile_facts, apply_truth_event as _ext_apply_truth_event, cascade_entity_resolution as _ext_cascade_entity_resolution, apply_content_attributions as _ext_apply_content_attributions
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
@@ -356,56 +359,11 @@ class DaemonOrchestrator:
 
     def _get_recent_profile_facts(self, limit: int = 30) -> list:
         """Gather recent current facts from user profile for correction/confirmation detection."""
-        facts = []
-        try:
-            from memory.user_profile_schema import ProfileCategory
-            for cat in ProfileCategory:
-                cat_facts = self.user_profile.get_category(cat, include_historical=False)
-                for f in cat_facts:
-                    if isinstance(f, dict) and f.get("fact_id"):
-                        facts.append(f)
-            # Sort by timestamp descending, take most recent
-            facts.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-            return facts[:limit]
-        except Exception as e:
-            self.logger.debug(f"[Orchestrator] Failed to get profile facts: {e}")
-            return []
+        return _ext_get_recent_profile_facts(getattr(self, "user_profile", None), limit)
 
     def _apply_truth_event(self, event: CorrectionEvent) -> None:
         """Apply a correction/confirmation event to the matching profile fact."""
-        try:
-            from memory.truth_scorer import TruthScorer
-            from memory.user_profile_schema import ProfileCategory
-
-            for cat in ProfileCategory:
-                cat_facts = self.user_profile.get_category(cat, include_historical=True)
-                for fact in cat_facts:
-                    if not isinstance(fact, dict):
-                        continue
-                    if fact.get("fact_id") != event.fact_id:
-                        continue
-
-                    old_truth = float(fact.get("truth_score", 0.7))
-                    if event.event_type == "correction":
-                        fact["truth_score"] = TruthScorer.apply_correction(old_truth)
-                        self.logger.info(
-                            f"[Orchestrator] Truth correction: {event.relation}='{event.old_value}' "
-                            f"truth {old_truth:.2f} → {fact['truth_score']:.2f}"
-                        )
-                    elif event.event_type == "confirmation":
-                        fact["truth_score"] = TruthScorer.apply_confirmation(old_truth)
-                        fact["last_confirmed_at"] = datetime.now().isoformat()
-                        fact["confirmation_count"] = fact.get("confirmation_count", 0) + 1
-                        self.logger.info(
-                            f"[Orchestrator] Truth confirmation: {event.relation}='{event.old_value}' "
-                            f"truth {old_truth:.2f} → {fact['truth_score']:.2f}"
-                        )
-
-                    self.user_profile.save()
-                    return  # Found and updated
-
-        except Exception as e:
-            self.logger.warning(f"[Orchestrator] Failed to apply truth event: {e}")
+        return _ext_apply_truth_event(event, getattr(self, "user_profile", None))
 
     # ---------- Entity Resolution Methods ----------
 
@@ -416,126 +374,12 @@ class DaemonOrchestrator:
     })
 
     def _cascade_entity_resolution(self, events: list) -> None:
-        """Annotate crisis-era summaries/reflections with resolution metadata.
-
-        When the user says "Flapjack did not die", finds summaries mentioning
-        Flapjack + crisis keywords and marks them with a resolution note +
-        elevated staleness_ratio so the prompt prefix signals resolution.
-        """
-        from config.app_config import STALENESS_ENABLED
-        if not STALENESS_ENABLED:
-            return
-
-        chroma_store = None
-        if self.memory_system and hasattr(self.memory_system, 'chroma_store'):
-            chroma_store = self.memory_system.chroma_store
-        if not chroma_store:
-            return
-
-        entity_resolver = getattr(self.memory_system, 'entity_resolver', None)
-
-        from datetime import date
-        today = date.today().isoformat()
-
-        for event in events:
-            # Resolve display name via entity resolver if available
-            display_name = event.entity_name
-            if entity_resolver:
-                try:
-                    resolved_id = entity_resolver.resolve(event.entity_name)
-                    if resolved_id:
-                        graph_memory = getattr(self.memory_system, 'graph_memory', None)
-                        if graph_memory:
-                            node = graph_memory.get_node(resolved_id)
-                            if node and hasattr(node, 'display_name') and node.display_name:
-                                display_name = node.display_name
-                except Exception:
-                    pass
-
-            entity_lower = event.entity_name.lower()
-            resolution_note = f"{display_name} is alive (confirmed {today})"
-            total_affected = 0
-
-            for collection in ('summaries', 'reflections'):
-                try:
-                    results = chroma_store.query_collection(
-                        collection, event.entity_name, n_results=20
-                    )
-
-                    for doc in results:
-                        content = (doc.get("content") or "").lower()
-
-                        if entity_lower not in content:
-                            continue
-
-                        has_crisis = any(kw in content for kw in self._CRISIS_KEYWORDS)
-                        if not has_crisis:
-                            continue
-
-                        doc_id = doc.get("id")
-                        if not doc_id:
-                            continue
-
-                        metadata = doc.get("metadata", {}) or {}
-                        current_staleness = float(metadata.get("staleness_ratio", 0) or 0)
-                        new_staleness = max(current_staleness, 0.65)
-
-                        chroma_store.update_metadata(collection, doc_id, {
-                            "resolution_note": resolution_note,
-                            "staleness_ratio": new_staleness,
-                            "resolution_date": today,
-                            "resolution_entity": display_name,
-                        })
-                        total_affected += 1
-
-                except Exception as e:
-                    self.logger.debug(
-                        f"[EntityResolution] Failed to query {collection} for "
-                        f"'{event.entity_name}': {e}"
-                    )
-
-            if total_affected:
-                self.logger.info(
-                    f"[EntityResolution] Annotated {total_affected} document(s) "
-                    f"with resolution for '{display_name}'"
-                )
+        """Annotate crisis-era summaries/reflections with resolution metadata."""
+        return _ext_cascade_entity_resolution(events, getattr(self, "memory_system", None))
 
     def _apply_content_attributions(self, attributions: list) -> None:
-        """Apply retroactive attribution to the most recent shared content.
-
-        When user says "it's by X", find the most recent conversation with
-        content_type metadata and update its content_attribution field.
-        """
-        chroma_store = None
-        if self.memory_system and hasattr(self.memory_system, 'chroma_store'):
-            chroma_store = self.memory_system.chroma_store
-        if not chroma_store:
-            return
-
-        try:
-            # Get recent conversations and find the most recent with content_type
-            recent = chroma_store.get_recent("conversations", limit=10)
-            for item in (recent or []):
-                md = item.get("metadata", {}) or {}
-                if md.get("content_type") and not md.get("content_attribution"):
-                    doc_id = item.get("id")
-                    if not doc_id:
-                        continue
-                    # Apply the first attribution event
-                    updates = {}
-                    for attr_event in attributions:
-                        if attr_event.attribution_type in ("artist", "author"):
-                            updates["content_attribution"] = attr_event.value
-                        elif attr_event.attribution_type == "title":
-                            updates["content_title"] = attr_event.value
-                    if updates:
-                        chroma_store.update_metadata("conversations", doc_id, updates)
-                        self.logger.info(
-                            f"[ContentAttribution] Updated {doc_id} with {updates}"
-                        )
-                    return  # Only update the most recent unattributed content
-        except Exception as e:
-            self.logger.debug(f"[ContentAttribution] Failed (non-fatal): {e}")
+        """Apply retroactive attribution to the most recent shared content."""
+        return _ext_apply_content_attributions(attributions, getattr(self, "memory_system", None))
 
     # ---------- STM Helper Methods ----------
     def _compute_topic_similarity(self, topic1: str, topic2: str) -> float:
@@ -665,200 +509,17 @@ class DaemonOrchestrator:
 
     # ---------- 1) Tone Mode Instructions ----------
     def _get_tone_instructions(self, tone_level: CrisisLevel) -> str:
-        """
-        Return mode-specific response instructions based on detected crisis level.
-
-        Args:
-            tone_level: Detected crisis level from tone_detector
-
-        Returns:
-            String containing tone-specific instructions to append to system prompt
-        """
-        # Inject style modifier BEFORE tone instructions (unless in HIGH crisis mode)
-        style_modifier = ""
-        if tone_level != CrisisLevel.HIGH:
-            try:
-                profile = getattr(self, 'user_profile', None)
-                if profile:
-                    style_modifier = profile.get_style_modifier()
-            except (AttributeError, TypeError) as e:
-                logger.debug(f"[Orchestrator] Could not get style modifier: {e}")
-                style_modifier = ""
-
-        if tone_level == CrisisLevel.HIGH:
-            # CRISIS_SUPPORT: Full therapeutic mode for genuine crisis
-            return (
-                "\n\n## RESPONSE MODE: CRISIS SUPPORT\n"
-                "The user is experiencing a severe crisis or mental health emergency. "
-                "Respond with full therapeutic presence:\n"
-                "- Acknowledge the severity of their feelings with empathy and care\n"
-                "- Validate their experience without minimizing or rushing to solutions\n"
-                "- Multiple paragraphs are appropriate to show you're truly engaged\n"
-                "- Offer concrete support resources when relevant (crisis lines, professional help)\n"
-                "- Avoid platitudes like \"you've got this\" - focus on genuine connection\n"
-                "- Stay present with their pain rather than trying to immediately fix it\n"
-                "- Encourage professional help or crisis intervention if appropriate"
-            )
-        elif tone_level == CrisisLevel.MEDIUM:
-            # ELEVATED_SUPPORT: Supportive but measured for acute distress
-            base_instructions = (
-                "\n\n## RESPONSE MODE: ELEVATED SUPPORT\n"
-                "The user is experiencing acute distress or emotional difficulty. "
-                "Respond with supportive care:\n"
-                "- 2-3 paragraphs maximum - be supportive but not overwhelming\n"
-                "- Validate their feelings and acknowledge the difficulty\n"
-                "- Offer perspective or gentle suggestions if appropriate\n"
-                "- Be warm and empathetic, but don't over-therapize\n"
-                "- Focus on their specific situation, not generic coping advice"
-            )
-            return style_modifier + base_instructions if style_modifier else base_instructions
-        elif tone_level == CrisisLevel.CONCERN:
-            # LIGHT_SUPPORT: Brief validation for moderate concern
-            base_instructions = (
-                "\n\n## RESPONSE MODE: LIGHT SUPPORT\n"
-                "The user is expressing concern, anxiety, or stress about something. "
-                "Respond with brief, grounded validation:\n"
-                "- 2-4 sentences - acknowledge without expanding unnecessarily\n"
-                "- \"That sucks\" + brief validation is often sufficient\n"
-                "- Don't offer unsolicited advice or try to solve their problem\n"
-                "- Match their energy - if they're venting, let them vent\n"
-                "- Only expand if they explicitly ask for more"
-            )
-            return style_modifier + base_instructions if style_modifier else base_instructions
-        else:  # CrisisLevel.CONVERSATIONAL
-            # CONVERSATIONAL: Natural friend voice - most interactions
-            base_instructions = (
-                "\n\n## RESPONSE MODE: CONVERSATIONAL (Natural Friend Voice)\n"
-                "**Goal: Be a confident, grounded friend - not a service agent, hype-man, or therapist**\n\n"
-                "**LENGTH: 2-5 sentences typically - brief but substantive. Don't mirror the user's brevity; give complete thoughts.**\n\n"
-                "Voice Calibration - The Sweet Spot:\n"
-                "❌ TOO HYPE: \"Hell yeah you're crushing it king! 💪 Die mad haters!\"\n"
-                "❌ TOO SERVICE-Y: \"Thanks so much, that's awesome to hear! I'm here anytime!\"\n"
-                "❌ TOO TERSE: \"Cool.\" (1 word when 2-3 sentences would be more natural)\n"
-                "✓ JUST RIGHT: \"Ha, glad that's better. The refactor sounds solid — should make the codebase way easier to navigate. Hope work goes smooth.\"\n\n"
-                "Core Principles:\n"
-                "1. **Match his energy** - casual when he's casual, focused when he's technical\n"
-                "   - ✓ \"Nice work on that.\" / \"Solid progress.\"\n"
-                "   - ✗ \"Thanks so much, that's awesome to hear! Always striving to provide value!\"\n\n"
-                "2. **Substantive but natural** - even brief topics deserve complete thoughts\n"
-                "   - ✓ \"Glad that worked. The edge case handling looks solid now.\"\n"
-                "   - ✓ \"Makes sense. That approach should avoid the race condition you were seeing.\"\n"
-                "   - ✗ \"Cool.\" (too terse)\n"
-                "   - ✗ \"Thank you for your feedback! I'm excited to keep improving!\"\n\n"
-                "3. **Confident friend** - comfortable in the relationship, not anxious to please\n"
-                "   - ✓ \"That's frustrating, but you handled it well.\"\n"
-                "   - ✗ \"Please let me know if there's anything else I can help with!\"\n\n"
-                "4. **Helpful without being formal** - offer perspective naturally\n"
-                "   - ✓ \"Makes sense you're annoyed. Moving on sounds right.\"\n"
-                "   - ✗ \"I appreciate your patience as I strive to deliver relevant information.\"\n\n"
-                "FORBIDDEN:\n"
-                "- Customer service language (\"Thanks so much!\", \"I'm here anytime!\", \"Please let me know\")\n"
-                "- Emojis and excessive exclamation points\n"
-                "- Hype language (crushing it, you got this king, Hell yeah)\n"
-                "- Corporate speak (\"striving to provide\", \"relevant and valuable info\")\n"
-                "- Excessive gratitude or validation-seeking\n"
-                "- Being overly terse (1-2 words when a full sentence would be natural)\n"
-                "- Multi-paragraph responses for simple acknowledgments\n\n"
-                "Think: You're the friend who knows the relationship is solid, so you don't need "
-                "to constantly prove your value or seek approval. Be supportive, honest, and chill."
-            )
-            return style_modifier + base_instructions if style_modifier else base_instructions
+        """Return mode-specific response instructions based on detected crisis level."""
+        return _ext_get_tone_instructions(tone_level, getattr(self, "user_profile", None))
 
     def _get_response_instructions(self, ctx: EmotionalContext) -> str:
-        """
-        Generate response instructions based on combined emotional context.
-
-        Matrix:
-        - HIGH + any need → Full crisis support (existing)
-        - MEDIUM + PRESENCE → Warmth first, then measured support
-        - MEDIUM + PERSPECTIVE → Supportive engagement
-        - CONCERN + PRESENCE → Brief acknowledgment, warmth, stay present
-        - CONCERN + PERSPECTIVE → Light engagement, offer reframe
-        - CONVERSATIONAL + any → Default casual mode
-
-        Args:
-            ctx: EmotionalContext with crisis level and need type
-
-        Returns:
-            String containing response instructions to append to system prompt
-        """
-
-        # Crisis levels override need-type (safety first)
-        if ctx.crisis_level == CrisisLevel.HIGH:
-            return self._get_tone_instructions(CrisisLevel.HIGH)
-
-        # Combined instructions for non-crisis
-        base = self._get_tone_instructions(ctx.crisis_level)
-
-        if ctx.need_type == NeedType.PRESENCE:
-            presence_addon = """
-
-## PRESENCE MODE: User needs warmth and acknowledgment
-The user is expressing emotional state, not seeking analysis.
-- Lead with warmth and acknowledgment
-- Stay with them before offering perspective
-- Short, warm responses preferred
-- Avoid immediate problem-solving or reframes
-- "I hear you" before "here's what I think"
-"""
-            return base + presence_addon
-
-        elif ctx.need_type == NeedType.PERSPECTIVE:
-            perspective_addon = """
-
-## PERSPECTIVE MODE: User is open to engagement
-The user is processing/analyzing, open to engagement.
-- Engage with their framing
-- Questions and reframes welcome
-- Can offer alternative viewpoints
-- Problem-solving appropriate if relevant
-"""
-            return base + perspective_addon
-
-        return base  # NEUTRAL - use base tone instructions only
+        """Generate response instructions based on combined emotional context."""
+        return _ext_get_response_instructions(ctx, getattr(self, "user_profile", None))
 
     # ---------- 1b) Session Headers Instructions ----------
     def _get_session_headers_instructions(self) -> str:
-        """
-        Return concise instructions about temporal reasoning with prompt headers.
-
-        Returns:
-            String containing session header guidance to append to system prompt
-        """
-        return (
-            "\n\n## TEMPORAL REASONING\n"
-            "**[TIME CONTEXT]**: Contains current datetime AND conversation pacing metrics.\n"
-            "- **Current time**: Use to calculate elapsed time from memory timestamps\n"
-            "- **Time since last message**: Gap between consecutive messages in this session\n"
-            "  - Quick replies (seconds) = active engagement, possible urgency\n"
-            "  - Long pauses (minutes/hours) = user returned after break, may need context refresh\n"
-            "  - 'N/A (first message in session)' = session just started\n"
-            "- **Time since last session**: Gap between previous session end and now\n"
-            "  - Hours/days = acknowledge the gap (\"welcome back\", \"it's been a while\")\n"
-            "  - Seconds/minutes = continuation, no greeting needed\n"
-            "  - 'N/A (first session)' = first time ever using the system\n"
-            "\n"
-            "**Use pacing metrics for appropriate responses:**\n"
-            "- Rapid messages (few seconds apart) → Keep responses concise, match their pace\n"
-            "- Long gaps (hours/days since last session) → Warmer greeting, summarize where we left off\n"
-            "- First message in session after break → Natural to acknowledge return\n"
-            "- Mid-session messages → No need for greetings, continue conversation naturally\n"
-            "\n"
-            "**All sections below contain timestamps - use them for temporal reasoning:**\n"
-            "- **[RECENT CONVERSATION]**: Last exchanges with timestamps, newest first\n"
-            "- **[RELEVANT MEMORIES]**: Semantically relevant past conversations with timestamps\n"
-            "- **[USER PROFILE]**: User facts (hybrid: semantic + recent) with timestamps in [ISO format] brackets after each fact\n"
-            "- **[SUMMARIES]**: Conversation summaries with timestamps\n"
-            "- **[RECENT REFLECTIONS]**: Meta-reflections with timestamps\n"
-            "\n"
-            "**Calculate recency from timestamps, not relative terms:**\n"
-            "- Memory from 2025-09-15, Current time 2025-11-17 = \"2 months ago\" (not \"recently\")\n"
-            "- Use item's own timestamp when available, not just Current time\n"
-            "- \"2 months ago\" (explicit) > \"recently\" (vague)\n"
-            "- For sleep/schedule: compare timestamps across memories\n"
-            "\n"
-            "**[CURRENT USER QUERY]**: The only query to respond to. All other sections are context only."
-        )
+        """Return concise instructions about temporal reasoning with prompt headers."""
+        return _ext_get_session_headers_instructions()
 
     # ---------- 2) Agentic Search Controller ----------
     @property
@@ -1516,96 +1177,12 @@ The user is processing/analyzing, open to engagement.
 
     # ---------- Memory Citation Methods ----------
     def _expand_citation_range(self, mem_id: str) -> List[str]:
-        """
-        Expand a range citation like MEM_RECENT_4-7 into individual IDs.
-
-        Args:
-            mem_id: Citation ID (e.g., "MEM_RECENT_4-7" or "MEM_RECENT_3")
-
-        Returns:
-            List of individual citation IDs (e.g., ["MEM_RECENT_4", "MEM_RECENT_5", "MEM_RECENT_6", "MEM_RECENT_7"])
-        """
-        # Check if it's a range citation (contains hyphen)
-        if '-' in mem_id and not mem_id.startswith('PROFILE'):
-            # Parse the range: MEM_RECENT_4-7 -> prefix="MEM_RECENT_", start=4, end=7
-            match = re.match(r'([A-Z_]+_)(\d+)-(\d+)', mem_id)
-            if match:
-                prefix = match.group(1)
-                start = int(match.group(2))
-                end = int(match.group(3))
-
-                # Generate individual IDs
-                return [f"{prefix}{i}" for i in range(start, end + 1)]
-
-        # Not a range, return as single-item list
-        return [mem_id]
+        """Expand a range citation like MEM_RECENT_4-7 into individual IDs."""
+        return _ext_expand_citation_range(mem_id)
 
     def _extract_citations(self, response: str, memory_map: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
-        """
-        Extract memory and web citations from response.
-
-        Handles: [MEM_RECENT_3], [MEM_SEMANTIC_4-7], [WEB_1], etc.
-        Web citations validated against self._web_source_map; invalid IDs stripped.
-
-        Returns:
-            Tuple of (clean_response, citations_list)
-        """
-        cited_ids = set(self.citation_pattern.findall(response))
-
-        citations = []
-        seen_ids = set()
-        invalid_cited_ids = []
-
-        # Memory citations
-        if memory_map:
-            for mem_id in cited_ids:
-                if mem_id.startswith("WEB_"):
-                    continue  # handle below
-                expanded_ids = self._expand_citation_range(mem_id)
-                for individual_id in expanded_ids:
-                    if individual_id in memory_map and individual_id not in seen_ids:
-                        citations.append({
-                            'memory_id': individual_id,
-                            'type': memory_map[individual_id].get('type', 'unknown'),
-                            'timestamp': memory_map[individual_id].get('timestamp', ''),
-                            'content': memory_map[individual_id].get('content', '')[:200],
-                            'relevance_score': memory_map[individual_id].get('relevance_score', 0.0),
-                            'db_id': memory_map[individual_id].get('db_id', None)
-                        })
-                        seen_ids.add(individual_id)
-
-        # Web citations — validate against web_source_map
-        web_source_map = self._web_source_map or {}
-        for cid in cited_ids:
-            if not cid.startswith("WEB_"):
-                continue
-            if cid in web_source_map and cid not in seen_ids:
-                src = web_source_map[cid]
-                citations.append({
-                    'memory_id': cid,
-                    'type': 'web_source',
-                    'title': src.get('title', ''),
-                    'url': src.get('url', ''),
-                    'domain': src.get('domain', ''),
-                })
-                seen_ids.add(cid)
-            elif cid not in web_source_map:
-                invalid_cited_ids.append(cid)
-
-        # Strip invalid web citation markers from response
-        clean_response = response
-        for bad_id in invalid_cited_ids:
-            clean_response = clean_response.replace(f"[{bad_id}]", "")
-
-        # Remove all remaining citation tags for clean display
-        clean_response = self.citation_pattern.sub('', clean_response)
-        clean_response = re.sub(r'\s+', ' ', clean_response).strip()
-
-        if invalid_cited_ids:
-            self.logger.warning(f"[Citation] Invalid web citations stripped: {invalid_cited_ids}")
-        self.logger.debug(f"[Citation] Extracted {len(citations)} citations (from {len(cited_ids)} tags, {len(invalid_cited_ids)} invalid)")
-
-        return clean_response, citations
+        """Extract memory and web citations from response."""
+        return _ext_extract_citations(response, memory_map, getattr(self, "_web_source_map", None) or {})
 
     # ---------- 3) Generate & Store ----------
     async def process_user_query(
