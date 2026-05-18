@@ -1,41 +1,17 @@
-reflection retrieval v2 + adversarial benchmark + content conflation prevention
+feat: add agent session safety layer
 
-Reflection retrieval subsystem redesign:
-- Topic-dense retrieval text generator (_extract_reflection_retrieval_text)
-  strips boilerplate, extracts entities/topics, natural language format
-- Structured metadata extraction (primary_topic, entities, themes,
-  emotional_tone, project_area) stored in ChromaDB
-- Reflection-specific query rewriting + dual-query semantic search
-- Entity/topic overlap scoring blended with semantic similarity
-- Expanded candidate pool (50) + cross-encoder rerank (top 25)
-- Metadata-only fallback via ChromaDB where_document
-- Improved reflection generation prompt (topic-specific, entity-rich)
-- Reflection MRR: 0.39 → 0.93 (+137%)
+Mechanical safeguards for AI coding sessions after a git restore
+destroyed uncommitted work. Snapshots repo state before agent work,
+blocks destructive git commands, and audits changes afterward.
 
-Adversarial benchmark (v2):
-- 868 seed memories (200 targets + 668 near-neighbor distractors)
-- 3 nearest-neighbors per target as confusers + 30 random per collection
-- Combined MRR: 0.82 → 0.88, R@topK: 0.91 → 0.97
-- Per-method reporting, fixed MRR aggregate (retrieval cases only)
-- Meta-conversational cases now have retrieval targets (MRR 0.40 → 0.71)
-- Facts evaluation analysis documented (0.77 MRR is measurement artifact)
+New components:
+- utils/fs_snapshot.py: filesystem manifest (sha256, size, mtime), diffing, CLI
+- utils/destructive_op_guard.py: git command classifier (restore/reset --hard/clean/push blocked)
+- scripts/agent_session_start.sh: pre-agent snapshot (git state, manifest, filtered untracked tarball, 10-snapshot rotation)
+- scripts/agent_session_audit.sh: post-agent audit (manifest diff, branch/HEAD comparison)
+- scripts/safe_git.sh: safe git wrapper with env var and one-shot lockfile unlock
+- docs/AGENT_SAFETY.md: full workflow documentation and emergency recovery procedures
 
-Content conflation prevention (3 composable features):
-- Session boundaries in prompt: visual markers when conversations
-  cross session boundaries (>2h gap or date change)
-- Shared content object tracking: detect lyrics/poems/code/quotes
-  via regex, store content_type metadata, retroactive attribution
-  detection ("it's by X"), content object rendering in prompt
-- Cross-session ambiguity detection: when short user message references
-  a phrase appearing in multiple sessions, inject disambiguation note
+92 new tests (40 fs_snapshot + 52 destructive_op_guard), all passing.
 
-New files:
-- core/content_type_detector.py (regex content type detection)
-- core/ambiguity_detector.py (cross-session ambiguity detection)
-- scripts/sample_real_benchmark_v2.py (adversarial benchmark sampler)
-- tests/unit/test_reflection_retrieval.py (33 tests)
-- tests/unit/test_session_boundaries.py (21 tests)
-- tests/unit/test_content_type_detector.py (22 tests)
-- tests/unit/test_ambiguity_detector.py (14 tests)
-
-Test results: 2417 unit + 305 benchmark = 2722 passed, 0 failures
+Also includes: config.yaml model switch to deepseek-v4.

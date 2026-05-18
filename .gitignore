@@ -58,4 +58,11 @@ build/
 venv/ 
 installer/output/ 
 *.spec 
-dist/ 
+dist/
+
+# --- AGENT SESSION SAFETY ---
+.agent_snapshots/
+.agent_allow_destructive_once
+RECOVERY_*.txt
+RECOVERY_*.patch
+RECOVERY_*.tar.gz

@@ -776,6 +776,33 @@ PROMPT_MAX_USER_UPLOADS = 5
 
 ---
 
+## Agent Session Safety
+
+```python
+# utils/fs_snapshot.py — Filesystem manifest for agent session snapshots
+sha256_file(path: str | Path) -> str
+should_exclude(rel: str) -> bool
+iter_snapshot_files(root: str | Path) -> list[Path]
+create_manifest(root: str | Path) -> dict[str, dict]   # {rel_posix: {size, mtime, sha256}}
+save_manifest(manifest, path) -> None
+load_manifest(path) -> dict
+diff_manifests(before, after) -> dict                   # {added: [], deleted: [], modified: []}
+# CLI: python -m utils.fs_snapshot create ROOT OUTPUT
+# CLI: python -m utils.fs_snapshot diff BEFORE AFTER
+
+# utils/destructive_op_guard.py — Git command classifier
+classify_git_args(args: list[str]) -> dict              # {subcmd, destructive: bool, reason}
+is_destructive_git_args(args: list[str]) -> bool
+unlock_allowed(env=None, root=None) -> bool             # Checks ALLOW_DESTRUCTIVE_OPS=1 or .agent_allow_destructive_once
+
+# Shell scripts:
+# scripts/agent_session_start.sh  — Pre-agent snapshot (git state + manifest + untracked tarball)
+# scripts/agent_session_audit.sh  — Post-agent audit (manifest diff, git status comparison)
+# scripts/safe_git.sh             — Safe git wrapper (blocks restore/reset --hard/clean/push)
+```
+
+---
+
 ## Helper Utilities
 
 ```python

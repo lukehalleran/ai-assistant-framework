@@ -5726,6 +5726,45 @@ if IS_FROZEN:
 
 ---
 
+## 17. Agent Session Safety Layer
+
+Mechanical safeguards for AI coding agent sessions: pre-session snapshots, post-session audits, destructive command blocking.
+
+### 17.1 Components
+
+| File | Purpose |
+|------|---------|
+| `utils/fs_snapshot.py` | Filesystem manifest (path, size, mtime, sha256), diffing, CLI (`python -m utils.fs_snapshot create/diff`) |
+| `utils/destructive_op_guard.py` | Git command classifier: `classify_git_args(args)`, `is_destructive_git_args(args)`, `unlock_allowed(env, root)` |
+| `scripts/agent_session_start.sh` | Pre-agent snapshot: git state + manifest + filtered untracked tarball, 10-snapshot rotation |
+| `scripts/agent_session_audit.sh` | Post-agent audit: branch/HEAD diff, git status, manifest diff, large file detection |
+| `scripts/safe_git.sh` | Safe git wrapper: blocks restore/reset --hard/clean/push/checkout --/branch -D unless unlocked |
+
+### 17.2 Snapshot Contents
+
+```
+.agent_snapshots/YYYYMMDD_HHMMSS/
+├── branch.txt              # Branch name
+├── head.txt                # HEAD SHA
+├── status.txt              # git status --short
+├── diff.patch              # Unstaged changes
+├── cached.diff             # Staged changes
+├── untracked.txt           # Untracked file list
+├── reflog.txt              # Recent commit log
+├── manifest.json           # Full filesystem manifest
+├── untracked_files.tar.gz  # Archived untracked files (<25MB each)
+└── skipped_untracked.txt   # Files too large to archive
+```
+
+### 17.3 Tests
+
+- `tests/unit/test_fs_snapshot.py` — 40 tests (manifest CRUD, diffing, exclusions, CLI)
+- `tests/unit/test_destructive_op_guard.py` — 52 tests (safe/destructive classification, unlock mechanisms)
+
+See `docs/AGENT_SAFETY.md` for full workflow documentation.
+
+---
+
 **End of Skeleton**
 
 This document compresses a ~143K LOC codebase by focusing on architecture, data flow, and patterns rather than implementation details.
