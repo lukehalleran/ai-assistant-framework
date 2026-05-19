@@ -23,6 +23,9 @@ Module Contract
     Delegates to ContentHygiene._backfill_recent_conversations().
   - Post-budget floors (Step 7.1): Guarantees minimum recent_conversations (PROMPT_MIN_RECENT_FLOOR=5),
     summaries (PROMPT_MAX_SUMMARIES), and reflections (PROMPT_MAX_REFLECTIONS) survive budget trimming.
+  - Skill activation (Step 5): Creates SkillActivationPolicy in __init__, over-fetches procedural
+    skills by SKILL_ACTIVATION_FETCH_MULTIPLIER (3x), applies policy after parallel gather completes
+    (intent suppression, score threshold, STM bonus, cooldown filter, cap to max_skills).
 - Outputs:
   - Context dictionary with all assembled data, metadata, and performance metrics
   - Formatted prompt string via _assemble_prompt delegation
@@ -33,6 +36,8 @@ Module Contract
   - .summarizer.LLMSummarizer (on-demand reflections and summaries)
   - .token_manager.TokenManager (budget enforcement, middle-out compression)
   - .base._FallbackMemoryCoordinator (testing fallback)
+  - memory.skill_activation.SkillActivationPolicy (post-retrieval skill filter)
+  - memory.skill_activation.SkillCooldownStore (JSON-backed cooldown tracking)
   - processing.gate_system (relevance filtering)
   - memory.memory_scorer (intent weight overrides, graph refs set/cleared per call)
 - Re-exports from .formatter (backward compatibility):
@@ -70,6 +75,7 @@ from .summarizer import LLMSummarizer
 from .token_manager import TokenManager
 from .base import _FallbackMemoryCoordinator
 from .hygiene import ContentHygiene
+from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
 
 logger = get_logger("prompt_builder")
 
@@ -417,6 +423,29 @@ class UnifiedPromptBuilder:
             memory_coordinator=self.memory_coordinator,
             context_gatherer=self.context_gatherer
         )
+
+        # Skill activation policy (post-retrieval filtering + cooldown)
+        try:
+            from config.app_config import (
+                SKILL_ACTIVATION_ENABLED, SKILL_ACTIVATION_MAX_SKILLS,
+                SKILL_ACTIVATION_MIN_SCORE, SKILL_ACTIVATION_COOLDOWN_HOURS,
+                SKILL_ACTIVATION_FETCH_MULTIPLIER, SKILL_ACTIVATION_STM_BONUS,
+                SKILL_ACTIVATION_USE_STM,
+            )
+            self._skill_activation_policy = SkillActivationPolicy(
+                cooldown_store=SkillCooldownStore(),
+                min_score=SKILL_ACTIVATION_MIN_SCORE,
+                cooldown_hours=SKILL_ACTIVATION_COOLDOWN_HOURS,
+                max_skills=SKILL_ACTIVATION_MAX_SKILLS,
+                stm_bonus=SKILL_ACTIVATION_STM_BONUS,
+                enabled=SKILL_ACTIVATION_ENABLED,
+            )
+            self._skill_fetch_multiplier = SKILL_ACTIVATION_FETCH_MULTIPLIER
+            self._skill_activation_use_stm = SKILL_ACTIVATION_USE_STM
+        except ImportError:
+            self._skill_activation_policy = None
+            self._skill_fetch_multiplier = 1
+            self._skill_activation_use_stm = False
 
         # State tracking
         self._prompt_token_usage = 0
@@ -802,9 +831,11 @@ class UnifiedPromptBuilder:
                 )
 
             # Procedural skills (adaptive workflows)
+            # Fetch wider window when activation policy is active so it can filter/rerank
+            _skill_fetch_limit = eff_max_skills * self._skill_fetch_multiplier if self._skill_activation_policy else eff_max_skills
             if eff_max_skills > 0:
                 tasks["procedural_skills"] = asyncio.create_task(
-                    _timed_task("procedural_skills", self.context_gatherer.get_procedural_skills(user_input, eff_max_skills))
+                    _timed_task("procedural_skills", self.context_gatherer.get_procedural_skills(user_input, _skill_fetch_limit))
                 )
 
             # Proposed features (code proposals, only for project-related queries)
@@ -898,6 +929,18 @@ class UnifiedPromptBuilder:
                     _gate_obj.cosine_threshold = _saved_gate_threshold
 
             # Step 3: Post-fetch processing
+
+            # Apply skill activation policy (filter/rerank by intent, relevance, cooldown)
+            if self._skill_activation_policy and "procedural_skills" in gathered:
+                _stm_topics = None
+                if self._skill_activation_use_stm and stm_summary:
+                    _topic = stm_summary.get("topic", "")
+                    _stm_topics = [_topic] if _topic and _topic.lower() != "general" else None
+                gathered["procedural_skills"] = self._skill_activation_policy.filter(
+                    gathered["procedural_skills"],
+                    intent_type=intent_type,
+                    stm_topics=_stm_topics,
+                )
 
             # Handle separated summaries (recent + semantic)
             summaries_data = gathered.get("summaries", {})

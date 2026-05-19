@@ -128,6 +128,7 @@ _PROFILES: Dict[IntentType, dict] = {
             "max_reflections": 8,   # eval: KEEP for emotional (50%/100%)
             "max_narrative": 5,     # eval: KEEP (100%/50%)
             "max_visual_memories": 0,
+            "max_skills": 0,        # procedural workflows are tone-deaf during distress
         },
         "gate": 0.35,
     },

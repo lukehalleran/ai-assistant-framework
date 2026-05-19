@@ -625,6 +625,18 @@ class ProceduralSkillsSection(BaseModel):
     dedup_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
 
+class SkillActivationSection(BaseModel):
+    """Post-retrieval skill filtering and cooldown."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    max_skills: int = Field(default=3, ge=0, description="Max skills to inject into prompt")
+    min_score: float = Field(default=0.25, ge=0.0, le=1.0, description="Minimum relevance score")
+    cooldown_hours: float = Field(default=48.0, ge=0.0, description="Hours before re-surfacing a skill")
+    fetch_multiplier: int = Field(default=3, ge=1, description="Fetch N*max_skills candidates for filtering")
+    stm_bonus: float = Field(default=0.10, ge=0.0, le=1.0, description="Score bonus for STM topic match")
+    use_stm: bool = Field(default=True, description="Use STM topics for reranking")
+
+
 class CodeProposalsSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
@@ -798,6 +810,7 @@ class DaemonConfig(BaseModel):
     visual_memory: VisualMemorySection = Field(default_factory=VisualMemorySection)
     wiki_enrichment: WikiEnrichmentSection = Field(default_factory=WikiEnrichmentSection)
     procedural_skills: ProceduralSkillsSection = Field(default_factory=ProceduralSkillsSection)
+    skill_activation: SkillActivationSection = Field(default_factory=SkillActivationSection)
     code_proposals: CodeProposalsSection = Field(default_factory=CodeProposalsSection)
     behavioral_patterns: BehavioralPatternsSection = Field(default_factory=BehavioralPatternsSection)
     escalation_tracker: EscalationSection = Field(default_factory=EscalationSection)

@@ -377,6 +377,14 @@ procedural_skills:
   enabled: true
   prompt_max_skills: 5
   dedup_threshold: 0.85
+skill_activation:
+  enabled: true
+  max_skills: 3
+  min_score: 0.25
+  cooldown_hours: 48.0
+  fetch_multiplier: 3
+  stm_bonus: 0.10
+  use_stm: true
 code_proposals:
   enabled: true
   collection: proposals

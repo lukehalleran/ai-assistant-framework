@@ -64,6 +64,7 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/memory_scorer.py` - Scoring and ranking
 - `memory/shutdown_processor.py` - Session-end summaries, facts, procedural skills, code proposals, cross-dedup preview, thread extraction, reflections
 - `memory/procedural_skill.py` - ProceduralSkill dataclass + SkillCategory enum
+- `memory/skill_activation.py` - SkillActivationPolicy (post-retrieval filter: intent suppression, min score, STM bonus, cooldown, cap) + SkillCooldownStore (JSON-backed TTL) **[NEW 2026-05]**
 - `memory/cross_deduplicator.py` - Cross-collection dedup (duplicates + fact contradictions, dry-run only on shutdown)
 - `memory/dedup_models.py` - Pydantic models: DedupPlan, DuplicatePair, ContradictionCluster
 - `memory/graph_memory.py` - Knowledge graph (NetworkX DiGraph, JSON persistence)
@@ -5297,6 +5298,7 @@ python main.py inspect-summaries
 | git_memory.py | Extract: Git commit history with metadata + conventional commit tagging [NEW 2026-01-27] |
 | git_memory_loader.py | Load: Backfill/incremental sync of git commits to PROCEDURAL ChromaDB [NEW 2026-01-27] |
 | procedural_skill.py | Data: ProceduralSkill dataclass + SkillCategory enum for adaptive workflows [NEW 2026-01-27] |
+| skill_activation.py | Filter: post-retrieval skill activation policy (intent suppression, score threshold, STM bonus, cooldown, cap) [NEW 2026-05] |
 | thread_models.py | Data: OpenThread Pydantic model + ThreadType/ThreadStatus enums + priority scoring + deadline-aware staleness [NEW 2026-03-20] |
 | thread_store.py | Store: ChromaDB-backed thread CRUD, priority ranking, deadline-aware staleness, cap enforcement [NEW 2026-03-20] |
 | thread_extractor.py | Extract: LLM-based open thread extraction + resolution detection from conversations [NEW 2026-03-20] |
