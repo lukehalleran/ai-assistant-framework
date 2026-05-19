@@ -211,29 +211,47 @@ def _score_triple(subj: str, rel: str, obj: str, nlp=None) -> float:
             pass  # NLP processing failed, skip bonus calculation
     return max(0.4, min(0.9, base + bonus - penalty))
 
-# ---------------- Optional deps (lazy) ----------------
+# ---------------- Optional deps (truly lazy — loaded on first use) ----------------
 _NLP = None
+_NLP_LOADED = False
 _REBEL = None
+_REBEL_LOADED = False
 
-try:
-    import spacy
-    _NLP = spacy.load("en_core_web_sm")
-    logger.debug("[FactExtractor] spaCy loaded: en_core_web_sm")
-except Exception as e:
-    logger.debug(f"[FactExtractor] spaCy not available or failed to load: {e}")
 
-try:
-    from transformers import pipeline
-    _REBEL = pipeline(
-        "text2text-generation",
-        model="Babelscape/rebel-large",
-        tokenizer="Babelscape/rebel-large",
-        max_length=512,
-        truncation=True
-    )
-    logger.debug("[FactExtractor] REBEL pipeline loaded: Babelscape/rebel-large")
-except Exception as e:
-    logger.debug(f"[FactExtractor] REBEL not available or failed to load: {e}")
+def _get_nlp():
+    """Load spaCy model on first use, not at import time."""
+    global _NLP, _NLP_LOADED
+    if _NLP_LOADED:
+        return _NLP
+    _NLP_LOADED = True
+    try:
+        import spacy
+        _NLP = spacy.load("en_core_web_sm")
+        logger.debug("[FactExtractor] spaCy loaded: en_core_web_sm")
+    except Exception as e:
+        logger.debug(f"[FactExtractor] spaCy not available or failed to load: {e}")
+    return _NLP
+
+
+def _get_rebel():
+    """Load REBEL pipeline on first use, not at import time."""
+    global _REBEL, _REBEL_LOADED
+    if _REBEL_LOADED:
+        return _REBEL
+    _REBEL_LOADED = True
+    try:
+        from transformers import pipeline
+        _REBEL = pipeline(
+            "text2text-generation",
+            model="Babelscape/rebel-large",
+            tokenizer="Babelscape/rebel-large",
+            max_length=512,
+            truncation=True
+        )
+        logger.debug("[FactExtractor] REBEL pipeline loaded: Babelscape/rebel-large")
+    except Exception as e:
+        logger.debug(f"[FactExtractor] REBEL not available or failed to load: {e}")
+    return _REBEL
 
 
 # ---------------- Preference helpers (new) ----------------
@@ -518,8 +536,8 @@ class FactExtractor:
 
         logger.debug(
             f"[FactExtractor.__init__] use_rebel={self.use_rebel} "
-            f"(pipeline={'yes' if _REBEL else 'no'}), use_regex={self.use_regex}, "
-            f"spaCy={'yes' if _NLP else 'no'}"
+            f"(pipeline={'yes' if _get_rebel() else 'no'}), use_regex={self.use_regex}, "
+            f"spaCy={'yes' if _get_nlp() else 'no'}"
         )
 
     def _detect_corrections(self, text: str) -> List[Tuple[str, str, str, float, str]]:
@@ -627,7 +645,7 @@ class FactExtractor:
             triples.extend(spacy_triples)
 
         # 1) REBEL (if available & enabled)
-        if self.use_rebel and _REBEL is not None:
+        if self.use_rebel and _get_rebel() is not None:
             rebel_triples = self._extract_with_rebel(text)
             logger.debug(f"[FactExtractor] REBEL extracted {len(rebel_triples)} triples")
             for i, t in enumerate(rebel_triples[:5]):
@@ -658,7 +676,7 @@ class FactExtractor:
         seen = set()
         user_kept = 0
         entity_kept = 0
-        nlp_ref = _NLP  # pass once
+        nlp_ref = _get_nlp()  # pass once
 
         for subj, rel, obj, conf, method in triples:
             # First, normalize subject/object with light heuristics
@@ -792,10 +810,11 @@ class FactExtractor:
         return facts
 
     def _extract_with_spacy_rules(self, text: str) -> List[Tuple[str, str, str, float, str]]:
-        if _NLP is None:
+        nlp = _get_nlp()
+        if nlp is None:
             return []
         triples = []
-        doc = _NLP(text)
+        doc = nlp(text)
 
         def tok_text(t):
             return t.text.strip()
@@ -925,7 +944,8 @@ class FactExtractor:
         base = f"User: {q}"
         if r:
             base += f"\nAssistant: {r}"
-        if _NLP is None:
+        nlp = _get_nlp()
+        if nlp is None:
             logger.debug("[FactExtractor] spaCy unavailable; returning base text")
             return base
 
@@ -936,7 +956,7 @@ class FactExtractor:
         except (re.error, TypeError):
             pass
         try:
-            doc = _NLP(base)
+            doc = nlp(base)
             # If you add a coref component later, apply here (spacy-experimental/coreferee)
             text = doc.text
             logger.debug(
@@ -954,7 +974,8 @@ class FactExtractor:
         Use REBEL to get triples with grounding check against source text.
         Output decoding per REBEL format: <triplet> subject <subj> relation <rel> object <obj>
         """
-        if _REBEL is None:
+        rebel = _get_rebel()
+        if rebel is None:
             return []
         try:
             # Hard cap input length to keep within model limits even if upstream changes
@@ -964,7 +985,7 @@ class FactExtractor:
             except (ValueError, TypeError):
                 max_chars = 1200
             safe_text = (text or "")[:max_chars]
-            out = _REBEL(
+            out = rebel(
                 safe_text,
                 return_text=True,
                 clean_up_tokenization_spaces=True,
@@ -1091,7 +1112,7 @@ class FactExtractor:
                         obj = re.sub(r"\b(?:currently|right\s+now|today|presently|now)\b\.?$", "", obj, flags=re.IGNORECASE).strip()
 
                     if 4 < len(rel) + len(obj) < 200:
-                        cleaned = _clean_triple(subj, rel, obj, nlp=_NLP)
+                        cleaned = _clean_triple(subj, rel, obj, nlp=_get_nlp())
                         if not cleaned:
                             continue
                         subj2, rel2, obj2 = cleaned
@@ -1131,7 +1152,7 @@ class FactExtractor:
                     val = re.split(r"\s+(?:and|but|however)\b|[,;]", val, maxsplit=1)[0].strip()
 
                     # Build canonical triple: user | rel | val
-                    cleaned = _clean_triple('user', rel, val, nlp=_NLP)
+                    cleaned = _clean_triple('user', rel, val, nlp=_get_nlp())
                     if not cleaned:
                         continue
                     sj, rl, ob = cleaned
@@ -1157,7 +1178,7 @@ class FactExtractor:
                     val = (val or '').strip()
                     val = re.split(r"\s+(?:and|but|however)\b|[,;]", val, maxsplit=1)[0].strip()
 
-                    cleaned = _clean_triple('user', rel, val, nlp=_NLP)
+                    cleaned = _clean_triple('user', rel, val, nlp=_get_nlp())
                     if not cleaned:
                         continue
                     sj, rl, ob = cleaned
@@ -1188,7 +1209,7 @@ class FactExtractor:
                     # Stop value at conjunctions/punctuation just in case
                     val = re.split(r"\s+(?:and|but|however)\b|[,;]", val, maxsplit=1)[0].strip()
 
-                    cleaned = _clean_triple('user', rel_key, val, nlp=_NLP)
+                    cleaned = _clean_triple('user', rel_key, val, nlp=_get_nlp())
                     if not cleaned:
                         continue
                     sj, rl, ob = cleaned
@@ -1227,7 +1248,7 @@ class FactExtractor:
                     obj = f"{value} {unit_norm}".strip()
                     subj = "user"
 
-                    cleaned = _clean_triple(subj, rel, obj, nlp=_NLP)
+                    cleaned = _clean_triple(subj, rel, obj, nlp=_get_nlp())
                     if not cleaned:
                         continue
                     subj2, rel2, obj2 = cleaned
@@ -1255,7 +1276,7 @@ class FactExtractor:
                     if not val:
                         continue
 
-                    cleaned = _clean_triple('user', rel_key, val, nlp=_NLP)
+                    cleaned = _clean_triple('user', rel_key, val, nlp=_get_nlp())
                     if cleaned:
                         sj, rl, ob = cleaned
                         found.append((sj, rl, ob, 0.75, "regex"))
@@ -1280,7 +1301,7 @@ class FactExtractor:
                     if not val or len(val) < 2:
                         continue
 
-                    cleaned = _clean_triple('user', rel_key, val, nlp=_NLP)
+                    cleaned = _clean_triple('user', rel_key, val, nlp=_get_nlp())
                     if cleaned:
                         sj, rl, ob = cleaned
                         found.append((sj, rl, ob, 0.75, "regex"))
@@ -1308,7 +1329,7 @@ class FactExtractor:
                     # Build relation like "cat_name", "friend_name", etc.
                     rel = f"{rel_type}_name" if rel_type else "name"
 
-                    cleaned = _clean_triple('user', rel, name, nlp=_NLP)
+                    cleaned = _clean_triple('user', rel, name, nlp=_get_nlp())
                     if cleaned:
                         sj, rl, ob = cleaned
                         found.append((sj, rl, ob, 0.78, "regex"))
@@ -1334,7 +1355,7 @@ class FactExtractor:
                     if not val or len(val) < 3:
                         continue
 
-                    cleaned = _clean_triple('user', rel_key, val, nlp=_NLP)
+                    cleaned = _clean_triple('user', rel_key, val, nlp=_get_nlp())
                     if cleaned:
                         sj, rl, ob = cleaned
                         found.append((sj, rl, ob, 0.70, "regex"))

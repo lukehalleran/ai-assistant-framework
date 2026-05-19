@@ -267,16 +267,16 @@ class ContextPipeline:
         user_name = None
         intent_result: Optional[IntentResult] = None
 
-        # Stage 1: Topic Extraction
-        primary_topic, topics = await self._extract_topics(user_input)
-        logger.debug(f"Stage 1 (Topics): primary={primary_topic}, all={topics}")
-
-        # Stage 2: Tone Detection (with conversation history for context)
+        # Stages 1+2: Topic Extraction + Tone Detection (parallelized — independent)
         if not use_raw_mode:
-            tone_level, emotional_context = await self._detect_tone(
-                user_input,
-                conversation_history
+            (primary_topic, topics), (tone_level, emotional_context) = await asyncio.gather(
+                self._extract_topics(user_input),
+                self._detect_tone(user_input, conversation_history),
             )
+        else:
+            primary_topic, topics = await self._extract_topics(user_input)
+        logger.debug(f"Stage 1 (Topics): primary={primary_topic}, all={topics}")
+        if not use_raw_mode:
             logger.debug(f"Stage 2 (Tone): level={tone_level.value}")
 
         # Stage 3: File Processing
@@ -287,16 +287,9 @@ class ContextPipeline:
                 processed_query = file_context
                 logger.debug(f"Stage 3 (Files): processed {len(files)} files")
 
-        # Stage 4: Heavy Topic Check + Inline Fact Extraction
-        if not use_raw_mode:
-            is_heavy_topic, extracted_facts, query_analysis = await self._check_heavy_topics(
-                user_input,
-                topics
-            )
-            if is_heavy_topic:
-                logger.debug(f"Stage 4 (Heavy Topic): detected, {len(extracted_facts)} facts extracted")
-
-        # Stage 4.5: Intent Classification (regex-first, no LLM)
+        # Stage 4a: Intent Classification (regex-first, no LLM, <1ms)
+        # Moved BEFORE heavy topic check so we can skip expensive LLM calls
+        # for casual/simple intents.
         is_small_talk = False
         if not use_raw_mode and self._intent_classifier:
             intent_result = self._intent_classifier.classify(
@@ -304,17 +297,51 @@ class ContextPipeline:
                 tone_level=tone_level.value,
             )
             logger.debug(
-                f"Stage 4.5 (Intent): {intent_result.intent.value} "
+                f"Stage 4a (Intent): {intent_result.intent.value} "
                 f"(conf={intent_result.confidence:.2f})"
             )
-            # Flag casual social messages to skip expensive downstream calls
-            from core.intent_classifier import IntentType
             if intent_result.intent == IntentType.CASUAL_SOCIAL and intent_result.confidence >= 0.70:
                 is_small_talk = True
-                logger.debug("Stage 4.5: is_small_talk=True (CASUAL_SOCIAL, high confidence)")
+                logger.debug("Stage 4a: is_small_talk=True (CASUAL_SOCIAL, high confidence)")
+
+        # Stage 4b: Heavy Topic Check + Inline Fact Extraction
+        # SKIP for casual/social intents and non-crisis short queries —
+        # the intent classifier already identified these as lightweight.
+        skip_heavy = use_raw_mode or is_small_talk
+        if not skip_heavy and intent_result is not None:
+            _SKIP_HEAVY_INTENTS = {
+                IntentType.CASUAL_SOCIAL,
+                IntentType.META_CONVERSATIONAL,
+            }
+            if (intent_result.intent in _SKIP_HEAVY_INTENTS
+                    and intent_result.confidence >= 0.60):
+                skip_heavy = True
+            elif (tone_level == ToneLevel.CONVERSATIONAL
+                    and len(user_input.split()) < 12
+                    and intent_result.intent != IntentType.EMOTIONAL_SUPPORT):
+                skip_heavy = True
+        if not skip_heavy:
+            is_heavy_topic, extracted_facts, query_analysis = await self._check_heavy_topics(
+                user_input,
+                topics
+            )
+            if is_heavy_topic:
+                logger.debug(f"Stage 4b (Heavy Topic): detected, {len(extracted_facts)} facts extracted")
+        elif skip_heavy:
+            logger.debug(f"Stage 4b (Heavy Topic): SKIPPED (intent={intent_result.intent.value if intent_result else '?'}, words={len(user_input.split())})")
 
         # Stages 5+6: Query Rewriting + STM Analysis (parallelized — independent LLM calls)
-        run_rewrite = not use_raw_mode and self._enable_query_rewrite
+        # Skip rewriting for short queries and casual/meta intents — the original
+        # phrasing is already good enough and rewriting adds 500-1500ms.
+        _word_count = len(user_input.split())
+        _skip_rewrite_intents = {IntentType.CASUAL_SOCIAL, IntentType.META_CONVERSATIONAL}
+        run_rewrite = (
+            not use_raw_mode
+            and self._enable_query_rewrite
+            and _word_count >= 10
+            and not is_small_talk
+            and (intent_result is None or intent_result.intent not in _skip_rewrite_intents)
+        )
         run_stm = not use_raw_mode and self._should_run_stm()
 
         if run_rewrite and run_stm:

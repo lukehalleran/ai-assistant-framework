@@ -1455,13 +1455,15 @@ else:
   - `_compute_context_inventory(initial_context)` → Summarizes available context (user profile, summaries, memories, notes, docs, dreams, visual memories, git commits, knowledge graph, threads, proactive insights) for LLM awareness **[ENHANCED 2026-05-11]**
   - Memory search diversity tracking: per-collection search counts prevent redundant queries **[NEW 2026-03-20]**
 
-**core/agentic/tools.py** - Tool execution **[NEW 2026-05]**
-- `ToolExecutor`: Dispatch routing + 12 execute methods
+**core/agentic/tools.py** - Tool execution **[UPDATED 2026-05-18]**
+- `ToolExecutor`: Dispatch routing + 16 execute methods
   - `get_tool_health()` → Returns diagnostic string of tool availability (web search, FAISS, sandbox, etc.)
   - `dispatch(decision, session)` → Routes to appropriate `_execute_*` method
-  - `_execute_web_search`, `_execute_fetch_url`, `_execute_wolfram`, `_execute_sandbox`, `_execute_memory_search`,
-    `_execute_memory_expand`, `_execute_file_read`, `_execute_file_grep`, `_execute_file_list`,
-    `_execute_git_stats`, `_execute_full_document`, `_execute_recall_image`
+  - Core: `_execute_search` (web, with optional `include_domains`), `_execute_fetch_url`, `_execute_wolfram`, `_execute_sandbox`
+  - Memory: `_execute_memory_search`, `_execute_memory_expand`, `_execute_full_document`, `_execute_recall_image`
+  - Files: `_execute_file_read`, `_execute_file_grep`, `_execute_file_list`, `_execute_git_stats`
+  - Dedicated APIs (free, no auth): `_execute_stackexchange` (api.stackexchange.com), `_execute_arxiv` (export.arxiv.org),
+    `_execute_pubmed` (eutils.ncbi.nlm.nih.gov), `_execute_hackernews` (hn.algolia.com)
 
 **core/agentic/formatters.py** - Formatting **[NEW 2026-05]**
 - `AgenticFormatter`: 18 pure formatting methods (no I/O, no state mutation)
@@ -4817,7 +4819,7 @@ daemon/
 │   ├── types.py               # Data structures (AgentState, SearchProtocol, etc.)
 │   ├── protocols.py           # Protocol detection and parsing
 │   ├── controller.py          # AgenticSearchController (orchestration, prompts, quality heuristics)
-│   ├── tools.py               # ToolExecutor (dispatch routing + 12 execute methods) [NEW 2026-05]
+│   ├── tools.py               # ToolExecutor (dispatch routing + 16 execute methods incl. StackExchange/arXiv/PubMed/HN) [UPDATED 2026-05-18]
 │   └── formatters.py          # AgenticFormatter (18 pure formatting methods) [NEW 2026-05]
 │
 ├── processing/

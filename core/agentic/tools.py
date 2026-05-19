@@ -153,6 +153,12 @@ class ToolExecutor:
         except Exception:
             lines.append("recall_image: DISABLED")
 
+        # Dedicated search APIs (always available — free, no auth)
+        lines.append("search_stackexchange: AVAILABLE (Stack Overflow, ServerFault, etc.)")
+        lines.append("search_arxiv: AVAILABLE (academic papers)")
+        lines.append("search_pubmed: AVAILABLE (biomedical literature)")
+        lines.append("search_hackernews: AVAILABLE (tech news/discussion)")
+
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -205,6 +211,14 @@ class ToolExecutor:
             return await self._dispatch_recall_image(decision, round_number)
         elif decision.wants_fetch_url and decision.fetch_url:
             return await self._dispatch_fetch_url(decision, round_number)
+        elif decision.wants_stackexchange and decision.stackexchange_query:
+            return await self._dispatch_api_search(decision, round_number, "stackexchange")
+        elif decision.wants_arxiv and decision.arxiv_query:
+            return await self._dispatch_api_search(decision, round_number, "arxiv")
+        elif decision.wants_pubmed and decision.pubmed_query:
+            return await self._dispatch_api_search(decision, round_number, "pubmed")
+        elif decision.wants_hackernews and decision.hackernews_query:
+            return await self._dispatch_api_search(decision, round_number, "hackernews")
         else:
             return _ToolResult(
                 decision=decision, round_data=None,
@@ -227,8 +241,10 @@ class ToolExecutor:
         )]
 
         start_time = time.time()
+        include_domains = [decision.search_site] if decision.search_site else None
         result = await self._execute_search(
-            [decision.search_query], crisis_level=crisis_level
+            [decision.search_query], crisis_level=crisis_level,
+            include_domains=include_domains,
         )
         search_duration = (time.time() - start_time) * 1000
 
@@ -807,7 +823,8 @@ class ToolExecutor:
     async def _execute_search(
         self,
         search_terms: List[str],
-        crisis_level: Optional[str] = None
+        crisis_level: Optional[str] = None,
+        include_domains: Optional[List[str]] = None,
     ) -> Any:
         """Execute web search with given terms."""
         from knowledge.web_search_manager import WebSearchDepth
@@ -816,7 +833,8 @@ class ToolExecutor:
             return await self.web_search_manager.search(
                 query=search_terms[0],
                 depth=WebSearchDepth.STANDARD,
-                crisis_level=crisis_level
+                crisis_level=crisis_level,
+                include_domains=include_domains,
             )
         else:
             return await self.web_search_manager.multi_search(
@@ -1129,3 +1147,219 @@ Provide a focused summary with the most important information."""
         except Exception as e:
             logger.warning(f"[AgenticSearch] Visual memory recall failed: {e}")
             return {"summary": f"[Visual memory error: {e}]", "formatted": "", "count": 0}
+
+    # ------------------------------------------------------------------
+    # Dedicated API search tools (no auth required)
+    # ------------------------------------------------------------------
+
+    async def _dispatch_api_search(
+        self, decision: SearchDecision, round_number: int, tool_name: str,
+    ) -> _ToolResult:
+        """Unified dispatcher for Stack Exchange, arXiv, PubMed, Hacker News."""
+        query_map = {
+            "stackexchange": decision.stackexchange_query,
+            "arxiv": decision.arxiv_query,
+            "pubmed": decision.pubmed_query,
+            "hackernews": decision.hackernews_query,
+        }
+        query = query_map.get(tool_name, "")
+        start_events = [ProgressEvent(
+            event_type="searching",
+            message=f"Searching {tool_name}: {query}",
+            round_number=round_number,
+            metadata={"tool": tool_name, "query": query}
+        )]
+
+        start_time = time.time()
+        try:
+            if tool_name == "stackexchange":
+                formatted = await self._execute_stackexchange(
+                    query, site=decision.stackexchange_site or "stackoverflow"
+                )
+            elif tool_name == "arxiv":
+                formatted = await self._execute_arxiv(query)
+            elif tool_name == "pubmed":
+                formatted = await self._execute_pubmed(query)
+            elif tool_name == "hackernews":
+                formatted = await self._execute_hackernews(query)
+            else:
+                formatted = f"Unknown API tool: {tool_name}"
+        except Exception as e:
+            logger.warning(f"[ToolExecutor] {tool_name} search failed: {e}")
+            formatted = f"[{tool_name} search error: {e}]"
+
+        duration_ms = (time.time() - start_time) * 1000
+        end_events = [ProgressEvent(
+            event_type="tool_complete",
+            message=f"{tool_name} search complete ({duration_ms:.0f}ms)",
+            round_number=round_number,
+        )]
+        return _ToolResult(
+            decision=decision, round_data=None,
+            formatted_context=formatted,
+            start_events=start_events, end_events=end_events,
+        )
+
+    async def _execute_stackexchange(self, query: str, site: str = "stackoverflow") -> str:
+        """Search Stack Exchange API. No auth needed."""
+        import asyncio
+        import urllib.parse
+        import httpx
+
+        url = (
+            f"https://api.stackexchange.com/2.3/search/advanced"
+            f"?order=desc&sort=votes&q={urllib.parse.quote(query)}"
+            f"&site={site}&filter=withbody&pagesize=5"
+        )
+        loop = asyncio.get_event_loop()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            data = resp.json()
+
+        items = data.get("items", [])
+        if not items:
+            return f"[Stack Exchange] No results for: {query}"
+
+        lines = [f"[STACK EXCHANGE — {site}] {query}\n"]
+        for i, item in enumerate(items[:5], 1):
+            title = item.get("title", "")
+            score = item.get("score", 0)
+            answered = item.get("is_answered", False)
+            accepted = "ACCEPTED" if item.get("accepted_answer_id") else ""
+            link = item.get("link", "")
+            # Extract text from body HTML (simple strip)
+            import re
+            body = re.sub(r"<[^>]+>", "", item.get("body", ""))[:500]
+            lines.append(
+                f"{i}. [{score} votes] {'[ANSWERED]' if answered else ''} {accepted}\n"
+                f"   {title}\n   {body.strip()}\n   {link}\n"
+            )
+        return "\n".join(lines)
+
+    async def _execute_arxiv(self, query: str) -> str:
+        """Search arXiv API. No auth needed."""
+        import urllib.parse
+        import httpx
+        import xml.etree.ElementTree as ET
+
+        url = (
+            f"http://export.arxiv.org/api/query"
+            f"?search_query=all:{urllib.parse.quote(query)}"
+            f"&start=0&max_results=5&sortBy=relevance&sortOrder=descending"
+        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url)
+
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        root = ET.fromstring(resp.text)
+        entries = root.findall("atom:entry", ns)
+
+        if not entries:
+            return f"[arXiv] No results for: {query}"
+
+        lines = [f"[arXiv SEARCH] {query}\n"]
+        for i, entry in enumerate(entries[:5], 1):
+            title = (entry.findtext("atom:title", "", ns) or "").strip().replace("\n", " ")
+            summary = (entry.findtext("atom:summary", "", ns) or "").strip().replace("\n", " ")[:400]
+            authors = [a.findtext("atom:name", "", ns) for a in entry.findall("atom:author", ns)]
+            link = ""
+            for l in entry.findall("atom:link", ns):
+                if l.get("title") == "pdf":
+                    link = l.get("href", "")
+                    break
+            if not link:
+                link = entry.findtext("atom:id", "", ns) or ""
+            author_str = ", ".join(authors[:3])
+            if len(authors) > 3:
+                author_str += f" et al. ({len(authors)} authors)"
+            lines.append(
+                f"{i}. {title}\n"
+                f"   {author_str}\n"
+                f"   {summary}\n"
+                f"   {link}\n"
+            )
+        return "\n".join(lines)
+
+    async def _execute_pubmed(self, query: str) -> str:
+        """Search PubMed E-utilities. No auth needed."""
+        import urllib.parse
+        import httpx
+        import xml.etree.ElementTree as ET
+
+        # Step 1: search for IDs
+        search_url = (
+            f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+            f"?db=pubmed&term={urllib.parse.quote(query)}&retmax=5&sort=relevance&retmode=xml"
+        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            search_resp = await client.get(search_url)
+
+        root = ET.fromstring(search_resp.text)
+        ids = [id_el.text for id_el in root.findall(".//Id") if id_el.text]
+
+        if not ids:
+            return f"[PubMed] No results for: {query}"
+
+        # Step 2: fetch summaries
+        fetch_url = (
+            f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+            f"?db=pubmed&id={','.join(ids)}&rettype=abstract&retmode=xml"
+        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            fetch_resp = await client.get(fetch_url)
+
+        articles_root = ET.fromstring(fetch_resp.text)
+        lines = [f"[PUBMED SEARCH] {query}\n"]
+
+        for i, article in enumerate(articles_root.findall(".//PubmedArticle"), 1):
+            title = article.findtext(".//ArticleTitle") or "No title"
+            abstract = article.findtext(".//AbstractText") or "No abstract"
+            pmid = article.findtext(".//PMID") or ""
+            authors_el = article.findall(".//Author")
+            authors = []
+            for a in authors_el[:3]:
+                last = a.findtext("LastName") or ""
+                init = a.findtext("Initials") or ""
+                if last:
+                    authors.append(f"{last} {init}".strip())
+            author_str = ", ".join(authors)
+            if len(authors_el) > 3:
+                author_str += f" et al."
+            lines.append(
+                f"{i}. {title}\n"
+                f"   {author_str}\n"
+                f"   {abstract[:400]}\n"
+                f"   https://pubmed.ncbi.nlm.nih.gov/{pmid}/\n"
+            )
+        return "\n".join(lines)
+
+    async def _execute_hackernews(self, query: str) -> str:
+        """Search Hacker News via Algolia API. No auth needed."""
+        import urllib.parse
+        import httpx
+
+        url = (
+            f"https://hn.algolia.com/api/v1/search"
+            f"?query={urllib.parse.quote(query)}&tags=story&hitsPerPage=5"
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            data = resp.json()
+
+        hits = data.get("hits", [])
+        if not hits:
+            return f"[Hacker News] No results for: {query}"
+
+        lines = [f"[HACKER NEWS SEARCH] {query}\n"]
+        for i, hit in enumerate(hits[:5], 1):
+            title = hit.get("title", "")
+            points = hit.get("points", 0)
+            comments = hit.get("num_comments", 0)
+            url = hit.get("url", "")
+            hn_url = f"https://news.ycombinator.com/item?id={hit.get('objectID', '')}"
+            lines.append(
+                f"{i}. [{points} pts, {comments} comments] {title}\n"
+                f"   {url}\n"
+                f"   Discussion: {hn_url}\n"
+            )
+        return "\n".join(lines)

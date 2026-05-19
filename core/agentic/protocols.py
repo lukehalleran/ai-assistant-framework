@@ -152,6 +152,10 @@ class NativeToolsHandler(BaseProtocolHandler):
             GET_FULL_DOCUMENT_TOOL_DEFINITION,
             RECALL_IMAGE_TOOL_DEFINITION,
             FETCH_URL_TOOL_DEFINITION,
+            STACKEXCHANGE_TOOL_DEFINITION,
+            ARXIV_TOOL_DEFINITION,
+            PUBMED_TOOL_DEFINITION,
+            HACKERNEWS_TOOL_DEFINITION,
         )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
@@ -166,6 +170,10 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.full_document_tool = GET_FULL_DOCUMENT_TOOL_DEFINITION
         self.recall_image_tool = RECALL_IMAGE_TOOL_DEFINITION
         self.fetch_url_tool = FETCH_URL_TOOL_DEFINITION
+        self.stackexchange_tool = STACKEXCHANGE_TOOL_DEFINITION
+        self.arxiv_tool = ARXIV_TOOL_DEFINITION
+        self.pubmed_tool = PUBMED_TOOL_DEFINITION
+        self.hackernews_tool = HACKERNEWS_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
         self.memory_available = memory_available
@@ -251,11 +259,13 @@ class NativeToolsHandler(BaseProtocolHandler):
         if func_name == "web_search":
             query = args.get("query", "")
             reason = args.get("reason")
+            site = args.get("site")
             if query:
-                logger.debug(f"[AgenticProtocol] Native tool search request: {query}")
+                logger.debug(f"[AgenticProtocol] Native tool search request: {query}" + (f" site={site}" if site else ""))
                 return SearchDecision(
                     wants_search=True,
                     search_query=query,
+                    search_site=site,
                     search_reason=reason
                 )
             else:
@@ -433,6 +443,52 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] fetch_url called without url")
                 return None
 
+        elif func_name == "search_stackexchange":
+            query = args.get("query", "")
+            site = args.get("site", "stackoverflow")
+            reason = args.get("reason")
+            if query:
+                return SearchDecision(
+                    wants_stackexchange=True,
+                    stackexchange_query=query,
+                    stackexchange_site=site,
+                    stackexchange_reason=reason,
+                )
+            return None
+
+        elif func_name == "search_arxiv":
+            query = args.get("query", "")
+            reason = args.get("reason")
+            if query:
+                return SearchDecision(
+                    wants_arxiv=True,
+                    arxiv_query=query,
+                    arxiv_reason=reason,
+                )
+            return None
+
+        elif func_name == "search_pubmed":
+            query = args.get("query", "")
+            reason = args.get("reason")
+            if query:
+                return SearchDecision(
+                    wants_pubmed=True,
+                    pubmed_query=query,
+                    pubmed_reason=reason,
+                )
+            return None
+
+        elif func_name == "search_hackernews":
+            query = args.get("query", "")
+            reason = args.get("reason")
+            if query:
+                return SearchDecision(
+                    wants_hackernews=True,
+                    hackernews_query=query,
+                    hackernews_reason=reason,
+                )
+            return None
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return None
@@ -464,6 +520,13 @@ class NativeToolsHandler(BaseProtocolHandler):
             tools.append(self.git_stats_tool)
         if self.fetch_url_available:
             tools.append(self.fetch_url_tool)
+        # Always available — free public APIs, no auth
+        tools.extend([
+            self.stackexchange_tool,
+            self.arxiv_tool,
+            self.pubmed_tool,
+            self.hackernews_tool,
+        ])
         # NOTE: recall_image tool deliberately excluded from iteration tools.
         # Visual memories are already retrieved by the builder's parallel pipeline
         # and included in the initial context. Adding recall_image here causes
@@ -493,6 +556,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             tool_list.append("git_stats")
         if self.fetch_url_available:
             tool_list.append("fetch_url")
+        tool_list.extend(["search_stackexchange", "search_arxiv", "search_pubmed", "search_hackernews"])
         tool_list.append("done_searching")
 
         tools_str = ", ".join(tool_list)
@@ -512,14 +576,24 @@ class NativeToolsHandler(BaseProtocolHandler):
             "Example: if you know the user's GitHub is https://github.com/user/repo, "
             "call fetch_url(url='https://github.com/user/repo'), don't search for 'user GitHub repo'."
         ) if self.fetch_url_available else ""
+        specialized_search_guidance = (
+            " For technical/programming questions, prefer search_stackexchange over web_search — "
+            "it returns structured Q&A with vote scores and accepted answers. "
+            "For academic/research questions, use search_arxiv (CS, ML, physics, math) "
+            "or search_pubmed (biomedical, health, clinical). "
+            "For tech industry news/opinions, use search_hackernews. "
+            "web_search with site parameter (e.g. site='reddit.com') is best for "
+            "personal experiences and community opinions."
+        )
         addition = (
             f"\n\n[AGENTIC TOOLS MODE]\n"
             f"You have access to {tools_str} tools. "
             f"Use web_search for current info, wolfram_alpha for quick math/science computations, "
             f"execute_python for multi-step calculations and data analysis "
             f"(up to {max_rounds} tool uses total).{memory_guidance}{fetch_url_guidance} "
+            f"{specialized_search_guidance} "
             "You may call multiple tools in a single step when the queries are independent "
-            "(e.g., web_search AND search_memory simultaneously). "
+            "(e.g., web_search AND search_stackexchange simultaneously). "
             "Use done_searching when you have enough information to answer."
         )
         return system_prompt + addition

@@ -675,6 +675,8 @@ class WebSearchManager:
         timeout: Optional[float] = None,
         use_cache: bool = True,
         max_results: int = 5,
+        include_domains: Optional[List[str]] = None,
+        exclude_domains: Optional[List[str]] = None,
     ) -> WebSearchResult:
         """
         Perform a web search with the specified depth.
@@ -729,7 +731,9 @@ class WebSearchManager:
 
         try:
             result = await asyncio.wait_for(
-                self._execute_search(query, depth, max_results),
+                self._execute_search(query, depth, max_results,
+                                     include_domains=include_domains,
+                                     exclude_domains=exclude_domains),
                 timeout=timeout
             )
 
@@ -758,7 +762,9 @@ class WebSearchManager:
         self,
         query: str,
         depth: WebSearchDepth,
-        max_results: int
+        max_results: int,
+        include_domains: Optional[List[str]] = None,
+        exclude_domains: Optional[List[str]] = None,
     ) -> WebSearchResult:
         """Execute the actual search based on depth."""
         session = WebSearchSession(initial_query=query, depth=depth)
@@ -772,7 +778,10 @@ class WebSearchManager:
             log.info(f"[WebSearch] News query detected, using topic='news', days=1")
 
         # Step 1: Basic search (all depths)
-        search_pages = await self._tavily_search(query, max_results, topic=topic, days=days)
+        search_pages = await self._tavily_search(
+            query, max_results, topic=topic, days=days,
+            include_domains=include_domains, exclude_domains=exclude_domains,
+        )
         session.search_results = search_pages
         session.credits_used += 1.0  # Base search cost
 
@@ -820,7 +829,9 @@ class WebSearchManager:
         query: str,
         max_results: int,
         topic: str = "general",
-        days: Optional[int] = None
+        days: Optional[int] = None,
+        include_domains: Optional[List[str]] = None,
+        exclude_domains: Optional[List[str]] = None,
     ) -> List[WebPage]:
         """
         Execute Tavily search API call.
@@ -830,6 +841,8 @@ class WebSearchManager:
             max_results: Maximum results to return
             topic: "general" or "news" - news uses Tavily's news-optimized agent
             days: For news topic, limit to N days back (default None = 3 days)
+            include_domains: Restrict results to these domains (e.g. ["reddit.com", "stackoverflow.com"])
+            exclude_domains: Exclude results from these domains
         """
         if not self._tavily_client:
             return []
@@ -852,6 +865,11 @@ class WebSearchManager:
             # days parameter only works with news topic
             if topic == "news" and days is not None:
                 search_kwargs["days"] = days
+
+            if include_domains:
+                search_kwargs["include_domains"] = list(include_domains)
+            if exclude_domains:
+                search_kwargs["exclude_domains"] = list(exclude_domains)
 
             log.debug(f"[WebSearch] Tavily search: topic={topic}, days={days}, query={query[:50]}...")
 

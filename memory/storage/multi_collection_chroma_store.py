@@ -526,11 +526,32 @@ class MultiCollectionChromaStore:
 
     # Query methods
 
+    def embed_query(self, text: str) -> list:
+        """Pre-embed a query using this store's embedding function.
 
+        Returns a flat list of floats suitable for passing as query_embedding
+        to query_collection(). Callers can embed once and reuse across
+        multiple collection queries to avoid redundant model invocations.
+        """
+        return self.embedding_fn([text])[0]
 
+    # --- Per-request embedding cache ---
+    # Avoids re-embedding the same query text when multiple parallel tasks
+    # hit different collections with identical query strings.
+    _embedding_cache: dict = {}
+
+    def clear_embedding_cache(self):
+        """Clear the per-request embedding cache. Call at the start of each request."""
+        self._embedding_cache = {}
+
+    def _cached_embed(self, text: str) -> list:
+        """Embed with per-request caching."""
+        if text not in self._embedding_cache:
+            self._embedding_cache[text] = self.embed_query(text)
+        return self._embedding_cache[text]
 
     def query_collection(self, collection_name: str, query_text: str,
-                     n_results: int = 5, **kwargs) -> List[Dict]:
+                     n_results: int = 5, query_embedding=None, **kwargs) -> List[Dict]:
         # Accept alias kwargs defensively
         if "n" in kwargs and isinstance(kwargs["n"], int):
             n_results = kwargs["n"]
@@ -540,11 +561,20 @@ class MultiCollectionChromaStore:
         if collection_name not in self.collections:
             raise ValueError(f"Unknown collection: {collection_name}")
 
-        # DO NOT include "ids" (not supported by your Chroma build)
+        # Use pre-computed embedding if provided, otherwise check the per-request
+        # cache to avoid re-embedding the same query text across parallel tasks.
+        query_args = {}
+        if query_embedding is not None:
+            query_args["query_embeddings"] = [query_embedding]
+        elif query_text and query_text in self._embedding_cache:
+            query_args["query_embeddings"] = [self._embedding_cache[query_text]]
+        else:
+            query_args["query_texts"] = [query_text]
+
         results = self.collections[collection_name].query(
-            query_texts=[query_text],
+            **query_args,
             n_results=n_results,
-            include=["documents", "metadatas", "distances"]  # no "ids"
+            include=["documents", "metadatas", "distances"]
         )
 
         # Some builds still return ids even if not requested; handle both cases
@@ -594,8 +624,19 @@ class MultiCollectionChromaStore:
         return all_results
 
     async def query_multiple_collections(self, collection_names: List[str], query_text: str,
-                                        n_results: int = 10) -> Dict[str, List[Dict]]:
-        """Query multiple collections in parallel for better performance"""
+                                        n_results: int = 10, query_embedding=None) -> Dict[str, List[Dict]]:
+        """Query multiple collections in parallel for better performance.
+
+        If *query_embedding* is provided, it is reused for every collection
+        query — avoiding redundant embedding calls (one per collection).
+        """
+        # Pre-embed once if not provided — avoids N re-embeddings for N collections.
+        if query_embedding is None and query_text:
+            try:
+                query_embedding = self._cached_embed(query_text)
+            except Exception as e:
+                logger.debug(f"[BatchQuery] Pre-embed failed, falling back to per-query: {e}")
+
         async def query_single_collection(collection_name: str) -> tuple[str, List[Dict]]:
             try:
                 if collection_name not in self.collections:
@@ -611,13 +652,17 @@ class MultiCollectionChromaStore:
                     return collection_name, []
 
                 # Run query in thread pool to avoid blocking
+                import functools
                 loop = asyncio.get_event_loop()
                 results = await loop.run_in_executor(
                     None,
-                    self.query_collection,
-                    collection_name,
-                    query_text,
-                    min(n_results, count)
+                    functools.partial(
+                        self.query_collection,
+                        collection_name,
+                        query_text,
+                        min(n_results, count),
+                        query_embedding=query_embedding,
+                    )
                 )
 
                 return collection_name, results or []

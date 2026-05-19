@@ -26,10 +26,12 @@ pyinstaller daemon.spec --clean --noconfirm  # Build executable
 ## Request Flow
 
 ```
-Query → ContextPipeline (tone, topic, intent, STM)
-      → UnifiedPromptBuilder (context assembly + web search)
+Query → ContextPipeline (tone‖topic parallel, intent gates heavy-topic skip)
+      → UnifiedPromptBuilder (context assembly + web search, cached query embedding)
         + ResponsePlanner (parallel: lightweight plan)
       → Agentic search (if triggered, replaces standard generation)
+        16 tools: web, wolfram, sandbox, memory, files, git, fetch_url,
+                  stackexchange, arxiv, pubmed, hackernews, recall_image, ...
       → BestOfHandler | ResponseGenerator (streaming)
       → ResponseParser (thinking block, artifact stripping)
       → MemoryCoordinator (persist)
@@ -85,7 +87,7 @@ core/                         # Request orchestration
 ├── response_generator.py
 ├── agentic/                  # ReAct search loop
 │   ├── controller.py         # Loop orchestration, [TOOL STATUS] injection
-│   ├── tools.py              # 12 tool types + get_tool_health()
+│   ├── tools.py              # 16 tool types + get_tool_health() (incl. StackExchange, arXiv, PubMed, HN)
 │   ├── formatters.py         # Stateless result formatting
 │   ├── types.py              # SearchDecision, tool definitions
 │   └── protocols.py          # Native tools + XML parsing

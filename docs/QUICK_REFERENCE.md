@@ -29,16 +29,17 @@ class ContextPipeline:
     async def build(user_input: str, files: List = None, use_raw_mode: bool = False,
                     personality: Optional[str] = None, conversation_history: Optional[List[Dict]] = None) -> ContextResult:
         """
-        Pipeline: topics → tone → files → heavy_check → intent → rewrite → stm → identity → thread
+        Pipeline: topics‖tone → files → intent → heavy_check → rewrite → stm → identity → thread
         Returns ContextResult with all processed components.
 
-        Stages:
-        1. Topic extraction (TopicManager)
-        2. Tone detection (analyze_emotional_context)
+        Stages (latency-optimized 2026-05-18):
+        1+2. Topic extraction + Tone detection (PARALLEL via asyncio.gather)
+             Tone fast-path: <8 words + no crisis keywords → skip semantic embedding
         3. File processing (FileProcessor)
-        4. Heavy topic check (QueryChecker)
-        4.5. Intent classification (IntentClassifier, regex-first, no LLM) [NEW 2026-02-15]
-        5. Query rewriting (LLM)
+        4a. Intent classification (regex-first, <1ms) — MOVED BEFORE heavy topic [2026-05-18]
+        4b. Heavy topic check — SKIPPED for CASUAL_SOCIAL, META_CONVERSATIONAL,
+            and short (<12 word) non-crisis queries [2026-05-18]
+        5. Query rewriting (LLM) — SKIPPED for <10 words and casual intents [2026-05-18]
         6. STM analysis (STMAnalyzer)
            - 24h time-windowed recent_memories slice (was: last 8 fixed)
            - Internally injects last 2 daily notes for cross-day recall disambiguation
@@ -595,6 +596,16 @@ class MultiCollectionChromaStore:
 
     def get_by_id(collection_name: str, doc_id: str) -> Optional[Dict]:  # [NEW 2026-03-26]
         """Direct document lookup by UUID → {id, content, metadata} or None"""
+
+    # Per-request embedding cache [NEW 2026-05-18]
+    def embed_query(text: str) -> list:
+        """Pre-embed query text. Returns 384-dim vector for BGE-small."""
+    def clear_embedding_cache() -> None:
+        """Reset per-request cache. Call at start of each prompt build."""
+    def _cached_embed(text: str) -> list:
+        """Embed with cache — same text across parallel tasks shares one embedding."""
+    # query_collection() auto-checks cache before re-embedding.
+    # query_multiple_collections() pre-embeds once for all 4+ collection queries.
 ```
 
 ---
@@ -1772,7 +1783,7 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 
 ```python
 # core/agentic/controller.py — orchestration, prompt building, model interaction, quality heuristics
-# core/agentic/tools.py — ToolExecutor: dispatch routing + 12 execute methods + get_tool_health()
+# core/agentic/tools.py — ToolExecutor: dispatch routing + 16 execute methods + get_tool_health()
 # core/agentic/formatters.py — AgenticFormatter: 18 pure formatting methods
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
@@ -1794,10 +1805,11 @@ class AgenticSearchController:
         5. Yield AgenticEvent for each stage (thinking/searching/computed/done)
         """
 
-    # ToolExecutor.get_tool_health() → "[TOOL STATUS]" prompt section [NEW 2026-05]
-    # Reports per-tool availability: web_search, wiki_knowledge (FAISS), memory_search (ChromaDB),
-    # wolfram, file_access, git_stats, expand_memory, visual_memory, fetch_url.
-    # Uses knowledge.semantic_search.is_faiss_available() for FAISS index status.
+    # ToolExecutor.get_tool_health() → "[TOOL STATUS]" prompt section [UPDATED 2026-05-18]
+    # Reports per-tool availability: web_search (+ site param), wiki_knowledge (FAISS),
+    # memory_search (ChromaDB), wolfram, file_access, git_stats, expand_memory, visual_memory,
+    # fetch_url, search_stackexchange, search_arxiv, search_pubmed, search_hackernews.
+    # Dedicated API tools are always AVAILABLE (free, no auth).
     # Injected into agentic system prompt + iteration prompts + final prompt.
 
     # Budget-enforced context accumulation [NEW 2026-03-28]

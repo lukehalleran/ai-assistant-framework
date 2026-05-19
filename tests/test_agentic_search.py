@@ -461,9 +461,14 @@ class TestNativeToolsHandler:
         handler = NativeToolsHandler()
         tools = handler.get_tools()
 
-        assert len(tools) == 2
-        assert tools[0]["function"]["name"] == "web_search"
-        assert tools[1]["function"]["name"] == "done_searching"
+        # Base: web_search + done_searching + 4 always-on API tools
+        # (stackexchange, arxiv, pubmed, hackernews)
+        assert len(tools) >= 6
+        tool_names = [t["function"]["name"] for t in tools]
+        assert "web_search" in tool_names
+        assert "done_searching" in tool_names
+        assert "search_stackexchange" in tool_names
+        assert "search_arxiv" in tool_names
 
     def test_augment_system_prompt(self):
         """Test system prompt augmentation for native tools."""

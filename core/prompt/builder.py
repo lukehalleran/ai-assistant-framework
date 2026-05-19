@@ -697,6 +697,15 @@ class UnifiedPromptBuilder:
                         logger.info(f"[BUILD_PROMPT] Gate threshold override: {_saved_gate_threshold:.3f} -> {_gate_override:.3f}")
 
             # Step 3: Launch parallel data gathering tasks with per-task timing
+            # Pre-embed the query once so all parallel ChromaDB lookups reuse it.
+            chroma = getattr(self.memory_coordinator, 'chroma_store', None)
+            if chroma and hasattr(chroma, 'clear_embedding_cache'):
+                chroma.clear_embedding_cache()
+                try:
+                    chroma._cached_embed(user_input)
+                except Exception:
+                    pass  # Non-fatal; individual queries will embed as needed
+
             tasks = {}
             task_timings = {}
 
@@ -728,29 +737,34 @@ class UnifiedPromptBuilder:
             )
 
             # Summaries (separated into recent + semantic)
-            tasks["summaries"] = asyncio.create_task(
-                _timed_task("summaries", self.context_gatherer._get_summaries_separate(user_input, eff_max_summaries_r, eff_max_summaries_s))
-            )
+            if eff_max_summaries_r > 0 or eff_max_summaries_s > 0:
+                tasks["summaries"] = asyncio.create_task(
+                    _timed_task("summaries", self.context_gatherer._get_summaries_separate(user_input, eff_max_summaries_r, eff_max_summaries_s))
+                )
 
             # Dreams (if enabled)
-            tasks["dreams"] = asyncio.create_task(
-                _timed_task("dreams", self.context_gatherer._get_dreams(eff_max_dreams))
-            )
+            if eff_max_dreams > 0:
+                tasks["dreams"] = asyncio.create_task(
+                    _timed_task("dreams", self.context_gatherer._get_dreams(eff_max_dreams))
+                )
 
             # Semantic chunks
-            tasks["semantic"] = asyncio.create_task(
-                _timed_task("semantic", self.context_gatherer._get_semantic_chunks(user_input, max_results=eff_max_semantic))
-            )
+            if eff_max_semantic > 0:
+                tasks["semantic"] = asyncio.create_task(
+                    _timed_task("semantic", self.context_gatherer._get_semantic_chunks(user_input, max_results=eff_max_semantic))
+                )
 
             # Reflections (separated into recent + semantic)
-            tasks["reflections"] = asyncio.create_task(
-                _timed_task("reflections", self.context_gatherer._get_reflections_separate(user_input, eff_max_reflections_r, eff_max_reflections_s))
-            )
+            if eff_max_reflections_r > 0 or eff_max_reflections_s > 0:
+                tasks["reflections"] = asyncio.create_task(
+                    _timed_task("reflections", self.context_gatherer._get_reflections_separate(user_input, eff_max_reflections_r, eff_max_reflections_s))
+                )
 
             # Wiki content
-            tasks["wiki"] = asyncio.create_task(
-                _timed_task("wiki", self.context_gatherer._get_wiki_content(user_input, eff_max_wiki))
-            )
+            if eff_max_wiki > 0:
+                tasks["wiki"] = asyncio.create_task(
+                    _timed_task("wiki", self.context_gatherer._get_wiki_content(user_input, eff_max_wiki))
+                )
 
             # Personal notes from Obsidian vault
             # Check if model is multimodal to decide whether to load images
@@ -782,19 +796,22 @@ class UnifiedPromptBuilder:
                 )
 
             # Git commit history (procedural memory)
-            tasks["git_commits"] = asyncio.create_task(
-                _timed_task("git_commits", self.context_gatherer.get_git_commits(user_input, eff_max_git))
-            )
+            if eff_max_git > 0:
+                tasks["git_commits"] = asyncio.create_task(
+                    _timed_task("git_commits", self.context_gatherer.get_git_commits(user_input, eff_max_git))
+                )
 
             # Procedural skills (adaptive workflows)
-            tasks["procedural_skills"] = asyncio.create_task(
-                _timed_task("procedural_skills", self.context_gatherer.get_procedural_skills(user_input, eff_max_skills))
-            )
+            if eff_max_skills > 0:
+                tasks["procedural_skills"] = asyncio.create_task(
+                    _timed_task("procedural_skills", self.context_gatherer.get_procedural_skills(user_input, eff_max_skills))
+                )
 
             # Proposed features (code proposals, only for project-related queries)
-            tasks["proposed_features"] = asyncio.create_task(
-                _timed_task("proposed_features", self.context_gatherer.get_proposed_features(user_input, eff_max_proposals))
-            )
+            if eff_max_proposals > 0:
+                tasks["proposed_features"] = asyncio.create_task(
+                    _timed_task("proposed_features", self.context_gatherer.get_proposed_features(user_input, eff_max_proposals))
+                )
 
             # Knowledge graph context (entity relationships)
             tasks["graph_context"] = asyncio.create_task(
