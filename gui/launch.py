@@ -1027,7 +1027,15 @@ def launch_gui(orchestrator, force_wizard=False):
 
         with gr.Tabs():
             with gr.TabItem("Chat"):
-                chatbot = gr.Chatbot(label="Daemon", height=520, type="messages")
+                chatbot = gr.Chatbot(
+                    label="Daemon", height=520, type="messages",
+                    latex_delimiters=[
+                        {"left": "$$", "right": "$$", "display": True},
+                        {"left": "$", "right": "$", "display": False},
+                        {"left": "\\(", "right": "\\)", "display": False},
+                        {"left": "\\[", "right": "\\]", "display": True},
+                    ],
+                )
                 # Thinking process display for duel mode (two models side-by-side)
                 with gr.Accordion("💭 Thinking Process", open=True, visible=False) as thinking_accordion:
                     gr.Markdown("### Model Reasoning Comparison")

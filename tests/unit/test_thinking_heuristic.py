@@ -226,3 +226,215 @@ class TestParseThinkingBlockIntegration:
         assert ResponseParser.has_incomplete_thinking_block("<thinking>partial") is True
         assert ResponseParser.has_incomplete_thinking_block("<thinking>done</thinking>answer") is False
         assert ResponseParser.has_incomplete_thinking_block("no tags here") is False
+
+
+# ── Real-world thinking leak regression tests ──
+
+class TestRealWorldLeaks:
+    """Regression tests from actual observed thinking leaks in production."""
+
+    def test_agentic_sandbox_failure_reasoning(self):
+        """DeepSeek v4 leaked sandbox failure reasoning into visible response."""
+        text = (
+            "The user wants a simple pandas DataFrame with 5 rows of random "
+            "name/age/score data. The sandbox had two failed attempts due to "
+            "a dateutil.parser import error — that's an environment issue "
+            "(likely a version mismatch in the sandbox's python-dateutil "
+            "package), not a code problem. I'll try running it anyway since "
+            "it might have been transient or fixed, but if it fails again "
+            "I'll just give them the working code directly rather than "
+            "burning more rounds debugging the sandbox environment.\n\n"
+            "Looks like the sandbox has a dateutil version conflict. "
+            "Here is the code:\n\n"
+            "```python\nimport pandas as pd\ndf = pd.DataFrame({'a': [1]})\n```"
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert thinking, "Should detect sandbox reasoning as thinking"
+        assert "```python" in answer, "Code block should be in the answer"
+        assert "The user wants" not in answer, "User-reference should be stripped"
+
+    def test_agentic_tool_dispatch_planning(self):
+        """LLM planning which tools to use."""
+        text = (
+            "The user is asking about recent ML papers. I should use "
+            "search_arxiv for academic content and maybe search_hackernews "
+            "for community discussion. Let me try both in parallel.\n\n"
+            "Here are some recent papers on retrieval-augmented generation:\n"
+            "1. RAG-Token by Facebook (2024)..."
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert thinking, "Tool dispatch planning should be caught"
+        assert "recent papers" in answer
+
+    def test_agentic_retry_reasoning(self):
+        """LLM reasoning about retrying a failed search."""
+        text = (
+            "The previous search didn't return relevant results. "
+            "I need to adjust my query to be more specific. "
+            "This time I should include the exact framework name.\n\n"
+            "Based on my research, ChromaDB handles persistence via..."
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert thinking, "Retry reasoning should be caught"
+
+    def test_environment_issue_diagnosis(self):
+        """LLM diagnosing environment issues shouldn't leak."""
+        text = (
+            "That's an environment issue with the sandbox. Not a code problem. "
+            "The dateutil package is incompatible. I'll just give them the "
+            "code to run locally.\n\n"
+            "Here's the working code:\n```python\nprint('hello')\n```"
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert thinking, "Environment diagnosis should be caught"
+        assert "```python" in answer
+
+    def test_credit_aware_meta_reasoning(self):
+        """LLM reasoning about API costs."""
+        text = (
+            "I've already used 3 search rounds. Rather than burning more "
+            "rounds on this, I have enough information to answer.\n\n"
+            "The answer to your question is..."
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert thinking, "Cost-aware reasoning should be caught"
+
+    def test_user_wants_mid_paragraph(self):
+        """'The user wants' in a single flowing paragraph."""
+        text = (
+            "The user wants to understand recursion. I should use a simple "
+            "example like factorial since they mentioned they're a beginner. "
+            "Let me keep it concise.\n\n"
+            "Recursion is when a function calls itself!"
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert thinking, "Single-paragraph reasoning should be caught"
+
+    def test_mixed_thinking_and_code(self):
+        """Thinking followed by code blocks — code should survive."""
+        text = (
+            "I need to figure out the right approach here. The user seems "
+            "to want a sorting algorithm. Let me check what language they're "
+            "using.\n\n"
+            "Here's a quicksort implementation in Python:\n\n"
+            "```python\ndef quicksort(arr):\n    if len(arr) <= 1:\n"
+            "        return arr\n    pivot = arr[0]\n    return quicksort("
+            "[x for x in arr[1:] if x < pivot]) + [pivot] + quicksort("
+            "[x for x in arr[1:] if x >= pivot])\n```"
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert thinking
+        assert "quicksort" in answer
+        assert "I need to figure" not in answer
+
+
+# ── False positive prevention ──
+
+class TestFalsePositivePrevention:
+    """Ensure normal responses aren't misdetected as thinking."""
+
+    def test_educational_let_me_explain(self):
+        """'Let me explain' in a teaching context is NOT thinking."""
+        text = (
+            "Great question! Let me explain how HTTP works.\n\n"
+            "HTTP is a request-response protocol. The client sends a "
+            "request with a method (GET, POST, etc.) and the server "
+            "returns a response with a status code."
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert not thinking, "'Let me explain' in context should not trigger"
+
+    def test_i_think_as_opinion(self):
+        """'I think' expressing an opinion, not reasoning."""
+        text = (
+            "I think Python is the best language for beginners. "
+            "It has clean syntax and great documentation. "
+            "You should try starting with the official tutorial."
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert not thinking, "Opinion 'I think' should not trigger"
+
+    def test_discussing_users_in_third_person(self):
+        """Talking ABOUT users generically, not reasoning about THE user."""
+        text = (
+            "When users first start learning SQL, they often struggle "
+            "with JOIN operations. The key is to visualize the tables. "
+            "Here's a diagram that helps:"
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert not thinking, "Generic 'users' reference should not trigger"
+
+    def test_sandbox_in_user_facing_explanation(self):
+        """Mentioning 'sandbox' in a user-facing explanation."""
+        text = (
+            "The code sandbox lets you run Python safely. "
+            "It has pandas, numpy, and matplotlib pre-installed. "
+            "Just paste your code and it'll execute in an isolated environment."
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert not thinking, "User-facing sandbox description should not trigger"
+
+    def test_first_person_narrative_response(self):
+        """Response about the user's life should not trigger."""
+        text = (
+            "Based on what you've told me, you've been working out "
+            "about twice a week and focusing on compound lifts. "
+            "Your deadlift has improved from 225 to 275 since March. "
+            "That's solid progress!"
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert not thinking, "Narrative about user should not trigger"
+
+    def test_long_technical_response_with_i_should(self):
+        """Technical response that happens to use 'I should mention'."""
+        text = (
+            "Here's how to set up a Python virtual environment.\n\n"
+            "First, install venv:\n```bash\npython -m venv myenv\n```\n\n"
+            "Then activate it:\n```bash\nsource myenv/bin/activate\n```\n\n"
+            "I should mention that on Windows, the activation command "
+            "is different: `myenv\\Scripts\\activate`."
+        )
+        thinking, answer = ResponseParser._detect_untagged_thinking(text)
+        assert not thinking, "Mid-response 'I should mention' is conversational"
+
+
+# ── Tag-based edge cases ──
+
+class TestTagEdgeCases:
+    """Edge cases for tag-based thinking block parsing."""
+
+    def test_nested_thinking_tags(self):
+        """Only outermost thinking tags should be parsed."""
+        text = "<thinking>Outer <thinking>inner</thinking> still thinking</thinking>Answer."
+        thinking, answer = ResponseParser.parse_thinking_block(text)
+        assert "Answer" in answer
+
+    def test_think_tag_with_whitespace(self):
+        text = "  <think>  spaces  </think>  The answer.  "
+        thinking, answer = ResponseParser.parse_thinking_block(text)
+        assert "spaces" in thinking
+        assert "answer" in answer
+
+    def test_multiple_thinking_blocks(self):
+        """First thinking block should be extracted."""
+        text = "<thinking>First block</thinking>Middle text<thinking>Second</thinking>End."
+        thinking, answer = ResponseParser.parse_thinking_block(text)
+        assert "First block" in thinking
+
+    def test_thinking_with_code_inside(self):
+        """Code blocks inside thinking tags should be captured."""
+        text = "<thinking>```python\nx = 1\n```</thinking>The answer is 1."
+        thinking, answer = ResponseParser.parse_thinking_block(text)
+        assert "x = 1" in thinking
+        assert answer == "The answer is 1."
+
+    def test_leaked_closing_tag(self):
+        """Partial closing tag should be stripped."""
+        text = "Some answer text </think> and more."
+        cleaned = ResponseParser.strip_thinking_tag_leaks(text)
+        assert "</think>" not in cleaned
+
+    def test_leaked_opening_tag(self):
+        text = "Normal text <thinking> leaked."
+        # If no closing tag, this is an incomplete block
+        assert ResponseParser.has_incomplete_thinking_block(text) is True

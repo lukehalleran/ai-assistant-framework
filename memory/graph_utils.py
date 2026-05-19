@@ -24,6 +24,23 @@ _STOPWORDS = frozenset({
     "will", "would", "should", "could", "tell", "know", "think",
 })
 
+# Pronouns and generic words that should never be graph entities
+_JUNK_ENTITIES = frozenset({
+    # Pronouns
+    "him", "her", "them", "his", "their", "its", "he", "she", "we",
+    # Quantifiers / adjectives
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "several", "many", "much", "most", "more", "some", "other", "each", "both", "all",
+    "possible", "also", "well", "first", "last", "new", "good", "bad", "best", "worst",
+    "really", "very", "just", "only", "still", "even", "now", "then",
+    # Generic words
+    "said", "which", "way", "area", "method", "type", "kind",
+    "thing", "stuff", "lot", "bit", "part", "point", "end",
+    # Meta/conversational
+    "response", "question", "answer", "content", "output", "error",
+    "result", "process", "system", "data", "information",
+})
+
 
 _TEMPORAL_RE = re.compile(
     r"^\d+(\.\d+)?\s*(years?|months?|weeks?|days?|hours?)", re.IGNORECASE
@@ -44,10 +61,20 @@ _VERB_STEMS = frozenset({
 })
 
 
-def _is_expansion_junk(name: str) -> bool:
-    """Return True if *name* looks like a junk phrase, not a real entity."""
-    n = name.strip()
+def is_junk_entity(name: str) -> bool:
+    """Return True if *name* is a stopword, pronoun, measurement, or other
+    non-entity that should never be a graph node.
+
+    Used by:
+    - Graph ingestion (_ingest_fact_to_graph) to filter subjects AND objects
+    - Query expansion (rank_expansion_candidates) to filter candidates
+    - Wiki enrichment (_link_conversation_entities) to filter matches
+    - extract_graph_entities() to filter extraction results
+    """
+    n = name.strip().lower()
     if not n or len(n) <= 2:
+        return True
+    if n in _STOPWORDS or n in _JUNK_ENTITIES:
         return True
     if len(n.split()) >= 4:
         return True
@@ -55,10 +82,15 @@ def _is_expansion_junk(name: str) -> bool:
         return True
     if _TEMPORAL_RE.match(n) or _FREQUENCY_RE.match(n) or _MEASUREMENT_RE.match(n):
         return True
-    first_word = n.split()[0].lower()
+    first_word = n.split()[0]
     if first_word in _VERB_STEMS:
         return True
     return False
+
+
+def _is_expansion_junk(name: str) -> bool:
+    """Return True if *name* looks like a junk phrase, not a real entity."""
+    return is_junk_entity(name)
 
 
 def rank_expansion_candidates(
@@ -205,6 +237,9 @@ def extract_graph_entities(text: str, resolver, graph_memory=None) -> Set[str]:
                 if etype in _CONCEPT_TYPES:
                     continue
             entity_ids.add(eid)
+
+    # Final junk filter — catch anything that slipped through n-gram matching
+    entity_ids = {eid for eid in entity_ids if not is_junk_entity(eid)}
 
     return entity_ids
 

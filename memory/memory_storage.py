@@ -1106,9 +1106,16 @@ class MemoryStorage:
         try:
             from memory.entity_resolver import normalize_relation
             from memory.graph_models import GraphNode, GraphEdge
+            from memory.graph_utils import is_junk_entity
             from config.app_config import KNOWLEDGE_GRAPH_MIN_CONFIDENCE
 
             if confidence < KNOWLEDGE_GRAPH_MIN_CONFIDENCE:
+                return
+
+            # Filter junk subjects (pronouns, stopwords, numbers) — these
+            # should never become graph nodes. "user" is exempt.
+            if subj.lower() != "user" and is_junk_entity(subj):
+                logger.debug(f"[MemoryStorage] Graph skip junk subject: '{subj}'")
                 return
 
             canon_rel = normalize_relation(rel)

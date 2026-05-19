@@ -448,8 +448,8 @@ class ModelManager:
         # Claude Sonnet 4.5+ and Opus 4.5+ have extended thinking
         if full.startswith("anthropic/claude"):
             return True
-        # DeepSeek-R1 (reasoning model)
-        if "deepseek-r1" in full:
+        # DeepSeek models with reasoning support (R1 + v4 family)
+        if "deepseek-r1" in full or "deepseek-v4" in full:
             return True
         return False
 

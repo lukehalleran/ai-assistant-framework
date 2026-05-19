@@ -1936,7 +1936,7 @@ class WolframResult:
     cached: bool = False
 
 
-# knowledge/sandbox_manager.py [NEW 2026-01-22]
+# knowledge/sandbox_manager.py [NEW 2026-01-22, UPDATED 2026-05-18]
 class SandboxManager:
     """E2B Code Sandbox for secure Python execution"""
 
@@ -1945,6 +1945,12 @@ class SandboxManager:
 
     async def create_session() -> PersistentSession:
         """Create persistent session (variables survive across calls)"""
+
+# Persistent sandbox session [NEW 2026-05-18]:
+# Session held on AgenticSearchController._sandbox_session (lazy, 10min timeout)
+# Variables/dataframes/imports survive across messages in the same conversation.
+# System prompt instructs LLM to reuse existing variables.
+# Cleanup: controller.close_sandbox() called in main.py _do_shutdown()
 
     def format_for_prompt(result: SandboxResult, purpose: str) -> str:
         """Format result for LLM context injection"""
