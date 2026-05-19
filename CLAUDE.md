@@ -210,7 +210,7 @@ utils/
 - **Tone-driven prompts:** System prompts vary by crisis level (HIGH/MEDIUM/CONCERN/CONVERSATIONAL)
 - **Token budget:** Middle-out compression (preserve start + end, compress middle)
 - **Graceful degradation:** LLM→micro-summaries, semantic→keyword, API→stubs
-- **Thinking leak defense:** 3-layer (API reasoning params → `<thinking>` tags → heuristic detection)
+- **Thinking leak defense:** 3-layer (API reasoning params → `<thinking>` tags → heuristic detection with 13 line-level + 9 sentence-level patterns)
 - **Anti-confabulation:** Source excerpts on profile facts, inline warnings at all profile injection points
 
 ## Agent Session Safety

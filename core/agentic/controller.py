@@ -161,6 +161,12 @@ class AgenticSearchController:
             except Exception as e:
                 logger.warning(f"[AgenticSearch] Could not init MemoryExpander: {e}")
 
+        # Persistent sandbox session — survives across agentic runs within the
+        # same conversation so variables, dataframes, and files carry over.
+        # Created lazily on first sandbox use; closed on shutdown or timeout.
+        self._sandbox_session = None
+        self._sandbox_session_timeout = 600  # 10 minutes idle → close
+
         # Modular components (extracted from this class)
         self._formatter = AgenticFormatter()
         self._tool_executor = ToolExecutor(
@@ -176,6 +182,39 @@ class AgenticSearchController:
             memory_expander=self.memory_expander,
             compression_model=compression_model,
         )
+
+    async def _get_sandbox_session(self):
+        """Get or create a persistent sandbox session."""
+        # Check if existing session is still alive and not timed out
+        if self._sandbox_session is not None:
+            if self._sandbox_session.is_closed:
+                self._sandbox_session = None
+            elif hasattr(self._sandbox_session, 'age') and self._sandbox_session.age > self._sandbox_session_timeout:
+                logger.info("[AgenticSearch] Sandbox session timed out, closing")
+                try:
+                    await self._sandbox_session.close()
+                except Exception:
+                    pass
+                self._sandbox_session = None
+
+        if self._sandbox_session is None and self.sandbox_manager:
+            try:
+                self._sandbox_session = await self.sandbox_manager.create_session()
+                logger.info("[AgenticSearch] Created persistent sandbox session")
+            except Exception as e:
+                logger.warning(f"[AgenticSearch] Failed to create sandbox session: {e}")
+
+        return self._sandbox_session
+
+    async def close_sandbox(self):
+        """Close the persistent sandbox session. Call on shutdown."""
+        if self._sandbox_session and not self._sandbox_session.is_closed:
+            try:
+                await self._sandbox_session.close()
+                logger.info("[AgenticSearch] Closed persistent sandbox session")
+            except Exception as e:
+                logger.warning(f"[AgenticSearch] Error closing sandbox: {e}")
+            self._sandbox_session = None
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count for text, using tokenizer if available."""
@@ -302,12 +341,13 @@ class AgenticSearchController:
             "when asked. Never claim a tool is working if its status says otherwise."
         )
 
-        # Create persistent sandbox session if available (for variable persistence across turns)
+        # Get persistent sandbox session (survives across agentic runs in the conversation)
         sandbox_session = None
         if sandbox_available:
             try:
-                sandbox_session = await self.sandbox_manager.create_session()
-                logger.info("[AgenticSearch] Created persistent sandbox session for ReAct loop")
+                sandbox_session = await self._get_sandbox_session()
+                if sandbox_session:
+                    logger.info("[AgenticSearch] Using persistent sandbox session")
             except Exception as e:
                 logger.warning(f"[AgenticSearch] Failed to create sandbox session: {e}")
                 # Continue without sandbox - will fall back gracefully
@@ -633,13 +673,10 @@ class AgenticSearchController:
                     yield chunk
 
         finally:
-            # Always clean up the sandbox session
-            if sandbox_session and not sandbox_session.is_closed:
-                try:
-                    await sandbox_session.close()
-                    logger.info("[AgenticSearch] Closed sandbox session")
-                except Exception as e:
-                    logger.warning(f"[AgenticSearch] Error closing sandbox session: {e}")
+            # Sandbox session is persistent — do NOT close it here.
+            # It will be reused across agentic runs within the conversation.
+            # Cleanup happens via close_sandbox() at shutdown or on timeout.
+            pass
 
     # ------------------------------------------------------------------
     # Parallel dispatch infrastructure

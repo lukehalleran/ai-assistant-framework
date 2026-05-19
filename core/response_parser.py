@@ -214,6 +214,14 @@ class ResponseParser:
         re.compile(r"(?:in|from) the previous (?:attempt|response|search|try|query)", re.IGNORECASE),
         # Self-referential: "I suggested" / "I mentioned" (reasoning about own prior output)
         re.compile(r"(?:^|\n)\s*(?:This is the .{5,30}query I (?:suggested|mentioned|recommended)|I (?:suggested|mentioned|recommended) (?:earlier|before|previously))", re.IGNORECASE),
+        # Agentic tool failure reasoning
+        re.compile(r"(?:^|\n)\s*(?:Looks like the sandbox|The sandbox (?:had|has)|sandbox (?:error|fail))", re.IGNORECASE),
+        # "not a code issue/problem" — meta-diagnosis of tool behavior
+        re.compile(r"(?:^|\n)\s*(?:not a code (?:issue|problem|bug)|that's an environment (?:issue|problem))", re.IGNORECASE),
+        # Previous search/attempt didn't work
+        re.compile(r"(?:^|\n)\s*(?:The previous (?:search|attempt|query|round)|(?:That |It )didn't (?:return|work|find))", re.IGNORECASE),
+        # Round/budget counting
+        re.compile(r"(?:^|\n)\s*(?:I've (?:already )?used \d+|(?:I )?have enough (?:info|information|data|context) to)", re.IGNORECASE),
     ]
 
     # SENTENCE-LEVEL: no line-anchor — catches thinking dumped as a single paragraph.
@@ -227,6 +235,16 @@ class ResponseParser:
         re.compile(r"(?:in the previous (?:attempt|response|search|try|query)|(?:the tool|the query) (?:that |which )?(?:worked|didn't|wasn't))", re.IGNORECASE),
         # Internal planning language not addressed to user
         re.compile(r"(?:this time I should|so I should|I need to (?:adjust|fix|change|rethink|gather|find|search|pull|get|figure))", re.IGNORECASE),
+        # Mid-sentence I'll with planning verbs (doesn't require line start)
+        re.compile(r"I'll (?:try|just|give them|fall back|use|run|attempt|skip|move on)", re.IGNORECASE),
+        # Sandbox/tool failure reasoning (agentic-specific)
+        re.compile(r"(?:sandbox had|sandbox (?:error|fail)|environment (?:issue|hiccup|conflict|problem)|not a code (?:issue|problem|bug))", re.IGNORECASE),
+        # Burning rounds / cost-aware meta-reasoning
+        re.compile(r"(?:burning more rounds|rather than (?:burning|wasting|spending)|save (?:rounds|API|credits))", re.IGNORECASE),
+        # Referring to previous search/attempt results
+        re.compile(r"(?:(?:the )?previous (?:search|attempt|query|round) (?:didn't|did not|failed|returned)|didn't return relevant)", re.IGNORECASE),
+        # Search round counting / budget awareness
+        re.compile(r"(?:I've (?:already )?used \d+ (?:search|tool|round)|enough information to answer|have enough (?:info|data|context) to)", re.IGNORECASE),
     ]
     _HEURISTIC_MIN_HITS = 2  # need at least 2 distinct patterns to trigger
 

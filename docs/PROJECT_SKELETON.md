@@ -1514,8 +1514,11 @@ agentic_search:
 - `<python purpose="...">code</python>` XML marker for local models
 - `SearchDecision` extended with `wants_sandbox`, `sandbox_code`, `sandbox_purpose`
 - `SearchDecision` extended with `wants_git_stats`, `git_stats_query`, `git_stats_reason` **[NEW 2026-03-29]**
-- Persistent session created at loop start (variables survive across turns)
-- Session cleanup in finally block
+- Persistent sandbox session survives across agentic runs within a conversation [UPDATED 2026-05-18]
+  (variables, dataframes, imports carry over between messages)
+- Session held on AgenticSearchController with lazy creation + 10min idle timeout
+- Shutdown cleanup via close_sandbox() in main.py _do_shutdown()
+- System prompt tells LLM to reuse existing sandbox variables
 - Progress events: `executing_code` → `code_executed` / `code_error`
 - `skip_initial_search` parameter skips Round 1 web search for computation-only or memory-only queries
 - `search_memory` tool [NEW 2026-03-15]: Searches ChromaDB collections (facts, conversations, summaries, etc.) from within the ReAct loop
@@ -4872,7 +4875,7 @@ daemon/
 │   ├── graph_walk_generator.py # GraphWalkGenerator: biased Markov walk synthesis (Tier 1) [NEW 2026-04-01]
 │   ├── wikidata_models.py     # Pydantic models for Wikidata import [NEW 2026-04]
 │   ├── wikidata_resolver.py   # WikidataEntityMapper: personal <-> Wikidata entity resolution [NEW 2026-04]
-│   ├── wiki_enrichment.py     # Shutdown: tracked wiki articles -> graph nodes [NEW 2026-04]
+│   ├── wiki_enrichment.py     # Shutdown: wiki articles -> graph bridges (gated: convo-entity-only, junk-filtered) [UPDATED 2026-05-18]
 │   ├── wiki_tracker.py        # Session-level Wikipedia article tracking [NEW 2026-04]
 │   ├── clip_manager.py        # OpenCLIP singleton for CLIP image/text encoding [NEW 2026-05]
 │   ├── visual_memory_store.py # Dual storage: ChromaDB + FAISS for visual memories [NEW 2026-05]

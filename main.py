@@ -504,6 +504,14 @@ def _run_shutdown_tasks(orchestrator):
 
         # Run shutdown tasks
         async def _do_shutdown():
+            # Close persistent sandbox session if active
+            try:
+                agentic = getattr(orchestrator, '_agentic_controller', None)
+                if agentic and hasattr(agentic, 'close_sandbox'):
+                    await agentic.close_sandbox()
+            except Exception as e:
+                logger.debug(f"[Shutdown] Sandbox cleanup: {e}")
+
             # Wait for any pending background storage tasks first
             try:
                 from gui.handlers import wait_for_pending_storage
