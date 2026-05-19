@@ -230,14 +230,62 @@ class _SimplePromptBuilder:
 # main.py (updated build_orchestrator function)
 def build_orchestrator():
     """Builds and returns a configured orchestrator"""
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from utils.bootstrap import update_splash
 
-    # Create model_manager FIRST
-    update_splash("Initializing model manager...")
-    model_manager = ModelManager()
-    # Register common OpenRouter model ids explicitly
-    model_manager.load_openai_model("gpt-4-turbo", "openai/gpt-4-turbo")
-    # Choose active model: prefer persisted config, else default to GPT‑5
+    _t_total = _time.monotonic()
+
+    # ------------------------------------------------------------------ #
+    # Phase 1: Parallel heavy loads (three model loads + ChromaDB + JSON) #
+    # ------------------------------------------------------------------ #
+    # ModelManager loads SentenceTransformer("all-MiniLM-L6-v2")
+    # MultiCollectionChromaStore loads SentenceTransformer("BAAI/bge-small-en-v1.5") + ChromaDB
+    # CorpusManager reads corpus JSON
+    # All three are fully independent.
+    update_splash("Loading models (parallel)...")
+
+    _results = {}
+
+    def _init_model_manager():
+        t = _time.monotonic()
+        mm = ModelManager()
+        mm.load_openai_model("gpt-4-turbo", "openai/gpt-4-turbo")
+        logger.info(f"[startup] ModelManager: {_time.monotonic()-t:.2f}s")
+        return mm
+
+    def _init_chroma_store():
+        t = _time.monotonic()
+        cs = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
+        logger.info(f"[startup] ChromaStore: {_time.monotonic()-t:.2f}s")
+        return cs
+
+    def _init_corpus_manager():
+        t = _time.monotonic()
+        cm = CorpusManager(corpus_file=CORPUS_FILE)
+        logger.info(f"[startup] CorpusManager: {_time.monotonic()-t:.2f}s")
+        return cm
+
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="startup") as pool:
+        futures = {
+            pool.submit(_init_model_manager): "model_manager",
+            pool.submit(_init_chroma_store): "chroma_store",
+            pool.submit(_init_corpus_manager): "corpus_manager",
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            _results[name] = future.result()
+
+    model_manager = _results["model_manager"]
+    chroma_store = _results["chroma_store"]
+    corpus_manager = _results["corpus_manager"]
+
+    logger.info(f"[startup] Phase 1 (parallel loads): {_time.monotonic()-_t_total:.2f}s")
+
+    # ------------------------------------------------------------------ #
+    # Phase 2: Configure model manager (fast, needs model_manager)       #
+    # ------------------------------------------------------------------ #
+    _t2 = _time.monotonic()
     try:
         active_from_config = (config.get("models", {}) or {}).get("active")
     except (AttributeError, TypeError, KeyError):
@@ -267,46 +315,56 @@ def build_orchestrator():
     except Exception as e:
         logger.debug(f"[build_orchestrator] deps.initialize failed or unavailable: {e}")
 
-    # NOW create instances that depend on model_manager
-    update_splash("Loading NLP models...")
+    # ------------------------------------------------------------------ #
+    # Phase 3: Light components + gate system (needs model_manager)      #
+    # ------------------------------------------------------------------ #
+    update_splash("Initializing components...")
     time_manager = TimeManager()
     tokenizer_manager = TokenizerManager(model_manager=model_manager)
-    # Enable hybrid topic extraction (heuristics + optional LLM fallback)
-    topic_manager = TopicManager()  # resolves model_manager via deps if available
-    # IMPORTANT: get_primary_topic must return str | None (not (str, …))
+    topic_manager = TopicManager()
     set_topic_resolver(topic_manager.get_primary_topic)
     wiki_manager = WikiManager()
 
-    gate_system = MultiStageGateSystem(model_manager)
-    response_generator = ResponseGenerator(model_manager, time_manager)
-    file_processor = FileProcessor()
+    # Gate system loads CrossEncoder — run in parallel with response_generator + file_processor
+    def _init_gate_system():
+        t = _time.monotonic()
+        gs = MultiStageGateSystem(model_manager)
+        logger.info(f"[startup] GateSystem (CrossEncoder): {_time.monotonic()-t:.2f}s")
+        return gs
 
-    update_splash("Connecting to memory store...")
-    chroma_store = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
-    # Build shared corpus manager once
-    corpus_manager = CorpusManager(corpus_file=CORPUS_FILE)
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="startup") as pool:
+        gate_future = pool.submit(_init_gate_system)
+        # These are fast but run while CrossEncoder loads
+        response_generator = ResponseGenerator(model_manager, time_manager)
+        file_processor = FileProcessor()
+        gate_system = gate_future.result()
 
-    # Single coordinator instance (use the SAME corpus manager)
+    logger.info(f"[startup] Phase 2+3 (config + components): {_time.monotonic()-_t2:.2f}s")
+
+    # ------------------------------------------------------------------ #
+    # Phase 4: Memory coordinator + prompt builder + orchestrator         #
+    # ------------------------------------------------------------------ #
+    update_splash("Connecting memory system...")
+    _t4 = _time.monotonic()
     memory_coordinator = MemoryCoordinator(
         corpus_manager=corpus_manager,
         chroma_store=chroma_store,
         gate_system=gate_system,
-        topic_manager=topic_manager,   # will be honored if __init__ uses `or TopicManager()`
+        topic_manager=topic_manager,
         model_manager=model_manager,
         time_manager=time_manager
     )
-    # Keep a local reference; we'll pass it where needed
     coord = memory_coordinator
 
     if HAS_UNIFIED_PROMPT:
         prompt_builder = _UnifiedPromptBuilder(
             model_manager=model_manager,
-            memory_coordinator=coord,  # <- same instance
+            memory_coordinator=coord,
             tokenizer_manager=tokenizer_manager,
             wiki_manager=wiki_manager,
             topic_manager=topic_manager,
             gate_system=gate_system,
-            time_manager=time_manager,  # Pass shared time_manager instance
+            time_manager=time_manager,
     )
         mc = getattr(prompt_builder, "memory_coordinator", None)
         logger.info("[orchestrator] coord wired: type=%s has get_memories=%s get_facts=%s",
@@ -315,6 +373,9 @@ def build_orchestrator():
     else:
         logger.warning("Using simple fallback prompt builder")
         prompt_builder = _SimplePromptBuilder(memory_coordinator=coord)
+
+    logger.info(f"[startup] Phase 4 (coordinator + builder): {_time.monotonic()-_t4:.2f}s")
+    logger.info(f"[startup] TOTAL build_orchestrator: {_time.monotonic()-_t_total:.2f}s")
 
     update_splash("Building orchestrator...")
     return DaemonOrchestrator(

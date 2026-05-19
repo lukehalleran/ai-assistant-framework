@@ -858,6 +858,21 @@ async def detect_crisis_level(
             explanation=f"Explicit crisis language detected: {trigger}"
         )
 
+    # Stage 1.5: Fast-path exit for obviously safe short messages.
+    # If keyword check found nothing AND message is short, skip the
+    # expensive semantic embedding. This saves ~200-500ms per message
+    # for casual queries like "hey", "thanks", "what time is it".
+    word_count = len(message.split())
+    if word_count < 8:
+        logger.debug(f"[ToneDetector] Short message ({word_count} words), no crisis keywords — fast CONVERSATIONAL")
+        return ToneAnalysis(
+            level=CrisisLevel.CONVERSATIONAL,
+            confidence=0.95,
+            trigger="short_no_keywords",
+            raw_scores={},
+            explanation="Short message with no crisis indicators"
+        )
+
     # Stage 2: Semantic detection for nuanced cases
     level, confidence, raw_scores = _semantic_crisis_detection(
         message, conversation_history, model_manager

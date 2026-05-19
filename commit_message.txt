@@ -1,17 +1,35 @@
-feat: add agent session safety layer
+feat: chat latency optimizations + parallel startup + 4 new search tools
 
-Mechanical safeguards for AI coding sessions after a git restore
-destroyed uncommitted work. Snapshots repo state before agent work,
-blocks destructive git commands, and audits changes afterward.
+Startup performance:
+- Parallelize build_orchestrator: ModelManager, ChromaStore, CorpusManager
+  load concurrently via ThreadPoolExecutor (wall clock = max, not sum)
+- Lazy-load spaCy in fact_extractor (deferred from import to first use)
+- GateSystem CrossEncoder loads in background thread during Phase 2
+- Per-phase timing instrumentation in build_orchestrator
 
-New components:
-- utils/fs_snapshot.py: filesystem manifest (sha256, size, mtime), diffing, CLI
-- utils/destructive_op_guard.py: git command classifier (restore/reset --hard/clean/push blocked)
-- scripts/agent_session_start.sh: pre-agent snapshot (git state, manifest, filtered untracked tarball, 10-snapshot rotation)
-- scripts/agent_session_audit.sh: post-agent audit (manifest diff, branch/HEAD comparison)
-- scripts/safe_git.sh: safe git wrapper with env var and one-shot lockfile unlock
-- docs/AGENT_SAFETY.md: full workflow documentation and emergency recovery procedures
+Chat latency optimizations:
+- Move intent classification (regex, <1ms) BEFORE heavy topic LLM call;
+  skip heavy topic check for CASUAL_SOCIAL, META_CONVERSATIONAL, and
+  short non-crisis queries (saves 500-2000ms per casual message)
+- Tone detection fast-path: short messages (<8 words) with no crisis
+  keywords skip semantic embedding entirely (saves 200-500ms)
+- Parallelize topic extraction + tone detection (asyncio.gather)
+- Skip query rewriting for short queries (<10 words) and casual intents
+- Gate 8 retrieval tasks on eff_max > 0 (summaries, dreams, semantic,
+  reflections, wiki, git, skills, proposals — never launch when gated to 0)
+- Per-request query embedding cache on ChromaDB store: embed once, reuse
+  across all parallel collection queries. query_multiple_collections()
+  pre-embeds automatically instead of re-embedding per collection.
 
-92 new tests (40 fs_snapshot + 52 destructive_op_guard), all passing.
+New agentic search tools (free public APIs, no auth):
+- search_stackexchange: Stack Overflow Q&A with vote scores + accepted answers
+- search_arxiv: academic paper search (titles, authors, abstracts, PDF links)
+- search_pubmed: biomedical literature (PubMed E-utilities, 2-step ID+fetch)
+- search_hackernews: Hacker News stories via Algolia API
+- web_search gains optional 'site' parameter for domain-targeted Tavily search
+  (e.g. site="reddit.com", threaded through types → protocols → tools → manager)
+- Tool health report updated with new tools
+- System prompt guidance for when to use each specialized search tool
 
-Also includes: config.yaml model switch to deepseek-v4.
+Files changed: 12 files, +787 -135 lines
+Tests: 494 targeted tests passing (context_pipeline, intent, agentic, coordinator, prompt)

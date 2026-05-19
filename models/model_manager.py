@@ -389,7 +389,6 @@ class ModelManager:
         try:
             # Determine if using local files only
             local_files_only = model_path.startswith("./")
-            # logger.debug( Loading local model '{model_name}' from '{model_path}'")
 
             # Load model
             model = AutoModelForCausalLM.from_pretrained(

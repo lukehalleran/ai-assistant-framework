@@ -115,6 +115,7 @@ class SearchDecision:
     # Web search
     wants_search: bool = False
     search_query: Optional[str] = None
+    search_site: Optional[str] = None  # Domain filter (e.g. "stackoverflow.com")
     search_reason: Optional[str] = None
     # Wolfram Alpha (quick calculations)
     wants_wolfram: bool = False
@@ -168,6 +169,23 @@ class SearchDecision:
     wants_fetch_url: bool = False
     fetch_url: Optional[str] = None
     fetch_url_reason: Optional[str] = None
+    # Stack Exchange search
+    wants_stackexchange: bool = False
+    stackexchange_query: Optional[str] = None
+    stackexchange_site: str = "stackoverflow"
+    stackexchange_reason: Optional[str] = None
+    # arXiv paper search
+    wants_arxiv: bool = False
+    arxiv_query: Optional[str] = None
+    arxiv_reason: Optional[str] = None
+    # PubMed biomedical literature search
+    wants_pubmed: bool = False
+    pubmed_query: Optional[str] = None
+    pubmed_reason: Optional[str] = None
+    # Hacker News search
+    wants_hackernews: bool = False
+    hackernews_query: Optional[str] = None
+    hackernews_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -319,7 +337,9 @@ SEARCH_TOOL_DEFINITION = {
         "description": (
             "Search the web for current information. Use when you need "
             "real-time data, recent events, or information that may have "
-            "changed since your training cutoff."
+            "changed since your training cutoff. "
+            "Use 'site' to target specific domains for better results "
+            "(e.g. 'stackoverflow.com' for code questions, 'reddit.com' for opinions)."
         ),
         "parameters": {
             "type": "object",
@@ -327,6 +347,14 @@ SEARCH_TOOL_DEFINITION = {
                 "query": {
                     "type": "string",
                     "description": "The search query. Be specific and include relevant context."
+                },
+                "site": {
+                    "type": "string",
+                    "description": (
+                        "Optional: restrict to a specific domain. "
+                        "Examples: 'stackoverflow.com', 'reddit.com', 'github.com', "
+                        "'news.ycombinator.com', 'arxiv.org', 'pubmed.ncbi.nlm.nih.gov'."
+                    )
                 },
                 "reason": {
                     "type": "string",
@@ -718,6 +746,114 @@ FETCH_URL_TOOL_DEFINITION = {
                 }
             },
             "required": ["url"]
+        }
+    }
+}
+
+STACKEXCHANGE_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "search_stackexchange",
+        "description": (
+            "Search Stack Exchange for technical Q&A. Returns top-voted answers "
+            "with accepted-answer flags. Best for programming, sysadmin, math, "
+            "and science questions. Default site is stackoverflow."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Technical question or keywords to search."
+                },
+                "site": {
+                    "type": "string",
+                    "description": "Stack Exchange site (default: stackoverflow). Others: serverfault, superuser, math, stats, unix, askubuntu."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this search is needed."
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+
+ARXIV_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "search_arxiv",
+        "description": (
+            "Search arXiv for academic papers. Returns titles, authors, "
+            "abstracts, and links. Use for research questions, ML/AI papers, "
+            "physics, math, CS, statistics, and quantitative biology."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Academic search query — paper titles, topics, or author names."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this search is needed."
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+
+PUBMED_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "search_pubmed",
+        "description": (
+            "Search PubMed for biomedical and life science literature. "
+            "Returns paper titles, authors, abstracts, and PMIDs. "
+            "Use for medical, health, biology, and clinical research questions."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Biomedical search query — conditions, treatments, genes, etc."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this search is needed."
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+
+HACKERNEWS_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "search_hackernews",
+        "description": (
+            "Search Hacker News for tech discussions, startup news, and developer opinions. "
+            "Returns story titles, points, comment counts, and URLs. "
+            "Best for tech industry trends, developer tools, and community opinions."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query for Hacker News stories and discussions."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this search is needed."
+                }
+            },
+            "required": ["query"]
         }
     }
 }
