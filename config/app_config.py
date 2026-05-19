@@ -398,6 +398,22 @@ PROCEDURAL_SKILLS_ENABLED = bool(int(os.getenv("PROCEDURAL_SKILLS_ENABLED", "1" 
 PROMPT_MAX_SKILLS = int(os.getenv("PROMPT_MAX_SKILLS", str(PROMPT_MAX_SKILLS)))
 SKILL_DEDUP_THRESHOLD = float(os.getenv("SKILL_DEDUP_THRESHOLD", str(SKILL_DEDUP_THRESHOLD)))
 
+# Skill Activation (post-retrieval filtering & cooldown)
+SKILL_ACTIVATION_CFG = config.get("skill_activation", {})
+SKILL_ACTIVATION_ENABLED: bool = bool(SKILL_ACTIVATION_CFG.get("enabled", True))
+SKILL_ACTIVATION_MAX_SKILLS: int = int(SKILL_ACTIVATION_CFG.get("max_skills", 3))
+SKILL_ACTIVATION_MIN_SCORE: float = float(SKILL_ACTIVATION_CFG.get("min_score", 0.25))
+SKILL_ACTIVATION_COOLDOWN_HOURS: float = float(SKILL_ACTIVATION_CFG.get("cooldown_hours", 48.0))
+SKILL_ACTIVATION_FETCH_MULTIPLIER: int = int(SKILL_ACTIVATION_CFG.get("fetch_multiplier", 3))
+SKILL_ACTIVATION_STM_BONUS: float = float(SKILL_ACTIVATION_CFG.get("stm_bonus", 0.10))
+SKILL_ACTIVATION_USE_STM: bool = bool(SKILL_ACTIVATION_CFG.get("use_stm", True))
+
+# Environment variable overrides for Skill Activation
+SKILL_ACTIVATION_ENABLED = bool(int(os.getenv("SKILL_ACTIVATION_ENABLED", "1" if SKILL_ACTIVATION_ENABLED else "0")))
+SKILL_ACTIVATION_MAX_SKILLS = int(os.getenv("SKILL_ACTIVATION_MAX_SKILLS", str(SKILL_ACTIVATION_MAX_SKILLS)))
+SKILL_ACTIVATION_MIN_SCORE = float(os.getenv("SKILL_ACTIVATION_MIN_SCORE", str(SKILL_ACTIVATION_MIN_SCORE)))
+SKILL_ACTIVATION_COOLDOWN_HOURS = float(os.getenv("SKILL_ACTIVATION_COOLDOWN_HOURS", str(SKILL_ACTIVATION_COOLDOWN_HOURS)))
+
 # --------------------------------------------------------------------
 # Code Proposals Configuration
 # --------------------------------------------------------------------

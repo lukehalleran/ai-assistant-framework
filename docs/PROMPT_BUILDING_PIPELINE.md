@@ -91,7 +91,7 @@ default to `[]` without affecting other sections.
 | reference_docs | `get_reference_docs()` | 5 |
 | user_uploads | `get_user_uploads()` | 5 |
 | git_commits | `get_git_commits()` | varies |
-| procedural_skills | `get_procedural_skills()` | 5 |
+| procedural_skills | `get_procedural_skills()` | 5 (over-fetched 3x, filtered by SkillActivationPolicy) |
 | proposed_features | `get_proposed_features()` | 3 |
 | graph_context | `get_graph_context()` | 12 sentences |
 | unresolved_threads | `get_unresolved_threads()` | 3 |
@@ -107,6 +107,12 @@ Per-task timing is tracked and logged for bottleneck detection.
 - Apply reflections session filter if enabled
 - Sort reflections by timestamp (newest first)
 - Top-up reflections via on-demand LLM synthesis if count < target
+- **Skill activation** — `SkillActivationPolicy.filter()` applied to
+  procedural_skills results: intent suppression (EMOTIONAL_SUPPORT,
+  CASUAL_SOCIAL return []), min score threshold (0.25), STM topic bonus
+  (+0.10), cooldown filter (48h via `SkillCooldownStore`), cap to 3.
+  Skills are over-fetched at `SKILL_ACTIVATION_FETCH_MULTIPLIER` (3x)
+  during Step 4 to give the policy a wider candidate pool.
 
 ### Step 6 — Hygiene & Caps
 
@@ -340,6 +346,14 @@ NARRATIVE_STATE_MAX_TOKENS = 500
 MEMORY_ITEM_MAX_TOKENS = 512
 SEMANTIC_ITEM_MAX_TOKENS = 800
 LLM_COMPRESSION_RATIO_THRESHOLD = 3.0
+
+# Skill activation (post-retrieval filter)
+SKILL_ACTIVATION_ENABLED = True
+SKILL_ACTIVATION_MAX_SKILLS = 3
+SKILL_ACTIVATION_MIN_SCORE = 0.25
+SKILL_ACTIVATION_COOLDOWN_HOURS = 48.0
+SKILL_ACTIVATION_FETCH_MULTIPLIER = 3
+SKILL_ACTIVATION_STM_BONUS = 0.10
 ```
 
 ---

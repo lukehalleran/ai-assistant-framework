@@ -65,7 +65,7 @@ UnifiedPromptBuilder (thin orchestrator)
 
 ## Key Config
 
-Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (44 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
+Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (45 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
 
 Key values: `PROMPT_TOKEN_BUDGET_DEFAULT=15000` (floor 8K, ceiling 16K), `COSINE_SIMILARITY_THRESHOLD=0.25`, 9 intent types, dual fact budget (user=6, entity=4). Web search requires `TAVILY_API_KEY`. Currently disabled: synthesis generators, graph walk.
 
@@ -123,6 +123,7 @@ memory/                       # Memory system
 ├── claim_tracker.py          # Staleness tracking via claim hashing
 ├── synthesis_memory.py       # Synthesis persistence + audit queue
 ├── procedural_skill.py       # ProceduralSkill + SkillCategory
+├── skill_activation.py       # Post-retrieval skill filtering + cooldown
 ├── user_profile.py           # User profile with source excerpts + relative timestamps
 ├── user_profile_schema.py    # Relation canonicalization, 5-layer categorization
 ├── thread_manager.py

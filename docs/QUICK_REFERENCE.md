@@ -1374,6 +1374,17 @@ VISUAL_MEMORY_DEDUP_ENABLED = True      # SHA-256 content dedup on ingestion
 # Retrieval: entity-gated (only fires when query mentions an entity with stored images)
 # Backfill: scripts/backfill_visual_entities.py (profile-aware re-captioning + entity tagging)
 
+# Skill Activation [NEW 2026-05]
+SKILL_ACTIVATION_ENABLED = True          # Toggle post-retrieval skill filtering
+SKILL_ACTIVATION_MAX_SKILLS = 3          # Max skills surfaced per turn
+SKILL_ACTIVATION_MIN_SCORE = 0.25        # Minimum relevance score threshold
+SKILL_ACTIVATION_COOLDOWN_HOURS = 48.0   # Hours before re-surfacing same skill
+SKILL_ACTIVATION_FETCH_MULTIPLIER = 3    # Over-fetch factor (fetch N*max, filter to max)
+SKILL_ACTIVATION_STM_BONUS = 0.10        # Relevance bonus for STM topic match
+SKILL_ACTIVATION_USE_STM = True          # Enable STM topic bonus
+# Suppressed intents: EMOTIONAL_SUPPORT, CASUAL_SOCIAL → no skills surfaced
+# Cooldown store: data/skill_cooldown.json (JSON-backed TTL tracking)
+
 # Config Schema Validation [NEW 2026-05-10]
 # config/schema.py — Pydantic v2 validation for config.yaml (44 section models)
 # Validates at startup after YAML load, before constant extraction

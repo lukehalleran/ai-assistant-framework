@@ -398,7 +398,7 @@ pipeline serves all query types; only the parameters change.
 |--------|-----------------|--------------|
 | FACTUAL_RECALL | "what's my X", "do you remember", "do you see X", "show me X" | Boost truth (0.30), relevance (0.40), lower recency (0.05) |
 | TEMPORAL_RECALL | "last week", "history of", "progression" | Boost recency (0.40), continuity (0.20), reshape decay curve around temporal anchor |
-| EMOTIONAL_SUPPORT | Crisis keywords, "I feel" | Boost continuity (0.40), lower recency (0.15), increase recent conversation retrieval |
+| EMOTIONAL_SUPPORT | Crisis keywords, "I feel" | Boost continuity (0.40), lower recency (0.15), increase recent conversation retrieval, suppress procedural skills (max_skills=0) |
 | CASUAL_SOCIAL | "hi", "ok", "thanks", short queries | Boost continuity (0.25), reduce all retrieval limits, lightweight response |
 | TECHNICAL_HELP | "fix", "bug", "how do I", code references | Boost relevance (0.40), continuity (0.20), lower recency (0.10), increase procedural skill retrieval |
 | CREATIVE_EXPLORATION | "brainstorm", "imagine", "what if" | Boost continuity (0.20), importance (0.15), lower recency (0.10), wider retrieval |
@@ -645,7 +645,7 @@ and fetches from a different source or collection:
 | Recent reflections | ChromaDB `reflections` | 3 | Time-ordered |
 | Semantic reflections | ChromaDB `reflections` | 3 | Relevance-ordered |
 | Graph context | Knowledge graph BFS | 12 sentences | Natural language from traversal |
-| Procedural skills | ChromaDB `procedural_skills` | 5 | Adaptive workflows |
+| Procedural skills | ChromaDB `procedural_skills` | 5 (over-fetched 3x) | Adaptive workflows, filtered by SkillActivationPolicy |
 | Unresolved threads | ChromaDB `threads` | 3 | Priority-ranked |
 | Proactive insights | ContextSurfacer | 2 | LLM once/session, cached |
 | Wiki content | FAISS (40M vectors, IVFPQ index) | 3 | Gated at 0.30 threshold; falls back to ChromaDB if FAISS unavailable |
@@ -690,6 +690,28 @@ cleans it up after:
 This pattern avoids passing intent overrides through every layer of the
 retrieval stack — the scorer reads them from its own instance attributes
 during the gather window.
+
+### Procedural Skill Activation
+
+After parallel retrieval completes, procedural skills pass through
+`SkillActivationPolicy` (`memory/skill_activation.py`) — a post-retrieval
+filter that prevents irrelevant or repetitive workflows from consuming
+prompt budget. The policy applies five stages in order:
+
+1. **Intent suppression** — EMOTIONAL_SUPPORT and CASUAL_SOCIAL intents
+   receive no skills (tone-deaf during distress or greetings)
+2. **Minimum score threshold** — candidates below `SKILL_ACTIVATION_MIN_SCORE`
+   (0.25) are dropped
+3. **STM topic bonus** — skills whose tags/trigger match current STM topics
+   get a relevance boost (`SKILL_ACTIVATION_STM_BONUS`, 0.10)
+4. **Cooldown filter** — skills surfaced within `SKILL_ACTIVATION_COOLDOWN_HOURS`
+   (48h) are skipped; tracked via `SkillCooldownStore` (JSON at
+   `data/skill_cooldown.json`)
+5. **Cap** — at most `SKILL_ACTIVATION_MAX_SKILLS` (3) skills pass through
+
+The builder over-fetches by `SKILL_ACTIVATION_FETCH_MULTIPLIER` (3x) from
+ChromaDB to give the policy a wider candidate pool. Config section:
+`skill_activation:` in `config.yaml`.
 
 ---
 

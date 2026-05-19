@@ -35,6 +35,7 @@ resolved, and stale information is penalized in ranking.
 | `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks |
 | `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 7 additive bonuses/penalties) with intent overrides, graph boost, size penalty |
 | `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion, reflection embedding cleanup |
+| `memory/skill_activation.py` | SkillActivationPolicy (post-retrieval skill filter) + SkillCooldownStore (JSON-backed TTL) |
 | `core/prompt/builder.py` | UnifiedPromptBuilder: thin orchestrator for parallel task dispatch, intent overrides, budget |
 | `core/prompt/context_gatherer.py` | Mixin compositor (composes gatherer_web, gatherer_memory, gatherer_knowledge) |
 | `core/prompt/gatherer_web.py` | WebSearchMixin: web search retrieval + trigger logic |
@@ -126,7 +127,7 @@ UnifiedPromptBuilder.build_prompt()
   │     ├── summaries (recent+semantic)   ← ChromaDB summaries
   │     ├── reflections (recent+semantic) ← ChromaDB reflections
   │     ├── graph_context (12 sentences)  ← GraphMemory BFS traversal
-  │     ├── procedural_skills (5)         ← ChromaDB procedural_skills
+  │     ├── procedural_skills (5, over-fetched 3x) ← ChromaDB procedural_skills
   │     ├── unresolved_threads (3)        ← ThreadStore
   │     ├── proactive_insights (2)        ← ContextSurfacer
   │     ├── wiki_content (3)              ← FAISS (40M wiki vectors; ChromaDB fallback)
@@ -135,6 +136,10 @@ UnifiedPromptBuilder.build_prompt()
   │     ├── git_commits (10)              ← ChromaDB procedural
   │     ├── web_search (if triggered)     ← Tavily API
   │     └── codebase_changes (first msg)  ← git diff
+  │
+  ├─ 3.5. Skill Activation (procedural_skills)
+  │     SkillActivationPolicy: intent suppression → score threshold →
+  │     STM topic bonus → cooldown filter → cap to 3
   │
   ├─ 4. Multi-Stage Gating (semantic memories)
   │     Top 2 recent → bypass gating
@@ -315,7 +320,7 @@ The IntentClassifier detects query intent and overrides scoring weights:
 |--------|--------------|--------|
 | FACTUAL_RECALL | relevance=0.40, recency=0.05, truth=0.30, continuity=0.10 | Prioritize confirmed facts, suppress recency |
 | TEMPORAL_RECALL | recency=0.40, continuity=0.20, `_temporal_anchor_hours` | Reshape decay curve around time window |
-| EMOTIONAL_SUPPORT | recency=0.15, continuity=0.40, truth=0.10 | Prioritize conversation flow over recency |
+| EMOTIONAL_SUPPORT | recency=0.15, continuity=0.40, truth=0.10, max_skills=0 | Prioritize conversation flow over recency, suppress procedural skills |
 | TECHNICAL_HELP | relevance=0.40, recency=0.10, continuity=0.20 | Prioritize semantic match, lower recency |
 | CREATIVE_EXPLORATION | recency=0.10, continuity=0.20, importance=0.15 | Suppress recency, favor importance/continuity |
 | PROJECT_WORK | relevance=0.40, recency=0.10, truth=0.20, continuity=0.15 | Prioritize relevance+truth, lower recency |
@@ -580,6 +585,59 @@ Stage 5: Cap
 ```
 
 **Timing:** ~200ms total (FAISS ~50ms, cosine ~50ms, cross-encoder ~100ms)
+
+---
+
+## Procedural Skill Activation
+
+After parallel retrieval, procedural skills from the `procedural_skills`
+collection pass through `SkillActivationPolicy` (`memory/skill_activation.py`),
+a post-retrieval filter that prevents irrelevant or repetitive workflows
+from consuming prompt budget.
+
+### Filtering Pipeline
+
+```
+Input: N candidates from ChromaDB procedural_skills (over-fetched at 3x)
+
+1. Intent suppression
+   EMOTIONAL_SUPPORT, CASUAL_SOCIAL → return [] immediately
+
+2. Minimum score threshold
+   Drop candidates with relevance_score < 0.25
+
+3. STM topic bonus
+   If skill tags/trigger match STM topics → +0.10 relevance boost
+
+4. Cooldown filter
+   Skip skills surfaced within past 48 hours
+   Tracked in data/skill_cooldown.json (JSON-backed TTL store)
+
+5. Cap
+   Return top 3 by adjusted score
+
+Output: 0-3 activated skills for prompt injection
+```
+
+### Cooldown Store
+
+`SkillCooldownStore` persists surfacing history at `data/skill_cooldown.json`.
+Each entry stores the last-surfaced ISO timestamp and a running count.
+Entries older than 30 days are cleaned up via `cleanup_old()`.
+
+### Configuration
+
+| Constant | Default | Purpose |
+|----------|---------|---------|
+| `SKILL_ACTIVATION_ENABLED` | True | Master toggle |
+| `SKILL_ACTIVATION_MAX_SKILLS` | 3 | Max skills surfaced per turn |
+| `SKILL_ACTIVATION_MIN_SCORE` | 0.25 | Minimum relevance threshold |
+| `SKILL_ACTIVATION_COOLDOWN_HOURS` | 48.0 | Re-surfacing cooldown |
+| `SKILL_ACTIVATION_FETCH_MULTIPLIER` | 3 | Over-fetch factor for wider candidate pool |
+| `SKILL_ACTIVATION_STM_BONUS` | 0.10 | Bonus for STM topic overlap |
+| `SKILL_ACTIVATION_USE_STM` | True | Enable STM bonus |
+
+YAML section: `skill_activation:` in `config/config.yaml`.
 
 ---
 
