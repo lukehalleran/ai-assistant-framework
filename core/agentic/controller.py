@@ -74,6 +74,7 @@ if TYPE_CHECKING:
     from core.prompt.token_manager import TokenManager
     from core.file_access_manager import FileAccessManager
     from core.git_stats_manager import GitStatsManager
+    from core.github_manager import GitHubManager
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ class AgenticSearchController:
         sandbox_manager: Optional["SandboxManager"] = None,
         file_access_manager: Optional["FileAccessManager"] = None,
         git_stats_manager: Optional["GitStatsManager"] = None,
+        github_manager: Optional["GitHubManager"] = None,
         token_manager: Optional["TokenManager"] = None,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         context_budget_tokens: int = DEFAULT_CONTEXT_BUDGET_TOKENS,
@@ -135,6 +137,7 @@ class AgenticSearchController:
             sandbox_manager: Optional E2B sandbox manager for code execution
             file_access_manager: Optional file access manager for read/grep/list
             git_stats_manager: Optional git stats manager for repo activity queries
+            github_manager: Optional GitHub API manager for read-only repo queries
             token_manager: Optional token counter for budget enforcement
             max_rounds: Maximum search rounds allowed (default 5)
             context_budget_tokens: Token budget for accumulated context
@@ -147,6 +150,7 @@ class AgenticSearchController:
         self.sandbox_manager = sandbox_manager
         self.file_access_manager = file_access_manager
         self.git_stats_manager = git_stats_manager
+        self.github_manager = github_manager
         self.token_manager = token_manager
         self.max_rounds = max_rounds
         self.context_budget_tokens = context_budget_tokens
@@ -178,6 +182,7 @@ class AgenticSearchController:
             sandbox_manager=sandbox_manager,
             file_access_manager=file_access_manager,
             git_stats_manager=git_stats_manager,
+            github_manager=github_manager,
             token_manager=token_manager,
             memory_expander=self.memory_expander,
             compression_model=compression_model,
@@ -315,6 +320,7 @@ class AgenticSearchController:
         memory_available = self.chroma_store is not None
         file_access_available = self.file_access_manager is not None and self.file_access_manager.is_available()
         git_stats_available = self.git_stats_manager is not None and self.git_stats_manager.is_available()
+        github_available = self.github_manager is not None and self.github_manager.is_available()
         fetch_url_available = self.web_search_manager is not None and self.web_search_manager.is_available()
         handler = get_protocol_handler(
             protocol,
@@ -323,6 +329,7 @@ class AgenticSearchController:
             memory_available=memory_available,
             file_access_available=file_access_available,
             git_stats_available=git_stats_available,
+            github_available=github_available,
             fetch_url_available=fetch_url_available,
         )
 

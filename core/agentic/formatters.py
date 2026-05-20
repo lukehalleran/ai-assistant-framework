@@ -169,6 +169,16 @@ class AgenticFormatter:
             f"Content:\n{content}"
         )
 
+    def format_github_context(
+        self, round_num: int, query: str, content: str
+    ) -> str:
+        """Format GitHub API results for accumulated context."""
+        return (
+            f"[GITHUB — Round {round_num}]\n"
+            f"Query: {query}\n"
+            f"Result:\n{content}"
+        )
+
     def format_memory_results(self, results: list, collection: str) -> str:
         """Format ChromaDB results into readable text for the LLM."""
         lines = []

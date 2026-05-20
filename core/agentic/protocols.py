@@ -26,6 +26,7 @@ Supported Tools:
     - file_grep / <file_grep>: Search for patterns across files
     - file_list / <file_list>: List directory contents
     - git_stats / <git_stats>: Git repository activity stats
+    - github / <github>: Read-only GitHub API (issues, PRs, actions, releases, search)
     - get_full_document / <get_full_document>: Retrieve complete uploaded document by title
     - fetch_url / <fetch_url>: Fetch web page content by URL
     - signal_done / <done>: Signal task completion
@@ -137,7 +138,7 @@ class NativeToolsHandler(BaseProtocolHandler):
     Parses tool_calls from LLM response to detect search, Wolfram, and sandbox requests.
     """
 
-    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, fetch_url_available: bool = False):
+    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, github_available: bool = False, fetch_url_available: bool = False):
         from core.agentic.types import (
             SEARCH_TOOL_DEFINITION,
             DONE_TOOL_DEFINITION,
@@ -149,6 +150,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             FILE_GREP_TOOL_DEFINITION,
             FILE_LIST_TOOL_DEFINITION,
             GIT_STATS_TOOL_DEFINITION,
+            GITHUB_TOOL_DEFINITION,
             GET_FULL_DOCUMENT_TOOL_DEFINITION,
             RECALL_IMAGE_TOOL_DEFINITION,
             FETCH_URL_TOOL_DEFINITION,
@@ -167,6 +169,7 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.file_grep_tool = FILE_GREP_TOOL_DEFINITION
         self.file_list_tool = FILE_LIST_TOOL_DEFINITION
         self.git_stats_tool = GIT_STATS_TOOL_DEFINITION
+        self.github_tool = GITHUB_TOOL_DEFINITION
         self.full_document_tool = GET_FULL_DOCUMENT_TOOL_DEFINITION
         self.recall_image_tool = RECALL_IMAGE_TOOL_DEFINITION
         self.fetch_url_tool = FETCH_URL_TOOL_DEFINITION
@@ -179,6 +182,7 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.memory_available = memory_available
         self.file_access_available = file_access_available
         self.git_stats_available = git_stats_available
+        self.github_available = github_available
         self.fetch_url_available = fetch_url_available
 
     def parse_response(self, response: Any) -> List[SearchDecision]:
@@ -443,6 +447,20 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] fetch_url called without url")
                 return None
 
+        elif func_name == "github":
+            query = args.get("query", "")
+            reason = args.get("reason")
+            if query:
+                logger.debug(f"[AgenticProtocol] Native tool github: {query}")
+                return SearchDecision(
+                    wants_github=True,
+                    github_query=query,
+                    github_reason=reason,
+                )
+            else:
+                logger.warning("[AgenticProtocol] github called without query")
+                return None
+
         elif func_name == "search_stackexchange":
             query = args.get("query", "")
             site = args.get("site", "stackoverflow")
@@ -518,6 +536,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             tools.extend([self.file_read_tool, self.file_grep_tool, self.file_list_tool])
         if self.git_stats_available:
             tools.append(self.git_stats_tool)
+        if self.github_available:
+            tools.append(self.github_tool)
         if self.fetch_url_available:
             tools.append(self.fetch_url_tool)
         # Always available — free public APIs, no auth
@@ -554,6 +574,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             tool_list.extend(["file_read", "file_grep", "file_list"])
         if self.git_stats_available:
             tool_list.append("git_stats")
+        if self.github_available:
+            tool_list.append("github")
         if self.fetch_url_available:
             tool_list.append("fetch_url")
         tool_list.extend(["search_stackexchange", "search_arxiv", "search_pubmed", "search_hackernews"])
@@ -576,6 +598,14 @@ class NativeToolsHandler(BaseProtocolHandler):
             "Example: if you know the user's GitHub is https://github.com/user/repo, "
             "call fetch_url(url='https://github.com/user/repo'), don't search for 'user GitHub repo'."
         ) if self.fetch_url_available else ""
+        github_guidance = (
+            " Use the github tool for questions about this repository's issues, PRs, "
+            "CI/CD status, releases, workflows, labels, milestones, and contributors. "
+            "It queries the GitHub API directly — much faster and more structured than "
+            "web_search for repo-specific data. Use natural language: "
+            "'open issues labeled bug', 'PR #42', 'failed CI runs', 'latest release', "
+            "'search code for TODO', 'contributors'."
+        ) if self.github_available else ""
         specialized_search_guidance = (
             " For technical/programming questions, prefer search_stackexchange over web_search — "
             "it returns structured Q&A with vote scores and accepted answers. "
@@ -594,7 +624,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             f"IMPORTANT: The Python sandbox is PERSISTENT across messages — variables, "
             f"dataframes, and imports from previous execute_python calls are still alive. "
             f"Reuse them instead of recreating from scratch."
-            f"{memory_guidance}{fetch_url_guidance} "
+            f"{memory_guidance}{fetch_url_guidance}{github_guidance} "
             f"{specialized_search_guidance} "
             "You may call multiple tools in a single step when the queries are independent "
             "(e.g., web_search AND search_stackexchange simultaneously). "
@@ -651,6 +681,11 @@ class XMLMarkerHandler(BaseProtocolHandler):
     # Git stats pattern: <git_stats>query</git_stats>
     GIT_STATS_PATTERN = re.compile(
         r'<git_stats>(.*?)</git_stats>',
+        re.DOTALL | re.IGNORECASE
+    )
+    # GitHub API pattern: <github>query</github>
+    GITHUB_PATTERN = re.compile(
+        r'<github>(.*?)</github>',
         re.DOTALL | re.IGNORECASE
     )
     # Fetch URL pattern: <fetch_url url="https://example.com">reason</fetch_url>
@@ -796,6 +831,16 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     git_stats_query=query,
                 ))
 
+        # Check for GitHub API markers
+        for github_match in self.GITHUB_PATTERN.finditer(text):
+            query = github_match.group(1).strip()
+            if query:
+                logger.debug(f"[AgenticProtocol] XML github marker found: {query}")
+                decisions.append(SearchDecision(
+                    wants_github=True,
+                    github_query=query,
+                ))
+
         # Check for fetch_url markers
         for fetch_url_match in self.FETCH_URL_PATTERN.finditer(text):
             url = fetch_url_match.group(1).strip()
@@ -890,6 +935,7 @@ def get_protocol_handler(
     memory_available: bool = False,
     file_access_available: bool = False,
     git_stats_available: bool = False,
+    github_available: bool = False,
     fetch_url_available: bool = False,
 ) -> BaseProtocolHandler:
     """
@@ -902,6 +948,7 @@ def get_protocol_handler(
         memory_available: Whether ChromaDB memory search is available
         file_access_available: Whether file access manager is configured
         git_stats_available: Whether git stats manager is configured
+        github_available: Whether GitHub API manager is configured
         fetch_url_available: Whether web search manager supports URL extraction
 
     Returns:
@@ -914,6 +961,7 @@ def get_protocol_handler(
             memory_available=memory_available,
             file_access_available=file_access_available,
             git_stats_available=git_stats_available,
+            github_available=github_available,
             fetch_url_available=fetch_url_available,
         )
     else:

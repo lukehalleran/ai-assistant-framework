@@ -1,42 +1,43 @@
-feat: persistent sandbox, LaTeX, graph cleanup, wiki enrichment gating, thinking leak hardening
+feat: GitHub agentic tool + ChromaDB lazy init + startup/shutdown parallelization
 
-Persistent sandbox session:
-- E2B sandbox session now survives across agentic runs within a conversation
-  (variables, dataframes, imports carry over between messages)
-- Session held on AgenticSearchController with lazy creation + 10min idle timeout
-- Shutdown cleanup wired into main.py _do_shutdown()
-- System prompt tells LLM to reuse existing sandbox variables
+New: GitHub API agentic tool (read-only):
+- GitHubManager in core/github_manager.py — queries GitHub via gh CLI
+- 18th agentic tool: issues, PRs, actions, releases, workflows, labels,
+  milestones, contributors, code search
+- Safety: ALLOWED_COMMANDS whitelist + BLOCKED_FLAGS, only read-only
+  gh subcommands (list, view, diff, checks, status, search). Blocks
+  create, close, merge, edit, delete, comment, push.
+- Native protocol (function calling) + XML protocol (<github>query</github>)
+- SearchDecision extended: wants_github, github_query, github_reason
+- ToolExecutor: _dispatch_github() + _execute_github()
+- AgenticFormatter.format_github_context() for result formatting
+- Tool health reporting includes GitHub availability
+- Config: github_api section (enabled, timeout_s, max_output_lines, repo)
+- GitHubAPISection Pydantic model in schema.py
+- 99 unit tests in tests/unit/test_github_manager.py
 
-LaTeX rendering:
-- Enabled $...$ and $$...$$ plus \(...\) and \[...\] in Gradio chatbot
+ChromaDB lazy collection initialization:
+- Collections registered as None placeholders in __init__(), lazily
+  opened on first access via _get_collection(name)
+- Eliminates eager initialization of all 13 collections at startup
+- _initialize_collections() → _initialize_all_collections() (stats only)
+- All internal usages updated: self.collections[name] → self._get_collection(name)
+- New get_ids_by_timestamp_range(collection, start, end) method for
+  efficient timestamp-filtered queries (replaces list_all scan in shutdown)
 
-Knowledge graph cleanup:
-- Removed 593 junk nodes (pronouns, stopwords, timestamps, measurements,
-  wiki orphan clusters) and 930 dangling edges. Graph: 1729→1136 nodes.
-- Cleaned 14,355 stale aliases (14772→417)
-- Deleted 341 junk encyclopedia facts from ChromaDB (2849→2508 facts)
-  Backup at data/facts_junk_backup_20260518_203815.json
+Startup parallelization:
+- MemoryCoordinator: graph+resolver, user profile, and claim index
+  loaded in parallel via ThreadPoolExecutor(max_workers=3)
+- main.py: SentenceTransformer model loads serialized via threading lock
+  (PyTorch Module.to() is not thread-safe for concurrent model loads)
+- Removed eager embedder preload (_get_embedder("all-MiniLM-L6-v2"))
+- User profile shared from coordinator → orchestrator (avoids duplicate
+  disk read)
 
-Wiki enrichment gating (prevents future junk):
-- Gate 1: Only create wiki nodes if article title matches a conversation entity
-- Gate 2: Only link to entities from conversations (not other wiki nodes)
-- Bridge mode: when 2+ conversation entities co-occur in wiki text, create
-  direct bridge edges between them (wiki article = evidence, not entity)
-- Junk entity filter applied to all extraction results
-
-Graph entity junk prevention:
-- New shared is_junk_entity() in graph_utils.py (pronouns, stopwords,
-  quantifiers, adjectives, meta-words, short tokens, numbers)
-- Applied at: ingestion (subjects + objects), extraction, expansion, wiki enrichment
-- Subjects now filtered during graph ingestion (was objects-only)
-
-Thinking block leak hardening:
-- Added 9 new heuristic patterns (5 sentence-level + 4 line-level):
-  sandbox failure reasoning, environment diagnosis, mid-sentence "I'll try/skip",
-  cost-aware reasoning, previous search failure, round counting
-- 19 new tests (7 real-world leak regressions, 7 false positive prevention,
-  5 tag edge cases). Total thinking tests: 27→46.
-- DeepSeek v4 now gets API-level reasoning separation (supports_reasoning()
-  extended to match deepseek-v4, not just deepseek-r1)
-
-Env fix: upgraded python-dateutil 2.6.1→2.9.0 (was blocking e2b SDK import)
+Shutdown parallelization:
+- Shutdown phases restructured into parallel groups via asyncio.gather:
+  Phase A (parallel): facts + LLM facts + behavioral patterns + skills
+  Phase B (parallel): proposals + impl tracking + threads + synthesis + wiki
+  Phase C (sequential): graph save, category cache, cross-dedup
+- Source doc ID lookup uses get_ids_by_timestamp_range() instead of
+  list_all() full-scan

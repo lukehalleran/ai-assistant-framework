@@ -1223,14 +1223,11 @@ class MemoryStorage:
 
             collection_name = "procedural_skills"
 
-            # Ensure collection exists
-            if collection_name not in self.chroma_store.collections or self.chroma_store.collections[collection_name] is None:
-                if hasattr(self.chroma_store, "create_collection"):
-                    self.chroma_store.create_collection(collection_name)
-
-            coll = self.chroma_store.collections.get(collection_name)
-            if coll is None:
-                logger.warning("[MemoryStorage] procedural_skills collection not available")
+            # Ensure collection exists (lazy init handles creation)
+            try:
+                coll = self.chroma_store._get_collection(collection_name)
+            except (ValueError, Exception) as e:
+                logger.warning(f"[MemoryStorage] procedural_skills collection not available: {e}")
                 return None
 
             embedding_text = skill.to_embedding_text()

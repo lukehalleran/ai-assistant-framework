@@ -611,6 +611,14 @@ class GitStatsSection(BaseModel):
     max_output_lines: int = Field(default=50, ge=1)
 
 
+class GitHubAPISection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    timeout_s: int = Field(default=15, ge=1)
+    max_output_lines: int = Field(default=80, ge=1)
+    repo: str = Field(default="", description="Optional owner/repo override (auto-detected if empty)")
+
+
 class GitMemorySection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
@@ -817,6 +825,7 @@ class DaemonConfig(BaseModel):
     cross_dedup: CrossDedupSection = Field(default_factory=CrossDedupSection)
     user_profile: UserProfileSection = Field(default_factory=UserProfileSection)
     git_stats: GitStatsSection = Field(default_factory=GitStatsSection)
+    github_api: GitHubAPISection = Field(default_factory=GitHubAPISection)
     git_memory: GitMemorySection = Field(default_factory=GitMemorySection)
     wolfram: WolframSection = Field(default_factory=WolframSection)
     sandbox: SandboxSection = Field(default_factory=SandboxSection)

@@ -66,7 +66,7 @@ resolved, and stale information is penalized in ranking.
 ### Shutdown & Consolidation
 | File | Purpose |
 |------|---------|
-| `memory/shutdown_processor.py` | 13-step session-end processing (Steps 1-8, with sub-steps 4.5, 6.5, 6.75, 6.8, 6.9) |
+| `memory/shutdown_processor.py` | Session-end processing: 3 parallel phases (A: extraction, B: generation, C: persistence) |
 | `memory/thread_manager.py` | Thread detection for conversation continuity |
 | `memory/thread_store.py` | ChromaDB-backed thread persistence + priority ranking + deadline-aware staleness + per-turn regex resolution |
 | `memory/thread_extractor.py` | LLM-based thread extraction + resolution detection |
@@ -74,7 +74,7 @@ resolved, and stale information is penalized in ranking.
 ### Storage Layer
 | File | Purpose |
 |------|---------|
-| `memory/storage/multi_collection_chroma_store.py` | ChromaDB wrapper: 13 collections, `add_to_collection`, `query_collection`, `get_by_id`, `update_metadata` |
+| `memory/storage/multi_collection_chroma_store.py` | ChromaDB wrapper: 13 collections (lazy init via `_get_collection`), `add_to_collection`, `query_collection`, `get_by_id`, `update_metadata`, `get_ids_by_timestamp_range` |
 
 ---
 
@@ -196,46 +196,43 @@ MemoryStorage.store_interaction(query, response)
 ```
 ShutdownProcessor.process_shutdown_memory()
   │
-  ├─ Steps 1-2: Block summaries (N=10 conversations per block)
+  ├─ Block summaries (N=10 conversations per block)
   │     LLM consolidation → micro-summary fallback
   │     Claim extraction → ClaimIndex registration
-  │     Source doc IDs stored for expand_memory drill-down
+  │     Source doc IDs via get_ids_by_timestamp_range() (not list_all scan)
   │
-  ├─ Step 3: Session fact extraction (rule-based, last 10 turns)
-  │     Fact verification gate (REJECT/STORE/STORE_AND_FLAG)
-  │     On STORE_AND_FLAG: mark conflicting facts as superseded
+  ├─ Phase A (parallel via asyncio.gather) ────────────────────────
+  │  ├─ Session fact extraction (rule-based, last 10 turns)
+  │  │     Fact verification gate (REJECT/STORE/STORE_AND_FLAG)
+  │  │     On STORE_AND_FLAG: mark conflicting facts as superseded
+  │  ├─ LLM fact extraction (neural triples) + batch verification
+  │  ├─ Behavioral pattern extraction (cross-turn habit detection)
+  │  └─ Procedural skill extraction
   │
-  ├─ Step 4: LLM fact extraction (neural triples)
-  │     Batch verification before storage
+  ├─ Phase B (parallel via asyncio.gather) ────────────────────────
+  │  ├─ Code proposal generation
+  │  ├─ Implementation tracking (lightweight file check)
+  │  ├─ Open thread processing
+  │  │     Detect resolutions → extract new → enforce cap
+  │  ├─ Synthesis dreaming (three-tier parallel generation)
+  │  │     Auto-halt check: skips if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
+  │  │     Tier 0: RetrievalSynthesisGenerator (structural query → FAISS → adversarial eval)
+  │  │     Tier 1: GraphWalkGenerator (biased Markov walks, hub-dampened, cross-domain)
+  │  │     Tier 2: SynthesisGenerator (cross-store sampling, FAISS wiki search)
+  │  │     All → SynthesisFilter → SynthesisMemory
+  │  │     On acceptance: provisional bridge edge created (weight=0.0, status="provisional")
+  │  └─ Wiki-to-graph enrichment (session wiki articles → graph nodes)
   │
-  ├─ Step 4.5: Behavioral pattern extraction (cross-turn habit detection)
+  ├─ Phase C (sequential — must follow Phase B) ──────────────────
+  │  ├─ Knowledge graph + alias + category cache save (JSON flush)
+  │  └─ Cross-collection dedup
+  │        Mode depends on DAEMON_MODE:
+  │          Dev mode (default): dry_run=True — preview/log only, never auto-deletes
+  │          User mode: auto-executes deletions (CROSS_DEDUP_AUTO_EXECUTE=True)
+  │        Live deletions also available via GUI Preview/Run buttons in Status tab
+  │        Double-run guard: class-level _dedup_ran flag prevents running twice per process
   │
-  ├─ Step 5: Procedural skill extraction
-  ├─ Step 6: Code proposal generation
-  ├─ Step 6.5: Implementation tracking (lightweight file check)
-  │
-  ├─ Step 6.75: Open thread processing
-  │     Detect resolutions → extract new → enforce cap
-  │
-  ├─ Step 6.8: Synthesis dreaming (three-tier parallel generation)
-  │     Auto-halt check: skips if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
-  │     Tier 0: RetrievalSynthesisGenerator (structural query → FAISS → adversarial eval)
-  │     Tier 1: GraphWalkGenerator (biased Markov walks, hub-dampened, cross-domain)
-  │     Tier 2: SynthesisGenerator (cross-store sampling, FAISS wiki search)
-  │     All → SynthesisFilter → SynthesisMemory
-  │     On acceptance: provisional bridge edge created (weight=0.0, status="provisional")
-  │     Composite-rejected candidates stored for FN audit review
-  │
-  ├─ Step 6.9: Wiki-to-graph enrichment (session wiki articles → graph nodes)
-  │
-  ├─ Step 7: Knowledge graph + alias + category cache save (JSON flush)
-  │
-  └─ Step 8: Cross-collection dedup
-        Mode depends on DAEMON_MODE:
-          Dev mode (default): dry_run=True — preview/log only, never auto-deletes
-          User mode: auto-executes deletions (CROSS_DEDUP_AUTO_EXECUTE=True)
-        Live deletions also available via GUI Preview/Run buttons in Status tab
-        Double-run guard: class-level _dedup_ran flag prevents running twice per process
+  └─ Consolidation trigger (if threshold met and not shutdown-only)
 ```
 
 ---

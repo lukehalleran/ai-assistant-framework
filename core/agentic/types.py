@@ -21,6 +21,7 @@ Public Types:
     - GIT_STATS_TOOL_DEFINITION (git repository stats tool schema)
     - RECALL_IMAGE_TOOL_DEFINITION (visual memory CLIP image search tool schema)
     - FETCH_URL_TOOL_DEFINITION (direct URL content fetching tool schema)
+    - GITHUB_TOOL_DEFINITION (read-only GitHub API tool schema)
 
 SearchDecision Fields (extended for multi-tool support):
     - wants_search, search_query, search_reason (web search)
@@ -186,6 +187,10 @@ class SearchDecision:
     wants_hackernews: bool = False
     hackernews_query: Optional[str] = None
     hackernews_reason: Optional[str] = None
+    # GitHub API (read-only: issues, PRs, actions, releases, search, etc.)
+    wants_github: bool = False
+    github_query: Optional[str] = None
+    github_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -307,6 +312,8 @@ class AgenticSearchSession:
             return "full_document"
         if query.startswith("[Fetch URL]"):
             return "fetch_url"
+        if query.startswith("[GitHub]"):
+            return "github"
         return "web_search"
 
 
@@ -858,6 +865,39 @@ HACKERNEWS_TOOL_DEFINITION = {
     }
 }
 
+GITHUB_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "github",
+        "description": (
+            "Query the GitHub repository for issues, pull requests, actions, "
+            "releases, workflows, labels, milestones, contributors, and code search. "
+            "Read-only — never modifies the repository. "
+            "Use natural language: 'open issues labeled bug', 'PR #42', "
+            "'failed CI runs', 'latest release', 'search code for TODO', etc."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Natural language description of what to look up on GitHub, "
+                        "e.g. 'open issues', 'PR #12 diff', 'recent workflow runs', "
+                        "'closed issues labeled enhancement', 'contributors', "
+                        "'search code for authenticate'"
+                    )
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this GitHub query is needed."
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+
 # System prompt injection for local models
 AGENTIC_SYSTEM_PROMPT_INJECTION = """
 [AGENTIC TOOLS ENABLED]
@@ -932,6 +972,18 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
     Web search finds pages; fetch_url reads them.
     Example: <fetch_url url="https://github.com/user/repo">user asked me to check their repo</fetch_url>
 
+13. **GitHub**: <github>your query</github>
+    Query the GitHub repository for issues, PRs, actions, releases, workflows, labels,
+    milestones, contributors, and code search. Read-only — never modifies the repository.
+    Use natural language queries.
+    Examples:
+    <github>open issues labeled bug</github>
+    <github>PR #42</github>
+    <github>recent workflow runs</github>
+    <github>search code for authenticate</github>
+    <github>contributors</github>
+    <github>closed PRs</github>
+
 **Tool Selection Guidelines:**
 | Task Type | Best Tool |
 |-----------|-----------|
@@ -955,6 +1007,8 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | Git repository activity, commit counts | Git Stats |
 | Full uploaded document (syllabus, PDF, etc.) | Get Full Document |
 | Read a specific URL (GitHub, article, docs) | Fetch URL |
+| GitHub issues, PRs, CI status, releases | GitHub |
+| GitHub code search, contributors, labels | GitHub |
 
 **IMPORTANT — fetch_url vs search:**
 When you know a specific URL (from profile facts, memory, or the user's message), use fetch_url to read it directly.

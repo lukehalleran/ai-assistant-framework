@@ -2,7 +2,7 @@
 # memory/memory_coordinator.py
 
 Module Contract
-- Purpose: Central coordinator for conversational memory. Persists each turn, retrieves relevant memories (recent + semantic), runs shutdown reflections, and synthesizes/stores block summaries at shutdown. ENHANCED: Now integrates UserProfile for structured fact storage with categorization.
+- Purpose: Central coordinator for conversational memory. Persists each turn, retrieves relevant memories (recent + semantic), runs shutdown reflections, and synthesizes/stores block summaries at shutdown. ENHANCED: Now integrates UserProfile for structured fact storage with categorization. Init parallelized via ThreadPoolExecutor(3) for graph, profile, and claim index disk reads.
 - Inputs:
   - store_interaction(query, response, tags?, session_id=?, provenance=?): adds a turn to corpus + Chroma (with provenance metadata) [ENHANCED 2026-03-26]
   - session_id (property): stable session identifier derived from session_start timestamp [NEW 2026-03-26]
@@ -121,29 +121,67 @@ class MemoryCoordinator:
             time_manager=time_manager
         )
 
-        # Initialize knowledge graph (NetworkX-based entity relationship graph)
+        # ------------------------------------------------------------------
+        # Parallel disk reads: graph+resolver, user profile, claim index
+        # These are independent JSON file loads that can overlap.
+        # ------------------------------------------------------------------
+        from concurrent.futures import ThreadPoolExecutor
+
         self.graph_memory = None
         self.entity_resolver = None
-        try:
-            from config.app_config import (
-                KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_PERSIST_PATH,
-                KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD, KNOWLEDGE_GRAPH_ALIASES_PATH,
-            )
-            if KNOWLEDGE_GRAPH_ENABLED:
+        self.user_profile = None
+        self.claim_index = None
+
+        def _load_graph_and_resolver():
+            """Load knowledge graph + entity resolver (sequential pair)."""
+            try:
+                from config.app_config import (
+                    KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_PERSIST_PATH,
+                    KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD, KNOWLEDGE_GRAPH_ALIASES_PATH,
+                )
+                if not KNOWLEDGE_GRAPH_ENABLED:
+                    return None, None
                 from memory.graph_memory import GraphMemory
                 from memory.entity_resolver import EntityResolver
-                self.graph_memory = GraphMemory(persist_path=KNOWLEDGE_GRAPH_PERSIST_PATH)
-                self.graph_memory._auto_save_threshold = KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD
-                self.entity_resolver = EntityResolver(
-                    graph_memory=self.graph_memory,
-                    aliases_path=KNOWLEDGE_GRAPH_ALIASES_PATH,
-                )
+                gm = GraphMemory(persist_path=KNOWLEDGE_GRAPH_PERSIST_PATH)
+                gm._auto_save_threshold = KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD
+                er = EntityResolver(graph_memory=gm, aliases_path=KNOWLEDGE_GRAPH_ALIASES_PATH)
                 logger.info(
-                    f"[MemoryCoordinator] Knowledge graph initialized: "
-                    f"{self.graph_memory.node_count()} nodes, {self.graph_memory.edge_count()} edges"
+                    "[MemoryCoordinator] Knowledge graph initialized: %d nodes, %d edges",
+                    gm.node_count(), gm.edge_count(),
                 )
-        except Exception as e:
-            logger.debug(f"[MemoryCoordinator] Knowledge graph init failed (non-fatal): {e}")
+                return gm, er
+            except Exception as e:
+                logger.debug(f"[MemoryCoordinator] Knowledge graph init failed (non-fatal): {e}")
+                return None, None
+
+        def _load_user_profile():
+            return UserProfile()
+
+        def _load_claim_index():
+            try:
+                from config.app_config import STALENESS_ENABLED, STALENESS_INDEX_PATH
+                if not STALENESS_ENABLED:
+                    return None
+                from memory.claim_tracker import ClaimIndex
+                ci = ClaimIndex(persist_path=STALENESS_INDEX_PATH)
+                logger.debug(
+                    "[MemoryCoordinator] Claim index initialized: %d claims, %d docs",
+                    ci.total_claims, ci.total_documents,
+                )
+                return ci
+            except Exception as e:
+                logger.debug(f"[MemoryCoordinator] Claim index init failed (non-fatal): {e}")
+                return None
+
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="mem-init") as pool:
+            graph_future = pool.submit(_load_graph_and_resolver)
+            profile_future = pool.submit(_load_user_profile)
+            claims_future = pool.submit(_load_claim_index)
+
+            self.graph_memory, self.entity_resolver = graph_future.result()
+            self.user_profile = profile_future.result()
+            self.claim_index = claims_future.result()
 
         # Initialize fact verification gate (pre-storage conflict checking)
         self.fact_verifier = None
@@ -185,9 +223,6 @@ class MemoryCoordinator:
         )
         self._retriever.conversation_context = list(self.conversation_context)
 
-        # Initialize user profile for structured fact storage
-        self.user_profile = UserProfile()
-
         # Initialize thread store for proactive thread surfacing
         self.thread_store = None
         try:
@@ -213,20 +248,6 @@ class MemoryCoordinator:
                 logger.debug("[MemoryCoordinator] Context surfacer initialized")
         except Exception as e:
             logger.debug(f"[MemoryCoordinator] Context surfacer init failed (non-fatal): {e}")
-
-        # Initialize claim index for memory staleness tracking
-        self.claim_index = None
-        try:
-            from config.app_config import STALENESS_ENABLED, STALENESS_INDEX_PATH
-            if STALENESS_ENABLED:
-                from memory.claim_tracker import ClaimIndex
-                self.claim_index = ClaimIndex(persist_path=STALENESS_INDEX_PATH)
-                logger.debug(
-                    "[MemoryCoordinator] Claim index initialized: %d claims, %d docs",
-                    self.claim_index.total_claims, self.claim_index.total_documents,
-                )
-        except Exception as e:
-            logger.debug(f"[MemoryCoordinator] Claim index init failed (non-fatal): {e}")
 
         # Initialize shutdown processor for end-of-session consolidation
         from memory.shutdown_processor import ShutdownProcessor

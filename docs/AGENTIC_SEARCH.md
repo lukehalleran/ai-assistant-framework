@@ -14,7 +14,7 @@ details see `PROMPT_BUILDING_PIPELINE.md`.
 When a user query needs external information, Daemon can enter a
 multi-round ReAct (Reasoning + Acting) loop where the LLM iteratively
 decides which tools to call — web search, URL fetch, memory search, Wolfram Alpha,
-Python sandbox, file access, memory expansion, git stats, full-document
+Python sandbox, file access, memory expansion, git stats, GitHub API, full-document
 retrieval, or image recall — until it has enough
 context to answer. The loop is budget-enforced and streams progress
 events to the UI in real time.
@@ -26,11 +26,12 @@ events to the UI in real time.
 | File | Purpose |
 |------|---------|
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics |
-| `core/agentic/tools.py` | ToolExecutor: 12 dispatch methods + 10 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary |
+| `core/agentic/tools.py` | ToolExecutor: 13 dispatch methods + 11 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary |
 | `core/agentic/formatters.py` | AgenticFormatter: 18 pure formatting methods (context, results, prompts) |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
+| `core/github_manager.py` | GitHub API tool: read-only `gh` CLI access (issues, PRs, actions, releases) |
 | `core/orchestrator.py` | Trigger logic and lazy initialization of controller |
 
 ---
@@ -227,6 +228,21 @@ Use case: User asks to "pull up" or "check" an uploaded PDF/DOCX/syllabus
           and search_memory only returned fragments
 ```
 
+### github
+
+Query GitHub repository data via `gh` CLI (read-only).
+
+```
+Parameters: query (required), reason (optional)
+Execution: GitHubManager.execute_query() — parses natural-language query into
+           gh CLI subcommand (issues, prs, actions, releases, workflows, labels,
+           milestones, contributors, code_search)
+Safety: Read-only — only allowlisted gh subcommands (issue list, pr list,
+        run list, release list, workflow list, label list, api, search code)
+Output: Formatted summary + raw gh output, capped at max_output_lines
+Config: GITHUB_API_ENABLED, GITHUB_API_TIMEOUT, GITHUB_API_MAX_OUTPUT_LINES, GITHUB_API_REPO
+```
+
 ### recall_image
 
 Search visual memory for CLIP-matched images by text query.
@@ -279,6 +295,7 @@ For models without native tool support. Markers embedded in text:
 <file_grep pattern="regex" folder="src/" glob="*.py"/>
 <file_list path="/path/to/dir" recursive="true"/>
 <git_stats>commits this week</git_stats>
+<github>open issues labeled bug</github>
 <recall_image>query</recall_image>
 <done/>
 ```
@@ -290,7 +307,7 @@ For models without native tool support. Markers embedded in text:
 Parsed by `XMLMarkerHandler` using regex. `<done/>` is checked first
 and returns immediately if present. Remaining markers are collected
 in order: python -> wolfram -> memory -> expand_memory ->
-get_full_document -> file_read -> file_grep -> git_stats ->
+get_full_document -> file_read -> file_grep -> git_stats -> github ->
 file_list -> fetch_url -> recall_image -> search -> implicit answer
 (if no markers found).
 
@@ -306,7 +323,7 @@ file_list -> fetch_url -> recall_image -> search -> implicit answer
 `ToolExecutor.get_tool_health()` probes each tool backend and returns a
 multi-line status summary (AVAILABLE / UNAVAILABLE / DISABLED per tool).
 Checked backends: web_search, wiki_knowledge (FAISS), memory_search
-(ChromaDB), wolfram, file_access, git_stats, expand_memory, recall_image.
+(ChromaDB), wolfram, file_access, git_stats, github, expand_memory, recall_image.
 
 The status block is injected at three points under the header
 `[TOOL STATUS — DO NOT LIE ABOUT THESE]`:
@@ -424,6 +441,7 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `listing_files` / `files_listed` | File list |
 | `retrieving_document` / `document_retrieved` | Full document retrieval |
 | `querying_git` / `git_stats_done` | Git stats |
+| `querying_github` / `github_done` | GitHub API |
 | `fetching_url` / `url_fetched` | URL content fetch |
 | `recalling_image` / `recall_image_done` | Visual memory recall |
 | `synthesizing` | Starting final generation |
@@ -506,6 +524,12 @@ EXPAND_CONTEXT_CHAR_LIMIT_LONG      # Long-form context limit (2000)
 GIT_STATS_ENABLED                   # Feature gate (default True)
 GIT_STATS_TIMEOUT                   # Subprocess timeout in seconds
 GIT_STATS_MAX_OUTPUT_LINES          # Cap raw output (default 50)
+
+# GitHub API tool (YAML: github_api:)
+GITHUB_API_ENABLED                  # Feature gate (default True)
+GITHUB_API_TIMEOUT                  # Subprocess timeout in seconds
+GITHUB_API_MAX_OUTPUT_LINES         # Cap raw output
+GITHUB_API_REPO                     # Target repo (owner/name)
 
 # Uncertainty fallback (YAML: uncertainty_fallback:)
 UNCERTAINTY_FALLBACK_ENABLED        # Post-generation retry gate (default True)

@@ -141,7 +141,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **PDF/DOCX support**: Full pipeline with table extraction (pdfplumber + python-docx), chunking with header detection
 - **Multi-provider LLM**: Duel mode, best-of-N, ensemble, fallback chains
 - **Code proposals**: LLM-generated, ChromaDB-stored, GUI management, shutdown integration
-- **Agentic search**: ReAct loop with Tavily + Wolfram Alpha + E2B sandbox, context inventory, collection diversity tracking, memory expansion tool, full-document retrieval tool, git stats tool, uncertainty fallback (auto-retry via agentic search when standard response indicates "I don't know")
+- **Agentic search**: ReAct loop with Tavily + Wolfram Alpha + E2B sandbox, context inventory, collection diversity tracking, memory expansion tool, full-document retrieval tool, git stats tool, GitHub API tool, uncertainty fallback (auto-retry via agentic search when standard response indicates "I don't know")
 - **Response planning**: Pre-answer plan + post-answer review gate with silent agentic retry on low-confidence reviews
 - **Thread surfacing**: Proactive open-thread detection with resolution tracking
 - **Session awareness**: Codebase diff + active features inventory at session start
