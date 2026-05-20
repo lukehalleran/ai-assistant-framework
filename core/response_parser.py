@@ -398,6 +398,38 @@ class ResponseParser:
         except Exception:
             return text
 
+    _AGENTIC_OUTER_TAGS = (
+        r'search|memory|wolfram|python|expand_memory|get_full_document|git_stats|github|'
+        r'recall_image|search_memory|web_search|fetch_url|tool_call|function_call|'
+        r'file_read|file_grep|file_list|done'
+    )
+    _AGENTIC_TOOL_BLOCK = re.compile(
+        rf'<({_AGENTIC_OUTER_TAGS})(?:\s[^>]*)?>[\s\S]*?</\1>',
+        re.IGNORECASE
+    )
+    _AGENTIC_SELF_CLOSING = re.compile(
+        rf'<(?:{_AGENTIC_OUTER_TAGS}|action|query|collection|limit)\s*/?>',
+        re.IGNORECASE
+    )
+
+    @staticmethod
+    def strip_agentic_tool_tags(text: str) -> str:
+        """Strip agentic tool XML blocks from non-agentic responses.
+
+        When the LLM hallucinates tool calls during standard (non-agentic)
+        generation, these tags appear as raw text. This strips entire
+        <tool>...</tool> blocks and collapses leftover blank lines.
+        """
+        if not text or '<' not in text:
+            return text
+        try:
+            cleaned = ResponseParser._AGENTIC_TOOL_BLOCK.sub('', text)
+            cleaned = ResponseParser._AGENTIC_SELF_CLOSING.sub('', cleaned)
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+            return cleaned.strip()
+        except Exception:
+            return text
+
     @staticmethod
     def strip_prompt_artifacts(text: str) -> str:
         """Remove known bracketed prompt headers if the model echoes them.

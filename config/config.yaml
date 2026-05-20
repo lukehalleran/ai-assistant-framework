@@ -68,7 +68,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: deepseek-v4
+  active: claude-opus-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -383,7 +383,7 @@ skill_activation:
   min_score: 0.25
   cooldown_hours: 48.0
   fetch_multiplier: 3
-  stm_bonus: 0.10
+  stm_bonus: 0.1
   use_stm: true
 code_proposals:
   enabled: true
@@ -424,7 +424,7 @@ github_api:
   enabled: true
   timeout_s: 15
   max_output_lines: 80
-  repo: ''  # auto-detected from git remote if empty
+  repo: ''
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

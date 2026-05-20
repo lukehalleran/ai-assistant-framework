@@ -120,7 +120,7 @@ core/                    # Request orchestration, context pipeline, agentic loop
 ├── response_planner.py  # Pre-answer planning + post-answer review gate
 ├── agentic/             # ReAct tool loop
 │   ├── controller.py    # Loop orchestration, prompt building, quality heuristics
-│   ├── tools.py         # ToolExecutor: dispatch routing + 13 execute methods
+│   ├── tools.py         # ToolExecutor: dispatch routing + 17 execute methods
 │   ├── formatters.py    # AgenticFormatter: 18 pure formatting methods
 │   ├── types.py         # Tool definitions, state types
 │   └── protocols.py     # Native + XML tool calling
@@ -990,6 +990,7 @@ After generation, responses pass through `ResponseParser`:
 - `likely_untagged_thinking()` — Fast streaming-time check (no split required). Returns True when ≥2 heuristic patterns are present. Used by `handlers.py` to suppress thinking before `parse_thinking_block()` can find a clean split.
 - `strip_reflection_blocks()` — Remove `<reflect>` and quality reflection blocks
 - `strip_xml_wrappers()` — Remove `<result>`, `<answer>`, `<output>` wrappers
+- `strip_agentic_tool_tags()` — Strip entire `<tool>...</tool>` blocks leaked into non-agentic responses
 - `strip_prompt_artifacts()` — Remove echoed prompt headers
 
 For models with native reasoning support (Claude, DeepSeek-R1), thinking is
@@ -1010,14 +1011,16 @@ When a query needs more than stored memory — real-time information,
 computation, or deeper memory exploration — Daemon enters a multi-round
 ReAct (Reason + Act) loop.
 
-### Triggering: 4-Tier Gate
+### Triggering: 5-Tier Gate
 
 The agentic gate in `gui/handlers.py` decides whether to enter the loop:
 
 1. **Keyword heuristic** (instant) — 20+ computation keywords ("calculate",
    "compute"), memory keywords ("do you remember", "my notes",
-   "search your memory"), and web search keywords ("web search",
-   "search for", "search online", "look up"). URL detection
+   "search your memory"), web search keywords ("web search",
+   "search for", "search online", "look up"), and tool name keywords
+   ("github", "git stats", "wolfram", "sandbox", "pull request",
+   "open issues", etc. via `needs_tools`). URL detection
    (`http://`/`https://`) also triggers agentic mode. Explicit search
    keywords bypass intent veto.
 1b. **Knowledge keywords** (instant, added 2026-03-31) — Domain-specific
@@ -1068,7 +1071,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
   retry is silently discarded and the original stays visible.
 - This prevents the jarring UX of showing the same response twice.
 
-### 14 Tools (11 action + done_searching + file_read/file_grep/file_list as 3)
+### 17 Tools (14 action + done_searching + file_read/file_grep/file_list as 3)
 
 | Tool | Implementation | Key Feature |
 |------|---------------|-------------|
@@ -1083,6 +1086,10 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
 | Git Stats | GitStatsManager | Read-only local git commands: commit counts, contributors, files changed, diff stats. Keyword-based intent parsing with temporal phrase extraction. |
 | GitHub | GitHubManager | Read-only GitHub API via `gh` CLI: issues, PRs, actions, releases, workflows, labels, milestones, contributors, code search. |
 | Recall Image | VisualRetriever | Search visual memory for CLIP-matched images by text query. |
+| StackExchange | api.stackexchange.com | Free API, no auth required. Dispatched via `_dispatch_api_search`. |
+| arXiv | export.arxiv.org | Free API, no auth required. Dispatched via `_dispatch_api_search`. |
+| PubMed | eutils.ncbi.nlm.nih.gov | Free API, no auth required. Dispatched via `_dispatch_api_search`. |
+| Hacker News | hn.algolia.com | Free API, no auth required. Dispatched via `_dispatch_api_search`. |
 | Done Searching | Control signal | Model declares search complete, triggers final synthesis |
 
 ### ReAct Loop Structure
@@ -1159,6 +1166,12 @@ Supported tool names (native / XML marker):
 XML alias patterns: `<web_search>query</web_search>` and
 `<web_search query="...">` are accepted as aliases for `<search>`.
 `<search_memory query="...">` is accepted as an alias for `<memory>`.
+Nested XML: `<search_memory><query>X</query></search_memory>`
+(DeepSeek-style) parsed via `MEMORY_NESTED_PATTERN`.
+
+GitHub tool definitions conditionally included based on `github_available`.
+Empty arguments for git_stats/github/search_memory default to the
+original query.
 
 ### Budget Enforcement
 
@@ -1452,7 +1465,8 @@ topics across sessions. These are surfaced proactively at session start.
 
 **Extraction** (at shutdown): `ThreadExtractor` uses LLM to identify new
 threads from session conversation. Each thread gets urgency scoring and
-optional deadline extraction.
+optional deadline extraction. Today's date is injected into the extraction
+prompt so relative dates ("tomorrow", "next Tuesday") resolve to absolute dates.
 
 **Per-turn resolution** (real-time): `check_quick_resolutions()` in
 `thread_store.py` runs after every `store_interaction()` call. Pure regex
@@ -1460,8 +1474,9 @@ matching of completion signals against open thread topic keywords (~1ms).
 Fast pre-check skips DB query if no completion signal in the message.
 
 **Resolution detection** (at shutdown): The extractor also checks if
-existing threads were addressed during the session. Resolved threads
-are marked as complete.
+existing threads were addressed during the session. Today's date is
+injected into the resolution prompt for judging whether deadlines have
+passed. Resolved threads are marked as complete.
 
 **Staleness**: `is_stale(stale_days, deadline_grace_hours)` checks both
 time-based staleness (no reference in `stale_days`) and deadline-aware

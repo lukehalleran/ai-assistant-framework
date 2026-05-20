@@ -539,6 +539,46 @@ class AgenticSearchController:
                     if not d.is_done and not d.wants_answer
                 ]
                 if not tool_decisions:
+                    # If this is round 1 and the model just narrated instead of
+                    # using tools, retry once with an explicit nudge. Some models
+                    # (e.g. DeepSeek) emit plain text describing tool calls instead
+                    # of the actual XML markers on the first attempt.
+                    if (len(session.rounds) == 0
+                            and not getattr(session, '_tool_nudge_sent', False)):
+                        # Check if the response mentions tools/actions
+                        _answer_text = ''
+                        for d in decisions:
+                            if d.partial_response:
+                                _answer_text += d.partial_response
+                        _tool_mentions = any(w in _answer_text.lower() for w in (
+                            'github', 'git_stats', 'search', 'let me pull',
+                            'let me grab', 'let me run', 'let me check',
+                            'list_repos', 'commits', 'lines added',
+                        ))
+                        if _tool_mentions:
+                            logger.info(
+                                "[AgenticSearch] Model narrated tool intent without "
+                                "using XML markers — retrying with nudge"
+                            )
+                            session._tool_nudge_sent = True
+                            # Append the response + nudge to get the model to
+                            # actually emit XML markers this time
+                            _nudge = (
+                                "\n\n[SYSTEM]: You described what tools you would use "
+                                "but did NOT actually call them. You MUST use the XML "
+                                "tool markers to execute tools. For example:\n"
+                                "<github>open issues</github>\n"
+                                "<git_stats>commits this week</git_stats>\n"
+                                "<memory collection=\"facts\">user github</memory>\n"
+                                "Do NOT describe what you will do — just call the tools "
+                                "now using the XML format above."
+                            )
+                            session.accumulated_context += (
+                                f"\n\n[Your previous response (NOT executed)]:\n"
+                                f"{_answer_text[:500]}\n{_nudge}"
+                            )
+                            continue  # Retry the loop iteration
+
                     logger.info("[AgenticSearch] Model ready to answer (implicit)")
                     break
 
@@ -724,6 +764,16 @@ class AgenticSearchController:
             return await self._tool_executor._dispatch_recall_image(decision, round_number)
         elif decision.wants_fetch_url and decision.fetch_url:
             return await self._tool_executor._dispatch_fetch_url(decision, round_number)
+        elif decision.wants_github and decision.github_query:
+            return await self._tool_executor._dispatch_github(decision, round_number)
+        elif decision.wants_stackexchange and decision.stackexchange_query:
+            return await self._tool_executor._dispatch_api_search(decision, round_number, "stackexchange")
+        elif decision.wants_arxiv and decision.arxiv_query:
+            return await self._tool_executor._dispatch_api_search(decision, round_number, "arxiv")
+        elif decision.wants_pubmed and decision.pubmed_query:
+            return await self._tool_executor._dispatch_api_search(decision, round_number, "pubmed")
+        elif decision.wants_hackernews and decision.hackernews_query:
+            return await self._tool_executor._dispatch_api_search(decision, round_number, "hackernews")
         else:
             return _ToolResult(
                 decision=decision, round_data=None,
@@ -855,13 +905,15 @@ class AgenticSearchController:
                     tools=handler.get_tools()
                 )
             else:
-                # Use standard generation for XML markers
-                response = await self.model_manager.generate_once(
+                # Use standard generation for XML markers.
+                # IMPORTANT: Use a dedicated non-reasoning call for the decision
+                # phase. Models with native reasoning (DeepSeek) burn the token
+                # budget on chain-of-thought, leaving nothing for XML markers.
+                # The decision phase just needs to emit tool tags, not reason.
+                response = await self._generate_decision_no_reasoning(
                     prompt=prompt,
                     model_name=model_name,
                     system_prompt=system_prompt,
-                    max_tokens=500,  # Limit for decision phase
-                    temperature=0.3
                 )
 
             return handler.parse_response(response)
@@ -870,6 +922,50 @@ class AgenticSearchController:
             logger.error(f"[AgenticSearch] Decision generation failed: {e}")
             # On error, signal to answer with current context
             return [SearchDecision(wants_answer=True)]
+
+    async def _generate_decision_no_reasoning(
+        self,
+        prompt: str,
+        model_name: str,
+        system_prompt: str,
+    ) -> str:
+        """Generate a decision response WITHOUT native reasoning.
+
+        For the agentic iteration phase, models like DeepSeek burn their
+        token budget on chain-of-thought reasoning, leaving no room for
+        actual XML tool markers. This method bypasses reasoning and uses
+        a higher token limit so the model can emit tool tags directly.
+        """
+        target_model = model_name or self.model_manager.active_model_name
+        full_model = self.model_manager.api_models.get(target_model, target_model)
+
+        if self.model_manager.async_client is None:
+            return ""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+
+        create_kwargs = dict(
+            model=full_model,
+            messages=messages,
+            max_tokens=800,
+            temperature=0.3,
+            stream=False,
+        )
+        # Explicitly do NOT add reasoning params
+
+        try:
+            response = await self.model_manager.async_client.chat.completions.create(
+                **create_kwargs
+            )
+            if response and response.choices:
+                return response.choices[0].message.content or ""
+            return ""
+        except Exception as e:
+            logger.error(f"[AgenticSearch] Decision generation (no-reasoning) failed: {e}")
+            return ""
 
     async def _generate_with_tools(
         self,
@@ -1091,6 +1187,31 @@ class AgenticSearchController:
         footer = "Do NOT re-search for information already covered above. Use search_memory to fill gaps in specific collections not yet covered."
         return f"{header}\n" + "\n".join(lines) + f"\n{footer}"
 
+    @staticmethod
+    def _detect_tool_hints(query: str) -> str:
+        """Detect tool name mentions in a query and return usage hints.
+
+        When the user explicitly mentions tools by name, the model should
+        prioritize calling those tools rather than narrating about them.
+        """
+        q = query.lower()
+        hints = []
+        if any(w in q for w in ('github', 'issues', 'pull request', 'pr ', 'prs',
+                                 'releases', 'actions', 'workflow')):
+            hints.append('Use <github>your query</github> (or the github tool) to query GitHub.')
+        if any(w in q for w in ('git stats', 'git stat', 'commits', 'loc ',
+                                 'lines of code', 'lines added', 'lines changed',
+                                 'files changed')):
+            hints.append('Use <git_stats>your query</git_stats> (or the git_stats tool) for repo stats.')
+        if any(w in q for w in ('search memory', 'remember', 'recall', 'my facts')):
+            hints.append('Use <memory collection="facts">query</memory> (or the search_memory tool).')
+        if not hints:
+            return ''
+        return (
+            '\n[TOOL HINT]: The user is asking you to USE these tools, not describe them. '
+            'Call them now:\n' + '\n'.join(f'- {h}' for h in hints)
+        )
+
     def _build_iteration_prompt(
         self,
         query: str,
@@ -1101,7 +1222,11 @@ class AgenticSearchController:
         """Build prompt for iteration decision."""
         _now = datetime.now()
         _time_ctx = _now.strftime("Today is %A, %Y-%m-%d %H:%M. ")
-        parts = [f"""{_time_ctx}User Question: {query}
+
+        # Detect tool mentions and add hints
+        _tool_hints = self._detect_tool_hints(query)
+
+        parts = [f"""{_time_ctx}User Question: {query}{_tool_hints}
 
 Search Results So Far:
 {search_context}

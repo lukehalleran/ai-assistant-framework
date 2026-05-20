@@ -579,7 +579,11 @@ class GitHubManager:
     def _query_repo_info(
         self, repo_flag: List[str]
     ) -> Tuple[str, List[str], str]:
-        args = ["repo", "view"] + repo_flag
+        # gh repo view takes the repo as a positional arg, not --repo flag
+        repo = self.repo or self._detected_repo
+        args = ["repo", "view"]
+        if repo:
+            args.append(repo)
         output = self._run_gh(args)
         return output, [f"gh {' '.join(args)}"], "Repository info"
 
@@ -644,9 +648,11 @@ class GitHubManager:
         cmds = []
 
         try:
-            repo_output = self._run_gh(["repo", "view"] + repo_flag)
+            _repo = self.repo or self._detected_repo
+            _repo_args = ["repo", "view"] + ([_repo] if _repo else [])
+            repo_output = self._run_gh(_repo_args)
             parts.append(f"=== REPOSITORY ===\n{repo_output}")
-            cmds.append("gh repo view")
+            cmds.append(f"gh {' '.join(_repo_args)}")
         except (ValueError, RuntimeError):
             pass
 

@@ -318,7 +318,8 @@ class TestNativeProtocolParsing:
         assert decisions[0].git_stats_query == "commits this week"
         assert decisions[0].git_stats_reason == "user asked"
 
-    def test_parse_git_stats_empty_query(self):
+    def test_parse_git_stats_empty_query_defaults(self):
+        """Empty-arg git_stats should default to 'recent commits' instead of failing."""
         from core.agentic.protocols import NativeToolsHandler
 
         handler = NativeToolsHandler(git_stats_available=True)
@@ -331,8 +332,8 @@ class TestNativeProtocolParsing:
 
         decisions = handler.parse_response(mock_response)
         assert len(decisions) == 1
-        assert decisions[0].wants_git_stats is False
-        assert decisions[0].wants_answer is True
+        assert decisions[0].wants_git_stats is True
+        assert decisions[0].git_stats_query == "recent commits"
 
     def test_git_stats_in_tools_list(self):
         from core.agentic.protocols import NativeToolsHandler
@@ -365,7 +366,8 @@ class TestXMLProtocolParsing:
         assert decisions[0].wants_git_stats is True
         assert decisions[0].git_stats_query == "commits this week"
 
-    def test_parse_git_stats_xml_empty(self):
+    def test_parse_git_stats_xml_empty_defaults(self):
+        """Empty XML git_stats should default to 'recent commits'."""
         from core.agentic.protocols import XMLMarkerHandler
 
         handler = XMLMarkerHandler()
@@ -373,8 +375,8 @@ class TestXMLProtocolParsing:
 
         decisions = handler.parse_response(text)
         assert len(decisions) == 1
-        # Empty query should not trigger git_stats — falls through to wants_answer
-        assert decisions[0].wants_answer is True
+        assert decisions[0].wants_git_stats is True
+        assert decisions[0].git_stats_query == "recent commits"
 
 
 # ── Provenance Classification ──────────────────────────────────────
