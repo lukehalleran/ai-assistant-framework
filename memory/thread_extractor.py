@@ -27,6 +27,7 @@ Module Contract
 
 import json
 import time
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 from utils.logging_utils import get_logger
@@ -66,6 +67,7 @@ Rules:
 - Output ONLY a valid JSON array, no other text
 - If no open threads exist, output []
 - Maximum 5 threads per session
+- TEMPORAL: Today's date is {today}. When the user mentions relative dates ("tomorrow", "next Tuesday", "this weekend"), resolve them to absolute dates in deadline_date AND in the summary. Example: "I have an exam tomorrow" on 2026-05-19 → deadline_date: "2026-05-20", summary: "User has an exam on Tue 2026-05-20"
 
 CONVERSATION:
 {conversation_text}
@@ -97,6 +99,7 @@ Rules:
 - Do NOT mark a thread resolved just because it wasn't mentioned
 - Output ONLY a valid JSON array, no other text
 - If no threads were resolved, output []
+- Today's date is {today}. Use this to judge whether deadlines have passed.
 
 Resolved threads (JSON array only):"""
 
@@ -186,7 +189,11 @@ class ThreadExtractor:
         if not conversation_text.strip():
             return []
 
-        prompt = EXTRACTION_PROMPT.format(conversation_text=conversation_text)
+        today_str = datetime.now().strftime("%A, %Y-%m-%d")
+        prompt = EXTRACTION_PROMPT.format(
+            conversation_text=conversation_text,
+            today=today_str,
+        )
 
         try:
             model_alias = self._get_model_alias()
@@ -280,9 +287,11 @@ class ThreadExtractor:
             })
 
         threads_json = json.dumps(threads_data, indent=2)
+        today_str = datetime.now().strftime("%A, %Y-%m-%d")
         prompt = RESOLUTION_PROMPT.format(
             threads_json=threads_json,
             conversation_text=conversation_text,
+            today=today_str,
         )
 
         try:

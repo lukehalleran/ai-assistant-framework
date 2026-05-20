@@ -184,6 +184,7 @@ Side effects: None (pure functions)
 - `strip_reflection_blocks(response)` → str - Remove `<reflect>`, `[SYSTEM QUALITY REFLECTION]` blocks
 - `strip_thinking_tag_leaks(text)` → str - Remove partial/malformed thinking tags (e.g., `/think>`, `<|think|>`)
 - `strip_xml_wrappers(text)` → str - Remove `<result>`, `<answer>`, `<final>`, `<output>`, `<response>` wrappers **[ENHANCED 2026-03-26]**
+- `strip_agentic_tool_tags(text)` → str - Strip entire `<tool>...</tool>` blocks (search, memory, github, etc.) leaked into non-agentic responses **[NEW 2026-05-20]**
 - `strip_prompt_artifacts(text)` → str - Remove echoed prompt headers like `[TIME CONTEXT]`, `[FACTS]`
 
 **Usage**:
@@ -1445,19 +1446,24 @@ else:
 - `FETCH_URL_TOOL_DEFINITION`: Fetch URL content tool schema **[NEW 2026-05]**
 - `AGENTIC_SYSTEM_PROMPT_INJECTION`: Instructions for local models to use XML markers
 
-**core/agentic/protocols.py** - Protocol detection and parsing
+**core/agentic/protocols.py** - Protocol detection and parsing **[ENHANCED 2026-05-20]**
 - `detect_protocol(model_name)` → `SearchProtocol` (native for gpt/claude, XML for local)
-- `NativeToolsHandler`: Parses OpenAI/Anthropic tool_calls from response
-- `XMLMarkerHandler`: Parses `<search>query</search>`, `<fetch_url url="...">`, and `<done/>` from local model output. XML alias patterns: `<web_search>`/`<web_search query="...">` → `<search>`, `<search_memory query="...">` → `<memory>` **[ENHANCED 2026-05]**
+- `NativeToolsHandler`: Parses OpenAI/Anthropic tool_calls from response. GitHub tool definitions gated by `github_available` param. Empty args for git_stats/github/search_memory default to original query.
+- `XMLMarkerHandler`: Parses `<search>query</search>`, `<fetch_url url="...">`, and `<done/>` from local model output. XML alias patterns: `<web_search>`/`<web_search query="...">` → `<search>`, `<search_memory query="...">` → `<memory>`. Nested XML: `MEMORY_NESTED_PATTERN` for DeepSeek-style `<search_memory><query>X</query></search_memory>`. Helpers: `_strip_xml_tags()`, `_extract_nested_tag()`.
 - `BaseProtocolHandler`: Common interface for both
+- `github_available` param threaded through `NativeToolsHandler` and `get_protocol_handler()`
 - Enhanced `search_memory` tool guidance with per-collection descriptions **[ENHANCED 2026-03-20]**
 
-**core/agentic/controller.py** - Main controller (orchestration, prompt building, model interaction, quality heuristics)
+**core/agentic/controller.py** - Main controller (orchestration, prompt building, model interaction, quality heuristics) **[ENHANCED 2026-05-20]**
 - `AgenticSearchController`: Orchestrates the ReAct loop
   - `run_agentic_search(query, system_prompt, model_name, initial_terms)` → AsyncGenerator
   - Yields `ProgressEvent` for status updates, `str` for response chunks
   - Max 5 rounds of search before forcing synthesis
   - Delegates tool execution to `ToolExecutor`, formatting to `AgenticFormatter`
+  - `_dispatch_single()` routes all tool types including github, stackexchange, arxiv, pubmed, hackernews **[ENHANCED 2026-05-20]**
+  - `_generate_decision_no_reasoning()` bypasses native reasoning (DeepSeek chain-of-thought) for XML protocol decision phase so models emit tool tags instead of burning tokens on CoT **[NEW 2026-05-20]**
+  - `_detect_tool_hints()` injects `[TOOL HINT]` when query mentions tool names (github, git_stats, memory), steering model to call tools instead of narrating **[NEW 2026-05-20]**
+  - Nudge retry: if round 1 produces no tool calls but response mentions tools, retries once with explicit XML marker instructions **[NEW 2026-05-20]**
   - Budget-enforced accumulated context: `_append_accumulated()` trims oldest rounds when `accumulated_context` exceeds `context_budget_tokens` (default 8000) **[NEW 2026-03-28]**
   - Budget-aware final prompt: `_build_final_prompt()` trims low-value sections (dreams, reflections, docs, summaries) if total exceeds ceiling, preserving recent conversations and agentic results **[NEW 2026-03-28]**
   - Falls back gracefully on errors
@@ -1569,17 +1575,17 @@ agentic_search:
 
 **Key Components**:
 
-**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[ENHANCED 2026-03-31]**
+**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[ENHANCED 2026-05-20]**
 - `handle_submit()` → Main async generator yielding response chunks to GUI
   - **Fast Mode** [NEW 2026-03-10]: When `fast_mode=True`, temporarily reduces retrieval limits (PROMPT_MAX_MEMS→10, PROMPT_MAX_RECENT→5, PROMPT_MAX_SEMANTIC→8), sets `context_gatherer._fast_mode` and `hybrid_retriever._fast_mode`. Yields progress keepalive messages ("Thinking...", "Analyzing context...", etc.) every 2s during `prepare_prompt()` to prevent mobile timeouts. All overrides restored in `finally` block.
-  - **Agentic Search Path** [ENHANCED 2026-03-15]:
-    - 4-tier agentic gate (all run before casual skip filter):
-      - Tier 1: Keyword heuristic — computation keywords (`calculate`, `solve`, etc.) OR memory keywords (`do you remember`, `my notes`, `search your memory`, etc.)
+  - **Agentic Search Path** [ENHANCED 2026-05-20]:
+    - 5-tier agentic gate (all run before casual skip filter):
+      - Tier 1: Keyword heuristic — computation keywords (`calculate`, `solve`, etc.) OR memory keywords (`do you remember`, `my notes`, `search your memory`, etc.) OR tool name keywords (`github`, `git stats`, `wolfram`, `sandbox`, `pull request`, `open issues`, etc. → `needs_tools`) [ENHANCED 2026-05-20]
       - Tier 1b: Knowledge keywords [NEW 2026-03-31] — encyclopedic/wiki intent (`explain in depth`, `how does`, `what is the difference between`, `consult wikipedia`, etc.). Only fires for substantive queries (4+ words) when no computation/memory trigger matched.
       - Tier 2: Entity match — `extract_graph_entities()` checks query against knowledge graph alias index; if known entity found (e.g., "Flapjack", "Auggie"), triggers memory search
       - Tier 3: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call; `needs_memory_search` or `needs_knowledge_search` fields catch structurally obvious recall/encyclopedic queries the keywords missed. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
-    - Casual skip filter (< 5 words, "nice"/"thanks"/etc.) only applies when no keyword/entity/knowledge trigger fired
-    - `skip_initial_search=True` for computation, memory, and knowledge queries (skips Round 1 web search)
+    - Casual skip filter (< 5 words, "nice"/"thanks"/etc.) only applies when no keyword/entity/knowledge/tool-name trigger fired
+    - `skip_initial_search=True` for computation, memory, knowledge, and tool-name queries (skips Round 1 web search)
     - Routes through `AgenticSearchController.run_agentic_search()`
     - Yields progress events (🔍 searching, 🧠 searching memory, 📄 found results, ✨ synthesizing)
     - Strips thinking blocks from final response
@@ -1590,6 +1596,9 @@ agentic_search:
   - Yields dict chunks: `{"role": "assistant", "content": text, "is_progress"?: bool}`
 
 **Tag Stripping Logic** (FIXED):
+- `_strip_leaked_xml_blocks()`: Removes entire leaked XML tool blocks (tags + content) from responses. More aggressive than marker-only stripping — removes everything between opening and closing tool tags. Used on final output, agentic responses, and storage sanitization. **[ENHANCED 2026-05-20]**
+- Bare tool-call line stripping: for zero-dispatch agentic responses (model narrated but didn't call tools), strips short lines without sentence structure that look like bare tool queries **[NEW 2026-05-20]**
+- Storage sanitization: `_strip_leaked_xml_blocks()` applied before persisting responses to memory **[NEW 2026-05-20]**
 - Strips outer wrapper tags: `<reply>`, `<response>`, `<answer>`, `<result>`
 - Uses backreference regex `\1` to match opening/closing tags properly
 - Regex: `r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$"`
@@ -3253,16 +3262,18 @@ check_quick_resolutions(user_message, open_threads) → List[str]
 - Lazy staleness: checked at retrieval time
 - Cap enforcement: oldest low-priority threads pruned when over limit
 
-**`memory/thread_extractor.py`** — LLM-based extraction
+**`memory/thread_extractor.py`** — LLM-based extraction **[ENHANCED 2026-05-20]**
 ```python
 class ThreadExtractor:
     extract_threads(conversations, model_manager) → List[OpenThread]
         # LLM prompt with few-shot examples per ThreadType
+        # Today's date injected into prompt for relative date resolution ("tomorrow" → absolute date) [NEW 2026-05-20]
         # Robust JSON parsing with find("[") / rfind("]")
         # Temperature=0.0 for deterministic extraction
 
     detect_resolutions(conversations, open_threads, model_manager) → List[Tuple[str, str]]
         # LLM checks if existing threads were resolved in new conversations
+        # Today's date injected for judging whether deadlines have passed [NEW 2026-05-20]
         # Returns (thread_id, resolution_reason) tuples
         # Skipped if no existing open threads
 ```

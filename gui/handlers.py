@@ -127,18 +127,58 @@ import re as _re
 # Regex to strip leaked XML tool-call markers from enhanced-mode LLM output.
 # Covers both agentic-style markers (<search>, <memory>, etc.) and hallucinated
 # variants the LLM may produce (<search_memory>, <web_search>, etc.).
+# Top-level agentic tool tag names (the outer wrappers the LLM emits)
+_AGENTIC_OUTER_TAGS = (
+    r'search|memory|wolfram|python|expand_memory|get_full_document|git_stats|github|'
+    r'recall_image|search_memory|web_search|fetch_url|tool_call|function_call|'
+    r'file_read|file_grep|file_list|done'
+)
+# All tool-related tags including inner ones (query, action, collection, etc.)
+_ALL_TOOL_TAGS = _AGENTIC_OUTER_TAGS + r'|action|query|collection|limit'
+
+# Pattern 1: Strip opening/closing tags only (preserves content between them)
 _LEAKED_XML_TOOL_RE = _re.compile(
-    r'</?(?:search|memory|wolfram|python|expand_memory|get_full_document|git_stats|'
-    r'recall_image|search_memory|web_search|fetch_url|tool_call|function_call)'
-    r'(?:\s[^>]*)?>',
+    rf'</?(?:{_ALL_TOOL_TAGS})(?:\s[^>]*)?>',
+    _re.IGNORECASE
+)
+# Pattern 2: Strip entire tool blocks — matches <tag>...</tag> for each outer tool name
+# Uses [\s\S] instead of . for newline crossing
+_LEAKED_XML_TOOL_BLOCK_RE = _re.compile(
+    rf'<({_AGENTIC_OUTER_TAGS})(?:\s[^>]*)?>'
+    rf'[\s\S]*?'
+    rf'</\1>',
+    _re.IGNORECASE
+)
+# Pattern 3: Self-closing tags like <done/>, <file_list ... />
+_LEAKED_XML_SELF_CLOSING_RE = _re.compile(
+    rf'<(?:{_ALL_TOOL_TAGS})\s*/?>',
     _re.IGNORECASE
 )
 
 
 def _strip_leaked_xml_markers(text: str) -> str:
-    """Remove leaked XML tool-call markers from enhanced-mode output."""
+    """Remove leaked XML tool-call markers from enhanced-mode output.
+
+    Used during streaming to strip tags but preserve surrounding text.
+    """
     cleaned = _LEAKED_XML_TOOL_RE.sub('', text)
+    cleaned = _LEAKED_XML_SELF_CLOSING_RE.sub('', cleaned)
     # Collapse runs of blank lines left after stripping
+    cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
+
+
+def _strip_leaked_xml_blocks(text: str) -> str:
+    """Remove entire leaked XML tool blocks (tags + content) from non-agentic responses.
+
+    More aggressive than _strip_leaked_xml_markers — removes everything between
+    opening and closing tool tags. Used on final output when response was not
+    generated in agentic mode.
+    """
+    if not text or '<' not in text:
+        return text
+    cleaned = _LEAKED_XML_TOOL_BLOCK_RE.sub('', text)
+    cleaned = _LEAKED_XML_SELF_CLOSING_RE.sub('', cleaned)
     cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned)
     return cleaned.strip()
 
@@ -622,6 +662,21 @@ async def handle_submit(
             needs_web_search = True
             logger.debug("[Handle Submit] Tier 1: explicit web search/URL keyword detected")
 
+        # Agentic tool name keywords — if the user mentions a tool by name,
+        # they want agentic mode regardless of message length
+        needs_tools = False
+        _tool_keywords = [
+            'github', 'git stats', 'git_stats', 'git stat',
+            'wolfram', 'sandbox', 'execute python',
+            'search memory', 'search_memory',
+            'loc ', 'lines of code', 'lines added', 'lines changed',
+            'workflow', 'pull request', 'open issues', 'closed issues',
+            'actions', 'releases',
+        ]
+        if any(kw in _lower for kw in _tool_keywords):
+            needs_tools = True
+            logger.debug("[Handle Submit] Tier 1: agentic tool name detected in query")
+
         _memory_keywords = [
             'documentation', 'daemon docs', 'architecture',
             'do you remember', 'did we talk', 'did we discuss',
@@ -690,13 +745,64 @@ async def handle_submit(
             )),
             all(w in ['yes', 'no', 'ok', 'okay', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank', 'you', 'lol', 'haha', 'true', 'right', 'fair', 'same'] for w in _words),
         ]
-        if not needs_computation and not needs_memory and not needs_knowledge and not needs_web_search and any(_skip_patterns):
+
+        # Context-aware override: if the current message is a short
+        # continuation/retry and the previous turn's QUERY had agentic
+        # signals (search keywords, ?, tool mentions), inherit agentic intent.
+        _prev_was_agentic = False
+        if any(_skip_patterns):
+            # Check if current message looks like a continuation/retry
+            _continuation_phrases = (
+                'try again', 'try that again', 'one more', 'do it',
+                'go ahead', 'yes please', 'please do', 'go for it',
+                'run it', 'let\'s go', "let's go", 'sure', 'yep',
+                'yes', 'yeah', 'do that',
+            )
+            _is_continuation = any(p in _lower for p in _continuation_phrases)
+
+            if _is_continuation:
+                try:
+                    _cm = getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None)
+                    if _cm:
+                        _recent = _cm.get_recent_memories(2)
+                        for _prev in _recent:
+                            _prev_query = (_prev.get('query', '') or '').lower()
+                            _prev_response = (_prev.get('response', '') or '')[:800]
+                            # Previous query had agentic signals
+                            _prev_had_signals = (
+                                '?' in _prev_query
+                                or any(w in _prev_query for w in (
+                                    'search', 'find', 'look', 'github', 'git',
+                                    'issues', 'pull request', 'pr ', 'commits',
+                                    'stats', 'loc', 'lines', 'code',
+                                    'calculate', 'compute', 'wolfram',
+                                ))
+                            )
+                            # Previous response mentioned tools or showed tool intent
+                            _prev_mentioned_tools = any(w in _prev_response.lower() for w in (
+                                'let me pull', 'let me grab', 'let me run',
+                                'let me check', 'let me search', 'let me query',
+                                'i\'ll hit', "i'll hit", 'i\'ll search', "i'll search",
+                                'git_stats', 'github api', 'github tool',
+                            ))
+                            if _prev_had_signals or _prev_mentioned_tools:
+                                _prev_was_agentic = True
+                                logger.debug(
+                                    f"[Handle Submit] Continuation after agentic-intent turn — "
+                                    f"overriding casual skip (query_signals={_prev_had_signals}, "
+                                    f"response_tools={_prev_mentioned_tools})"
+                                )
+                                break
+                except Exception as e:
+                    logger.debug(f"[Handle Submit] Previous-turn agentic check failed (non-fatal): {e}")
+
+        if not needs_computation and not needs_memory and not needs_knowledge and not needs_web_search and not needs_tools and any(_skip_patterns) and not _prev_was_agentic:
             logger.debug("[Handle Submit] Agentic skipped - casual/short message")
             should_use_agentic = False
             search_terms = []
         else:
 
-            if needs_computation or needs_memory or needs_knowledge or needs_web_search:
+            if needs_computation or needs_memory or needs_knowledge or needs_web_search or needs_tools:
                 should_use_agentic = True
                 search_terms = []  # No initial web search needed, tools handle it
 
@@ -710,6 +816,8 @@ async def handle_submit(
                     triggered_modes.append("knowledge")
                 if needs_web_search:
                     triggered_modes.append("web_search")
+                if needs_tools:
+                    triggered_modes.append("tools")
                 logger.debug(f"[Handle Submit] Agentic triggered - modes: {', '.join(triggered_modes)}")
             else:
                 # Check if web search, memory search, or knowledge search should be triggered using LLM-first trigger
@@ -799,7 +907,7 @@ async def handle_submit(
                     model_name=model_name,
                     initial_search_terms=initial_terms,
                     initial_context=raw_context,
-                    skip_initial_search=needs_computation or needs_memory or needs_knowledge or (needs_web_search and not initial_terms and not _extracted_urls),
+                    skip_initial_search=needs_computation or needs_memory or needs_knowledge or needs_tools or (needs_web_search and not initial_terms and not _extracted_urls),
                     initial_urls=_extracted_urls if _extracted_urls else None,
                 )
 
@@ -877,7 +985,8 @@ async def handle_submit(
                             if thinking_detected and not clean_answer:
                                 yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
                             else:
-                                yield {"role": "assistant", "content": clean_answer or agentic_response}
+                                _stream_display = _strip_leaked_xml_blocks(clean_answer or agentic_response)
+                                yield {"role": "assistant", "content": _stream_display}
 
                 # Final output from agentic search - strip thinking blocks
                 final_output = agentic_response
@@ -893,7 +1002,36 @@ async def handle_submit(
                 if thinking_part and not final_answer:
                     display_output = ""
                 display_output = ResponseParser.strip_thinking_tag_leaks(display_output)
-                display_output = _strip_leaked_xml_markers(display_output)
+                display_output = _strip_leaked_xml_blocks(display_output)
+
+                # If agentic loop ran but no tools were actually dispatched (model
+                # just narrated what it would do), strip bare tool-call-like lines
+                # that leaked as plain text (e.g. "list_repos", "Lines added...")
+                _agentic_session = getattr(
+                    getattr(orchestrator, '_agentic_controller', None),
+                    '_last_session', None
+                )
+                _had_real_rounds = (
+                    _agentic_session
+                    and hasattr(_agentic_session, 'rounds')
+                    and len(_agentic_session.rounds) > 0
+                )
+                if not _had_real_rounds and display_output:
+                    # Response is just narration — strip lines that look like
+                    # bare tool queries (short lines without sentence structure)
+                    _cleaned_lines = []
+                    for _line in display_output.split('\n'):
+                        _stripped_line = _line.strip()
+                        # Keep empty lines and lines with sentence structure
+                        if (not _stripped_line
+                                or len(_stripped_line.split()) >= 4
+                                or _stripped_line.endswith(('.', '!', '?', ':', ';', ','))
+                                or _stripped_line.startswith(('#', '-', '*', '>'))):
+                            _cleaned_lines.append(_line)
+                        else:
+                            logger.debug(f"[Handle Submit] Stripped bare tool-call line: {_stripped_line!r}")
+                    display_output = '\n'.join(_cleaned_lines).strip()
+                    display_output = _re.sub(r'\n{3,}', '\n\n', display_output)
 
                 # Append web sources footer if [WEB_N] citations present
                 _web_map = getattr(agentic_controller, '_current_web_source_map', None) or {}
@@ -1007,6 +1145,16 @@ async def handle_submit(
                     logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
                     final_output_sanitized = final_output
 
+                # Prevent context pollution: if the agentic response was just
+                # narration about tools (no real tool dispatch), store the
+                # cleaned display_output instead of the raw response with
+                # leaked XML/tool text. This prevents failed tool-call attempts
+                # from polluting future [RECENT CONVERSATION] context.
+                final_output_sanitized = _strip_leaked_xml_blocks(final_output_sanitized)
+                # If the stored response is mostly empty after cleaning, use display_output
+                if len(final_output_sanitized.strip()) < 20 and display_output.strip():
+                    final_output_sanitized = display_output
+
                 tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
                 _store_task = asyncio.create_task(_background_store_interaction(
                     orchestrator=orchestrator,
@@ -1107,7 +1255,7 @@ async def handle_submit(
                         display_output = (m.group(2).strip() if m else final_answer)
                     except (IndexError, AttributeError):
                         display_output = final_answer
-                    display_output = _strip_leaked_xml_markers(display_output)
+                    display_output = _strip_leaked_xml_blocks(display_output)
                     yield {"role": "assistant", "content": display_output}
             else:
                 # No thinking block detected, stream normally
@@ -1118,7 +1266,7 @@ async def handle_submit(
                     display_output = (m.group(2).strip() if m else final_output)
                 except (IndexError, AttributeError):
                     display_output = final_output
-                display_output = _strip_leaked_xml_markers(display_output)
+                display_output = _strip_leaked_xml_blocks(display_output)
                 yield {"role": "assistant", "content": display_output}
 
         # After streaming completes, if we're still showing "Thinking..." the user
@@ -1132,7 +1280,7 @@ async def handle_submit(
             recovered = final_answer if final_answer else final_output
             # Strip thinking tags/content if they leaked
             recovered = ResponseParser.strip_thinking_tag_leaks(recovered)
-            recovered = _strip_leaked_xml_markers(recovered)
+            recovered = _strip_leaked_xml_blocks(recovered)
             if recovered.strip():
                 display_output = recovered.strip()
                 final_output = display_output
@@ -1183,9 +1331,11 @@ async def handle_submit(
             # Sync display_output so final yield doesn't show stale thinking-polluted content
             display_output = final_output
 
-        # Strip leaked XML tool markers (LLM sometimes hallucinates tool-call XML in enhanced mode)
-        final_output = _strip_leaked_xml_markers(final_output)
-        display_output = _strip_leaked_xml_markers(display_output)
+        # Strip leaked XML tool blocks (LLM sometimes hallucinates tool-call XML
+        # in standard mode when prior conversation mentioned agentic tools).
+        # Use block-level stripping to remove entire <tool>content</tool> sequences.
+        final_output = _strip_leaked_xml_blocks(final_output)
+        display_output = _strip_leaked_xml_blocks(display_output)
 
         # ── Uncertainty Fallback: retry via agentic search if response is uncertain ──
         _uncertainty_retry_done = False
@@ -1570,6 +1720,10 @@ async def handle_submit(
                     response_to_store = ""
                 else:
                     response_to_store = final_answer if final_answer else final_output
+
+                # Strip any leaked tool XML blocks before storage (prevents
+                # failed tool-call attempts from polluting conversation history)
+                response_to_store = _strip_leaked_xml_blocks(response_to_store)
 
                 # Truncate at spurious turn markers (training data leakage)
                 try:

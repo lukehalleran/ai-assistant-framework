@@ -466,6 +466,10 @@ class ResponseParser:
         """Remove <result>, <answer>, <final>, <output>, <response> wrappers"""  # [ENHANCED 2026-03-26]
 
     @staticmethod
+    def strip_agentic_tool_tags(text: str) -> str:  # [NEW 2026-05-20]
+        """Strip entire <tool>...</tool> blocks (search, memory, github, etc.) leaked into non-agentic responses."""
+
+    @staticmethod
     def strip_prompt_artifacts(text: str) -> str:
         """Remove echoed prompt headers: [TIME CONTEXT], [FACTS], [RECENT CONVERSATION], etc."""
 ```
@@ -1013,18 +1017,20 @@ class ThreadStore:
         """Prune lowest-priority threads when over cap. Returns count pruned."""
 
 
-# memory/thread_extractor.py — LLM-based extraction
+# memory/thread_extractor.py — LLM-based extraction [ENHANCED 2026-05-20]
 class ThreadExtractor:
     def __init__(model_manager):
         """Two-phase LLM approach: extraction + resolution detection."""
 
     async def extract_new_threads(session_conversations) -> List[OpenThread]:
         """Extract open loops from session. Few-shot prompt, temp=0.0, cap 5 per session.
-        Thread types: commitment, deadline, unfinished, question."""
+        Thread types: commitment, deadline, unfinished, question.
+        Today's date injected into prompt for relative date resolution."""
 
     async def detect_resolutions(session_conversations, open_threads) -> List[Tuple[str, str]]:
         """Detect which existing threads were resolved. Returns (thread_id, resolution) tuples.
-        Only marks resolved with clear evidence, NOT just because thread wasn't mentioned."""
+        Only marks resolved with clear evidence, NOT just because thread wasn't mentioned.
+        Today's date injected for judging whether deadlines have passed."""
 
 
 # Integration:
@@ -1780,19 +1786,22 @@ class MemoryConsolidator:
 ## Agentic Search & Tools [NEW 2026-01-22, ENHANCED 2026-03-31]
 
 **Agentic Gate** (gui/handlers.py) — 5-tier trigger before ReAct loop:
-1. **Keyword heuristic** (0ms): computation keywords OR memory keywords ("do you remember", "my notes", etc.) OR web search keywords ("web search", "search for", "search online", "look up") [NEW 2026-05]. Explicit search keywords bypass intent veto.
+1. **Keyword heuristic** (0ms): computation keywords OR memory keywords ("do you remember", "my notes", etc.) OR web search keywords ("web search", "search for", "search online", "look up") OR tool name keywords ("github", "git stats", "wolfram", "sandbox", "pull request", "open issues", etc. → `needs_tools`) [ENHANCED 2026-05-20]. Explicit search keywords bypass intent veto.
 1b. **URL detection** (0ms) [NEW 2026-05]: `http://`/`https://` in query triggers agentic mode with `initial_urls` for auto-fetch
 1c. **Knowledge keywords** (0ms) [NEW 2026-03-31]: encyclopedic/wiki intent (`explain in depth`, `how does`, `consult wikipedia`, etc.) — fires for 4+ word queries when no computation/memory trigger matched
 2. **Entity match** (0ms): `extract_graph_entities()` checks query against knowledge graph aliases; known entities (e.g. "Flapjack") trigger memory search
 3. **LLM fallback**: piggybacks on `analyze_for_web_search_llm()`; `needs_memory_search` or `needs_knowledge_search` fields in `WebSearchDecision` catch structural recall/encyclopedic queries. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
 
-Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/entity/knowledge trigger fired.
-`skip_initial_search=True` for computation, memory, and knowledge queries. When Tier 1 fires without LLM-generated search terms, initial search is also skipped.
+Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/entity/knowledge/tool-name trigger fired.
+`skip_initial_search=True` for computation, memory, knowledge, and tool-name queries. When Tier 1 fires without LLM-generated search terms, initial search is also skipped.
 
 **Post-generation trigger** [NEW 2026-04]: If standard response is uncertain ("I don't know"), `UncertaintyDetector` (`core/uncertainty_detector.py`) retries via agentic search. Keyword regex (~18 patterns) + semantic embedding layer. Config: `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD`, `UNCERTAINTY_MAX_LENGTH`.
 
 ```python
-# core/agentic/controller.py — orchestration, prompt building, model interaction, quality heuristics
+# core/agentic/controller.py — orchestration, prompt building, model interaction, quality heuristics,
+#   nudge retry (re-prompts model when it narrates tools instead of calling them),
+#   no-reasoning decision phase (_generate_decision_no_reasoning bypasses chain-of-thought for XML tool emission),
+#   tool hints (_detect_tool_hints injects usage hints when query mentions tool names)
 # core/agentic/tools.py — ToolExecutor: dispatch routing + 17 execute methods + get_tool_health()
 # core/agentic/formatters.py — AgenticFormatter: 18 pure formatting methods
 class AgenticSearchController:
@@ -2017,10 +2026,13 @@ class MemoryExpander:
         """Reset cache between ReAct sessions"""
 
 
-# Protocol handlers (core/agentic/protocols.py)
+# Protocol handlers (core/agentic/protocols.py) [ENHANCED 2026-05-20]
 # XMLMarkerHandler - for local models: <search>, <fetch_url>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <github>, <recall_image>, <done>
 #   Alias patterns: <web_search>/<web_search query="..."> → <search>, <search_memory query="..."> → <memory>
-# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (13 tool definitions, including fetch_url, recall_image, and github)
+#   Nested XML: <search_memory><query>X</query></search_memory> (DeepSeek-style) via MEMORY_NESTED_PATTERN
+#   Helpers: _strip_xml_tags() removes inner tags from content, _extract_nested_tag() extracts child elements
+#   Empty args defaulting: git_stats/github/search_memory with empty args fall back to original query
+# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (tool defs gated by github_available param)
 ```
 
 ### Agentic Config Constants

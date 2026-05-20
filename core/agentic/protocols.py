@@ -316,17 +316,22 @@ class NativeToolsHandler(BaseProtocolHandler):
             query = args.get("query", "")
             collection = args.get("collection", "facts")
             reason = args.get("reason")
-            if query:
-                logger.debug(f"[AgenticProtocol] Native tool memory search: {collection}/{query}")
-                return SearchDecision(
-                    wants_memory_search=True,
-                    memory_query=query,
-                    memory_collection=collection,
-                    memory_reason=reason
-                )
-            else:
-                logger.warning("[AgenticProtocol] search_memory called without query")
+            if not query:
+                # Fallback: scan args for any string value
+                for k, v in args.items():
+                    if k not in ("collection", "reason") and isinstance(v, str) and v.strip():
+                        query = v.strip()
+                        break
+            if not query:
+                logger.warning(f"[AgenticProtocol] search_memory called with empty args={args}, skipping")
                 return None
+            logger.debug(f"[AgenticProtocol] Native tool memory search: {collection}/{query}")
+            return SearchDecision(
+                wants_memory_search=True,
+                memory_query=query,
+                memory_collection=collection,
+                memory_reason=reason
+            )
 
         elif func_name == "expand_memory":
             memory_id = args.get("memory_id", "")
@@ -392,18 +397,24 @@ class NativeToolsHandler(BaseProtocolHandler):
                 return None
 
         elif func_name == "git_stats":
-            query = args.get("query", "")
+            query = args.get("query", "") or args.get("input", "") or args.get("q", "")
             reason = args.get("reason")
-            if query:
-                logger.debug(f"[AgenticProtocol] Native tool git_stats: {query}")
-                return SearchDecision(
-                    wants_git_stats=True,
-                    git_stats_query=query,
-                    git_stats_reason=reason,
-                )
-            else:
-                logger.warning("[AgenticProtocol] git_stats called without query")
-                return None
+            if not query:
+                # Some models pass the query as the only arg with a non-standard key
+                for k, v in args.items():
+                    if k not in ("reason",) and isinstance(v, str) and v.strip():
+                        query = v.strip()
+                        break
+            if not query:
+                # Model called git_stats with empty args — use a sensible default
+                query = "recent commits"
+                logger.warning(f"[AgenticProtocol] git_stats called with empty args, defaulting to '{query}'")
+            logger.debug(f"[AgenticProtocol] Native tool git_stats: {query}")
+            return SearchDecision(
+                wants_git_stats=True,
+                git_stats_query=query,
+                git_stats_reason=reason,
+            )
 
         elif func_name == "get_full_document":
             title = args.get("title", "")
@@ -448,18 +459,22 @@ class NativeToolsHandler(BaseProtocolHandler):
                 return None
 
         elif func_name == "github":
-            query = args.get("query", "")
+            query = args.get("query", "") or args.get("input", "") or args.get("q", "")
             reason = args.get("reason")
-            if query:
-                logger.debug(f"[AgenticProtocol] Native tool github: {query}")
-                return SearchDecision(
-                    wants_github=True,
-                    github_query=query,
-                    github_reason=reason,
-                )
-            else:
-                logger.warning("[AgenticProtocol] github called without query")
-                return None
+            if not query:
+                for k, v in args.items():
+                    if k not in ("reason",) and isinstance(v, str) and v.strip():
+                        query = v.strip()
+                        break
+            if not query:
+                query = "repo info"
+                logger.warning(f"[AgenticProtocol] github called with empty args, defaulting to '{query}'")
+            logger.debug(f"[AgenticProtocol] Native tool github: {query}")
+            return SearchDecision(
+                wants_github=True,
+                github_query=query,
+                github_reason=reason,
+            )
 
         elif func_name == "search_stackexchange":
             query = args.get("query", "")
@@ -633,6 +648,23 @@ class NativeToolsHandler(BaseProtocolHandler):
         return system_prompt + addition
 
 
+def _strip_xml_tags(text: str) -> str:
+    """Strip XML tags from text, returning just the text content.
+
+    Handles cases where models wrap content in nested XML tags like
+    <github><action>list_repos</action></github> instead of <github>list repos</github>.
+    """
+    return re.sub(r'<[^>]+>', ' ', text).strip()
+
+
+def _extract_nested_tag(text: str, tag: str) -> Optional[str]:
+    """Extract the text content of a nested <tag>...</tag> from XML body."""
+    m = re.search(rf'<{tag}\s*>(.*?)</{tag}>', text, re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
 class XMLMarkerHandler(BaseProtocolHandler):
     """
     Handler for XML marker-based search requests (local models).
@@ -649,6 +681,11 @@ class XMLMarkerHandler(BaseProtocolHandler):
     # Primary: <memory>query</memory>
     # Alias: <search_memory>query</search_memory>, <search_memory query="...">...
     MEMORY_ATTR_PATTERN = re.compile(r'<search_memory\s+query=["\']([^"\']+)["\']\s*/?>', re.DOTALL | re.IGNORECASE)
+    # Nested-tag fallback: <search_memory><query>...</query><collection>...</collection></search_memory>
+    MEMORY_NESTED_PATTERN = re.compile(
+        r'<search_memory\s*>(.*?)</search_memory>',
+        re.DOTALL | re.IGNORECASE
+    )
     WOLFRAM_PATTERN = re.compile(r'<wolfram>(.*?)</wolfram>', re.DOTALL | re.IGNORECASE)
     DONE_PATTERN = re.compile(r'<done\s*/?>', re.IGNORECASE)
     # Python sandbox pattern with optional purpose attribute
@@ -823,23 +860,31 @@ class XMLMarkerHandler(BaseProtocolHandler):
 
         # Check for git stats markers
         for git_stats_match in self.GIT_STATS_PATTERN.finditer(text):
-            query = git_stats_match.group(1).strip()
-            if query:
-                logger.debug(f"[AgenticProtocol] XML git_stats marker found: {query}")
-                decisions.append(SearchDecision(
-                    wants_git_stats=True,
-                    git_stats_query=query,
-                ))
+            raw = git_stats_match.group(1).strip()
+            # Handle nested tags: <git_stats><query>...</query></git_stats>
+            query = _strip_xml_tags(raw) if '<' in raw else raw
+            if not query:
+                query = "recent commits"
+                logger.warning(f"[AgenticProtocol] XML git_stats empty, defaulting to '{query}'")
+            logger.debug(f"[AgenticProtocol] XML git_stats marker found: {query}")
+            decisions.append(SearchDecision(
+                wants_git_stats=True,
+                git_stats_query=query,
+            ))
 
         # Check for GitHub API markers
         for github_match in self.GITHUB_PATTERN.finditer(text):
-            query = github_match.group(1).strip()
-            if query:
-                logger.debug(f"[AgenticProtocol] XML github marker found: {query}")
-                decisions.append(SearchDecision(
-                    wants_github=True,
-                    github_query=query,
-                ))
+            raw = github_match.group(1).strip()
+            # Handle nested tags: <github><action>list_repos</action></github>
+            query = _strip_xml_tags(raw) if '<' in raw else raw
+            if not query:
+                query = "repo info"
+                logger.warning(f"[AgenticProtocol] XML github empty, defaulting to '{query}'")
+            logger.debug(f"[AgenticProtocol] XML github marker found: {query}")
+            decisions.append(SearchDecision(
+                wants_github=True,
+                github_query=query,
+            ))
 
         # Check for fetch_url markers
         for fetch_url_match in self.FETCH_URL_PATTERN.finditer(text):
@@ -893,6 +938,19 @@ class XMLMarkerHandler(BaseProtocolHandler):
                 decisions.append(SearchDecision(
                     wants_memory_search=True,
                     memory_query=query,
+                ))
+
+        # Nested-tag fallback: <search_memory><query>X</query><collection>Y</collection></search_memory>
+        for nested_match in self.MEMORY_NESTED_PATTERN.finditer(text):
+            body = nested_match.group(1)
+            query = _extract_nested_tag(body, "query")
+            collection = _extract_nested_tag(body, "collection") or "facts"
+            if query:
+                logger.debug(f"[AgenticProtocol] XML search_memory nested marker found: {collection}/{query}")
+                decisions.append(SearchDecision(
+                    wants_memory_search=True,
+                    memory_query=query,
+                    memory_collection=collection,
                 ))
 
         # No markers found - model wants to answer

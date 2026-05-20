@@ -1,43 +1,34 @@
-feat: GitHub agentic tool + ChromaDB lazy init + startup/shutdown parallelization
+fix: agentic tool dispatch, reasoning bypass, XML robustness, context pollution
 
-New: GitHub API agentic tool (read-only):
-- GitHubManager in core/github_manager.py — queries GitHub via gh CLI
-- 18th agentic tool: issues, PRs, actions, releases, workflows, labels,
-  milestones, contributors, code search
-- Safety: ALLOWED_COMMANDS whitelist + BLOCKED_FLAGS, only read-only
-  gh subcommands (list, view, diff, checks, status, search). Blocks
-  create, close, merge, edit, delete, comment, push.
-- Native protocol (function calling) + XML protocol (<github>query</github>)
-- SearchDecision extended: wants_github, github_query, github_reason
-- ToolExecutor: _dispatch_github() + _execute_github()
-- AgenticFormatter.format_github_context() for result formatting
-- Tool health reporting includes GitHub availability
-- Config: github_api section (enabled, timeout_s, max_output_lines, repo)
-- GitHubAPISection Pydantic model in schema.py
-- 99 unit tests in tests/unit/test_github_manager.py
+Controller routing: _dispatch_single was missing routes for github,
+stackexchange, arxiv, pubmed, hackernews — tool calls returned
+round_data=None so rounds never counted, causing infinite loops.
 
-ChromaDB lazy collection initialization:
-- Collections registered as None placeholders in __init__(), lazily
-  opened on first access via _get_collection(name)
-- Eliminates eager initialization of all 13 collections at startup
-- _initialize_collections() → _initialize_all_collections() (stats only)
-- All internal usages updated: self.collections[name] → self._get_collection(name)
-- New get_ids_by_timestamp_range(collection, start, end) method for
-  efficient timestamp-filtered queries (replaces list_all scan in shutdown)
+Reasoning bypass: XML-protocol decision phase now uses
+_generate_decision_no_reasoning() which skips native reasoning params.
+DeepSeek/R1 models were burning the entire 500-token budget on
+chain-of-thought, leaving nothing for XML tool markers.
 
-Startup parallelization:
-- MemoryCoordinator: graph+resolver, user profile, and claim index
-  loaded in parallel via ThreadPoolExecutor(max_workers=3)
-- main.py: SentenceTransformer model loads serialized via threading lock
-  (PyTorch Module.to() is not thread-safe for concurrent model loads)
-- Removed eager embedder preload (_get_embedder("all-MiniLM-L6-v2"))
-- User profile shared from coordinator → orchestrator (avoids duplicate
-  disk read)
+Tool name triggers: messages mentioning "github", "git stats",
+"actions", "workflow", etc. now force agentic mode at Tier 1
+regardless of message length (previously casual-skipped).
 
-Shutdown parallelization:
-- Shutdown phases restructured into parallel groups via asyncio.gather:
-  Phase A (parallel): facts + LLM facts + behavioral patterns + skills
-  Phase B (parallel): proposals + impl tracking + threads + synthesis + wiki
-  Phase C (sequential): graph save, category cache, cross-dedup
-- Source doc ID lookup uses get_ids_by_timestamp_range() instead of
-  list_all() full-scan
+XML robustness: nested tags (<git_stats><query>X</query></git_stats>),
+empty tags (<github></github>), and DeepSeek-style
+<search_memory><query>X</query><collection>Y</collection></search_memory>
+all handled. Empty args default to sensible queries instead of
+silently dropping the tool call.
+
+Context pollution: leaked tool XML stripped at block level before
+storage. _strip_leaked_xml_blocks replaces _strip_leaked_xml_markers
+across all display and storage paths. Bare tool-call lines stripped
+from zero-dispatch agentic responses.
+
+Thread extractor: today's date injected into extraction and resolution
+prompts so relative dates ("tomorrow", "next Tuesday") resolve to
+absolute dates.
+
+Additional: nudge retry for narrated-but-not-executed tool calls,
+tool hints in iteration prompts, context-aware casual skip override,
+skip_initial_search for tool-triggered queries, gh repo view
+positional arg fix.

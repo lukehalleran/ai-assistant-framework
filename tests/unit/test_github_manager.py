@@ -519,6 +519,39 @@ class TestXMLProtocol:
         assert len(github_d) == 1
         assert len(search_d) == 1
 
+    def test_parse_github_nested_tags(self):
+        """DeepSeek-style: <github><action>list_repos</action></github>"""
+        from core.agentic.protocols import XMLMarkerHandler
+        handler = XMLMarkerHandler()
+        text = "<github><action>list_repos</action></github>"
+        decisions = handler.parse_response(text)
+        github_d = [d for d in decisions if d.wants_github]
+        assert len(github_d) == 1
+        assert "list_repos" in github_d[0].github_query
+        assert "<" not in github_d[0].github_query  # tags stripped
+
+    def test_parse_git_stats_nested_tags(self):
+        """DeepSeek-style: <git_stats><query>commits this week</query></git_stats>"""
+        from core.agentic.protocols import XMLMarkerHandler
+        handler = XMLMarkerHandler()
+        text = "<git_stats><query>commits this week</query></git_stats>"
+        decisions = handler.parse_response(text)
+        git_d = [d for d in decisions if d.wants_git_stats]
+        assert len(git_d) == 1
+        assert "commits this week" in git_d[0].git_stats_query
+        assert "<" not in git_d[0].git_stats_query
+
+    def test_parse_search_memory_nested_tags(self):
+        """DeepSeek-style: <search_memory><query>X</query><collection>summaries</collection></search_memory>"""
+        from core.agentic.protocols import XMLMarkerHandler
+        handler = XMLMarkerHandler()
+        text = '<search_memory><query>github repo name</query><collection>summaries</collection></search_memory>'
+        decisions = handler.parse_response(text)
+        mem_d = [d for d in decisions if d.wants_memory_search]
+        assert len(mem_d) >= 1
+        assert mem_d[0].memory_query == "github repo name"
+        assert mem_d[0].memory_collection == "summaries"
+
 
 # ── Provenance Classification ──────────────────────────────────────
 

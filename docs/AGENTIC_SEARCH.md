@@ -14,8 +14,8 @@ details see `PROMPT_BUILDING_PIPELINE.md`.
 When a user query needs external information, Daemon can enter a
 multi-round ReAct (Reasoning + Acting) loop where the LLM iteratively
 decides which tools to call — web search, URL fetch, memory search, Wolfram Alpha,
-Python sandbox, file access, memory expansion, git stats, GitHub API, full-document
-retrieval, or image recall — until it has enough
+Python sandbox, file access, memory expansion, git stats, GitHub API, StackExchange,
+arXiv, PubMed, Hacker News, full-document retrieval, or image recall — until it has enough
 context to answer. The loop is budget-enforced and streams progress
 events to the UI in real time.
 
@@ -25,11 +25,11 @@ events to the UI in real time.
 
 | File | Purpose |
 |------|---------|
-| `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics |
+| `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics, nudge retry, no-reasoning decision phase, tool hints |
 | `core/agentic/tools.py` | ToolExecutor: 13 dispatch methods + 11 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary |
 | `core/agentic/formatters.py` | AgenticFormatter: 18 pure formatting methods (context, results, prompts) |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
-| `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing |
+| `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing, nested XML support, github_available gating |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
 | `core/github_manager.py` | GitHub API tool: read-only `gh` CLI access (issues, PRs, actions, releases) |
 | `core/orchestrator.py` | Trigger logic and lazy initialization of controller |
@@ -44,10 +44,12 @@ Agentic search activates when ALL conditions are met:
 2. Config: `agentic_search.enabled = true`
 3. At least one trigger fires in `gui/handlers.py`:
    - Keyword heuristic: computation, memory, knowledge, or web search keywords detected ("web search", "search for", "search online", "look up")
+   - Tool name keywords: explicit tool mentions ("github", "git stats", "wolfram", "sandbox", "pull request", "open issues", etc.) trigger agentic mode via `needs_tools`
    - URL detection: `http://` or `https://` in query triggers agentic mode with auto-fetch
    - Entity match: query mentions known knowledge graph entity
    - LLM trigger: `should_search=True`, `needs_memory_search=True`, or `needs_knowledge_search=True`. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
    - Explicit search keywords bypass intent veto; skip initial search when Tier 1 fires without LLM-generated terms
+   - `needs_tools` added to `skip_initial_search` condition (skips Round 1 web search for tool-name queries)
 
 The controller is lazy-initialized on first use via the orchestrator's
 `agentic_controller` property.
@@ -96,9 +98,20 @@ separately in the `while` condition alongside `can_continue`.
 Each round:
 
 1. **THINKING** — Build iteration prompt with `[TIME CONTEXT]` (current date/time) +
-   accumulated context + inventory of already-gathered RAG context + relaxation/diversity hints
-2. **DECIDE** — Call `_get_model_decision()` (native tools or XML markers)
-3. **EXECUTE** — Dispatch to the appropriate tool handler
+   accumulated context + inventory of already-gathered RAG context + relaxation/diversity hints +
+   tool hints (injected via `_detect_tool_hints()` when query mentions tool names like "github", "git stats", etc.)
+2. **DECIDE** — Call `_get_model_decision()` (native tools or XML markers).
+   For XML protocol, uses `_generate_decision_no_reasoning()` to bypass
+   native reasoning (e.g. DeepSeek chain-of-thought) that would burn the
+   token budget, leaving no room for XML tool markers.
+3. **EXECUTE** — Dispatch to the appropriate tool handler via `_dispatch_single()`,
+   which routes github, stackexchange, arxiv, pubmed, and hackernews tools
+   in addition to the core tools
+
+**Nudge Retry**: If round 1 produces no tool calls but the response text
+mentions tools ("github", "let me check", "commits", etc.), the controller
+retries once with an explicit nudge instructing the model to emit XML
+markers instead of narrating what it would do.
 
 ### Final Generation
 
@@ -278,7 +291,10 @@ Effect: Sets model_signaled_done=True, exits loop
 
 Uses OpenAI-style function calling. LLM response includes
 `tool_calls[0].function.name` and `.arguments` (JSON). Parsed by
-`NativeToolsHandler` -> `SearchDecision`.
+`NativeToolsHandler` -> `SearchDecision`. GitHub tool definitions are
+conditionally included based on `github_available` parameter. Empty
+arguments for git_stats, github, and search_memory default to the
+original query rather than failing.
 
 ### XML Markers
 
@@ -303,6 +319,12 @@ For models without native tool support. Markers embedded in text:
 **XML Alias Patterns**: `XMLMarkerHandler` also accepts these aliases:
 - `<web_search>query</web_search>` and `<web_search query="...">` as aliases for `<search>`
 - `<search_memory query="...">` as an alias for `<memory>`
+- `<search_memory><query>X</query></search_memory>` nested-tag pattern (DeepSeek-style) via `MEMORY_NESTED_PATTERN`
+
+**Nested XML Support**: `_strip_xml_tags()` removes inner XML tags from
+extracted content, and `_extract_nested_tag()` extracts specific child
+elements from nested XML structures (e.g. `<query>` and `<collection>`
+inside `<search_memory>`).
 
 Parsed by `XMLMarkerHandler` using regex. `<done/>` is checked first
 and returns immediately if present. Remaining markers are collected
