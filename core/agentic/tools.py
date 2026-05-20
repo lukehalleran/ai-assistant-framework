@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from core.prompt.token_manager import TokenManager
     from core.file_access_manager import FileAccessManager
     from core.git_stats_manager import GitStatsManager
+    from core.github_manager import GitHubManager
     from memory.memory_expander import MemoryExpander
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ class ToolExecutor:
         sandbox_manager: Optional["SandboxManager"] = None,
         file_access_manager: Optional["FileAccessManager"] = None,
         git_stats_manager: Optional["GitStatsManager"] = None,
+        github_manager: Optional["GitHubManager"] = None,
         token_manager: Optional["TokenManager"] = None,
         memory_expander: Optional["MemoryExpander"] = None,
         compression_model: str = "gpt-4o-mini",
@@ -78,6 +80,7 @@ class ToolExecutor:
         self.sandbox_manager = sandbox_manager
         self.file_access_manager = file_access_manager
         self.git_stats_manager = git_stats_manager
+        self.github_manager = github_manager
         self.token_manager = token_manager
         self.memory_expander = memory_expander
         self.compression_model = compression_model
@@ -153,6 +156,12 @@ class ToolExecutor:
         except Exception:
             lines.append("recall_image: DISABLED")
 
+        # GitHub API
+        if self.github_manager:
+            lines.append("github: AVAILABLE (issues, PRs, actions, releases, search — read-only)")
+        else:
+            lines.append("github: UNAVAILABLE (gh CLI not installed or not authenticated)")
+
         # Dedicated search APIs (always available — free, no auth)
         lines.append("search_stackexchange: AVAILABLE (Stack Overflow, ServerFault, etc.)")
         lines.append("search_arxiv: AVAILABLE (academic papers)")
@@ -219,6 +228,8 @@ class ToolExecutor:
             return await self._dispatch_api_search(decision, round_number, "pubmed")
         elif decision.wants_hackernews and decision.hackernews_query:
             return await self._dispatch_api_search(decision, round_number, "hackernews")
+        elif decision.wants_github and decision.github_query:
+            return await self._dispatch_github(decision, round_number)
         else:
             return _ToolResult(
                 decision=decision, round_data=None,
@@ -816,6 +827,49 @@ class ToolExecutor:
             end_events=end_events,
         )
 
+    async def _dispatch_github(
+        self, decision: SearchDecision, round_number: int,
+    ) -> _ToolResult:
+        start_events = [ProgressEvent(
+            event_type="querying_github",
+            message=f"GitHub: {decision.github_query}",
+            round_number=round_number,
+            metadata={"query": decision.github_query, "reason": decision.github_reason}
+        )]
+
+        start_time = time.time()
+        github_result = await self._execute_github(decision.github_query)
+        duration = (time.time() - start_time) * 1000
+
+        round_data = SearchRound(
+            round_number=round_number,
+            request=SearchRequest(
+                query=f"[GitHub] {decision.github_query}",
+                reason=decision.github_reason,
+                round_number=round_number
+            ),
+            results=None,
+            duration_ms=duration
+        )
+        round_data.summary = github_result
+
+        end_events = [ProgressEvent(
+            event_type="github_done",
+            message="GitHub query complete",
+            round_number=round_number,
+            metadata={"duration_ms": duration}
+        )]
+
+        return _ToolResult(
+            decision=decision,
+            round_data=round_data,
+            formatted_context=self.formatter.format_github_context(
+                round_number, decision.github_query, github_result
+            ),
+            start_events=start_events,
+            end_events=end_events,
+        )
+
     # ------------------------------------------------------------------
     # Low-level execution methods
     # ------------------------------------------------------------------
@@ -1065,6 +1119,17 @@ Provide a focused summary with the most important information."""
         except Exception as e:
             logger.warning(f"[AgenticSearch] Git stats failed: {e}")
             return f"[Git stats error: {e}]"
+
+    async def _execute_github(self, query: str) -> str:
+        """Execute a GitHub query via GitHubManager."""
+        if not self.github_manager:
+            return "[GitHub API not configured]"
+        try:
+            result = await self.github_manager.execute_query(query)
+            return self.github_manager.format_for_prompt(result)
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] GitHub query failed: {e}")
+            return f"[GitHub query error: {e}]"
 
     async def _execute_fetch_url(self, url: str) -> str:
         """Fetch page content from a URL via Tavily extract API.

@@ -101,12 +101,14 @@ def test_chroma_store_init(temp_chroma_dir):
 
 
 def test_chroma_store_collections_initialized(chroma_store):
-    """Test all collections are initialized."""
+    """Test all collections are registered and lazily initializable."""
     expected_collections = ['conversations', 'summaries', 'wiki_knowledge', 'facts', 'reflections']
 
     for name in expected_collections:
         assert name in chroma_store.collections
-        assert chroma_store.collections[name] is not None
+        # Lazy init: accessing via _get_collection should create on demand
+        coll = chroma_store._get_collection(name)
+        assert coll is not None
 
 
 def test_add_conversation_memory(chroma_store):
@@ -411,7 +413,7 @@ def test_generate_id(chroma_store):
 
 def test_collection_embedder_name(chroma_store):
     """Test _collection_embedder_name method."""
-    coll = chroma_store.collections["conversations"]
+    coll = chroma_store._get_collection("conversations")
 
     name = chroma_store._collection_embedder_name(coll)
 

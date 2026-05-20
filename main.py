@@ -107,9 +107,7 @@ from memory.storage.multi_collection_chroma_store import MultiCollectionChromaSt
 from processing.gate_system import MultiStageGateSystem
 from gui.launch import launch_gui
 from utils.topic_manager import TopicManager
-from knowledge.WikiManager import WikiManager, _get_embedder
-# Preload embedder during startup
-_ = _get_embedder("all-MiniLM-L6-v2")
+from knowledge.WikiManager import WikiManager
 
 from processing.gate_system import set_topic_resolver
 from models.tokenizer_manager import TokenizerManager
@@ -242,21 +240,27 @@ def build_orchestrator():
     # ModelManager loads SentenceTransformer("all-MiniLM-L6-v2")
     # MultiCollectionChromaStore loads SentenceTransformer("BAAI/bge-small-en-v1.5") + ChromaDB
     # CorpusManager reads corpus JSON
-    # All three are fully independent.
+    # NOTE: SentenceTransformer model loads must be serialized — PyTorch's
+    # Module.to() is not thread-safe when two models load concurrently
+    # (causes "Cannot copy out of meta tensor" crash).
     update_splash("Loading models (parallel)...")
 
     _results = {}
+    import threading
+    _st_load_lock = threading.Lock()
 
     def _init_model_manager():
         t = _time.monotonic()
-        mm = ModelManager()
+        with _st_load_lock:
+            mm = ModelManager()
         mm.load_openai_model("gpt-4-turbo", "openai/gpt-4-turbo")
         logger.info(f"[startup] ModelManager: {_time.monotonic()-t:.2f}s")
         return mm
 
     def _init_chroma_store():
         t = _time.monotonic()
-        cs = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
+        with _st_load_lock:
+            cs = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
         logger.info(f"[startup] ChromaStore: {_time.monotonic()-t:.2f}s")
         return cs
 
@@ -388,7 +392,8 @@ def build_orchestrator():
         wiki_manager=wiki_manager,
         tokenizer_manager=tokenizer_manager,
         conversation_logger=get_conversation_logger(),
-        config=config
+        config=config,
+        user_profile=coord.user_profile,
     )
 
 async def test_orchestrator():

@@ -32,6 +32,8 @@ Additional Contract (Agentic Search):
   - Falls back to standard flow on agentic failures
   - Agentic mode uses LLM-first trigger's search_terms for initial search
   - Initializes SandboxManager for E2B code execution support [NEW 2026-01-22]
+  - Initializes GitHubManager for read-only GitHub API access [NEW 2026-05-19]
+  - Accepts shared user_profile from MemoryCoordinator (avoids duplicate disk read) [CHANGED 2026-05-19]
 """
 import re
 import processing.gate_system as gate_system
@@ -148,6 +150,7 @@ class DaemonOrchestrator:
         tokenizer_manager=None,
         conversation_logger=None,
         config: Optional[Dict[str, Any]] = None,
+        user_profile=None,
     ):
         self.logger = get_logger("orchestrator")
         self.conversation_logger = conversation_logger  # kept for compatibility if referenced elsewhere
@@ -182,14 +185,17 @@ class DaemonOrchestrator:
         self.topic_confidence_threshold = float(self.config.get("topic_confidence_threshold", 0.7))
         self.system_prompt_path = self.config.get("system_prompt_path")
 
-        # Load user profile for identity and preferences
-        try:
-            from memory.user_profile import UserProfile
-            self.user_profile = UserProfile()
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"[Orchestrator] Failed to load user profile: {e}")
-            self.user_profile = None
+        # Use shared user profile (avoids duplicate disk read)
+        if user_profile is not None:
+            self.user_profile = user_profile
+        else:
+            try:
+                from memory.user_profile import UserProfile
+                self.user_profile = UserProfile()
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"[Orchestrator] Failed to load user profile: {e}")
+                self.user_profile = None
 
         # Emotional context tracking (tone + need type)
         self.current_tone_level: Optional[CrisisLevel] = None  # Keep for compatibility
@@ -647,6 +653,33 @@ class DaemonOrchestrator:
                 if self.logger:
                     self.logger.debug(f"[Orchestrator] Git stats manager not available: {e}")
 
+            # Initialize GitHub API manager if configured
+            github_manager = None
+            try:
+                from config.app_config import (
+                    GITHUB_API_ENABLED,
+                    GITHUB_API_TIMEOUT,
+                    GITHUB_API_MAX_OUTPUT_LINES,
+                    GITHUB_API_REPO,
+                )
+                if GITHUB_API_ENABLED:
+                    from core.github_manager import GitHubManager
+                    github_manager = GitHubManager(
+                        repo=GITHUB_API_REPO if GITHUB_API_REPO else None,
+                        timeout=GITHUB_API_TIMEOUT,
+                        max_output_lines=GITHUB_API_MAX_OUTPUT_LINES,
+                    )
+                    if github_manager.is_available():
+                        if self.logger:
+                            self.logger.info("[Orchestrator] GitHub API manager initialized")
+                    else:
+                        github_manager = None
+                        if self.logger:
+                            self.logger.debug("[Orchestrator] GitHub API: gh CLI not available")
+            except ImportError as e:
+                if self.logger:
+                    self.logger.debug(f"[Orchestrator] GitHub API manager not available: {e}")
+
             self._agentic_controller = AgenticSearchController(
                 model_manager=self.model_manager,
                 web_search_manager=web_search_manager,
@@ -655,6 +688,7 @@ class DaemonOrchestrator:
                 sandbox_manager=sandbox_manager,
                 file_access_manager=file_access_manager,
                 git_stats_manager=git_stats_manager,
+                github_manager=github_manager,
                 token_manager=token_manager,
                 max_rounds=self._agentic_config.get("max_rounds", 5),
                 context_budget_tokens=self._agentic_config.get("context_budget_tokens", 8000),

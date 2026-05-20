@@ -397,10 +397,11 @@ MemoryCoordinator (memory_coordinator.py, ~551 lines)
 - Temporal decay: `1.0 / (1.0 + decay_rate * age_hours)`
 - Evidence-based truth scoring via TruthScorer (confirmation/correction/contradiction, replaces old access-count boosting)
 
-**Init**: Passes `memory_coordinator=self` to ShutdownProcessor, enabling pipeline-enriched proposal generation **[ENHANCED 2026-02-09]**
+**Init**: Parallel disk reads via `ThreadPoolExecutor(max_workers=3)` for graph+resolver, user profile, and claim index **[CHANGED 2026-05-19]**
+- Passes `memory_coordinator=self` to ShutdownProcessor, enabling pipeline-enriched proposal generation **[ENHANCED 2026-02-09]**
 - Creates `FactVerifier(chroma_store, model_manager)` when `FACT_VERIFICATION_ENABLED`, passes to MemoryStorage as `fact_verifier=` **[NEW 2026-03-25]**
 - Creates `ContextSurfacer(graph_memory, entity_resolver, model_manager)` when graph_memory + entity_resolver available **[NEW 2026-03-25]**
-- Creates `ClaimIndex(persist_path=STALENESS_INDEX_PATH)` when `STALENESS_ENABLED`, passes to ShutdownProcessor as `claim_index=` **[NEW 2026-03-25]**
+- User profile shared to orchestrator (avoids duplicate disk read) **[NEW 2026-05-19]**
 
 **Dependencies**: MemoryRetriever, MemoryStorage, MemoryScorer, ShutdownProcessor, ThreadManager, HybridRetriever, CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryConsolidator, UserProfile, FactVerifier, ClaimIndex, ContextSurfacer
 
@@ -509,17 +510,20 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
      2a. After each summary stored, extract claims via extract_claims_from_text()
          and register in ClaimIndex (if STALENESS_ENABLED) [NEW 2026-03-25]
   3. Store summaries in ChromaDB (summaries collection)
-  4. Extract facts via LLM (LLMFactExtractor, injecting existing profile facts for relation reuse) + regex (FactExtractor).
-     UserProfile updated WITHIN this step — user-only facts go to add_facts_batch(); entity facts to ChromaDB only **[ENHANCED 2026-04-05]**
-  5. Extract procedural skills via LLM (0-3 per session)
-  6. Generate code proposals via GoalDirectedGenerator (0-5 per session) [ENHANCED 2026-02-09]
-  6.5. Lightweight implementation tracking — file existence only, ~50ms/proposal (ImplementationDetector) [NEW 2026-03-25]
-  6.75. Extract open threads via LLM + resolve completed threads (ThreadExtractor) [NEW 2026-03-20]
-  6.8. Synthesis dreaming — three-tier parallel generation: RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) → SynthesisFilter → SynthesisMemory; provisional bridge creation on acceptance; auto-halt if audit FP rate > threshold [ENHANCED 2026-04-01]
-  6.9. Wiki enrichment — tracked wiki articles → graph nodes [NEW 2026-03-28]
-  7. Save knowledge graph + entity aliases + claim index to disk [ENHANCED 2026-03-25]
-  8. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
-  9. Log statistics
+  Phase A (parallel via asyncio.gather):
+    4a. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor) [ENHANCED 2026-04-05]
+    4b. Behavioral pattern extraction (cross-turn habit detection)
+    4c. Extract procedural skills via LLM (0-3 per session)
+  Phase B (parallel via asyncio.gather):
+    5a. Generate code proposals via GoalDirectedGenerator [ENHANCED 2026-02-09]
+    5b. Lightweight implementation tracking — file existence only [NEW 2026-03-25]
+    5c. Extract open threads via LLM + resolve completed threads [NEW 2026-03-20]
+    5d. Synthesis dreaming — three-tier parallel generation [ENHANCED 2026-04-01]
+    5e. Wiki enrichment — tracked wiki articles → graph nodes [NEW 2026-03-28]
+  Phase C (sequential — follows Phase B):
+    6. Save knowledge graph + entity aliases + category cache to disk [ENHANCED 2026-03-25]
+    7. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
+  8. Log statistics
   ```
 
 - `async run_shutdown_reflection(session_conversations=None, session_summaries=None)` → End-of-session LLM reflection:
@@ -1089,11 +1093,15 @@ PROFILE_EPHEMERAL_RELATIONS = [          # Relations whose history gets pruned
 **Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results, visual_memories
 
 **Key Methods**:
+- `_get_collection(name)` → Lazily initialize and return a collection on first access **[NEW 2026-05-19]**
 - `add_memory(text, metadata, collection)` → Embed and store
 - `query(text, collection, n_results)` → Semantic search
   - Uses sentence-transformers for embeddings
   - Returns: {ids, documents, metadatas, distances}
 - `get_by_id(collection_name, doc_id)` → Direct document lookup by UUID, returns `{id, content, metadata}` or None **[NEW 2026-03-26]**
+- `get_ids_by_timestamp_range(collection_name, start_iso, end_iso)` → Filtered query returning doc IDs within timestamp range **[NEW 2026-05-19]**
+
+**Init**: Collections registered as `None` placeholders in `__init__()`, lazily initialized on first access via `_get_collection()` **[CHANGED 2026-05-19]**
 
 **Embedding Model**: `all-MiniLM-L6-v2` (default, configurable)
 
@@ -1457,7 +1465,7 @@ else:
   - Memory search diversity tracking: per-collection search counts prevent redundant queries **[NEW 2026-03-20]**
 
 **core/agentic/tools.py** - Tool execution **[UPDATED 2026-05-18]**
-- `ToolExecutor`: Dispatch routing + 16 execute methods
+- `ToolExecutor`: Dispatch routing + 17 execute methods
   - `get_tool_health()` → Returns diagnostic string of tool availability (web search, FAISS, sandbox, etc.)
   - `dispatch(decision, session)` → Routes to appropriate `_execute_*` method
   - Core: `_execute_search` (web, with optional `include_domains`), `_execute_fetch_url`, `_execute_wolfram`, `_execute_sandbox`
@@ -1500,6 +1508,17 @@ agentic_search:
 - Read-only safety: only allowlisted git subcommands (`log`, `shortlog`, `diff --stat`, `rev-list`)
 - Progress events: `checking_git` → `git_stats_result`
 - Config: `GIT_STATS_ENABLED`, `GIT_STATS_TIMEOUT` (10s), `GIT_STATS_MAX_OUTPUT_LINES` (50); YAML section `git_stats`
+
+**GitHub API Integration** [NEW 2026-05-19]:
+- `GitHubManager` in `core/github_manager.py` — read-only GitHub API access via `gh` CLI
+- `GITHUB_API_TOOL_DEFINITION` in types.py — tool schema for native protocol
+- `<github>query</github>` XML marker for local models
+- `SearchDecision` extended with `wants_github`, `github_query`, `github_reason`
+- Read-only safety: only read-only gh subcommands (issue list, pr list, run list, release list, etc.)
+- Intent parsing: issues, PRs, actions, releases, workflows, labels, milestones, contributors, code search
+- Progress events: `querying_github` → `github_done`
+- Config: `GITHUB_API_ENABLED`, `GITHUB_API_TIMEOUT`, `GITHUB_API_MAX_OUTPUT_LINES`, `GITHUB_API_REPO`; YAML section `github_api`
+- 99 unit tests in `tests/unit/test_github_manager.py`
 
 **Wolfram Alpha Integration** [NEW 2026-01-22]:
 - `wolfram_manager` parameter added to `AgenticSearchController.__init__()`
@@ -4761,6 +4780,7 @@ daemon/
 │   ├── escalation_tracker.py  # EscalationTracker — crisis cooldown with response strategies [NEW 2026-02-13]
 │   ├── correction_detector.py # CorrectionDetector — pattern-based correction/confirmation detection [NEW 2026-03]
 │   ├── git_stats_manager.py   # GitStatsManager — read-only git repo stats for agentic loop [NEW 2026-03-29]
+│   ├── github_manager.py     # GitHubManager — read-only GitHub API via gh CLI for agentic loop [NEW 2026-05-19]
 │   ├── file_access_manager.py # FileAccessManager — filesystem access for agentic tools [NEW 2026-03-26]
 │   ├── uncertainty_detector.py # UncertaintyDetector — keyword regex + semantic "I don't know" detection [NEW 2026-04]
 │   ├── response_planner.py    # ResponsePlanner — pre-answer planning + post-answer review gate [NEW 2026-04]
@@ -4823,7 +4843,7 @@ daemon/
 │   ├── types.py               # Data structures (AgentState, SearchProtocol, etc.)
 │   ├── protocols.py           # Protocol detection and parsing
 │   ├── controller.py          # AgenticSearchController (orchestration, prompts, quality heuristics)
-│   ├── tools.py               # ToolExecutor (dispatch routing + 16 execute methods incl. StackExchange/arXiv/PubMed/HN) [UPDATED 2026-05-18]
+│   ├── tools.py               # ToolExecutor (dispatch routing + 17 execute methods incl. StackExchange/arXiv/PubMed/HN/GitHub) [UPDATED 2026-05-19]
 │   └── formatters.py          # AgenticFormatter (18 pure formatting methods) [NEW 2026-05]
 │
 ├── processing/

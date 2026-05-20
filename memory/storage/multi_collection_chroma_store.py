@@ -25,7 +25,10 @@ Module Contract
   - delete_fact(fact_id) -> bool
   - create_collection(name) -> None  [dynamic collection creation]
   - get_collection_stats() -> Dict[str, Dict]  [count + sample per collection]
+  - get_ids_by_timestamp_range(collection_name, start_iso, end_iso) -> List[str]
+    Filtered query returning only doc IDs within a timestamp range.
 - Key behaviors:
+  - Collections are lazily initialized on first access via _get_collection(name)
   - SentenceTransformer embedding function configured once, shared across all collections
   - _flatten_for_chroma() ensures all metadata values are primitives or JSON strings
   - Fact deduplication via cosine similarity check before insertion
@@ -113,9 +116,41 @@ class MultiCollectionChromaStore:
             'visual_memories': None,     # CLIP-embedded image metadata for visual recall
         }
 
-        self._initialize_collections()
+        # Lazy init: collections are opened on first access via _get_collection()
+        # Log the persist directory for debugging
+        logger.info(f"[Chroma] Using persistent dir: {self.persist_directory}")
 
-
+    def _get_collection(self, name: str):
+        """Get a collection by name, lazily initializing on first access."""
+        if name not in self.collections:
+            raise ValueError(f"Unknown collection: {name}")
+        coll = self.collections[name]
+        if coll is not None:
+            return coll
+        # First access — open/create the collection
+        try:
+            self.collections[name] = self.client.get_or_create_collection(
+                name=name, embedding_function=self.embedding_fn
+            )
+            logger.debug(f"[Chroma] Lazily initialized collection: {name}")
+        except ValueError as e:
+            if "Embedding function name mismatch" not in str(e):
+                raise
+            # Embedder mismatch — delete and recreate
+            try:
+                existing = self.client.get_collection(name=name)
+            except Exception:
+                existing = None
+            existing_fn = self._collection_embedder_name(existing) if existing else "default"
+            logger.warning(f"[Chroma] '{name}' uses embedder '{existing_fn}', expected 'sentence_transformer'. Recreating…")
+            try:
+                self.client.delete_collection(name=name)
+            except Exception as de:
+                logger.error(f"[Chroma] CRITICAL: Could not delete stale collection '{name}': {de}")
+            self.collections[name] = self.client.get_or_create_collection(
+                name=name, embedding_function=self.embedding_fn
+            )
+        return self.collections[name]
 
     def _collection_embedder_name(self, coll) -> str:
         """
@@ -141,45 +176,32 @@ class MultiCollectionChromaStore:
         except Exception:
             pass
         return "unknown"
-    def _initialize_collections(self):
-        """Initialize/open collections; if embedder mismatches, delete & recreate."""
-        logger.info(f"[Chroma] Using persistent dir: {self.persist_directory}")
+    def _initialize_all_collections(self):
+        """Eagerly initialize all collections. Use only when needed (e.g., stats)."""
+        for name in self.collections:
+            self._get_collection(name)
 
-        def _create(name: str):
-            self.collections[name] = self.client.get_or_create_collection(
-                name=name, embedding_function=self.embedding_fn
+    def get_ids_by_timestamp_range(
+        self, collection_name: str, start_iso: str, end_iso: str
+    ) -> List[str]:
+        """Get document IDs where timestamp metadata falls within [start, end]."""
+        if collection_name not in self.collections:
+            return []
+        coll = self._get_collection(collection_name)
+        try:
+            results = coll.get(
+                where={
+                    "$and": [
+                        {"timestamp": {"$gte": start_iso}},
+                        {"timestamp": {"$lte": end_iso}},
+                    ]
+                },
+                include=[],  # only need IDs
             )
-            logger.debug(f"[Chroma] Initialized collection: {name}")
-
-        for name in self.collections.keys():
-            try:
-                # Happy path: create/open with our embedder
-                _create(name)
-            except ValueError as e:
-                msg = str(e)
-                if "Embedding function name mismatch" not in msg:
-                    logger.error(f"[Chroma] Failed to init '{name}': {e}")
-                    raise
-
-                # Inspect what Chroma thinks it has, then fix it in-place
-                try:
-                    existing = self.client.get_collection(name=name)  # may succeed even with mismatch
-                except Exception:
-                    existing = None
-
-                existing_fn = self._collection_embedder_name(existing) if existing else "default"
-                logger.warning(f"[Chroma] '{name}' uses embedder '{existing_fn}', expected 'sentence_transformer'. Recreating…")
-
-                # Delete then recreate with our embedder
-                try:
-                    self.client.delete_collection(name=name)
-                except Exception as de:
-                    logger.error(f"[Chroma] CRITICAL: Could not delete stale collection '{name}': {de} - data corruption risk")
-
-                _create(name)
-            except Exception as e:
-                logger.error(f"[Chroma] Failed to init '{name}': {e}")
-                raise
+            return results.get("ids", []) or []
+        except Exception as e:
+            logger.warning(f"[ChromaStore] get_ids_by_timestamp_range failed: {e}")
+            return []
 
 
 
@@ -188,7 +210,7 @@ class MultiCollectionChromaStore:
     def list_all(self, collection_name: str) -> List[Dict]:
         if collection_name not in self.collections:
             return []
-        coll = self.collections[collection_name]
+        coll = self._get_collection(collection_name)
 
         # ❌ don't ask for "ids" here; not supported in your Chroma build
         results = coll.get(include=["documents", "metadatas"])  # <- only these
@@ -215,16 +237,15 @@ class MultiCollectionChromaStore:
     # Generic helpers expected by coordinators
     def create_collection(self, name: str):
         """Create/open a collection with the configured embedder."""
-        self.collections[name] = self.client.get_or_create_collection(
-            name=name, embedding_function=self.embedding_fn
-        )
-        return self.collections[name]
+        if name not in self.collections:
+            self.collections[name] = None  # register it
+        return self._get_collection(name)
 
     def add_to_collection(self, name: str, text: str, metadata: Dict[str, Any]) -> str:
         """Add a single text item to the specified collection with metadata."""
-        if name not in self.collections or self.collections[name] is None:
-            self.create_collection(name)
-        coll = self.collections[name]
+        if name not in self.collections:
+            self.collections[name] = None  # register dynamic collection
+        coll = self._get_collection(name)
         clean_md = _flatten_for_chroma(dict(metadata or {}))
         # ChromaDB requires non-empty metadata - add timestamp if empty
         if not clean_md:
@@ -239,9 +260,9 @@ class MultiCollectionChromaStore:
         """Add multiple items in a single batch (one embedding pass + one disk write)."""
         if not texts:
             return []
-        if name not in self.collections or self.collections[name] is None:
-            self.create_collection(name)
-        coll = self.collections[name]
+        if name not in self.collections:
+            self.collections[name] = None
+        coll = self._get_collection(name)
         doc_ids = [str(uuid.uuid4()) for _ in texts]
         clean_mds = []
         for md in metadatas:
@@ -279,7 +300,7 @@ class MultiCollectionChromaStore:
         """
         if collection_name not in self.collections:
             return None
-        coll = self.collections[collection_name]
+        coll = self._get_collection(collection_name)
         try:
             results = coll.get(ids=[doc_id], include=["documents", "metadatas"])
             docs = results.get("documents", []) or []
@@ -329,7 +350,7 @@ class MultiCollectionChromaStore:
             doc_id = str(uuid.uuid4())
 
             # Add to collection
-            self.collections['conversations'].add(
+            self._get_collection('conversations').add(
                 ids=[doc_id],
                 documents=[f"User: {query}\nAssistant: {response}"],
                 metadatas=[metadata]
@@ -355,7 +376,7 @@ class MultiCollectionChromaStore:
             "type": "summary"
         })
 
-        self.collections['summaries'].add(
+        self._get_collection('summaries').add(
             documents=[summary],
             metadatas=[metadata],
             ids=[memory_id]
@@ -375,7 +396,7 @@ class MultiCollectionChromaStore:
             "type": "wiki"
         }
 
-        self.collections['wiki_knowledge'].add(
+        self._get_collection('wiki_knowledge').add(
             documents=[content],
             metadatas=[metadata],
             ids=[memory_id]
@@ -445,14 +466,14 @@ class MultiCollectionChromaStore:
         logger.debug(f"[ChromaStore] Fact metadata: {metadata}")
 
         try:
-            self.collections["facts"].add(
+            self._get_collection("facts").add(
                 documents=[fact],
                 metadatas=[metadata],
                 ids=[memory_id],
             )
             logger.debug(f"[ChromaStore] Successfully added fact to collection")
             # Verify the fact was added
-            count = self.collections["facts"].count()
+            count = self._get_collection("facts").count()
             logger.debug(f"[ChromaStore] Facts collection now has {count} documents")
         except Exception as e:
             logger.error(f"[ChromaStore] Error adding fact: {e}")
@@ -468,7 +489,7 @@ class MultiCollectionChromaStore:
                 return False
 
             # ChromaDB delete by ID
-            self.collections["facts"].delete(ids=[fact_id])
+            self._get_collection("facts").delete(ids=[fact_id])
             logger.debug(f"[ChromaStore] Deleted fact with ID: {fact_id}")
             return True
 
@@ -516,7 +537,7 @@ class MultiCollectionChromaStore:
             "timestamp": datetime.now().isoformat(),
             "type": "reflection",
         })
-        self.collections["reflections"].add(
+        self._get_collection("reflections").add(
             documents=[reflection],
             metadatas=[metadata],
             ids=[memory_id],
@@ -571,7 +592,7 @@ class MultiCollectionChromaStore:
         else:
             query_args["query_texts"] = [query_text]
 
-        results = self.collections[collection_name].query(
+        results = self._get_collection(collection_name).query(
             **query_args,
             n_results=n_results,
             include=["documents", "metadatas", "distances"]
@@ -613,7 +634,7 @@ class MultiCollectionChromaStore:
         """Search across all collections"""
         all_results = {}
 
-        for name, collection in self.collections.items():
+        for name in self.collections:
             try:
                 results = self.query_collection(name, query, n_results_per_type)
                 all_results[name] = results
@@ -644,7 +665,7 @@ class MultiCollectionChromaStore:
                     return collection_name, []
 
                 # Check if collection is empty
-                collection = self.collections[collection_name]
+                collection = self._get_collection(collection_name)
                 count = collection.count()
 
                 if count == 0:
@@ -690,10 +711,10 @@ class MultiCollectionChromaStore:
         Merges *metadata_updates* into the document's current metadata
         and writes the result back.  Returns True on success.
         """
-        coll = self.collections.get(collection_name)
-        if not coll:
+        if collection_name not in self.collections:
             logger.warning("[ChromaStore] update_metadata: unknown collection '%s'", collection_name)
             return False
+        coll = self._get_collection(collection_name)
         try:
             existing = coll.get(ids=[doc_id], include=["metadatas"])
             if not existing or not existing.get("metadatas"):
@@ -710,8 +731,9 @@ class MultiCollectionChromaStore:
         """Get statistics for all collections"""
         stats = {}
 
-        for name, collection in self.collections.items():
+        for name in self.collections:
             try:
+                collection = self._get_collection(name)
                 count = collection.count()
                 stats[name] = {
                     'name': name,

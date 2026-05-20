@@ -11,6 +11,10 @@ Module Contract
 - Key methods:
   - process_shutdown_memory(session_conversations, topic, **kwargs) -> Dict[str, Any]
     Main entry: runs all consolidation phases and returns results summary.
+    Phases are parallelized via asyncio.gather where independent:
+      Phase A (parallel): facts + LLM facts + behavioral patterns + skills
+      Phase B (parallel): proposals + impl tracking + threads + synthesis + wiki enrichment
+      Phase C (sequential): graph save, category cache, cross-dedup
   - run_shutdown_reflection(session_conversations, topic, session_context) -> Optional[str]
     Generates topic-specific session reflections with entity-rich content
     (SESSION TOPIC, KEY ENTITIES, WHAT HAPPENED, PATTERNS & INSIGHTS).
@@ -225,34 +229,37 @@ class ShutdownProcessor:
                     N, T, prev_blocks, since_last, remaining, remaining, pending_blocks
                 )
 
-            # 3) Extract facts from this session's user turns only
-            await self._extract_session_facts(session_conversations)
+            # ── Parallel Phase A: Extraction ──────────────────────────
+            # Facts, LLM facts, behavioral patterns, and skills are
+            # independent LLM calls that can overlap.
+            phase_a = await asyncio.gather(
+                self._extract_session_facts(session_conversations),
+                self._extract_llm_facts(session_conversations),
+                self._extract_behavioral_patterns(session_conversations),
+                self._extract_procedural_skills(session_conversations),
+                return_exceptions=True,
+            )
+            for r in phase_a:
+                if isinstance(r, Exception):
+                    logger.error(f"[Shutdown] Extraction phase error: {r}")
 
-            # 4) Optional LLM-assisted facts
-            await self._extract_llm_facts(session_conversations)
+            # ── Parallel Phase B: Generation + maintenance ────────────
+            # Proposals, threads, synthesis, and wiki enrichment are
+            # independent of each other and of Phase A results.
+            phase_b = await asyncio.gather(
+                self._generate_proposals(session_conversations),
+                self._check_implementation_tracking(),
+                self._process_open_threads(session_conversations),
+                self._run_synthesis_dreaming(),
+                self._run_wiki_enrichment(),
+                return_exceptions=True,
+            )
+            for r in phase_b:
+                if isinstance(r, Exception):
+                    logger.error(f"[Shutdown] Generation phase error: {r}")
 
-            # 4.5) Behavioral pattern extraction (cross-turn habit detection)
-            await self._extract_behavioral_patterns(session_conversations)
-
-            # 5) Extract procedural skills (adaptive workflows)
-            await self._extract_procedural_skills(session_conversations)
-
-            # 6) Generate code proposals (goal-directed)
-            await self._generate_proposals(session_conversations)
-
-            # 6.5) Lightweight implementation tracking (file existence only)
-            await self._check_implementation_tracking()
-
-            # 6.75) Extract open threads and detect resolutions
-            await self._process_open_threads(session_conversations)
-
-            # 6.8) Synthesis dreaming — generate and filter cross-domain candidates
-            await self._run_synthesis_dreaming()
-
-            # 6.9) Wiki-to-graph enrichment — add session's wiki articles to graph
-            await self._run_wiki_enrichment()
-
-            # 7) Save knowledge graph, entity aliases, and category cache
+            # ── Sequential Phase C: Persistence ───────────────────────
+            # Graph save must follow wiki enrichment (Phase B).
             self._save_knowledge_graph()
             try:
                 from memory.user_profile_schema import save_category_cache
@@ -260,7 +267,7 @@ class ShutdownProcessor:
             except Exception as e:
                 logger.debug(f"[Shutdown] Category cache save failed (non-fatal): {e}")
 
-            # 8) Cross-collection deduplication (if enabled)
+            # Dedup runs last after all writes complete.
             await self._run_cross_collection_dedup()
 
             logger.info("[Shutdown] Memory processing complete")
@@ -395,24 +402,12 @@ class ShutdownProcessor:
 
             # Capture source conversation doc IDs for expand_memory drill-down
             try:
-                if md.get('temporal_anchor_start') and md.get('temporal_anchor_end'):
-                    ts_lo = datetime.fromisoformat(md['temporal_anchor_start'])
-                    ts_hi = datetime.fromisoformat(md['temporal_anchor_end'])
-                    all_convos = self.chroma_store.list_all('conversations') if hasattr(self.chroma_store, 'list_all') else []
-                    source_ids = []
-                    for cdoc in all_convos:
-                        cmeta = cdoc.get('metadata') or {}
-                        cts = cmeta.get('timestamp', '')
-                        if not cts:
-                            continue
-                        try:
-                            ct = datetime.fromisoformat(cts)
-                        except (ValueError, TypeError):
-                            continue
-                        if ts_lo <= ct <= ts_hi:
-                            cid = cdoc.get('id')
-                            if cid:
-                                source_ids.append(cid)
+                ts_start = md.get('temporal_anchor_start')
+                ts_end = md.get('temporal_anchor_end')
+                if ts_start and ts_end and hasattr(self.chroma_store, 'get_ids_by_timestamp_range'):
+                    source_ids = self.chroma_store.get_ids_by_timestamp_range(
+                        'conversations', ts_start, ts_end
+                    )
                     if source_ids:
                         md['source_doc_ids'] = ','.join(source_ids)
                         logger.debug(f"[Shutdown] Summary linked to {len(source_ids)} source conversations")

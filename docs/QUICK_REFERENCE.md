@@ -83,6 +83,7 @@ prompt_ctx = await prompt_builder.build_prompt_from_context(context)
 ```python
 # memory/memory_coordinator.py — Thin orchestrator (~551 lines, plus new component wiring)
 # All methods delegate to modular components. No inline logic.
+# Init: parallel disk reads via ThreadPoolExecutor(3) for graph, profile, claims [CHANGED 2026-05-19]
 class MemoryCoordinator:
     def __init__(self, ...):
         self._retriever = MemoryRetriever(...)    # Retrieval operations
@@ -93,6 +94,7 @@ class MemoryCoordinator:
         self.claim_index = ClaimIndex(...)     # Staleness tracking [NEW 2026-03-25]
         self.fact_verifier = FactVerifier(...)  # Pre-storage conflict gate [NEW 2026-03-24]
         self.context_surfacer = ContextSurfacer(...)  # Proactive insights [NEW 2026-03-24]
+        self.user_profile = UserProfile()      # Shared with orchestrator [CHANGED 2026-05-19]
 
     # Retrieval — delegates to MemoryRetriever
     async def get_memories(query, limit=30, topics=None) -> List[Dict]:
@@ -179,15 +181,12 @@ class ShutdownProcessor:
         claim_index enables staleness tracking on summary creation. [NEW 2026-03-25]"""
 
     async def process_shutdown_memory(session_conversations=None):
-        """Steps: 1) block summaries, 2) session facts, 3) LLM facts,
-        4) behavioral pattern extraction (cross-turn habit detection, min 3 turns) [NEW 2026-05-09],
-        5) procedural skills, 6) code proposals, 6.4) cross-dedup (dry_run=True only),
-        6.5a) open thread extraction + resolution detection [NEW 2026-03-23],
-        6.5b) implementation tracking (lightweight file-existence check) [NEW 2026-03-24],
-        6.8) synthesis dreaming — 3-tier generators in parallel (retrieval, graph walk, cross-store) [NEW 2026-03-28],
-        6.8a) auto-halt check: skips synthesis if FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD [NEW 2026-04-01],
-        7) user profile updates (user-only facts; entity facts stay in ChromaDB only).
-        After summary storage: extract claims → register in ClaimIndex → add staleness metadata [NEW 2026-03-25]"""
+        """Parallelized pipeline [CHANGED 2026-05-19]:
+        1) block summaries (source IDs via get_ids_by_timestamp_range),
+        Phase A (parallel): session facts, LLM facts, behavioral patterns, procedural skills,
+        Phase B (parallel): proposals, impl tracking, threads, synthesis dreaming, wiki enrichment,
+        Phase C (sequential): graph save, category cache, cross-dedup (dry_run only).
+        After summary storage: extract claims → register in ClaimIndex → add staleness metadata"""
 
     async def _run_cross_collection_dedup():
         """User mode (CROSS_DEDUP_AUTO_EXECUTE=True): executes deletions automatically.
@@ -1794,7 +1793,7 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 
 ```python
 # core/agentic/controller.py — orchestration, prompt building, model interaction, quality heuristics
-# core/agentic/tools.py — ToolExecutor: dispatch routing + 16 execute methods + get_tool_health()
+# core/agentic/tools.py — ToolExecutor: dispatch routing + 17 execute methods + get_tool_health()
 # core/agentic/formatters.py — AgenticFormatter: 18 pure formatting methods
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
@@ -1818,7 +1817,7 @@ class AgenticSearchController:
 
     # ToolExecutor.get_tool_health() → "[TOOL STATUS]" prompt section [UPDATED 2026-05-18]
     # Reports per-tool availability: web_search (+ site param), wiki_knowledge (FAISS),
-    # memory_search (ChromaDB), wolfram, file_access, git_stats, expand_memory, visual_memory,
+    # memory_search (ChromaDB), wolfram, file_access, git_stats, github, expand_memory, visual_memory,
     # fetch_url, search_stackexchange, search_arxiv, search_pubmed, search_hackernews.
     # Dedicated API tools are always AVAILABLE (free, no auth).
     # Injected into agentic system prompt + iteration prompts + final prompt.
@@ -1914,6 +1913,25 @@ class GitStatsManager:
 # Keyword-based intent parsing maps queries to git commands
 # Temporal phrase extraction: "this week", "today", "last 30 days" → --since dates
 
+# core/github_manager.py [NEW 2026-05-19]
+class GitHubManager:
+    """Read-only GitHub API access via gh CLI for the agentic loop"""
+
+    def is_available() -> bool:
+        """True if gh CLI is installed and authenticated"""
+
+    async def execute_query(query: str) -> Dict[str, Any]:
+        """Parse natural-language query → safe gh subcommand → structured result dict"""
+
+    def format_for_prompt(result: Dict) -> str:
+        """Format result dict for LLM context injection"""
+
+# Safety: only read-only gh subcommands (issue list, pr list, run list, release list, etc.)
+# Keyword-based intent parsing: issues, PRs, actions, releases, workflows, labels, milestones,
+#   contributors, code search
+# Config: GITHUB_API_ENABLED, GITHUB_API_TIMEOUT, GITHUB_API_MAX_OUTPUT_LINES, GITHUB_API_REPO
+#   YAML section: github_api
+
 
 # knowledge/wolfram_manager.py [NEW]
 class WolframManager:
@@ -2000,9 +2018,9 @@ class MemoryExpander:
 
 
 # Protocol handlers (core/agentic/protocols.py)
-# XMLMarkerHandler - for local models: <search>, <fetch_url>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <recall_image>, <done>
+# XMLMarkerHandler - for local models: <search>, <fetch_url>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <github>, <recall_image>, <done>
 #   Alias patterns: <web_search>/<web_search query="..."> → <search>, <search_memory query="..."> → <memory>
-# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (12 tool definitions, including fetch_url and recall_image)
+# NativeToolsHandler - for API models: OpenAI/Anthropic function calling (13 tool definitions, including fetch_url, recall_image, and github)
 ```
 
 ### Agentic Config Constants

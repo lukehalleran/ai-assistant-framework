@@ -75,7 +75,7 @@ Prompt sections:        27 (conditional)
 Intent types:           9
 Parallel retrieval:     19 async tasks
 Memory tiers:           5
-Agentic tools:          13
+Agentic tools:          14
 Gating latency:         ~200ms
 Config options:         180+
 ```
@@ -120,7 +120,7 @@ core/                    # Request orchestration, context pipeline, agentic loop
 ├── response_planner.py  # Pre-answer planning + post-answer review gate
 ├── agentic/             # ReAct tool loop
 │   ├── controller.py    # Loop orchestration, prompt building, quality heuristics
-│   ├── tools.py         # ToolExecutor: dispatch routing + 12 execute methods
+│   ├── tools.py         # ToolExecutor: dispatch routing + 13 execute methods
 │   ├── formatters.py    # AgenticFormatter: 18 pure formatting methods
 │   ├── types.py         # Tool definitions, state types
 │   └── protocols.py     # Native + XML tool calling
@@ -139,7 +139,7 @@ memory/                  # 5-tier memory system
 ├── memory_retriever.py      # Parallel ChromaDB retrieval + semantic-primary fact ranking
 ├── memory_scorer.py         # 12-step composite scoring
 ├── memory_storage.py        # Persistence + fact extraction + graph ingestion + reflection embedding cleanup
-├── shutdown_processor.py    # 12-step session-end pipeline
+├── shutdown_processor.py    # Session-end pipeline (3 parallel phases)
 ├── graph_memory.py          # NetworkX knowledge graph
 ├── entity_resolver.py       # Alias resolution + relation normalization
 ├── fact_extractor.py        # Dual-budget fact extraction
@@ -482,7 +482,7 @@ provides a unified interface:
 - `update_metadata(collection_name, doc_id, metadata_updates)` → merge updates
 
 Collections are registered as `None` placeholders in `__init__()` and
-auto-initialized on first use by `_initialize_collections()`.
+lazily initialized on first access via `_get_collection(name)`.
 
 ### Protected vs. Deduplicable Collections
 
@@ -1068,7 +1068,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
   retry is silently discarded and the original stays visible.
 - This prevents the jarring UX of showing the same response twice.
 
-### 13 Tools (10 action + done_searching + file_read/file_grep/file_list as 3)
+### 14 Tools (11 action + done_searching + file_read/file_grep/file_list as 3)
 
 | Tool | Implementation | Key Feature |
 |------|---------------|-------------|
@@ -1081,6 +1081,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
 | Full Document | ReferenceDocsManager | Reassemble all chunks of an uploaded doc by title; fuzzy title matching |
 | File Read / File Grep / File List | Local filesystem | 3 separate tools, sandboxed to project directory |
 | Git Stats | GitStatsManager | Read-only local git commands: commit counts, contributors, files changed, diff stats. Keyword-based intent parsing with temporal phrase extraction. |
+| GitHub | GitHubManager | Read-only GitHub API via `gh` CLI: issues, PRs, actions, releases, workflows, labels, milestones, contributors, code search. |
 | Recall Image | VisualRetriever | Search visual memory for CLIP-matched images by text query. |
 | Done Searching | Control signal | Model declares search complete, triggers final synthesis |
 
@@ -1133,7 +1134,7 @@ never confabulates about its own capabilities. Checked backends:
   (checks index file + metadata parquet existence without triggering a
   full load; reports UNAVAILABLE when the external drive is disconnected)
 - **memory_search (ChromaDB)** — chroma_store presence
-- **wolfram / file_access / git_stats / expand_memory / recall_image** —
+- **wolfram / file_access / git_stats / github / expand_memory / recall_image** —
   manager presence or config flag
 
 ### Protocol Support
@@ -1153,7 +1154,7 @@ Supported tool names (native / XML marker):
 `wolfram` / `<wolfram>`, `code_sandbox` / `<code_sandbox>`,
 `search_memory` / `<search_memory>`, `expand_memory` / `<expand_memory>`,
 `file_operation` / `<file_operation>`, `git_stats` / `<git_stats>`,
-`recall_image` / `<recall_image>`.
+`github` / `<github>`, `recall_image` / `<recall_image>`.
 
 XML alias patterns: `<web_search>query</web_search>` and
 `<web_search query="...">` are accepted as aliases for `<search>`.
@@ -1736,14 +1737,16 @@ When Daemon starts (GUI launch or CLI start):
 
 See [Section 13: Per-Turn State Updates](#13-per-turn-state-updates).
 
-### Session Shutdown (12-Step Pipeline)
+### Session Shutdown (Parallelized Pipeline)
 
-`ShutdownProcessor.process_shutdown_memory()` runs a strict sequence:
+`ShutdownProcessor.process_shutdown_memory()` runs three phases:
 
 ```
 Step 1:  Block summaries — LLM compression of N-turn conversation blocks
          Claim extraction → ClaimIndex registration
-         Source doc IDs stored for expand_memory drill-down
+         Source doc IDs via get_ids_by_timestamp_range() (not list_all scan)
+
+── Phase A (parallel via asyncio.gather) ──────────────────────────
 
 Step 2:  Session fact extraction — Rule-based, last 10 turns
          Each fact passes through FactVerifier gate
@@ -1761,6 +1764,8 @@ Step 4:  Behavioral pattern extraction — Cross-turn habit detection
          Config: behavioral_patterns.enabled (default true).
 
 Step 5:  Procedural skill extraction — WHEN/THEN adaptive workflows
+
+── Phase B (parallel via asyncio.gather) ──────────────────────────
 
 Step 6:  Code proposal generation — Self-improvement suggestions
          Filtered against GOALS.md for relevance
@@ -1781,6 +1786,8 @@ Step 9:  Synthesis dreaming — Three-tier parallel candidate generation:
 Step 10: Wiki-to-graph enrichment — Tracked wiki articles from session
          added as graph nodes, linked to existing entities via
          extract_graph_entities(). Edges use mentioned_alongside relation.
+
+── Phase C (sequential — must follow Phase B) ─────────────────────
 
 Step 11: Knowledge graph save — JSON flush (dirty-flag optimization)
 

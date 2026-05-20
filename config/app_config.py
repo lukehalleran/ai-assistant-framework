@@ -1182,6 +1182,18 @@ GIT_STATS_MAX_OUTPUT_LINES: int = int(GIT_STATS_CFG.get("max_output_lines", 50))
 GIT_STATS_ENABLED = bool(int(os.getenv("GIT_STATS_ENABLED", "1" if GIT_STATS_ENABLED else "0")))
 
 # --------------------------------------------------------------------
+# GitHub API (read-only access via gh CLI)
+# --------------------------------------------------------------------
+GITHUB_API_CFG = config.get("github_api", {})
+GITHUB_API_ENABLED: bool = bool(GITHUB_API_CFG.get("enabled", True))
+GITHUB_API_TIMEOUT: int = int(GITHUB_API_CFG.get("timeout_s", 15))
+GITHUB_API_MAX_OUTPUT_LINES: int = int(GITHUB_API_CFG.get("max_output_lines", 80))
+GITHUB_API_REPO: str = str(GITHUB_API_CFG.get("repo", "") or "")
+
+# Environment variable override
+GITHUB_API_ENABLED = bool(int(os.getenv("GITHUB_API_ENABLED", "1" if GITHUB_API_ENABLED else "0")))
+
+# --------------------------------------------------------------------
 # Token Budget (model-aware prompt budget)
 # --------------------------------------------------------------------
 TOKEN_BUDGET_CFG = config.get("token_budget", {})
