@@ -66,3 +66,15 @@ dist/
 RECOVERY_*.txt
 RECOVERY_*.patch
 RECOVERY_*.tar.gz
+
+# Private archives / backups
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+*.backup
