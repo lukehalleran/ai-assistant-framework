@@ -1031,7 +1031,6 @@ def launch_gui(orchestrator, force_wizard=False):
                     label="Daemon", height=520, type="messages",
                     latex_delimiters=[
                         {"left": "$$", "right": "$$", "display": True},
-                        {"left": "$", "right": "$", "display": False},
                         {"left": "\\(", "right": "\\)", "display": False},
                         {"left": "\\[", "right": "\\]", "display": True},
                     ],

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Guard wrapper: routes find through safe_cmd.sh for protected-path checking.
+# Only blocks find with -delete or -exec rm on protected paths.
+# Installed via: source scripts/activate_guards.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "${SCRIPT_DIR}/../safe_cmd.sh" "$(basename "$0")" "$@"

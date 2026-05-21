@@ -106,7 +106,12 @@ Each round:
    token budget, leaving no room for XML tool markers.
 3. **EXECUTE** — Dispatch to the appropriate tool handler via `_dispatch_single()`,
    which routes github, stackexchange, arxiv, pubmed, and hackernews tools
-   in addition to the core tools
+   in addition to the core tools.  Tool dispatch runs under the
+   `python_fs_guard.agent_mode()` context manager (see
+   `utils/python_fs_guard.py`), which intercepts destructive Python
+   filesystem calls (`os.remove`, `shutil.rmtree`, `os.rename`, etc.) and
+   blocks them when they target protected repo paths.  This guard applies to
+   in-process tool execution only; it does not cover subprocesses.
 
 **Nudge Retry**: If round 1 produces no tool calls but the response text
 mentions tools ("github", "let me check", "commits", etc.), the controller

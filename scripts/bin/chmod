@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Guard wrapper: routes chmod through safe_cmd.sh for protected-path checking.
+# Installed via: source scripts/activate_guards.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "${SCRIPT_DIR}/../safe_cmd.sh" "$(basename "$0")" "$@"

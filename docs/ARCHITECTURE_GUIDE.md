@@ -187,6 +187,26 @@ eval/                    # Prompt section ablation & eval system
 ├── no_store_generation.py # Side-effect-free LLM generation
 └── persistence_guard.py   # State fingerprinting (prevents mutations)
 
+utils/
+├── tone_detector.py           # Crisis detection (250+ keywords)
+├── web_search_trigger.py      # Keyword + semantic + LLM trigger detection
+├── file_processor.py          # File upload processing
+├── text_chunking.py           # Header-based + size-based chunking
+├── destructive_op_guard.py    # Git command classifier (blocks destructive ops)
+├── shell_cmd_guard.py         # Shell command classifier (rm, mv, chmod, etc.)
+├── python_fs_guard.py         # Monkey-patches os/shutil destructive calls
+├── fs_snapshot.py             # Filesystem manifest for agent session safety
+└── bootstrap.py               # Frozen executable setup
+
+scripts/
+├── safe_git.sh                # Git wrapper that blocks destructive operations
+├── safe_cmd.sh                # Shell wrapper that blocks destructive commands
+├── activate_guards.sh         # Activates PATH wrappers + Python fs guard
+├── bin/                       # PATH-prefix wrappers (rm, mv, rmdir, chmod, truncate, find)
+├── agent_session_start.sh     # Pre-agent-session snapshot
+├── agent_session_audit.sh     # Post-agent-session audit
+└── ...
+
 processing/gate_system.py  # Multi-stage retrieval gating
 models/model_manager.py    # Multi-provider LLM abstraction
 gui/handlers.py            # Request routing + streaming
@@ -2099,6 +2119,29 @@ system, different I/O layer.
 - First-run wizard for API key and model configuration
 - Build output: `dist/Daemon/Daemon`
 
+### Agent Safety (Defense in Depth)
+
+Three guard layers prevent agent sessions from making destructive changes to
+the filesystem or git history. All guards default-deny: operations are blocked
+unless explicitly unlocked by the human operator.
+
+1. **Shell command guard**: `scripts/safe_cmd.sh` wraps dangerous commands,
+   `scripts/bin/` provides PATH-prefix wrappers (rm, mv, rmdir, chmod,
+   truncate, find) that intercept calls before they reach the real binary, and
+   `utils/shell_cmd_guard.py` provides a Python-side classifier for
+   programmatic shell dispatch.
+2. **Git command guard**: `scripts/safe_git.sh` wraps git to block destructive
+   subcommands (restore, reset --hard, clean, push --force), backed by the
+   `utils/destructive_op_guard.py` classifier.
+3. **Python filesystem guard**: `utils/python_fs_guard.py` monkey-patches
+   `os.remove`, `os.unlink`, `os.rmdir`, `os.rename`, `os.replace`,
+   `shutil.rmtree`, and `shutil.move`. Activated at startup in `main.py`. An
+   `agent_mode()` ContextVar is set during agentic tool dispatch in
+   `core/agentic/controller.py` to enable enforcement only inside agent loops.
+
+Activation: `bash scripts/activate_guards.sh` prepends `scripts/bin/` to PATH
+and sources the guard aliases. See `docs/AGENT_SAFETY.md` for full policy.
+
 ### Resource Usage
 
 | Resource | Idle | Active Query |
@@ -2142,6 +2185,8 @@ Key test counts by subsystem:
 | Claim tracker | 47 | `tests/unit/test_claim_tracker.py` |
 | File access | 44 | `tests/unit/test_file_access_manager.py` |
 | Fact verification | 39 | `tests/unit/test_fact_verification.py` |
+| Shell cmd guard | 127 | `tests/unit/test_shell_cmd_guard.py` |
+| Python fs guard | 74 | `tests/unit/test_python_fs_guard.py` |
 | Thread system | 137 | 4 files (models + store + extractor + integration) |
 | Eval system | 246 | `tests/test_eval/` (7 files) |
 

@@ -2607,9 +2607,12 @@ Dependencies: ProposalStore, MultiStageGateSystem (optional), ModelManager (opti
 - `GenerationResult`: Statistics from note generation (success, date, output_path, conversation_count, intensity, skipped_reason)
 
 **Key Methods**:
-- `generate_for_date(date, force)` → `GenerationResult`: Generate note for specific date
+- `generate_for_date(date, force)` → `GenerationResult`: Generate note for specific date; auto-updates if conversation count grew by >= threshold
 - `generate_yesterday_if_missing()` → `Optional[GenerationResult]`: Startup catch-up hook
 - `note_exists(date)` → `bool`: Check if note already exists
+- `_should_auto_update(date)` → `bool`: Returns True if existing note's conversation count grew by >= `DAILY_NOTES_UPDATE_MIN_NEW` **[NEW 2026-05]**
+- `_get_existing_conversation_count(date)` → `int`: Reads `conversations:` from existing note frontmatter **[NEW 2026-05]**
+- `_find_existing_note_path(date)` → `Optional[Path]`: Locates existing note across all folder layouts **[NEW 2026-05]**
 - `_get_conversations_for_date(date)` → `List[Dict]`: Filter corpus by timestamp
 - `_format_conversations(convos)` → `str`: Format for LLM prompt
 - `_calculate_active_duration(convos)` → `float`: Estimate actual usage time in hours **[NEW 2026-01-18]**
@@ -2679,6 +2682,7 @@ TAG_GENERATION_ENABLED = True  **[NEW 2026-01-22]**
 TAG_GENERATION_MODEL = "sonnet-4.5"  # was gpt-4o-mini [UPDATED 2026-03-10]
 TAG_GENERATION_MAX_TAGS = 10  **[NEW 2026-01-22]**
 TAG_GENERATION_MIN_TAGS = 3  **[NEW 2026-01-22]**
+DAILY_NOTES_UPDATE_MIN_NEW = 3  # Auto-update threshold: re-generate if conversation count grew by >= this **[NEW 2026-05]**
 ```
 
 **CLI Commands** (`main.py`):
@@ -2692,9 +2696,10 @@ TAG_GENERATION_MIN_TAGS = 3  **[NEW 2026-01-22]**
 
 **Scheduling**:
 - Cron (recommended): `0 2 * * * cd /path/to/daemon && python main.py daily-note yesterday`
-- GUI startup catch-up [NEW 2026-01-18]: `_run_daily_notes_catchup()` in gui/launch.py
+- GUI startup catch-up [ENHANCED 2026-05]: `_run_daily_notes_catchup()` in gui/launch.py
   - Runs in background thread on GUI launch (non-blocking)
   - Calls `generate_yesterday_if_missing()`
+  - Auto-updates existing note if conversation count grew by >= `DAILY_NOTES_UPDATE_MIN_NEW` (default 3)
   - Respects `DAILY_NOTES_ENABLED` config flag
   - Errors logged but don't affect GUI startup
 
@@ -2941,12 +2946,13 @@ TAG_GENERATION_MIN_TAGS = 3
 - `_read_obsidian_weekly_summaries(limit)` → List[Dict] from Obsidian vault (searches both root-level and monthly-parent folders)
 - `_read_obsidian_daily_notes(limit)` → List[Dict] from weekly folders (searches both root and monthly parent paths)
 
-**Narrative Context Synthesis** [ENHANCED 2026-03-10]:
+**Narrative Context Synthesis** [ENHANCED 2026-05]:
 Generates a "Current Life State" narrative from 3-tier notes (monthly/weekly/daily) for temporal grounding.
 - Primary source: Obsidian monthly summaries + weekly summaries + daily notes
 - Monthly for arc, weekly for active threads, daily for recent shifts
 - Fallback: Corpus summaries
 - Output: ~300 word synthesis covering life chapter, active threads, emotional trajectory, recurring themes
+- Prompt includes TEMPORAL ACCURACY RULES: instructs LLM to use note dates (not "recently"), distinguish completed vs ongoing, never invent timelines
 - Cached to `./data/narrative_context.txt` (0ms retrieval latency)
 - CLI: `python main.py refresh-narrative`
 
@@ -4885,7 +4891,9 @@ daemon/
 │   ├── daily_notes_generator.py # Auto-generated daily summaries with monthly folder hierarchy [ENHANCED 2026-03-10]
 │   ├── weekly_notes_generator.py # Auto-generated weekly summaries with monthly folder hierarchy [ENHANCED 2026-03-10]
 │   ├── monthly_notes_generator.py # Auto-generated monthly summaries from daily notes [NEW 2026-03-10]
-│   └── tag_generator.py       # LLM-based tag generation for notes [NEW 2026-01-22]
+│   ├── tag_generator.py       # LLM-based tag generation for notes [NEW 2026-01-22]
+│   ├── shell_cmd_guard.py     # Shell command classifier (rm, mv, rmdir, chmod, truncate, find) [NEW 2026-05]
+│   └── python_fs_guard.py     # Python filesystem guard: monkey-patches os/shutil destructive ops, ContextVar agent mode [NEW 2026-05]
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
@@ -5774,9 +5782,14 @@ Mechanical safeguards for AI coding agent sessions: pre-session snapshots, post-
 |------|---------|
 | `utils/fs_snapshot.py` | Filesystem manifest (path, size, mtime, sha256), diffing, CLI (`python -m utils.fs_snapshot create/diff`) |
 | `utils/destructive_op_guard.py` | Git command classifier: `classify_git_args(args)`, `is_destructive_git_args(args)`, `unlock_allowed(env, root)` |
+| `utils/shell_cmd_guard.py` | Shell command classifier (rm, mv, rmdir, chmod, truncate, find). Classifies commands as safe/destructive/blocked. |
+| `utils/python_fs_guard.py` | Python filesystem guard. Monkey-patches os.remove, os.unlink, os.rmdir, os.rename, os.replace, shutil.rmtree, shutil.move. ContextVar-based agent mode. |
 | `scripts/agent_session_start.sh` | Pre-agent snapshot: git state + manifest + filtered untracked tarball, 10-snapshot rotation |
 | `scripts/agent_session_audit.sh` | Post-agent audit: branch/HEAD diff, git status, manifest diff, large file detection |
 | `scripts/safe_git.sh` | Safe git wrapper: blocks restore/reset --hard/clean/push/checkout --/branch -D unless unlocked |
+| `scripts/safe_cmd.sh` | Safe shell command wrapper for non-git destructive ops (rm, mv, rmdir, chmod, truncate, find) |
+| `scripts/activate_guards.sh` | PATH-based guard activation: prepends `scripts/bin/` to PATH so wrapper scripts intercept commands |
+| `scripts/bin/` | PATH wrapper scripts for rm, mv, rmdir, chmod, truncate, find |
 
 ### 17.2 Snapshot Contents
 
@@ -5798,6 +5811,8 @@ Mechanical safeguards for AI coding agent sessions: pre-session snapshots, post-
 
 - `tests/unit/test_fs_snapshot.py` — 40 tests (manifest CRUD, diffing, exclusions, CLI)
 - `tests/unit/test_destructive_op_guard.py` — 52 tests (safe/destructive classification, unlock mechanisms)
+- `tests/unit/test_shell_cmd_guard.py` — 127 tests (shell command classification, safe/destructive/blocked)
+- `tests/unit/test_python_fs_guard.py` — 74 tests (monkey-patched fs ops, agent mode, ContextVar gating)
 
 See `docs/AGENT_SAFETY.md` for full workflow documentation.
 

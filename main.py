@@ -91,6 +91,11 @@ from utils.time_manager import TimeManager
 configure_logging()
 logger = get_logger("main")
 
+# Activate Python filesystem guard early — before any component imports.
+# Protects critical repo paths from agent-originated delete/move/replace.
+from utils.python_fs_guard import activate as _activate_fs_guard
+_activate_fs_guard()
+
 # Add parent directory to path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_dir)

@@ -202,7 +202,9 @@ utils/
 ├── text_chunking.py          # chunk_by_headers + chunk_by_size fallback
 ├── bootstrap.py              # Frozen executable setup
 ├── fs_snapshot.py            # Filesystem manifest for agent session safety
-└── destructive_op_guard.py   # Git command classifier (blocks destructive ops)
+├── destructive_op_guard.py   # Git command classifier (blocks destructive ops)
+├── python_fs_guard.py        # Python-level fs guard (os.remove, shutil.rmtree, etc.)
+└── shell_cmd_guard.py        # Shell command classifier (rm, mv, chmod, etc.)
 ```
 
 ## Important Patterns
@@ -220,8 +222,10 @@ utils/
 Before agent edits: `bash scripts/agent_session_start.sh`
 After agent edits: `bash scripts/agent_session_audit.sh`
 Use `scripts/safe_git.sh` instead of raw `git` for destructive-capable operations.
+Use `scripts/safe_cmd.sh` instead of raw `rm`, `mv`, `chmod`, etc. for potentially destructive shell commands.
+Python-level destructive operations (`os.remove`, `shutil.rmtree`, `Path.unlink`, `os.rename`, `os.replace`, `shutil.move`) are guarded by `utils/python_fs_guard.py`, which monkey-patches these functions at startup and blocks protected-path operations during agentic tool dispatch.
 
-Agents may **not** run `git restore`, `git reset --hard`, `git clean`, `git push`, or `rm -rf` without explicit human unlock. See `docs/AGENT_SAFETY.md` for full details.
+Agents may **not** run `git restore`, `git reset --hard`, `git clean`, `git push`, `rm -rf`, `mv` on protected paths, or `chmod 000` without explicit human unlock. See `docs/AGENT_SAFETY.md` for full details.
 
 ## Testing
 
