@@ -649,6 +649,10 @@ DAILY_NOTES_MODEL: str = DAILY_NOTES_CFG.get("model", "sonnet-4.5")
 # Max tokens for LLM response
 DAILY_NOTES_MAX_TOKENS: int = int(DAILY_NOTES_CFG.get("max_tokens", 800))
 
+# Auto-update: regenerate daily note when conversation count grows significantly
+# Minimum additional conversations to trigger re-generation of an existing note
+DAILY_NOTES_UPDATE_MIN_NEW: int = int(DAILY_NOTES_CFG.get("update_min_new", 3))
+
 # Environment variable overrides for Daily Notes
 DAILY_NOTES_ENABLED = bool(int(os.getenv("DAILY_NOTES_ENABLED", "1" if DAILY_NOTES_ENABLED else "0")))
 

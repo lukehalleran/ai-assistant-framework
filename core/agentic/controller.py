@@ -26,6 +26,7 @@ Modular Architecture (2026-05-09):
 Dependencies:
     - core.agentic.formatters.AgenticFormatter (result formatting)
     - core.agentic.tools.ToolExecutor (tool dispatch + execution)
+    - utils.python_fs_guard.agent_mode (Python filesystem guard context)
     - models.model_manager.ModelManager (for LLM generation)
     - knowledge.web_search_manager.WebSearchManager (for web searches)
     - knowledge.wolfram_manager.WolframManager (for computations, optional)
@@ -65,6 +66,7 @@ from core.agentic.protocols import (
 )
 from core.agentic.formatters import AgenticFormatter
 from core.agentic.tools import ToolExecutor
+from utils.python_fs_guard import agent_mode as _fs_agent_mode
 
 if TYPE_CHECKING:
     from models.model_manager import ModelManager
@@ -739,7 +741,17 @@ class AgenticSearchController:
 
         Uses self._dispatch_* methods (not tool_executor directly) so that
         tests can mock individual dispatch/execute methods on the controller.
+
+        Runs inside agent_mode() so Python filesystem guards are active —
+        destructive operations on protected repo paths will raise PermissionError.
         """
+        with _fs_agent_mode():
+            return await self._dispatch_single_inner(
+                decision, round_number, session, crisis_level, sandbox_session
+            )
+
+    async def _dispatch_single_inner(self, decision, round_number, session, crisis_level, sandbox_session):
+        """Inner dispatch logic, always runs under agent_mode() context."""
         if decision.wants_search and decision.search_query:
             return await self._dispatch_web_search(decision, round_number, crisis_level)
         elif decision.wants_wolfram and decision.wolfram_query:

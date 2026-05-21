@@ -809,10 +809,34 @@ classify_git_args(args: list[str]) -> dict              # {subcmd, destructive: 
 is_destructive_git_args(args: list[str]) -> bool
 unlock_allowed(env=None, root=None) -> bool             # Checks ALLOW_DESTRUCTIVE_OPS=1 or .agent_allow_destructive_once
 
+# utils/shell_cmd_guard.py — Shell command classifier (rm, mv, rmdir, chmod, truncate, find)
+classify_shell_cmd(args: list[str], repo_root=None) -> dict  # {command, destructive, severity, reason, targets}
+is_destructive_shell_cmd(args: list[str], repo_root=None) -> bool
+# PROTECTED_DIRS: 16 dirs (.git, data/, config/, memory/, core/, etc.)
+# PROTECTED_FILES: 6 files (main.py, daemon.spec, pytest.ini, pyproject.toml, etc.)
+# ALWAYS_BLOCKED_TARGETS: ., .., /, ~, * — cannot be unlocked
+# Classifiers for: rm, mv, rmdir, chmod, truncate, find
+
+# utils/python_fs_guard.py — Python filesystem monkey-patch guard
+activate(repo_root=None)     # Monkey-patches os.remove, os.unlink, os.rmdir, os.rename,
+                             #   os.replace, shutil.rmtree, shutil.move
+deactivate()                 # Restore original stdlib functions
+agent_mode()                 # Context manager (ContextVar tokens), sets agent mode for checks
+is_active() -> bool
+set_agent_mode(active: bool)
+# Only blocks in agent mode (Daemon's own runtime is unguarded)
+# Checks both source AND destination for rename/replace/move
+# Always-blocked targets cannot be unlocked
+
 # Shell scripts:
 # scripts/agent_session_start.sh  — Pre-agent snapshot (git state + manifest + untracked tarball)
 # scripts/agent_session_audit.sh  — Post-agent audit (manifest diff, git status comparison)
 # scripts/safe_git.sh             — Safe git wrapper (blocks restore/reset --hard/clean/push)
+# scripts/safe_cmd.sh             — Shell wrapper for destructive commands (mirrors safe_git.sh unlock pattern)
+# scripts/activate_guards.sh      — Source to prepend scripts/bin/ to PATH; wraps rm, mv, rmdir,
+#                                    chmod, truncate, find through safe_cmd.sh transparently
+# scripts/bin/                    — PATH wrapper scripts (rm, mv, rmdir, chmod, truncate, find)
+#                                    that route through safe_cmd.sh
 ```
 
 ---
@@ -1659,6 +1683,8 @@ class DailyNotesGenerator:
         """
         1. Get conversations for date from corpus
         2. Skip if no conversations or note exists (unless force)
+           2b. Auto-update: if note exists but conversation count grew by
+               >= DAILY_NOTES_UPDATE_MIN_NEW (default 3), regenerate the note
         3. Format conversations for LLM
         4. Calculate active duration (estimated actual usage time)
         5. Calculate intensity (1-10 based on count/active_hours/complexity)
@@ -1670,6 +1696,12 @@ class DailyNotesGenerator:
 
     async def generate_yesterday_if_missing() -> Optional[GenerationResult]:
         """Startup catch-up hook (called by GUI on launch)"""
+
+    # Auto-update helpers:
+    def _should_auto_update(target_date: date, current_count: int) -> bool
+    def _get_existing_conversation_count(target_date: date) -> int
+    def _find_existing_note_path(target_date: date) -> Path | None
+    # Config: DAILY_NOTES_UPDATE_MIN_NEW (default 3)
 
     def _calculate_active_duration(convos: List[Dict]) -> float:
         """
@@ -1766,6 +1798,11 @@ class MemoryConsolidator:
         - Active Threads (ongoing projects/concerns)
         - Emotional Trajectory (mood trend)
         - Recurring Themes (patterns)
+
+        Synthesis prompt includes TEMPORAL ACCURACY RULES:
+        - Date attribution derived from daily note frontmatter
+        - Multi-day events expressed as date ranges
+        - Day-of-week names anchored to actual dates
 
         Cached to: ./data/narrative_context.txt (0ms retrieval)
         Token budget: Priority 8, 500 token cap

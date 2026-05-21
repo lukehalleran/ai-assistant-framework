@@ -1,34 +1,40 @@
-fix: agentic tool dispatch, reasoning bypass, XML robustness, context pollution
+feat: 3-layer agent safety guards + daily notes auto-update + LaTeX fix
 
-Controller routing: _dispatch_single was missing routes for github,
-stackexchange, arxiv, pubmed, hackernews — tool calls returned
-round_data=None so rounds never counted, causing infinite loops.
+Shell command guard (utils/shell_cmd_guard.py):
+- Python classifier for rm, mv, rmdir, chmod, truncate, find against
+  protected paths (16 dirs, 6 files, 5 always-blocked targets)
+- scripts/safe_cmd.sh bash wrapper with same unlock mechanism as safe_git.sh
+- scripts/bin/ PATH wrappers (rm, mv, rmdir, chmod, truncate, find) that
+  transparently intercept commands and route through safe_cmd.sh
+- scripts/activate_guards.sh sources into shell to prepend PATH
+- Added to ~/.bashrc for automatic activation in all sessions
+- 127 tests
 
-Reasoning bypass: XML-protocol decision phase now uses
-_generate_decision_no_reasoning() which skips native reasoning params.
-DeepSeek/R1 models were burning the entire 500-token budget on
-chain-of-thought, leaving nothing for XML tool markers.
+Python filesystem guard (utils/python_fs_guard.py):
+- Monkey-patches os.remove, os.unlink, os.rmdir, os.rename, os.replace,
+  shutil.rmtree, shutil.move at startup (main.py)
+- ContextVar-based agent_mode() — only blocks during agentic tool dispatch;
+  Daemon's own runtime (profile saves, daily notes, migrations) is unguarded
+- Checks both source AND destination for rename/replace/move operations
+- Corrected check ordering: always-blocked targets checked before
+  outside-repo passthrough (prevents "/" from slipping through)
+- Preserves *args/**kwargs for platform compatibility (dir_fd, etc.)
+- Integrated into core/agentic/controller.py via _dispatch_single wrapper
+- 74 tests
 
-Tool name triggers: messages mentioning "github", "git stats",
-"actions", "workflow", etc. now force agentic mode at Tier 1
-regardless of message length (previously casual-skipped).
+Daily notes auto-update (utils/daily_notes_generator.py):
+- Regenerates existing daily note when conversation count grows by >=
+  DAILY_NOTES_UPDATE_MIN_NEW (default 3), fixing stale notes from
+  early-session shutdowns
+- New methods: _find_existing_note_path, _get_existing_conversation_count,
+  _should_auto_update
+- New config constant: DAILY_NOTES_UPDATE_MIN_NEW
+- 23 tests
 
-XML robustness: nested tags (<git_stats><query>X</query></git_stats>),
-empty tags (<github></github>), and DeepSeek-style
-<search_memory><query>X</query><collection>Y</collection></search_memory>
-all handled. Empty args default to sensible queries instead of
-silently dropping the tool call.
-
-Context pollution: leaked tool XML stripped at block level before
-storage. _strip_leaked_xml_blocks replaces _strip_leaked_xml_markers
-across all display and storage paths. Bare tool-call lines stripped
-from zero-dispatch agentic responses.
-
-Thread extractor: today's date injected into extraction and resolution
-prompts so relative dates ("tomorrow", "next Tuesday") resolve to
-absolute dates.
-
-Additional: nudge retry for narrated-but-not-executed tool calls,
-tool hints in iteration prompts, context-aware casual skip override,
-skip_initial_search for tool-triggered queries, gh repo view
-positional arg fix.
+Other:
+- memory/memory_consolidator.py: Added temporal accuracy rules to narrative
+  synthesis prompt (date attribution from frontmatter, multi-day ranges)
+- gui/launch.py: Removed single-$ LaTeX delimiter from Chatbot — was
+  treating currency $signs as math mode, garbling financial responses
+- Updated docs: AGENT_SAFETY.md, CLAUDE.md, QUICK_REFERENCE.md,
+  PROJECT_SKELETON.md, ARCHITECTURE_GUIDE.md, AGENTIC_SEARCH.md

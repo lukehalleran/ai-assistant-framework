@@ -23,7 +23,9 @@ Module Contract:
     - usage_intensity (was: intensity) [RENAMED 2026-01-18]
     - span_hours (wall-clock), active_hours (estimated usage) [NEW 2026-01-18]
     - tags: system tags + content tags [NEW 2026-01-22]
-  - Idempotent: skips if note already exists (unless force=True)
+  - Auto-update: if note exists but conversation count has grown by >= DAILY_NOTES_UPDATE_MIN_NEW (default 3),
+    regenerates with all conversations for the day. Fixes stale notes from early-session shutdowns. [NEW 2026-05-20]
+  - Skips if note exists and conversation count delta is below threshold (unless force=True)
   - Triggers narrative context refresh after daily note creation [NEW 2026-01-17]
 - Key Methods:
   - _calculate_active_duration(convos): Estimate actual usage time [NEW 2026-01-18]
@@ -291,20 +293,69 @@ class DailyNotesGenerator:
 
     def note_exists(self, target_date: date) -> bool:
         """Check if note already exists for date (flat, weekly-at-root, or monthly/weekly)."""
+        return self._find_existing_note_path(target_date) is not None
+
+    def _find_existing_note_path(self, target_date: date) -> Optional[Path]:
+        """Find the actual filesystem path of an existing note, or None."""
         filename = self._format_filename(target_date)
 
-        # Check flat directory
-        if (self.output_dir / filename).exists():
-            return True
+        # Check monthly/weekly folder (current layout — most likely)
+        month_folder = self._get_month_folder_name(target_date)
+        week_folder = self._get_week_folder_name(target_date)
+        path = self.output_dir / month_folder / week_folder / filename
+        if path.exists():
+            return path
 
         # Check weekly folder at root (legacy layout)
-        week_folder = self._get_week_folder_name(target_date)
-        if (self.output_dir / week_folder / filename).exists():
-            return True
+        path = self.output_dir / week_folder / filename
+        if path.exists():
+            return path
 
-        # Check monthly/weekly folder (new layout)
-        month_folder = self._get_month_folder_name(target_date)
-        if (self.output_dir / month_folder / week_folder / filename).exists():
+        # Check flat directory
+        path = self.output_dir / filename
+        if path.exists():
+            return path
+
+        return None
+
+    def _get_existing_conversation_count(self, target_date: date) -> int:
+        """Read the conversation count from an existing note's YAML frontmatter."""
+        note_path = self._find_existing_note_path(target_date)
+        if not note_path:
+            return 0
+
+        try:
+            content = note_path.read_text(encoding='utf-8')
+            if not content.startswith("---"):
+                return 0
+
+            end_idx = content.find("---", 3)
+            if end_idx < 0:
+                return 0
+
+            frontmatter = content[3:end_idx]
+            for line in frontmatter.split("\n"):
+                line = line.strip()
+                if line.startswith("conversations:"):
+                    return int(line.split(":", 1)[1].strip())
+        except Exception as e:
+            logger.debug(f"[DailyNotes] Could not read frontmatter for {target_date}: {e}")
+
+        return 0
+
+    def _should_auto_update(self, target_date: date, current_count: int) -> bool:
+        """Check if an existing note should be regenerated due to significant new data."""
+        from config.app_config import DAILY_NOTES_UPDATE_MIN_NEW
+
+        existing_count = self._get_existing_conversation_count(target_date)
+        new_conversations = current_count - existing_count
+
+        if new_conversations >= DAILY_NOTES_UPDATE_MIN_NEW:
+            logger.info(
+                f"[DailyNotes] Auto-update triggered for {target_date}: "
+                f"{existing_count} → {current_count} conversations "
+                f"(+{new_conversations}, threshold={DAILY_NOTES_UPDATE_MIN_NEW})"
+            )
             return True
 
         return False
@@ -522,16 +573,19 @@ generated: {datetime.now().isoformat()}
             logger.info(f"[DailyNotes] Skipped {target_date}: feature disabled")
             return result
 
-        # Check if already exists
-        if not force and self.note_exists(target_date):
-            result.skipped_reason = "already_exists"
-            result.output_path = self.output_dir / f"{target_date.isoformat()}.md"
-            logger.info(f"[DailyNotes] Skipped {target_date}: note already exists")
-            return result
-
-        # Get conversations for date
+        # Get conversations for date (needed for both new and auto-update checks)
         convos = self._get_conversations_for_date(target_date)
         result.conversation_count = len(convos)
+
+        # Check if already exists — but allow auto-update when new data is significant
+        if not force and self.note_exists(target_date):
+            if self._should_auto_update(target_date, len(convos)):
+                logger.info(f"[DailyNotes] Auto-updating {target_date} with {len(convos)} conversations")
+            else:
+                result.skipped_reason = "already_exists"
+                result.output_path = self._find_existing_note_path(target_date)
+                logger.info(f"[DailyNotes] Skipped {target_date}: note already exists")
+                return result
 
         if not convos:
             result.skipped_reason = "no_conversations"

@@ -197,6 +197,14 @@ Synthesize a 250-300 word "Current Life State" narrative covering:
 3. EMOTIONAL TRAJECTORY: How is mood/stress trending? Use daily notes for recent shifts. (2-3 sentences)
 4. RECURRING THEMES: Patterns visible across all three time scales.
 
+TEMPORAL ACCURACY RULES — these are critical:
+- Each daily note has a date in its frontmatter. Use those dates as ground truth.
+- When a note references events from EARLIER days ("yesterday was rough", "on Saturday I..."),
+  attribute those events to the correct calendar date, not the note's own date.
+- For multi-day events (illness, travel, projects), state the full date range explicitly
+  (e.g. "sick Saturday through Monday, better Tuesday") — never collapse to a single day.
+- Use day-of-week names anchored to actual dates, not vague relative terms.
+
 Write in third person ("The user is..."). Be specific and grounded in the data.
 Prioritize recent daily notes for current state, weekly for active threads, monthly for trajectory.
 Do NOT make up information not present in the summaries."""
