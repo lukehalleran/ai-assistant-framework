@@ -138,7 +138,7 @@ memory/                       # Memory system
 ├── memory_consolidator.py    # Session consolidation
 ├── hybrid_retriever.py       # Hybrid retrieval for summaries/reflections
 ├── corpus_manager.py         # In-memory corpus management
-├── code_proposal.py          # Code proposal data models
+├── code_proposal.py          # Code proposal data models + supervision fields (RiskLevel, ProposalOutcome)
 ├── proposal_store.py         # ChromaDB proposal storage
 ├── thread_models.py          # Thread data models + enums
 ├── utils.py                  # Memory utility functions
@@ -168,7 +168,9 @@ knowledge/                    # External knowledge
 config/                       # Configuration
 ├── app_config.py             # YAML loader + ~280 module-level constants
 ├── schema.py                 # Pydantic v2 validation (44 section models)
-└── config.yaml               # 44 sections, ~334 keys
+├── config.yaml               # 44 sections, ~334 keys
+├── feature_registry.yaml     # Retrospective shipped-feature catalog (branch supervision)
+└── feature_registry.py       # Typed loader: dependency resolution, conflict detection
 
 gui/                          # Gradio web interface
 ├── launch.py                 # Main GUI, dark theme, startup tasks
@@ -203,7 +205,7 @@ utils/
 ├── bootstrap.py              # Frozen executable setup
 ├── fs_snapshot.py            # Filesystem manifest for agent session safety
 ├── destructive_op_guard.py   # Git command classifier (blocks destructive ops)
-├── python_fs_guard.py        # Python-level fs guard (os.remove, shutil.rmtree, etc.)
+├── python_fs_guard.py        # Python-level fs guard (os.remove, shutil.rmtree, shutil.copy/copy2/copyfile, etc.)
 └── shell_cmd_guard.py        # Shell command classifier (rm, mv, chmod, etc.)
 ```
 
@@ -223,7 +225,7 @@ Before agent edits: `bash scripts/agent_session_start.sh`
 After agent edits: `bash scripts/agent_session_audit.sh`
 Use `scripts/safe_git.sh` instead of raw `git` for destructive-capable operations.
 Use `scripts/safe_cmd.sh` instead of raw `rm`, `mv`, `chmod`, etc. for potentially destructive shell commands.
-Python-level destructive operations (`os.remove`, `shutil.rmtree`, `Path.unlink`, `os.rename`, `os.replace`, `shutil.move`) are guarded by `utils/python_fs_guard.py`, which monkey-patches these functions at startup and blocks protected-path operations during agentic tool dispatch.
+Python-level destructive operations (`os.remove`, `shutil.rmtree`, `Path.unlink`, `os.rename`, `os.replace`, `shutil.move`, `shutil.copyfile`, `shutil.copy`, `shutil.copy2`) are guarded by `utils/python_fs_guard.py`, which monkey-patches these 10 functions at startup and blocks protected-path operations during agentic tool dispatch. Child Python interpreters inherit the guard via `scripts/bin/usercustomize.py` when PYTHONPATH includes `scripts/bin/`.
 
 Agents may **not** run `git restore`, `git reset --hard`, `git clean`, `git push`, `rm -rf`, `mv` on protected paths, or `chmod 000` without explicit human unlock. See `docs/AGENT_SAFETY.md` for full details.
 

@@ -1,0 +1,281 @@
+# config/feature_registry.yaml
+# Retrospective feature registry — audit trail for shipped features.
+#
+# Purpose: Catalog of implemented features with supervision metadata.
+# Agents on sub-branches consult this to check dependencies, avoid
+# conflicts, and understand what already exists. Main branch uses
+# this alongside CodeProposal records to gate merge decisions.
+#
+# Schema per entry:
+#   proposal_id:        Unique slug (snake_case)
+#   title:              Human-readable name
+#   status:             implemented | partial | deprecated
+#   source:             how it originated (manual, goal_directed, incident, user_request)
+#   risk_level:         low | medium | high | critical
+#   touches_core_system: whether it modifies orchestrator/pipeline/coordinator/safety
+#   depends_on:         list of proposal_ids this depends on
+#   implemented_files:  source files
+#   test_files:         test files that validate it
+#   outcome:
+#     accepted:         bool
+#     notes:            human reviewer notes
+#     merged_at:        ISO date of merge (approximate for pre-registry features)
+
+features:
+
+  # ── Safety & Guards ──────────────────────────────────────────────
+
+  - proposal_id: agent_safety_guards
+    title: "3-Layer Agent Safety Guards"
+    status: implemented
+    source: incident
+    risk_level: high
+    touches_core_system: true
+    depends_on: []
+    implemented_files:
+      - utils/destructive_op_guard.py
+      - utils/fs_snapshot.py
+      - utils/shell_cmd_guard.py
+      - utils/python_fs_guard.py
+      - scripts/safe_git.sh
+      - scripts/safe_cmd.sh
+      - scripts/activate_guards.sh
+      - scripts/bin/usercustomize.py
+    test_files:
+      - tests/unit/test_destructive_op_guard.py
+      - tests/unit/test_fs_snapshot.py
+      - tests/unit/test_shell_cmd_guard.py
+      - tests/unit/test_python_fs_guard.py
+    outcome:
+      accepted: true
+      notes: "Expanded beyond original scope with shell and Python guards. 3 layers: git command classifier, shell command classifier, Python monkey-patch guard."
+      merged_at: "2026-05-21"
+
+  # ── Memory System ────────────────────────────────────────────────
+
+  - proposal_id: knowledge_graph
+    title: "Queryable Knowledge Graph"
+    status: implemented
+    source: goal_directed
+    risk_level: high
+    touches_core_system: true
+    depends_on: []
+    implemented_files:
+      - memory/graph_memory.py
+      - memory/graph_models.py
+      - memory/graph_utils.py
+      - memory/entity_resolver.py
+    test_files:
+      - tests/unit/test_knowledge_graph.py
+      - tests/unit/test_graph_integration.py
+    outcome:
+      accepted: true
+      notes: "NetworkX DiGraph with BFS traversal, alias resolution, graph-boosted scoring, query expansion."
+      merged_at: "2026-04-15"
+
+  - proposal_id: truth_scorer
+    title: "Evidence-Based Truth Scoring"
+    status: implemented
+    source: goal_directed
+    risk_level: medium
+    touches_core_system: true
+    depends_on: []
+    implemented_files:
+      - memory/truth_scorer.py
+      - core/correction_detector.py
+    test_files:
+      - tests/unit/test_truth_scorer.py
+      - tests/unit/test_correction_detector.py
+    outcome:
+      accepted: true
+      notes: "Replaces old echo-chamber system. Confirmation/correction/contradiction adjustments + time decay."
+      merged_at: "2026-04-10"
+
+  - proposal_id: cross_collection_dedup
+    title: "Cross-Collection Deduplicator"
+    status: implemented
+    source: goal_directed
+    risk_level: medium
+    touches_core_system: false
+    depends_on: []
+    implemented_files:
+      - memory/cross_deduplicator.py
+      - memory/dedup_models.py
+    test_files:
+      - tests/unit/test_cross_deduplicator.py
+    outcome:
+      accepted: true
+      notes: "Cosine sim >= 0.92 duplicate detection + fact contradiction detection. Dry-run only on shutdown; live deletes require GUI action."
+      merged_at: "2026-04-08"
+
+  - proposal_id: fact_verification_gate
+    title: "Fact Verification Gate"
+    status: implemented
+    source: goal_directed
+    risk_level: medium
+    touches_core_system: true
+    depends_on:
+      - truth_scorer
+      - cross_collection_dedup
+    implemented_files:
+      - memory/fact_verification.py
+    test_files:
+      - tests/unit/test_fact_verification.py
+    outcome:
+      accepted: true
+      notes: "Store/flag/reject verdicts. Never auto-deletes. LLM adjudication for borderline conflicts."
+      merged_at: "2026-04-18"
+
+  - proposal_id: claim_tracker
+    title: "Memory Staleness via Claim Tracking"
+    status: implemented
+    source: goal_directed
+    risk_level: medium
+    touches_core_system: true
+    depends_on:
+      - truth_scorer
+    implemented_files:
+      - memory/claim_tracker.py
+    test_files:
+      - tests/unit/test_claim_tracker.py
+    outcome:
+      accepted: true
+      notes: "Claim hashing on (subject, relation). Staleness cascade to summaries/reflections. Real-time cascade after correction events."
+      merged_at: "2026-04-25"
+
+  - proposal_id: thread_surfacing
+    title: "Proactive Thread Surfacing"
+    status: implemented
+    source: goal_directed
+    risk_level: low
+    touches_core_system: true
+    depends_on: []
+    implemented_files:
+      - memory/thread_models.py
+      - memory/thread_store.py
+      - memory/thread_extractor.py
+    test_files:
+      - tests/unit/test_thread_models.py
+      - tests/unit/test_thread_store.py
+      - tests/unit/test_thread_extractor.py
+    outcome:
+      accepted: true
+      notes: "ChromaDB-backed threads with priority scoring. LLM extraction + resolution detection. Session opener injection."
+      merged_at: "2026-04-20"
+
+  - proposal_id: proactive_context_surfacing
+    title: "Cross-Domain Proactive Insights"
+    status: implemented
+    source: goal_directed
+    risk_level: low
+    touches_core_system: true
+    depends_on:
+      - knowledge_graph
+    implemented_files:
+      - memory/context_surfacer.py
+      - memory/surfacing_models.py
+      - memory/surfacing_history.py
+    test_files:
+      - tests/unit/test_context_surfacer.py
+    outcome:
+      accepted: true
+      notes: "Star topology bridge scoring across knowledge graph domains. Session cache, novelty filter, graph sparsity guard."
+      merged_at: "2026-04-28"
+
+  - proposal_id: entity_facts
+    title: "Dual-Budget Entity Fact Extraction"
+    status: implemented
+    source: goal_directed
+    risk_level: low
+    touches_core_system: false
+    depends_on: []
+    implemented_files:
+      - memory/fact_extractor.py
+      - memory/llm_fact_extractor.py
+    test_files:
+      - tests/unit/test_entity_facts.py
+    outcome:
+      accepted: true
+      notes: "User facts (cap 6) + entity facts (cap 4). SpaCy NER entity type detection."
+      merged_at: "2026-04-12"
+
+  # ── Core Pipeline ────────────────────────────────────────────────
+
+  - proposal_id: intent_classifier
+    title: "Regex-First Query Intent Classifier"
+    status: implemented
+    source: goal_directed
+    risk_level: medium
+    touches_core_system: true
+    depends_on: []
+    implemented_files:
+      - core/intent_classifier.py
+    test_files:
+      - tests/unit/test_intent_classifier.py
+    outcome:
+      accepted: true
+      notes: "9 intent types with per-intent weight/retrieval/gate overrides. Tone bias + STM refinement."
+      merged_at: "2026-04-05"
+
+  - proposal_id: escalation_tracker
+    title: "Crisis Cooldown Escalation Tracker"
+    status: implemented
+    source: goal_directed
+    risk_level: medium
+    touches_core_system: true
+    depends_on: []
+    implemented_files:
+      - core/escalation_tracker.py
+    test_files:
+      - tests/unit/test_escalation_tracker.py
+    outcome:
+      accepted: true
+      notes: "Session-level emotional momentum tracking. 4-strategy progression with de-escalation nuance."
+      merged_at: "2026-04-08"
+
+  - proposal_id: agentic_search
+    title: "ReAct Agentic Search Loop"
+    status: implemented
+    source: goal_directed
+    risk_level: high
+    touches_core_system: true
+    depends_on: []
+    implemented_files:
+      - core/agentic/controller.py
+      - core/agentic/tools.py
+      - core/agentic/types.py
+      - core/agentic/protocols.py
+      - core/agentic/formatters.py
+    test_files:
+      - tests/test_agentic_search.py
+    outcome:
+      accepted: true
+      notes: "17 tool types with health monitoring. ReAct loop with tool status injection. Replaces standard generation when triggered."
+      merged_at: "2026-05-10"
+
+  # ── Code Proposals ───────────────────────────────────────────────
+
+  - proposal_id: code_proposals
+    title: "Goal-Directed Code Proposal System"
+    status: implemented
+    source: goal_directed
+    risk_level: medium
+    touches_core_system: false
+    depends_on: []
+    implemented_files:
+      - memory/code_proposal.py
+      - memory/proposal_store.py
+      - knowledge/proposal_generator.py
+      - knowledge/implementation_detector.py
+      - core/prompt/proposal_filter.py
+      - gui/tabs/proposals.py
+    test_files:
+      - tests/unit/test_code_proposal.py
+      - tests/unit/test_proposal_store.py
+      - tests/unit/test_proposal_generator.py
+      - tests/unit/test_implementation_detector.py
+      - tests/unit/test_proposal_filter.py
+    outcome:
+      accepted: true
+      notes: "LLM proposal generation, ChromaDB storage, 4-stage implementation detection, GUI tab. Foundation for branch supervision."
+      merged_at: "2026-04-22"

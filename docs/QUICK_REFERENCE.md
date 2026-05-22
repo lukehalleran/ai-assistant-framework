@@ -616,13 +616,13 @@ class MultiCollectionChromaStore:
 ## Code Proposals System **[NEW 2026-02-05]**
 
 ```python
-# memory/code_proposal.py — Pydantic data models
+# memory/code_proposal.py — Pydantic data models + supervision fields
 class CodeProposal(BaseModel):
     id: str                        # UUID
     title: str                     # Short title
     proposal_type: ProposalType    # feature|refactor|bugfix|test|docs|infra
     status: ProposalStatus         # PENDING|APPROVED|REJECTED|COMPLETED|FAILED
-    source: ProposalSource         # GOAL_DIRECTED|CONVERSATION|MANUAL
+    source: ProposalSource         # GOAL_DIRECTED|SESSION_INSIGHT|USER_REQUEST|SHUTDOWN_ANALYSIS|AGENT_BRANCH
     priority: int                  # 1-10 (LLM-assigned)
     reasoning: str                 # Why this change is needed
     description: str               # Detailed description
@@ -630,9 +630,23 @@ class CodeProposal(BaseModel):
     affected_files: List[str]      # File paths
     tags: List[str]                # Keywords
     estimated_complexity: str      # low|medium|high
+    # Supervision fields (branch gating)
+    risk_level: RiskLevel          # low|medium|high|critical
+    touches_core_system: bool      # Modifies orchestrator/pipeline/coordinator/safety?
+    depends_on: List[str]          # Proposal IDs that must complete first
+    test_files: List[str]          # Actual test file paths
+    outcome: Optional[ProposalOutcome]  # Review record (accepted, notes, merged_at, reviewed_by)
 
     def to_metadata() -> dict:     # Flat dict for ChromaDB
-    def from_metadata(meta) -> CodeProposal:  # Reconstruct from ChromaDB
+    def from_metadata(meta) -> CodeProposal:  # Reconstruct from ChromaDB (backward-compat)
+    def record_outcome(accepted, notes, merge_branch, reviewed_by):  # Human review outcome
+
+# config/feature_registry.py — Retrospective shipped-feature catalog
+load_registry() -> List[FeatureEntry]           # Cached YAML loader
+get_feature(proposal_id) -> FeatureEntry        # Single lookup
+get_dependencies(proposal_id) -> List[str]      # Transitive BFS
+get_core_features() -> List[FeatureEntry]       # touches_core_system=True
+check_conflicts(files) -> List[FeatureEntry]    # File overlap detection
 
 
 # knowledge/proposal_generator.py — LLM-based proposal generation
@@ -817,16 +831,20 @@ is_destructive_shell_cmd(args: list[str], repo_root=None) -> bool
 # ALWAYS_BLOCKED_TARGETS: ., .., /, ~, * — cannot be unlocked
 # Classifiers for: rm, mv, rmdir, chmod, truncate, find
 
-# utils/python_fs_guard.py — Python filesystem monkey-patch guard
+# utils/python_fs_guard.py — Python filesystem monkey-patch guard (10 patched functions)
 activate(repo_root=None)     # Monkey-patches os.remove, os.unlink, os.rmdir, os.rename,
-                             #   os.replace, shutil.rmtree, shutil.move
+                             #   os.replace, shutil.rmtree, shutil.move,
+                             #   shutil.copyfile, shutil.copy, shutil.copy2
 deactivate()                 # Restore original stdlib functions
 agent_mode()                 # Context manager (ContextVar tokens), sets agent mode for checks
 is_active() -> bool
 set_agent_mode(active: bool)
 # Only blocks in agent mode (Daemon's own runtime is unguarded)
 # Checks both source AND destination for rename/replace/move
+# Copy functions check DESTINATION only (reading source is safe)
 # Always-blocked targets cannot be unlocked
+# scripts/bin/usercustomize.py auto-activates guard in child Python interpreters
+#   (when scripts/bin/ on PYTHONPATH; skipped during pytest/coverage; disable with DISABLE_FS_GUARD=1)
 
 # Shell scripts:
 # scripts/agent_session_start.sh  — Pre-agent snapshot (git state + manifest + untracked tarball)
@@ -1366,10 +1384,11 @@ FACT_VERIFICATION_ENABLED = True
 FACT_VERIFICATION_LLM_MODEL = ""        # empty = default model
 FACT_VERIFICATION_CANDIDATE_LIMIT = 5
 
-# Proactive Context Surfacing [NEW 2026-03-24]
+# Proactive Context Surfacing [NEW 2026-03-24] [OPT 2026-05-22]
 PROACTIVE_SURFACING_ENABLED = True
 PROACTIVE_SURFACING_COOLDOWN_HOURS = 72
 PROACTIVE_SURFACING_MAX_INSIGHTS = 3
+# Non-blocking: first message fires background warmup, insights appear from message 2+
 
 # Memory Staleness [NEW 2026-03-25]
 STALENESS_ENABLED = True
@@ -1419,12 +1438,13 @@ SKILL_ACTIVATION_USE_STM = True          # Enable STM topic bonus
 # Validates at startup after YAML load, before constant extraction
 # validate_config(config) → returns dict unchanged or sys.exit(1) with errors
 
-# LLM Compression [NEW 2026-03-26]
+# LLM Compression [NEW 2026-03-26] [OPT 2026-05-22]
 LLM_COMPRESSION_ENABLED = True         # Use LLM to compress heavily oversized items
 LLM_COMPRESSION_MODEL = "gpt-4o-mini"  # Model for compression calls
 LLM_COMPRESSION_TIMEOUT = 3.0          # Per-item timeout (seconds)
 LLM_COMPRESSION_RATIO_THRESHOLD = 3.0  # Only compress items >= 3x over token limit
 LLM_COMPRESSION_MAX_BATCH = 8          # Max items to compress per request (cost guard)
+# Items > 6x target tokens skip LLM compression entirely (middle-out handles them instantly)
 
 # Citation & Provenance [NEW 2026-03-26]
 PROVENANCE_ENABLED = True              # Toggle provenance metadata on interactions

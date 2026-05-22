@@ -26,3 +26,10 @@ if [[ ":$PATH:" != *":$GUARD_BIN:"* ]]; then
 else
     echo "[guard] Shell command guards already active."
 fi
+
+# Activate Python filesystem guard in subprocesses via usercustomize.py.
+# scripts/bin/ contains usercustomize.py which auto-activates the guard
+# in child Python interpreters.
+if [[ ":$PYTHONPATH:" != *":$GUARD_BIN:"* ]]; then
+    export PYTHONPATH="${GUARD_BIN}${PYTHONPATH:+:$PYTHONPATH}"
+fi

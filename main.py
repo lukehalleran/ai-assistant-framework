@@ -47,6 +47,9 @@ if getattr(sys, 'frozen', False) and sys.stdout is None:
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 # Suppress chromadb telemetry errors (known bug with posthog compatibility)
 logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
+# Skip HuggingFace Hub HTTP checks for cached models (saves ~1s on model load).
+# Models (BGE embedder, cross-encoder) are downloaded once and cached locally.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 # =============================================================================
 # CRITICAL: BOOTSTRAP MUST RUN BEFORE ANY OTHER IMPORTS

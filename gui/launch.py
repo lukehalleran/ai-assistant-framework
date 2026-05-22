@@ -832,6 +832,7 @@ def launch_gui(orchestrator, force_wizard=False):
 
         # Prime the first fetch task
         next_task = _a.create_task(agen.__anext__())
+        tick = None
         loop_iter = 0
         while True:
             loop_iter += 1
@@ -846,8 +847,14 @@ def launch_gui(orchestrator, force_wizard=False):
                 try:
                     chunk = next_task.result()
                 except StopAsyncIteration:
+                    tick.cancel()
+                    break
+                except _a.CancelledError:
+                    tick.cancel()
+                    logging.warning("[GUI] Stream task cancelled (client disconnect or timeout)")
                     break
                 except Exception as e:
+                    tick.cancel()
                     # If streaming errored, log it and show error to user
                     logging.error(f"[GUI] Streaming error: {type(e).__name__}: {e}")
                     import traceback
@@ -863,6 +870,9 @@ def launch_gui(orchestrator, force_wizard=False):
                     _state_view = copy.deepcopy(chat_history)
                     yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
                     break
+
+                # Track whether this chunk carries the final debug record
+                _is_final_chunk = isinstance(chunk, dict) and "debug" in chunk
 
                 # Process streamed chunk
                 if isinstance(chunk, dict) and "thinking" in chunk:
@@ -928,7 +938,7 @@ def launch_gui(orchestrator, force_wizard=False):
                         pass
                     # Fallback: if no assistant content was streamed, set it from debug.response
                     try:
-                        if (not isinstance(chunk, dict)) or ("content" not in chunk or not chunk.get("content")):
+                        if not chunk.get("content"):
                             final_from_debug = (chunk.get("debug") or {}).get("response")
                             if final_from_debug:
                                 if chat_history and isinstance(chat_history[-1], dict) and chat_history[-1].get("role") == "assistant":
@@ -936,8 +946,11 @@ def launch_gui(orchestrator, force_wizard=False):
                     except (TypeError, KeyError, IndexError):
                         pass
                 # Re-yield current state along with typing + timer
+                # ALWAYS yield for the final chunk (debug record) to prevent the
+                # completed response from being stuck behind the throttle gate.
+                # Regular streaming chunks are still throttled to limit SSE traffic.
                 now = _t.time(); _updates += 1
-                if (now - _last_tick) >= 0.10 or (_updates % 2 == 0):
+                if _is_final_chunk or (now - _last_tick) >= 0.10 or (_updates % 2 == 0):
                     _last_tick = now
                     _dots = "." * (1 + (_updates % 3))
                     typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
@@ -959,6 +972,21 @@ def launch_gui(orchestrator, force_wizard=False):
                     _chatbot_view = copy.deepcopy(chat_history)
                     _state_view = copy.deepcopy(chat_history)
                     yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
+
+        # Safety net: if the assistant message is still the placeholder (no content
+        # chunk was ever processed), recover from the last debug record if available.
+        if (chat_history
+                and isinstance(chat_history[-1], dict)
+                and chat_history[-1].get("content") == "…"
+                and debug_entries):
+            try:
+                _last_debug = debug_entries[-1] if isinstance(debug_entries[-1], dict) else {}
+                _recovered = _last_debug.get("response", "")
+                if _recovered:
+                    chat_history[-1]["content"] = _recovered
+                    logging.warning(f"[GUI] Recovered stuck response from debug record ({len(_recovered)} chars)")
+            except (IndexError, TypeError, KeyError):
+                pass
 
         # Final update: clear typing indicator, freeze timer
         typing_text = ""

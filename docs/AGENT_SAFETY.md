@@ -135,15 +135,23 @@ This means Daemon's own runtime code (profile saves, daily note generation, migr
 | `os.replace()` | `pathlib.Path.replace()` — checks both source AND destination |
 | `shutil.rmtree()` | recursive directory removal |
 | `shutil.move()` | checks both source AND destination |
+| `shutil.copyfile()` | destination-only check (reading source is safe) |
+| `shutil.copy()` | destination-only check (reading source is safe) |
+| `shutil.copy2()` | destination-only check (reading source is safe) |
 
 ### What This Does NOT Protect
 
-This guard prevents common Python delete/move/replace operations during in-process agentic tool dispatch. It does **not** protect:
+This guard prevents common Python delete/move/replace/copy-overwrite operations during in-process agentic tool dispatch. It does **not** protect:
 
 - Arbitrary file writes: `open("protected.py", "w")`, `Path.write_text()`, `Path.write_bytes()`
-- Copy-overwrites: `shutil.copyfile()`, `shutil.copy()`, `shutil.copy2()`
-- Subprocesses: `subprocess.run(["python", "-c", "..."])` — child interpreters don't inherit monkey-patches
-- Separate Python interpreters that don't import/activate this guard
+- Separate Python interpreters that don't import/activate this guard and don't have `scripts/bin/` on PYTHONPATH
+
+### Subprocess Guard
+
+`scripts/bin/usercustomize.py` auto-activates the Python filesystem guard in child Python interpreters when `scripts/bin/` is on `PYTHONPATH` (set by `scripts/activate_guards.sh`). This ensures `subprocess.run(["python", "-c", "..."])` inherits protection without explicit imports.
+
+- Skipped automatically during pytest/coverage runs to avoid test interference
+- Can be disabled with the `DISABLE_FS_GUARD=1` environment variable
 
 ### Unlock
 
@@ -199,14 +207,15 @@ If an agent has already caused damage:
 | `tests/unit/test_fs_snapshot.py` | 40 tests for manifest utility |
 | `tests/unit/test_destructive_op_guard.py` | 52 tests for git command classifier |
 | `tests/unit/test_shell_cmd_guard.py` | 127 tests for shell command classifier |
-| `tests/unit/test_python_fs_guard.py` | 74 tests for Python filesystem guard |
+| `scripts/bin/usercustomize.py` | Subprocess guard: auto-activates python_fs_guard in child interpreters |
+| `tests/unit/test_python_fs_guard.py` | 85 tests for Python filesystem guard |
 
 ## Known Limitations
 
 - Shell wrappers only work if the agent uses them. For enforcement, configure PATH so `rm`/`mv` etc. resolve to `scripts/bin/` wrappers (see `scripts/activate_guards.sh`).
 - Python-level calls (`os.remove()`, `shutil.rmtree()`, `Path.unlink()`, etc.) are guarded by `utils/python_fs_guard.py` during agent tool execution. `subprocess.run(["rm", ...])` is not intercepted by the Python guard (use the shell PATH wrappers for that).
-- Arbitrary file writes (`open("x", "w")`, `Path.write_text()`) and copy-overwrites (`shutil.copy()`) are not yet guarded.
-- Child processes and separate Python interpreters do not inherit monkey-patches.
+- Arbitrary file writes (`open("x", "w")`, `Path.write_text()`) are not yet guarded.
+- Child Python processes inherit the guard when `scripts/bin/` is on PYTHONPATH (via `usercustomize.py`), but ctypes-level and kernel-level bypasses remain unguarded.
 - This is defense-in-depth, not a sandbox. The goal is to make destructive actions harder, sessions auditable, and accidental loss recoverable.
 
 ## Configuration

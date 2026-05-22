@@ -485,6 +485,10 @@ class UnifiedPromptBuilder:
             max_tokens = MEMORY_ITEM_MAX_TOKENS if name == "memories" else SEMANTIC_ITEM_MAX_TOKENS
             threshold = max_tokens * LLM_COMPRESSION_RATIO_THRESHOLD
 
+            # Items above this ratio are too large for the LLM to compress
+            # within the timeout — middle-out handles them instantly and well.
+            skip_threshold = max_tokens * LLM_COMPRESSION_RATIO_THRESHOLD * 2
+
             for i, item in enumerate(val):
                 item_text = self.token_manager._extract_text(item)
                 try:
@@ -492,6 +496,12 @@ class UnifiedPromptBuilder:
                 except Exception:
                     t = len(item_text.split())
                 if t >= threshold:
+                    if t >= skip_threshold:
+                        logger.debug(
+                            f"[LLM-COMPRESS] Skipping {name}[{i}]: {t} tokens "
+                            f"(>{skip_threshold:.0f}), middle-out will handle"
+                        )
+                        continue
                     candidates.append((name, i, item, t, max_tokens))
 
         if not candidates:
@@ -854,11 +864,27 @@ class UnifiedPromptBuilder:
                 _timed_task("unresolved_threads", self.context_gatherer.get_unresolved_threads(eff_max_surfaced_threads))
             )
 
-            # Proactive cross-domain insights from knowledge graph
+            # Proactive cross-domain insights (non-blocking: warm cache or background warmup)
             if eff_max_proactive > 0:
-                tasks["proactive_insights"] = asyncio.create_task(
-                    _timed_task("proactive_insights", self.context_gatherer.get_proactive_insights(user_input, eff_max_proactive))
-                )
+                _surfacer = getattr(self.memory_coordinator, 'context_surfacer', None)
+                if _surfacer and _surfacer._session_insights is not None:
+                    # Cache warm — retrieve instantly via gatherer (adds attribution + citations)
+                    tasks["proactive_insights"] = asyncio.create_task(
+                        _timed_task("proactive_insights",
+                                    self.context_gatherer.get_proactive_insights(user_input, eff_max_proactive))
+                    )
+                else:
+                    # Cache cold (first message of session) — fire background warmup,
+                    # skip insights for this message (available from message 2 onward)
+                    async def _warmup_insights():
+                        try:
+                            await self.context_gatherer.get_proactive_insights(user_input, eff_max_proactive)
+                            logger.debug("[BUILD_PROMPT] Proactive insights warmed up for next message")
+                        except Exception as exc:
+                            logger.debug(f"[BUILD_PROMPT] Insight warmup failed (non-fatal): {exc}")
+
+                    asyncio.create_task(_warmup_insights())
+                    logger.info("[BUILD_PROMPT] Proactive insights: cache cold, warming in background")
 
             # Visual memories (CLIP-based image search)
             if eff_max_visual_memories > 0:

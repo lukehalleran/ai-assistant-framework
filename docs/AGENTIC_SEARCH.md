@@ -109,9 +109,11 @@ Each round:
    in addition to the core tools.  Tool dispatch runs under the
    `python_fs_guard.agent_mode()` context manager (see
    `utils/python_fs_guard.py`), which intercepts destructive Python
-   filesystem calls (`os.remove`, `shutil.rmtree`, `os.rename`, etc.) and
+   filesystem calls (`os.remove`, `shutil.rmtree`, `os.rename`,
+   `shutil.copyfile`, `shutil.copy`, `shutil.copy2`, etc.) and
    blocks them when they target protected repo paths.  This guard applies to
-   in-process tool execution only; it does not cover subprocesses.
+   in-process tool execution; child Python interpreters also inherit it
+   when `scripts/bin/` is on PYTHONPATH (via `usercustomize.py`).
 
 **Nudge Retry**: If round 1 produces no tool calls but the response text
 mentions tools ("github", "let me check", "commits", etc.), the controller
