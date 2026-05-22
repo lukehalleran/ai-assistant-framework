@@ -1,9 +1,10 @@
 """Python-level filesystem guard for agent session safety.
 
 Purpose: Monkey-patch destructive Python filesystem operations (os.remove,
-         os.unlink, os.rmdir, os.rename, os.replace, shutil.rmtree, shutil.move)
-         to protect critical repo paths from agent-originated deletion, move,
-         or overwrite during in-process agentic tool dispatch.
+         os.unlink, os.rmdir, os.rename, os.replace, shutil.rmtree, shutil.move,
+         shutil.copyfile, shutil.copy, shutil.copy2) to protect critical repo
+         paths from agent-originated deletion, move, copy-overwrite, or replace
+         during in-process agentic tool dispatch.
 
 Scope:   This closes the in-process Python delete/move/replace bypass for
          agentic tool dispatch.  It does NOT protect arbitrary file writes,
@@ -94,6 +95,9 @@ def activate(repo_root: str | Path | None = None) -> None:
     _originals["os.replace"] = os.replace
     _originals["shutil.rmtree"] = shutil.rmtree
     _originals["shutil.move"] = shutil.move
+    _originals["shutil.copyfile"] = shutil.copyfile
+    _originals["shutil.copy"] = shutil.copy
+    _originals["shutil.copy2"] = shutil.copy2
 
     # Install patches
     os.remove = _guarded_remove
@@ -103,12 +107,15 @@ def activate(repo_root: str | Path | None = None) -> None:
     os.replace = _guarded_replace
     shutil.rmtree = _guarded_rmtree
     shutil.move = _guarded_move
+    shutil.copyfile = _guarded_copyfile
+    shutil.copy = _guarded_copy
+    shutil.copy2 = _guarded_copy2
 
     _active = True
     logger.info(
         f"[PythonFSGuard] Activated. Repo root: {_repo_root}. "
         "Guarding: os.remove, os.unlink, os.rmdir, os.rename, os.replace, "
-        "shutil.rmtree, shutil.move"
+        "shutil.rmtree, shutil.move, shutil.copyfile, shutil.copy, shutil.copy2"
     )
 
 
@@ -126,6 +133,9 @@ def deactivate() -> None:
     os.replace = _originals["os.replace"]
     shutil.rmtree = _originals["shutil.rmtree"]
     shutil.move = _originals["shutil.move"]
+    shutil.copyfile = _originals["shutil.copyfile"]
+    shutil.copy = _originals["shutil.copy"]
+    shutil.copy2 = _originals["shutil.copy2"]
 
     _originals.clear()
     _active = False
@@ -365,3 +375,21 @@ def _guarded_move(src, dst, *args, **kwargs):
     _check_and_maybe_block("shutil.move (source)", src)
     _check_and_maybe_block("shutil.move (destination)", dst)
     return _originals["shutil.move"](src, dst, *args, **kwargs)
+
+
+def _guarded_copyfile(src, dst, *args, **kwargs):
+    """Guarded shutil.copyfile — checks destination (copy can overwrite protected files)."""
+    _check_and_maybe_block("shutil.copyfile (destination)", dst)
+    return _originals["shutil.copyfile"](src, dst, *args, **kwargs)
+
+
+def _guarded_copy(src, dst, *args, **kwargs):
+    """Guarded shutil.copy — checks destination."""
+    _check_and_maybe_block("shutil.copy (destination)", dst)
+    return _originals["shutil.copy"](src, dst, *args, **kwargs)
+
+
+def _guarded_copy2(src, dst, *args, **kwargs):
+    """Guarded shutil.copy2 — checks destination."""
+    _check_and_maybe_block("shutil.copy2 (destination)", dst)
+    return _originals["shutil.copy2"](src, dst, *args, **kwargs)

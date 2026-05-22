@@ -1016,6 +1016,20 @@ async def analyze_for_web_search_llm(
     if not LLM_FIRST_ENABLED or model_manager is None:
         return heuristic_result
 
+    # Skip expensive LLM call when heuristic is already decisive.
+    # confidence=0.0 with no keywords means "nothing search-related at all" —
+    # the LLM won't find anything the heuristic missed in these cases.
+    # confidence >= 0.7 means strong heuristic yes (explicit search phrases) —
+    # the LLM would just confirm.
+    if heuristic_result.confidence <= 0.0 and not heuristic_result.matched_keywords:
+        logger.debug("[WebSearchTrigger] Skipping LLM: heuristic confident no-search (conf=0.0, no keywords)")
+        _llm_trigger_cache[cache_key] = (now, heuristic_result)
+        return heuristic_result
+    if heuristic_result.confidence >= 0.7 and heuristic_result.should_search:
+        logger.debug(f"[WebSearchTrigger] Skipping LLM: heuristic confident search (conf={heuristic_result.confidence:.2f})")
+        _llm_trigger_cache[cache_key] = (now, heuristic_result)
+        return heuristic_result
+
     # Try LLM classification
     llm_response = await _classify_with_llm_unified(
         query,

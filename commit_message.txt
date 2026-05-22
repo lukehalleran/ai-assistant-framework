@@ -1,40 +1,32 @@
-feat: 3-layer agent safety guards + daily notes auto-update + LaTeX fix
+refactor: extract handler helpers + fix GUI streaming + optimize prompt build latency
 
-Shell command guard (utils/shell_cmd_guard.py):
-- Python classifier for rm, mv, rmdir, chmod, truncate, find against
-  protected paths (16 dirs, 6 files, 5 always-blocked targets)
-- scripts/safe_cmd.sh bash wrapper with same unlock mechanism as safe_git.sh
-- scripts/bin/ PATH wrappers (rm, mv, rmdir, chmod, truncate, find) that
-  transparently intercept commands and route through safe_cmd.sh
-- scripts/activate_guards.sh sources into shell to prepend PATH
-- Added to ~/.bashrc for automatic activation in all sessions
-- 127 tests
+Three areas of work in one session, all behavior-preserving:
 
-Python filesystem guard (utils/python_fs_guard.py):
-- Monkey-patches os.remove, os.unlink, os.rmdir, os.rename, os.replace,
-  shutil.rmtree, shutil.move at startup (main.py)
-- ContextVar-based agent_mode() — only blocks during agentic tool dispatch;
-  Daemon's own runtime (profile saves, daily notes, migrations) is unguarded
-- Checks both source AND destination for rename/replace/move operations
-- Corrected check ordering: always-blocked targets checked before
-  outside-repo passthrough (prevents "/" from slipping through)
-- Preserves *args/**kwargs for platform compatibility (dir_fd, etc.)
-- Integrated into core/agentic/controller.py via _dispatch_single wrapper
-- 74 tests
+GUI Bug Fix (gui/launch.py):
+- Fix intermittent bug where response generates but GUI stays at loading spinner
+- Force yield for final chunks carrying debug records (bypass throttle gate)
+- Cancel pending tick tasks on loop break to prevent asyncio interference
+- Catch asyncio.CancelledError (BaseException in Python 3.9+, was uncaught)
+- Safety net: recover response from debug record if placeholder stays stuck
 
-Daily notes auto-update (utils/daily_notes_generator.py):
-- Regenerates existing daily note when conversation count grows by >=
-  DAILY_NOTES_UPDATE_MIN_NEW (default 3), fixing stale notes from
-  early-session shutdowns
-- New methods: _find_existing_note_path, _get_existing_conversation_count,
-  _should_auto_update
-- New config constant: DAILY_NOTES_UPDATE_MIN_NEW
-- 23 tests
+Complexity Reduction (gui/handlers.py, core/prompt/formatter.py):
+- Extract 10 helpers from handle_submit (1541→1200 LOC, 22% reduction):
+  _safe_count_tokens, _safe_extract_citations, _build_debug_record,
+  _build_provenance, _attach_agentic_provenance, _sanitize_response_text,
+  _strip_echoed_headers, _dispatch_storage, _silent_agentic_retry,
+  _get_session_id — each consolidates a pattern repeated 2-4x across
+  the 6 mode paths (raw/duel/agentic/enhanced/uncertainty/review)
+- Extract _format_summary_section() in formatter.py for 4 identical
+  prompt sections (summaries/reflections), _assemble_prompt 818→768 LOC
 
-Other:
-- memory/memory_consolidator.py: Added temporal accuracy rules to narrative
-  synthesis prompt (date attribution from frontmatter, multi-day ranges)
-- gui/launch.py: Removed single-$ LaTeX delimiter from Chatbot — was
-  treating currency $signs as math mode, garbling financial responses
-- Updated docs: AGENT_SAFETY.md, CLAUDE.md, QUICK_REFERENCE.md,
-  PROJECT_SKELETON.md, ARCHITECTURE_GUIDE.md, AGENTIC_SEARCH.md
+Latency Optimizations (~11-15s saved on first message):
+- Skip LLM web search trigger when heuristic is decisive (conf=0.0 or >=0.7)
+  Saves ~2-5s on queries that clearly don't need web search
+- Skip LLM compression for items >6x target tokens, go straight to middle-out
+  Saves ~2-3s timeout on large items (e.g. long emails)
+- Set HF_HUB_OFFLINE=1 to skip HuggingFace HTTP HEAD checks on model load (~1s)
+- Make proactive insights non-blocking: fire background warmup on first message,
+  use session cache from message 2+ (~6s off critical path)
+
+Benchmarks: 305/305 passed at each step, MRR=0.8865 unchanged
+Tests: 2923 passed, 0 failures

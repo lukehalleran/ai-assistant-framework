@@ -194,7 +194,7 @@ utils/
 ├── text_chunking.py           # Header-based + size-based chunking
 ├── destructive_op_guard.py    # Git command classifier (blocks destructive ops)
 ├── shell_cmd_guard.py         # Shell command classifier (rm, mv, chmod, etc.)
-├── python_fs_guard.py         # Monkey-patches os/shutil destructive calls
+├── python_fs_guard.py         # Monkey-patches os/shutil destructive + copy-overwrite calls (10 functions)
 ├── fs_snapshot.py             # Filesystem manifest for agent session safety
 └── bootstrap.py               # Frozen executable setup
 
@@ -940,6 +940,7 @@ When the assembled prompt exceeds the budget:
 1. **LLM compression** — Items ≥3x over their allocation (`LLM_COMPRESSION_RATIO_THRESHOLD`)
    get intelligent reduction via parallel async LLM calls (gpt-4o-mini,
    3s timeout per item, max 8 batch). Falls back to middle-out on timeout.
+   Items >6x target tokens skip LLM entirely (middle-out handles them faster).
    Config: `LLM_COMPRESSION_ENABLED`, `LLM_COMPRESSION_MODEL`,
    `LLM_COMPRESSION_TIMEOUT`; YAML section `llm_compression`
 2. **Middle-out compression** — Keeps 60% head + 40% tail, trims middle.
@@ -1546,11 +1547,14 @@ connections across different domains of the user's life.
 
 5. **Record history**: Update cooldown tracking to avoid repetition
 
-### Session Caching
+### Session Caching + Non-Blocking Warmup [OPT 2026-05-22]
 
-Insights are generated once per session. The first call runs the full
-pipeline; subsequent calls return cached results. This keeps LLM cost
-fixed regardless of conversation length.
+Insights are generated once per session. The `_session_insights` cache
+persists across messages. On the **first message**, the LLM call is
+fired as a background warmup task (not blocking the gather phase),
+and `proactive_insights` is empty. From **message 2 onward**, the
+cache is warm and insights are retrieved instantly (~0ms). This saves
+~6s off the first-message critical path.
 
 ### Novelty Tracking
 
@@ -2134,10 +2138,15 @@ unless explicitly unlocked by the human operator.
    subcommands (restore, reset --hard, clean, push --force), backed by the
    `utils/destructive_op_guard.py` classifier.
 3. **Python filesystem guard**: `utils/python_fs_guard.py` monkey-patches
-   `os.remove`, `os.unlink`, `os.rmdir`, `os.rename`, `os.replace`,
-   `shutil.rmtree`, and `shutil.move`. Activated at startup in `main.py`. An
-   `agent_mode()` ContextVar is set during agentic tool dispatch in
-   `core/agentic/controller.py` to enable enforcement only inside agent loops.
+   10 functions: `os.remove`, `os.unlink`, `os.rmdir`, `os.rename`, `os.replace`,
+   `shutil.rmtree`, `shutil.move`, `shutil.copyfile`, `shutil.copy`, and
+   `shutil.copy2`. Copy functions check the destination path only (reading source
+   is safe). Activated at startup in `main.py`. An `agent_mode()` ContextVar is
+   set during agentic tool dispatch in `core/agentic/controller.py` to enable
+   enforcement only inside agent loops. Child Python interpreters inherit the
+   guard via `scripts/bin/usercustomize.py` when `scripts/bin/` is on PYTHONPATH
+   (set by `activate_guards.sh`; skipped during pytest/coverage; disable with
+   `DISABLE_FS_GUARD=1`).
 
 Activation: `bash scripts/activate_guards.sh` prepends `scripts/bin/` to PATH
 and sources the guard aliases. See `docs/AGENT_SAFETY.md` for full policy.
@@ -2186,7 +2195,7 @@ Key test counts by subsystem:
 | File access | 44 | `tests/unit/test_file_access_manager.py` |
 | Fact verification | 39 | `tests/unit/test_fact_verification.py` |
 | Shell cmd guard | 127 | `tests/unit/test_shell_cmd_guard.py` |
-| Python fs guard | 74 | `tests/unit/test_python_fs_guard.py` |
+| Python fs guard | 85 | `tests/unit/test_python_fs_guard.py` |
 | Thread system | 137 | 4 files (models + store + extractor + integration) |
 | Eval system | 246 | `tests/test_eval/` (7 files) |
 
@@ -2449,6 +2458,51 @@ same proposal.
 
 **CLI**: `python main.py check-proposals [--id UUID] [--verbose]`
 **GUI**: Batch check + single-check buttons in the Proposals tab.
+
+---
+
+## Appendix: Branch Supervision & Feature Registry
+
+**Files**: `memory/code_proposal.py`, `config/feature_registry.yaml`, `config/feature_registry.py`
+
+The proposal system supports **human-in-the-loop self-modifying software**:
+sub-branches can push to themselves but require main-branch human approval
+to merge, informed by structured supervision metadata on each proposal.
+
+### Supervision Fields on CodeProposal
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `risk_level` | `RiskLevel` enum (low/medium/high/critical) | Merge gating — high/critical require explicit human review |
+| `touches_core_system` | `bool` | Flags changes to orchestrator, pipeline, coordinator, or safety code |
+| `depends_on` | `List[str]` | Proposal IDs that must be completed first (checked transitively) |
+| `test_files` | `List[str]` | Actual test file paths that validate the proposal |
+| `outcome` | `ProposalOutcome` | Structured review record: accepted, notes, merged_at, merge_branch, reviewed_by |
+| `source` | `ProposalSource.AGENT_BRANCH` | New source variant for agent-generated proposals on sub-branches |
+
+### Retrospective Feature Registry
+
+`config/feature_registry.yaml` catalogs all shipped features with the same
+supervision schema. Agents consult it to:
+
+- **Check dependencies** before proposing changes (`get_dependencies()`)
+- **Detect file conflicts** with existing features (`check_conflicts()`)
+- **Identify core-system features** that need extra care (`get_core_features()`)
+
+The Python loader (`config/feature_registry.py`) provides typed `FeatureEntry`
+objects with dependency resolution (BFS transitive), conflict detection
+(file overlap), and core-feature filtering.
+
+### Branch Workflow
+
+```
+Agent branch → creates CodeProposal (risk_level, depends_on, test_files)
+             → implements on its own branch (can push to self)
+             → main branch inspects proposal metadata
+             → human reviews: risk_level, touches_core_system, test results
+             → record_outcome(accepted=True/False, notes=..., merge_branch=...)
+             → if accepted: merge to main, add to feature_registry.yaml
+```
 
 ---
 

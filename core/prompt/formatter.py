@@ -146,6 +146,34 @@ def _staleness_prefix(item) -> str:
     return ""
 
 
+def _format_summary_section(items: list, header: str, apply_staleness: bool = True) -> str | None:
+    """Format a list of summary/reflection items into a numbered prompt section.
+
+    Shared formatter for recent_summaries, semantic_summaries,
+    recent_reflections, and semantic_reflections — all of which follow the
+    same dict→content/timestamp extraction + optional staleness prefix
+    pattern.  Returns the formatted section string, or None if empty.
+    """
+    lines: list[str] = []
+    for i, item in enumerate(items, start=1):
+        if isinstance(item, dict):
+            content = item.get("content", "") or str(item)
+            ts = item.get("timestamp", "")
+        else:
+            content = str(item)
+            ts = ""
+        if content:
+            content = _sanitize_embedded_headers(content)
+            prefix = _staleness_prefix(item) if apply_staleness else ""
+            if ts:
+                lines.append(f"{i}) {ts}: {prefix}{content}")
+            else:
+                lines.append(f"{i}) {prefix}{content}")
+    if not lines:
+        return None
+    return f"[{header}] n={len(lines)}\n" + "\n\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Session boundary detection for conversation rendering
 # ---------------------------------------------------------------------------
@@ -1098,77 +1126,27 @@ class PromptFormatter:
         else:
             logger.warning("PROMPT BUILD: FINAL COUNT - No memories to display in [RELEVANT MEMORIES] section")
 
-        # Recent Summaries
+        # Summaries and reflections (4 sections, shared format via _format_summary_section)
         recent_summaries = context.get("recent_summaries", []) or []
         logger.warning(f"PROMPT ASSEMBLY: Got {len(recent_summaries)} recent summaries")
-        recent_sum_lines: list[str] = []
-        for i, s in enumerate(recent_summaries, start=1):
-            if isinstance(s, dict):
-                content = s.get("content", "") or str(s)
-                ts = s.get("timestamp", "")
-            else:
-                content = str(s)
-                ts = ""
-            if content:
-                content = _sanitize_embedded_headers(content)
-                prefix = _staleness_prefix(s)
-                recent_sum_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
-        if recent_sum_lines:
-            sections.append(f"[RECENT SUMMARIES] n={len(recent_sum_lines)}\n" + "\n\n".join(recent_sum_lines))
-            logger.warning(f"PROMPT ASSEMBLY: Added recent summaries section with {len(recent_sum_lines)} items")
+        _sec = _format_summary_section(recent_summaries, "RECENT SUMMARIES")
+        if _sec:
+            sections.append(_sec)
+            logger.warning(f"PROMPT ASSEMBLY: Added recent summaries section")
         else:
             logger.warning("PROMPT ASSEMBLY: No recent summaries to add")
 
-        # Semantic Summaries
-        semantic_summaries = context.get("semantic_summaries", []) or []
-        semantic_sum_lines: list[str] = []
-        for i, s in enumerate(semantic_summaries, start=1):
-            if isinstance(s, dict):
-                content = s.get("content", "") or str(s)
-                ts = s.get("timestamp", "")
-            else:
-                content = str(s)
-                ts = ""
-            if content:
-                content = _sanitize_embedded_headers(content)
-                prefix = _staleness_prefix(s)
-                semantic_sum_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
-        if semantic_sum_lines:
-            sections.append(f"[SEMANTIC SUMMARIES] n={len(semantic_sum_lines)}\n" + "\n\n".join(semantic_sum_lines))
+        _sec = _format_summary_section(context.get("semantic_summaries", []) or [], "SEMANTIC SUMMARIES")
+        if _sec:
+            sections.append(_sec)
 
-        # Recent Reflections
-        recent_reflections = context.get("recent_reflections", []) or []
-        recent_refl_lines: list[str] = []
-        for i, r in enumerate(recent_reflections, start=1):
-            if isinstance(r, dict):
-                content = r.get("content", "") or str(r)
-                ts = r.get("timestamp", "")
-            else:
-                content = str(r)
-                ts = ""
-            if content:
-                content = _sanitize_embedded_headers(content)
-                prefix = _staleness_prefix(r)
-                recent_refl_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
-        if recent_refl_lines:
-            sections.append(f"[RECENT REFLECTIONS] n={len(recent_refl_lines)}\n" + "\n\n".join(recent_refl_lines))
+        _sec = _format_summary_section(context.get("recent_reflections", []) or [], "RECENT REFLECTIONS")
+        if _sec:
+            sections.append(_sec)
 
-        # Semantic Reflections
-        semantic_reflections = context.get("semantic_reflections", []) or []
-        semantic_refl_lines: list[str] = []
-        for i, r in enumerate(semantic_reflections, start=1):
-            if isinstance(r, dict):
-                content = r.get("content", "") or str(r)
-                ts = r.get("timestamp", "")
-            else:
-                content = str(r)
-                ts = ""
-            if content:
-                content = _sanitize_embedded_headers(content)
-                prefix = _staleness_prefix(r)
-                semantic_refl_lines.append(f"{i}) {ts}: {prefix}{content}" if ts else f"{i}) {prefix}{content}")
-        if semantic_refl_lines:
-            sections.append(f"[SEMANTIC REFLECTIONS] n={len(semantic_refl_lines)}\n" + "\n\n".join(semantic_refl_lines))
+        _sec = _format_summary_section(context.get("semantic_reflections", []) or [], "SEMANTIC REFLECTIONS")
+        if _sec:
+            sections.append(_sec)
 
         # Wiki content
         wiki = context.get("wiki", []) or []

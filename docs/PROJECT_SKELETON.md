@@ -1229,7 +1229,8 @@ Post-budget floors (Step 7.1) [ENHANCED 2026-03-28]:
 
 **Key Methods**:
 - `builder.py::build_prompt(user_input, config, ..., retrieval_overrides=None, weight_overrides=None)` → Complete context dict. Intent-driven overrides applied to all max_* retrieval counts and scorer weights. **[UPDATED 2026-02-15]**
-- `formatter.py::_assemble_prompt(context, user_input)` → Format to string with headers (737-line method, moved from builder.py) **[MOVED 2026-05]**
+- `formatter.py::_assemble_prompt(context, user_input)` → Format to string with headers (768 LOC, moved from builder.py) **[REFACTORED 2026-05-22]**
+  - `_format_summary_section()` extracts shared format logic for summaries/reflections (4 sections)
 - `hygiene.py::ContentHygiene._hygiene_and_caps(context)` → Dedupe with semantic similarity (0.90 threshold) **[MOVED 2026-05]**
 - `hygiene.py::ContentHygiene._backfill_recent_conversations()` → Top-up after deduplication **[MOVED 2026-05]**
 - `builder.py::_build_lightweight_context()` → Minimal context for small-talk
@@ -1575,8 +1576,9 @@ agentic_search:
 
 **Key Components**:
 
-**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[ENHANCED 2026-05-20]**
-- `handle_submit()` → Main async generator yielding response chunks to GUI
+**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[REFACTORED 2026-05-22]**
+- `handle_submit()` → Main async generator yielding response chunks to GUI (1200 LOC, down from 1541)
+- **Extracted helpers** [NEW 2026-05-22]: `_safe_count_tokens()`, `_safe_extract_citations()`, `_build_debug_record()`, `_build_provenance()`, `_attach_agentic_provenance()`, `_sanitize_response_text()`, `_strip_echoed_headers()`, `_dispatch_storage()`, `_silent_agentic_retry()`, `_get_session_id()` — consolidate patterns repeated 2-4x across mode paths
   - **Fast Mode** [NEW 2026-03-10]: When `fast_mode=True`, temporarily reduces retrieval limits (PROMPT_MAX_MEMS→10, PROMPT_MAX_RECENT→5, PROMPT_MAX_SEMANTIC→8), sets `context_gatherer._fast_mode` and `hybrid_retriever._fast_mode`. Yields progress keepalive messages ("Thinking...", "Analyzing context...", etc.) every 2s during `prepare_prompt()` to prevent mobile timeouts. All overrides restored in `finally` block.
   - **Agentic Search Path** [ENHANCED 2026-05-20]:
     - 5-tier agentic gate (all run before casual skip filter):
@@ -1611,11 +1613,14 @@ agentic_search:
   - Dark backgrounds: `rgb(17, 24, 39)` body, `rgb(31, 41, 55)` blocks
   - Light text colors for readability on dark backgrounds
   - Font stack: JetBrains Mono (Google Font) → ui-monospace → Consolas → monospace
-- `submit_chat()` → Async iteration over handler chunks
+- `submit_chat()` → Async iteration over handler chunks **[FIXED 2026-05-22]**
   - Creates placeholder assistant message
   - Updates chat_history with streamed content
   - Handles thinking blocks with HTML collapsible sections
   - Yields to Gradio for real-time display
+  - Forces yield for final chunks (debug record) to prevent response stuck behind throttle gate
+  - Cancels pending tick tasks on loop break; catches `asyncio.CancelledError`
+  - Safety net: recovers from debug record if assistant content stuck as placeholder
 - **Sync Notes Button** → Embeds new Obsidian notes to ChromaDB
   - Calls `ObsidianManager.embed_vault(force_reindex=False)`
   - Shows status: success count, skipped count, or error message
@@ -2456,12 +2461,19 @@ GIT_MEMORY_DEFAULT_LIMIT = 200
 **memory/code_proposal.py** - Data models (Pydantic BaseModel):
 - `ProposalType` (Enum): feature, refactor, bugfix, test, docs, infra
 - `ProposalStatus` (Enum): PENDING → APPROVED → COMPLETED (or REJECTED/FAILED)
-- `ProposalSource` (Enum): GOAL_DIRECTED, CONVERSATION, MANUAL
+- `ProposalSource` (Enum): GOAL_DIRECTED, SESSION_INSIGHT, USER_REQUEST, SHUTDOWN_ANALYSIS, AGENT_BRANCH
+- `RiskLevel` (Enum): low, medium, high, critical **[NEW 2026-05-22]**
+- `ProposalOutcome` (BaseModel): accepted, notes, merged_at, merge_branch, reviewed_by **[NEW 2026-05-22]**
 - `ImplementationStep`: order, description, file_path, action (create/modify/delete/test)
 - `CodeProposal`: Full proposal with title, type, priority, reasoning, description, steps, affected_files, tags, complexity
-  - `to_metadata()` / `from_metadata()` for ChromaDB (flat primitives only)
+  - Supervision fields: `risk_level`, `touches_core_system`, `depends_on`, `test_files`, `outcome` **[NEW 2026-05-22]**
+  - `to_metadata()` / `from_metadata()` for ChromaDB (flat primitives only, backward-compatible)
   - `to_dict()` / `from_dict()` for JSON serialization
   - Status lifecycle: `mark_approved()`, `mark_rejected()`, `mark_completed()`, `mark_failed()`
+  - `record_outcome(accepted, notes, merge_branch, reviewed_by)` — human review record **[NEW 2026-05-22]**
+
+**config/feature_registry.yaml** - Retrospective shipped-feature catalog (13 features) **[NEW 2026-05-22]**
+**config/feature_registry.py** - Typed loader with dependency resolution, conflict detection, core-feature filtering **[NEW 2026-05-22]**
 
 **knowledge/proposal_generator.py** - GoalDirectedGenerator:
 - `gather_context()` → Reads CLAUDE.md, QUICK_REFERENCE.md (full), PROJECT_SKELETON.md (filtered), GOALS.md, git log. All live from disk. **[ENHANCED 2026-02-10]**
@@ -4846,7 +4858,7 @@ daemon/
 │   ├── surfacing_models.py        # Pydantic models: DomainEntity, DomainCluster, ProactiveInsight [NEW 2026-03-25]
 │   ├── surfacing_history.py       # JSON-backed novelty tracking for proactive surfacing [NEW 2026-03-25]
 │   ├── synthesis_memory.py        # Synthesis results persistence + convergence tracking + audit queue [ENHANCED 2026-04-01]
-│   ├── code_proposal.py           # CodeProposal Pydantic model + ImplementationStep + enums [NEW 2026-02-05]
+│   ├── code_proposal.py           # CodeProposal + supervision fields (RiskLevel, ProposalOutcome) [ENHANCED 2026-05-22]
 │   ├── proposal_store.py          # ChromaDB-backed proposal storage with dedup + query [NEW 2026-02-05]
 │   ├── memory_expander.py         # MemoryExpander: temporal context expansion + summary drill-down [NEW 2026-03-26]
 │   ├── truth_scorer.py            # TruthScorer: evidence-based truth scoring (confirmation/correction) [NEW 2026-03]
@@ -4893,7 +4905,7 @@ daemon/
 │   ├── monthly_notes_generator.py # Auto-generated monthly summaries from daily notes [NEW 2026-03-10]
 │   ├── tag_generator.py       # LLM-based tag generation for notes [NEW 2026-01-22]
 │   ├── shell_cmd_guard.py     # Shell command classifier (rm, mv, rmdir, chmod, truncate, find) [NEW 2026-05]
-│   └── python_fs_guard.py     # Python filesystem guard: monkey-patches os/shutil destructive ops, ContextVar agent mode [NEW 2026-05]
+│   └── python_fs_guard.py     # Python filesystem guard: 10 monkey-patches (os/shutil delete/move/copy-overwrite), ContextVar agent mode [NEW 2026-05]
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
@@ -5783,7 +5795,8 @@ Mechanical safeguards for AI coding agent sessions: pre-session snapshots, post-
 | `utils/fs_snapshot.py` | Filesystem manifest (path, size, mtime, sha256), diffing, CLI (`python -m utils.fs_snapshot create/diff`) |
 | `utils/destructive_op_guard.py` | Git command classifier: `classify_git_args(args)`, `is_destructive_git_args(args)`, `unlock_allowed(env, root)` |
 | `utils/shell_cmd_guard.py` | Shell command classifier (rm, mv, rmdir, chmod, truncate, find). Classifies commands as safe/destructive/blocked. |
-| `utils/python_fs_guard.py` | Python filesystem guard. Monkey-patches os.remove, os.unlink, os.rmdir, os.rename, os.replace, shutil.rmtree, shutil.move. ContextVar-based agent mode. |
+| `utils/python_fs_guard.py` | Python filesystem guard. Monkey-patches 10 functions: os.remove, os.unlink, os.rmdir, os.rename, os.replace, shutil.rmtree, shutil.move, shutil.copyfile, shutil.copy, shutil.copy2 (copy functions check destination only). ContextVar-based agent mode. |
+| `scripts/bin/usercustomize.py` | Subprocess guard: auto-activates python_fs_guard in child Python interpreters (via PYTHONPATH). Skipped during pytest/coverage. Disable with DISABLE_FS_GUARD=1. |
 | `scripts/agent_session_start.sh` | Pre-agent snapshot: git state + manifest + filtered untracked tarball, 10-snapshot rotation |
 | `scripts/agent_session_audit.sh` | Post-agent audit: branch/HEAD diff, git status, manifest diff, large file detection |
 | `scripts/safe_git.sh` | Safe git wrapper: blocks restore/reset --hard/clean/push/checkout --/branch -D unless unlocked |
@@ -5812,7 +5825,7 @@ Mechanical safeguards for AI coding agent sessions: pre-session snapshots, post-
 - `tests/unit/test_fs_snapshot.py` — 40 tests (manifest CRUD, diffing, exclusions, CLI)
 - `tests/unit/test_destructive_op_guard.py` — 52 tests (safe/destructive classification, unlock mechanisms)
 - `tests/unit/test_shell_cmd_guard.py` — 127 tests (shell command classification, safe/destructive/blocked)
-- `tests/unit/test_python_fs_guard.py` — 74 tests (monkey-patched fs ops, agent mode, ContextVar gating)
+- `tests/unit/test_python_fs_guard.py` — 85 tests (monkey-patched fs ops, agent mode, ContextVar gating, copy-overwrite guards)
 
 See `docs/AGENT_SAFETY.md` for full workflow documentation.
 

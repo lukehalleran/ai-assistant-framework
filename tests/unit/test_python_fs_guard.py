@@ -105,11 +105,15 @@ class TestActivation:
         orig_replace = os.replace
         orig_rmtree = shutil.rmtree
         orig_move = shutil.move
+        orig_copyfile = shutil.copyfile
+        orig_copy = shutil.copy
+        orig_copy2 = shutil.copy2
 
         activate(repo_root=repo)
         # Functions should be replaced
         assert os.remove is not orig_remove
         assert os.unlink is not orig_unlink
+        assert shutil.copyfile is not orig_copyfile
 
         deactivate()
         # Functions should be restored to exact originals
@@ -120,6 +124,9 @@ class TestActivation:
         assert os.replace is orig_replace
         assert shutil.rmtree is orig_rmtree
         assert shutil.move is orig_move
+        assert shutil.copyfile is orig_copyfile
+        assert shutil.copy is orig_copy
+        assert shutil.copy2 is orig_copy2
 
 
 # ============================================================================
@@ -587,6 +594,86 @@ class TestWrapperCompatibility:
         dst = guarded / "tmp_work" / "moved.txt"
         shutil.move(str(src), str(dst), copy_function=shutil.copy2)
         assert dst.exists()
+
+
+# ============================================================================
+# TestCopyOverwriteProtection
+# ============================================================================
+
+class TestCopyOverwriteProtection:
+    """shutil.copyfile, shutil.copy, shutil.copy2 check destination."""
+
+    def test_copyfile_to_protected_blocks(self, guarded):
+        src = guarded / "scratch.log"
+        dst = guarded / "main.py"
+        with pytest.raises(PermissionError, match="destination"):
+            shutil.copyfile(str(src), str(dst))
+
+    def test_copy_to_protected_blocks(self, guarded):
+        src = guarded / "scratch.log"
+        dst = guarded / "CLAUDE.md"
+        with pytest.raises(PermissionError, match="destination"):
+            shutil.copy(str(src), str(dst))
+
+    def test_copy2_to_protected_blocks(self, guarded):
+        src = guarded / "scratch.log"
+        dst = guarded / "config" / "config.yaml"
+        with pytest.raises(PermissionError, match="destination"):
+            shutil.copy2(str(src), str(dst))
+
+    def test_copyfile_to_protected_dir_blocks(self, guarded):
+        src = guarded / "scratch.log"
+        dst = guarded / "data" / "injected.json"
+        with pytest.raises(PermissionError, match="destination"):
+            shutil.copyfile(str(src), str(dst))
+
+    def test_copyfile_to_non_protected_allowed(self, guarded):
+        src = guarded / "scratch.log"
+        dst = guarded / "build" / "copy.log"
+        shutil.copyfile(str(src), str(dst))
+        assert dst.exists()
+
+    def test_copy_to_non_protected_allowed(self, guarded):
+        src = guarded / "scratch.log"
+        dst = guarded / "tmp_work" / "copy.log"
+        shutil.copy(str(src), str(dst))
+        assert dst.exists()
+
+    def test_copy2_to_non_protected_allowed(self, guarded):
+        src = guarded / "scratch.log"
+        dst = guarded / "build" / "copy2.log"
+        shutil.copy2(str(src), str(dst))
+        assert dst.exists()
+
+    def test_copy_outside_repo_allowed(self, guarded, tmp_path):
+        src = guarded / "scratch.log"
+        dst = tmp_path / "outside_repo" / "copy.log"
+        dst.parent.mkdir(parents=True)
+        shutil.copy(str(src), str(dst))
+        assert dst.exists()
+
+    def test_file_survives_blocked_copy(self, guarded):
+        """Protected file should not be overwritten by blocked copy."""
+        target = guarded / "main.py"
+        original_content = target.read_bytes()
+        src = guarded / "scratch.log"
+        with pytest.raises(PermissionError):
+            shutil.copyfile(str(src), str(target))
+        assert target.read_bytes() == original_content
+
+    @patch.dict(os.environ, {"ALLOW_DESTRUCTIVE_OPS": "1"})
+    def test_copy_to_protected_unlocked(self, guarded):
+        """With unlock, copy to protected destination should pass."""
+        src = guarded / "scratch.log"
+        dst = guarded / "data" / "unlocked_copy.json"
+        shutil.copy(str(src), str(dst))
+        assert dst.exists()
+
+    def test_copy_not_in_agent_mode_allowed(self, guarded_no_agent):
+        """Outside agent mode, copy to protected is allowed."""
+        src = guarded_no_agent / "scratch.log"
+        dst = guarded_no_agent / "main.py"
+        shutil.copyfile(str(src), str(dst))
 
 
 # ============================================================================

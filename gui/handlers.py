@@ -29,6 +29,11 @@ Module Contract
 - Provenance [NEW 2026-03-26]:
   - All 5 response modes build provenance dicts (response_mode, model_name, thinking_block, cited_ids, prompt_hash, agentic_summary)
   - _background_store_interaction() accepts session_id, provenance, mode params and forwards to memory system
+- Extracted helpers [REFACTORED 2026-05-22]:
+  - _safe_count_tokens(), _safe_extract_citations(), _build_debug_record(), _build_provenance(),
+    _attach_agentic_provenance(), _sanitize_response_text(), _strip_echoed_headers(),
+    _dispatch_storage(), _silent_agentic_retry(), _get_session_id()
+  - Consolidate patterns repeated 2-4x across mode paths; handle_submit 1541→1200 LOC
 - Side effects:
   - Writes to conversation logger; stores to memory_system (with provenance metadata); updates debug_state for Debug Trace tab.
 """
@@ -278,6 +283,268 @@ def smart_join(prev: str, new: str) -> str:
         return prev + ' ' + new
 
 
+# ── Extracted helpers for handle_submit ──────────────────────────────
+# These reduce repetition across the 6 mode paths (raw, duel, agentic,
+# enhanced, uncertainty fallback, review gate) without changing behavior.
+
+
+def _get_session_id(orchestrator) -> str:
+    """Get the current memory session ID, or empty string."""
+    try:
+        return getattr(orchestrator.memory_system, 'session_id', None) or ""
+    except AttributeError:
+        return ""
+
+
+def _safe_count_tokens(prompt, system_prompt, model_name, orchestrator):
+    """Count tokens for prompt and system_prompt.
+
+    Returns (prompt_tokens, system_tokens, total_tokens).
+    Falls back to char//4 estimate on failure.
+    """
+    try:
+        tm = getattr(orchestrator, 'tokenizer_manager', None)
+        if tm:
+            p = int(tm.count_tokens(prompt, model_name))
+            s = int(tm.count_tokens(system_prompt or '', model_name))
+            return p, s, p + s
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.debug(f"[Handlers] Token counting failed: {e}")
+    p = len(prompt) // 4 if prompt else 0
+    s = len(system_prompt or '') // 4
+    return p, s, p + s
+
+
+def _safe_extract_citations(response_text, orchestrator):
+    """Extract memory citations from response if enabled.
+
+    Returns (possibly_modified_response, citations_list).
+    """
+    if not getattr(orchestrator, 'enable_citations', False):
+        return response_text, []
+    try:
+        memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
+        if memory_id_map:
+            modified, citations = orchestrator._extract_citations(
+                response_text, memory_id_map,
+            )
+            return modified, citations
+    except (AttributeError, KeyError) as e:
+        logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
+    return response_text, []
+
+
+def _build_provenance(mode, session_id, model_name, citations,
+                      thinking_block="", **extra):
+    """Build a provenance dict for any response mode."""
+    prov = {
+        "response_mode": mode,
+        "session_id": session_id or "",
+        "model_name": model_name,
+        "cited_ids": [c['memory_id'] for c in citations] if citations else [],
+    }
+    if thinking_block:
+        prov["thinking_block"] = thinking_block
+    prov.update(extra)
+    return prov
+
+
+def _attach_agentic_provenance(provenance, orchestrator):
+    """Attach agentic session details (rounds, prompt hash) to provenance."""
+    try:
+        ac = getattr(orchestrator, 'agentic_controller', None)
+        last = getattr(ac, '_last_session', None) if ac else None
+        if last and hasattr(last, 'get_provenance_summary'):
+            ap = last.get_provenance_summary()
+            provenance["agentic_rounds"] = ap.get("agentic_rounds", [])
+            provenance["final_prompt_hash"] = ap.get("final_prompt_hash", "")
+    except Exception as e:
+        logger.debug(f"[Handlers] Could not get agentic provenance: {e}")
+
+
+def _build_debug_record(
+    mode, user_text, prompt, system_prompt, response, model,
+    prompt_tokens, system_tokens, total_tokens,
+    citations, orchestrator, provenance=None,
+    phase_timings=None, task_timings=None, gather_elapsed=0.0,
+):
+    """Build a debug record dict for the Debug Trace tab."""
+    return {
+        'mode': mode,
+        'query': user_text,
+        'prompt': prompt,
+        'system_prompt': system_prompt,
+        'response': response,
+        'model': model,
+        'prompt_tokens': prompt_tokens,
+        'system_tokens': system_tokens,
+        'total_tokens': total_tokens,
+        'citations': citations,
+        'citations_enabled': getattr(orchestrator, 'enable_citations', False),
+        'provenance': provenance,
+        'phase_timings': phase_timings or {},
+        'task_timings': (
+            {k: round(v, 3) for k, v in task_timings.items()}
+            if task_timings else {}
+        ),
+        'gather_elapsed': round(gather_elapsed, 3) if gather_elapsed else 0.0,
+    }
+
+
+def _sanitize_response_text(text):
+    """Core response sanitization: thinking blocks, XML leaks, spurious turns."""
+    if not text:
+        return ""
+    thinking, answer = ResponseParser.parse_thinking_block(text)
+    if thinking and answer:
+        text = answer
+    elif thinking and not answer:
+        return ""
+    text = ResponseParser.strip_thinking_tag_leaks(text)
+    text = _strip_leaked_xml_blocks(text)
+    try:
+        from core.prompt import _truncate_at_spurious_turns
+        text = _truncate_at_spurious_turns(text)
+    except Exception:
+        pass
+    return text
+
+
+# Compiled regex for stripping echoed prompt headers from stored responses.
+_ECHOED_HEADER_RE = _re.compile(
+    r"(" + r")|(".join([
+        r"^\s*\[TIME CONTEXT\]",
+        r"^\s*\[RECENT CONVERSATION[^\]]*\]",
+        r"^\s*\[RELEVANT INFORMATION\]",
+        r"^\s*\[RELEVANT MEMORIES\]",
+        r"^\s*\[FACTS[ ^\]]*\]",
+        r"^\s*\[RECENT FACTS\]",
+        r"^\s*\[CURRENT MESSAGE FACTS\]",
+        r"^\s*\[DIRECTIVES\]",
+        r"^\s*\[CURRENT USER QUERY[ ^\]]*\]",
+        r"^\s*\[USER INPUT\]",
+        r"^\s*\[BACKGROUND KNOWLEDGE\]",
+        r"^\s*\[CONVERSATION SUMMARIES[ ^\]]*\]",
+        r"^\s*\[RECENT REFLECTIONS[ ^\]]*\]",
+        r"^\s*\[SESSION REFLECTIONS[ ^\]]*\]",
+    ]) + r")",
+    _re.IGNORECASE,
+)
+
+
+def _strip_echoed_headers(text):
+    """Remove echoed prompt section headers from response text (for storage)."""
+    if not text:
+        return text
+    lines = []
+    skip = False
+    for line in text.splitlines():
+        if _ECHOED_HEADER_RE.search(line):
+            skip = True
+            continue
+        if skip:
+            if not line.strip():
+                skip = False
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _dispatch_storage(
+    orchestrator, merged_input, response_to_store, user_text,
+    final_output, personality, file_names, conversation_logger,
+    session_id, provenance, mode,
+):
+    """Create a background storage task and track it for graceful shutdown."""
+    tags = [
+        f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}",
+        "topic:general",
+    ]
+    task = asyncio.create_task(_background_store_interaction(
+        orchestrator=orchestrator,
+        merged_input=merged_input,
+        response_to_store=response_to_store,
+        tags=tags,
+        user_text=user_text,
+        final_output=final_output,
+        personality=personality,
+        file_names=file_names,
+        conversation_logger=conversation_logger,
+        session_id=session_id,
+        provenance=provenance,
+        mode=mode,
+    ))
+    _pending_storage_tasks.add(task)
+    task.add_done_callback(_pending_storage_tasks.discard)
+    return task
+
+
+async def _silent_agentic_retry(
+    orchestrator, merged_input, system_prompt, model_name,
+    raw_context, original_response, hint, log_prefix,
+):
+    """Run a silent agentic retry and compare against the original response.
+
+    Returns (clean_response, thinking) if accepted (overlap < 0.7),
+    else (None, None).
+    """
+    try:
+        from core.agentic import ProgressEvent
+
+        agentic = orchestrator.agentic_controller
+        retry_system = hint + "\n\n" + (system_prompt or "")
+
+        retry_response = ""
+        async for item in agentic.run_agentic_search(
+            query=merged_input,
+            system_prompt=retry_system,
+            model_name=model_name,
+            initial_search_terms=[],
+            initial_context=raw_context,
+            skip_initial_search=True,
+        ):
+            if isinstance(item, ProgressEvent):
+                pass
+            else:
+                retry_response += item
+
+        if not retry_response.strip():
+            logger.warning(
+                f"[{log_prefix}] Agentic retry returned empty, keeping original"
+            )
+            return None, None
+
+        think_retry, answer_retry = ResponseParser.parse_thinking_block(
+            retry_response,
+        )
+        retry_clean = answer_retry if answer_retry else retry_response
+
+        orig_words = set(original_response.lower().split())
+        retry_words = set(retry_clean.lower().split())
+        overlap = len(orig_words & retry_words) / max(
+            len(orig_words | retry_words), 1,
+        )
+
+        if overlap < 0.7:
+            logger.info(
+                f"[{log_prefix}] Agentic retry accepted "
+                f"({len(retry_clean)} chars, overlap={overlap:.2f})"
+            )
+            return retry_clean, think_retry
+        else:
+            logger.info(
+                f"[{log_prefix}] Retry too similar "
+                f"(overlap={overlap:.2f}), keeping original"
+            )
+            return None, None
+
+    except Exception as e:
+        logger.error(f"[{log_prefix}] Agentic retry failed: {e}")
+        import traceback
+        logger.debug(f"[{log_prefix}] Traceback:\n{traceback.format_exc()}")
+        return None, None
+
+
 @log_and_time("Handle Submit")
 async def handle_submit(
     user_text,
@@ -347,28 +614,14 @@ async def handle_submit(
         )
 
         # Emit final chunk including debug record for UI tracing
-        # Compute token counts for the raw prompt (no system prompt)
-        try:
-            model_for_tokens = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
-            tm = getattr(orchestrator, 'tokenizer_manager', None)
-            prompt_tokens = int(tm.count_tokens(merged_input, model_for_tokens)) if tm else None
-        except (AttributeError, TypeError, ValueError) as e:
-            logger.debug(f"[Handlers] Token counting failed for raw mode: {e}")
-            prompt_tokens = None
-
-        debug_record = {
-            'mode': 'raw',
-            'query': user_text,
-            'prompt': merged_input,
-            'system_prompt': None,
-            'response': response_text,
-            'model': getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
-            'prompt_tokens': prompt_tokens,
-            'system_tokens': 0,
-            'total_tokens': (prompt_tokens or 0),
-            'citations': [],  # Raw mode bypasses memory
-            'citations_enabled': False,
-        }
+        _raw_model = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
+        _raw_ptok, _, _raw_ttok = _safe_count_tokens(merged_input, None, _raw_model, orchestrator)
+        debug_record = _build_debug_record(
+            mode='raw', user_text=user_text, prompt=merged_input,
+            system_prompt=None, response=response_text, model=_raw_model,
+            prompt_tokens=_raw_ptok, system_tokens=0, total_tokens=_raw_ttok,
+            citations=[], orchestrator=orchestrator,
+        )
         yield {"role": "assistant", "content": response_text, "debug": debug_record}
         return
 
@@ -545,79 +798,39 @@ async def handle_submit(
                 _, final_answer = ResponseParser.parse_thinking_block(final_output)
                 display_output = final_answer if final_answer else final_output
 
-            # Token counts
+            # Token counts, citations, provenance, debug record
             model_name = orchestrator.model_manager.get_active_model_name()
-            try:
-                tm = getattr(orchestrator, 'tokenizer_manager', None)
-                prompt_tokens = int(tm.count_tokens(full_prompt, model_name)) if tm else None
-                system_tokens = int(tm.count_tokens(system_prompt or '', model_name)) if tm else 0
-                total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
-            except (AttributeError, TypeError, ValueError):
-                prompt_tokens = len(full_prompt) // 4 if full_prompt else None
-                system_tokens = len(system_prompt or '') // 4
-                total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
+            prompt_tokens, system_tokens, total_tokens = _safe_count_tokens(
+                full_prompt, system_prompt, model_name, orchestrator,
+            )
+            _, citations = _safe_extract_citations(final_output, orchestrator)
 
-            # Citations
-            citations = []
-            if getattr(orchestrator, 'enable_citations', False):
-                try:
-                    memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
-                    if memory_id_map:
-                        _, citations = orchestrator._extract_citations(final_output, memory_id_map)
-                except (AttributeError, KeyError) as e:
-                    logger.warning(f"[DUEL] Failed to extract citations: {e}")
-
-            # Provenance
-            _duel_session_id = getattr(orchestrator.memory_system, 'session_id', None) if hasattr(orchestrator, 'memory_system') else None
-            _duel_prov = {
-                "response_mode": "best-of-duel",
-                "session_id": _duel_session_id or "",
-                "model_name": f"{m1} vs {m2}",
-                "cited_ids": [c['memory_id'] for c in citations] if citations else [],
-            }
+            _duel_session_id = _get_session_id(orchestrator)
+            _duel_extra = {}
             if isinstance(best, dict):
-                _duel_prov["thinking_a"] = best.get('thinking_a', '')
-                _duel_prov["thinking_b"] = best.get('thinking_b', '')
-                _duel_prov["model_a"] = best.get('model_a', '')
-                _duel_prov["model_b"] = best.get('model_b', '')
-                _duel_prov["winner"] = best.get('winner', '')
+                for _dk in ('thinking_a', 'thinking_b', 'model_a', 'model_b', 'winner'):
+                    _duel_extra[_dk] = best.get(_dk, '')
+            _duel_prov = _build_provenance(
+                "best-of-duel", _duel_session_id, f"{m1} vs {m2}",
+                citations, **_duel_extra,
+            )
 
-            debug_record = {
-                'mode': 'best-of-duel',
-                'query': user_text,
-                'prompt': full_prompt,
-                'system_prompt': system_prompt,
-                'response': final_output,
-                'model': f"{m1} vs {m2}",
-                'prompt_tokens': prompt_tokens,
-                'system_tokens': system_tokens,
-                'total_tokens': total_tokens,
-                'citations': citations,
-                'citations_enabled': getattr(orchestrator, 'enable_citations', False),
-                'provenance': _duel_prov,
-            }
+            debug_record = _build_debug_record(
+                mode='best-of-duel', user_text=user_text, prompt=full_prompt,
+                system_prompt=system_prompt, response=final_output,
+                model=f"{m1} vs {m2}", prompt_tokens=prompt_tokens,
+                system_tokens=system_tokens, total_tokens=total_tokens,
+                citations=citations, orchestrator=orchestrator,
+                provenance=_duel_prov,
+            )
 
-            # Yield the response
             yield {"role": "assistant", "content": display_output, "debug": debug_record}
 
-            # Store interaction in background
-            tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
-            task = asyncio.create_task(_background_store_interaction(
-                orchestrator=orchestrator,
-                merged_input=merged_input,
-                response_to_store=final_output,
-                tags=tags,
-                user_text=user_text,
-                final_output=final_output,
-                personality=personality,
-                file_names=file_names,
-                conversation_logger=conversation_logger,
-                session_id=_duel_session_id,
-                provenance=_duel_prov,
-                mode='best-of-duel',
-            ))
-            _pending_storage_tasks.add(task)
-            task.add_done_callback(_pending_storage_tasks.discard)
+            _dispatch_storage(
+                orchestrator, merged_input, final_output, user_text,
+                final_output, personality, file_names, conversation_logger,
+                _duel_session_id, _duel_prov, 'best-of-duel',
+            )
 
             return  # Done — duel mode complete
 
@@ -1052,50 +1265,19 @@ async def handle_submit(
 
                 logger.debug(f"[Handle Submit] Agentic loop done, response_len={len(final_output)}, display_len={len(display_output)}")
 
-                # Token counts for debug
-                try:
-                    tm = getattr(orchestrator, 'tokenizer_manager', None)
-                    prompt_tokens = int(tm.count_tokens(full_prompt, model_name)) if tm else None
-                    system_tokens = int(tm.count_tokens(system_prompt or '', model_name)) if tm else 0
-                    total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
-                except (AttributeError, TypeError, ValueError) as e:
-                    logger.debug(f"[Handlers] Token counting failed for agentic mode: {e}")
-                    # Fallback: rough estimate (~4 chars per token)
-                    prompt_tokens = len(full_prompt) // 4 if full_prompt else None
-                    system_tokens = len(system_prompt or '') // 4
-                    total_tokens = (prompt_tokens or 0) + (system_tokens or 0)
+                # Token counts, citations, provenance, debug record
+                prompt_tokens, system_tokens, total_tokens = _safe_count_tokens(
+                    full_prompt, system_prompt, model_name, orchestrator,
+                )
+                _, citations = _safe_extract_citations(final_output, orchestrator)
 
-                # Extract citations if enabled (instead of hardcoding [])
-                citations = []
-                if getattr(orchestrator, 'enable_citations', False):
-                    try:
-                        memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
-                        if memory_id_map:
-                            _, citations = orchestrator._extract_citations(final_output, memory_id_map)
-                    except (AttributeError, KeyError) as e:
-                        logger.warning(f"[CITATIONS] Failed to extract agentic citations: {e}")
+                _agentic_session_id = _get_session_id(orchestrator)
+                _agentic_prov = _build_provenance(
+                    "agentic-search", _agentic_session_id, model_name,
+                    citations, thinking_block=thinking_part or "",
+                )
+                _attach_agentic_provenance(_agentic_prov, orchestrator)
 
-                # Build agentic provenance
-                _agentic_session_id = getattr(orchestrator.memory_system, 'session_id', None) if hasattr(orchestrator, 'memory_system') else None
-                _agentic_prov = {
-                    "response_mode": "agentic-search",
-                    "session_id": _agentic_session_id or "",
-                    "model_name": model_name,
-                    "thinking_block": thinking_part or "",
-                    "cited_ids": [c['memory_id'] for c in citations] if citations else [],
-                }
-                # Attach agentic session details if available
-                try:
-                    _ac = getattr(orchestrator, 'agentic_controller', None)
-                    _last = getattr(_ac, '_last_session', None) if _ac else None
-                    if _last and hasattr(_last, 'get_provenance_summary'):
-                        _ap = _last.get_provenance_summary()
-                        _agentic_prov["agentic_rounds"] = _ap.get("agentic_rounds", [])
-                        _agentic_prov["final_prompt_hash"] = _ap.get("final_prompt_hash", "")
-                except Exception as e:
-                    logger.debug(f"[Handlers] Could not get agentic provenance: {e}")
-
-                # Collect timing data for agentic path
                 _agentic_phase = getattr(orchestrator, '_last_phase_timings', {})
                 _agentic_tasks = getattr(orchestrator, '_last_task_timings', {})
                 _agentic_gather = getattr(orchestrator, '_last_gather_elapsed', 0.0)
@@ -1108,23 +1290,17 @@ async def handle_submit(
                     _agentic_handler_timings["context_pipeline"] = _agentic_phase.get("context_pipeline", 0.0)
                     _agentic_handler_timings["prompt_build"] = _agentic_phase.get("prompt_build", 0.0)
 
-                debug_record = {
-                    'mode': 'agentic-search',
-                    'query': user_text,
-                    'prompt': full_prompt,
-                    'system_prompt': system_prompt,
-                    'response': final_output,
-                    'model': model_name,
-                    'prompt_tokens': prompt_tokens,
-                    'system_tokens': system_tokens,
-                    'total_tokens': total_tokens,
-                    'citations': citations,
-                    'citations_enabled': getattr(orchestrator, 'enable_citations', False),
-                    'provenance': _agentic_prov,
-                    'phase_timings': _agentic_handler_timings,
-                    'task_timings': {k: round(v, 3) for k, v in _agentic_tasks.items()} if _agentic_tasks else {},
-                    'gather_elapsed': round(_agentic_gather, 3),
-                }
+                debug_record = _build_debug_record(
+                    mode='agentic-search', user_text=user_text, prompt=full_prompt,
+                    system_prompt=system_prompt, response=final_output,
+                    model=model_name, prompt_tokens=prompt_tokens,
+                    system_tokens=system_tokens, total_tokens=total_tokens,
+                    citations=citations, orchestrator=orchestrator,
+                    provenance=_agentic_prov,
+                    phase_timings=_agentic_handler_timings,
+                    task_timings=_agentic_tasks,
+                    gather_elapsed=_agentic_gather,
+                )
                 # Yield final response with debug record (response was already streamed
                 # chunk-by-chunk during the loop, so only one yield needed here)
                 # If display_output is empty (entire response was thinking/reasoning), show fallback
@@ -1145,33 +1321,16 @@ async def handle_submit(
                     logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
                     final_output_sanitized = final_output
 
-                # Prevent context pollution: if the agentic response was just
-                # narration about tools (no real tool dispatch), store the
-                # cleaned display_output instead of the raw response with
-                # leaked XML/tool text. This prevents failed tool-call attempts
-                # from polluting future [RECENT CONVERSATION] context.
+                # Prevent context pollution: strip leaked XML/tool text
                 final_output_sanitized = _strip_leaked_xml_blocks(final_output_sanitized)
-                # If the stored response is mostly empty after cleaning, use display_output
                 if len(final_output_sanitized.strip()) < 20 and display_output.strip():
                     final_output_sanitized = display_output
 
-                tags = [f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}", "topic:general"]
-                _store_task = asyncio.create_task(_background_store_interaction(
-                    orchestrator=orchestrator,
-                    merged_input=merged_input,
-                    response_to_store=final_output_sanitized,
-                    tags=tags,
-                    user_text=user_text,
-                    final_output=final_output,
-                    personality=personality,
-                    file_names=file_names,
-                    conversation_logger=conversation_logger,
-                    session_id=_agentic_session_id,
-                    provenance=_agentic_prov,
-                    mode='agentic-search',
-                ))
-                _pending_storage_tasks.add(_store_task)
-                _store_task.add_done_callback(_pending_storage_tasks.discard)
+                _dispatch_storage(
+                    orchestrator, merged_input, final_output_sanitized, user_text,
+                    final_output, personality, file_names, conversation_logger,
+                    _agentic_session_id, _agentic_prov, 'agentic-search',
+                )
                 logger.info("[Handle Submit] Agentic storage dispatched to background")
 
                 return  # Exit after agentic search completes
@@ -1352,7 +1511,6 @@ async def handle_submit(
                     _uf_embedder = getattr(
                         getattr(orchestrator, 'model_manager', None), 'embed_model', None
                     )
-
                     _uf_result = UncertaintyDetector.detect(
                         response=final_output,
                         embedder=_uf_embedder,
@@ -1368,79 +1526,25 @@ async def handle_submit(
                             f"pattern={_uf_result.matched_pattern}). "
                             f"Retrying via agentic search."
                         )
-
-                        # Retry silently — don't show progress, only swap if result is different
-                        try:
-                            from core.agentic import ProgressEvent
-
-                            _retry_agentic = orchestrator.agentic_controller
-                            _retry_hint = (
-                                f'[MEMORY SEARCH RETRY] The user asked: "{user_text}" '
-                                f"and the initial response could not find relevant "
-                                f"information from context. Search memory deeply using "
-                                f"the search_memory tool across conversations, "
-                                f"summaries, and obsidian_notes collections. The "
-                                f"information may exist but was not retrieved in the "
-                                f"initial pass."
-                            )
-                            _retry_system = _retry_hint + "\n\n" + (system_prompt or "")
-
-                            _retry_response = ""
-                            async for item in _retry_agentic.run_agentic_search(
-                                query=merged_input,
-                                system_prompt=_retry_system,
-                                model_name=model_name,
-                                initial_search_terms=[],
-                                initial_context=raw_context,
-                                skip_initial_search=True,
-                            ):
-                                if isinstance(item, ProgressEvent):
-                                    pass  # Don't show retry progress to user
-                                else:
-                                    _retry_response += item
-
-                            if _retry_response.strip():
-                                _think_retry, _answer_retry = (
-                                    ResponseParser.parse_thinking_block(_retry_response)
-                                )
-                                _retry_clean = (
-                                    _answer_retry if _answer_retry else _retry_response
-                                )
-                                # Only replace if meaningfully different from original
-                                _orig_words = set(final_output.lower().split())
-                                _retry_words = set(_retry_clean.lower().split())
-                                _overlap = len(_orig_words & _retry_words) / max(len(_orig_words | _retry_words), 1)
-                                if _overlap < 0.7:
-                                    final_output = _retry_clean
-                                    display_output = final_output
-                                    thinking_part_stream = (
-                                        _think_retry or thinking_part_stream
-                                    )
-                                    _uncertainty_retry_done = True
-                                    logger.info(
-                                        f"[UNCERTAINTY FALLBACK] Agentic retry accepted "
-                                        f"({len(final_output)} chars, overlap={_overlap:.2f})"
-                                    )
-                                else:
-                                    logger.info(
-                                        f"[UNCERTAINTY FALLBACK] Retry too similar "
-                                        f"(overlap={_overlap:.2f}), keeping original"
-                                    )
-                            else:
-                                logger.warning(
-                                    "[UNCERTAINTY FALLBACK] Agentic retry returned "
-                                    "empty, keeping original response"
-                                )
-
-                        except Exception as e:
-                            logger.error(
-                                f"[UNCERTAINTY FALLBACK] Agentic retry failed: {e}"
-                            )
-                            import traceback
-                            logger.debug(
-                                f"[UNCERTAINTY FALLBACK] Traceback:\n"
-                                f"{traceback.format_exc()}"
-                            )
+                        _uf_hint = (
+                            f'[MEMORY SEARCH RETRY] The user asked: "{user_text}" '
+                            f"and the initial response could not find relevant "
+                            f"information from context. Search memory deeply using "
+                            f"the search_memory tool across conversations, "
+                            f"summaries, and obsidian_notes collections. The "
+                            f"information may exist but was not retrieved in the "
+                            f"initial pass."
+                        )
+                        _uf_clean, _uf_think = await _silent_agentic_retry(
+                            orchestrator, merged_input, system_prompt,
+                            model_name, raw_context, final_output,
+                            _uf_hint, "UNCERTAINTY FALLBACK",
+                        )
+                        if _uf_clean is not None:
+                            final_output = _uf_clean
+                            display_output = final_output
+                            thinking_part_stream = _uf_think or thinking_part_stream
+                            _uncertainty_retry_done = True
 
             except ImportError as e:
                 logger.debug(f"[UNCERTAINTY FALLBACK] Module not available: {e}")
@@ -1451,7 +1555,6 @@ async def handle_submit(
 
         # ── Post-Answer Review Gate: check response against plan ──
         _review_retry_done = False
-        # Skip review for short responses (casual/brief answers don't need quality gating)
         _review_min_len = 120
         if agentic_enabled and final_output and not _uncertainty_retry_done and len(final_output) >= _review_min_len:
             try:
@@ -1464,9 +1567,7 @@ async def handle_submit(
                     _planner = getattr(orchestrator, 'response_planner', None)
                     if _plan is not None and _planner is not None:
                         _review = await _planner.review_answer(
-                            plan=_plan,
-                            response=final_output,
-                            query=user_text,
+                            plan=_plan, response=final_output, query=user_text,
                         )
                         if (
                             _review
@@ -1478,77 +1579,23 @@ async def handle_submit(
                                 f"(confidence={_review.confidence:.2f}, "
                                 f"issues={_review.issues}). Retrying via agentic."
                             )
-
-                            # Retry silently — don't show progress, only swap if result is different
-                            try:
-                                from core.agentic import ProgressEvent
-
-                                _review_agentic = orchestrator.agentic_controller
-                                _review_hint = (
-                                    f'[RESPONSE REVIEW RETRY] The user asked: "{user_text}" '
-                                    f"The initial response had these issues: "
-                                    f"{'; '.join(_review.issues)}. "
-                                    f"Suggestion: {_review.suggestion}. "
-                                    f"Search memory and provide a better answer."
-                                )
-                                _review_system = _review_hint + "\n\n" + (system_prompt or "")
-
-                                _review_response = ""
-                                async for item in _review_agentic.run_agentic_search(
-                                    query=merged_input,
-                                    system_prompt=_review_system,
-                                    model_name=model_name,
-                                    initial_search_terms=[],
-                                    initial_context=raw_context,
-                                    skip_initial_search=True,
-                                ):
-                                    if isinstance(item, ProgressEvent):
-                                        pass  # Don't show retry progress to user
-                                    else:
-                                        _review_response += item
-
-                                if _review_response.strip():
-                                    _think_review, _answer_review = (
-                                        ResponseParser.parse_thinking_block(_review_response)
-                                    )
-                                    _review_clean = (
-                                        _answer_review if _answer_review else _review_response
-                                    )
-                                    # Only replace if meaningfully different from original
-                                    _orig_words = set(final_output.lower().split())
-                                    _rev_words = set(_review_clean.lower().split())
-                                    _overlap = len(_orig_words & _rev_words) / max(len(_orig_words | _rev_words), 1)
-                                    if _overlap < 0.7:
-                                        final_output = _review_clean
-                                        display_output = final_output
-                                        thinking_part_stream = (
-                                            _think_review or thinking_part_stream
-                                        )
-                                        _review_retry_done = True
-                                        logger.info(
-                                            f"[REVIEW GATE] Agentic retry accepted "
-                                            f"({len(final_output)} chars, overlap={_overlap:.2f})"
-                                        )
-                                    else:
-                                        logger.info(
-                                            f"[REVIEW GATE] Retry too similar "
-                                            f"(overlap={_overlap:.2f}), keeping original"
-                                        )
-                                else:
-                                    logger.warning(
-                                        "[REVIEW GATE] Agentic retry returned "
-                                        "empty, keeping original response"
-                                    )
-
-                            except Exception as e:
-                                logger.error(
-                                    f"[REVIEW GATE] Agentic retry failed: {e}"
-                                )
-                                import traceback
-                                logger.debug(
-                                    f"[REVIEW GATE] Traceback:\n"
-                                    f"{traceback.format_exc()}"
-                                )
+                            _rg_hint = (
+                                f'[RESPONSE REVIEW RETRY] The user asked: "{user_text}" '
+                                f"The initial response had these issues: "
+                                f"{'; '.join(_review.issues)}. "
+                                f"Suggestion: {_review.suggestion}. "
+                                f"Search memory and provide a better answer."
+                            )
+                            _rg_clean, _rg_think = await _silent_agentic_retry(
+                                orchestrator, merged_input, system_prompt,
+                                model_name, raw_context, final_output,
+                                _rg_hint, "REVIEW GATE",
+                            )
+                            if _rg_clean is not None:
+                                final_output = _rg_clean
+                                display_output = final_output
+                                thinking_part_stream = _rg_think or thinking_part_stream
+                                _review_retry_done = True
                         elif _review:
                             logger.debug(
                                 f"[REVIEW GATE] Response passed review "
@@ -1562,70 +1609,25 @@ async def handle_submit(
                     f"[REVIEW GATE] Review failed (non-fatal): {e}"
                 )
 
-        # After streaming completes, emit a final debug record so the Debug Trace tab is populated
-        try:
-            tm = getattr(orchestrator, 'tokenizer_manager', None)
-            model_for_tokens = model_name
-            prompt_tokens2 = int(tm.count_tokens(full_prompt, model_for_tokens)) if tm else None
-            system_tokens2 = int(tm.count_tokens(system_prompt or '', model_for_tokens)) if tm else 0
-            total_tokens2 = (prompt_tokens2 or 0) + (system_tokens2 or 0)
-        except (AttributeError, TypeError, ValueError) as e:
-            logger.debug(f"[Handlers] Token counting failed for streaming debug: {e}")
-            prompt_tokens2 = None
-            system_tokens2 = None
-            total_tokens2 = None
+        # After streaming completes, emit a final debug record
+        prompt_tokens2, system_tokens2, total_tokens2 = _safe_count_tokens(
+            full_prompt, system_prompt, model_name, orchestrator,
+        )
 
-        # Ensure we have content to log even if no chunk set display_output yet
-        _resp_for_debug = display_output or final_output
+        _resp_for_debug = _sanitize_response_text(display_output or final_output)
+        _resp_for_debug, citations = _safe_extract_citations(
+            _resp_for_debug, orchestrator,
+        )
 
-        # Final safety net: strip any thinking that leaked through all layers
-        _think_final, _answer_final = ResponseParser.parse_thinking_block(_resp_for_debug)
-        if _think_final and _answer_final:
-            _resp_for_debug = _answer_final
-        elif _think_final and not _answer_final:
-            # Entire response is thinking — suppress rather than display
-            logger.warning("[Handle Submit] Safety net: entire response was thinking — suppressing")
-            _resp_for_debug = ""
-        _resp_for_debug = ResponseParser.strip_thinking_tag_leaks(_resp_for_debug)
-
-        # Truncate at spurious turn markers (training data leakage) for display
-        try:
-            from core.prompt import _truncate_at_spurious_turns
-            _resp_for_debug = _truncate_at_spurious_turns(_resp_for_debug)
-        except Exception as e:
-            logger.warning(f"[HANDLE_SUBMIT] Failed to truncate spurious turns in display: {e}")
-
-        # Extract citations if enabled
-        citations = []
-        if getattr(orchestrator, 'enable_citations', False):
-            try:
-                # Get memory_id_map from orchestrator if available
-                memory_id_map = getattr(orchestrator, '_current_memory_id_map', {})
-                if memory_id_map:
-                    _resp_for_debug, citations = orchestrator._extract_citations(_resp_for_debug, memory_id_map)
-            except Exception as e:
-                logger.warning(f"[CITATIONS] Failed to extract citations: {e}")
-
-        _enh_session_id = getattr(orchestrator.memory_system, 'session_id', None) if hasattr(orchestrator, 'memory_system') else None
+        _enh_session_id = _get_session_id(orchestrator)
         _enh_mode = "uncertainty-fallback" if _uncertainty_retry_done else "enhanced"
-        _enh_prov = {
-            "response_mode": _enh_mode,
-            "session_id": _enh_session_id or "",
-            "model_name": model_name,
-            "thinking_block": thinking_part_stream or "",
-            "cited_ids": [c['memory_id'] for c in citations] if citations else [],
-        }
+        _enh_prov = _build_provenance(
+            _enh_mode, _enh_session_id, model_name, citations,
+            thinking_block=thinking_part_stream or "",
+        )
         if _uncertainty_retry_done:
-            try:
-                _ac = getattr(orchestrator, 'agentic_controller', None)
-                _last = getattr(_ac, '_last_session', None) if _ac else None
-                if _last and hasattr(_last, 'get_provenance_summary'):
-                    _ap = _last.get_provenance_summary()
-                    _enh_prov["agentic_rounds"] = _ap.get("agentic_rounds", [])
-                    _enh_prov["final_prompt_hash"] = _ap.get("final_prompt_hash", "")
-            except Exception:
-                pass
-        # Collect timing data for interpretability
+            _attach_agentic_provenance(_enh_prov, orchestrator)
+
         _phase_timings = getattr(orchestrator, '_last_phase_timings', {})
         _task_timings = getattr(orchestrator, '_last_task_timings', {})
         _gather_elapsed = getattr(orchestrator, '_last_gather_elapsed', 0.0)
@@ -1634,28 +1636,19 @@ async def handle_submit(
             "llm_streaming": round(_t_stream_elapsed, 3),
             "total_wall": round(_t_prepare_elapsed + _t_stream_elapsed, 3),
         }
-        # Merge orchestrator phase breakdown into handler timings
         if _phase_timings:
             _handler_timings["context_pipeline"] = _phase_timings.get("context_pipeline", 0.0)
             _handler_timings["prompt_build"] = _phase_timings.get("prompt_build", 0.0)
 
-        debug_record = {
-            'mode': _enh_mode,
-            'query': user_text,
-            'prompt': full_prompt,
-            'system_prompt': system_prompt,
-            'response': _resp_for_debug,
-            'model': model_name,
-            'prompt_tokens': prompt_tokens2,
-            'system_tokens': system_tokens2,
-            'total_tokens': total_tokens2,
-            'citations': citations,
-            'citations_enabled': getattr(orchestrator, 'enable_citations', False),
-            'provenance': _enh_prov,
-            'phase_timings': _handler_timings,
-            'task_timings': {k: round(v, 3) for k, v in _task_timings.items()} if _task_timings else {},
-            'gather_elapsed': round(_gather_elapsed, 3),
-        }
+        debug_record = _build_debug_record(
+            mode=_enh_mode, user_text=user_text, prompt=full_prompt,
+            system_prompt=system_prompt, response=_resp_for_debug,
+            model=model_name, prompt_tokens=prompt_tokens2,
+            system_tokens=system_tokens2, total_tokens=total_tokens2,
+            citations=citations, orchestrator=orchestrator,
+            provenance=_enh_prov, phase_timings=_handler_timings,
+            task_timings=_task_timings, gather_elapsed=_gather_elapsed,
+        )
         yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
         debug_emitted = True
 
@@ -1710,67 +1703,14 @@ async def handle_submit(
                 except (AttributeError, ValueError) as e:
                     logger.debug(f"[Handlers] Could not override corpus max_entries: {e}")
 
-                # Parse thinking block from final_output before storing
-                # Only store the final answer, not the thinking process
-                thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
-                if thinking_part:
-                    logger.debug(f"[HANDLE_SUBMIT][THINKING BLOCK]\n{thinking_part}")
-                # Don't store raw thinking if entire response was thinking
-                if thinking_part and not final_answer:
-                    response_to_store = ""
-                else:
-                    response_to_store = final_answer if final_answer else final_output
-
-                # Strip any leaked tool XML blocks before storage (prevents
-                # failed tool-call attempts from polluting conversation history)
-                response_to_store = _strip_leaked_xml_blocks(response_to_store)
-
-                # Truncate at spurious turn markers (training data leakage)
-                try:
-                    from core.prompt import _truncate_at_spurious_turns
-                    response_to_store = _truncate_at_spurious_turns(response_to_store)
-                except Exception as e:
-                    logger.warning(f"[HANDLE_SUBMIT] Failed to truncate spurious turns: {e}")
-
-                # Sanitize any echoed prompt headers before storing
-                try:
-                    import re
-                    header_patterns = [
-                        r"^\s*\[TIME CONTEXT\]",
-                        r"^\s*\[RECENT CONVERSATION[^\]]*\]",
-                        r"^\s*\[RELEVANT INFORMATION\]",
-                        r"^\s*\[RELEVANT MEMORIES\]",
-                        r"^\s*\[FACTS[ ^\]]*\]",
-                        r"^\s*\[RECENT FACTS\]",
-                        r"^\s*\[CURRENT MESSAGE FACTS\]",
-                        r"^\s*\[DIRECTIVES\]",
-                        r"^\s*\[CURRENT USER QUERY[ ^\]]*\]",
-                        r"^\s*\[USER INPUT\]",
-                        r"^\s*\[BACKGROUND KNOWLEDGE\]",
-                        r"^\s*\[CONVERSATION SUMMARIES[ ^\]]*\]",
-                        r"^\s*\[RECENT REFLECTIONS[ ^\]]*\]",
-                        r"^\s*\[SESSION REFLECTIONS[ ^\]]*\]",
-                    ]
-                    header_re = re.compile("(" + ")|(".join(header_patterns) + ")", re.IGNORECASE)
-                    lines = []
-                    skip = False
-                    for line in (response_to_store.splitlines() if response_to_store else []):
-                        if header_re.search(line):
-                            skip = True
-                            continue
-                        if skip:
-                            if not line.strip():
-                                skip = False
-                            continue
-                        lines.append(line)
-                    response_to_store = "\n".join(lines).strip()
-                except (re.error, TypeError, AttributeError) as e:
-                    logger.debug(f"[Handlers] Header sanitization failed: {e}")
+                # Sanitize response for storage
+                response_to_store = _sanitize_response_text(final_output)
+                response_to_store = _strip_echoed_headers(response_to_store)
 
                 # Build provenance from the debug_record emitted during streaming
                 _store_prov = None
                 _store_mode = "enhanced"
-                _store_session_id = getattr(orchestrator.memory_system, 'session_id', None) if hasattr(orchestrator, 'memory_system') else None
+                _store_session_id = _get_session_id(orchestrator)
                 if debug_emitted and 'debug_record' in dir():
                     try:
                         _store_prov = debug_record.get('provenance') if isinstance(debug_record, dict) else None
@@ -1781,28 +1721,14 @@ async def handle_submit(
                     _store_prov = {
                         "response_mode": _store_mode,
                         "model_name": model_name if 'model_name' in dir() else "",
-                        "thinking_block": thinking_part or "" if 'thinking_part' in dir() else "",
+                        "thinking_block": "",
                     }
 
-                # Fire-and-forget background storage (saves ~1.7s of LLM calls)
-                # Topic extraction and fact extraction run in background
-                task = asyncio.create_task(_background_store_interaction(
-                    orchestrator=orchestrator,
-                    merged_input=merged_input,
-                    response_to_store=response_to_store,
-                    tags=tags,
-                    user_text=user_text,
-                    final_output=final_output,
-                    personality=personality,
-                    file_names=file_names,
-                    conversation_logger=conversation_logger,
-                    session_id=_store_session_id,
-                    provenance=_store_prov,
-                    mode=_store_mode,
-                ))
-                # Track task for graceful shutdown
-                _pending_storage_tasks.add(task)
-                task.add_done_callback(_pending_storage_tasks.discard)
+                _dispatch_storage(
+                    orchestrator, merged_input, response_to_store, user_text,
+                    final_output, personality, file_names, conversation_logger,
+                    _store_session_id, _store_prov, _store_mode,
+                )
                 logger.info("[HANDLE_SUBMIT] Storage dispatched to background")
 
                 # No mid-session consolidation: summaries are generated at shutdown

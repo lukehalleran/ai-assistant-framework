@@ -9,9 +9,11 @@ import pytest
 from memory.code_proposal import (
     CodeProposal,
     ImplementationStep,
+    ProposalOutcome,
     ProposalSource,
     ProposalStatus,
     ProposalType,
+    RiskLevel,
 )
 
 
@@ -42,11 +44,21 @@ class TestEnums:
         assert ProposalSource.USER_REQUEST.value == "user_request"
         assert ProposalSource.SHUTDOWN_ANALYSIS.value == "shutdown_analysis"
 
+    def test_risk_level_values(self):
+        assert RiskLevel.LOW.value == "low"
+        assert RiskLevel.MEDIUM.value == "medium"
+        assert RiskLevel.HIGH.value == "high"
+        assert RiskLevel.CRITICAL.value == "critical"
+
+    def test_proposal_source_agent_branch(self):
+        assert ProposalSource.AGENT_BRANCH.value == "agent_branch"
+
     def test_enums_are_strings(self):
         """Enum values should be usable as strings."""
         assert isinstance(ProposalType.FEATURE.value, str)
         assert isinstance(ProposalStatus.PENDING.value, str)
         assert isinstance(ProposalSource.GOAL_DIRECTED.value, str)
+        assert isinstance(RiskLevel.HIGH.value, str)
 
 
 # ------------------------------------------------------------------
@@ -123,6 +135,12 @@ class TestCodeProposal:
         assert p.created_at > 0
         assert p.modified_at > 0
         assert p.executed_at is None
+        # Supervision field defaults
+        assert p.risk_level == RiskLevel.MEDIUM
+        assert p.touches_core_system is False
+        assert p.depends_on == []
+        assert p.test_files == []
+        assert p.outcome is None
 
     def test_to_dict_from_dict_roundtrip(self):
         p = CodeProposal(
@@ -303,3 +321,254 @@ class TestMetadataSerialization:
         p = CodeProposal(title="Test", reasoning=long_reasoning)
         d = p.to_dict()
         assert len(d["reasoning"]) == 2000
+
+
+# ------------------------------------------------------------------
+# ProposalOutcome tests
+# ------------------------------------------------------------------
+
+
+class TestProposalOutcome:
+    def test_defaults(self):
+        o = ProposalOutcome()
+        assert o.accepted is False
+        assert o.notes == ""
+        assert o.merged_at is None
+        assert o.merge_branch == ""
+        assert o.reviewed_by == ""
+
+    def test_to_dict_from_dict_roundtrip(self):
+        o = ProposalOutcome(
+            accepted=True,
+            notes="Looks good, expanded scope",
+            merged_at=1700000000.0,
+            merge_branch="feature/safety-guards",
+            reviewed_by="luke",
+        )
+        d = o.to_dict()
+        o2 = ProposalOutcome.from_dict(d)
+        assert o2.accepted is True
+        assert o2.notes == "Looks good, expanded scope"
+        assert o2.merged_at == 1700000000.0
+        assert o2.merge_branch == "feature/safety-guards"
+        assert o2.reviewed_by == "luke"
+
+    def test_from_dict_missing_fields(self):
+        o = ProposalOutcome.from_dict({})
+        assert o.accepted is False
+        assert o.notes == ""
+
+
+# ------------------------------------------------------------------
+# Supervision fields tests
+# ------------------------------------------------------------------
+
+
+class TestSupervisionFields:
+    def test_full_supervision_creation(self):
+        p = CodeProposal(
+            title="Add safety guard",
+            risk_level=RiskLevel.HIGH,
+            touches_core_system=True,
+            depends_on=["knowledge_graph", "truth_scorer"],
+            test_files=["tests/unit/test_safety.py"],
+            source=ProposalSource.AGENT_BRANCH,
+        )
+        assert p.risk_level == RiskLevel.HIGH
+        assert p.touches_core_system is True
+        assert p.depends_on == ["knowledge_graph", "truth_scorer"]
+        assert p.test_files == ["tests/unit/test_safety.py"]
+        assert p.source == ProposalSource.AGENT_BRANCH
+
+    def test_supervision_dict_roundtrip(self):
+        p = CodeProposal(
+            title="Critical core change",
+            risk_level=RiskLevel.CRITICAL,
+            touches_core_system=True,
+            depends_on=["dep_a", "dep_b"],
+            test_files=["tests/test_a.py", "tests/test_b.py"],
+            outcome=ProposalOutcome(
+                accepted=True,
+                notes="Approved after review",
+                merge_branch="feature/core-change",
+                reviewed_by="human",
+            ),
+        )
+        d = p.to_dict()
+        p2 = CodeProposal.from_dict(d)
+        assert p2.risk_level == RiskLevel.CRITICAL
+        assert p2.touches_core_system is True
+        assert p2.depends_on == ["dep_a", "dep_b"]
+        assert p2.test_files == ["tests/test_a.py", "tests/test_b.py"]
+        assert p2.outcome is not None
+        assert p2.outcome.accepted is True
+        assert p2.outcome.merge_branch == "feature/core-change"
+
+    def test_supervision_metadata_roundtrip(self):
+        p = CodeProposal(
+            title="Metadata roundtrip test",
+            risk_level=RiskLevel.HIGH,
+            touches_core_system=True,
+            depends_on=["foo"],
+            test_files=["tests/test_foo.py"],
+            outcome=ProposalOutcome(accepted=False, notes="Needs revision"),
+        )
+        md = p.to_metadata()
+        # Verify primitives in metadata
+        assert md["risk_level"] == "high"
+        assert md["touches_core_system"] is True
+        assert isinstance(md["depends_on_json"], str)
+        assert isinstance(md["test_files_json"], str)
+        assert isinstance(md["outcome_json"], str)
+
+        p2 = CodeProposal.from_metadata(md)
+        assert p2.risk_level == RiskLevel.HIGH
+        assert p2.touches_core_system is True
+        assert p2.depends_on == ["foo"]
+        assert p2.test_files == ["tests/test_foo.py"]
+        assert p2.outcome is not None
+        assert p2.outcome.accepted is False
+        assert p2.outcome.notes == "Needs revision"
+
+    def test_metadata_backward_compat_no_supervision_fields(self):
+        """Pre-supervision metadata (no risk_level etc.) should deserialize with defaults."""
+        md = {
+            "proposal_id": "old-id",
+            "title": "Old proposal",
+            "proposal_type": "feature",
+            "status": "pending",
+            "source": "goal_directed",
+            "priority": 5,
+            "reasoning": "",
+            "description": "",
+            "estimated_complexity": "medium",
+            "requires_tests": True,
+            "rejection_reason": "",
+            "commit_hash": "",
+            "rollback_available": False,
+            "tags_json": "[]",
+            "affected_files_json": "[]",
+            "steps_json": "[]",
+            "created_at": 1700000000.0,
+            "modified_at": 1700000000.0,
+            "executed_at": 0.0,
+            "implementation_confidence": 0.0,
+            "implementation_status": "not_checked",
+            "implementation_evidence": "",
+            "last_tracked_at": 0.0,
+            # NO supervision fields
+        }
+        p = CodeProposal.from_metadata(md)
+        assert p.risk_level == RiskLevel.MEDIUM
+        assert p.touches_core_system is False
+        assert p.depends_on == []
+        assert p.test_files == []
+        assert p.outcome is None
+
+    def test_embedding_text_includes_risk_for_high(self):
+        p = CodeProposal(title="Risky change", risk_level=RiskLevel.HIGH)
+        text = p.to_embedding_text()
+        assert "Risk: high" in text
+
+    def test_embedding_text_includes_core_system_flag(self):
+        p = CodeProposal(title="Core change", touches_core_system=True)
+        text = p.to_embedding_text()
+        assert "Core-system change" in text
+
+    def test_embedding_text_excludes_risk_for_low(self):
+        p = CodeProposal(title="Low risk", risk_level=RiskLevel.LOW)
+        text = p.to_embedding_text()
+        assert "Risk:" not in text
+
+    def test_record_outcome_accepted(self):
+        p = CodeProposal(title="Test")
+        p.record_outcome(
+            accepted=True,
+            notes="LGTM",
+            merge_branch="feature/x",
+            reviewed_by="luke",
+        )
+        assert p.status == ProposalStatus.COMPLETED
+        assert p.outcome is not None
+        assert p.outcome.accepted is True
+        assert p.outcome.merged_at is not None
+        assert p.outcome.merge_branch == "feature/x"
+        assert p.outcome.reviewed_by == "luke"
+
+    def test_record_outcome_rejected(self):
+        p = CodeProposal(title="Test")
+        p.record_outcome(accepted=False, notes="Too risky")
+        assert p.status == ProposalStatus.REJECTED
+        assert p.outcome.accepted is False
+        assert p.outcome.merged_at is None
+        assert p.rejection_reason == "Too risky"
+
+    def test_metadata_values_remain_primitives_with_supervision(self):
+        """All metadata values must be str/int/float/bool for ChromaDB."""
+        p = CodeProposal(
+            title="Full supervision test",
+            risk_level=RiskLevel.CRITICAL,
+            touches_core_system=True,
+            depends_on=["a", "b"],
+            test_files=["t1.py", "t2.py"],
+            outcome=ProposalOutcome(accepted=True, notes="ok"),
+        )
+        md = p.to_metadata()
+        for key, value in md.items():
+            assert isinstance(value, (str, int, float, bool)), (
+                f"Key '{key}' has non-primitive type {type(value)}"
+            )
+
+
+# ------------------------------------------------------------------
+# Feature registry loader tests
+# ------------------------------------------------------------------
+
+
+class TestFeatureRegistry:
+    def test_load_registry(self):
+        from config.feature_registry import load_registry
+        reg = load_registry(force=True)
+        assert len(reg) > 0
+        ids = [f.proposal_id for f in reg]
+        assert "agent_safety_guards" in ids
+        assert "knowledge_graph" in ids
+
+    def test_get_feature(self):
+        from config.feature_registry import get_feature
+        f = get_feature("agent_safety_guards")
+        assert f is not None
+        assert f.risk_level == "high"
+        assert f.touches_core_system is True
+        assert len(f.implemented_files) > 0
+        assert len(f.test_files) > 0
+        assert f.outcome is not None
+        assert f.outcome.accepted is True
+
+    def test_get_dependencies_transitive(self):
+        from config.feature_registry import get_dependencies
+        deps = get_dependencies("fact_verification_gate")
+        assert "truth_scorer" in deps
+        assert "cross_collection_dedup" in deps
+
+    def test_get_core_features(self):
+        from config.feature_registry import get_core_features
+        core = get_core_features()
+        core_ids = [f.proposal_id for f in core]
+        assert "agent_safety_guards" in core_ids
+        assert "agentic_search" in core_ids
+
+    def test_check_conflicts(self):
+        from config.feature_registry import check_conflicts
+        conflicts = check_conflicts(["memory/truth_scorer.py"])
+        conflict_ids = [c.proposal_id for c in conflicts]
+        assert "truth_scorer" in conflict_ids
+
+    def test_check_conflicts_no_overlap(self):
+        from config.feature_registry import check_conflicts
+        conflicts = check_conflicts(["nonexistent/file.py"])
+        assert conflicts == []
+
+    def test_get_feature_missing(self):
+        from config.feature_registry import get_feature
+        assert get_feature("nonexistent_feature") is None
