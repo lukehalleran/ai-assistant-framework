@@ -1560,6 +1560,26 @@ class PromptFormatter:
                 thread_lines.append(line)
             sections.append(f"[UNRESOLVED THREADS] n={len(thread_lines)}\n" + "\n".join(thread_lines))
 
+        # Daemon self-notes (working context from prior sessions)
+        daemon_self_notes = context.get("daemon_self_notes", []) or []
+        if daemon_self_notes:
+            note_lines = []
+            for note in daemon_self_notes:
+                meta = note.get("metadata", {}) or {}
+                category = meta.get("category", "general")
+                confidence = meta.get("confidence", "medium")
+                created = meta.get("created", "")[:10]
+                content = note.get("content", "")
+                note_lines.append(
+                    f"[DAEMON SELF-NOTE | {category} | confidence: {confidence} | {created}]\n{content}"
+                )
+            sections.append(
+                f"[DAEMON SELF-NOTES] n={len(note_lines)}\n"
+                "These are Daemon's own working notes from prior sessions — not user-authored facts.\n"
+                "Do not cite as established facts. Use as working context only.\n\n"
+                + "\n\n".join(note_lines)
+            )
+
         # Proactive cross-domain insights
         proactive_insights = context.get("proactive_insights", []) or []
         if proactive_insights:

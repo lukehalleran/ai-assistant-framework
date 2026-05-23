@@ -92,6 +92,9 @@ class WebSearchDecision:
     source: str = "heuristic"  # "llm" | "heuristic" | "explicit"
     needs_memory_search: bool = False  # LLM detected memory/recall intent
     needs_knowledge_search: bool = False  # LLM detected encyclopedic/wiki knowledge intent
+    needs_document_generation: bool = False  # LLM detected document generation intent
+    document_topic: str = ""  # Topic for document generation
+    document_type: str = ""  # "report" or "summary"
 
     def __post_init__(self):
         """Initialize mutable defaults."""
@@ -124,6 +127,9 @@ class LLMSearchTriggerResponse:
     num_searches: int
     needs_memory_search: bool = False  # Whether query wants stored memories/facts/notes
     needs_knowledge_search: bool = False  # Whether query wants encyclopedic/wiki knowledge
+    needs_document_generation: bool = False  # Whether query wants a saved document
+    document_topic: str = ""  # Topic for document generation
+    document_type: str = ""  # "report" or "summary"
 
     @classmethod
     def parse(cls, json_str: str) -> Optional['LLMSearchTriggerResponse']:
@@ -178,7 +184,10 @@ class LLMSearchTriggerResponse:
                 search_depth=search_depth,
                 num_searches=num_searches,
                 needs_memory_search=bool(data.get("needs_memory_search", False)),
-                needs_knowledge_search=bool(data.get("needs_knowledge_search", False))
+                needs_knowledge_search=bool(data.get("needs_knowledge_search", False)),
+                needs_document_generation=bool(data.get("needs_document_generation", False)),
+                document_topic=str(data.get("document_topic", "")),
+                document_type=str(data.get("document_type", "")),
             )
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             logger.debug(f"[LLMSearchTriggerResponse] JSON parse error: {e}")
@@ -834,6 +843,13 @@ KNOWLEDGE SEARCH CRITERIA (needs_knowledge_search):
 - Also TRUE if: user explicitly asks to consult Wikipedia, look something up, or requests a detailed/in-depth explanation of a concept
 - FALSE if: casual chat, simple yes/no questions, personal/emotional topics, creative writing, or questions answerable in one sentence without references
 
+DOCUMENT GENERATION CRITERIA (needs_document_generation):
+- TRUE if: the user wants a document SAVED to disk — a report, summary, or research document written and stored as a file
+- Examples: "write a report about climate change", "create a document about AI", "save a summary on quantum computing", "prepare a report on economic trends", "make me a research document about X", "generate a report and save it", "draft a report about Y", "I need a written report on Z"
+- Also TRUE if: user references the document writing feature, asks to "try the document feature", or says something like "write that up as a report"
+- FALSE if: user just wants information verbally, asks a question, wants a summary in chat, or says "summarize X" without asking to save/write/create a document
+- When TRUE, also set document_topic to the core topic and document_type to "report" or "summary"
+
 OUTPUT (JSON only, no markdown):
 {{
   "should_search": true or false,
@@ -843,7 +859,10 @@ OUTPUT (JSON only, no markdown):
   "search_depth": "quick" or "standard" or "deep",
   "num_searches": 1-4,
   "needs_memory_search": true or false,
-  "needs_knowledge_search": true or false
+  "needs_knowledge_search": true or false,
+  "needs_document_generation": true or false,
+  "document_topic": "topic for document (only if needs_document_generation is true)",
+  "document_type": "report or summary (only if needs_document_generation is true)"
 }}
 
 GUIDELINES:
@@ -851,7 +870,7 @@ GUIDELINES:
 - num_searches: Use 2-4 only for comparison queries or multi-faceted topics
 - search_depth: "quick" for simple facts, "standard" for news/analysis, "deep" for research
 - If not searching, return empty search_terms and num_searches: 0
-- At most one of should_search, needs_memory_search, needs_knowledge_search should be true (web vs memory vs knowledge are separate paths)
+- At most one of should_search, needs_memory_search, needs_knowledge_search, needs_document_generation should be true (web vs memory vs knowledge vs document generation are separate paths)
 
 JSON:"""
 
@@ -1124,7 +1143,10 @@ async def analyze_for_web_search_llm(
         num_searches=llm_response.num_searches if should_search else 0,
         source="llm",
         needs_memory_search=llm_response.needs_memory_search,
-        needs_knowledge_search=llm_response.needs_knowledge_search
+        needs_knowledge_search=llm_response.needs_knowledge_search,
+        needs_document_generation=llm_response.needs_document_generation,
+        document_topic=llm_response.document_topic,
+        document_type=llm_response.document_type,
     )
 
     # Cache the result to avoid duplicate LLM calls within same request

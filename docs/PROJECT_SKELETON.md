@@ -94,6 +94,8 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `knowledge/visual_memory_store.py` - Dual storage: ChromaDB + FAISS for visual memories **[NEW 2026-05]**
 - `knowledge/visual_memory_pipeline.py` - Image ingestion: CLIP embed → caption → entity tag → store **[NEW 2026-05]**
 - `knowledge/visual_retrieval.py` - CLIP text→image retrieval + base64 loading **[NEW 2026-05]**
+- `knowledge/document_generator.py` - Structured markdown report/summary generation from web search + ChromaDB sources **[NEW 2026-05]**
+- `knowledge/daemon_notes_manager.py` - Daemon self-notes for future sessions (decisions, architecture, risks, next steps) **[NEW 2026-05]**
 - `memory/memory_interface.py` - Protocol contracts
 
 The incomplete V2 `memory/coordinator.py` has been deleted.

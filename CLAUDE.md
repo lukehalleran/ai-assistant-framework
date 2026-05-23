@@ -30,8 +30,9 @@ Query → ContextPipeline (tone‖topic parallel, intent gates heavy-topic skip)
       → UnifiedPromptBuilder (context assembly + web search, cached query embedding)
         + ResponsePlanner (parallel: lightweight plan)
       → Agentic search (if triggered, replaces standard generation)
-        17 tools: web, wolfram, sandbox, memory, files, git, github, fetch_url,
-                  stackexchange, arxiv, pubmed, hackernews, recall_image, ...
+        18 tools: web, wolfram, sandbox, memory, files, git, github, fetch_url,
+                  stackexchange, arxiv, pubmed, hackernews, recall_image,
+                  generate_document, ...
       → BestOfHandler | ResponseGenerator (streaming)
       → ResponseParser (thinking block, artifact stripping)
       → MemoryCoordinator (persist)
@@ -41,7 +42,7 @@ Query → ContextPipeline (tone‖topic parallel, intent gates heavy-topic skip)
 
 ## Memory System
 
-**13 ChromaDB Collections:** `conversations` (protected), `facts`, `summaries`, `reflections`, `wiki_knowledge` (protected), `obsidian_notes` (protected), `reference_docs` (protected), `procedural`, `procedural_skills`, `proposals`, `threads`, `synthesis_results`, `visual_memories`
+**14 ChromaDB Collections:** `conversations` (protected), `facts`, `summaries`, `reflections`, `wiki_knowledge` (protected), `obsidian_notes` (protected), `reference_docs` (protected), `procedural`, `procedural_skills`, `proposals`, `threads`, `synthesis_results`, `visual_memories`, `daemon_self_notes`
 
 **Knowledge Graph:** NetworkX DiGraph at `data/knowledge_graph.json`. Entity alias resolution at `data/entity_aliases.json`. Ingestion via `memory_storage.py:_ingest_fact_to_graph()`. Retrieval via BFS in `context_gatherer.py`. Graph-boosted scoring (0.05/entity, cap 0.15) + query expansion with graph neighbors.
 
@@ -65,7 +66,7 @@ UnifiedPromptBuilder (thin orchestrator)
 
 ## Key Config
 
-Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (45 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
+Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (46 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
 
 Key values: `PROMPT_TOKEN_BUDGET_DEFAULT=15000` (floor 8K, ceiling 16K), `COSINE_SIMILARITY_THRESHOLD=0.25`, 9 intent types, dual fact budget (user=6, entity=4). Web search requires `TAVILY_API_KEY`. Currently disabled: synthesis generators, graph walk.
 
@@ -162,13 +163,15 @@ knowledge/                    # External knowledge
 ├── wiki_enrichment.py        # Shutdown: wiki articles → graph nodes
 ├── wikidata_resolver.py      # Personal ↔ Wikidata entity resolution
 ├── proposal_generator.py     # Goal-directed code proposals
+├── document_generator.py     # Research & save markdown docs (report/summary)
+├── daemon_notes_manager.py   # Daemon self-notes for future sessions (non-ground-truth)
 ├── implementation_detector.py # 4-stage proposal status detection
 └── synthesis_models.py       # Synthesis data models + enums
 
 config/                       # Configuration
 ├── app_config.py             # YAML loader + ~280 module-level constants
-├── schema.py                 # Pydantic v2 validation (44 section models)
-├── config.yaml               # 44 sections, ~334 keys
+├── schema.py                 # Pydantic v2 validation (45 section models)
+├── config.yaml               # 45 sections, ~340 keys
 ├── feature_registry.yaml     # Retrospective shipped-feature catalog (branch supervision)
 └── feature_registry.py       # Typed loader: dependency resolution, conflict detection
 

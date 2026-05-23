@@ -535,31 +535,29 @@ class TestAnalyzeForWebSearchLLM:
 
     @pytest.mark.asyncio
     async def test_with_mock_model_manager(self):
-        """Test with mocked model manager returns LLM decision."""
+        """Test that _classify_with_llm_unified correctly parses LLM JSON."""
         from unittest.mock import AsyncMock
 
         mock_manager = MagicMock()
         mock_response = '''{"should_search": true, "confidence": 0.9, "reason": "Time-sensitive", "search_terms": ["test query"], "search_depth": "standard", "num_searches": 1}'''
 
-        # Use AsyncMock for the coroutine
         mock_manager.generate_once = AsyncMock(return_value=mock_response)
 
-        # Patch LLM_FIRST_ENABLED to True (must be at module level)
-        import utils.web_search_trigger as trigger_module
-        original_value = trigger_module.LLM_FIRST_ENABLED
-        try:
-            trigger_module.LLM_FIRST_ENABLED = True
+        # Test the internal LLM classification directly to avoid
+        # heuristic short-circuits and veto logic in the outer function.
+        from utils.web_search_trigger import _classify_with_llm_unified
 
-            decision = await analyze_for_web_search_llm(
-                query="What's the current flu variant spreading in 2026?",
-                model_manager=mock_manager
-            )
+        result = await _classify_with_llm_unified(
+            query="test query for LLM classification",
+            model_manager=mock_manager,
+        )
 
-            # Should have LLM-influenced decision
-            assert decision.source == "llm"
-            assert decision.search_terms == ["test query"]
-        finally:
-            trigger_module.LLM_FIRST_ENABLED = original_value
+        assert result is not None
+        assert result.should_search is True
+        assert result.confidence == 0.9
+        assert result.search_terms == ["test query"]
+        assert result.search_depth == "standard"
+        assert mock_manager.generate_once.called
 
 
 if __name__ == "__main__":

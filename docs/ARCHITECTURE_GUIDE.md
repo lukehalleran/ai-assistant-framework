@@ -75,7 +75,7 @@ Prompt sections:        27 (conditional)
 Intent types:           9
 Parallel retrieval:     19 async tasks
 Memory tiers:           5
-Agentic tools:          14
+Agentic tools:          16
 Gating latency:         ~200ms
 Config options:         180+
 ```
@@ -120,7 +120,7 @@ core/                    # Request orchestration, context pipeline, agentic loop
 ├── response_planner.py  # Pre-answer planning + post-answer review gate
 ├── agentic/             # ReAct tool loop
 │   ├── controller.py    # Loop orchestration, prompt building, quality heuristics
-│   ├── tools.py         # ToolExecutor: dispatch routing + 17 execute methods
+│   ├── tools.py         # ToolExecutor: dispatch routing + 19 execute methods
 │   ├── formatters.py    # AgenticFormatter: 18 pure formatting methods
 │   ├── types.py         # Tool definitions, state types
 │   └── protocols.py     # Native + XML tool calling
@@ -153,7 +153,7 @@ memory/                  # 5-tier memory system
 ├── memory_expander.py       # Temporal expansion for agentic tool
 ├── synthesis_memory.py      # Synthesis results + convergence
 └── storage/
-    └── multi_collection_chroma_store.py  # ChromaDB wrapper (13 collections)
+    └── multi_collection_chroma_store.py  # ChromaDB wrapper (14 collections)
 
 knowledge/               # External knowledge integration
 ├── web_search_manager.py      # Tavily API + caching + numbered web citations
@@ -1092,7 +1092,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
   retry is silently discarded and the original stays visible.
 - This prevents the jarring UX of showing the same response twice.
 
-### 17 Tools (14 action + done_searching + file_read/file_grep/file_list as 3)
+### 19 Tools (16 action + done_searching + file_read/file_grep/file_list as 3)
 
 | Tool | Implementation | Key Feature |
 |------|---------------|-------------|
@@ -1100,7 +1100,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
 | Fetch URL | Tavily Extract API | Read web page content by URL; auto-fetch URLs in user messages; results registered in web_source_map for `[WEB_N]` citations |
 | Wolfram Alpha | LLM API | Token bucket rate limiting, MD5 result cache |
 | Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across rounds) |
-| Memory Search | ChromaDB (13 collections) + FAISS (wiki vectors) | wiki_knowledge routes through FAISS; all other collections via ChromaDB |
+| Memory Search | ChromaDB (14 collections) + FAISS (wiki vectors) | wiki_knowledge routes through FAISS; all other collections via ChromaDB |
 | Memory Expansion | MemoryExpander | Summary drill-down via source_doc_ids, temporal neighbors. Collection-aware char limits: long-form (obsidian, reference_docs) use 3000/2000 vs default 600/300. |
 | Full Document | ReferenceDocsManager | Reassemble all chunks of an uploaded doc by title; fuzzy title matching |
 | File Read / File Grep / File List | Local filesystem | 3 separate tools, sandboxed to project directory |
@@ -1111,6 +1111,8 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
 | arXiv | export.arxiv.org | Free API, no auth required. Dispatched via `_dispatch_api_search`. |
 | PubMed | eutils.ncbi.nlm.nih.gov | Free API, no auth required. Dispatched via `_dispatch_api_search`. |
 | Hacker News | hn.algolia.com | Free API, no auth required. Dispatched via `_dispatch_api_search`. |
+| Generate Document | DocumentGenerator | Structured markdown reports/summaries from web search + ChromaDB sources. Output to `documents/`. Also triggered directly by "write a report about X". |
+| Create Daemon Note | DaemonNotesManager | Structured self-notes for future sessions (decisions, risks, next steps). Stored in `daemon_self_notes` collection with `ground_truth: False`. |
 | Done Searching | Control signal | Model declares search complete, triggers final synthesis |
 
 ### ReAct Loop Structure
@@ -1958,6 +1960,36 @@ Daemon self-knowledge documentation:
 - Mtime-based idempotency: unchanged files skipped, modified re-uploaded
 - Stored in `reference_docs` collection (protected, never deduped)
 
+### Document Generation
+
+**File**: `knowledge/document_generator.py`
+
+Generates structured markdown reports and summaries from web search results
+and ChromaDB memory sources. Triggered directly when the user says "write a
+report about X" (bypassing the agentic loop), or available as the
+`generate_document` agentic tool within the ReAct loop. Output files are
+written to `documents/reports/` or `documents/summaries/` with YAML
+frontmatter, inline `[WEB_N]` citations, and a Sources section. All
+generated documents are tracked in `documents/index.json`. Config:
+`DOCUMENT_*` constants; YAML section `document_generation:`.
+
+### Daemon Self-Notes
+
+**File**: `knowledge/daemon_notes_manager.py`
+
+Allows Daemon to leave structured notes for its own future sessions --
+implementation decisions, architecture context, risks, and next steps.
+Triggered directly when the user says "save a note for yourself about X",
+or available as the `create_daemon_note` agentic tool for autonomous use.
+Notes are written to `daemon_notes/{slug}-{date}.md` with YAML frontmatter
+and stored in the `daemon_self_notes` ChromaDB collection (the 14th
+collection) with `ground_truth: False` metadata to distinguish them from
+user-stated facts. Retrieved via `get_daemon_self_notes()` in the context
+gatherer (max 2 per prompt), displayed in the `[DAEMON SELF-NOTES]` prompt
+section with a caveat label. Scoring applies a slight penalty
+(`COLLECTION_BOOSTS['daemon_self_notes'] = -0.05`). Config: `DAEMON_NOTES_*`
+constants; YAML section `daemon_notes:`.
+
 ---
 
 ## 24. Personality & Tone System
@@ -2363,7 +2395,7 @@ Arrows indicate "calls" or "data flows to."
        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ Storage Layer                                                │
-│  ├─ MultiCollectionChromaStore (13 collections)              │
+│  ├─ MultiCollectionChromaStore (14 collections)              │
 │  ├─ CorpusManager (JSON persistence)                         │
 │  ├─ Knowledge Graph (data/knowledge_graph.json)              │
 │  ├─ Entity Aliases (data/entity_aliases.json)                │

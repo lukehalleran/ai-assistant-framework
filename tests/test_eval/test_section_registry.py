@@ -67,7 +67,7 @@ class TestRegistryIntegrity:
     def test_registry_has_26_context_sections(self):
         """Registry should have 27 context sections + system_prompt (matching builder output)."""
         # system_prompt is entry 0 (separate), so 28 total
-        assert len(SECTION_REGISTRY) == 28
+        assert len(SECTION_REGISTRY) == 29
 
     def test_all_internal_keys_are_unique(self):
         """Internal keys should all be unique (enforced by dict but be explicit)."""
@@ -221,6 +221,7 @@ class TestRegistryMatchesBuilderSections:
         "[KNOWLEDGE GRAPH]",
         "[UNRESOLVED THREADS]",
         "[PROACTIVE INSIGHTS]",
+        "[DAEMON SELF-NOTES]",
         "[USER PROFILE]",
         "[ACTIVE FEATURES]",
         "[CODEBASE CHANGES SINCE LAST SESSION]",

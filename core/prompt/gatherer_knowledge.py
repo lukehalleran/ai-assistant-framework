@@ -1167,3 +1167,42 @@ class KnowledgeRetrievalMixin:
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to retrieve narrative context: {e}")
             return ""
+
+    async def get_daemon_self_notes(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Retrieve daemon self-notes relevant to the query.
+
+        Queries the daemon_self_notes ChromaDB collection, filtering out
+        superseded notes. Results are used in the prompt's [DAEMON SELF-NOTES] section.
+
+        Returns:
+            List of note dicts with content, metadata, relevance_score
+        """
+        chroma = getattr(self, '_chroma_store', None) or (
+            getattr(self.memory_coordinator, 'chroma_store', None)
+            if self.memory_coordinator else None
+        )
+        if not chroma:
+            return []
+
+        try:
+            results = chroma.query_collection(
+                "daemon_self_notes",
+                query_text=query,
+                n_results=limit * 2,
+            )
+            if not results:
+                return []
+
+            # Filter out superseded notes
+            filtered = []
+            for item in results:
+                meta = item.get("metadata", {}) or {}
+                if meta.get("status") == "superseded":
+                    continue
+                filtered.append(item)
+
+            return filtered[:limit]
+
+        except Exception as e:
+            logger.debug(f"[ContextGatherer] daemon_self_notes retrieval failed: {e}")
+            return []

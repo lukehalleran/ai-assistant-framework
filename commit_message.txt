@@ -1,32 +1,53 @@
-refactor: extract handler helpers + fix GUI streaming + optimize prompt build latency
+feat: document generation pipeline + daemon self-notes system
 
-Three areas of work in one session, all behavior-preserving:
+Two new knowledge subsystems that turn retrieval + memory + agentic tooling
+into durable artifacts.
 
-GUI Bug Fix (gui/launch.py):
-- Fix intermittent bug where response generates but GUI stays at loading spinner
-- Force yield for final chunks carrying debug records (bypass throttle gate)
-- Cancel pending tick tasks on loop break to prevent asyncio interference
-- Catch asyncio.CancelledError (BaseException in Python 3.9+, was uncaught)
-- Safety net: recover response from debug record if placeholder stays stuck
+Document Generation (knowledge/document_generator.py)
+- User says "write a report about X" → gathers sources from web search,
+  ChromaDB (wiki, notes), generates outline + draft with inline citations
+- Output: documents/reports/ or documents/summaries/ with YAML frontmatter,
+  [WEB_N]/[WIKI_N]/[NOTE_N] inline citations, Sources section
+- documents/index.json tracks all generated docs
+- Direct invocation from handler (bypasses agentic loop for reliability)
+- Also registered as agentic tool generate_document for ReAct loop use
+- LLM topic refinement strips conversational filler from queries
+- Token budget doubled to compensate for reasoning token consumption
 
-Complexity Reduction (gui/handlers.py, core/prompt/formatter.py):
-- Extract 10 helpers from handle_submit (1541→1200 LOC, 22% reduction):
-  _safe_count_tokens, _safe_extract_citations, _build_debug_record,
-  _build_provenance, _attach_agentic_provenance, _sanitize_response_text,
-  _strip_echoed_headers, _dispatch_storage, _silent_agentic_retry,
-  _get_session_id — each consolidates a pattern repeated 2-4x across
-  the 6 mode paths (raw/duel/agentic/enhanced/uncertainty/review)
-- Extract _format_summary_section() in formatter.py for 4 identical
-  prompt sections (summaries/reflections), _assemble_prompt 818→768 LOC
+Daemon Self-Notes (knowledge/daemon_notes_manager.py)
+- Daemon leaves structured notes for its own future sessions:
+  implementation decisions, architecture rationale, risks, next steps
+- New ChromaDB collection: daemon_self_notes (ground_truth=False always)
+- Two creation paths: user-directed ("save a note for yourself about X")
+  and autonomous (create_daemon_note tool in ReAct loop)
+- Retrieved via get_daemon_self_notes() in context gatherer, max 2 per prompt
+- Prompt section [DAEMON SELF-NOTES] with caveat: "not user-authored facts"
+- Scoring: COLLECTION_BOOSTS['daemon_self_notes'] = -0.05 (below user content)
+- Registered in eval section_registry (assembly_order=28, ablatable)
+- Added to proactive_context bundle for ablation testing
 
-Latency Optimizations (~11-15s saved on first message):
-- Skip LLM web search trigger when heuristic is decisive (conf=0.0 or >=0.7)
-  Saves ~2-5s on queries that clearly don't need web search
-- Skip LLM compression for items >6x target tokens, go straight to middle-out
-  Saves ~2-3s timeout on large items (e.g. long emails)
-- Set HF_HUB_OFFLINE=1 to skip HuggingFace HTTP HEAD checks on model load (~1s)
-- Make proactive insights non-blocking: fire background warmup on first message,
-  use session cache from message 2+ (~6s off critical path)
+Infrastructure changes:
+- Config: document_generation + daemon_notes YAML/schema/app_config sections
+- Agentic: 2 new tools (generate_document, create_daemon_note) with dispatch,
+  protocol parsing, tool health, progress events
+- Prompt: [DAEMON SELF-NOTES] section in formatter after [PROACTIVE INSIGHTS]
+- Handler: direct invocation for both features with intent veto bypass,
+  correct yield format, web_search_manager resolution, progress indicators
+- System prompt: document generation + self-notes sections added
+- Trigger: regex + LLM-based intent detection (needs_document_generation,
+  needs_self_note_creation in web_search_trigger)
+- Eval: section_registry entry #29, proactive_context bundle, test count update
+- .gitignore: documents/ and daemon_notes/ artifacts
 
-Benchmarks: 305/305 passed at each step, MRR=0.8865 unchanged
-Tests: 2923 passed, 0 failures
+Bug fixes along the way:
+- Fixed pre-existing test_with_mock_model_manager (heuristic short-circuit)
+- Fixed intent classifier vetoing document/self-note triggers
+- Fixed yield format (dict not tuple) for handler direct invocation
+- Fixed path.relative_to() error (both paths must be resolved)
+- Fixed _agentic_query NameError after code restructuring
+- Fixed summary subdirectory pluralization (summarys -> summaries)
+- Fixed topic extraction including conversational filler
+
+Tests: 106 new (67 document_generator + 39 daemon_notes_manager)
+Docs: CLAUDE.md, AGENTIC_SEARCH, ARCHITECTURE_GUIDE, MEMORY_SYSTEM,
+      PROJECT_SKELETON, system_prompt.txt updated

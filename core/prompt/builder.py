@@ -892,6 +892,17 @@ class UnifiedPromptBuilder:
                     _timed_task("visual_memories", self.context_gatherer.get_visual_memories(user_input, eff_max_visual_memories))
                 )
 
+            # Daemon self-notes (working context from prior sessions)
+            try:
+                from config.app_config import DAEMON_NOTES_ENABLED, DAEMON_NOTES_MAX_PER_PROMPT
+                if DAEMON_NOTES_ENABLED and DAEMON_NOTES_MAX_PER_PROMPT > 0:
+                    tasks["daemon_self_notes"] = asyncio.create_task(
+                        _timed_task("daemon_self_notes",
+                                    self.context_gatherer.get_daemon_self_notes(user_input, DAEMON_NOTES_MAX_PER_PROMPT))
+                    )
+            except Exception:
+                pass
+
             # Web search (triggered based on query analysis, suppressed during crisis)
             tasks["web_search"] = asyncio.create_task(
                 _timed_task("web_search", self.context_gatherer._get_web_search_results(user_input, crisis_level, intent_type=intent_type))

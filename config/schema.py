@@ -776,6 +776,25 @@ class PromptsSection(BaseModel):
 # Root model
 # =============================================================================
 
+class DocumentGenerationSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    output_dir: str = "documents"
+    max_sources: int = Field(default=10, ge=1, le=50)
+    report_max_sections: int = Field(default=5, ge=1, le=20)
+    summary_max_sections: int = Field(default=3, ge=1, le=10)
+    report_token_budget: int = Field(default=6000, ge=1000, le=16000)
+    summary_token_budget: int = Field(default=2000, ge=500, le=8000)
+
+
+class DaemonNotesSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    output_dir: str = "daemon_notes"
+    max_per_prompt: int = Field(default=2, ge=0, le=10)
+    collection_boost: float = Field(default=-0.05, ge=-1.0, le=1.0)
+
+
 class DaemonConfig(BaseModel):
     """Root config model — validates the entire config.yaml structure."""
     model_config = ConfigDict(extra="ignore")
@@ -832,6 +851,8 @@ class DaemonConfig(BaseModel):
     security: SecuritySection = Field(default_factory=SecuritySection)
     wiki: WikiSection = Field(default_factory=WikiSection)
     truth_scorer: TruthScorerSection = Field(default_factory=TruthScorerSection)
+    document_generation: DocumentGenerationSection = Field(default_factory=DocumentGenerationSection)
+    daemon_notes: DaemonNotesSection = Field(default_factory=DaemonNotesSection)
 
 
 # =============================================================================

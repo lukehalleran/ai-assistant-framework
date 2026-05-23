@@ -278,6 +278,7 @@ COLLECTION_BOOSTS = config.get("memory", {}).get("collection_boosts", {
     "conversations": 0.0,
     "semantic": 0.05,
     "wiki": 0.05,
+    "daemon_self_notes": -0.05,
 })
 
 # -----------------------------
@@ -1422,6 +1423,37 @@ VISUAL_MEMORY_INGEST_ON_OBSIDIAN_SYNC: bool = bool(VISUAL_MEMORY_CFG.get("ingest
 # Environment variable overrides
 VISUAL_MEMORY_ENABLED = bool(int(os.getenv(
     "VISUAL_MEMORY_ENABLED", "1" if VISUAL_MEMORY_ENABLED else "0"
+)))
+
+# --------------------------------------------------------------------
+# Document Generation (research & save markdown documents)
+# --------------------------------------------------------------------
+DOCUMENT_CFG = config.get("document_generation", {})
+DOCUMENT_GENERATION_ENABLED: bool = bool(DOCUMENT_CFG.get("enabled", True))
+DOCUMENT_OUTPUT_DIR: str = str(DOCUMENT_CFG.get("output_dir", "documents"))
+DOCUMENT_MAX_SOURCES: int = int(DOCUMENT_CFG.get("max_sources", 10))
+DOCUMENT_REPORT_MAX_SECTIONS: int = int(DOCUMENT_CFG.get("report_max_sections", 5))
+DOCUMENT_SUMMARY_MAX_SECTIONS: int = int(DOCUMENT_CFG.get("summary_max_sections", 3))
+DOCUMENT_REPORT_TOKEN_BUDGET: int = int(DOCUMENT_CFG.get("report_token_budget", 6000))
+DOCUMENT_SUMMARY_TOKEN_BUDGET: int = int(DOCUMENT_CFG.get("summary_token_budget", 2000))
+
+# Environment variable overrides
+DOCUMENT_GENERATION_ENABLED = bool(int(os.getenv(
+    "DOCUMENT_GENERATION_ENABLED", "1" if DOCUMENT_GENERATION_ENABLED else "0"
+)))
+
+# --------------------------------------------------------------------
+# Daemon Self-Notes (structured notes for future sessions)
+# --------------------------------------------------------------------
+DAEMON_NOTES_CFG = config.get("daemon_notes", {})
+DAEMON_NOTES_ENABLED: bool = bool(DAEMON_NOTES_CFG.get("enabled", True))
+DAEMON_NOTES_OUTPUT_DIR: str = str(DAEMON_NOTES_CFG.get("output_dir", "daemon_notes"))
+DAEMON_NOTES_MAX_PER_PROMPT: int = int(DAEMON_NOTES_CFG.get("max_per_prompt", 2))
+DAEMON_NOTES_COLLECTION_BOOST: float = float(DAEMON_NOTES_CFG.get("collection_boost", -0.05))
+
+# Environment variable overrides
+DAEMON_NOTES_ENABLED = bool(int(os.getenv(
+    "DAEMON_NOTES_ENABLED", "1" if DAEMON_NOTES_ENABLED else "0"
 )))
 
 # --------------------------------------------------------------------

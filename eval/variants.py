@@ -425,6 +425,7 @@ DEFAULT_BUNDLES: Dict[str, List[str]] = {
         "proactive_insights",
         "unresolved_threads",
         "graph_context",
+        "daemon_self_notes",
     ],
     "personal_context": [
         "user_profile",

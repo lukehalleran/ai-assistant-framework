@@ -1009,7 +1009,35 @@ async def handle_submit(
                 except Exception as e:
                     logger.debug(f"[Handle Submit] Previous-turn agentic check failed (non-fatal): {e}")
 
-        if not needs_computation and not needs_memory and not needs_knowledge and not needs_web_search and not needs_tools and any(_skip_patterns) and not _prev_was_agentic:
+        # --- Document generation intent check (before generic agentic) ---
+        _doc_gen_intent = None
+        try:
+            from knowledge.document_generator import detect_document_intent
+            _doc_gen_intent = detect_document_intent(user_text)
+            if _doc_gen_intent:
+                logger.warning(f"[Handle Submit] DOCUMENT GENERATION DETECTED: {_doc_gen_intent}")
+                should_use_agentic = True
+                needs_tools = True
+                search_terms = []
+        except Exception as e:
+            logger.warning(f"[Handle Submit] Document intent check FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # --- Self-note intent check ---
+        _self_note_intent = None
+        try:
+            from knowledge.daemon_notes_manager import detect_self_note_intent
+            _self_note_intent = detect_self_note_intent(user_text)
+            if _self_note_intent:
+                logger.warning(f"[Handle Submit] SELF-NOTE DETECTED: {_self_note_intent}")
+                should_use_agentic = True
+                needs_tools = True
+                search_terms = []
+        except Exception as e:
+            logger.debug(f"[Handle Submit] Self-note intent check failed: {e}")
+
+        if not _doc_gen_intent and not _self_note_intent and not needs_computation and not needs_memory and not needs_knowledge and not needs_web_search and not needs_tools and any(_skip_patterns) and not _prev_was_agentic:
             logger.debug("[Handle Submit] Agentic skipped - casual/short message")
             should_use_agentic = False
             search_terms = []
@@ -1061,6 +1089,18 @@ async def handle_submit(
                         needs_knowledge = True
                         search_terms = []
 
+                    # LLM-based document generation detection
+                    elif getattr(trigger_decision, 'needs_document_generation', False):
+                        logger.info("[Handle Submit] Agentic triggered - LLM detected document generation intent")
+                        should_use_agentic = True
+                        needs_tools = True
+                        search_terms = []
+                        _doc_gen_intent = {
+                            "topic": getattr(trigger_decision, 'document_topic', '') or user_text,
+                            "doc_type": getattr(trigger_decision, 'document_type', 'report') or 'report',
+                            "focus": None,
+                        }
+
                     logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, needs_memory={needs_memory}, needs_knowledge={needs_knowledge}, terms={search_terms}")
                 except Exception as e:
                     logger.warning(f"[Handle Submit] Agentic trigger check failed: {e}")
@@ -1075,7 +1115,7 @@ async def handle_submit(
         _has_explicit_search_keyword = any(kw in _lower for kw in [
             'search', 'look up', 'fetch', 'check out', 'go to', 'visit', 'pull up',
         ]) or _has_url
-        if should_use_agentic and not _has_explicit_search_keyword:
+        if should_use_agentic and not _has_explicit_search_keyword and not _doc_gen_intent and not _self_note_intent:
             _intent_info = raw_context.get("intent") if raw_context else None
             if _intent_info:
                 _intent_type = getattr(_intent_info, 'intent_type', None) if not isinstance(_intent_info, dict) else _intent_info.get('intent_type')
@@ -1086,6 +1126,128 @@ async def handle_submit(
                     logger.info(f"[Handle Submit] Agentic VETOED by intent classifier: {_intent_type} (conf={_intent_conf:.2f})")
                     should_use_agentic = False
                     search_terms = []
+
+        # --- Direct document generation (bypasses agentic loop) ---
+        if _doc_gen_intent and should_use_agentic:
+            logger.warning(f"[Handle Submit] DIRECT DOCUMENT GENERATION: {_doc_gen_intent}")
+            try:
+                from knowledge.document_generator import DocumentGenerator
+
+                # Resolve web_search_manager: same path the orchestrator uses
+                _wsm = None
+                _pb = getattr(orchestrator, 'prompt_builder', None)
+                if _pb:
+                    _cg = getattr(_pb, 'context_gatherer', None)
+                    if _cg:
+                        _wsm = getattr(_cg, 'web_search_manager', None)
+
+                # Resolve chroma_store
+                _cs = None
+                _ms = getattr(orchestrator, 'memory_system', None)
+                if _ms:
+                    _cs = getattr(_ms, 'chroma_store', None)
+
+                _dg = DocumentGenerator(
+                    model_manager=orchestrator.model_manager,
+                    web_search_manager=_wsm,
+                    chroma_store=_cs,
+                )
+
+                yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
+
+                _doc_result = await _dg.generate(
+                    topic=_doc_gen_intent["topic"],
+                    doc_type=_doc_gen_intent["doc_type"],
+                    focus=_doc_gen_intent.get("focus"),
+                )
+
+                _doc_response = (
+                    f"Document saved: **{_doc_result.title}**\n\n"
+                    f"- **Path**: `{_doc_result.path}`\n"
+                    f"- **Type**: {_doc_result.doc_type}\n"
+                    f"- **Sources**: {len(_doc_result.sources)}\n"
+                    f"- **Sections**: {_doc_result.sections_count}\n"
+                    f"- **Words**: {_doc_result.word_count}\n"
+                )
+                logger.info(f"[Handle Submit] Document generated: {_doc_result.path}")
+
+                # Store interaction
+                if orchestrator.memory_system:
+                    try:
+                        await orchestrator.memory_system.store_interaction(
+                            query=user_text,
+                            response=_doc_response,
+                            tags=["document_generation"],
+                        )
+                    except Exception:
+                        pass
+
+                yield {"role": "assistant", "content": _doc_response}
+                return
+
+            except Exception as e:
+                logger.error(f"[Handle Submit] Direct document generation failed: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fall through to normal agentic/enhanced mode
+
+        # --- Direct daemon self-note creation (bypasses agentic loop) ---
+        if _self_note_intent and should_use_agentic:
+            logger.warning(f"[Handle Submit] DIRECT SELF-NOTE CREATION: {_self_note_intent}")
+            try:
+                from knowledge.daemon_notes_manager import DaemonNotesManager
+
+                _cs = None
+                _ms = getattr(orchestrator, 'memory_system', None)
+                if _ms:
+                    _cs = getattr(_ms, 'chroma_store', None)
+
+                _dnm = DaemonNotesManager(
+                    model_manager=orchestrator.model_manager,
+                    chroma_store=_cs,
+                )
+
+                yield {"role": "assistant", "content": f"🗒️ Saving self-note: {_self_note_intent['topic']}...", "is_progress": True}
+
+                # Use the LLM to generate a proper summary from context
+                _note_summary = await _dnm._generate_summary(
+                    _self_note_intent["topic"],
+                    orchestrator.model_manager,
+                )
+
+                _note_result = await _dnm.create_note(
+                    title=_self_note_intent["topic"],
+                    category=_self_note_intent["category"],
+                    summary=_note_summary,
+                    confidence="medium",
+                )
+
+                _note_response = (
+                    f"Self-note saved: **{_note_result.title}**\n\n"
+                    f"- **Path**: `{_note_result.path}`\n"
+                    f"- **Category**: {_note_result.category}\n"
+                    f"- **Confidence**: {_note_result.confidence}\n"
+                    f"- **ID**: {_note_result.id}\n"
+                )
+                logger.info(f"[Handle Submit] Self-note created: {_note_result.path}")
+
+                if orchestrator.memory_system:
+                    try:
+                        await orchestrator.memory_system.store_interaction(
+                            query=user_text,
+                            response=_note_response,
+                            tags=["daemon_self_note"],
+                        )
+                    except Exception:
+                        pass
+
+                yield {"role": "assistant", "content": _note_response}
+                return
+
+            except Exception as e:
+                logger.error(f"[Handle Submit] Direct self-note creation failed: {e}")
+                import traceback
+                traceback.print_exc()
 
         if should_use_agentic:
             logger.warning("[Handle Submit] AGENTIC SEARCH MODE - routing through agentic controller")
@@ -1104,7 +1266,6 @@ async def handle_submit(
                 import re as _re_url
                 _url_pattern = _re_url.compile(r'https?://[^\s<>"\')\]]+')
                 _extracted_urls = _url_pattern.findall(user_text)
-                logger.debug(f"[Handle Submit] Extracted URLs: {_extracted_urls}")
 
                 # Run agentic search loop with RAG context
                 agentic_response = ""
@@ -1170,6 +1331,10 @@ async def handle_submit(
                             "expanding_memory": "🧠",
                             "memory_expanded": "✅",
                             "synthesizing": "✨",
+                            "generating_document": "📝",
+                            "document_generated": "✅",
+                            "saving_note": "🗒️",
+                            "note_saved": "✅",
                             "done": "✅",
                             "error": "❌",
                         }.get(item.event_type, "•")

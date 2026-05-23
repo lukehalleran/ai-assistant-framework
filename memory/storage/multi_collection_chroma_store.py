@@ -114,6 +114,7 @@ class MultiCollectionChromaStore:
             'threads': None,             # Open threads (commitments, deadlines, questions)
             'synthesis_results': None,   # Cross-domain synthesis insights from graph walks
             'visual_memories': None,     # CLIP-embedded image metadata for visual recall
+            'daemon_self_notes': None,   # Daemon's own working notes for future sessions
         }
 
         # Lazy init: collections are opened on first access via _get_collection()
