@@ -1,53 +1,29 @@
-feat: document generation pipeline + daemon self-notes system
+feat: autonomous self-note guardrails — session cap, dedup, failure gating
 
-Two new knowledge subsystems that turn retrieval + memory + agentic tooling
-into durable artifacts.
+Hardens the autonomous note-writing path (create_daemon_note agentic tool)
+to prevent memory pollution, spam, and feedback-loop drift.
 
-Document Generation (knowledge/document_generator.py)
-- User says "write a report about X" → gathers sources from web search,
-  ChromaDB (wiki, notes), generates outline + draft with inline citations
-- Output: documents/reports/ or documents/summaries/ with YAML frontmatter,
-  [WEB_N]/[WIKI_N]/[NOTE_N] inline citations, Sources section
-- documents/index.json tracks all generated docs
-- Direct invocation from handler (bypasses agentic loop for reliability)
-- Also registered as agentic tool generate_document for ReAct loop use
-- LLM topic refinement strips conversational filler from queries
-- Token budget doubled to compensate for reasoning token consumption
+Guardrails added to daemon_notes_manager.py:
+- Per-session cap: max 3 autonomous notes per session, resets on new session_id
+- Semantic dedup: queries daemon_self_notes before writing, skips if similarity >= 0.85
+- Session ID tracking: session_id field added to DaemonNote dataclass + ChromaDB metadata
+- create_autonomous_note() method: wraps create_note() with all guardrails,
+  returns None (silent skip) when rejected
 
-Daemon Self-Notes (knowledge/daemon_notes_manager.py)
-- Daemon leaves structured notes for its own future sessions:
-  implementation decisions, architecture rationale, risks, next steps
-- New ChromaDB collection: daemon_self_notes (ground_truth=False always)
-- Two creation paths: user-directed ("save a note for yourself about X")
-  and autonomous (create_daemon_note tool in ReAct loop)
-- Retrieved via get_daemon_self_notes() in context gatherer, max 2 per prompt
-- Prompt section [DAEMON SELF-NOTES] with caveat: "not user-authored facts"
-- Scoring: COLLECTION_BOOSTS['daemon_self_notes'] = -0.05 (below user content)
-- Registered in eval section_registry (assembly_order=28, ablatable)
-- Added to proactive_context bundle for ablation testing
+Status enum expanded:
+- Added tentative, hypothesis, failed_attempt to VALID_STATUSES
+- Autonomous notes default to status=tentative, confidence=tentative
+- Allows marking failed approaches distinctly from confirmed decisions
 
-Infrastructure changes:
-- Config: document_generation + daemon_notes YAML/schema/app_config sections
-- Agentic: 2 new tools (generate_document, create_daemon_note) with dispatch,
-  protocol parsing, tool health, progress events
-- Prompt: [DAEMON SELF-NOTES] section in formatter after [PROACTIVE INSIGHTS]
-- Handler: direct invocation for both features with intent veto bypass,
-  correct yield format, web_search_manager resolution, progress indicators
-- System prompt: document generation + self-notes sections added
-- Trigger: regex + LLM-based intent detection (needs_document_generation,
-  needs_self_note_creation in web_search_trigger)
-- Eval: section_registry entry #29, proactive_context bundle, test count update
-- .gitignore: documents/ and daemon_notes/ artifacts
+Agentic tool dispatch (core/agentic/tools.py):
+- _execute_create_daemon_note now uses create_autonomous_note() instead of create_note()
+- Singleton _daemon_notes_manager for session cap tracking across agentic rounds
+- Returns "[Self-note skipped by guardrails]" when cap/dedup rejects
 
-Bug fixes along the way:
-- Fixed pre-existing test_with_mock_model_manager (heuristic short-circuit)
-- Fixed intent classifier vetoing document/self-note triggers
-- Fixed yield format (dict not tuple) for handler direct invocation
-- Fixed path.relative_to() error (both paths must be resolved)
-- Fixed _agentic_query NameError after code restructuring
-- Fixed summary subdirectory pluralization (summarys -> summaries)
-- Fixed topic extraction including conversational filler
-
-Tests: 106 new (67 document_generator + 39 daemon_notes_manager)
-Docs: CLAUDE.md, AGENTIC_SEARCH, ARCHITECTURE_GUIDE, MEMORY_SYSTEM,
-      PROJECT_SKELETON, system_prompt.txt updated
+Tests: 9 new guardrail tests (48 total for daemon_notes_manager)
+- Per-session cap enforced + resets on new session
+- Semantic dedup rejects duplicates, allows different content
+- Status defaults to tentative for autonomous notes
+- failed_attempt and hypothesis statuses work
+- ChromaDB metadata includes session_id and ground_truth=False
+- Notes only go to daemon_self_notes collection, never facts
