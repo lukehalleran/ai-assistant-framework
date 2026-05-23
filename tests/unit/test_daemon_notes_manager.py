@@ -22,6 +22,8 @@ from knowledge.daemon_notes_manager import (
     detect_self_note_intent,
     VALID_CATEGORIES,
     VALID_CONFIDENCE,
+    MAX_AUTONOMOUS_NOTES_PER_SESSION,
+    DEDUP_SIMILARITY_THRESHOLD,
 )
 
 
@@ -357,3 +359,169 @@ class TestTriggerDetection:
         result = detect_self_note_intent("save a note for yourself about the memory scoring algorithm")
         assert result is not None
         assert "memory scoring" in result["topic"].lower()
+
+
+# ############################################################################
+#
+#  Autonomous note guardrails
+#
+# ############################################################################
+
+class TestAutonomousGuardrails:
+
+    @pytest.fixture
+    def auto_manager(self, mock_model_manager, mock_chroma_store, tmp_path):
+        """Manager for autonomous note tests."""
+        # Make chroma query return empty (no duplicates by default)
+        mock_chroma_store.query_collection = MagicMock(return_value=[])
+        return DaemonNotesManager(
+            model_manager=mock_model_manager,
+            chroma_store=mock_chroma_store,
+            output_dir=tmp_path / "daemon_notes",
+            repo_root=tmp_path,
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_session_cap(self, auto_manager):
+        """After MAX_AUTONOMOUS_NOTES_PER_SESSION, notes are rejected."""
+        session = "test-session-123"
+        created = []
+        for i in range(MAX_AUTONOMOUS_NOTES_PER_SESSION + 2):
+            result = await auto_manager.create_autonomous_note(
+                title=f"Note {i}",
+                category="implementation",
+                summary=f"This is autonomous note number {i} with enough text.",
+                session_id=session,
+            )
+            created.append(result)
+
+        # First N should succeed
+        assert all(n is not None for n in created[:MAX_AUTONOMOUS_NOTES_PER_SESSION])
+        # Remaining should be None (skipped)
+        assert all(n is None for n in created[MAX_AUTONOMOUS_NOTES_PER_SESSION:])
+
+    @pytest.mark.asyncio
+    async def test_session_reset(self, auto_manager):
+        """New session_id resets the counter."""
+        for i in range(MAX_AUTONOMOUS_NOTES_PER_SESSION):
+            await auto_manager.create_autonomous_note(
+                title=f"Session 1 Note {i}",
+                category="research",
+                summary=f"Note from session one, number {i} with detail.",
+                session_id="session-1",
+            )
+
+        # Cap reached for session-1
+        result = await auto_manager.create_autonomous_note(
+            title="Should be rejected",
+            category="research",
+            summary="This should be rejected due to session cap.",
+            session_id="session-1",
+        )
+        assert result is None
+
+        # New session resets
+        result = await auto_manager.create_autonomous_note(
+            title="New session note",
+            category="research",
+            summary="This is from a new session and should succeed.",
+            session_id="session-2",
+        )
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_semantic_dedup_skips_duplicate(self, auto_manager, mock_chroma_store):
+        """Near-duplicate notes are rejected."""
+        # Mock ChromaDB returning a high-similarity match
+        mock_chroma_store.query_collection = MagicMock(return_value=[
+            {"content": "Very similar content", "relevance_score": 0.92, "metadata": {}}
+        ])
+
+        result = await auto_manager.create_autonomous_note(
+            title="Duplicate Note",
+            category="implementation",
+            summary="This is very similar to an existing note.",
+            session_id="test",
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_semantic_dedup_allows_different(self, auto_manager, mock_chroma_store):
+        """Sufficiently different notes pass dedup."""
+        mock_chroma_store.query_collection = MagicMock(return_value=[
+            {"content": "Different content", "relevance_score": 0.3, "metadata": {}}
+        ])
+
+        result = await auto_manager.create_autonomous_note(
+            title="Unique Note",
+            category="implementation",
+            summary="This is sufficiently different from existing notes.",
+            session_id="test",
+        )
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_status_defaults_to_tentative(self, auto_manager):
+        """Autonomous notes default to tentative status."""
+        result = await auto_manager.create_autonomous_note(
+            title="Tentative Note",
+            category="decisions",
+            summary="This should have tentative status by default.",
+            session_id="test",
+        )
+        assert result is not None
+        assert result.status == "tentative"
+
+    @pytest.mark.asyncio
+    async def test_failed_attempt_status(self, auto_manager):
+        """Notes can be marked as failed_attempt."""
+        result = await auto_manager.create_autonomous_note(
+            title="Failed Approach",
+            category="implementation",
+            summary="Tried using the agentic loop for direct invocation. It did not work.",
+            session_id="test",
+            status="failed_attempt",
+        )
+        assert result is not None
+        assert result.status == "failed_attempt"
+
+    @pytest.mark.asyncio
+    async def test_hypothesis_status(self, auto_manager):
+        """Notes can be marked as hypothesis."""
+        result = await auto_manager.create_autonomous_note(
+            title="Embedding Hypothesis",
+            category="research",
+            summary="BGE-small may outperform MiniLM for this use case based on initial results.",
+            session_id="test",
+            status="hypothesis",
+        )
+        assert result is not None
+        assert result.status == "hypothesis"
+
+    @pytest.mark.asyncio
+    async def test_chromadb_metadata_has_session_id(self, auto_manager, mock_chroma_store):
+        """Autonomous notes include session_id in ChromaDB metadata."""
+        result = await auto_manager.create_autonomous_note(
+            title="Audit Trail Test",
+            category="implementation",
+            summary="This note should have session_id in its metadata.",
+            session_id="session-audit-123",
+        )
+        assert result is not None
+        call_args = mock_chroma_store.add_to_collection.call_args
+        meta = call_args[1]["metadata"]
+        assert meta["ground_truth"] is False
+        assert meta["source_type"] == "daemon_self_note"
+
+    @pytest.mark.asyncio
+    async def test_note_does_not_enter_user_profile(self, auto_manager, mock_chroma_store):
+        """Autonomous notes only go to daemon_self_notes, never to facts or user_profile."""
+        await auto_manager.create_autonomous_note(
+            title="Should Not Be A Fact",
+            category="implementation",
+            summary="This note must not appear in the facts collection.",
+            session_id="test",
+        )
+        call_args = mock_chroma_store.add_to_collection.call_args
+        collection_name = call_args[0][0] if call_args[0] else call_args[1].get("name", "")
+        assert collection_name == "daemon_self_notes"

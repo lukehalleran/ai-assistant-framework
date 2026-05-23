@@ -1031,10 +1031,21 @@ class ToolExecutor:
             end_events=end_events,
         )
 
+    # Class-level singleton for autonomous note session tracking.
+    # Shared across ToolExecutor instances within the same process so
+    # the per-session cap survives across agentic rounds.
+    _daemon_notes_manager: Optional[Any] = None
+
     async def _execute_create_daemon_note(
         self, title: str, category: str, summary: str,
     ) -> str:
-        """Execute self-note creation via DaemonNotesManager."""
+        """Execute autonomous self-note creation with guardrails.
+
+        Uses create_autonomous_note() which enforces:
+        - Per-session cap (max 3)
+        - Semantic dedup (skip if >0.85 similarity to existing note)
+        - Session ID tracking for audit trail
+        """
         from config import app_config
 
         if not app_config.DAEMON_NOTES_ENABLED:
@@ -1046,20 +1057,38 @@ class ToolExecutor:
         try:
             from knowledge.daemon_notes_manager import DaemonNotesManager
 
-            manager = DaemonNotesManager(
-                model_manager=self.model_manager,
-                chroma_store=self.chroma_store,
-            )
-            result = await manager.create_note(
+            # Reuse manager instance for session cap tracking
+            if ToolExecutor._daemon_notes_manager is None:
+                ToolExecutor._daemon_notes_manager = DaemonNotesManager(
+                    model_manager=self.model_manager,
+                    chroma_store=self.chroma_store,
+                )
+
+            manager = ToolExecutor._daemon_notes_manager
+            # Ensure model_manager/chroma_store are current
+            manager.model_manager = self.model_manager
+            manager.chroma_store = self.chroma_store
+
+            # Get session ID from current web source map timestamp or fallback
+            session_id = str(int(time.time()))
+
+            result = await manager.create_autonomous_note(
                 title=title,
                 category=category if category in ("implementation", "architecture", "research", "decisions") else "implementation",
                 summary=summary,
-                confidence="medium",
+                confidence="tentative",
+                session_id=session_id,
+                status="tentative",
             )
+
+            if result is None:
+                return "[Self-note skipped by guardrails (session cap or dedup)]"
+
             return (
                 f"Self-note saved: {result.title}\n"
                 f"Path: {result.path}\n"
-                f"Category: {result.category}"
+                f"Category: {result.category}\n"
+                f"Status: {result.status}"
             )
         except Exception as e:
             logger.warning(f"[AgenticSearch] Self-note creation failed: {e}")

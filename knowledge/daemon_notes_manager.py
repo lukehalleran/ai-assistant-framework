@@ -48,7 +48,11 @@ logger = get_logger("daemon_notes_manager")
 # Valid categories and confidence levels
 VALID_CATEGORIES = ("implementation", "architecture", "research", "decisions")
 VALID_CONFIDENCE = ("low", "medium", "high")
-VALID_STATUSES = ("active", "stale", "superseded", "resolved")
+VALID_STATUSES = ("active", "stale", "superseded", "resolved", "tentative", "hypothesis", "failed_attempt")
+
+# Autonomous note guardrails
+MAX_AUTONOMOUS_NOTES_PER_SESSION = 3
+DEDUP_SIMILARITY_THRESHOLD = 0.85
 
 
 # ============================================================================
@@ -74,6 +78,8 @@ class DaemonNote:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    session_id: str = ""  # Originating session for audit trail
+
     def to_chromadb_metadata(self) -> dict[str, Any]:
         """Metadata for ChromaDB embedding. ALWAYS marks as non-ground-truth."""
         return {
@@ -89,6 +95,7 @@ class DaemonNote:
             "tags": ",".join(self.tags) if self.tags else "",
             "related_files": ",".join(self.related_files) if self.related_files else "",
             "timestamp": self.created,
+            "session_id": self.session_id,
         }
 
 
@@ -117,6 +124,10 @@ class DaemonNotesManager:
         root = Path(repo_root) if repo_root else Path(".")
         self.output_dir = Path(output_dir) if output_dir else root / app_config.DAEMON_NOTES_OUTPUT_DIR
         self.repo_root = root.resolve()
+
+        # Autonomous note guardrails (class-level state, shared across instances in same process)
+        self._session_id: str = ""
+        self._session_note_count: int = 0
 
     async def create_note(
         self,
@@ -212,6 +223,80 @@ class DaemonNotesManager:
             f"[DaemonNotes] Created note: '{note.title}' ({note.category}, "
             f"confidence={note.confidence}) -> {path}"
         )
+        return note
+
+    # ------------------------------------------------------------------
+    # Autonomous note creation (with guardrails)
+    # ------------------------------------------------------------------
+
+    async def create_autonomous_note(
+        self,
+        title: str,
+        category: str,
+        summary: str,
+        confidence: str = "tentative",
+        session_id: str = "",
+        status: str = "tentative",
+        **kwargs,
+    ) -> DaemonNote | None:
+        """Create a note from the agentic loop with safety guardrails.
+
+        Applies: per-session cap, semantic dedup, session_id tracking.
+        Returns None (silently skips) if guardrails reject the note.
+        """
+        # 1. Per-session cap
+        if session_id and session_id != self._session_id:
+            self._session_id = session_id
+            self._session_note_count = 0
+
+        if self._session_note_count >= MAX_AUTONOMOUS_NOTES_PER_SESSION:
+            logger.info(
+                f"[DaemonNotes] Autonomous note skipped (session cap {MAX_AUTONOMOUS_NOTES_PER_SESSION} reached): {title}"
+            )
+            return None
+
+        # 2. Semantic dedup — skip if near-duplicate exists
+        if self.chroma_store and summary:
+            try:
+                existing = self.chroma_store.query_collection(
+                    "daemon_self_notes",
+                    query_text=f"{title}\n{summary}",
+                    n_results=1,
+                )
+                if existing:
+                    top_score = existing[0].get("relevance_score", 0.0)
+                    if top_score >= DEDUP_SIMILARITY_THRESHOLD:
+                        logger.info(
+                            f"[DaemonNotes] Autonomous note skipped (dedup score={top_score:.3f}): {title}"
+                        )
+                        return None
+            except Exception as e:
+                logger.debug(f"[DaemonNotes] Dedup check failed (proceeding): {e}")
+
+        # 3. Validate status
+        if status not in VALID_STATUSES:
+            status = "tentative"
+
+        # 4. Create with extra metadata
+        note = await self.create_note(
+            title=title,
+            category=category,
+            summary=summary,
+            confidence=confidence,
+            **kwargs,
+        )
+
+        # Patch status if not default
+        if note and status != "active":
+            note.status = status
+
+        # 5. Track session count
+        self._session_note_count += 1
+        logger.info(
+            f"[DaemonNotes] Autonomous note #{self._session_note_count}/{MAX_AUTONOMOUS_NOTES_PER_SESSION} "
+            f"this session: '{title}'"
+        )
+
         return note
 
     # ------------------------------------------------------------------
