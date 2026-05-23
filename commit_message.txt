@@ -1,22 +1,28 @@
-feat: standalone grab-and-go utilities — agent_guard + project_proposer
+feat: standalone memory scorer — 12-step ranking + evidence-based truth
 
-Two self-contained single-file utilities extracted from Daemon, zero coupling
-to the main project. Each file is drop-in ready for any Python 3.10+ project.
+Single-file memory/document scoring engine extracted from Daemon, zero external
+dependencies. Drop-in ready for any Python 3.9+ RAG system.
 
-agent_guard.py (952 lines, stdlib only)
-- Three-layer agent safety: git command classifier, shell command classifier,
-  Python FS monkey-patching (10 functions: os.remove, shutil.rmtree, etc.)
-- ContextVar-based agent_mode() — async-safe, only guards agent-originated calls
-- Two-tier blocking: always-blocked (., .., /, ~, *) + configurable protected paths
-- Unlock via env var (ALLOW_DESTRUCTIVE_OPS=1) or one-shot lockfile
+memory_scorer.py (680 lines, stdlib only)
+- MemoryScorer: 12-step ranking pipeline — relevance + collection boost,
+  two-regime temporal decay (small/large anchor), evidence-based truth,
+  importance, stemmed token continuity + tag matching, structural alignment
+  (math-aware), topic match, deictic follow-up handling, meta-conversational
+  bonus, optional graph proximity boost, staleness penalty with steep threshold
+- TruthScorer: stateless evidence-based truth — source-dependent initial scores,
+  confirmation boost, correction/contradiction penalties, weekly time decay
+  toward configurable floor. All state lives in document metadata.
+- ScorerConfig: single dataclass with all tunable knobs and sensible defaults
+- GraphScorerProtocol: optional runtime-checkable protocol for plugging in
+  any knowledge graph backend
+- CLI: `python memory_scorer.py demo|score|truth`
 
-project_proposer.py (685 lines, stdlib only, optional openai/anthropic SDK)
-- Scans project docs (README, CLAUDE.md, GOALS.md, etc.), git log, structure,
-  and metadata (pyproject.toml, package.json, Cargo.toml, go.mod)
-- Generates structured feature proposals via pluggable LLM callable
-- Built-in adapters for OpenAI and Anthropic, or bring-your-own callable
-- CLI: python project_proposer.py --provider openai --model gpt-4o
+Key design choices vs Daemon's version:
+- TruthScorer is instance-based (config-injectable) instead of static methods
+- Graph integration via clean Protocol instead of importing graph_utils
+- time_fn parameter replaces time_manager dependency
+- All config constants inlined as ScorerConfig defaults matching production values
 
-Tests: 213 total (154 guard + 59 proposer), 0.36s, no API keys needed
-Docs: Architecture + skeleton docs for both, module contracts on all files
-Verified against Flask (Python), Ruff (Rust), Express (Node) repos
+Tests: 94 new (307 total across all 3 modules), 0.35s, no external deps
+Docs: Full architecture doc + README section + CLI examples
+Verified standalone from isolated /tmp directory with zero Daemon imports
