@@ -2,9 +2,9 @@
 
 Grab-and-go single-file utilities extracted from the [Daemon](https://github.com/your-repo/daemon) project. Each file is fully self-contained — drop it into your project and use it directly.
 
-**Architecture docs**: See `docs/AGENT_GUARD.md` and `docs/PROJECT_PROPOSER.md` for full architecture overviews, data flow diagrams, design decisions, and invariants.
+**Architecture docs**: See `docs/` for full architecture overviews, data flow diagrams, design decisions, and invariants.
 
-**Tests**: `pytest standalone/tests/` — 213 tests, stdlib-only, no API keys needed.
+**Tests**: `pytest tests/` — 307 tests, stdlib-only, no API keys needed.
 
 ## agent_guard.py
 
@@ -112,3 +112,58 @@ By default, the proposer reads (if present):
 - Top-level directory listing
 
 Override with `context_files=["my_doc.md", "docs/plan.md"]`.
+
+---
+
+## memory_scorer.py
+
+**Memory/document scoring and ranking engine for RAG systems.** 12-step scoring pipeline with evidence-based truth scoring, temporal decay, staleness penalties, and optional knowledge-graph boosting.
+
+**Dependencies:** None (Python 3.9+ stdlib only)
+
+### Quick start
+
+```python
+from memory_scorer import MemoryScorer, TruthScorer, ScorerConfig
+
+# Basic — score and rank memories by relevance to a query
+scorer = MemoryScorer()
+ranked = scorer.rank_memories(memories, query="what is my cat's name")
+
+# Custom config
+config = ScorerConfig(
+    recency_decay_rate=0.08,
+    collection_boosts={"facts": 0.20},
+    staleness_enabled=True,
+    debug=True,
+)
+scorer = MemoryScorer(config=config)
+
+# Intent-driven weight overrides (e.g. temporal recall)
+ranked = scorer.rank_memories(
+    memories, query="what happened last tuesday",
+    weight_overrides={"recency": 0.40, "_temporal_anchor_hours": 168},
+)
+```
+
+### Truth Scorer (standalone)
+
+Evidence-based truth with time decay — works independently of the full scorer:
+
+```python
+ts = TruthScorer()
+ts.calculate_initial_score("user_stated")   # 0.80
+ts.apply_confirmation(0.7)                  # 0.85
+ts.apply_correction(0.7)                    # 0.45
+ts.compute_effective_truth(metadata_dict)   # applies decay automatically
+```
+
+### CLI
+
+```bash
+python memory_scorer.py demo                    # interactive demo
+python memory_scorer.py score '{"..."}' --query "test"  # score one memory
+python memory_scorer.py truth '{"truth_score": 0.8}'    # compute truth
+```
+
+See `docs/MEMORY_SCORER.md` for full docs, graph scoring protocol, and memory dict format.
