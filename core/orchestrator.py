@@ -1361,6 +1361,85 @@ class DaemonOrchestrator:
             # (model_name already determined earlier for image loading)
             _t_gen_start = _time_mod.perf_counter()
 
+            # --- Document Generation Check ---
+            # Check for document generation intent BEFORE generic agentic search.
+            # If detected, enter agentic mode with generate_document as primary action.
+            _doc_intent = None
+            if use_agentic_search and not use_raw_mode and self.agentic_controller:
+                try:
+                    from knowledge.document_generator import detect_document_intent
+                    _doc_intent = detect_document_intent(user_input)
+                except Exception:
+                    pass
+
+            if _doc_intent and self.agentic_controller:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            f"[Orchestrator] Document generation detected: "
+                            f"topic={_doc_intent['topic']}, type={_doc_intent['doc_type']}"
+                        )
+
+                    from core.agentic import ProgressEvent
+
+                    # Augment user query with explicit generate_document instruction
+                    doc_query = (
+                        f"{user_input}\n\n"
+                        f"[SYSTEM: The user wants a {_doc_intent['doc_type']} document. "
+                        f"Use the generate_document tool with topic=\"{_doc_intent['topic']}\", "
+                        f"doc_type=\"{_doc_intent['doc_type']}\""
+                        + (f", focus=\"{_doc_intent['focus']}\"" if _doc_intent.get("focus") else "")
+                        + ".]"
+                    )
+
+                    full_response = ""
+                    async for event_or_chunk in self.agentic_controller.run_agentic_search(
+                        query=doc_query,
+                        system_prompt=system_prompt or "",
+                        model_name=model_name,
+                        initial_search_terms=[_doc_intent["topic"]],
+                        initial_context=prompt_ctx,
+                        crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
+                    ):
+                        if isinstance(event_or_chunk, ProgressEvent):
+                            if self.logger:
+                                self.logger.debug(
+                                    f"[AgenticSearch] {event_or_chunk.event_type}: {event_or_chunk.message}"
+                                )
+                            debug_info.setdefault("agentic_events", []).append({
+                                "type": event_or_chunk.event_type,
+                                "message": event_or_chunk.message,
+                                "round": event_or_chunk.round_number,
+                            })
+                        else:
+                            full_response += event_or_chunk
+
+                    if self.memory_system:
+                        try:
+                            await self.memory_system.store_interaction(
+                                query=user_input,
+                                response=full_response.strip(),
+                                tags=["document_generation"]
+                            )
+                        except Exception:
+                            pass
+
+                    debug_info.update({
+                        "response_length": len(full_response),
+                        "end_time": datetime.now(),
+                        "prompt_length": len(prompt),
+                        "document_generation_used": True,
+                        "doc_intent": _doc_intent,
+                    })
+                    debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
+
+                    return full_response.strip(), debug_info
+
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"[Orchestrator] Document generation failed, falling back: {e}")
+                    debug_info["doc_gen_error"] = str(e)
+
             # --- Agentic Search Check ---
             # If agentic search is requested and available, check if we should use it
             if use_agentic_search and not use_raw_mode and self.agentic_controller:

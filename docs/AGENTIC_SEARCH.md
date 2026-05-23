@@ -15,7 +15,8 @@ When a user query needs external information, Daemon can enter a
 multi-round ReAct (Reasoning + Acting) loop where the LLM iteratively
 decides which tools to call — web search, URL fetch, memory search, Wolfram Alpha,
 Python sandbox, file access, memory expansion, git stats, GitHub API, StackExchange,
-arXiv, PubMed, Hacker News, full-document retrieval, or image recall — until it has enough
+arXiv, PubMed, Hacker News, full-document retrieval, image recall, document
+generation, or daemon self-notes — until it has enough
 context to answer. The loop is budget-enforced and streams progress
 events to the UI in real time.
 
@@ -26,8 +27,8 @@ events to the UI in real time.
 | File | Purpose |
 |------|---------|
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics, nudge retry, no-reasoning decision phase, tool hints |
-| `core/agentic/tools.py` | ToolExecutor: 13 dispatch methods + 11 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary |
-| `core/agentic/formatters.py` | AgenticFormatter: 18 pure formatting methods (context, results, prompts) |
+| `core/agentic/tools.py` | ToolExecutor: 15 dispatch methods + 13 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary |
+| `core/agentic/formatters.py` | AgenticFormatter: 20 pure formatting methods (context, results, prompts) |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing, nested XML support, github_available gating |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
@@ -184,7 +185,7 @@ Search Daemon's own memory and knowledge base.
 Parameters: query (required), collection (required), reason (optional)
 Valid collections: reference_docs, facts, conversations, summaries,
                    reflections, obsidian_notes, wiki_knowledge,
-                   procedural, procedural_skills
+                   procedural, procedural_skills, daemon_self_notes
 Diversity: Per-collection search counts tracked; hints injected after 2+ searches
 wiki_knowledge: ChromaDB is queried first (like all collections). Then FAISS
                 semantic search (41M Wikipedia vectors, ~2 GB IVFPQ index) is
@@ -272,6 +273,34 @@ Parameters: query (required), reason (optional)
 Dispatch: _dispatch_recall_image → _execute_recall_image → VisualRetriever
 Execution: Queries visual_memories ChromaDB collection using CLIP embeddings
            matched against the text query. Returns image metadata and descriptions.
+```
+
+### generate_document
+
+Generate a structured markdown report or summary from web search and memory sources.
+
+```
+Parameters: topic (required), doc_type ("report" or "summary", default "report"), reason (optional)
+Execution: DocumentGenerator.generate() — web search + ChromaDB retrieval, LLM synthesis
+Output: Markdown file in documents/reports/ or documents/summaries/ with YAML frontmatter
+Citations: Inline [WEB_N] references + Sources section
+Index: documents/index.json tracks all generated docs
+Direct trigger: "write a report about X" bypasses agentic loop for direct invocation
+Config: DOCUMENT_* constants; YAML section document_generation:
+```
+
+### create_daemon_note
+
+Save a structured note for Daemon's future sessions (architecture decisions, risks, next steps).
+
+```
+Parameters: topic (required), content (required), reason (optional)
+Execution: DaemonNotesManager.save_note() — writes markdown + stores in ChromaDB
+Output: Markdown file in daemon_notes/{slug}-{date}.md with YAML frontmatter
+Collection: daemon_self_notes (ground_truth: False in metadata)
+Retrieval: get_daemon_self_notes() in context gatherer, max 2 per prompt
+Direct trigger: "save a note for yourself about X" bypasses agentic loop
+Config: DAEMON_NOTES_* constants; YAML section daemon_notes:
 ```
 
 ### done_searching
@@ -473,6 +502,8 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `querying_github` / `github_done` | GitHub API |
 | `fetching_url` / `url_fetched` | URL content fetch |
 | `recalling_image` / `recall_image_done` | Visual memory recall |
+| `generating_document` / `document_generated` | Document generation |
+| `creating_note` / `note_created` | Daemon self-note creation |
 | `synthesizing` | Starting final generation |
 | `done` | Session complete (suppressed in GUI after response starts) |
 | `error` | Error occurred |

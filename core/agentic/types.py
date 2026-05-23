@@ -22,6 +22,7 @@ Public Types:
     - RECALL_IMAGE_TOOL_DEFINITION (visual memory CLIP image search tool schema)
     - FETCH_URL_TOOL_DEFINITION (direct URL content fetching tool schema)
     - GITHUB_TOOL_DEFINITION (read-only GitHub API tool schema)
+    - GENERATE_DOCUMENT_TOOL_DEFINITION (research & save document tool schema)
 
 SearchDecision Fields (extended for multi-tool support):
     - wants_search, search_query, search_reason (web search)
@@ -191,6 +192,18 @@ class SearchDecision:
     wants_github: bool = False
     github_query: Optional[str] = None
     github_reason: Optional[str] = None
+    # Document generation (research & save markdown document)
+    wants_generate_document: bool = False
+    generate_document_topic: Optional[str] = None
+    generate_document_type: Optional[str] = None  # "report" | "summary"
+    generate_document_focus: Optional[str] = None
+    generate_document_reason: Optional[str] = None
+    # Daemon self-note (save working context for future sessions)
+    wants_create_daemon_note: bool = False
+    daemon_note_title: Optional[str] = None
+    daemon_note_category: Optional[str] = None  # implementation | architecture | research | decisions
+    daemon_note_summary: Optional[str] = None
+    daemon_note_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -314,6 +327,10 @@ class AgenticSearchSession:
             return "fetch_url"
         if query.startswith("[GitHub]"):
             return "github"
+        if query.startswith("[Generate Document]"):
+            return "generate_document"
+        if query.startswith("[Self-Note]"):
+            return "daemon_self_note"
         return "web_search"
 
 
@@ -894,6 +911,79 @@ GITHUB_TOOL_DEFINITION = {
                 }
             },
             "required": ["query"]
+        }
+    }
+}
+
+GENERATE_DOCUMENT_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "generate_document",
+        "description": (
+            "Research a topic and save a structured markdown document (report or summary). "
+            "Gathers sources from web search, memory, and notes, then drafts a document "
+            "with inline citations, YAML frontmatter, and a Sources section. "
+            "Saves to documents/ with versioned filenames."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "The topic to research and write about."
+                },
+                "doc_type": {
+                    "type": "string",
+                    "enum": ["report", "summary"],
+                    "description": "Type of document: 'report' (multi-section) or 'summary' (concise)."
+                },
+                "focus": {
+                    "type": "string",
+                    "description": "Optional narrowing focus, e.g. 'economic impact' or 'recent developments'."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this document is needed."
+                }
+            },
+            "required": ["topic", "doc_type"]
+        }
+    }
+}
+
+CREATE_DAEMON_NOTE_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "create_daemon_note",
+        "description": (
+            "Save a structured self-note for future Daemon sessions. "
+            "Use this when you discover something worth remembering: implementation decisions, "
+            "architectural patterns, gotchas, or important context about the user's project. "
+            "Notes are saved to disk and embedded for future retrieval. "
+            "They are NOT user-facing facts — they are your own working context."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short descriptive title for the note (3-100 chars)."
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["implementation", "architecture", "research", "decisions"],
+                    "description": "Category: implementation (how things work), architecture (design patterns), research (findings), decisions (choices made)."
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "2-5 sentence summary of the key information to remember."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this is worth noting for future sessions."
+                }
+            },
+            "required": ["title", "category", "summary"]
         }
     }
 }

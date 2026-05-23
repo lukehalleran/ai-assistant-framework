@@ -158,6 +158,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             ARXIV_TOOL_DEFINITION,
             PUBMED_TOOL_DEFINITION,
             HACKERNEWS_TOOL_DEFINITION,
+            GENERATE_DOCUMENT_TOOL_DEFINITION,
+            CREATE_DAEMON_NOTE_TOOL_DEFINITION,
         )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
@@ -177,6 +179,8 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.arxiv_tool = ARXIV_TOOL_DEFINITION
         self.pubmed_tool = PUBMED_TOOL_DEFINITION
         self.hackernews_tool = HACKERNEWS_TOOL_DEFINITION
+        self.generate_document_tool = GENERATE_DOCUMENT_TOOL_DEFINITION
+        self.create_daemon_note_tool = CREATE_DAEMON_NOTE_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
         self.memory_available = memory_available
@@ -522,6 +526,42 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             return None
 
+        elif func_name == "generate_document":
+            topic = args.get("topic", "")
+            doc_type = args.get("doc_type", "report")
+            focus = args.get("focus")
+            reason = args.get("reason")
+            if topic:
+                logger.debug(f"[AgenticProtocol] Native tool generate_document: {topic} ({doc_type})")
+                return SearchDecision(
+                    wants_generate_document=True,
+                    generate_document_topic=topic,
+                    generate_document_type=doc_type,
+                    generate_document_focus=focus,
+                    generate_document_reason=reason,
+                )
+            else:
+                logger.warning("[AgenticProtocol] generate_document called without topic")
+                return None
+
+        elif func_name == "create_daemon_note":
+            title = args.get("title", "")
+            category = args.get("category", "implementation")
+            summary = args.get("summary", "")
+            reason = args.get("reason")
+            if title and summary:
+                logger.debug(f"[AgenticProtocol] Native tool create_daemon_note: {title} ({category})")
+                return SearchDecision(
+                    wants_create_daemon_note=True,
+                    daemon_note_title=title,
+                    daemon_note_category=category,
+                    daemon_note_summary=summary,
+                    daemon_note_reason=reason,
+                )
+            else:
+                logger.warning(f"[AgenticProtocol] create_daemon_note called without title/summary")
+                return None
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return None
@@ -562,6 +602,9 @@ class NativeToolsHandler(BaseProtocolHandler):
             self.pubmed_tool,
             self.hackernews_tool,
         ])
+        # Document generation + self-notes — always available
+        tools.append(self.generate_document_tool)
+        tools.append(self.create_daemon_note_tool)
         # NOTE: recall_image tool deliberately excluded from iteration tools.
         # Visual memories are already retrieved by the builder's parallel pipeline
         # and included in the initial context. Adding recall_image here causes

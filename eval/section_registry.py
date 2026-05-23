@@ -283,6 +283,17 @@ _register(SectionDef(
 ))
 
 _register(SectionDef(
+    internal_key="daemon_self_notes",
+    header="[DAEMON SELF-NOTES]",
+    source_field="daemon_self_notes",
+    category=SectionCategory.GENERATED_CONTEXT,
+    eligible_for_ablation=True,
+    structurally_required=False,
+    assembly_order=28,
+    notes="Daemon's own working notes from prior sessions. Non-ground-truth, trust-weighted below user content.",
+))
+
+_register(SectionDef(
     internal_key="visual_memories",
     header="[VISUAL MEMORIES]",
     source_field="visual_memories",

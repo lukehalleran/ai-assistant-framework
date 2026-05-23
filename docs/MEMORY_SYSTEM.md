@@ -74,11 +74,11 @@ resolved, and stale information is penalized in ranking.
 ### Storage Layer
 | File | Purpose |
 |------|---------|
-| `memory/storage/multi_collection_chroma_store.py` | ChromaDB wrapper: 13 collections (lazy init via `_get_collection`), `add_to_collection`, `query_collection`, `get_by_id`, `update_metadata`, `get_ids_by_timestamp_range` |
+| `memory/storage/multi_collection_chroma_store.py` | ChromaDB wrapper: 14 collections (lazy init via `_get_collection`), `add_to_collection`, `query_collection`, `get_by_id`, `update_metadata`, `get_ids_by_timestamp_range` |
 
 ---
 
-## 13 ChromaDB Collections
+## 14 ChromaDB Collections
 
 | Collection | Content | Protected | Deduped |
 |------------|---------|-----------|---------|
@@ -95,8 +95,16 @@ resolved, and stale information is penalized in ranking.
 | `threads` | Open threads (commitments, deadlines) | No | Yes |
 | `synthesis_results` | Cross-domain synthesis insights (+ human audit: two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`) | No | Yes |
 | `visual_memories` | CLIP-embedded image metadata for visual recall | No | No |
+| `daemon_self_notes` | Daemon's own session notes (decisions, risks, next steps); `ground_truth: False` in metadata | No | Yes |
 
 **Protected** = never scanned by cross-collection deduplicator.
+
+`daemon_self_notes` is explicitly not ground truth -- all entries carry
+`ground_truth: False` metadata to distinguish them from user-stated facts.
+Retrieved via `get_daemon_self_notes()` in the context gatherer (max 2 per
+prompt), displayed in `[DAEMON SELF-NOTES]` with a caveat label. Scoring
+applies `COLLECTION_BOOSTS['daemon_self_notes'] = -0.05` (slight demotion).
+Registered in eval `section_registry` (assembly_order=28, ablatable).
 
 ---
 
@@ -688,6 +696,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 [KNOWLEDGE GRAPH]                      ← entity relationships (natural language)
 [UNRESOLVED THREADS]                   ← open commitments/deadlines
 [PROACTIVE INSIGHTS]                   ← cross-domain connections
+[DAEMON SELF-NOTES]                    ← Daemon's own session notes (caveat-labeled)
 [USER PROFILE]                         ← categorized facts (high-attention zone)
 [ACTIVE FEATURES]                      ← feature inventory (always)
 [CODEBASE CHANGES SINCE LAST SESSION]  ← git diff (first message only)

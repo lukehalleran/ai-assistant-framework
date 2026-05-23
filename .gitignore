@@ -60,6 +60,15 @@ installer/output/
 *.spec 
 dist/
 
+# --- GENERATED DOCUMENTS ---
+documents/reports/
+documents/summaries/
+documents/index.json
+
+# --- DAEMON SELF-NOTES ---
+daemon_notes/*.md
+daemon_notes/index.json
+
 # --- AGENT SESSION SAFETY ---
 .agent_snapshots/
 .agent_allow_destructive_once

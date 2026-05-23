@@ -168,6 +168,26 @@ class ToolExecutor:
         lines.append("search_pubmed: AVAILABLE (biomedical literature)")
         lines.append("search_hackernews: AVAILABLE (tech news/discussion)")
 
+        # Document generation
+        try:
+            from config.app_config import DOCUMENT_GENERATION_ENABLED
+            if DOCUMENT_GENERATION_ENABLED:
+                lines.append("generate_document: AVAILABLE (research topic → save markdown report/summary to documents/)")
+            else:
+                lines.append("generate_document: DISABLED")
+        except Exception:
+            lines.append("generate_document: DISABLED")
+
+        # Daemon self-notes
+        try:
+            from config.app_config import DAEMON_NOTES_ENABLED
+            if DAEMON_NOTES_ENABLED:
+                lines.append("create_daemon_note: AVAILABLE (save working context for future sessions → daemon_notes/)")
+            else:
+                lines.append("create_daemon_note: DISABLED")
+        except Exception:
+            lines.append("create_daemon_note: DISABLED")
+
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -230,6 +250,10 @@ class ToolExecutor:
             return await self._dispatch_api_search(decision, round_number, "hackernews")
         elif decision.wants_github and decision.github_query:
             return await self._dispatch_github(decision, round_number)
+        elif decision.wants_generate_document and decision.generate_document_topic:
+            return await self._dispatch_generate_document(decision, round_number)
+        elif decision.wants_create_daemon_note and decision.daemon_note_title:
+            return await self._dispatch_create_daemon_note(decision, round_number)
         else:
             return _ToolResult(
                 decision=decision, round_data=None,
@@ -870,7 +894,177 @@ class ToolExecutor:
             end_events=end_events,
         )
 
+    async def _dispatch_generate_document(
+        self, decision: SearchDecision, round_number: int,
+    ) -> _ToolResult:
+        topic = decision.generate_document_topic or "unknown"
+        doc_type = decision.generate_document_type or "report"
+
+        start_events = [ProgressEvent(
+            event_type="generating_document",
+            message=f"Generating {doc_type}: {topic}",
+            round_number=round_number,
+            metadata={"topic": topic, "doc_type": doc_type, "reason": decision.generate_document_reason}
+        )]
+
+        start_time = time.time()
+        doc_result = await self._execute_generate_document(
+            topic, doc_type, decision.generate_document_focus
+        )
+        duration = (time.time() - start_time) * 1000
+
+        round_data = SearchRound(
+            round_number=round_number,
+            request=SearchRequest(
+                query=f"[Generate Document] {topic}",
+                reason=decision.generate_document_reason,
+                round_number=round_number
+            ),
+            results=None,
+            duration_ms=duration
+        )
+        round_data.summary = doc_result
+
+        end_events = [ProgressEvent(
+            event_type="document_generated",
+            message=f"Document saved: {topic}",
+            round_number=round_number,
+            metadata={"duration_ms": duration}
+        )]
+
+        formatted = (
+            f"\n---\n**Round {round_number}: Document Generated**\n"
+            f"{doc_result}\n---\n"
+        )
+
+        return _ToolResult(
+            decision=decision,
+            round_data=round_data,
+            formatted_context=formatted,
+            start_events=start_events,
+            end_events=end_events,
+        )
+
+    async def _execute_generate_document(
+        self, topic: str, doc_type: str, focus: str | None = None,
+    ) -> str:
+        """Execute document generation via DocumentGenerator."""
+        from config import app_config
+
+        if not app_config.DOCUMENT_GENERATION_ENABLED:
+            return "[Document generation is disabled in config]"
+
+        try:
+            from knowledge.document_generator import DocumentGenerator
+
+            generator = DocumentGenerator(
+                model_manager=self.model_manager,
+                web_search_manager=self.web_search_manager,
+                chroma_store=self.chroma_store,
+            )
+            result = await generator.generate(
+                topic=topic,
+                doc_type=doc_type if doc_type in ("report", "summary") else "report",
+                focus=focus,
+            )
+            return (
+                f"Document saved: {result.path}\n"
+                f"Title: {result.title}\n"
+                f"Type: {result.doc_type}\n"
+                f"Sources: {len(result.sources)}\n"
+                f"Sections: {result.sections_count}\n"
+                f"Words: {result.word_count}"
+            )
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] Document generation failed: {e}")
+            return f"[Document generation error: {e}]"
+
     # ------------------------------------------------------------------
+    async def _dispatch_create_daemon_note(
+        self, decision: SearchDecision, round_number: int,
+    ) -> _ToolResult:
+        title = decision.daemon_note_title or "untitled"
+
+        start_events = [ProgressEvent(
+            event_type="saving_note",
+            message=f"Saving self-note: {title}",
+            round_number=round_number,
+            metadata={"title": title, "category": decision.daemon_note_category}
+        )]
+
+        start_time = time.time()
+        note_result = await self._execute_create_daemon_note(
+            title, decision.daemon_note_category or "implementation",
+            decision.daemon_note_summary or "",
+        )
+        duration = (time.time() - start_time) * 1000
+
+        round_data = SearchRound(
+            round_number=round_number,
+            request=SearchRequest(
+                query=f"[Self-Note] {title}",
+                reason=decision.daemon_note_reason,
+                round_number=round_number
+            ),
+            results=None,
+            duration_ms=duration
+        )
+        round_data.summary = note_result
+
+        end_events = [ProgressEvent(
+            event_type="note_saved",
+            message=f"Self-note saved: {title}",
+            round_number=round_number,
+            metadata={"duration_ms": duration}
+        )]
+
+        formatted = (
+            f"\n---\n**Round {round_number}: Self-Note Saved**\n"
+            f"{note_result}\n---\n"
+        )
+
+        return _ToolResult(
+            decision=decision,
+            round_data=round_data,
+            formatted_context=formatted,
+            start_events=start_events,
+            end_events=end_events,
+        )
+
+    async def _execute_create_daemon_note(
+        self, title: str, category: str, summary: str,
+    ) -> str:
+        """Execute self-note creation via DaemonNotesManager."""
+        from config import app_config
+
+        if not app_config.DAEMON_NOTES_ENABLED:
+            return "[Self-notes disabled in config]"
+
+        if not summary or len(summary.strip()) < 10:
+            return "[Self-note skipped: summary too short]"
+
+        try:
+            from knowledge.daemon_notes_manager import DaemonNotesManager
+
+            manager = DaemonNotesManager(
+                model_manager=self.model_manager,
+                chroma_store=self.chroma_store,
+            )
+            result = await manager.create_note(
+                title=title,
+                category=category if category in ("implementation", "architecture", "research", "decisions") else "implementation",
+                summary=summary,
+                confidence="medium",
+            )
+            return (
+                f"Self-note saved: {result.title}\n"
+                f"Path: {result.path}\n"
+                f"Category: {result.category}"
+            )
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] Self-note creation failed: {e}")
+            return f"[Self-note error: {e}]"
+
     # Low-level execution methods
     # ------------------------------------------------------------------
 
