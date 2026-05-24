@@ -705,6 +705,24 @@ class UnifiedPromptBuilder:
                 eff_max_visual_memories = 0
                 logger.debug("[BUILD_PROMPT] No intent overrides + short message — suppressing visual memory")
             eff_max_personal_notes = _ro.get("max_personal_notes", PROMPT_MAX_PERSONAL_NOTES)
+            eff_max_upcoming_schedule = _ro.get("max_upcoming_schedule", 0)
+
+            # Schedule keyword gating: even without intent override, activate
+            # schedule retrieval when query has schedule trigger + temporal signal
+            if eff_max_upcoming_schedule == 0:
+                _ql = user_input.lower()
+                _sched_triggers = (
+                    "schedule", "shift", "free", "busy", "exam", "when do i",
+                    "am i free", "am i off", "do i have anything", "what do i have",
+                )
+                _temporal_signals = (
+                    "today", "tomorrow", "tonight", "this week", "weekend",
+                    "next", "monday", "tuesday", "wednesday", "thursday",
+                    "friday", "saturday", "sunday",
+                )
+                if (any(t in _ql for t in _sched_triggers)
+                        and any(s in _ql for s in _temporal_signals)):
+                    eff_max_upcoming_schedule = 10
 
             if _ro:
                 logger.info(f"[BUILD_PROMPT] Intent retrieval overrides: {_ro}")
@@ -885,6 +903,13 @@ class UnifiedPromptBuilder:
 
                     asyncio.create_task(_warmup_insights())
                     logger.info("[BUILD_PROMPT] Proactive insights: cache cold, warming in background")
+
+            # Upcoming schedule (gated by intent or keyword detection)
+            if eff_max_upcoming_schedule > 0:
+                tasks["upcoming_schedule"] = asyncio.create_task(
+                    _timed_task("upcoming_schedule",
+                                self.context_gatherer.get_upcoming_schedule(user_input, eff_max_upcoming_schedule))
+                )
 
             # Visual memories (CLIP-based image search)
             if eff_max_visual_memories > 0:
@@ -1090,6 +1115,7 @@ class UnifiedPromptBuilder:
                 "proposed_features": gathered.get("proposed_features", []),  # Code proposals
                 "graph_context": gathered.get("graph_context", []),  # Knowledge graph relationships
                 "unresolved_threads": gathered.get("unresolved_threads", []),  # Proactive thread surfacing
+                "upcoming_schedule": gathered.get("upcoming_schedule", []),  # Schedule events (gated)
                 "proactive_insights": gathered.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": gathered.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
@@ -1412,6 +1438,7 @@ class UnifiedPromptBuilder:
                 "proposed_features": context.get("proposed_features", []),  # Code proposals
                 "graph_context": context.get("graph_context", []),  # Knowledge graph relationships
                 "unresolved_threads": context.get("unresolved_threads", []),  # Proactive thread surfacing
+                "upcoming_schedule": context.get("upcoming_schedule", []),  # Schedule events (gated)
                 "proactive_insights": context.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": context.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
@@ -1452,6 +1479,7 @@ class UnifiedPromptBuilder:
                 "proposed_features": [],
                 "graph_context": [],
                 "unresolved_threads": [],
+                "upcoming_schedule": [],
                 "proactive_insights": [],
                 "web_search_results": None,
                 "memory_id_map": {}
@@ -1609,6 +1637,7 @@ class UnifiedPromptBuilder:
                 "proposed_features": [],
                 "graph_context": [],
                 "unresolved_threads": [],
+                "upcoming_schedule": [],
                 "proactive_insights": [],
                 "web_search_results": None,
                 "codebase_changes": codebase_changes or {},
@@ -1729,6 +1758,7 @@ class PromptBuilder:
                 "proposed_features": [],
                 "graph_context": [],
                 "unresolved_threads": [],
+                "upcoming_schedule": [],
                 "proactive_insights": [],
             }
             return self.unified_builder._assemble_prompt(context, user_input)

@@ -155,6 +155,9 @@ These systems are complete and working. Listed here for context, not as active w
 
 ## Recent Completions (April-May 2026)
 
+### Schedule Extraction (2026-05)
+- Structured calendar event extraction — 5 patterns (`work_schedule`, `class_schedule`, `exam_date`, `shift_pattern`, `day_off`), temporal normalization, supersession, gated `[UPCOMING SCHEDULE]` prompt section. 64 tests.
+
 ### God Object Decomposition — Phases 2-3 (2026-05-08)
 - Extracted `PromptFormatter`, `ContentHygiene`, `ContextGatherer` mixins from UnifiedPromptBuilder
 - Extracted `AgenticFormatter` + `ToolExecutor` from agentic controller

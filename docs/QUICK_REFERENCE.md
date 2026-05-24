@@ -1359,6 +1359,16 @@ ENTITY_FACTS_PER_TURN_CAP = 4           # Max entity facts per turn
 USER_FACTS_PER_TURN_CAP = 6             # Max user facts per turn
 ENTITY_FACT_MIN_CONFIDENCE = 0.55        # Min confidence for entity facts
 
+# Schedule Extraction [NEW 2026-05]
+SCHEDULE_EXTRACTION_ENABLED = True       # Toggle schedule pattern detection in fact extraction
+SCHEDULE_PROMPT_MAX_EVENTS = 5           # Max events in [UPCOMING SCHEDULE] section
+SCHEDULE_PROMPT_LOOKAHEAD_DAYS = 7       # Days ahead to show in upcoming schedule
+# 5 patterns: work_schedule, class_schedule, exam_date, shift_pattern, day_off
+# Stored as facts with fact_type="schedule" metadata
+# Time normalization: utils/temporal_resolver.py — normalize_time_range(), expand_day_abbreviations(), resolve_date_expression()
+# Supersession: same kind + same day → old fact marked superseded via FactVerifier._check_schedule_supersession()
+# Tests: 64 in tests/unit/test_schedule_extraction.py
+
 # Knowledge Graph [NEW 2026-03]
 KNOWLEDGE_GRAPH_ENABLED = True           # Toggle knowledge graph system
 KNOWLEDGE_GRAPH_MAX_DEPTH = 2            # BFS traversal depth

@@ -832,3 +832,109 @@ class MemoryRetrievalMixin:
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get profile context: {e}")
             return ""
+
+    async def get_upcoming_schedule(self, query: str = "", limit: int = 10) -> list:
+        """Retrieve upcoming schedule events from facts collection.
+
+        Queries facts with ``fact_type=="schedule"`` metadata, expands recurring
+        events into upcoming instances within the lookahead window, excludes
+        superseded facts, and returns sorted by calendar date.
+
+        Returns:
+            List of dicts with keys: schedule_kind, event_type, schedule_days,
+            schedule_start, schedule_end, schedule_scope, display_date,
+            source_text, parser_confidence, resolution_basis, needs_confirmation.
+        """
+        from config.app_config import (
+            SCHEDULE_EXTRACTION_ENABLED,
+            SCHEDULE_PROMPT_MAX_EVENTS,
+            SCHEDULE_PROMPT_LOOKAHEAD_DAYS,
+        )
+        if not SCHEDULE_EXTRACTION_ENABLED:
+            return []
+
+        try:
+            mc = self.memory_coordinator
+            if not mc or not hasattr(mc, 'chroma_store'):
+                return []
+
+            store = mc.chroma_store
+            coll = store.collections.get("facts")
+            if coll is None or coll.count() == 0:
+                return []
+
+            # Query for schedule facts — use a schedule-relevant query
+            search_query = query or "schedule work class exam"
+            results = store.query_collection(
+                "facts", query_text=search_query, n_results=50,
+            )
+
+            # Filter to schedule facts, exclude superseded
+            schedule_facts = []
+            for r in results:
+                md = r.get("metadata", {}) or {}
+                if md.get("fact_type") != "schedule":
+                    continue
+                if md.get("superseded_by"):
+                    continue
+                schedule_facts.append(md)
+
+            if not schedule_facts:
+                return []
+
+            # Expand recurring events into upcoming instances
+            from datetime import timedelta
+            now = datetime.now()
+            cutoff = now + timedelta(days=SCHEDULE_PROMPT_LOOKAHEAD_DAYS)
+            day_to_weekday = {
+                "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                "friday": 4, "saturday": 5, "sunday": 6,
+            }
+            upcoming = []
+
+            for fact in schedule_facts:
+                scope = fact.get("schedule_scope", "ambiguous")
+                kind = fact.get("schedule_kind", "")
+                days_str = fact.get("schedule_days", "")
+
+                if scope == "one_off":
+                    # Date-based: include if within lookahead
+                    try:
+                        evt_date = datetime.fromisoformat(days_str)
+                        if now.date() <= evt_date.date() <= cutoff.date():
+                            fact["display_date"] = evt_date.strftime("%a %b %d")
+                            upcoming.append(fact)
+                    except (ValueError, TypeError):
+                        pass
+                else:
+                    # Recurring or ambiguous: expand day names to next occurrence
+                    day_names = [d.strip() for d in days_str.split(",") if d.strip()]
+                    for day_name in day_names:
+                        wd = day_to_weekday.get(day_name)
+                        if wd is None:
+                            continue
+                        # Find next occurrence
+                        days_ahead = (wd - now.weekday()) % 7
+                        if days_ahead == 0 and scope == "recurring":
+                            days_ahead = 0  # include today for recurring
+                        elif days_ahead == 0:
+                            days_ahead = 7  # ambiguous: skip today
+                        next_date = now + timedelta(days=days_ahead)
+                        if next_date.date() <= cutoff.date():
+                            entry = dict(fact)
+                            entry["display_date"] = next_date.strftime("%a %b %d")
+                            entry["_sort_key"] = next_date.isoformat()
+                            upcoming.append(entry)
+
+            # Sort by date, then start time
+            upcoming.sort(key=lambda x: (
+                x.get("_sort_key", ""),
+                x.get("schedule_start", "") or "",
+            ))
+
+            # Enforce limit
+            return upcoming[:min(limit, SCHEDULE_PROMPT_MAX_EVENTS)]
+
+        except Exception as e:
+            logger.warning(f"[ContextGatherer] Failed to get upcoming schedule: {e}")
+            return []

@@ -11,7 +11,7 @@ For formal notation see `FORMAL_MODEL.md`. For config constants see
 
 ## What the Pipeline Does
 
-Every user query triggers a full prompt build: 19 parallel async
+Every user query triggers a full prompt build: 20 parallel async
 retrievals across memory, knowledge graph, web search, files, and
 profile data. Results are filtered, deduplicated, scored, compressed
 to fit a token budget, and assembled into a final prompt string with
@@ -70,7 +70,7 @@ key_points, tone, avoid list, and strategy. The plan is injected into
 the system prompt before `_assemble_prompt()`. If the planner times out
 or fails, the prompt proceeds without a plan.
 
-### Step 4 — Parallel Retrieval (19 tasks, 30s timeout)
+### Step 4 — Parallel Retrieval (20 tasks, 30s timeout)
 
 All tasks execute simultaneously via `asyncio.wait()` (not `asyncio.gather`).
 Completed tasks survive a timeout — only the still-pending sections fall back
@@ -98,6 +98,7 @@ default to `[]` without affecting other sections.
 | proactive_insights | `get_proactive_insights()` | 2 |
 | visual_memories | `get_visual_memories()` | varies |
 | web_search | `_get_web_search_results()` | 5 results |
+| upcoming_schedule | `get_upcoming_schedule()` | 5 events (gated by TEMPORAL_RECALL/PROJECT_WORK intent) |
 
 Per-task timing is tracked and logged for bottleneck detection.
 
@@ -218,13 +219,14 @@ high-attention items (user profile, time, query) placed last:
 18. `[KNOWLEDGE GRAPH]` — entity relationships, natural language (up to 12 sentences)
 19. `[UNRESOLVED THREADS]` — open commitments/deadlines (1-3)
 20. `[PROACTIVE INSIGHTS]` — cross-domain connections (1-2)
-21. `[USER PROFILE]` — categorized facts with inline anti-confabulation instruction and source excerpts when available (high-attention zone)
-22. `[ACTIVE FEATURES]` — feature inventory (always)
-23. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
-24. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
-25. `[TEMPORAL GROUNDING]` — narrative context (if available)
-26. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available). Includes `Reference Type:` line (`new_event` / `recall` / `clarification` / `correction` / `unclear`) with explicit WARNING directive when type ≠ `new_event`. Also renders `Resolved State:` from `temporal_facts`, `Open Threads:` from `open_threads` (ongoing commitments/topics), and `Constraints:` from `constraints` (implicit/explicit response limits). STM internally injects last 2 daily notes from the Obsidian vault for cross-day recall disambiguation.
-27. `[CURRENT USER QUERY]` — always last, protected from compression
+21. `[UPCOMING SCHEDULE]` — schedule facts for next N days (intent-gated: TEMPORAL_RECALL/PROJECT_WORK, up to 5 events)
+22. `[USER PROFILE]` — categorized facts with inline anti-confabulation instruction and source excerpts when available (high-attention zone)
+23. `[ACTIVE FEATURES]` — feature inventory (always)
+24. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
+25. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
+26. `[TEMPORAL GROUNDING]` — narrative context (if available)
+27. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available). Includes `Reference Type:` line (`new_event` / `recall` / `clarification` / `correction` / `unclear`) with explicit WARNING directive when type ≠ `new_event`. Also renders `Resolved State:` from `temporal_facts`, `Open Threads:` from `open_threads` (ongoing commitments/topics), and `Constraints:` from `constraints` (implicit/explicit response limits). STM internally injects last 2 daily notes from the Obsidian vault for cross-day recall disambiguation.
+28. `[CURRENT USER QUERY]` — always last, protected from compression
 
 Items with `staleness_ratio >= 0.6` get `[HISTORICAL — PARTIALLY OUTDATED]` prefix.
 

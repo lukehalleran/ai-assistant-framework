@@ -1560,6 +1560,54 @@ class PromptFormatter:
                 thread_lines.append(line)
             sections.append(f"[UNRESOLVED THREADS] n={len(thread_lines)}\n" + "\n".join(thread_lines))
 
+        # Upcoming schedule (gated — only present when retrieval was triggered)
+        upcoming_schedule = context.get("upcoming_schedule", []) or []
+        if upcoming_schedule:
+            sched_lines = []
+            for evt in upcoming_schedule:
+                display_date = evt.get("display_date", "")
+                kind = evt.get("schedule_kind", "")
+                event_type = evt.get("event_type", kind)
+                start = evt.get("schedule_start", "")
+                end = evt.get("schedule_end", "")
+                scope = evt.get("schedule_scope", "")
+                confidence = float(evt.get("parser_confidence", 1.0))
+                basis = evt.get("resolution_basis", "")
+
+                # Build display line
+                label = event_type.replace("_", " ").title()
+                if start and end:
+                    # Format times for display
+                    try:
+                        from datetime import datetime as _dt
+                        s_dt = _dt.strptime(start, "%H:%M")
+                        e_dt = _dt.strptime(end, "%H:%M")
+                        time_str = f"{s_dt.strftime('%I:%M %p').lstrip('0')} – {e_dt.strftime('%I:%M %p').lstrip('0')}"
+                    except (ValueError, TypeError):
+                        time_str = f"{start} – {end}"
+                    line = f"• {display_date}: {label} {time_str}"
+                elif kind == "shift_pattern":
+                    shift_val = evt.get("object", event_type)
+                    line = f"• {label}: {shift_val}"
+                elif kind == "day_off":
+                    line = f"• {display_date}: Day off"
+                elif kind == "exam_date":
+                    line = f"• {display_date}: Exam"
+                else:
+                    line = f"• {display_date}: {label}"
+
+                # Confidence qualifier for heuristic resolutions
+                if confidence < 0.75 and basis not in ("explicit_ampm", "explicit_24h", "explicit_named"):
+                    line += f" (inferred from context)"
+                if scope == "one_off":
+                    line += " (one-time)"
+
+                sched_lines.append(line)
+
+            sections.append(
+                f"[UPCOMING SCHEDULE] n={len(sched_lines)}\n" + "\n".join(sched_lines)
+            )
+
         # Daemon self-notes (working context from prior sessions)
         daemon_self_notes = context.get("daemon_self_notes", []) or []
         if daemon_self_notes:

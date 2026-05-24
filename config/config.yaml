@@ -225,6 +225,11 @@ entity_facts:
   per_turn_cap: 4
   user_per_turn_cap: 6
   min_confidence: 0.55
+schedule_extraction:
+  enabled: true
+  prompt_max_events: 10
+  lookahead_days: 7
+  bare_time_min_confidence: 0.50
 reference_docs:
   auto_seed: true
   seed_paths:

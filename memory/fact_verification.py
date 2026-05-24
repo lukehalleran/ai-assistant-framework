@@ -6,6 +6,11 @@ verdict: STORE, STORE_AND_FLAG (marks old fact as superseded), REJECT, or
 SKIP (ephemeral relation).
 
 No auto-deletion — conflicting old facts get ``superseded_by`` metadata.
+
+Schedule supersession (2026-05): Before general conflict detection, checks if
+a new schedule fact (work_schedule, class_schedule, etc.) should supersede an
+existing one. Same schedule_kind + overlapping day(s) + newer timestamp = old
+fact marked superseded via STORE_AND_FLAG verdict.
 """
 
 from __future__ import annotations
@@ -60,6 +65,7 @@ class FactVerifier:
 
         verify(subject, predicate, object_val, ...) →
           1. Ephemeral relation? → SKIP
+          1b. Schedule supersession? → STORE_AND_FLAG (same kind + same day)
           2. Query ChromaDB for candidates with matching subject+predicate
           3. No candidates? → STORE (fast path)
           4. Candidates have same object? → STORE (re-confirmation)
@@ -103,6 +109,13 @@ class FactVerifier:
         )
         if fast is not None:
             return fast
+
+        # Schedule supersession: same kind + same day → supersede old fact
+        schedule_result = self._check_schedule_supersession(
+            predicate, object_val, fact_text,
+        )
+        if schedule_result is not None:
+            return schedule_result
 
         # Find conflicting candidates in ChromaDB
         candidates = self._find_candidates(subject, predicate, fact_text)
@@ -220,6 +233,81 @@ class FactVerifier:
                 confidence=1.0,
                 reason="ephemeral_relation",
             )
+
+        return None
+
+    _SCHEDULE_RELATIONS = frozenset({
+        "work_schedule", "class_schedule", "exam_date",
+        "shift_pattern", "day_off",
+    })
+
+    def _check_schedule_supersession(
+        self,
+        predicate: str,
+        object_val: str,
+        fact_text: str,
+    ) -> Optional[VerificationResult]:
+        """Check if a schedule fact should supersede an existing one.
+
+        Same schedule_kind + overlapping day(s) → mark older fact as superseded.
+        Returns None if this is not a schedule fact or no supersession applies.
+        """
+        if predicate not in self._SCHEDULE_RELATIONS:
+            return None
+
+        try:
+            coll = self._chroma.collections.get("facts")
+            if coll is None or coll.count() == 0:
+                return None
+
+            # Query for existing schedule facts of the same kind
+            results = self._chroma.query_collection(
+                "facts", query_text=fact_text, n_results=20,
+            )
+
+            # Extract days from the new fact
+            new_days = set()
+            obj_lower = object_val.lower()
+            from utils.temporal_resolver import expand_day_abbreviations
+            parts = obj_lower.split()
+            if parts:
+                new_days = set(expand_day_abbreviations(parts[0]))
+
+            superseded: List[ConflictCandidate] = []
+            for r in results:
+                md = r.get("metadata", {}) or {}
+                old_kind = md.get("schedule_kind", md.get("relation", ""))
+                if old_kind != predicate:
+                    continue
+                # Check for day overlap
+                old_days_str = md.get("schedule_days", "")
+                old_days = set(old_days_str.split(",")) if old_days_str else set()
+
+                if new_days and old_days and new_days & old_days:
+                    # Same kind + overlapping days → supersession
+                    superseded.append(ConflictCandidate(
+                        doc_id=r.get("id", ""),
+                        content=r.get("content", ""),
+                        subject=md.get("subject", ""),
+                        predicate=old_kind,
+                        object=md.get("object", ""),
+                    ))
+
+            if superseded:
+                logger.info(
+                    f"[FactVerifier] Schedule supersession: {predicate} "
+                    f"supersedes {len(superseded)} existing fact(s)"
+                )
+                return VerificationResult(
+                    verdict=FactVerdict.STORE_AND_FLAG,
+                    confidence=0.90,
+                    reason="schedule_supersession",
+                    conflicting_candidates=superseded,
+                    metadata_updates={"superseded_reason": "schedule_update"},
+                )
+
+        except Exception as e:
+            logger.debug(f"[FactVerifier] Schedule supersession check failed: {e}")
 
         return None
 
