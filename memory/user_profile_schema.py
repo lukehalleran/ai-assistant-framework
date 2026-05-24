@@ -95,6 +95,12 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "internship_application_status": ProfileCategory.CAREER,
     "internship_priority": ProfileCategory.CAREER,
     "hourly_wage": ProfileCategory.CAREER,
+    "work_schedule": ProfileCategory.CAREER,
+    "shift_pattern": ProfileCategory.CAREER,
+    "day_off": ProfileCategory.CAREER,
+
+    # Education / Schedule
+    "class_schedule": ProfileCategory.EDUCATION,
 
     # Projects
     "project_name": ProfileCategory.PROJECTS,
@@ -353,6 +359,8 @@ SNAPSHOT_RELATIONS: Set[str] = {
     "current_weight", "current_bench",
     "current_medication", "current_health_status", "current_health_condition",
     "current_goal", "current_grade", "current_week", "current_year",
+    # Schedule: recurring schedules are valid until explicitly superseded
+    "work_schedule", "class_schedule", "shift_pattern",
 }
 
 

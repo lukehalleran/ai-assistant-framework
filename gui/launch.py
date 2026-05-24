@@ -816,7 +816,7 @@ def launch_gui(orchestrator, force_wizard=False):
         timer_text = "<div style='text-align:right'>⏱️ 0.0 s</div>"
         # Use a deep copy for the Chatbot output to avoid aliasing issues
         _chatbot_view = copy.deepcopy(chat_history)
-        _state_view = copy.deepcopy(chat_history)
+        _state_view = _chatbot_view
         yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
 
         # Concurrent loop: tick timer while awaiting streamed chunks, without blocking loop
@@ -834,10 +834,11 @@ def launch_gui(orchestrator, force_wizard=False):
         next_task = _a.create_task(agen.__anext__())
         tick = None
         loop_iter = 0
+        _content_dirty = True  # True when chat_history changed since last deepcopy
         while True:
             loop_iter += 1
             # Wait either for next chunk or a tick interval
-            tick = _a.create_task(_a.sleep(0.25))
+            tick = _a.create_task(_a.sleep(0.15))
             done, pending = await _a.wait({next_task, tick}, return_when=_a.FIRST_COMPLETED)
             if loop_iter <= 5 or loop_iter % 20 == 0:
                 logging.info(f"[GUI Loop] iter={loop_iter}, done={len(done)}, pending={len(pending)}")
@@ -867,7 +868,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     typing_text = ""
                     timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
                     _chatbot_view = copy.deepcopy(chat_history)
-                    _state_view = copy.deepcopy(chat_history)
+                    _state_view = _chatbot_view
                     yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
                     break
 
@@ -898,9 +899,10 @@ def launch_gui(orchestrator, force_wizard=False):
                     if chat_history and isinstance(chat_history[-1], dict):
                         chat_history[-1]["content"] = thinking_html
 
-                    # Yield immediately to show thinking (use deep copies to avoid aliasing)
+                    # Yield immediately to show thinking (use deep copy to avoid aliasing)
                     _chatbot_view = copy.deepcopy(chat_history)
-                    _state_view = copy.deepcopy(chat_history)
+                    _state_view = _chatbot_view
+                    _content_dirty = False
                     yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=False), "", "", ""
                 elif isinstance(chunk, dict) and "content" in chunk:
                     assistant_reply = chunk["content"]
@@ -945,6 +947,7 @@ def launch_gui(orchestrator, force_wizard=False):
                                     chat_history[-1]["content"] = final_from_debug
                     except (TypeError, KeyError, IndexError):
                         pass
+                _content_dirty = True
                 # Re-yield current state along with typing + timer
                 # ALWAYS yield for the final chunk (debug record) to prevent the
                 # completed response from being stuck behind the throttle gate.
@@ -956,22 +959,25 @@ def launch_gui(orchestrator, force_wizard=False):
                     typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
                     timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
                     _chatbot_view = copy.deepcopy(chat_history)
-                    _state_view = copy.deepcopy(chat_history)
+                    _state_view = _chatbot_view  # share ref — both are fresh copies
+                    _content_dirty = False
                     yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
 
                 # Schedule next chunk read
                 next_task = _a.create_task(agen.__anext__())
             elif tick in done:
-                # Timer tick: update indicators only if next_task wasn't processed
+                # Timer tick: always update timer (0.15s sleep is the throttle)
                 now = _t.time(); _updates += 1
-                if (now - _last_tick) >= 0.20 or (_updates % 3 == 0):
-                    _last_tick = now
-                    _dots = "." * (1 + (_updates % 3))
-                    typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
-                    timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
+                _last_tick = now
+                _dots = "." * (1 + (_updates % 3))
+                typing_text = f"<div style='text-align:right'>Assistant is typing {_dots}</div>"
+                timer_text = f"<div style='text-align:right'>⏱️ {now - _t0:.1f} s</div>"
+                # Only deepcopy when chat content changed; reuse last snapshot for timer-only ticks
+                if _content_dirty:
                     _chatbot_view = copy.deepcopy(chat_history)
-                    _state_view = copy.deepcopy(chat_history)
-                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
+                    _state_view = _chatbot_view
+                    _content_dirty = False
+                yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
 
         # Safety net: if the assistant message is still the placeholder (no content
         # chunk was ever processed), recover from the last debug record if available.
@@ -992,7 +998,7 @@ def launch_gui(orchestrator, force_wizard=False):
         typing_text = ""
         timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
         _chatbot_view = copy.deepcopy(chat_history)
-        _state_view = copy.deepcopy(chat_history)
+        _state_view = _chatbot_view
         yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
 
     # ---- Settings persistence helpers ----

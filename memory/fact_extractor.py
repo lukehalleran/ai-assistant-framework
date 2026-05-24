@@ -21,6 +21,13 @@ Module Contract:
     with metadata: fact_scope="entity", entity_type (spaCy NER), user_connection (possessive patterns)
     Entity facts require min confidence of ENTITY_FACT_MIN_CONFIDENCE (default 0.55)
     Controlled by ENTITY_FACTS_ENABLED toggle
+  - SCHEDULE EXTRACTION (2026-05): Structured schedule/calendar event extraction.
+    5 pattern categories: work_schedule, class_schedule, exam_date, shift_pattern, day_off.
+    Past-tense guard blocks "worked", "had class", "work was". Negation patterns trigger
+    supersession. Metadata enrichment via _enrich_schedule_metadata() adds: fact_type,
+    schedule_kind, schedule_scope (recurring/one_off/ambiguous), schedule_days (comma-sep),
+    schedule_start/end (HH:MM), event_type, source_text, parser_confidence,
+    needs_confirmation, resolution_basis. Controlled by SCHEDULE_EXTRACTION_ENABLED toggle.
 - Dependencies:
   - spaCy (optional, for NLP + entity type detection)
   - REBEL pipeline (optional, for neural extraction)
@@ -415,6 +422,38 @@ class FactExtractor:
             ("graduate_year", r"\b(?:i|we)\s+(?:graduate|finish|complete)\s+(?:in|by)\s+(\d{4})"),
             # "I've been doing X for N months/years"
             ("experience_duration", r"\b(?:i(?:'ve|\s+have)\s+been)\s+(\w+ing)\s+(?:for\s+)?(\d+)\s+(months?|years?|weeks?)"),
+        ]
+
+        # Schedule patterns: day + time range, multi-day, date events, shifts, days off
+        # Past-tense guard: patterns anchor on present/future tense only.
+        # "I worked Friday" or "work was crazy Friday" will NOT match.
+        _DAY = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)"
+        _DAYS_PLURAL = r"(?:mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)"
+        _DAY_ABBREV = r"(?:mwf|mw|tth|tr|tt|mtwthf|mtwrf|mtwtf|mf|ss)"
+        _TIME = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)"
+        self.schedule_patterns = [
+            # "I work Friday 3-10" / "I work Fridays 3pm-10pm"
+            ("work_schedule",
+             r"\bi\s+work\s+(" + _DAY + r"s?)\s+" + _TIME + r"\s*[-–to]+\s*" + _TIME + r"\b"),
+            # "I have class MWF 9-11am" / "class TTh 9:30-10:45"
+            ("class_schedule",
+             r"\b(?:i\s+have\s+)?class(?:es)?\s+(" + _DAY_ABBREV + r"|" + _DAY + r"s?(?:\s*(?:and|&|/)\s*" + _DAY + r"s?)*)\s+" + _TIME + r"\s*[-–to]+\s*" + _TIME + r"\b"),
+            # "my exam is April 15th" / "my exam is on Dec 3rd"
+            ("exam_date",
+             r"\bmy\s+(?:exam|test|final|midterm)\s+(?:is|falls)\s+(?:on\s+)?([A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?)\b"),
+            # "I work evenings" / "I work nights" / "I work mornings"
+            ("shift_pattern",
+             r"\bi\s+work\s+(mornings?|evenings?|nights?|afternoons?|overnights?|graveyard)\b"),
+            # "I'm off Tuesday" / "I'm off Tuesdays"
+            ("day_off",
+             r"\bi(?:'m|\s+am)\s+off\s+(?:on\s+)?(" + _DAY + r"s?)\b"),
+        ]
+
+        # Schedule negation patterns — trigger supersession of existing schedule facts
+        self.schedule_negation_patterns = [
+            # "I don't work Friday anymore" / "I'm not working Fridays"
+            (r"\bi\s+(?:don't|do\s+not|no\s+longer)\s+work\s+(" + _DAY + r"s?)",),
+            (r"\bi(?:'m|\s+am)\s+not\s+working\s+(" + _DAY + r"s?)",),
         ]
 
         # ENHANCED: Location patterns
@@ -1283,6 +1322,58 @@ class FactExtractor:
             if temp_total:
                 logger.debug(f"[FactExtractor] TemporalPattern[{ti}:{rel_key}] matched {temp_total}")
 
+        # 3b) Schedule patterns — day + time range, multi-day, date events, shifts, days off
+        from config.app_config import SCHEDULE_EXTRACTION_ENABLED
+        if SCHEDULE_EXTRACTION_ENABLED:
+            for si, (rel_key, pattern) in enumerate(self.schedule_patterns):
+                sched_total = 0
+                for ln in norm_lines:
+                    # Past-tense guard: skip lines with past-tense work/class constructions
+                    ln_lower = ln.lower()
+                    if re.search(r'\b(?:worked|had\s+class|was\s+\w+ing)\b', ln_lower):
+                        continue
+                    # Skip historical observations like "work was crazy Friday"
+                    if re.search(r'\bwork\s+was\b', ln_lower):
+                        continue
+                    try:
+                        matches = re.findall(pattern, ln, flags=re.IGNORECASE)
+                    except Exception as e:
+                        logger.warning(f"[FactExtractor] Schedule regex error idx={si}: {e}")
+                        continue
+                    sched_total += len(matches)
+                    for m in matches[:4]:
+                        if isinstance(m, tuple):
+                            parts = [p.strip() for p in m if p and p.strip()]
+                        else:
+                            parts = [m.strip()]
+                        if not parts:
+                            continue
+
+                        # Build the object value based on relation type
+                        if rel_key in ("work_schedule", "class_schedule"):
+                            # parts: (day_text, start_time, end_time)
+                            day_text = parts[0] if len(parts) > 0 else ""
+                            start_t = parts[1] if len(parts) > 1 else ""
+                            end_t = parts[2] if len(parts) > 2 else ""
+                            obj_val = f"{day_text} {start_t}-{end_t}".strip()
+                        elif rel_key == "exam_date":
+                            obj_val = parts[0] if parts else ""
+                        elif rel_key in ("shift_pattern", "day_off"):
+                            obj_val = parts[0] if parts else ""
+                        else:
+                            obj_val = " ".join(parts)
+
+                        obj_val = obj_val.strip()
+                        if not obj_val:
+                            continue
+
+                        cleaned = _clean_triple('user', rel_key, obj_val, nlp=_get_nlp())
+                        if cleaned:
+                            sj, rl, ob = cleaned
+                            found.append((sj, rl, ob, 0.80, "schedule_regex"))
+                if sched_total:
+                    logger.debug(f"[FactExtractor] SchedulePattern[{si}:{rel_key}] matched {sched_total}")
+
         # 4) ENHANCED: Location patterns
         for loc_i, (rel_key, pattern) in enumerate(self.location_patterns):
             loc_total = 0
@@ -1374,6 +1465,121 @@ class FactExtractor:
         except NameError:
             return "fact"
 
+    def _enrich_schedule_metadata(
+        self,
+        metadata: dict,
+        relation: str,
+        obj: str,
+        source_text: str,
+    ) -> None:
+        """Add structured schedule fields to metadata dict in-place.
+
+        Parses the object string to extract day names, time ranges, date
+        expressions, and scope (recurring vs one-off).  Sets parser_confidence,
+        resolution_basis, and needs_confirmation based on parsing certainty.
+        """
+        from utils.temporal_resolver import (
+            expand_day_abbreviations,
+            normalize_time_range,
+            resolve_date_expression,
+        )
+        from config.app_config import SCHEDULE_BARE_TIME_MIN_CONFIDENCE
+
+        obj_lower = obj.lower().strip()
+
+        # --- Determine event_type ---
+        event_type_map = {
+            "work_schedule": "work",
+            "class_schedule": "class",
+            "exam_date": "exam",
+            "shift_pattern": "shift",
+            "day_off": "day_off",
+        }
+        metadata["event_type"] = event_type_map.get(relation, "other")
+
+        if relation in ("work_schedule", "class_schedule"):
+            # Parse "friday 3pm-10pm" or "MWF 9-11am"
+            # Split into day part and time part
+            parts = obj_lower.split()
+            day_part = parts[0] if parts else ""
+            time_part = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+            # Expand days
+            days = expand_day_abbreviations(day_part)
+            metadata["schedule_days"] = ",".join(days) if days else day_part
+
+            # Detect scope from original text
+            if day_part.endswith("s") and day_part[:-1] in {
+                "monday", "tuesday", "wednesday", "thursday",
+                "friday", "saturday", "sunday",
+            }:
+                metadata["schedule_scope"] = "recurring"
+            elif len(days) > 1:
+                # Multi-day abbreviation → recurring
+                metadata["schedule_scope"] = "recurring"
+            else:
+                metadata["schedule_scope"] = "ambiguous"
+
+            # Parse time range
+            time_match = re.match(
+                r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)'
+                r'\s*[-–to]+\s*'
+                r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)',
+                time_part, re.IGNORECASE,
+            )
+            if time_match:
+                start_text = time_match.group(1)
+                end_text = time_match.group(2)
+                context = "work" if relation == "work_schedule" else "class"
+                start_hhmm, end_hhmm, basis, confidence = normalize_time_range(
+                    start_text, end_text, context=context,
+                )
+                metadata["schedule_start"] = start_hhmm
+                metadata["schedule_end"] = end_hhmm
+                metadata["resolution_basis"] = basis
+                metadata["parser_confidence"] = confidence
+                metadata["needs_confirmation"] = confidence < SCHEDULE_BARE_TIME_MIN_CONFIDENCE
+            else:
+                metadata["schedule_start"] = None
+                metadata["schedule_end"] = None
+                metadata["resolution_basis"] = "none"
+                metadata["parser_confidence"] = 0.60
+                metadata["needs_confirmation"] = False
+
+        elif relation == "exam_date":
+            iso_date, basis, confidence = resolve_date_expression(obj)
+            metadata["schedule_days"] = iso_date or obj_lower
+            metadata["schedule_scope"] = "one_off"
+            metadata["schedule_start"] = None
+            metadata["schedule_end"] = None
+            metadata["resolution_basis"] = basis
+            metadata["parser_confidence"] = confidence
+            metadata["needs_confirmation"] = False
+
+        elif relation == "shift_pattern":
+            metadata["schedule_days"] = ""
+            metadata["schedule_scope"] = "recurring"
+            metadata["schedule_start"] = None
+            metadata["schedule_end"] = None
+            metadata["resolution_basis"] = "shift_heuristic"
+            metadata["parser_confidence"] = 0.75
+            metadata["needs_confirmation"] = False
+
+        elif relation == "day_off":
+            days = expand_day_abbreviations(obj_lower.rstrip("s"))
+            metadata["schedule_days"] = ",".join(days) if days else obj_lower
+
+            if obj_lower.endswith("s") and not obj_lower.endswith("ss"):
+                metadata["schedule_scope"] = "recurring"
+            else:
+                metadata["schedule_scope"] = "ambiguous"
+
+            metadata["schedule_start"] = None
+            metadata["schedule_end"] = None
+            metadata["resolution_basis"] = "none"
+            metadata["parser_confidence"] = 0.80
+            metadata["needs_confirmation"] = False
+
     def _to_node(
         self,
         subject: str,
@@ -1403,6 +1609,17 @@ class FactExtractor:
         # Merge entity metadata (fact_scope, entity_type, user_connection)
         if extra_metadata:
             metadata.update(extra_metadata)
+
+        # Schedule fact enrichment: add structured temporal metadata
+        _SCHEDULE_RELATIONS = {
+            "work_schedule", "class_schedule", "exam_date",
+            "shift_pattern", "day_off",
+        }
+        if relation in _SCHEDULE_RELATIONS:
+            metadata["fact_type"] = "schedule"
+            metadata["schedule_kind"] = relation
+            metadata["source_text"] = source_text[:400]
+            self._enrich_schedule_metadata(metadata, relation, object, source_text)
 
         node = MemoryNode(
             id=str(uuid.uuid4()),

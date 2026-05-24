@@ -108,7 +108,7 @@ Example: "what about my brother" -> "what about my brother Auggie Mom Flapjack"
 candidates : X x C -> P(D)
 ```
 
-19 parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
+20 parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
 - Conversations (recent by time + semantic by expanded query)
 - Facts (user profile: hybrid 2/3 semantic + 1/3 recent)
 - Summaries (recent + semantic, separate)
@@ -248,7 +248,7 @@ where P is the **prompt space** (system prompt + context + query, token-budgeted
 
 The token budget is **model-aware**: computed as `min(context_window * 0.25, ceiling)` clamped to `[floor, ceiling]`, with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps. Post-budget **floor guarantees** ensure critical sections survive trimming: recent conversations (min 5), summaries (min 10), reflections (min 10). The agentic controller enforces its own budget on accumulated search context (`context_budget_tokens` default 8000) and trims low-value sections from the final prompt if total exceeds ceiling.
 
-Assembly produces an ordered sequence of 27 conditional sections:
+Assembly produces an ordered sequence of 28 conditional sections:
 
 ```
 prompt = [
@@ -272,6 +272,7 @@ prompt = [
     [KNOWLEDGE GRAPH]                        // if available (entity relationship sentences)
     [UNRESOLVED THREADS]                     // if available (open commitments/deadlines)
     [PROACTIVE INSIGHTS]                     // if available (cross-domain connections)
+    [UPCOMING SCHEDULE]                      // if available (schedule facts, intent-gated)
     [USER PROFILE]                           // if available (categorized facts + source excerpts + anti-confabulation instruction)
     [ACTIVE FEATURES]                        // always (compact feature inventory)
     [CODEBASE CHANGES SINCE LAST SESSION]    // first message only (git diff since last session)
@@ -354,7 +355,7 @@ AGENT(q, s):
     return (r, s')
 ```
 
-**Key distinction**: Web search runs as one of the 19 parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
+**Key distinction**: Web search runs as one of the 20 parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
 
 ### 6.1 Memory Expansion (expand_memory)
 
@@ -823,9 +824,9 @@ Agent(q, s_t) =
     let x       = phi(q, s_t)                       in    // perceive
     let iota    = classify_intent(q, x.tone)         in    // interpret
     let q'      = expand(q, s_t.G)                   in    // expand (graph-augmented query)
-    let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (19 parallel retrievals)
+    let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (20 parallel retrievals)
     let pi_plan = plan(q, x) if should_plan(x)      in    // plan response (parallel with remember)
-    let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (27-section prompt + plan injection)
+    let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (28-section prompt + plan injection)
     let r       = generate_or_search(p)              in    // act (LLM + optional agentic loop)
     let r'      = review_or_retry(r, pi_plan)        in    // review (post-answer gate + optional retry)
     let Pi      = provenance(r', p, session)          in    // audit (provenance metadata)
@@ -852,10 +853,10 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | U | User model | `user_profile.py` |
 | E | Escalation FSM state | `escalation_tracker.py` |
 | X | Context space | `ContextResult` dataclass in `context_pipeline.py` |
-| P | Prompt space (27 sections) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
+| P | Prompt space (28 sections) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
 | A = R U T | Action space | Response or tool call |
 | phi | Context function (8 integer stages + 2 half-stages) | `context_pipeline.py` |
-| rho_iota | Retrieval function (19 parallel tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |
+| rho_iota | Retrieval function (20 parallel tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |
 | sigma_iota | Scoring function (parameterized by intent + graph) | `memory_scorer.py` -> `rank_memories()` |
 | beta | Prompt construction (X x D* x iota x E -> P) | `prompt/builder.py` |
 | iota | Intent classification | `intent_classifier.py` |

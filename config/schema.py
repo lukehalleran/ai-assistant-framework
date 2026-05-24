@@ -540,6 +540,14 @@ class EntityFactsSection(BaseModel):
     min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
 
 
+class ScheduleExtractionSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    prompt_max_events: int = Field(default=10, ge=0)
+    lookahead_days: int = Field(default=7, ge=1)
+    bare_time_min_confidence: float = Field(default=0.50, ge=0.0, le=1.0)
+
+
 class FactVerificationSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
@@ -817,6 +825,7 @@ class DaemonConfig(BaseModel):
     narrative_context: NarrativeContextSection = Field(default_factory=NarrativeContextSection)
     intent_classifier: IntentClassifierSection = Field(default_factory=IntentClassifierSection)
     entity_facts: EntityFactsSection = Field(default_factory=EntityFactsSection)
+    schedule_extraction: ScheduleExtractionSection = Field(default_factory=ScheduleExtractionSection)
     reference_docs: ReferenceDocsSection = Field(default_factory=ReferenceDocsSection)
     fact_verification: FactVerificationSection = Field(default_factory=FactVerificationSection)
     proactive_surfacing: ProactiveSurfacingSection = Field(default_factory=ProactiveSurfacingSection)

@@ -112,7 +112,7 @@ memory/                       # Memory system
 ├── memory_storage.py         # Persistence + graph ingestion + reflection retrieval text + content type metadata
 ├── memory_scorer.py          # Scoring with intent overrides + graph boost
 ├── memory_retriever.py       # Retrieval + reflection v2 subsystem + semantic-primary fact ranking
-├── fact_extractor.py         # Dual-budget fact extraction (user + entity)
+├── fact_extractor.py         # Dual-budget fact extraction (user + entity) + schedule extraction (5 patterns, _enrich_schedule_metadata)
 ├── llm_fact_extractor.py     # LLM-assisted extraction with relation reuse
 ├── truth_scorer.py           # Evidence-based truth (confirmation/correction/contradiction)
 ├── graph_memory.py           # NetworkX DiGraph: CRUD, BFS, JSON persistence
@@ -209,7 +209,8 @@ utils/
 ├── fs_snapshot.py            # Filesystem manifest for agent session safety
 ├── destructive_op_guard.py   # Git command classifier (blocks destructive ops)
 ├── python_fs_guard.py        # Python-level fs guard (os.remove, shutil.rmtree, shutil.copy/copy2/copyfile, etc.)
-└── shell_cmd_guard.py        # Shell command classifier (rm, mv, chmod, etc.)
+├── shell_cmd_guard.py        # Shell command classifier (rm, mv, chmod, etc.)
+└── temporal_resolver.py      # Relative→absolute date conversion + schedule time normalization (normalize_time_range, expand_day_abbreviations, resolve_date_expression)
 ```
 
 ## Important Patterns

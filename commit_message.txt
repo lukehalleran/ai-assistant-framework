@@ -1,29 +1,30 @@
-feat: autonomous self-note guardrails — session cap, dedup, failure gating
+feat: structured schedule extraction + GUI timer smoothing
 
-Hardens the autonomous note-writing path (create_daemon_note agentic tool)
-to prevent memory pollution, spam, and feedback-loop drift.
+Schedule Extraction (Phase 1):
+Daemon now parses schedule statements ("I work Friday 3-10pm", "class MWF
+9-11am", "my exam is April 15th") into structured metadata instead of
+storing as opaque text facts.
 
-Guardrails added to daemon_notes_manager.py:
-- Per-session cap: max 3 autonomous notes per session, resets on new session_id
-- Semantic dedup: queries daemon_self_notes before writing, skips if similarity >= 0.85
-- Session ID tracking: session_id field added to DaemonNote dataclass + ChromaDB metadata
-- create_autonomous_note() method: wraps create_note() with all guardrails,
-  returns None (silent skip) when rejected
+- 5 pattern categories: work_schedule, class_schedule, exam_date,
+  shift_pattern, day_off with past-tense and negation guards
+- Uncertainty-aware metadata: schedule_scope (recurring/one_off/ambiguous),
+  parser_confidence, resolution_basis, needs_confirmation, source_text
+- Three-tier time normalization: explicit am/pm (0.95) → context heuristic
+  (0.65-0.70) → ambiguous guess (0.50). Bare "3-10" inferred from context
+  (work=PM, class=AM) but marked as lower confidence
+- Recurring vs one-off detection from plural ("Fridays" vs "Friday")
+- Schedule supersession: same kind + same day → old fact marked superseded
+  via existing FactVerifier STORE_AND_FLAG pattern
+- [UPCOMING SCHEDULE] prompt section with recurring expansion, gated by
+  TEMPORAL_RECALL/PROJECT_WORK intent or keyword+temporal dual signal
+- 64 new tests, 0 regressions (4489 passed)
 
-Status enum expanded:
-- Added tentative, hypothesis, failed_attempt to VALID_STATUSES
-- Autonomous notes default to status=tentative, confidence=tentative
-- Allows marking failed approaches distinctly from confirmed decisions
+temporal_resolver.py: normalize_time_range(), expand_day_abbreviations(),
+resolve_date_expression() — future-biased date resolution, university
+shorthand (MWF/TTh/TR)
 
-Agentic tool dispatch (core/agentic/tools.py):
-- _execute_create_daemon_note now uses create_autonomous_note() instead of create_note()
-- Singleton _daemon_notes_manager for session cap tracking across agentic rounds
-- Returns "[Self-note skipped by guardrails]" when cap/dedup rejects
-
-Tests: 9 new guardrail tests (48 total for daemon_notes_manager)
-- Per-session cap enforced + resets on new session
-- Semantic dedup rejects duplicates, allows different content
-- Status defaults to tentative for autonomous notes
-- failed_attempt and hypothesis statuses work
-- ChromaDB metadata includes session_id and ground_truth=False
-- Notes only go to daemon_self_notes collection, never facts
+GUI timer smoothing:
+- Tick interval 0.25s → 0.15s for smoother updates
+- Removed redundant throttle gate on timer-only ticks
+- Eliminated double deepcopy per yield (share reference, skip copy when
+  content unchanged) — reduces event-loop blocking as chat grows

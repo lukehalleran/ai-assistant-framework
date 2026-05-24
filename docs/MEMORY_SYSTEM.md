@@ -432,6 +432,10 @@ Possessive alias patterns (`_POSSESSIVE_RE`) auto-detect phrases like
 "my cat", "my boss", "my brother" and register them as entity aliases
 during `learn_alias()` calls.
 
+### Schedule Facts (2026-05)
+
+Facts with `fact_type="schedule"` metadata extracted from schedule statements ("I work Friday 3-10pm"). Five categories: `work_schedule`, `class_schedule`, `exam_date`, `shift_pattern`, `day_off`. Metadata includes `schedule_scope` (recurring/one_off/ambiguous), `schedule_days`, `schedule_start`/`end` (HH:MM), `parser_confidence`, `resolution_basis`, `needs_confirmation`. Supersession via `FactVerifier._check_schedule_supersession()` when same kind + same day detected.
+
 ### Truth Score Lifecycle
 
 ```
@@ -696,6 +700,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 [KNOWLEDGE GRAPH]                      ← entity relationships (natural language)
 [UNRESOLVED THREADS]                   ← open commitments/deadlines
 [PROACTIVE INSIGHTS]                   ← cross-domain connections
+[UPCOMING SCHEDULE]                    ← schedule facts for next N days (intent-gated)
 [DAEMON SELF-NOTES]                    ← Daemon's own session notes (caveat-labeled)
 [USER PROFILE]                         ← categorized facts (high-attention zone)
 [ACTIVE FEATURES]                      ← feature inventory (always)

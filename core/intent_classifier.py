@@ -113,7 +113,7 @@ _PROFILES: Dict[IntentType, dict] = {
         },
         "retrieval": {
             "max_recent": 20, "max_summaries": 15, "max_mems": 10,
-            "max_dreams": 0,
+            "max_dreams": 0, "max_upcoming_schedule": 10,
         },
         "gate": 0.30,
     },
@@ -198,6 +198,7 @@ _PROFILES: Dict[IntentType, dict] = {
             "max_recent": 5,            # eval: reduced from 15 (DROP 25%/25%)
             "max_reflections": 4,       # eval: SPLIT (50%/25%), keep some
             "max_reference_docs": 15,   # eval: KEEP (75%/50%)
+            "max_upcoming_schedule": 10,
         },
         "gate": 0.40,
     },

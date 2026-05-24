@@ -977,6 +977,20 @@ USER_FACTS_PER_TURN_CAP = int(os.getenv("USER_FACTS_PER_TURN_CAP", str(USER_FACT
 ENTITY_FACT_MIN_CONFIDENCE = float(os.getenv("ENTITY_FACT_MIN_CONFIDENCE", str(ENTITY_FACT_MIN_CONFIDENCE)))
 
 # --------------------------------------------------------------------
+# Schedule Extraction
+# --------------------------------------------------------------------
+# Extract structured schedule/calendar events from conversation text.
+# Stores as regular facts with fact_type="schedule" metadata.
+SCHEDULE_CFG = config.get("schedule_extraction", {})
+SCHEDULE_EXTRACTION_ENABLED: bool = bool(SCHEDULE_CFG.get("enabled", True))
+SCHEDULE_PROMPT_MAX_EVENTS: int = int(SCHEDULE_CFG.get("prompt_max_events", 10))
+SCHEDULE_PROMPT_LOOKAHEAD_DAYS: int = int(SCHEDULE_CFG.get("lookahead_days", 7))
+SCHEDULE_BARE_TIME_MIN_CONFIDENCE: float = float(SCHEDULE_CFG.get("bare_time_min_confidence", 0.50))
+
+# Environment variable overrides for Schedule Extraction
+SCHEDULE_EXTRACTION_ENABLED = bool(int(os.getenv("SCHEDULE_EXTRACTION_ENABLED", "1" if SCHEDULE_EXTRACTION_ENABLED else "0")))
+
+# --------------------------------------------------------------------
 # Fact Verification Gate
 # --------------------------------------------------------------------
 # Intercept newly extracted facts before ChromaDB storage, checking for

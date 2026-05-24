@@ -1312,6 +1312,10 @@ Before any fact is stored, it passes through `FactVerifier.verify()`:
 The STORE_AND_FLAG verdict marks the old fact with `superseded_by` metadata
 via `update_metadata()` — the old fact is never deleted, just flagged.
 
+### Schedule Extraction (2026-05)
+
+Extension to Fact Pipeline. `FactExtractor` Stage 4 matches 5 schedule pattern categories (`work_schedule`, `class_schedule`, `exam_date`, `shift_pattern`, `day_off`), and `_enrich_schedule_metadata()` adds structured temporal fields (`schedule_scope`, `schedule_days`, `schedule_start`/`end`, `parser_confidence`). `FactVerifier._check_schedule_supersession()` handles same-kind+same-day updates. `get_upcoming_schedule()` in `gatherer_memory.py` retrieves and expands recurring events. `[UPCOMING SCHEDULE]` prompt section gated by TEMPORAL_RECALL/PROJECT_WORK intent. Time normalization via `utils/temporal_resolver.py`.
+
 ---
 
 ## 15. Truth Scoring & Correction Detection
