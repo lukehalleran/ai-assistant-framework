@@ -245,10 +245,11 @@ class TestLLMCompression:
     @pytest.mark.asyncio
     async def test_prioritizes_largest_ratio(self, builder):
         """Items with highest ratio are compressed first when batch is limited."""
-        # Item A: 2000 tokens, ratio 2000/512 ≈ 3.9
-        # Item B: 4000 tokens, ratio 4000/512 ≈ 7.8 → higher priority
-        item_a = _make_item("a" * 8000)   # ~2000 tokens
-        item_b = _make_item("b" * 16000)  # ~4000 tokens
+        # Both items must stay below skip_threshold (ratio_threshold * 2 = 6x max_tokens = 3072 tokens)
+        # Item A: ~1600 tokens, ratio 1600/512 ≈ 3.1
+        # Item B: ~2500 tokens, ratio 2500/512 ≈ 4.9 → higher priority
+        item_a = _make_item("a" * 6400)   # ~1600 tokens
+        item_b = _make_item("b" * 10000)  # ~2500 tokens
         ctx = {"memories": [item_a, item_b]}
 
         compressed_items = []
