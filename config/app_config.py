@@ -1213,6 +1213,37 @@ GITHUB_API_REPO: str = str(GITHUB_API_CFG.get("repo", "") or "")
 GITHUB_API_ENABLED = bool(int(os.getenv("GITHUB_API_ENABLED", "1" if GITHUB_API_ENABLED else "0")))
 
 # --------------------------------------------------------------------
+# Internet Actions (write actions with user confirmation)
+# --------------------------------------------------------------------
+INTERNET_ACTIONS_CFG = config.get("internet_actions", {})
+INTERNET_ACTIONS_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("enabled", False))
+INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN: str = str(
+    INTERNET_ACTIONS_CFG.get("telegram_bot_token", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+)
+INTERNET_ACTIONS_TELEGRAM_CHAT_ID: str = str(
+    INTERNET_ACTIONS_CFG.get("telegram_default_chat_id", "") or os.getenv("TELEGRAM_CHAT_ID", "")
+)
+INTERNET_ACTIONS_DISCORD_WEBHOOK_URL: str = str(
+    INTERNET_ACTIONS_CFG.get("discord_webhook_url", "") or os.getenv("DISCORD_WEBHOOK_URL", "")
+)
+INTERNET_ACTIONS_SMTP_HOST: str = str(INTERNET_ACTIONS_CFG.get("smtp_host", ""))
+INTERNET_ACTIONS_SMTP_PORT: int = int(INTERNET_ACTIONS_CFG.get("smtp_port", 587))
+INTERNET_ACTIONS_SMTP_USER: str = str(INTERNET_ACTIONS_CFG.get("smtp_user", ""))
+INTERNET_ACTIONS_SMTP_PASSWORD: str = str(
+    INTERNET_ACTIONS_CFG.get("smtp_password", "") or os.getenv("SMTP_PASSWORD", "")
+)
+INTERNET_ACTIONS_SMTP_FROM: str = str(INTERNET_ACTIONS_CFG.get("smtp_from", ""))
+INTERNET_ACTIONS_GITHUB_WRITE_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("github_write_enabled", False))
+INTERNET_ACTIONS_PLAYWRIGHT_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("playwright_enabled", False))
+INTERNET_ACTIONS_PLAYWRIGHT_TIMEOUT: int = int(INTERNET_ACTIONS_CFG.get("playwright_timeout_s", 30))
+INTERNET_ACTIONS_TTL: int = int(INTERNET_ACTIONS_CFG.get("action_ttl_seconds", 300))
+INTERNET_ACTIONS_MAX_PENDING: int = int(INTERNET_ACTIONS_CFG.get("max_pending_actions", 5))
+INTERNET_ACTIONS_AUDIT_LOG: str = str(INTERNET_ACTIONS_CFG.get("audit_log_path", "logs/actions_audit.jsonl"))
+
+# Environment variable override
+INTERNET_ACTIONS_ENABLED = bool(int(os.getenv("INTERNET_ACTIONS_ENABLED", "1" if INTERNET_ACTIONS_ENABLED else "0")))
+
+# --------------------------------------------------------------------
 # Token Budget (model-aware prompt budget)
 # --------------------------------------------------------------------
 TOKEN_BUDGET_CFG = config.get("token_budget", {})

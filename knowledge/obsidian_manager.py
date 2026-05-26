@@ -394,7 +394,7 @@ class ObsidianManager:
             Number of chunks deleted.
         """
         try:
-            collection = self.chroma_store.collections.get('obsidian_notes')
+            collection = self.chroma_store._get_collection('obsidian_notes')
             if not collection:
                 return 0
             docs = collection.get(where={"file_path": file_path}, include=[])
@@ -447,7 +447,7 @@ class ObsidianManager:
         existing_mtimes: Dict[str, Optional[float]] = {}
         if not force_reindex:
             try:
-                collection = self.chroma_store.collections.get('obsidian_notes')
+                collection = self.chroma_store._get_collection('obsidian_notes')
                 if collection:
                     all_docs = collection.get(include=['metadatas'])
                     metadatas = all_docs.get('metadatas', []) or []
@@ -690,7 +690,7 @@ class ObsidianManager:
         - Content keyword match: 0.2-0.4
         """
         try:
-            collection = self.chroma_store.collections.get('obsidian_notes')
+            collection = self.chroma_store._get_collection('obsidian_notes')
             if not collection:
                 return []
 
@@ -812,7 +812,7 @@ class ObsidianManager:
                 count = len(results) if results else 0
 
                 # Try to get actual count via collection
-                collection = self.chroma_store.collections.get('obsidian_notes')
+                collection = self.chroma_store._get_collection('obsidian_notes')
                 if collection:
                     count = collection.count()
             except Exception:

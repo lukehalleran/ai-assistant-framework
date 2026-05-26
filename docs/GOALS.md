@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-05-09
+**Last Updated**: 2026-05-24
 
 ---
 
@@ -16,110 +16,80 @@ Everything built so far — the multi-stage gating, composite scoring, cross-enc
 
 ---
 
-## Phase: Feature-Complete — Consolidate, Populate, Ship
+## Phase: Generation — Re-enable Synthesis, Enrich Proposals, Grow the Graph
 
-All major feature systems are built. The focus now shifts to: making what exists robust and shippable, populating the knowledge graph with real data, rebuilding the desktop executable, and splitting the onboarding wizard into user vs dev channels.
+Consolidation is largely complete (3,800+ tests, 0 failures, clean module extractions). The focus now shifts to: turning the frozen synthesis pipeline back on, improving the proposals system with wiki-seeded idea generation, and growing graph bridge density to unlock the walk generator.
 
 ---
 
 ## Active Goals (Current Sprint)
 
-### 1. Consolidation & Stabilization
-- **Status**: Primary focus — all features built, now harden
-- **Why**: Codebase at ~143K lines of code (444 files). Must be lean and reliable before scaling to batch synthesis workloads or shipping to users.
-- Use retrieval benchmark suite to ablate prompt sections — measure recall impact of removing each
-- Audit ChromaDB collections: do all 12 justify separate indexes? Can any be merged without retrieval regression?
-- Reduce prompt context sections (currently 14+) to minimum set that maintains quality
-- Clean up mutable state side-channels in scorer/builder pipeline (e.g., `_intent_weight_overrides` on MemoryScorer — replace with scoped context object or context manager)
-- Resolve JSON corpus + ChromaDB dual-write: define source of truth, add reconciliation or eliminate one path
-- Target: reduce codebase to ~85K lines without measurable retrieval quality loss
-- Target: orchestrator.py under 400 lines (extract remaining truth/escalation/correction logic)
-- Eliminate remaining calls to deprecated `prepare_prompt`
+### 1. Synthesis Pipeline Re-enablement
+- **Status**: All 3 generators DISABLED in `config.yaml` since 2026-04-01 pending grading validation
+- **Why**: The synthesis pipeline is the core vision of this project. Everything else supports it. It's been frozen while the grading protocol (`docs/grading_plan.md`) validates filter quality. Time to close that loop.
+- Complete grading on existing audit queue candidates (two-layer: 3 binary screening Qs + 1-5 gut-feel slider)
+- Validate FP rate is below `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` (0.50) — this gates auto-halt
+- Re-enable Tier 0 (RetrievalSynthesisGenerator) first — highest signal, named mechanisms
+- Monitor composite/novelty/coherence rejection rates after re-enablement
+- Decide whether to loosen composite threshold (currently tight) once live data flows
+- Tier 1 (GraphWalkGenerator) blocked on bridge count (6 < 40) — see Goal 3
+- Tier 2 (SynthesisGenerator) lowest priority — lower insight quality than Tier 0
 
-### 2. Rebuild Desktop Executable
-- **Status**: v1.0.0 shipped 2026-04-08 — spec may need updates for modules added since then
-- **Why**: PyInstaller spec (`daemon.spec`) needs periodic updates for new modules. Hidden imports, data files, and bundled assets may drift as features are added.
-- Audit `daemon.spec` for missing hidden imports and data files added since v1.0.0
-- Test frozen build end-to-end: startup → wizard → chat → shutdown
-- Verify FAISS index + parquet files are handled correctly (large external data, not bundled)
-- Ensure `orjson` optional import fallback works in frozen context
-- Target: clean `pyinstaller daemon.spec --clean --noconfirm` producing a working `dist/Daemon/Daemon`
+### 2. Proposals Pipeline — Wiki-Enriched Idea Generation
+- **Status**: Extracted to standalone branch. Core modules (`knowledge/proposal_generator.py`, `memory/proposal_store.py`, `memory/code_proposal.py`) still on master pending cleanup.
+- **Why**: Current proposals are generated from Daemon's own context (goals, retrieval, code state). Adding wiki-seeded generation would surface ideas the user wouldn't arrive at independently — cross-domain techniques, algorithms, architectural patterns from unrelated fields.
+- Design wiki→proposal bridge: use FAISS wiki index (40M vectors) to retrieve domain-adjacent concepts given current project state / goals
+- Generate proposals that apply techniques from unrelated domains to Daemon's architecture (e.g., biological memory consolidation → summary compression, information-theoretic coding → dedup thresholds)
+- Quality bar: proposals must be actionable and specific (file paths, method signatures), not vague metaphor
+- Remove dead imports/references from master once standalone extraction is confirmed complete
+- Consider whether standalone proposal tool feeds back into Daemon's `proposals` ChromaDB collection or stays external
 
-### 3. Wizard Dual-Channel (User vs Dev)
-- **Status**: Partial — user/dev routing shipped with v1.0.0 (2026-04-08), dev-channel features incomplete
-- **Why**: Current wizard (`gui/wizard.py`) is a single onboarding flow. Users and developers need different setup paths — users care about API keys, data paths, and persona; devs need repo config, model selection, debug toggles, and feature flags.
-- Split wizard into two channels selectable at launch: "I'm a user" vs "I'm a developer"
-- **User channel**: API key setup, data directory, persona/name, privacy overview, optional Obsidian vault path
-- **Dev channel** (planned, not yet implemented): All user steps plus: model provider selection, feature flag toggles (synthesis, graph walks, wiki enrichment, etc.), debug/logging level, benchmark suite intro, config.yaml deep-edit. Currently dev channel only adds E2B key setup.
-- Shared: both channels write to the same `config.yaml` — dev channel just exposes more knobs
-- Consider making dev channel accessible from GUI settings tab post-wizard (not just first-run)
-
-### 4. Knowledge Graph Data Population
-- **Status**: Density milestone achieved (30,929 nodes), bridge quality under review
-- **Why**: Graph-boosted scoring, query expansion, synthesis walks, and proactive surfacing all scale with graph density. Current graph has 30,929 nodes (29,705 wikidata + 1,209 personal + 15 wiki-retrieved), 8,343 edges.
-- Wikidata subgraph import complete (`scripts/import_wikidata_to_graph.py`) — 29,705 entities across 10 domain categories
-- Fact migration complete — 1,209 personal nodes from ChromaDB facts
-- Bridge cleanup performed: 129 garbage bridges (low-confidence entity mapper matches) reduced to 6 quality bridges
-- WikidataEntityMapper threshold raised 0.60 -> 0.80, exact-match blocklist added to prevent spurious bridges
-- Walk generator (Tier 1) inactive due to low bridge count (6 < 40 minimum) — will activate as retrieval synthesis creates provisional bridges
-- Monitor `count_bridge_edges()` for bridge growth from synthesis feedback loop
+### 3. Knowledge Graph Bridge Growth
+- **Status**: 6 quality bridges (need ≥40 for walk generator activation)
+- **Why**: Graph walks (Tier 1 synthesis) are blocked by insufficient personal↔wikidata bridges. The bridge feedback loop (accepted synthesis insights → provisional edges) is the designed growth mechanism, but requires Tier 0 running to produce candidates.
+- Re-enable Tier 0 first (Goal 1) — accepted insights automatically create bridge edges
+- Monitor `count_bridge_edges()` after synthesis re-enablement
+- Consider additional bridge sources: Obsidian notes → wikidata entity linking, fact extraction → entity mapper
+- WikidataEntityMapper threshold (0.80) may need revisiting once bridge quality is validated at scale
+- Target: 40+ quality bridges → walk generator auto-activates
 
 ---
 
 ## Medium-Term Goals (Next 1-3 Months)
 
-### 5. Knowledge Synthesis Pipeline (Core Vision)
-- **Status**: Validated end-to-end. All three generators currently DISABLED in `config.yaml` pending grading validation — pipeline code is intact but not running at shutdown. See `docs/grading_plan.md` for the grading protocol that gates re-enablement. The prompt eval system (Phases 1-2, 4-6) provides the ablation and judge infrastructure needed to validate generator output quality before re-enablement.
-- **This is the primary goal. Everything else supports this.**
-
-**Data Ingestion**:
-- Wikipedia embedded via FAISS IVFPQ index (40M vectors, ~2 GB RAM) — **done**
-- arXiv paper abstracts/full text — planned
-- PubMed abstracts — planned
-
-**Connection Generation** (three-tier, runs in parallel at shutdown):
-- **Tier 0 — RetrievalSynthesisGenerator** (`synthesis_retriever.py`): Extracts structural queries from personal facts via few-shot LLM, searches FAISS (40M vectors), adversarially evaluates. Produces candidates naming specific mechanisms. Result: 2/15 accepted (13%) with named mechanisms ("conditional dependency", "historical layering"). **This is the primary generator.** Currently disabled in config.yaml.
-- **Tier 1 — GraphWalkGenerator**: Biased Markov walks with hub dampening (degree > 15) and cross-domain constraint (>=2 domains). Currently disabled in config.yaml (and would also be blocked by low bridge count: 6 < 40 minimum). Will activate as bridge feedback loop creates provisional edges.
-- **Tier 2 — SynthesisGenerator**: Random personal-fact + wiki-article pairing with LLM bridge articulation. Fallback generator. Result: 2/15 accepted (13%) but insight quality lower than Tier 0. Currently disabled in config.yaml.
-
-**Multi-Stage Filtering** (validated):
-- 7-stage filter pipeline (`synthesis_filter.py`), calibration fixture with 72 labeled candidates
-- IVFPQ threshold recalibration done (novelty, co-occurrence, composite thresholds adjusted for quantized distances)
-- Coherence judge recalibrated (`claude-opus-4.6`): WEAK = no mechanism named; MODERATE = names real mechanism concretely applied to both domains
-- End-to-end validation complete: 4/30 accepted (13%), rejection breakdown: composite 13, novelty 12, coherence 1
-- Bridge feedback loop confirmed: accepted insights create provisional graph edges (129 -> 133 edges after run)
-
-**Achieved milestones**:
-- Retrieval-based synthesis generating mechanism-naming candidates (not just surface metaphor)
-- Coherence judge discriminates structure from metaphor after recalibration
-- Bridge cleanup: 129 garbage bridges -> 6 quality bridges via WikidataEntityMapper threshold raise (0.60 -> 0.80) + blocklist
-- Three generators head-to-head: RETRIEVAL 2/15, WALK 0/0, XSTORE 2/15
-
-**Remaining work**:
-- Composite threshold is tight — may need loosening as retrieval generator matures
-- Novelty gate may over-reject retrieval candidates (structurally novel but Wikipedia-adjacent phrasing)
-- Structural query diversity needs monitoring (few-shot prompt may converge on limited query patterns)
-- Pairwise reranking stage not yet implemented
-
-### 6. Dreaming Engine (Batch Generation Infrastructure)
-- **Status**: Shutdown dreaming infrastructure built but all three generators currently disabled in config.yaml pending grading validation. Idle-time dreaming pending.
-- Shutdown dreaming wired to run three generators in parallel at session end (Step 6.8 in shutdown_processor.py), but all are disabled until audit grading validates the pipeline
+### 4. Dreaming Engine (Batch Generation Infrastructure)
+- **Status**: Shutdown dreaming infrastructure built but generators currently disabled. Idle-time dreaming pending.
+- Shutdown dreaming wired to run generators in parallel at session end (Step 6.8 in shutdown_processor.py)
 - Idle-time background thread: activates after N minutes inactivity, pauses on user input — not yet implemented
 - Coverage tracking: which domains/topics explored, avoid redundant generation
 - Scheduler design pending
-- **Prerequisite**: Infrastructure must be lean and hardened first — batch workloads will stress every pipeline component at scale
+- **Prerequisite**: Synthesis re-enablement (Goal 1) must land first
+
+### 5. Additional Data Ingestion
+- Wikipedia embedded via FAISS IVFPQ index (40M vectors, ~2 GB RAM) — **done**
+- arXiv paper abstracts/full text — planned
+- PubMed abstracts — planned
+- These expand the source pool for both synthesis candidates and wiki-enriched proposals
+
+### 6. Rebuild Desktop Executable
+- **Status**: v1.0.0 shipped 2026-04-08 — spec needs updates for modules added since
+- Audit `daemon.spec` for missing hidden imports and data files
+- Test frozen build end-to-end: startup → wizard → chat → shutdown
+- Target: clean `pyinstaller daemon.spec --clean --noconfirm` producing a working `dist/Daemon/Daemon`
 
 ### 7. Memory Quality Maintenance
 - Prune low-value entries over time (decay + consolidation)
 - Improve fact extraction precision (reduce false triples)
 - Monitor retrieval benchmark scores for regression after any scoring/weight changes
-- **Current benchmark baseline** (2026-05-13, 30 seeds + 19 cases): Recall@1: 0.58, Recall@3: 1.00, Recall@10: 1.00, MRR: 0.79. 100% of correct memories in top 3 (rank distribution: 57% rank 1, 43% rank 2-3). Intent accuracy: 100% (19/19). Technical help MRR improved from 0.375 to 0.750. Temporal recall MRR improved from 0.115 to 1.000.
+- **Current benchmark baseline** (2026-05-17): Combined MRR=0.8823, R@1=0.8143, R@3=0.9196, R@topK=0.9750
 
 ---
 
 ## Foundational Infrastructure (Built, Maintaining)
 
-These systems are complete and working. Listed here for context, not as active work items. Changes should be consolidation-oriented (simplify, merge, delete) rather than additive.
+These systems are complete and working. Listed here for context, not as active work items.
+
+- **Consolidation (2026-05)**: Codebase hardened — 3,800+ tests (0 failures), module extractions (agentic gate, handler helpers, prompt formatter, context gatherer), retrieval benchmarks stable (MRR 0.88), orchestrator decomposed
 
 - **Memory system**: 6 types (episodic, semantic, procedural, summary, meta, fact), 12 ChromaDB collections, modular components with Protocol contracts, thin coordinator
 - **Multi-stage gating**: FAISS → Cosine → Cross-Encoder reranking
@@ -141,7 +111,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **PDF/DOCX support**: Full pipeline with table extraction (pdfplumber + python-docx), chunking with header detection
 - **Multi-provider LLM**: Duel mode, best-of-N, ensemble, fallback chains
 - **Code proposals**: LLM-generated, ChromaDB-stored, GUI management, shutdown integration
-- **Agentic search**: ReAct loop with Tavily + Wolfram Alpha + E2B sandbox, context inventory, collection diversity tracking, memory expansion tool, full-document retrieval tool, git stats tool, GitHub API tool, uncertainty fallback (auto-retry via agentic search when standard response indicates "I don't know")
+- **Agentic search**: ReAct loop with 19 tools (Tavily, Wolfram Alpha, E2B sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, signal done), context inventory, collection diversity tracking, uncertainty fallback (auto-retry via agentic search when standard response indicates "I don't know")
 - **Response planning**: Pre-answer plan + post-answer review gate with silent agentic retry on low-confidence reviews
 - **Thread surfacing**: Proactive open-thread detection with resolution tracking
 - **Session awareness**: Codebase diff + active features inventory at session start
@@ -154,6 +124,18 @@ These systems are complete and working. Listed here for context, not as active w
 ---
 
 ## Recent Completions (April-May 2026)
+
+### Internet Actions System (2026-05)
+- `core/actions/` subsystem: propose→confirm→execute flow for internet write actions
+- 6 action types: send_telegram, send_discord, send_email, github_create_issue, github_comment_pr, calendar_create_event
+- `propose_action` agentic tool (19th tool), GUI approve/reject buttons, JSONL audit log
+- Implemented executors: Telegram (Bot API), Discord (webhook), Email (SMTP). GitHub + calendar stubs.
+- Config: `internet_actions` YAML section, `INTERNET_ACTIONS_*` app_config constants
+
+### Agentic Gate Extraction (2026-05)
+- Extracted 4-tier agentic gate from `gui/handlers.py` → `core/agentic/gate.py`
+- `AgenticDecision` dataclass + `evaluate_agentic_gate()` async function
+- Handler helpers refactored: `handle_submit` 1541→1200 LOC
 
 ### Schedule Extraction (2026-05)
 - Structured calendar event extraction — 5 patterns (`work_schedule`, `class_schedule`, `exam_date`, `shift_pattern`, `day_off`), temporal normalization, supersession, gated `[UPCOMING SCHEDULE]` prompt section. 64 tests.
@@ -341,7 +323,6 @@ These systems are complete and working. Listed here for context, not as active w
 
 ## Non-Goals (Explicit Exclusions)
 
-- **New feature systems** — feature-complete. No new subsystems until consolidation targets are met.
 - **Auto-execution of code proposals** — proposals are advisory only, human reviews and implements
 - **Auto-deletion of user data** — all destructive operations default to dry_run=True; live deletions require explicit GUI action
 - **Real-time collaboration** — single-user system, not multi-tenant
@@ -354,9 +335,9 @@ These systems are complete and working. Listed here for context, not as active w
 
 1. **The filter is the product.** Connection generation is cheap. Identifying which connections are novel and meaningful is the entire value proposition. Every infrastructure decision should be evaluated by whether it improves filtering quality.
 
-2. **No new features until consolidation targets are met.** The codebase is feature-complete. Every addition now is net-negative until the existing ~143K lines are trimmed and hardened. Removing a system that doesn't pull its weight is more valuable than adding a new one.
+2. **Infrastructure is ready — generate.** Consolidation is done. The synthesis and proposals pipelines exist and are validated. The bottleneck is now turning them on, feeding them better inputs, and growing the graph.
 
-3. **Data over code.** The limiting factor is now graph density, not missing features. Effort spent populating the knowledge graph with real data has higher ROI than writing new code.
+3. **Data over code.** The limiting factor is graph density and source diversity, not missing features. Effort spent populating the knowledge graph and connecting wiki to proposals has higher ROI than writing new infrastructure.
 
 4. **The personal assistant earns its keep.** It's not scaffolding — it's a daily-use product AND the live testbed. Both purposes matter.
 

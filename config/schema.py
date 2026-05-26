@@ -803,6 +803,31 @@ class DaemonNotesSection(BaseModel):
     collection_boost: float = Field(default=-0.05, ge=-1.0, le=1.0)
 
 
+class InternetActionsSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = False
+    # Telegram
+    telegram_bot_token: str = ""
+    telegram_default_chat_id: str = ""
+    # Discord
+    discord_webhook_url: str = ""
+    # Email (SMTP)
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    # GitHub write (reuses existing gh CLI auth)
+    github_write_enabled: bool = False
+    # Headless browser
+    playwright_enabled: bool = False
+    playwright_timeout_s: int = Field(default=30, ge=5, le=120)
+    # Safety
+    action_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    max_pending_actions: int = Field(default=5, ge=1, le=20)
+    audit_log_path: str = "logs/actions_audit.jsonl"
+
+
 class DaemonConfig(BaseModel):
     """Root config model — validates the entire config.yaml structure."""
     model_config = ConfigDict(extra="ignore")
@@ -862,6 +887,7 @@ class DaemonConfig(BaseModel):
     truth_scorer: TruthScorerSection = Field(default_factory=TruthScorerSection)
     document_generation: DocumentGenerationSection = Field(default_factory=DocumentGenerationSection)
     daemon_notes: DaemonNotesSection = Field(default_factory=DaemonNotesSection)
+    internet_actions: InternetActionsSection = Field(default_factory=InternetActionsSection)
 
 
 # =============================================================================

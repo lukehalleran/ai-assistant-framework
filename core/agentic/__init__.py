@@ -45,6 +45,7 @@ from core.agentic.protocols import (
     XMLMarkerHandler,
 )
 from core.agentic.controller import AgenticSearchController
+from core.agentic.gate import AgenticDecision, evaluate_agentic_gate
 
 __all__ = [
     # Types
@@ -68,4 +69,7 @@ __all__ = [
     "XMLMarkerHandler",
     # Controller
     "AgenticSearchController",
+    # Gate
+    "AgenticDecision",
+    "evaluate_agentic_gate",
 ]

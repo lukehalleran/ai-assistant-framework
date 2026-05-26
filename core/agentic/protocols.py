@@ -138,7 +138,7 @@ class NativeToolsHandler(BaseProtocolHandler):
     Parses tool_calls from LLM response to detect search, Wolfram, and sandbox requests.
     """
 
-    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, github_available: bool = False, fetch_url_available: bool = False):
+    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, github_available: bool = False, fetch_url_available: bool = False, actions_available: bool = False):
         from core.agentic.types import (
             SEARCH_TOOL_DEFINITION,
             DONE_TOOL_DEFINITION,
@@ -160,6 +160,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             HACKERNEWS_TOOL_DEFINITION,
             GENERATE_DOCUMENT_TOOL_DEFINITION,
             CREATE_DAEMON_NOTE_TOOL_DEFINITION,
+            PROPOSE_ACTION_TOOL_DEFINITION,
         )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
@@ -181,6 +182,7 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.hackernews_tool = HACKERNEWS_TOOL_DEFINITION
         self.generate_document_tool = GENERATE_DOCUMENT_TOOL_DEFINITION
         self.create_daemon_note_tool = CREATE_DAEMON_NOTE_TOOL_DEFINITION
+        self.propose_action_tool = PROPOSE_ACTION_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
         self.memory_available = memory_available
@@ -188,6 +190,7 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.git_stats_available = git_stats_available
         self.github_available = github_available
         self.fetch_url_available = fetch_url_available
+        self.actions_available = actions_available
 
     def parse_response(self, response: Any) -> List[SearchDecision]:
         """
@@ -214,8 +217,19 @@ class NativeToolsHandler(BaseProtocolHandler):
             tool_calls = response['tool_calls']
 
         if not tool_calls:
-            # No tool calls - model wants to answer directly
+            # No tool calls from API — but model may have emitted the call
+            # as text (common with OpenRouter proxied models). Try to parse
+            # propose_action from the text content before giving up.
             content = self._extract_content(response)
+            if content:
+                text_decisions = self._parse_text_tool_calls(content)
+                if text_decisions:
+                    logger.info(
+                        f"[AgenticProtocol] Parsed {len(text_decisions)} tool call(s) "
+                        f"from text content (API returned no tool_calls)"
+                    )
+                    return text_decisions
+            # Model wants to answer directly
             return [SearchDecision(
                 wants_answer=True,
                 partial_response=content
@@ -562,9 +576,131 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning(f"[AgenticProtocol] create_daemon_note called without title/summary")
                 return None
 
+        elif func_name == "propose_action":
+            action_type = args.get("action_type", "")
+            message = args.get("message", "")
+            reason = args.get("reason", "")
+            recipient = args.get("recipient", "")
+            subject = args.get("subject", "")
+            if action_type and message:
+                params = {"message": message}
+                if recipient:
+                    params["recipient"] = recipient
+                if subject:
+                    params["subject"] = subject
+                summary = f"{action_type}: {message[:80]}"
+                if recipient:
+                    summary = f"{action_type} to {recipient}: {message[:60]}"
+                logger.info(f"[AgenticProtocol] Native tool propose_action: {summary}")
+                return SearchDecision(
+                    wants_action=True,
+                    action_type=action_type,
+                    action_params=params,
+                    action_summary=summary,
+                    action_reason=reason,
+                )
+            else:
+                logger.warning("[AgenticProtocol] propose_action called without action_type/message")
+                return None
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return None
+
+    def _parse_text_tool_calls(self, content: str) -> List[SearchDecision]:
+        """Parse tool calls embedded as text when the API didn't return tool_calls.
+
+        Handles patterns like:
+            [propose_action: send_email]
+            {"to": "...", "message": "...", ...}
+
+        Also handles XML-style <action> tags as fallback.
+        """
+        decisions = []
+
+        # Pattern 1: [propose_action: <type>] followed by JSON
+        action_match = re.search(
+            r'\[propose_action:\s*(\w+)\]\s*\{',
+            content,
+        )
+        if action_match:
+            action_type = action_match.group(1)
+            json_start = content.index('{', action_match.start())
+            # Find matching closing brace
+            depth = 0
+            json_end = json_start
+            for i, ch in enumerate(content[json_start:], json_start):
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_end = i + 1
+                        break
+            try:
+                params = json.loads(content[json_start:json_end])
+            except (json.JSONDecodeError, ValueError):
+                params = {}
+            if params:
+                message = params.get("body") or params.get("message", "")
+                recipient = params.get("to") or params.get("recipient", "")
+                subject = params.get("subject", "")
+                reason = params.get("reason", "User requested")
+                if message:
+                    action_params = {"message": message}
+                    if recipient:
+                        action_params["recipient"] = recipient
+                    if subject:
+                        action_params["subject"] = subject
+                    summary = f"{action_type} to {recipient}: {message[:60]}" if recipient else f"{action_type}: {message[:80]}"
+                    logger.info(f"[AgenticProtocol] Parsed text propose_action: {summary}")
+                    decisions.append(SearchDecision(
+                        wants_action=True,
+                        action_type=action_type if action_type.startswith("send_") else f"send_{action_type}",
+                        action_params=action_params,
+                        action_summary=summary,
+                        action_reason=reason,
+                    ))
+
+        # Pattern 2: XML-style <action type="..."> (delegate to XML handler)
+        if not decisions:
+            action_xml = re.search(
+                r'<action\s+type="(\w+)"[^>]*>(.*?)</action>',
+                content,
+                re.DOTALL,
+            )
+            if action_xml:
+                action_type = action_xml.group(1)
+                message = action_xml.group(2).strip()
+                # Extract attributes
+                recipient = ""
+                subject = ""
+                reason = ""
+                for attr_match in re.finditer(r'(\w+)="([^"]*)"', action_xml.group(0)):
+                    k, v = attr_match.group(1), attr_match.group(2)
+                    if k == "recipient":
+                        recipient = v
+                    elif k == "subject":
+                        subject = v
+                    elif k == "reason":
+                        reason = v
+                if message:
+                    action_params = {"message": message}
+                    if recipient:
+                        action_params["recipient"] = recipient
+                    if subject:
+                        action_params["subject"] = subject
+                    summary = f"{action_type} to {recipient}: {message[:60]}" if recipient else f"{action_type}: {message[:80]}"
+                    logger.info(f"[AgenticProtocol] Parsed XML action from text: {summary}")
+                    decisions.append(SearchDecision(
+                        wants_action=True,
+                        action_type=action_type,
+                        action_params=action_params,
+                        action_summary=summary,
+                        action_reason=reason or "User requested",
+                    ))
+
+        return decisions
 
     def _extract_content(self, response: Any) -> Optional[str]:
         """Extract text content from response."""
@@ -605,6 +741,9 @@ class NativeToolsHandler(BaseProtocolHandler):
         # Document generation + self-notes — always available
         tools.append(self.generate_document_tool)
         tools.append(self.create_daemon_note_tool)
+        # Internet actions — only when enabled
+        if self.actions_available:
+            tools.append(self.propose_action_tool)
         # NOTE: recall_image tool deliberately excluded from iteration tools.
         # Visual memories are already retrieved by the builder's parallel pipeline
         # and included in the initial context. Adding recall_image here causes
@@ -784,6 +923,15 @@ class XMLMarkerHandler(BaseProtocolHandler):
         r'(?:\s+collection=["\']([^"\']*)["\'])?'
         r'(?:\s+window=["\'](\d+)["\'])?'
         r'\s*>(.*?)</expand_memory>',
+        re.DOTALL | re.IGNORECASE
+    )
+    # Internet action pattern: <action type="send_telegram" recipient="@luke">message</action>
+    ACTION_PATTERN = re.compile(
+        r'<action\s+type=["\']([^"\']+)["\']'
+        r'(?:\s+recipient=["\']([^"\']*)["\'])?'
+        r'(?:\s+subject=["\']([^"\']*)["\'])?'
+        r'(?:\s+reason=["\']([^"\']*)["\'])?'
+        r'\s*>(.*?)</action>',
         re.DOTALL | re.IGNORECASE
     )
 
@@ -996,6 +1144,31 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     memory_collection=collection,
                 ))
 
+        # Check for action markers: <action type="send_telegram" recipient="@luke">message</action>
+        for action_match in self.ACTION_PATTERN.finditer(text):
+            action_type = action_match.group(1).strip()
+            recipient = action_match.group(2) or ""
+            subject = action_match.group(3) or ""
+            reason = action_match.group(4) or ""
+            message = action_match.group(5).strip()
+            if action_type and message:
+                params = {"message": message}
+                if recipient:
+                    params["recipient"] = recipient
+                if subject:
+                    params["subject"] = subject
+                summary = f"{action_type}: {message[:80]}"
+                if recipient:
+                    summary = f"{action_type} to {recipient}: {message[:60]}"
+                logger.info(f"[AgenticProtocol] XML action marker found: {summary}")
+                decisions.append(SearchDecision(
+                    wants_action=True,
+                    action_type=action_type,
+                    action_params=params,
+                    action_summary=summary,
+                    action_reason=reason,
+                ))
+
         # No markers found - model wants to answer
         if not decisions:
             return [SearchDecision(
@@ -1038,6 +1211,7 @@ def get_protocol_handler(
     git_stats_available: bool = False,
     github_available: bool = False,
     fetch_url_available: bool = False,
+    actions_available: bool = False,
 ) -> BaseProtocolHandler:
     """
     Factory function to get appropriate protocol handler.
@@ -1051,6 +1225,7 @@ def get_protocol_handler(
         git_stats_available: Whether git stats manager is configured
         github_available: Whether GitHub API manager is configured
         fetch_url_available: Whether web search manager supports URL extraction
+        actions_available: Whether internet write actions are enabled
 
     Returns:
         Protocol handler instance
@@ -1064,6 +1239,7 @@ def get_protocol_handler(
             git_stats_available=git_stats_available,
             github_available=github_available,
             fetch_url_available=fetch_url_available,
+            actions_available=actions_available,
         )
     else:
         return XMLMarkerHandler()

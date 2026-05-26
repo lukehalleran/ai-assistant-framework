@@ -23,6 +23,7 @@ Public Types:
     - FETCH_URL_TOOL_DEFINITION (direct URL content fetching tool schema)
     - GITHUB_TOOL_DEFINITION (read-only GitHub API tool schema)
     - GENERATE_DOCUMENT_TOOL_DEFINITION (research & save document tool schema)
+    - PROPOSE_ACTION_TOOL_DEFINITION (internet write action proposal tool schema)
 
 SearchDecision Fields (extended for multi-tool support):
     - wants_search, search_query, search_reason (web search)
@@ -204,6 +205,12 @@ class SearchDecision:
     daemon_note_category: Optional[str] = None  # implementation | architecture | research | decisions
     daemon_note_summary: Optional[str] = None
     daemon_note_reason: Optional[str] = None
+    # Internet action (propose write action requiring user confirmation)
+    wants_action: bool = False
+    action_type: Optional[str] = None  # ActionType value
+    action_params: Optional[Dict[str, Any]] = None
+    action_summary: Optional[str] = None
+    action_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -984,6 +991,50 @@ CREATE_DAEMON_NOTE_TOOL_DEFINITION = {
                 }
             },
             "required": ["title", "category", "summary"]
+        }
+    }
+}
+
+PROPOSE_ACTION_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "propose_action",
+        "description": (
+            "Propose a write action on an external service that requires user confirmation. "
+            "Use this to send messages (Telegram, Discord, email), create GitHub issues, "
+            "or perform other internet write operations. The user will see a confirmation "
+            "prompt and can approve or reject the action. Propose at most ONE action per turn."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "enum": [
+                        "send_telegram", "send_discord", "send_email",
+                        "github_create_issue", "github_comment_pr",
+                        "calendar_create_event"
+                    ],
+                    "description": "Type of action to propose."
+                },
+                "recipient": {
+                    "type": "string",
+                    "description": "Who/where to send (chat ID, webhook, email address, repo, etc.)."
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Subject line (for email) or issue title (for GitHub). Optional for messaging."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Message body or issue/comment content."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why you are proposing this action (shown to user for context)."
+                }
+            },
+            "required": ["action_type", "message", "reason"]
         }
     }
 }

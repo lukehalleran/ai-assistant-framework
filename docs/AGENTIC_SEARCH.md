@@ -26,13 +26,15 @@ events to the UI in real time.
 
 | File | Purpose |
 |------|---------|
+| `core/agentic/gate.py` | 4-tier agentic gate: `evaluate_agentic_gate()` → `AgenticDecision` (keyword → entity → doc/note → LLM fallback) |
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics, nudge retry, no-reasoning decision phase, tool hints |
-| `core/agentic/tools.py` | ToolExecutor: 15 dispatch methods + 13 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary |
+| `core/agentic/tools.py` | ToolExecutor: 16 dispatch methods + 14 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary |
 | `core/agentic/formatters.py` | AgenticFormatter: 20 pure formatting methods (context, results, prompts) |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing, nested XML support, github_available gating |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
 | `core/github_manager.py` | GitHub API tool: read-only `gh` CLI access (issues, PRs, actions, releases) |
+| `core/actions/` | Internet action types, executors (telegram/discord/email), audit log, pending store |
 | `core/orchestrator.py` | Trigger logic and lazy initialization of controller |
 
 ---
@@ -43,14 +45,13 @@ Agentic search activates when ALL conditions are met:
 
 1. `use_agentic_search=True` passed to `process_user_query()`
 2. Config: `agentic_search.enabled = true`
-3. At least one trigger fires in `gui/handlers.py`:
-   - Keyword heuristic: computation, memory, knowledge, or web search keywords detected ("web search", "search for", "search online", "look up")
-   - Tool name keywords: explicit tool mentions ("github", "git stats", "wolfram", "sandbox", "pull request", "open issues", etc.) trigger agentic mode via `needs_tools`
-   - URL detection: `http://` or `https://` in query triggers agentic mode with auto-fetch
-   - Entity match: query mentions known knowledge graph entity
-   - LLM trigger: `should_search=True`, `needs_memory_search=True`, or `needs_knowledge_search=True`. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
-   - Explicit search keywords bypass intent veto; skip initial search when Tier 1 fires without LLM-generated terms
-   - `needs_tools` added to `skip_initial_search` condition (skips Round 1 web search for tool-name queries)
+3. `evaluate_agentic_gate()` in `core/agentic/gate.py` returns `AgenticDecision.should_trigger=True`:
+   - Tier 1: Keyword heuristic — computation, memory, knowledge, web search, and tool name keywords
+   - Tier 2: Entity match — query mentions known knowledge graph entity + recall signal
+   - Tier 3: Document generation or self-note intent detection
+   - Tier 4: LLM fallback — piggybacks on web search trigger call (`needs_memory_search`, `needs_knowledge_search`, `needs_document_generation`)
+   - Casual skip filter, continuation override, and intent-based veto all handled inside gate
+   - `AgenticDecision.skip_initial_search` computed by gate (True for computation, memory, knowledge, tools modes)
 
 The controller is lazy-initialized on first use via the orchestrator's
 `agentic_controller` property.
@@ -303,6 +304,22 @@ Direct trigger: "save a note for yourself about X" bypasses agentic loop
 Config: DAEMON_NOTES_* constants; YAML section daemon_notes:
 ```
 
+### propose_action
+
+Propose an internet write action requiring user confirmation before execution.
+
+```
+Parameters: action_type (required), recipient (required), message (required),
+            reason (optional), subject (optional, for email)
+Action types: send_telegram, send_discord, send_email,
+              github_create_issue, github_comment_pr, calendar_create_event
+Execution: Creates an ActionProposal stored in PendingActionsStore.
+           GUI displays approve/reject buttons. On approval, the action is
+           dispatched to the type-specific executor. On rejection, the proposal
+           is discarded and an audit log entry is written.
+Audit: All proposals and outcomes logged to logs/actions_audit.jsonl
+```
+
 ### done_searching
 
 Signal that enough information has been gathered.
@@ -330,7 +347,11 @@ Uses OpenAI-style function calling. LLM response includes
 `NativeToolsHandler` -> `SearchDecision`. GitHub tool definitions are
 conditionally included based on `github_available` parameter. Empty
 arguments for git_stats, github, and search_memory default to the
-original query rather than failing.
+original query rather than failing. `propose_action` is parsed as a
+native tool call. `NativeToolsHandler` also has a
+`_parse_text_tool_calls()` fallback that detects text-embedded action
+proposals when the LLM narrates a proposal instead of emitting a
+proper tool call.
 
 ### XML Markers
 
@@ -349,6 +370,7 @@ For models without native tool support. Markers embedded in text:
 <git_stats>commits this week</git_stats>
 <github>open issues labeled bug</github>
 <recall_image>query</recall_image>
+<action type="send_email" recipient="..." reason="...">message</action>
 <done/>
 ```
 
@@ -366,8 +388,10 @@ Parsed by `XMLMarkerHandler` using regex. `<done/>` is checked first
 and returns immediately if present. Remaining markers are collected
 in order: python -> wolfram -> memory -> expand_memory ->
 get_full_document -> file_read -> file_grep -> git_stats -> github ->
-file_list -> fetch_url -> recall_image -> search -> implicit answer
-(if no markers found).
+file_list -> fetch_url -> recall_image -> action -> search ->
+implicit answer (if no markers found). `propose_action` is parsed
+from `<action type="..." recipient="..." reason="...">message</action>`
+XML markers.
 
 ### System Prompt Augmentation
 
@@ -504,6 +528,8 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `recalling_image` / `recall_image_done` | Visual memory recall |
 | `generating_document` / `document_generated` | Document generation |
 | `creating_note` / `note_created` | Daemon self-note creation |
+| `proposing_action` | "Proposing action: {summary}" |
+| `action_proposed` | "Action proposed: {summary}" (metadata: action_id, action_type, summary) |
 | `synthesizing` | Starting final generation |
 | `done` | Session complete (suppressed in GUI after response starts) |
 | `error` | Error occurred |
@@ -600,4 +626,62 @@ UNCERTAINTY_MAX_LENGTH              # Max response length to check (default 400)
 RESPONSE_REVIEW_ENABLED             # Post-answer review against plan (default True)
 RESPONSE_REVIEW_CONFIDENCE_THRESHOLD  # Min confidence to trigger agentic retry (default 0.80)
 RESPONSE_REVIEW_TIMEOUT             # Seconds before review skipped (default 5.0)
+
+# Internet actions (YAML: internet_actions:)
+INTERNET_ACTIONS_ENABLED            # Master switch
+INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN # Telegram Bot API token
+INTERNET_ACTIONS_TELEGRAM_CHAT_ID   # Target Telegram chat ID
+INTERNET_ACTIONS_DISCORD_WEBHOOK_URL # Discord webhook URL
+INTERNET_ACTIONS_SMTP_HOST          # SMTP server host
+INTERNET_ACTIONS_SMTP_PORT          # SMTP server port
+INTERNET_ACTIONS_SMTP_USER          # SMTP username
+INTERNET_ACTIONS_SMTP_PASSWORD      # SMTP password
+INTERNET_ACTIONS_SMTP_FROM          # Sender email address
+INTERNET_ACTIONS_GITHUB_WRITE_ENABLED # GitHub write actions gate
+INTERNET_ACTIONS_PLAYWRIGHT_ENABLED # Playwright browser actions gate
+INTERNET_ACTIONS_TTL                # Pending action time-to-live
+INTERNET_ACTIONS_MAX_PENDING        # Max pending actions before rejection
+INTERNET_ACTIONS_AUDIT_LOG          # Audit log path (default logs/actions_audit.jsonl)
 ```
+
+---
+
+## Internet Actions (Human-in-the-Loop)
+
+Daemon can propose internet write actions (sending messages, creating
+issues, etc.) but never executes them autonomously. All actions follow
+a **propose → confirm → execute** flow with mandatory human approval.
+
+### Flow
+
+1. **Propose** — The `propose_action` agentic tool creates an
+   `ActionProposal` (action type, recipient, message, reason) and
+   stores it in `PendingActionsStore`. The proposal is returned to the
+   GUI as a pending action.
+2. **Confirm** — The GUI displays approve/reject buttons when a
+   pending action exists. The user reviews the proposed action and
+   decides.
+3. **Execute** — On approval, `ActionExecutorRegistry` routes the
+   proposal to the type-specific executor (e.g. `telegram.py`,
+   `discord.py`, `email.py`). On rejection, the proposal is discarded
+   and an audit log entry is written.
+
+### Audit
+
+All actions — proposals, approvals, rejections, execution results,
+and errors — are logged to `logs/actions_audit.jsonl` (one JSON object
+per line).
+
+### Implemented Executors
+
+| Action Type | Backend | Notes |
+|-------------|---------|-------|
+| `send_telegram` | Telegram Bot API via httpx | Requires bot token + chat ID |
+| `send_discord` | Discord webhook via httpx | Requires webhook URL |
+| `send_email` | stdlib `smtplib` (run in thread) | Requires SMTP config |
+
+### Stubs (Not Yet Implemented)
+
+- `github_create_issue` — create a GitHub issue
+- `github_comment_pr` — comment on a GitHub pull request
+- `calendar_create_event` — create a calendar event

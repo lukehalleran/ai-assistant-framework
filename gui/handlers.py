@@ -10,14 +10,10 @@ Module Contract
 - Behavior:
   - RAW mode: send directly through orchestrator.process_user_query(use_raw_mode=True)
   - DUEL mode: If BEST_OF_DUEL_MODE enabled, two models compete + judge picks winner. Builds provenance with response_mode="best-of-duel". Runs BEFORE agentic check.
-  - AGENTIC: If agentic_search.enabled and query triggers search, computation, memory recall, OR knowledge search, route through AgenticSearchController. Uses merged_input (user text + file content) as query so uploaded file content is visible to the agentic loop.
-    - 4-tier agentic gate [ENHANCED 2026-03-31]:
-      - Tier 1: Keyword heuristic (instant) — computation keywords OR memory keywords ("do you remember", "my notes", etc.)
-      - Tier 1b: Knowledge keywords (instant) [NEW 2026-03-31] — encyclopedic/wiki intent ("explain in depth", "how does", "consult wikipedia", etc.), 4+ words, no computation/memory trigger
-      - Tier 2: Entity match (instant) — query mentions a known entity from the knowledge graph (e.g., "Flapjack", "Auggie")
-      - Tier 3: LLM fallback — piggybacks on web search trigger LLM call; returns needs_memory_search and needs_knowledge_search fields. Memory search takes priority: if LLM returns both should_search and needs_memory_search, the query is routed to memory (not web).
-    - Casual skip filter only applies when no keyword/entity/knowledge trigger fired
-    - skip_initial_search=True for computation, memory, and knowledge queries (skips Round 1 web search)
+  - AGENTIC: If agentic_search.enabled, delegates to core/agentic/gate.py:evaluate_agentic_gate()
+    which runs the 4-tier gate (keyword → entity → doc/note intent → LLM fallback) and returns
+    an AgenticDecision. If triggered, routes through AgenticSearchController.
+    Uses merged_input (user text + file content) as query so uploaded file content is visible to the agentic loop.
     - Streaming hides thinking via has_incomplete_thinking_block() (tags) + likely_untagged_thinking() (heuristic)
     - Post-content ProgressEvents suppressed to prevent response pop-back
     - Citations extracted from memory_id_map via _extract_citations()
@@ -843,289 +839,24 @@ async def handle_submit(
         # Fall through to agentic/streaming on failure
 
     if agentic_enabled:
-        _lower = user_text.lower().strip()
-        _words = _lower.split()
-        needs_computation = False
-        needs_memory = False
-        needs_knowledge = False
-        _matched_entities = set()
-
-        needs_web_search = False
-
-        # --- Tier 1: Keyword heuristics (instant, no LLM) ---
-        # Only unambiguous computation terms — avoid common English words
-        # that trigger false positives (e.g. "I mean", "expand on that", "plot of the movie")
-        _computation_keywords = [
-            'calculate', 'compute', 'solve', 'integral', 'derivative', 'equation',
-            'fibonacci', 'factorial', 'median', 'standard deviation',
-            'matrix', 'numpy', 'pandas', 'sympy',
-            'regression', 'correlation', 'sum of', 'product of',
-            'simplify', 'differentiate', 'integrate',
-        ]
-        needs_computation = any(kw in _lower for kw in _computation_keywords)
-
-        # Explicit web search / URL fetch keywords — bypass LLM trigger
-        _web_search_keywords = [
-            'web search', 'search the web', 'search for', 'search online',
-            'google ', 'look it up', 'fetch the', 'fetch url',
-            'go to http', 'check out http', 'visit http',
-        ]
-        _has_url = 'http://' in _lower or 'https://' in _lower
-        if _has_url or any(kw in _lower for kw in _web_search_keywords):
-            needs_web_search = True
-            logger.debug("[Handle Submit] Tier 1: explicit web search/URL keyword detected")
-
-        # Agentic tool name keywords — if the user mentions a tool by name,
-        # they want agentic mode regardless of message length
-        needs_tools = False
-        _tool_keywords = [
-            'github', 'git stats', 'git_stats', 'git stat',
-            'wolfram', 'sandbox', 'execute python',
-            'search memory', 'search_memory',
-            'loc ', 'lines of code', 'lines added', 'lines changed',
-            'workflow', 'pull request', 'open issues', 'closed issues',
-            'actions', 'releases',
-        ]
-        if any(kw in _lower for kw in _tool_keywords):
-            needs_tools = True
-            logger.debug("[Handle Submit] Tier 1: agentic tool name detected in query")
-
-        _memory_keywords = [
-            'documentation', 'daemon docs', 'architecture',
-            'do you remember', 'did we talk', 'did we discuss',
-            'did i tell you', 'did i mention', 'have i told you',
-            'what do you know about me', 'what are my',
-            'my notes', 'obsidian', 'in my vault',
-            'past conversations', 'search your memory',
-            'search memory', 'check your memory', 'look up',
-            'my facts', 'what did i say',
-        ]
-        needs_memory = any(kw in _lower for kw in _memory_keywords)
-
-        # Knowledge/wiki keywords: explicit wiki references or in-depth knowledge requests
-        _knowledge_keywords = [
-            'wikipedia', 'consult wikipedia', 'wiki ',
-            'explain in depth', 'explain in detail', 'in depth',
-            'how does ', 'how do ', 'what is the difference between',
-            'compare and contrast', 'tell me about ',
-            'what is a ', 'what are ', 'what causes ',
-            'history of ', 'science behind', 'mechanism of ',
-        ]
-        # Only trigger for substantive queries (4+ words), not casual one-liners
-        # Allow knowledge + memory combinations (e.g., "tell me about my notes on physics")
-        if len(_words) >= 4 and not needs_computation:
-            needs_knowledge = any(kw in _lower for kw in _knowledge_keywords)
-
-        # --- Tier 2: Entity match (instant, no LLM) ---
-        # If query mentions a known entity AND has a recall/question signal,
-        # treat as memory query. Entity mention alone (casual chat) is not enough.
-        if not needs_computation and not needs_memory:
-            try:
-                _resolver = getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None)
-                if _resolver:
-                    from memory.graph_utils import extract_graph_entities
-                    _matched_entities = extract_graph_entities(user_text, _resolver)
-                    _matched_entities.discard("user")  # "user" is not a meaningful match
-                    if _matched_entities:
-                        # Require a recall/question signal alongside entity mention
-                        _has_recall_signal = (
-                            '?' in user_text
-                            or any(w in _lower for w in [
-                                'what', 'when', 'where', 'who', 'how', 'why',
-                                'tell me', 'remind', 'remember', 'know about',
-                                'recall', 'anything about', 'details on',
-                            ])
-                        )
-                        if _has_recall_signal:
-                            needs_memory = True
-                            logger.debug(f"[Handle Submit] Agentic triggered - entity {_matched_entities} + recall signal")
-                        else:
-                            logger.debug(f"[Handle Submit] Entity match {_matched_entities} but no recall signal — skipping agentic")
-            except Exception as e:
-                logger.debug(f"[Handle Submit] Entity match check failed (non-fatal): {e}")
-
-        # Casual skip filter: only applies when no keyword/entity trigger fired
-        _search_words = {'search', 'look', 'find', 'news', 'latest', 'current', 'today', 'recent', '2026', '2025', 'what is', 'who is', 'how does', 'tell me about'}
-        _has_search_signal = any(w in _lower for w in _search_words) or '?' in user_text or _has_url
-        _skip_patterns = [
-            len(_words) < 5 and not _has_search_signal,
-            len(_words) < 10 and not _has_search_signal,
-            # Casual starters only skip for SHORT messages without search signals
-            len(_words) < 12 and not _has_search_signal and _lower.startswith((
-                'nice', 'thanks', 'thank you', 'cool', 'great', 'awesome', 'got it',
-                'ok ', 'okay', 'yeah', 'yes', 'no ', 'nope', 'nah', 'haha', 'lol',
-                'true', 'fair', 'same', 'right', 'exactly', 'for sure', 'bet', 'word',
-            )),
-            all(w in ['yes', 'no', 'ok', 'okay', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank', 'you', 'lol', 'haha', 'true', 'right', 'fair', 'same'] for w in _words),
-        ]
-
-        # Context-aware override: if the current message is a short
-        # continuation/retry and the previous turn's QUERY had agentic
-        # signals (search keywords, ?, tool mentions), inherit agentic intent.
-        _prev_was_agentic = False
-        if any(_skip_patterns):
-            # Check if current message looks like a continuation/retry
-            _continuation_phrases = (
-                'try again', 'try that again', 'one more', 'do it',
-                'go ahead', 'yes please', 'please do', 'go for it',
-                'run it', 'let\'s go', "let's go", 'sure', 'yep',
-                'yes', 'yeah', 'do that',
-            )
-            _is_continuation = any(p in _lower for p in _continuation_phrases)
-
-            if _is_continuation:
-                try:
-                    _cm = getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None)
-                    if _cm:
-                        _recent = _cm.get_recent_memories(2)
-                        for _prev in _recent:
-                            _prev_query = (_prev.get('query', '') or '').lower()
-                            _prev_response = (_prev.get('response', '') or '')[:800]
-                            # Previous query had agentic signals
-                            _prev_had_signals = (
-                                '?' in _prev_query
-                                or any(w in _prev_query for w in (
-                                    'search', 'find', 'look', 'github', 'git',
-                                    'issues', 'pull request', 'pr ', 'commits',
-                                    'stats', 'loc', 'lines', 'code',
-                                    'calculate', 'compute', 'wolfram',
-                                ))
-                            )
-                            # Previous response mentioned tools or showed tool intent
-                            _prev_mentioned_tools = any(w in _prev_response.lower() for w in (
-                                'let me pull', 'let me grab', 'let me run',
-                                'let me check', 'let me search', 'let me query',
-                                'i\'ll hit', "i'll hit", 'i\'ll search', "i'll search",
-                                'git_stats', 'github api', 'github tool',
-                            ))
-                            if _prev_had_signals or _prev_mentioned_tools:
-                                _prev_was_agentic = True
-                                logger.debug(
-                                    f"[Handle Submit] Continuation after agentic-intent turn — "
-                                    f"overriding casual skip (query_signals={_prev_had_signals}, "
-                                    f"response_tools={_prev_mentioned_tools})"
-                                )
-                                break
-                except Exception as e:
-                    logger.debug(f"[Handle Submit] Previous-turn agentic check failed (non-fatal): {e}")
-
-        # --- Document generation intent check (before generic agentic) ---
-        _doc_gen_intent = None
-        try:
-            from knowledge.document_generator import detect_document_intent
-            _doc_gen_intent = detect_document_intent(user_text)
-            if _doc_gen_intent:
-                logger.warning(f"[Handle Submit] DOCUMENT GENERATION DETECTED: {_doc_gen_intent}")
-                should_use_agentic = True
-                needs_tools = True
-                search_terms = []
-        except Exception as e:
-            logger.warning(f"[Handle Submit] Document intent check FAILED: {e}")
-            import traceback
-            traceback.print_exc()
-
-        # --- Self-note intent check ---
-        _self_note_intent = None
-        try:
-            from knowledge.daemon_notes_manager import detect_self_note_intent
-            _self_note_intent = detect_self_note_intent(user_text)
-            if _self_note_intent:
-                logger.warning(f"[Handle Submit] SELF-NOTE DETECTED: {_self_note_intent}")
-                should_use_agentic = True
-                needs_tools = True
-                search_terms = []
-        except Exception as e:
-            logger.debug(f"[Handle Submit] Self-note intent check failed: {e}")
-
-        if not _doc_gen_intent and not _self_note_intent and not needs_computation and not needs_memory and not needs_knowledge and not needs_web_search and not needs_tools and any(_skip_patterns) and not _prev_was_agentic:
-            logger.debug("[Handle Submit] Agentic skipped - casual/short message")
-            should_use_agentic = False
-            search_terms = []
-        else:
-
-            if needs_computation or needs_memory or needs_knowledge or needs_web_search or needs_tools:
-                should_use_agentic = True
-                search_terms = []  # No initial web search needed, tools handle it
-
-                # Log all triggered modes (can be multiple)
-                triggered_modes = []
-                if needs_computation:
-                    triggered_modes.append("computation")
-                if needs_memory:
-                    triggered_modes.append("memory")
-                if needs_knowledge:
-                    triggered_modes.append("knowledge")
-                if needs_web_search:
-                    triggered_modes.append("web_search")
-                if needs_tools:
-                    triggered_modes.append("tools")
-                logger.debug(f"[Handle Submit] Agentic triggered - modes: {', '.join(triggered_modes)}")
-            else:
-                # Check if web search, memory search, or knowledge search should be triggered using LLM-first trigger
-                try:
-                    from utils.web_search_trigger import analyze_for_web_search_llm
-                    trigger_decision = await analyze_for_web_search_llm(
-                        query=user_text,
-                        model_manager=orchestrator.model_manager
-                    )
-                    # trigger_decision is a WebSearchDecision object with attributes
-                    should_use_agentic = getattr(trigger_decision, 'should_search', False)
-                    search_terms = getattr(trigger_decision, 'search_terms', []) or []
-
-                    # Memory/knowledge search takes priority over web search —
-                    # if LLM says both should_search AND needs_memory_search, the query
-                    # is personal recall, not a web query (e.g. "do you see Paczki?")
-                    if getattr(trigger_decision, 'needs_memory_search', False):
-                        logger.debug("[Handle Submit] Agentic triggered - LLM detected memory search intent")
-                        should_use_agentic = True
-                        needs_memory = True
-                        search_terms = []  # clear web search terms
-
-                    # LLM-based knowledge search fallback: encyclopedic/wiki queries
-                    elif getattr(trigger_decision, 'needs_knowledge_search', False):
-                        if not should_use_agentic:
-                            logger.debug("[Handle Submit] Agentic triggered - LLM detected knowledge search intent")
-                            should_use_agentic = True
-                        needs_knowledge = True
-                        search_terms = []
-
-                    # LLM-based document generation detection
-                    elif getattr(trigger_decision, 'needs_document_generation', False):
-                        logger.info("[Handle Submit] Agentic triggered - LLM detected document generation intent")
-                        should_use_agentic = True
-                        needs_tools = True
-                        search_terms = []
-                        _doc_gen_intent = {
-                            "topic": getattr(trigger_decision, 'document_topic', '') or user_text,
-                            "doc_type": getattr(trigger_decision, 'document_type', 'report') or 'report',
-                            "focus": None,
-                        }
-
-                    logger.debug(f"[Handle Submit] Agentic trigger: should_search={should_use_agentic}, needs_memory={needs_memory}, needs_knowledge={needs_knowledge}, terms={search_terms}")
-                except Exception as e:
-                    logger.warning(f"[Handle Submit] Agentic trigger check failed: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    should_use_agentic = False
-                    search_terms = []
-
-        # --- Intent-based veto: skip agentic for casual/meta queries even if keyword matched ---
-        # Exception: if the message contains an explicit search/fetch keyword, don't veto —
-        # the user may be mixing casual talk with a real search request.
-        _has_explicit_search_keyword = any(kw in _lower for kw in [
-            'search', 'look up', 'fetch', 'check out', 'go to', 'visit', 'pull up',
-        ]) or _has_url
-        if should_use_agentic and not _has_explicit_search_keyword and not _doc_gen_intent and not _self_note_intent:
-            _intent_info = raw_context.get("intent") if raw_context else None
-            if _intent_info:
-                _intent_type = getattr(_intent_info, 'intent_type', None) if not isinstance(_intent_info, dict) else _intent_info.get('intent_type')
-                _intent_conf = getattr(_intent_info, 'confidence', 0) if not isinstance(_intent_info, dict) else _intent_info.get('confidence', 0)
-                _veto_intents = {'meta_conversational', 'casual_social'}
-                _type_val = getattr(_intent_type, 'value', str(_intent_type)) if _intent_type else ''
-                if _type_val in _veto_intents and _intent_conf >= 0.75:
-                    logger.info(f"[Handle Submit] Agentic VETOED by intent classifier: {_intent_type} (conf={_intent_conf:.2f})")
-                    should_use_agentic = False
-                    search_terms = []
+        from core.agentic.gate import evaluate_agentic_gate
+        _gate_decision = await evaluate_agentic_gate(
+            user_text=user_text,
+            entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
+            model_manager=orchestrator.model_manager,
+            corpus_manager=getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None),
+            intent_info=raw_context.get("intent") if raw_context else None,
+        )
+        should_use_agentic = _gate_decision.should_trigger
+        search_terms = _gate_decision.search_terms
+        needs_computation = "computation" in _gate_decision.modes
+        needs_memory = "memory" in _gate_decision.modes
+        needs_knowledge = "knowledge" in _gate_decision.modes
+        needs_web_search = "web_search" in _gate_decision.modes
+        needs_tools = "tools" in _gate_decision.modes
+        _matched_entities = _gate_decision.matched_entities
+        _doc_gen_intent = _gate_decision.doc_gen_intent
+        _self_note_intent = _gate_decision.self_note_intent
 
         # --- Direct document generation (bypasses agentic loop) ---
         if _doc_gen_intent and should_use_agentic:
@@ -1281,7 +1012,7 @@ async def handle_submit(
                     model_name=model_name,
                     initial_search_terms=initial_terms,
                     initial_context=raw_context,
-                    skip_initial_search=needs_computation or needs_memory or needs_knowledge or needs_tools or (needs_web_search and not initial_terms and not _extracted_urls),
+                    skip_initial_search=_gate_decision.skip_initial_search and not _extracted_urls,
                     initial_urls=_extracted_urls if _extracted_urls else None,
                 )
 
@@ -1335,6 +1066,8 @@ async def handle_submit(
                             "document_generated": "✅",
                             "saving_note": "🗒️",
                             "note_saved": "✅",
+                            "proposing_action": "📨",
+                            "action_proposed": "✅",
                             "done": "✅",
                             "error": "❌",
                         }.get(item.event_type, "•")
@@ -1397,14 +1130,24 @@ async def handle_submit(
                 if not _had_real_rounds and display_output:
                     # Response is just narration — strip lines that look like
                     # bare tool queries (short lines without sentence structure)
+                    # But preserve [propose_action] blocks for text parsing
                     _cleaned_lines = []
+                    _in_action_block = False
                     for _line in display_output.split('\n'):
                         _stripped_line = _line.strip()
+                        # Track action JSON blocks — don't strip them
+                        if _stripped_line.startswith('[propose_action'):
+                            _in_action_block = True
+                        if _in_action_block:
+                            _cleaned_lines.append(_line)
+                            if _stripped_line == '}':
+                                _in_action_block = False
+                            continue
                         # Keep empty lines and lines with sentence structure
                         if (not _stripped_line
                                 or len(_stripped_line.split()) >= 4
                                 or _stripped_line.endswith(('.', '!', '?', ':', ';', ','))
-                                or _stripped_line.startswith(('#', '-', '*', '>'))):
+                                or _stripped_line.startswith(('#', '-', '*', '>', '{', '"'))):
                             _cleaned_lines.append(_line)
                         else:
                             logger.debug(f"[Handle Submit] Stripped bare tool-call line: {_stripped_line!r}")
@@ -1427,6 +1170,75 @@ async def handle_submit(
                             display_output += "\n\n---\n**Sources:**\n" + "\n".join(_footer_lines)
                     # Also set on orchestrator for provenance
                     orchestrator._web_source_map = _web_map
+
+                # Parse text-based action proposals from the final response.
+                # The model sometimes outputs [propose_action: send_email] {...}
+                # as text in the final generation instead of calling the tool
+                # during the agentic loop.
+                try:
+                    from config.app_config import INTERNET_ACTIONS_ENABLED
+                    if INTERNET_ACTIONS_ENABLED and display_output:
+                        from core.agentic.tools import ToolExecutor
+                        _actions_store = ToolExecutor._get_pending_actions_store()
+                        if not _actions_store.get_pending():
+                            # No action was proposed via tool call — check text
+                            from core.agentic.protocols import NativeToolsHandler
+                            _text_handler = NativeToolsHandler(actions_available=True)
+                            _text_decisions = _text_handler._parse_text_tool_calls(display_output)
+                            for _td in _text_decisions:
+                                if _td.wants_action and _td.action_type:
+                                    logger.info(f"[Handle Submit] Parsed text action proposal: {_td.action_type}")
+                                    # Create the proposal via the dispatch path
+                                    from core.actions.types import ActionProposal, ActionType
+                                    from core.actions.audit import ActionAuditLog
+                                    from config.app_config import INTERNET_ACTIONS_TTL, INTERNET_ACTIONS_AUDIT_LOG
+                                    try:
+                                        _action_type = ActionType(_td.action_type)
+                                    except ValueError:
+                                        logger.warning(f"[Handle Submit] Unknown action type from text: {_td.action_type}")
+                                        break
+                                    _proposal = ActionProposal(
+                                        action_type=_action_type,
+                                        params=_td.action_params or {},
+                                        summary=_td.action_summary or f"{_td.action_type}: action",
+                                        reasoning=_td.action_reason or "",
+                                    )
+                                    _actions_store.propose(_proposal)
+                                    ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(_proposal)
+                                    # Strip the raw tool text from display
+                                    import re as _re_action
+                                    display_output = _re_action.sub(
+                                        r'\[propose_action:\s*\w+\]\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}',
+                                        '', display_output, count=1,
+                                    ).strip()
+                                    break  # Only one action per turn
+                except (ImportError, Exception) as e:
+                    logger.warning(f"[Handle Submit] Text action parse failed: {e}")
+
+                # Check for pending action proposals → append card to display
+                _pending_action_id = None
+                try:
+                    from config.app_config import INTERNET_ACTIONS_ENABLED
+                    if INTERNET_ACTIONS_ENABLED:
+                        from core.agentic.tools import ToolExecutor
+                        _actions_store = ToolExecutor._get_pending_actions_store()
+                        _pending_proposal = _actions_store.get_pending()
+                        if _pending_proposal:
+                            _pending_action_id = _pending_proposal.action_id
+                            _recipient = _pending_proposal.params.get("recipient", "")
+                            _subject = _pending_proposal.params.get("subject", "")
+                            _msg = _pending_proposal.params.get("message", "")
+                            _action_header = f"**{_pending_proposal.action_type.value}**"
+                            if _recipient:
+                                _action_header += f" to {_recipient}"
+                            if _subject:
+                                _action_header += f" — *{_subject}*"
+                            _action_card = f"\n\n---\n{_action_header}\n"
+                            if _msg:
+                                _action_card += f"> {_msg[:300]}\n\n"
+                            display_output += _action_card
+                except ImportError:
+                    pass
 
                 logger.debug(f"[Handle Submit] Agentic loop done, response_len={len(final_output)}, display_len={len(display_output)}")
 
@@ -1473,7 +1285,10 @@ async def handle_submit(
                     display_output = "I processed your request but my response was caught by the thinking filter. Let me try again — could you rephrase or retry?"
                     logger.warning("[Handle Submit] Agentic response was entirely thinking content, showing fallback")
                 logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
-                yield {"role": "assistant", "content": display_output, "debug": debug_record}
+                _final_chunk = {"role": "assistant", "content": display_output, "debug": debug_record}
+                if _pending_action_id:
+                    _final_chunk["pending_action_id"] = _pending_action_id
+                yield _final_chunk
                 logger.debug("[Handle Submit] Agentic final response yielded")
 
                 # Store interaction in background (fire-and-forget, same as enhanced path).
@@ -1805,6 +1620,62 @@ async def handle_submit(
             _handler_timings["context_pipeline"] = _phase_timings.get("context_pipeline", 0.0)
             _handler_timings["prompt_build"] = _phase_timings.get("prompt_build", 0.0)
 
+        # Parse text-based action proposals from enhanced response.
+        # Model may output [propose_action: send_email] {...} as text even
+        # in non-agentic mode if it knows about the tool from context.
+        _enh_pending_action_id = None
+        try:
+            from config.app_config import INTERNET_ACTIONS_ENABLED
+            if INTERNET_ACTIONS_ENABLED and _resp_for_debug:
+                from core.agentic.tools import ToolExecutor
+                _enh_store = ToolExecutor._get_pending_actions_store()
+                if not _enh_store.get_pending():
+                    from core.agentic.protocols import NativeToolsHandler
+                    _enh_handler = NativeToolsHandler(actions_available=True)
+                    _enh_decisions = _enh_handler._parse_text_tool_calls(_resp_for_debug)
+                    for _etd in _enh_decisions:
+                        if _etd.wants_action and _etd.action_type:
+                            logger.info(f"[Handle Submit] Enhanced: parsed text action: {_etd.action_type}")
+                            from core.actions.types import ActionProposal, ActionType
+                            from core.actions.audit import ActionAuditLog
+                            from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
+                            try:
+                                _ea_type = ActionType(_etd.action_type)
+                            except ValueError:
+                                break
+                            _ea_proposal = ActionProposal(
+                                action_type=_ea_type,
+                                params=_etd.action_params or {},
+                                summary=_etd.action_summary or f"{_etd.action_type}: action",
+                                reasoning=_etd.action_reason or "",
+                            )
+                            _enh_store.propose(_ea_proposal)
+                            ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(_ea_proposal)
+                            _enh_pending_action_id = _ea_proposal.action_id
+                            # Strip raw tool text and append proper action card
+                            import re as _re_enh_action
+                            _resp_for_debug = _re_enh_action.sub(
+                                r'\[propose_action:\s*\w+\]\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}',
+                                '', _resp_for_debug, count=1,
+                            ).strip()
+                            _pending = _enh_store.get_pending()
+                            if _pending:
+                                _enh_recip = _pending.params.get("recipient", "")
+                                _enh_subj = _pending.params.get("subject", "")
+                                _enh_msg = _pending.params.get("message", "")
+                                _enh_header = f"**{_pending.action_type.value}**"
+                                if _enh_recip:
+                                    _enh_header += f" to {_enh_recip}"
+                                if _enh_subj:
+                                    _enh_header += f" — *{_enh_subj}*"
+                                _card = f"\n\n---\n{_enh_header}\n"
+                                if _enh_msg:
+                                    _card += f"> {_enh_msg[:300]}\n\n"
+                                _resp_for_debug += _card
+                            break
+        except (ImportError, Exception) as e:
+            logger.warning(f"[Handle Submit] Enhanced text action parse failed: {e}")
+
         debug_record = _build_debug_record(
             mode=_enh_mode, user_text=user_text, prompt=full_prompt,
             system_prompt=system_prompt, response=_resp_for_debug,
@@ -1814,7 +1685,10 @@ async def handle_submit(
             provenance=_enh_prov, phase_timings=_handler_timings,
             task_timings=_task_timings, gather_elapsed=_gather_elapsed,
         )
-        yield {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
+        _enh_final_chunk = {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
+        if _enh_pending_action_id:
+            _enh_final_chunk["pending_action_id"] = _enh_pending_action_id
+        yield _enh_final_chunk
         debug_emitted = True
 
     except Exception as e:
@@ -1911,3 +1785,88 @@ async def handle_submit(
                 setattr(app_config, key, value)
                 logger.warning(f"[Fast Mode] Restored {key} = {value}")
             logger.warning("[Handle Submit] ⚡ Fast Mode limits RESTORED to normal")
+
+
+# ---------------------------------------------------------------------------
+# Internet Actions — Approve / Reject handlers (called by GUI buttons)
+# ---------------------------------------------------------------------------
+
+async def execute_pending_action(action_id: str, chat_history: list, orchestrator=None):
+    """Execute an approved internet action. Called by GUI Approve button.
+
+    Does NOT go through submit_chat — directly modifies chat_history and returns.
+    """
+    import gradio as gr
+    from core.actions.types import PendingActionsStore
+    from core.actions.audit import ActionAuditLog
+    from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
+
+    if not action_id:
+        return chat_history, gr.update(value=None), gr.update(visible=False)
+
+    # Load proposal from the global store
+    from core.agentic.tools import ToolExecutor
+    store = ToolExecutor._get_pending_actions_store()
+    proposal = store.approve(action_id)
+
+    if not proposal:
+        chat_history.append({
+            "role": "assistant",
+            "content": "Action expired or not found. Ask me again if you still want this."
+        })
+        return chat_history, gr.update(value=None), gr.update(visible=False)
+
+    # Audit: log approval
+    audit = ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG)
+    audit.log_decision(action_id, approved=True)
+
+    # Execute via the executor registry
+    try:
+        from core.actions.executors import ActionExecutorRegistry
+        executor = ActionExecutorRegistry()
+        result = await executor.execute(proposal)
+        audit.log_execution(action_id, result)
+
+        if result.success:
+            store.mark_executed(action_id, result.message)
+            msg = f"[ACTION EXECUTED: {proposal.action_type.value}] {result.message}"
+        else:
+            store.mark_failed(action_id, result.message)
+            msg = f"Action failed: {result.message}\n\nWant me to try something else?"
+    except Exception as e:
+        store.mark_failed(action_id, str(e))
+        msg = f"Action failed with error: {e}\n\nWant me to try something else?"
+        logger.error(f"[Actions] Execution failed for {action_id}: {e}")
+
+    chat_history.append({"role": "assistant", "content": msg})
+    return chat_history, gr.update(value=None), gr.update(visible=False)
+
+
+async def reject_pending_action(action_id: str, chat_history: list, orchestrator=None):
+    """Reject a pending internet action. Called by GUI Reject button."""
+    import gradio as gr
+    from core.actions.audit import ActionAuditLog
+    from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
+
+    if not action_id:
+        return chat_history, gr.update(value=None), gr.update(visible=False)
+
+    from core.agentic.tools import ToolExecutor
+    store = ToolExecutor._get_pending_actions_store()
+    proposal = store.reject(action_id)
+
+    audit = ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG)
+    audit.log_decision(action_id, approved=False)
+
+    if proposal:
+        chat_history.append({
+            "role": "assistant",
+            "content": f"[ACTION REJECTED] Cancelled: {proposal.summary}"
+        })
+    else:
+        chat_history.append({
+            "role": "assistant",
+            "content": "Action already expired or was not found."
+        })
+
+    return chat_history, gr.update(value=None), gr.update(visible=False)

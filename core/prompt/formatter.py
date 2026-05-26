@@ -1424,7 +1424,32 @@ class PromptFormatter:
                 meta = commit.get("metadata", {})
                 commit_hash = meta.get("commit_hash", "")
                 author = meta.get("author", "")
-                age = meta.get("age_relative", "")
+                # Compute relative time from stored ISO timestamp instead of
+                # using stale age_relative snapshot from extraction time
+                age = ""
+                iso_ts = meta.get("timestamp", "")
+                if iso_ts:
+                    try:
+                        from datetime import datetime as _dt
+                        commit_dt = _dt.fromisoformat(iso_ts)
+                        now = _dt.now(tz=commit_dt.tzinfo)
+                        delta_days = (now.date() - commit_dt.date()).days
+                        if delta_days == 0:
+                            age = "today"
+                        elif delta_days == 1:
+                            age = "yesterday"
+                        elif delta_days < 7:
+                            age = f"{delta_days} days ago"
+                        elif delta_days < 30:
+                            age = f"{delta_days // 7}w ago"
+                        elif delta_days < 365:
+                            age = f"{delta_days // 30} months ago"
+                        else:
+                            age = f"{delta_days // 365}y ago"
+                    except (ValueError, TypeError):
+                        age = meta.get("age_relative", "")
+                else:
+                    age = meta.get("age_relative", "")
                 tags = meta.get("tags", "")
             else:
                 content = str(commit)

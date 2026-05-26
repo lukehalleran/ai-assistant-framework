@@ -4,7 +4,7 @@
 
 Daemon is a production-grade conversational RAG system with a 5-tier hierarchical memory architecture. Features multi-stage semantic gating, crisis-aware tone detection, multi-provider LLM support, knowledge graph, synthesis dreaming, visual memory, and agentic search.
 
-**Stats:** ~143K lines across 450+ files (395+ Python), 177 test files, 3,600+ tests. Last full run: 2026-05-17 (2417 unit + 305 benchmark passed, 0 failures).
+**Stats:** ~162K lines across 456+ files (440+ Python), 211 test files, 3,800+ tests. Last full run: 2026-05-17 (2417 unit + 305 benchmark passed, 0 failures).
 
 ## Critical Rules
 
@@ -30,9 +30,9 @@ Query → ContextPipeline (tone‖topic parallel, intent gates heavy-topic skip)
       → UnifiedPromptBuilder (context assembly + web search, cached query embedding)
         + ResponsePlanner (parallel: lightweight plan)
       → Agentic search (if triggered, replaces standard generation)
-        18 tools: web, wolfram, sandbox, memory, files, git, github, fetch_url,
+        19 tools: web, wolfram, sandbox, memory, files, git, github, fetch_url,
                   stackexchange, arxiv, pubmed, hackernews, recall_image,
-                  generate_document, ...
+                  generate_document, propose_action, ...
       → BestOfHandler | ResponseGenerator (streaming)
       → ResponseParser (thinking block, artifact stripping)
       → MemoryCoordinator (persist)
@@ -66,7 +66,7 @@ UnifiedPromptBuilder (thin orchestrator)
 
 ## Key Config
 
-Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (46 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
+Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (47 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
 
 Key values: `PROMPT_TOKEN_BUDGET_DEFAULT=15000` (floor 8K, ceiling 16K), `COSINE_SIMILARITY_THRESHOLD=0.25`, 9 intent types, dual fact budget (user=6, entity=4). Web search requires `TAVILY_API_KEY`. Currently disabled: synthesis generators, graph walk.
 
@@ -87,9 +87,17 @@ core/                         # Request orchestration
 ├── git_stats_manager.py      # Read-only git repo stats (agentic tool)
 ├── github_manager.py         # Read-only GitHub API via gh CLI (agentic tool)
 ├── response_generator.py
+├── actions/                  # Internet actions (human-in-the-loop write actions)
+│   ├── types.py              # ActionType enum, ActionProposal, ActionResult, PendingActionsStore
+│   ├── executors.py          # ActionExecutorRegistry: routes to type-specific handlers
+│   ├── telegram.py           # Telegram Bot API sender
+│   ├── discord.py            # Discord webhook sender
+│   ├── email.py              # SMTP email sender
+│   └── audit.py              # Append-only JSONL audit log (logs/actions_audit.jsonl)
 ├── agentic/                  # ReAct search loop
+│   ├── gate.py               # 4-tier agentic gate: AgenticDecision + evaluate_agentic_gate()
 │   ├── controller.py         # Loop orchestration, [TOOL STATUS] injection
-│   ├── tools.py              # 17 tool types + get_tool_health() (incl. GitHub, StackExchange, arXiv, PubMed, HN)
+│   ├── tools.py              # 18 tool types + get_tool_health() (incl. GitHub, StackExchange, arXiv, PubMed, HN, propose_action)
 │   ├── formatters.py         # Stateless result formatting
 │   ├── types.py              # SearchDecision, tool definitions
 │   └── protocols.py          # Native tools + XML parsing
@@ -169,15 +177,15 @@ knowledge/                    # External knowledge
 └── synthesis_models.py       # Synthesis data models + enums
 
 config/                       # Configuration
-├── app_config.py             # YAML loader + ~280 module-level constants
-├── schema.py                 # Pydantic v2 validation (45 section models)
-├── config.yaml               # 45 sections, ~340 keys
+├── app_config.py             # YAML loader + ~300 module-level constants
+├── schema.py                 # Pydantic v2 validation (46 section models)
+├── config.yaml               # 47 sections, ~360 keys
 ├── feature_registry.yaml     # Retrospective shipped-feature catalog (branch supervision)
 └── feature_registry.py       # Typed loader: dependency resolution, conflict detection
 
 gui/                          # Gradio web interface
 ├── launch.py                 # Main GUI, dark theme, startup tasks
-├── handlers.py               # Chat submission, streaming, agentic gate
+├── handlers.py               # Chat submission, streaming, action approve/reject
 └── wizard.py                 # First-run onboarding
 
 eval/                         # Prompt ablation & eval (Phases 1-2, 4-6)

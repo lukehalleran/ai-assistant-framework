@@ -229,7 +229,7 @@ schedule_extraction:
   enabled: true
   prompt_max_events: 10
   lookahead_days: 7
-  bare_time_min_confidence: 0.50
+  bare_time_min_confidence: 0.5
 reference_docs:
   auto_seed: true
   seed_paths:
@@ -444,6 +444,22 @@ daemon_notes:
   output_dir: daemon_notes
   max_per_prompt: 2
   collection_boost: -0.05
+internet_actions:
+  enabled: true
+  telegram_bot_token: ''
+  telegram_default_chat_id: ''
+  discord_webhook_url: ''
+  smtp_host: smtp.gmail.com
+  smtp_port: 587
+  smtp_user: lukehalleran@gmail.com
+  smtp_password: ''
+  smtp_from: lukehalleran@gmail.com
+  github_write_enabled: false
+  playwright_enabled: false
+  playwright_timeout_s: 30
+  action_ttl_seconds: 300
+  max_pending_actions: 5
+  audit_log_path: logs/actions_audit.jsonl
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
     the truth even when uncomfortable, admits ignorance freely, and uses dark humor

@@ -1473,15 +1473,17 @@ else:
   - `_compute_context_inventory(initial_context)` → Summarizes available context (user profile, summaries, memories, notes, docs, dreams, visual memories, git commits, knowledge graph, threads, proactive insights) for LLM awareness **[ENHANCED 2026-05-11]**
   - Memory search diversity tracking: per-collection search counts prevent redundant queries **[NEW 2026-03-20]**
 
-**core/agentic/tools.py** - Tool execution **[UPDATED 2026-05-18]**
-- `ToolExecutor`: Dispatch routing + 17 execute methods
+**core/agentic/tools.py** - Tool execution **[UPDATED 2026-05-25]**
+- `ToolExecutor`: Dispatch routing + 18 execute methods
   - `get_tool_health()` → Returns diagnostic string of tool availability (web search, FAISS, sandbox, etc.)
-  - `dispatch(decision, session)` → Routes to appropriate `_execute_*` method
+  - `dispatch(decision, session)` → Routes to appropriate `_execute_*` / `_dispatch_*` method
   - Core: `_execute_search` (web, with optional `include_domains`), `_execute_fetch_url`, `_execute_wolfram`, `_execute_sandbox`
   - Memory: `_execute_memory_search`, `_execute_memory_expand`, `_execute_full_document`, `_execute_recall_image`
   - Files: `_execute_file_read`, `_execute_file_grep`, `_execute_file_list`, `_execute_git_stats`
   - Dedicated APIs (free, no auth): `_execute_stackexchange` (api.stackexchange.com), `_execute_arxiv` (export.arxiv.org),
     `_execute_pubmed` (eutils.ncbi.nlm.nih.gov), `_execute_hackernews` (hn.algolia.com)
+  - Content: `_dispatch_generate_document`, `_dispatch_create_daemon_note`
+  - Actions: `_dispatch_action_proposal` — creates `ActionProposal` for user confirmation, does not execute **[NEW 2026-05-25]**
 
 **core/agentic/formatters.py** - Formatting **[NEW 2026-05]**
 - `AgenticFormatter`: 18 pure formatting methods (no I/O, no state mutation)
@@ -1561,6 +1563,9 @@ agentic_search:
 - `fetch_url` tool [NEW 2026-05]: Fetch web page content by URL via Tavily extract API. Auto-triggered for URLs in user messages (Round 1). URL reroute: web_search queries containing URLs auto-reroute here. Results registered in `web_source_map` for `[WEB_N]` citation tracking. Gated on `web_search_manager.is_available()`.
 - `wiki_knowledge` added to `search_memory` valid collections [NEW 2026-03-30]: enables agentic search of pre-embedded Wikipedia corpus
 - FAISS Wikipedia fallback [NEW 2026-03-31]: `_search_wiki_faiss()` + `_format_wiki_faiss_results()` — when searching `wiki_knowledge`, always prefers FAISS semantic search (40M vectors, IVFPQ index) over sparse ChromaDB data
+- `generate_document` tool [NEW 2026-05]: Research & save markdown documents (report/summary). `SearchDecision` extended with `wants_generate_document`, `generate_document_topic`, `generate_document_type`, `generate_document_focus`, `generate_document_reason`.
+- `create_daemon_note` tool [NEW 2026-05]: Save working context as self-note for future sessions. `SearchDecision` extended with `wants_create_daemon_note`, `daemon_note_title`, `daemon_note_category`, `daemon_note_summary`, `daemon_note_reason`.
+- `propose_action` tool [NEW 2026-05-25]: Propose internet write action requiring user confirmation (human-in-the-loop). `SearchDecision` extended with `wants_action`, `action_type` (ActionType value: send_telegram, send_email, etc.), `action_params` (message, recipient, subject), `action_summary` (human-readable summary), `action_reason` (why the action was proposed). Does NOT execute — creates `ActionProposal` for GUI approval/rejection.
 
 **Provenance** **[NEW 2026-03-26]**:
 - `AgenticSearchSession.final_prompt_hash` — SHA-256[:16] of final assembled prompt
@@ -1582,22 +1587,27 @@ agentic_search:
 - `handle_submit()` → Main async generator yielding response chunks to GUI (1200 LOC, down from 1541)
 - **Extracted helpers** [NEW 2026-05-22]: `_safe_count_tokens()`, `_safe_extract_citations()`, `_build_debug_record()`, `_build_provenance()`, `_attach_agentic_provenance()`, `_sanitize_response_text()`, `_strip_echoed_headers()`, `_dispatch_storage()`, `_silent_agentic_retry()`, `_get_session_id()` — consolidate patterns repeated 2-4x across mode paths
   - **Fast Mode** [NEW 2026-03-10]: When `fast_mode=True`, temporarily reduces retrieval limits (PROMPT_MAX_MEMS→10, PROMPT_MAX_RECENT→5, PROMPT_MAX_SEMANTIC→8), sets `context_gatherer._fast_mode` and `hybrid_retriever._fast_mode`. Yields progress keepalive messages ("Thinking...", "Analyzing context...", etc.) every 2s during `prepare_prompt()` to prevent mobile timeouts. All overrides restored in `finally` block.
-  - **Agentic Search Path** [ENHANCED 2026-05-20]:
-    - 5-tier agentic gate (all run before casual skip filter):
-      - Tier 1: Keyword heuristic — computation keywords (`calculate`, `solve`, etc.) OR memory keywords (`do you remember`, `my notes`, `search your memory`, etc.) OR tool name keywords (`github`, `git stats`, `wolfram`, `sandbox`, `pull request`, `open issues`, etc. → `needs_tools`) [ENHANCED 2026-05-20]
-      - Tier 1b: Knowledge keywords [NEW 2026-03-31] — encyclopedic/wiki intent (`explain in depth`, `how does`, `what is the difference between`, `consult wikipedia`, etc.). Only fires for substantive queries (4+ words) when no computation/memory trigger matched.
-      - Tier 2: Entity match — `extract_graph_entities()` checks query against knowledge graph alias index; if known entity found (e.g., "Flapjack", "Auggie"), triggers memory search
-      - Tier 3: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call; `needs_memory_search` or `needs_knowledge_search` fields catch structurally obvious recall/encyclopedic queries the keywords missed. Memory search takes priority: if LLM returns both `should_search` and `needs_memory_search`, the query routes to memory (not web).
-    - Casual skip filter (< 5 words, "nice"/"thanks"/etc.) only applies when no keyword/entity/knowledge/tool-name trigger fired
-    - `skip_initial_search=True` for computation, memory, knowledge, and tool-name queries (skips Round 1 web search)
+  - **Agentic Search Path** [REFACTORED 2026-05-24]:
+    - Gate logic extracted to `core/agentic/gate.py:evaluate_agentic_gate()` — returns `AgenticDecision` dataclass
+    - 4-tier gate (keyword → entity → doc/note intent → LLM fallback):
+      - Tier 1: Keyword heuristic — computation, memory, web search, tool name, and knowledge keywords
+      - Tier 2: Entity match — `extract_graph_entities()` checks query against knowledge graph alias index
+      - Tier 3: Document generation + self-note intent detection (instant)
+      - Tier 4: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call
+    - Casual skip filter + continuation override + intent-based veto all handled inside gate
+    - `skip_initial_search` computed by gate (True for computation, memory, knowledge, tools modes)
     - Routes through `AgenticSearchController.run_agentic_search()`
     - Yields progress events (🔍 searching, 🧠 searching memory, 📄 found results, ✨ synthesizing)
     - Strips thinking blocks from final response
+    - Action proposals: if agentic response includes `wants_action`, yields `pending_action_id` and `action_row` visibility for GUI approve/reject buttons **[NEW 2026-05-25]**
   - **Standard Path**:
     - Receives streaming chunks from response_generator
     - Parses thinking blocks in real-time
     - Applies response tag stripping
   - Yields dict chunks: `{"role": "assistant", "content": text, "is_progress"?: bool}`
+  - `submit_chat()` now yields 12 outputs (was 10): added `pending_action_id` and `action_row` visibility **[NEW 2026-05-25]**
+- `execute_pending_action(action_id, chat_history, orchestrator)` → Executes approved action via `ActionExecutorRegistry`, appends result to chat **[NEW 2026-05-25]**
+- `reject_pending_action(action_id, chat_history, orchestrator)` → Rejects pending action, appends rejection notice to chat **[NEW 2026-05-25]**
 
 **Tag Stripping Logic** (FIXED):
 - `_strip_leaked_xml_blocks()`: Removes entire leaked XML tool blocks (tags + content) from responses. More aggressive than marker-only stripping — removes everything between opening and closing tool tags. Used on final output, agentic responses, and storage sanitization. **[ENHANCED 2026-05-20]**
@@ -1615,11 +1625,12 @@ agentic_search:
   - Dark backgrounds: `rgb(17, 24, 39)` body, `rgb(31, 41, 55)` blocks
   - Light text colors for readability on dark backgrounds
   - Font stack: JetBrains Mono (Google Font) → ui-monospace → Consolas → monospace
-- `submit_chat()` → Async iteration over handler chunks **[FIXED 2026-05-22]**
+- `submit_chat()` → Async iteration over handler chunks **[UPDATED 2026-05-25]**
   - Creates placeholder assistant message
   - Updates chat_history with streamed content
   - Handles thinking blocks with HTML collapsible sections
   - Yields to Gradio for real-time display
+  - `action_row` (approve/reject buttons) and `pending_action_id` State added for internet action proposals **[NEW 2026-05-25]**
   - Forces yield for final chunks (debug record) to prevent response stuck behind throttle gate
   - Cancels pending tick tasks on loop break; catches `asyncio.CancelledError`
   - Safety net: recovers from debug record if assistant content stuck as placeholder
@@ -4575,6 +4586,22 @@ CODE_PROPOSALS_ENABLED = True
 CODE_PROPOSALS_MAX_PER_SESSION = 5
 CODE_PROPOSALS_DEDUP_THRESHOLD = 0.70
 
+# Internet Actions (human-in-the-loop) [NEW 2026-05-25]
+INTERNET_ACTIONS_ENABLED = False             # Disabled by default; requires explicit opt-in
+INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN = ""     # Via TELEGRAM_BOT_TOKEN env or config.yaml
+INTERNET_ACTIONS_TELEGRAM_CHAT_ID = ""       # Via TELEGRAM_CHAT_ID env
+INTERNET_ACTIONS_DISCORD_WEBHOOK_URL = ""    # Via DISCORD_WEBHOOK_URL env
+INTERNET_ACTIONS_SMTP_HOST = ""              # SMTP server for email
+INTERNET_ACTIONS_SMTP_PORT = 587
+INTERNET_ACTIONS_SMTP_USER = ""
+INTERNET_ACTIONS_SMTP_PASSWORD = ""          # Via SMTP_PASSWORD env
+INTERNET_ACTIONS_SMTP_FROM = ""
+INTERNET_ACTIONS_TTL = 300                   # Pending action expiry (seconds)
+INTERNET_ACTIONS_MAX_PENDING = 5             # Max pending actions
+INTERNET_ACTIONS_AUDIT_LOG = "logs/actions_audit.jsonl"
+# Config: INTERNET_ACTIONS_* constants; YAML section `internet_actions`
+# Schema: InternetActionsSection in config/schema.py
+
 # File Upload [ENHANCED 2026-02-10]
 FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.docx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']  # .pdf added [2026-03-10]
 FILE_UPLOAD_IMAGE_DIR = "data/uploads"
@@ -4874,8 +4901,17 @@ daemon/
 │   ├── types.py               # Data structures (AgentState, SearchProtocol, etc.)
 │   ├── protocols.py           # Protocol detection and parsing
 │   ├── controller.py          # AgenticSearchController (orchestration, prompts, quality heuristics)
-│   ├── tools.py               # ToolExecutor (dispatch routing + 17 execute methods incl. StackExchange/arXiv/PubMed/HN/GitHub) [UPDATED 2026-05-19]
+│   ├── tools.py               # ToolExecutor (dispatch routing + 18 execute methods incl. StackExchange/arXiv/PubMed/HN/GitHub/actions) [UPDATED 2026-05-25]
+│   ├── gate.py                # evaluate_agentic_gate() — 4-tier gate logic, returns AgenticDecision [NEW 2026-05-24]
 │   └── formatters.py          # AgenticFormatter (18 pure formatting methods) [NEW 2026-05]
+│
+├── core/actions/              # Internet actions (human-in-the-loop) [NEW 2026-05-25]
+│   ├── types.py               # ActionType enum, ActionProposal, ActionResult, PendingActionsStore
+│   ├── executors.py           # ActionExecutorRegistry: routes to telegram/discord/email
+│   ├── telegram.py            # Telegram Bot API sender (httpx)
+│   ├── discord.py             # Discord webhook sender (httpx)
+│   ├── email.py               # SMTP email sender (stdlib smtplib)
+│   └── audit.py               # Append-only JSONL audit log
 │
 ├── processing/
 │   └── gate_system.py         # Multi-stage filtering

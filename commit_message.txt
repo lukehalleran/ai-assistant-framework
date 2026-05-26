@@ -1,30 +1,52 @@
-feat: structured schedule extraction + GUI timer smoothing
+feat: internet actions system + agentic gate extraction
 
-Schedule Extraction (Phase 1):
-Daemon now parses schedule statements ("I work Friday 3-10pm", "class MWF
-9-11am", "my exam is April 15th") into structured metadata instead of
-storing as opaque text facts.
+Internet actions (core/actions/): propose→confirm→execute flow for
+write actions on external services. The agentic loop proposes actions
+via propose_action tool (19th agentic tool); GUI shows approve/reject
+buttons; on approval, ActionExecutorRegistry routes to type-specific
+executor. All actions logged to logs/actions_audit.jsonl.
 
-- 5 pattern categories: work_schedule, class_schedule, exam_date,
-  shift_pattern, day_off with past-tense and negation guards
-- Uncertainty-aware metadata: schedule_scope (recurring/one_off/ambiguous),
-  parser_confidence, resolution_basis, needs_confirmation, source_text
-- Three-tier time normalization: explicit am/pm (0.95) → context heuristic
-  (0.65-0.70) → ambiguous guess (0.50). Bare "3-10" inferred from context
-  (work=PM, class=AM) but marked as lower confidence
-- Recurring vs one-off detection from plural ("Fridays" vs "Friday")
-- Schedule supersession: same kind + same day → old fact marked superseded
-  via existing FactVerifier STORE_AND_FLAG pattern
-- [UPCOMING SCHEDULE] prompt section with recurring expansion, gated by
-  TEMPORAL_RECALL/PROJECT_WORK intent or keyword+temporal dual signal
-- 64 new tests, 0 regressions (4489 passed)
+Implemented executors: Telegram (Bot API via httpx), Discord (webhook
+via httpx), Email (stdlib SMTP in thread). Stubs: github_create_issue,
+github_comment_pr, calendar_create_event.
 
-temporal_resolver.py: normalize_time_range(), expand_day_abbreviations(),
-resolve_date_expression() — future-biased date resolution, university
-shorthand (MWF/TTh/TR)
+New files:
+- core/actions/ (6 files): types.py (ActionType enum, ActionProposal,
+  ActionResult, PendingActionsStore), executors.py, telegram.py,
+  discord.py, email.py, audit.py
+- core/agentic/gate.py: extracted 4-tier agentic gate from
+  gui/handlers.py (AgenticDecision + evaluate_agentic_gate)
+- tests/unit/test_actions.py, test_agentic_gate.py, test_handle_submit.py
 
-GUI timer smoothing:
-- Tick interval 0.25s → 0.15s for smoother updates
-- Removed redundant throttle gate on timer-only ticks
-- Eliminated double deepcopy per yield (share reference, skip copy when
-  content unchanged) — reduces event-loop blocking as chat grows
+Agentic changes:
+- SearchDecision extended: wants_action, action_type, action_params,
+  action_summary, action_reason fields
+- PROPOSE_ACTION_TOOL_DEFINITION in types.py
+- NativeToolsHandler + XMLMarkerHandler both parse propose_action
+  (including _parse_text_tool_calls fallback for text-embedded proposals)
+- controller.py: dispatches action proposals before honoring done signal;
+  injects [AVAILABLE ACTIONS] instructions when internet actions enabled
+
+GUI changes:
+- gui/launch.py: action_row (approve/reject buttons), pending_action_id
+  State, submit_chat now yields 12 outputs (was 10)
+- gui/handlers.py: gate logic replaced by evaluate_agentic_gate() call
+  (265 lines → 15-line call site); new execute_pending_action() and
+  reject_pending_action() handlers; text action parsing from final
+  response in both agentic and enhanced paths
+
+Config:
+- internet_actions YAML section (config.yaml)
+- InternetActionsSection Pydantic model (schema.py)
+- INTERNET_ACTIONS_* constants (app_config.py)
+- Active model changed: deepseek-v4 → claude-opus-4.6
+
+Other changes:
+- core/prompt/formatter.py: compute relative commit age from ISO
+  timestamp at render time (fixes stale age_relative snapshots)
+- knowledge/obsidian_manager.py: use _get_collection() instead of
+  direct .collections dict access (API consistency)
+- data/benchmark_per_case.csv: minor ranking order changes
+- test_corpus.json: timestamp refresh
+- docs: updated CLAUDE.md, AGENTIC_SEARCH.md, ARCHITECTURE_GUIDE.md,
+  PROJECT_SKELETON.md, GOALS.md, FORMAL_MODEL.md, QUICK_REFERENCE.md
