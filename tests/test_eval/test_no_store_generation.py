@@ -63,13 +63,11 @@ class TestEvalGenerationConfig:
 class TestEvalGenerator:
     """Test EvalGenerator with a fake model manager."""
 
-    def test_generate_no_model_manager_raises(self):
+    @pytest.mark.asyncio
+    async def test_generate_no_model_manager_raises(self):
         gen = EvalGenerator()
         with pytest.raises(RuntimeError, match="model_manager"):
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(
-                gen.generate("prompt", "model")
-            )
+            await gen.generate("prompt", "model")
 
     @pytest.mark.asyncio
     async def test_generate_with_fake_model_manager(self):
