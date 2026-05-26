@@ -1869,8 +1869,10 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 #   nudge retry (re-prompts model when it narrates tools instead of calling them),
 #   no-reasoning decision phase (_generate_decision_no_reasoning bypasses chain-of-thought for XML tool emission),
 #   tool hints (_detect_tool_hints injects usage hints when query mentions tool names)
-# core/agentic/tools.py — ToolExecutor: dispatch routing + 17 execute methods + get_tool_health()
+# core/agentic/tools.py — ToolExecutor: dispatch routing + 19 execute methods + get_tool_health()
+# core/agentic/gate.py — 4-tier agentic gate: keyword → entity → tool-name → LLM fallback [NEW 2026-05]
 # core/agentic/formatters.py — AgenticFormatter: 18 pure formatting methods
+# core/actions/ — Internet action executors: telegram.py, discord.py, email.py, types.py, audit.py, executors.py [NEW 2026-05]
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
     Delegates tool execution to ToolExecutor, formatting to AgenticFormatter."""
@@ -1937,6 +1939,18 @@ class SearchDecision:
     wants_fetch_url: bool = False      # Fetch URL content [NEW 2026-05]
     fetch_url: Optional[str] = None
     fetch_url_reason: Optional[str] = None
+    # Daemon self-note (save working context for future sessions) [NEW 2026-05]
+    wants_create_daemon_note: bool = False
+    daemon_note_title: Optional[str] = None
+    daemon_note_category: Optional[str] = None  # implementation | architecture | research | decisions
+    daemon_note_summary: Optional[str] = None
+    daemon_note_reason: Optional[str] = None
+    # Internet action (propose write action requiring user confirmation) [NEW 2026-05]
+    wants_action: bool = False
+    action_type: Optional[str] = None  # ActionType value
+    action_params: Optional[Dict[str, Any]] = None
+    action_summary: Optional[str] = None
+    action_reason: Optional[str] = None
     is_done: bool = False
     done_reason: Optional[str] = None
     wants_answer: bool = False
@@ -1971,6 +1985,15 @@ class AgenticSearchSession:
 # Function name: "fetch_url", params: url (str, required), reason (str, optional)
 # Calls WebSearchManager._tavily_extract([url]); result registered in web_source_map for [WEB_N] citations
 # Gated on web_search_manager.is_available(); auto-triggered for URLs in user messages
+
+# PROPOSE_ACTION_TOOL_DEFINITION — Internet write action proposal [NEW 2026-05]
+# Function name: "propose_action"
+# Params: action_type (enum: send_telegram, send_discord, send_email,
+#   github_create_issue, github_comment_pr, calendar_create_event),
+#   recipient (str), subject (str), message (str), reason (str)
+# Required: action_type, message, reason
+# User sees confirmation prompt and can approve/reject; at most ONE action per turn
+# Execution via core/actions/ executors (Telegram, Discord, email, GitHub)
 
 # core/git_stats_manager.py [NEW 2026-03-29]
 class GitStatsManager:
@@ -2137,6 +2160,18 @@ SANDBOX_RATE_LIMIT_PER_MINUTE = 30
 GIT_STATS_ENABLED = True
 GIT_STATS_TIMEOUT = 10                 # subprocess timeout (seconds)
 GIT_STATS_MAX_OUTPUT_LINES = 50        # cap git command output
+
+# Internet Actions [NEW 2026-05]
+INTERNET_ACTIONS_ENABLED = False       # disabled by default
+INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN    # env: TELEGRAM_BOT_TOKEN
+INTERNET_ACTIONS_TELEGRAM_CHAT_ID      # env: TELEGRAM_CHAT_ID
+INTERNET_ACTIONS_DISCORD_WEBHOOK_URL   # env: DISCORD_WEBHOOK_URL
+INTERNET_ACTIONS_SMTP_HOST / _PORT / _USER / _PASSWORD / _FROM
+INTERNET_ACTIONS_GITHUB_WRITE_ENABLED = False
+INTERNET_ACTIONS_TTL = 300             # action expiry (seconds)
+INTERNET_ACTIONS_MAX_PENDING = 5       # max queued actions
+INTERNET_ACTIONS_AUDIT_LOG = "logs/actions_audit.jsonl"
+#   YAML section: internet_actions
 ```
 
 ### Tool Invocation (Prompt Injection)

@@ -324,6 +324,11 @@ class AgenticSearchController:
         git_stats_available = self.git_stats_manager is not None and self.git_stats_manager.is_available()
         github_available = self.github_manager is not None and self.github_manager.is_available()
         fetch_url_available = self.web_search_manager is not None and self.web_search_manager.is_available()
+        try:
+            from config.app_config import INTERNET_ACTIONS_ENABLED
+            actions_available = INTERNET_ACTIONS_ENABLED
+        except ImportError:
+            actions_available = False
         handler = get_protocol_handler(
             protocol,
             wolfram_available=wolfram_available,
@@ -333,6 +338,7 @@ class AgenticSearchController:
             git_stats_available=git_stats_available,
             github_available=github_available,
             fetch_url_available=fetch_url_available,
+            actions_available=actions_available,
         )
 
         # Augment system prompt for agentic mode
@@ -349,6 +355,25 @@ class AgenticSearchController:
             "If a tool is UNAVAILABLE, you MUST tell the user it is unavailable "
             "when asked. Never claim a tool is working if its status says otherwise."
         )
+
+        # Inject internet actions availability
+        try:
+            from config.app_config import INTERNET_ACTIONS_ENABLED
+            if INTERNET_ACTIONS_ENABLED:
+                augmented_system_prompt += (
+                    "\n\n[AVAILABLE ACTIONS]\n"
+                    "You can propose write actions requiring user confirmation via the propose_action tool.\n"
+                    "Propose when you notice:\n"
+                    "- An upcoming deadline mentioned in context or threads\n"
+                    "- A follow-up the user said they'd do but hasn't yet\n"
+                    "- Information that should be shared with someone mentioned in conversation\n"
+                    "- The user explicitly asks you to send/create/post something\n\n"
+                    "Available action types: send_telegram, send_discord, send_email, "
+                    "github_create_issue, github_comment_pr, calendar_create_event\n"
+                    "Propose at most ONE action per turn. The user will see a confirmation prompt."
+                )
+        except ImportError:
+            pass
 
         # Get persistent sandbox session (survives across agentic runs in the conversation)
         sandbox_session = None
@@ -527,6 +552,29 @@ class AgenticSearchController:
                     session=session
                 )
 
+                # Dispatch action proposals BEFORE honoring done signal.
+                # The model often sends propose_action + signal_done together;
+                # if we break on done first, the action never gets dispatched.
+                _action_decisions = [
+                    d for d in decisions
+                    if d.wants_action and d.action_type
+                ]
+                if _action_decisions:
+                    for _ad in _action_decisions:
+                        _ad_round = session.current_round
+                        _ad_result = await self._dispatch_single(
+                            _ad, _ad_round, session, crisis_level, sandbox_session
+                        )
+                        for ev in _ad_result.start_events:
+                            yield ev
+                        for ev in _ad_result.end_events:
+                            yield ev
+                        if _ad_result.round_data is not None:
+                            session.rounds.append(_ad_result.round_data)
+                        if _ad_result.formatted_context:
+                            self._append_accumulated(session, _ad_result.formatted_context)
+                        logger.info(f"[AgenticSearch] Dispatched action before done: {_ad.action_type}")
+
                 # Check for done signal — honor it immediately
                 if any(d.is_done for d in decisions):
                     done_d = next((d for d in decisions if d.is_done), None)
@@ -535,10 +583,11 @@ class AgenticSearchController:
                     logger.info(f"[AgenticSearch] Model signaled done: {session.done_reason}")
                     break
 
-                # Filter to actual tool requests
+                # Filter to actual tool requests (exclude already-dispatched actions)
                 tool_decisions = [
                     d for d in decisions
                     if not d.is_done and not d.wants_answer
+                    and not (d.wants_action and d.action_type)  # already handled above
                 ]
                 if not tool_decisions:
                     # If this is round 1 and the model just narrated instead of
@@ -556,6 +605,8 @@ class AgenticSearchController:
                             'github', 'git_stats', 'search', 'let me pull',
                             'let me grab', 'let me run', 'let me check',
                             'list_repos', 'commits', 'lines added',
+                            'propose_action', 'send_email', 'send email',
+                            'send_telegram', 'send_discord',
                         ))
                         if _tool_mentions:
                             logger.info(
@@ -572,6 +623,8 @@ class AgenticSearchController:
                                 "<github>open issues</github>\n"
                                 "<git_stats>commits this week</git_stats>\n"
                                 "<memory collection=\"facts\">user github</memory>\n"
+                                "<action type=\"send_email\" recipient=\"user@example.com\" "
+                                "reason=\"user asked\">message body</action>\n"
                                 "Do NOT describe what you will do — just call the tools "
                                 "now using the XML format above."
                             )
@@ -1397,6 +1450,17 @@ What would you like to do?""")
             f"[TOOL STATUS — report these accurately, never claim a tool works if it says UNAVAILABLE]\n{tool_health}"
         )
 
+        # Check if an action was proposed during this session
+        _has_pending_action = False
+        try:
+            from core.agentic.tools import ToolExecutor
+            _store = ToolExecutor._get_pending_actions_store()
+            _pending = _store.get_pending()
+            if _pending:
+                _has_pending_action = True
+        except Exception:
+            pass
+
         # Instructions
         has_web = bool(session.accumulated_context)
         citation_line = (
@@ -1404,12 +1468,19 @@ What would you like to do?""")
             "Every factual claim from web sources MUST include a [WEB_N] citation."
             if has_web else "- Cite web sources when stating facts from search results"
         )
+        action_instruction = ""
+        if _has_pending_action:
+            action_instruction = (
+                "\n- IMPORTANT: You proposed an action that is now awaiting user confirmation. "
+                "Briefly confirm what you proposed and let the user know they can approve or reject it. "
+                "Do NOT narrate about your tools or capabilities — just confirm the proposed action."
+            )
         parts.append(f"""Please provide a comprehensive answer based on ALL context above:
 - Use your memories, facts, and personal notes to personalize the response
 {citation_line}
 - Note any uncertainties or conflicting information
 - Focus on answering the user's specific question
-- If asked about tool status, ONLY report what [TOOL STATUS] says — do NOT rely on prior conversation""")
+- If asked about tool status, ONLY report what [TOOL STATUS] says — do NOT rely on prior conversation{action_instruction}""")
 
         # Budget enforcement: if assembled prompt is too large, trim low-value sections
         # while preserving recent conversations and agentic search results.

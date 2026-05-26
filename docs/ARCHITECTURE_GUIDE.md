@@ -75,7 +75,7 @@ Prompt sections:        27 (conditional)
 Intent types:           9
 Parallel retrieval:     19 async tasks
 Memory tiers:           5
-Agentic tools:          16
+Agentic tools:          19
 Gating latency:         ~200ms
 Config options:         180+
 ```
@@ -118,11 +118,19 @@ core/                    # Request orchestration, context pipeline, agentic loop
 ├── best_of_handler.py   # Best-of-N, duel, ensemble generation
 ├── escalation_tracker.py# Crisis cooldown FSM (4 states)
 ├── response_planner.py  # Pre-answer planning + post-answer review gate
+├── actions/             # Internet write actions (email, telegram, discord) with human-in-the-loop
+│   ├── types.py         # ProposedAction, ActionType, ActionStatus models
+│   ├── executors.py     # ActionExecutorRegistry: dispatch to per-channel executors
+│   ├── email.py         # SMTP email executor
+│   ├── telegram.py      # Telegram Bot API executor
+│   ├── discord.py       # Discord webhook executor
+│   └── audit.py         # Action audit logging
 ├── agentic/             # ReAct tool loop
 │   ├── controller.py    # Loop orchestration, prompt building, quality heuristics
 │   ├── tools.py         # ToolExecutor: dispatch routing + 19 execute methods
 │   ├── formatters.py    # AgenticFormatter: 18 pure formatting methods
 │   ├── types.py         # Tool definitions, state types
+│   ├── gate.py          # 5-tier agentic gate evaluation
 │   └── protocols.py     # Native + XML tool calling
 └── prompt/              # Prompt assembly pipeline
     ├── builder.py       # Thin orchestrator: parallel task dispatch, intent overrides, budget
@@ -256,10 +264,11 @@ User types: "How's my squat progress looking?"
     │     High-signal sections placed at end for transformer attention
     │     ResponsePlanner runs in parallel with retrieval (Step 4), plan injected into system prompt
     │
-    ├─ 8. Agentic Gate Check
-    │     3-tier: keyword heuristic → entity match → LLM fallback
+    ├─ 8. Agentic Gate Check (core/agentic/gate.py)
+    │     4-tier: keyword heuristic → knowledge keywords → entity match → LLM fallback
     │     If triggered → ReAct loop (think → tool → observe, max 5 rounds)
     │     If not → standard generation
+    │     If propose_action called → GUI shows approve/reject buttons before execution
     │
     ├─ 9. Response Generation
     │     Standard streaming | Best-of-N | Duel (A vs B + judge) | Ensemble
@@ -1026,7 +1035,7 @@ instruction is skipped for these models to prevent instruction echoing.
 
 **Files**: `core/agentic/controller.py`, `core/agentic/tools.py`,
 `core/agentic/formatters.py`, `core/agentic/types.py`,
-`core/agentic/protocols.py`
+`core/agentic/protocols.py`, `core/agentic/gate.py`, `core/actions/`
 
 When a query needs more than stored memory — real-time information,
 computation, or deeper memory exploration — Daemon enters a multi-round
@@ -1034,7 +1043,7 @@ ReAct (Reason + Act) loop.
 
 ### Triggering: 5-Tier Gate
 
-The agentic gate in `gui/handlers.py` decides whether to enter the loop:
+The agentic gate in `core/agentic/gate.py` (`evaluate_agentic_gate()`) decides whether to enter the loop:
 
 1. **Keyword heuristic** (instant) — 20+ computation keywords ("calculate",
    "compute"), memory keywords ("do you remember", "my notes",
@@ -1092,7 +1101,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
   retry is silently discarded and the original stays visible.
 - This prevents the jarring UX of showing the same response twice.
 
-### 19 Tools (16 action + done_searching + file_read/file_grep/file_list as 3)
+### 19 Tools (18 action + done_searching)
 
 | Tool | Implementation | Key Feature |
 |------|---------------|-------------|
@@ -1113,6 +1122,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
 | Hacker News | hn.algolia.com | Free API, no auth required. Dispatched via `_dispatch_api_search`. |
 | Generate Document | DocumentGenerator | Structured markdown reports/summaries from web search + ChromaDB sources. Output to `documents/`. Also triggered directly by "write a report about X". |
 | Create Daemon Note | DaemonNotesManager | Structured self-notes for future sessions (decisions, risks, next steps). Stored in `daemon_self_notes` collection with `ground_truth: False`. |
+| Propose Action | `core/actions/` (types + executors) | Propose internet write action requiring user confirmation (email, telegram, discord, GitHub issues). GUI shows approve/reject buttons; execution only on explicit approval. |
 | Done Searching | Control signal | Model declares search complete, triggers final synthesis |
 
 ### ReAct Loop Structure
@@ -1184,7 +1194,8 @@ Supported tool names (native / XML marker):
 `wolfram` / `<wolfram>`, `code_sandbox` / `<code_sandbox>`,
 `search_memory` / `<search_memory>`, `expand_memory` / `<expand_memory>`,
 `file_operation` / `<file_operation>`, `git_stats` / `<git_stats>`,
-`github` / `<github>`, `recall_image` / `<recall_image>`.
+`github` / `<github>`, `recall_image` / `<recall_image>`,
+`propose_action` / `<propose_action>`.
 
 XML alias patterns: `<web_search>query</web_search>` and
 `<web_search query="...">` are accepted as aliases for `<search>`.
@@ -2119,6 +2130,7 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `wikidata_import` | Wikidata entity resolution | `WIKIDATA_*` constants |
 | `graph_walk` | Biased Markov walk synthesis | `GRAPH_WALK_ENABLED`, `GRAPH_WALK_MIN_BRIDGE_EDGES` |
 | `uncertainty_fallback` | "I don't know" detection + retry | `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD` |
+| `internet_actions` | Human-in-the-loop write actions | `INTERNET_ACTIONS_ENABLED`, channel-specific settings |
 
 ### Environment Variable Overrides
 

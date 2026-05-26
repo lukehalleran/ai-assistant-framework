@@ -789,6 +789,23 @@ def launch_gui(orchestrator, force_wizard=False):
         except Exception as e:
             return f"Error reading app log: {e}"
 
+    def _check_pending_action():
+        """Check if there's a pending action proposal after submit_chat completes."""
+        import logging as _log
+        try:
+            from config.app_config import INTERNET_ACTIONS_ENABLED
+            _log.warning(f"[_check_pending_action] INTERNET_ACTIONS_ENABLED={INTERNET_ACTIONS_ENABLED}")
+            if INTERNET_ACTIONS_ENABLED:
+                from core.agentic.tools import ToolExecutor
+                store = ToolExecutor._get_pending_actions_store()
+                pending = store.get_pending()
+                _log.warning(f"[_check_pending_action] pending={pending is not None}, action_id={pending.action_id if pending else 'N/A'}")
+                if pending:
+                    return pending.action_id, gr.update(visible=True)
+        except (ImportError, Exception) as e:
+            _log.warning(f"[_check_pending_action] ERROR: {e}")
+        return None, gr.update(visible=False)
+
     async def submit_chat(user_text, chat_history, files, use_raw_gpt, enable_citations_flag, fast_mode, personality, debug_entries):
         import logging
         logger = logging.getLogger("gradio_gui")
@@ -817,7 +834,7 @@ def launch_gui(orchestrator, force_wizard=False):
         # Use a deep copy for the Chatbot output to avoid aliasing issues
         _chatbot_view = copy.deepcopy(chat_history)
         _state_view = _chatbot_view
-        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
+        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text, gr.update(), gr.update()
 
         # Concurrent loop: tick timer while awaiting streamed chunks, without blocking loop
         agen = handle_submit(
@@ -869,7 +886,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
                     _chatbot_view = copy.deepcopy(chat_history)
                     _state_view = _chatbot_view
-                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
+                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text, gr.update(), gr.update()
                     break
 
                 # Track whether this chunk carries the final debug record
@@ -906,7 +923,9 @@ def launch_gui(orchestrator, force_wizard=False):
                     yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=False), "", "", ""
                 elif isinstance(chunk, dict) and "content" in chunk:
                     assistant_reply = chunk["content"]
-                    logging.debug(f"[GUI LAUNCH] Processing chunk: '{assistant_reply[:100] if assistant_reply else 'EMPTY'}'")
+                    _has_debug = "debug" in chunk
+                    _has_action = "pending_action_id" in chunk
+                    logging.warning(f"[GUI LAUNCH] Content chunk: len={len(assistant_reply) if assistant_reply else 0}, has_debug={_has_debug}, has_action={_has_action}, preview='{(assistant_reply or '')[:120]}'")
                     # Update the last assistant message's content
                     if assistant_reply:  # Only update if there's actual content
                         if chat_history and isinstance(chat_history[-1], dict):
@@ -944,6 +963,7 @@ def launch_gui(orchestrator, force_wizard=False):
                             final_from_debug = (chunk.get("debug") or {}).get("response")
                             if final_from_debug:
                                 if chat_history and isinstance(chat_history[-1], dict) and chat_history[-1].get("role") == "assistant":
+                                    logging.warning(f"[GUI LAUNCH] DEBUG FALLBACK OVERWRITE: replacing '{chat_history[-1]['content'][:80]}' with debug.response '{final_from_debug[:80]}'")
                                     chat_history[-1]["content"] = final_from_debug
                     except (TypeError, KeyError, IndexError):
                         pass
@@ -961,7 +981,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _chatbot_view = copy.deepcopy(chat_history)
                     _state_view = _chatbot_view  # share ref — both are fresh copies
                     _content_dirty = False
-                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
+                    yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text, gr.update(), gr.update()
 
                 # Schedule next chunk read
                 next_task = _a.create_task(agen.__anext__())
@@ -977,7 +997,7 @@ def launch_gui(orchestrator, force_wizard=False):
                     _chatbot_view = copy.deepcopy(chat_history)
                     _state_view = _chatbot_view
                     _content_dirty = False
-                yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
+                yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text, gr.update(), gr.update()
 
         # Safety net: if the assistant message is still the placeholder (no content
         # chunk was ever processed), recover from the last debug record if available.
@@ -997,9 +1017,26 @@ def launch_gui(orchestrator, force_wizard=False):
         # Final update: clear typing indicator, freeze timer
         typing_text = ""
         timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
+        _final_content = chat_history[-1].get("content", "") if (chat_history and isinstance(chat_history[-1], dict)) else ""
+        logging.warning(f"[GUI LAUNCH] FINAL YIELD content preview: '{_final_content[:150]}'")
         _chatbot_view = copy.deepcopy(chat_history)
         _state_view = _chatbot_view
-        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text
+        # Check for pending action — show approve/reject buttons
+        _final_action_id = None
+        _final_action_visible = gr.update(visible=False)
+        try:
+            from config.app_config import INTERNET_ACTIONS_ENABLED
+            if INTERNET_ACTIONS_ENABLED:
+                from core.agentic.tools import ToolExecutor
+                _fa_store = ToolExecutor._get_pending_actions_store()
+                _fa_pending = _fa_store.get_pending()
+                if _fa_pending:
+                    _final_action_id = _fa_pending.action_id
+                    _final_action_visible = gr.update(visible=True)
+                    logging.warning(f"[GUI LAUNCH] Pending action found: {_final_action_id}")
+        except Exception as e:
+            logging.warning(f"[GUI LAUNCH] Action check failed: {e}")
+        yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text, _final_action_id, _final_action_visible
 
     # ---- Settings persistence helpers ----
     def _load_settings():
@@ -1111,6 +1148,12 @@ def launch_gui(orchestrator, force_wizard=False):
                 sync_status_md = gr.Markdown(value="", elem_id="sync_status")
                 model_status = gr.Markdown(visible=True)
 
+                # Internet Actions — Approve/Reject buttons (hidden by default)
+                with gr.Row(visible=False) as action_row:
+                    approve_btn = gr.Button("✓ Approve Action", variant="primary", scale=1)
+                    reject_btn = gr.Button("✗ Reject Action", variant="stop", scale=1)
+                pending_action_id = gr.State(value=None)
+
                 with gr.Row():
                     files = gr.File(file_types=[".txt", ".md", ".json", ".yaml", ".yml", ".log", ".html", ".xml", ".docx", ".xlsx", ".csv", ".py", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"], file_count="multiple", label="Files & Images")
                     use_raw = gr.Checkbox(label="Bypass Memory (Raw GPT)", value=False)
@@ -1141,7 +1184,7 @@ def launch_gui(orchestrator, force_wizard=False):
                 submit_button.click(
                     submit_chat,
                     inputs=[user_input, chat_state, files, use_raw, enable_citations, fast_mode, personality, debug_state],
-                    outputs=[chatbot, chat_state, user_input, debug_state, typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md],
+                    outputs=[chatbot, chat_state, user_input, debug_state, typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md, pending_action_id, action_row],
                 )
 
                 # Clear chat handler
@@ -1152,6 +1195,20 @@ def launch_gui(orchestrator, force_wizard=False):
                     fn=_clear_chat,
                     inputs=[],
                     outputs=[chatbot, chat_state, user_input, typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md],
+                )
+
+                # Internet Actions — Approve/Reject button wiring
+                from gui.handlers import execute_pending_action, reject_pending_action
+
+                approve_btn.click(
+                    fn=execute_pending_action,
+                    inputs=[pending_action_id, chat_state],
+                    outputs=[chatbot, pending_action_id, action_row],
+                )
+                reject_btn.click(
+                    fn=reject_pending_action,
+                    inputs=[pending_action_id, chat_state],
+                    outputs=[chatbot, pending_action_id, action_row],
                 )
 
                 # Sync Obsidian notes handler

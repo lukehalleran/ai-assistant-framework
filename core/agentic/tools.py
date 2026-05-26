@@ -188,6 +188,16 @@ class ToolExecutor:
         except Exception:
             lines.append("create_daemon_note: DISABLED")
 
+        # Internet actions (email, telegram, discord)
+        try:
+            from config.app_config import INTERNET_ACTIONS_ENABLED
+            if INTERNET_ACTIONS_ENABLED:
+                lines.append("propose_action: AVAILABLE (send_email, send_telegram, send_discord — requires user confirmation)")
+            else:
+                lines.append("propose_action: DISABLED (internet actions not enabled)")
+        except Exception:
+            lines.append("propose_action: DISABLED")
+
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -254,6 +264,8 @@ class ToolExecutor:
             return await self._dispatch_generate_document(decision, round_number)
         elif decision.wants_create_daemon_note and decision.daemon_note_title:
             return await self._dispatch_create_daemon_note(decision, round_number)
+        elif decision.wants_action and decision.action_type:
+            return await self._dispatch_action_proposal(decision, round_number)
         else:
             return _ToolResult(
                 decision=decision, round_data=None,
@@ -1030,6 +1042,128 @@ class ToolExecutor:
             start_events=start_events,
             end_events=end_events,
         )
+
+    # ------------------------------------------------------------------
+    # Internet Actions (propose only — execution happens in GUI handler)
+    # ------------------------------------------------------------------
+
+    async def _dispatch_action_proposal(
+        self, decision: SearchDecision, round_number: int,
+    ) -> _ToolResult:
+        """Create an ActionProposal and store it for user confirmation.
+
+        Does NOT execute the action — just proposes it. The GUI handler
+        will surface the proposal and the user confirms or rejects.
+        """
+        from core.actions.types import ActionProposal, ActionType, PendingActionsStore
+        from core.actions.audit import ActionAuditLog
+        from config.app_config import INTERNET_ACTIONS_TTL, INTERNET_ACTIONS_AUDIT_LOG
+
+        action_type_str = decision.action_type or ""
+        summary = decision.action_summary or f"{action_type_str}: action proposed"
+        params = decision.action_params or {}
+
+        start_events = [ProgressEvent(
+            event_type="proposing_action",
+            message=f"Proposing action: {summary[:60]}",
+            round_number=round_number,
+            metadata={"action_type": action_type_str}
+        )]
+
+        # Validate action type
+        try:
+            action_type = ActionType(action_type_str)
+        except ValueError:
+            formatted = (
+                f"\n---\n**Round {round_number}: Action Proposal Failed**\n"
+                f"Unknown action type: {action_type_str}\n---\n"
+            )
+            return _ToolResult(
+                decision=decision, round_data=None,
+                formatted_context=formatted,
+                start_events=start_events, end_events=[],
+            )
+
+        # Create proposal
+        proposal = ActionProposal(
+            action_type=action_type,
+            params=params,
+            summary=summary,
+            reasoning=decision.action_reason or "",
+        )
+
+        # Store in the global pending actions store
+        store = self._get_pending_actions_store()
+        stored = store.propose(proposal)
+
+        if not stored:
+            formatted = (
+                f"\n---\n**Round {round_number}: Action Proposal Rejected**\n"
+                f"Too many pending actions. Complete existing proposals first.\n---\n"
+            )
+            return _ToolResult(
+                decision=decision, round_data=None,
+                formatted_context=formatted,
+                start_events=start_events, end_events=[],
+            )
+
+        # Audit log
+        audit = ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG)
+        audit.log_proposal(proposal)
+
+        # Build formatted context for the agentic loop
+        formatted = (
+            f"\n---\n**Round {round_number}: Action Proposed (awaiting user confirmation)**\n"
+            f"[ACTION PROPOSED: {action_type.value}] {summary}\n"
+            f"Reason: {decision.action_reason or 'N/A'}\n"
+            f"Action ID: {proposal.action_id}\n---\n"
+        )
+
+        round_data = SearchRound(
+            round_number=round_number,
+            request=SearchRequest(
+                query=f"[Action Proposal] {summary}",
+                reason=decision.action_reason,
+                round_number=round_number
+            ),
+            results=None,
+            duration_ms=0
+        )
+        round_data.summary = f"Proposed: {summary}"
+
+        end_events = [ProgressEvent(
+            event_type="action_proposed",
+            message=f"Action proposed: {summary[:60]}",
+            round_number=round_number,
+            metadata={
+                "action_id": proposal.action_id,
+                "action_type": action_type.value,
+                "summary": summary,
+            }
+        )]
+
+        return _ToolResult(
+            decision=decision,
+            round_data=round_data,
+            formatted_context=formatted,
+            start_events=start_events,
+            end_events=end_events,
+        )
+
+    # Module-level pending actions store singleton
+    _pending_actions_store: Optional[Any] = None
+
+    @classmethod
+    def _get_pending_actions_store(cls):
+        """Get or create the global PendingActionsStore singleton."""
+        if cls._pending_actions_store is None:
+            from core.actions.types import PendingActionsStore
+            from config.app_config import INTERNET_ACTIONS_TTL, INTERNET_ACTIONS_MAX_PENDING
+            cls._pending_actions_store = PendingActionsStore(
+                ttl_seconds=INTERNET_ACTIONS_TTL,
+                max_pending=INTERNET_ACTIONS_MAX_PENDING,
+            )
+        return cls._pending_actions_store
 
     # Class-level singleton for autonomous note session tracking.
     # Shared across ToolExecutor instances within the same process so
