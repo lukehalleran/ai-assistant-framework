@@ -1240,6 +1240,21 @@ INTERNET_ACTIONS_TTL: int = int(INTERNET_ACTIONS_CFG.get("action_ttl_seconds", 3
 INTERNET_ACTIONS_MAX_PENDING: int = int(INTERNET_ACTIONS_CFG.get("max_pending_actions", 5))
 INTERNET_ACTIONS_AUDIT_LOG: str = str(INTERNET_ACTIONS_CFG.get("audit_log_path", "logs/actions_audit.jsonl"))
 
+# Google OAuth2 (env var overrides for secrets)
+INTERNET_ACTIONS_GOOGLE_CLIENT_ID: str = str(
+    INTERNET_ACTIONS_CFG.get("google_client_id", "") or os.getenv("GOOGLE_CLIENT_ID", "")
+)
+INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET: str = str(
+    INTERNET_ACTIONS_CFG.get("google_client_secret", "") or os.getenv("GOOGLE_CLIENT_SECRET", "")
+)
+INTERNET_ACTIONS_GOOGLE_TOKEN_PATH: str = str(
+    INTERNET_ACTIONS_CFG.get("google_token_path", "data/google_token.json")
+)
+GOOGLE_CALENDAR_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("google_calendar_enabled", False))
+GOOGLE_CALENDAR_ENABLED = bool(int(os.getenv("GOOGLE_CALENDAR_ENABLED", "1" if GOOGLE_CALENDAR_ENABLED else "0")))
+GOOGLE_CALENDAR_MAX_EVENTS: int = int(INTERNET_ACTIONS_CFG.get("google_calendar_max_events", 10))
+GOOGLE_CALENDAR_LOOKAHEAD_DAYS: int = int(INTERNET_ACTIONS_CFG.get("google_calendar_lookahead_days", 7))
+
 # Environment variable override
 INTERNET_ACTIONS_ENABLED = bool(int(os.getenv("INTERNET_ACTIONS_ENABLED", "1" if INTERNET_ACTIONS_ENABLED else "0")))
 

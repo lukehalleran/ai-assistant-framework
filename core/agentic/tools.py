@@ -5,7 +5,7 @@ Contract:
     - Provides ToolExecutor for dispatching and executing agentic search tools
     - Routes SearchDecision objects to appropriate tool handlers
     - Handles web search, Wolfram, sandbox, memory search/expand, file access,
-      full document retrieval, and git stats
+      full document retrieval, git stats, and internet action proposals (email, calendar, etc.)
     - Extracted from AgenticSearchController to reduce god-object size
 
 Dependencies:
@@ -188,11 +188,14 @@ class ToolExecutor:
         except Exception:
             lines.append("create_daemon_note: DISABLED")
 
-        # Internet actions (email, telegram, discord)
+        # Internet actions (email, telegram, discord, calendar)
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED
+            from config.app_config import INTERNET_ACTIONS_ENABLED, GOOGLE_CALENDAR_ENABLED
             if INTERNET_ACTIONS_ENABLED:
-                lines.append("propose_action: AVAILABLE (send_email, send_telegram, send_discord — requires user confirmation)")
+                action_list = "send_email, send_telegram, send_discord"
+                if GOOGLE_CALENDAR_ENABLED:
+                    action_list += ", calendar_create_event"
+                lines.append(f"propose_action: AVAILABLE ({action_list} — requires user confirmation)")
             else:
                 lines.append("propose_action: DISABLED (internet actions not enabled)")
         except Exception:

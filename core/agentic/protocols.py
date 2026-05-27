@@ -29,6 +29,7 @@ Supported Tools:
     - github / <github>: Read-only GitHub API (issues, PRs, actions, releases, search)
     - get_full_document / <get_full_document>: Retrieve complete uploaded document by title
     - fetch_url / <fetch_url>: Fetch web page content by URL
+    - propose_action: Propose internet write actions (email, telegram, discord, calendar)
     - signal_done / <done>: Signal task completion
 
 Dependencies:
@@ -582,21 +583,41 @@ class NativeToolsHandler(BaseProtocolHandler):
             reason = args.get("reason", "")
             recipient = args.get("recipient", "")
             subject = args.get("subject", "")
-            if action_type and message:
-                params = {"message": message}
+
+            # Calendar events use summary/start_time/end_time instead of message
+            is_calendar = action_type == "calendar_create_event"
+            cal_summary = args.get("summary", "")
+
+            if action_type and (message or (is_calendar and cal_summary)):
+                params = {}
+                if message:
+                    params["message"] = message
                 if recipient:
                     params["recipient"] = recipient
                 if subject:
                     params["subject"] = subject
-                summary = f"{action_type}: {message[:80]}"
-                if recipient:
-                    summary = f"{action_type} to {recipient}: {message[:60]}"
-                logger.info(f"[AgenticProtocol] Native tool propose_action: {summary}")
+
+                # Forward calendar-specific params
+                if is_calendar:
+                    for key in ("summary", "description", "start_time", "end_time",
+                                "time_zone", "calendar_id", "location"):
+                        val = args.get(key)
+                        if val:
+                            params[key] = val
+
+                if is_calendar and cal_summary:
+                    display = f"calendar_create_event: {cal_summary}"
+                    summary_text = display
+                elif recipient:
+                    summary_text = f"{action_type} to {recipient}: {message[:60]}"
+                else:
+                    summary_text = f"{action_type}: {message[:80]}"
+                logger.info(f"[AgenticProtocol] Native tool propose_action: {summary_text}")
                 return SearchDecision(
                     wants_action=True,
                     action_type=action_type,
                     action_params=params,
-                    action_summary=summary,
+                    action_summary=summary_text,
                     action_reason=reason,
                 )
             else:
@@ -646,17 +667,42 @@ class NativeToolsHandler(BaseProtocolHandler):
                 recipient = params.get("to") or params.get("recipient", "")
                 subject = params.get("subject", "")
                 reason = params.get("reason", "User requested")
-                if message:
-                    action_params = {"message": message}
+                is_calendar = action_type == "calendar_create_event"
+                cal_summary = params.get("summary", "")
+
+                if message or (is_calendar and cal_summary):
+                    action_params = {}
+                    if message:
+                        action_params["message"] = message
                     if recipient:
                         action_params["recipient"] = recipient
                     if subject:
                         action_params["subject"] = subject
-                    summary = f"{action_type} to {recipient}: {message[:60]}" if recipient else f"{action_type}: {message[:80]}"
+                    # Forward calendar-specific params
+                    if is_calendar:
+                        for key in ("summary", "description", "start_time", "end_time",
+                                    "time_zone", "calendar_id", "location"):
+                            val = params.get(key)
+                            if val:
+                                action_params[key] = val
+
+                    if is_calendar and cal_summary:
+                        summary = f"calendar_create_event: {cal_summary}"
+                    elif recipient:
+                        summary = f"{action_type} to {recipient}: {message[:60]}"
+                    else:
+                        summary = f"{action_type}: {message[:80]}"
+
+                    # Normalize action type: only add send_ prefix for messaging types
+                    if not action_type.startswith("send_") and action_type in (
+                        "telegram", "discord", "email",
+                    ):
+                        action_type = f"send_{action_type}"
+
                     logger.info(f"[AgenticProtocol] Parsed text propose_action: {summary}")
                     decisions.append(SearchDecision(
                         wants_action=True,
-                        action_type=action_type if action_type.startswith("send_") else f"send_{action_type}",
+                        action_type=action_type,
                         action_params=action_params,
                         action_summary=summary,
                         action_reason=reason,

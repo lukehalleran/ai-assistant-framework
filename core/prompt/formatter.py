@@ -15,6 +15,7 @@ Module Contract
     WEB SEARCH RESULTS → RELEVANT INFORMATION → DREAMS → USER'S PERSONAL NOTES →
     USER UPLOADED ITEMS → VISUAL MEMORIES → DAEMON DOCUMENTATION → PROJECT COMMIT HISTORY →
     ADAPTIVE WORKFLOWS → PROPOSED FEATURES → KNOWLEDGE GRAPH → UNRESOLVED THREADS →
+    UPCOMING SCHEDULE → GOOGLE CALENDAR →
     PROACTIVE INSIGHTS → USER PROFILE → ACTIVE FEATURES → CODEBASE CHANGES →
     TIME CONTEXT → TEMPORAL GROUNDING → STM SUMMARY → CURRENT USER QUERY.
   - _assemble_prompt_legacy(context, user_input, directives) -> str
@@ -1631,6 +1632,43 @@ class PromptFormatter:
 
             sections.append(
                 f"[UPCOMING SCHEDULE] n={len(sched_lines)}\n" + "\n".join(sched_lines)
+            )
+
+        # Google Calendar events (real-time via OAuth2)
+        google_calendar = context.get("google_calendar", []) or []
+        if google_calendar:
+            cal_lines: list[str] = []
+            for i, event in enumerate(google_calendar, start=1):
+                summary = event.get("summary", "Untitled")
+                start = event.get("start", "")
+                end = event.get("end", "")
+                all_day = event.get("all_day", False)
+                location = event.get("location", "")
+
+                if all_day:
+                    time_str = f"{start} [all day]"
+                elif start and end:
+                    # Format ISO datetimes to readable form
+                    try:
+                        from datetime import datetime as _dt
+                        s_dt = _dt.fromisoformat(start)
+                        e_dt = _dt.fromisoformat(end)
+                        date_str = s_dt.strftime("%Y-%m-%d")
+                        s_time = s_dt.strftime("%I:%M %p").lstrip("0")
+                        e_time = e_dt.strftime("%I:%M %p").lstrip("0")
+                        time_str = f"{date_str} {s_time} – {e_time}"
+                    except (ValueError, TypeError):
+                        time_str = f"{start} – {end}"
+                else:
+                    time_str = start or "TBA"
+
+                line = f"{i}) {time_str}: {summary}"
+                if location:
+                    line += f" ({location})"
+                cal_lines.append(line)
+
+            sections.append(
+                f"[GOOGLE CALENDAR] n={len(cal_lines)}\n" + "\n".join(cal_lines)
             )
 
         # Daemon self-notes (working context from prior sessions)

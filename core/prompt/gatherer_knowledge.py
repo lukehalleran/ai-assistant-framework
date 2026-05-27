@@ -1206,3 +1206,27 @@ class KnowledgeRetrievalMixin:
         except Exception as e:
             logger.debug(f"[ContextGatherer] daemon_self_notes retrieval failed: {e}")
             return []
+
+    async def get_google_calendar_events(self, max_events: int = 10) -> List[Dict[str, Any]]:
+        """Fetch upcoming Google Calendar events for prompt injection.
+
+        Returns list of event dicts (summary, start, end, all_day, location).
+        All failures return [] silently — calendar is best-effort context.
+        """
+        try:
+            from config.app_config import GOOGLE_CALENDAR_ENABLED
+        except ImportError:
+            return []
+
+        if not GOOGLE_CALENDAR_ENABLED:
+            return []
+
+        try:
+            from core.actions.google_calendar import fetch_upcoming_events
+            events = await fetch_upcoming_events(
+                max_events=max_events,
+            )
+            return events
+        except Exception as e:
+            logger.debug(f"[ContextGatherer] Google Calendar fetch failed: {e}")
+            return []

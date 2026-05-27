@@ -1,52 +1,60 @@
-feat: internet actions system + agentic gate extraction
+feat: Google OAuth2 + Calendar integration, Gmail API email, ephemeral fact filtering
 
-Internet actions (core/actions/): propose→confirm→execute flow for
-write actions on external services. The agentic loop proposes actions
-via propose_action tool (19th agentic tool); GUI shows approve/reject
-buttons; on approval, ActionExecutorRegistry routes to type-specific
-executor. All actions logged to logs/actions_audit.jsonl.
+Google OAuth2 (core/actions/google_auth.py): installed-app flow with
+3 scopes (gmail.send, calendar.readonly, calendar.events). Token
+persistence at data/google_token.json, auto-refresh, scope-upgrade
+detection, has_scope() gate. Singleton via get_google_auth().
 
-Implemented executors: Telegram (Bot API via httpx), Discord (webhook
-via httpx), Email (stdlib SMTP in thread). Stubs: github_create_issue,
-github_comment_pr, calendar_create_event.
+Google Calendar read (core/actions/google_calendar.py): fetch_upcoming_events()
+with 5-min module-level cache, httpx GET to Calendar API, returns
+minimal fields (summary, start, end, all_day, location). Injected
+into prompt as [GOOGLE CALENDAR] section via gatherer_knowledge.py
+get_google_calendar_events() + builder.py parallel task.
 
-New files:
-- core/actions/ (6 files): types.py (ActionType enum, ActionProposal,
-  ActionResult, PendingActionsStore), executors.py, telegram.py,
-  discord.py, email.py, audit.py
-- core/agentic/gate.py: extracted 4-tier agentic gate from
-  gui/handlers.py (AgenticDecision + evaluate_agentic_gate)
-- tests/unit/test_actions.py, test_agentic_gate.py, test_handle_submit.py
+Google Calendar write (core/actions/google_calendar_create.py):
+create_calendar_event() validates scope, POSTs to Calendar API.
+Executor wired (was stub). Protocol fix: protocols.py now detects
+calendar_create_event, accepts summary instead of message, forwards
+all 7 calendar params (summary, description, start_time, end_time,
+time_zone, calendar_id, location). Text parser no longer blindly
+prepends send_ to non-messaging action types. Tool health in
+tools.py now lists calendar_create_event when enabled. types.py
+propose_action schema extended with calendar fields, required
+relaxed to ["action_type", "reason"].
 
-Agentic changes:
-- SearchDecision extended: wants_action, action_type, action_params,
-  action_summary, action_reason fields
-- PROPOSE_ACTION_TOOL_DEFINITION in types.py
-- NativeToolsHandler + XMLMarkerHandler both parse propose_action
-  (including _parse_text_tool_calls fallback for text-embedded proposals)
-- controller.py: dispatches action proposals before honoring done signal;
-  injects [AVAILABLE ACTIONS] instructions when internet actions enabled
+Gmail API email (core/actions/email.py): rewritten — Gmail API
+primary path via google_auth (httpx POST to gmail/v1/users/me/
+messages/send with base64 RFC 5322). SMTP fallback only if Gmail
+unconfigured/unauthenticated. No SMTP fallback after Gmail attempt
+(prevents duplicate sends).
 
-GUI changes:
-- gui/launch.py: action_row (approve/reject buttons), pending_action_id
-  State, submit_chat now yields 12 outputs (was 10)
-- gui/handlers.py: gate logic replaced by evaluate_agentic_gate() call
-  (265 lines → 15-line call site); new execute_pending_action() and
-  reject_pending_action() handlers; text action parsing from final
-  response in both agentic and enhanced paths
+Ephemeral fact filtering: dual-layer blocking in fact_extractor.py
+and llm_fact_extractor.py — blocks PROFILE_EPHEMERAL_RELATIONS
+predicates and boolean-only values at extraction time. LLM prompt
+updated to explicitly discourage transient state. memory_retriever.py
+replaces hardcoded _EPHEMERAL_PREDICATES with config-driven
+_get_ephemeral_predicates(), adds TTL filter (PROFILE_EPHEMERAL_TTL_HOURS
+default 24h) to drop stale ephemeral facts from retrieval.
 
-Config:
-- internet_actions YAML section (config.yaml)
-- InternetActionsSection Pydantic model (schema.py)
-- INTERNET_ACTIONS_* constants (app_config.py)
-- Active model changed: deepseek-v4 → claude-opus-4.6
+Backup: scripts/backup_data.sh uploads encrypted backup to Backblaze
+B2 via rclone after local backup, prunes remote backups older than
+KEEP_DAYS.
 
-Other changes:
-- core/prompt/formatter.py: compute relative commit age from ISO
-  timestamp at render time (fixes stale age_relative snapshots)
-- knowledge/obsidian_manager.py: use _get_collection() instead of
-  direct .collections dict access (API consistency)
-- data/benchmark_per_case.csv: minor ranking order changes
-- test_corpus.json: timestamp refresh
-- docs: updated CLAUDE.md, AGENTIC_SEARCH.md, ARCHITECTURE_GUIDE.md,
-  PROJECT_SKELETON.md, GOALS.md, FORMAL_MODEL.md, QUICK_REFERENCE.md
+Prompt changes: new [UPCOMING SCHEDULE] and [GOOGLE CALENDAR]
+sections in formatter.py. Section registry now 31 entries (was 29).
+system_prompt.txt updated with section documentation.
+
+Config: InternetActionsSection extended with google_client_id,
+google_client_secret, google_token_path, google_calendar_enabled,
+google_calendar_max_events, google_calendar_lookahead_days. YAML
+section updated. app_config.py adds GOOGLE_CALENDAR_* and
+INTERNET_ACTIONS_GOOGLE_* constants with env var overrides.
+
+New files: core/actions/google_auth.py, google_calendar.py,
+google_calendar_create.py, tests/unit/test_calendar_create.py,
+test_calendar_prompt.py, test_gmail_send.py, test_google_auth.py,
+test_google_calendar.py
+
+Docs: updated CLAUDE.md, QUICK_REFERENCE.md, PROJECT_SKELETON.md,
+ARCHITECTURE_GUIDE.md, FORMAL_MODEL.md, GOALS.md, MEMORY_SYSTEM.md,
+PROMPT_BUILDING_PIPELINE.md, AGENTIC_SEARCH.md

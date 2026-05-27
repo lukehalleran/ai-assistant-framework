@@ -7,8 +7,8 @@ Module Contract
   - ActionExecutorRegistry: class with execute(proposal) -> ActionResult
 - Dependencies:
   - core.actions.types (ActionProposal, ActionResult, ActionType)
-  - Individual executor modules (telegram, discord, email)
-- Side effects: Executes internet write actions (sends messages, creates issues, etc.)
+  - Individual executor modules (telegram, discord, email, google_calendar_create)
+- Side effects: Executes internet write actions (sends messages, creates issues, calendar events, etc.)
 """
 
 import logging
@@ -91,8 +91,5 @@ class ActionExecutorRegistry:
 
     async def _execute_calendar_create_event(self, proposal: ActionProposal) -> ActionResult:
         """Create a Google Calendar event."""
-        return ActionResult(
-            action_id=proposal.action_id,
-            success=False,
-            message="Calendar event creation not yet implemented.",
-        )
+        from core.actions.google_calendar_create import create_calendar_event
+        return await create_calendar_event(proposal)

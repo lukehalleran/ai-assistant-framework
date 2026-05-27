@@ -576,7 +576,7 @@ class CorpusManager:
 
 # memory/storage/multi_collection_chroma_store.py
 class MultiCollectionChromaStore:
-    # Collections (13 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results, visual_memories
+    # Collections (14 total): conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results, visual_memories, daemon_self_notes
 
     async def add_memory(text: str, metadata: Dict, collection: str):
         """Embed text and store in ChromaDB collection"""
@@ -916,7 +916,7 @@ class MemoryConsolidator:
         return summary
 
 
-# memory/fact_extractor.py [ENHANCED 2026-03: entity facts]
+# memory/fact_extractor.py [ENHANCED 2026-03: entity facts, 2026-05: ephemeral filtering]
 class FactExtractor:
     def extract_facts(query, response, conversation_context) -> List[MemoryNode]:
         """
@@ -931,7 +931,21 @@ class FactExtractor:
         - Entity facts (subject=entity name): capped at ENTITY_FACTS_PER_TURN_CAP (4)
         - Entity facts require ENTITY_FACT_MIN_CONFIDENCE (0.55)
         - Entity metadata: fact_scope, entity_type (spaCy NER), user_connection
+
+        Ephemeral filtering [NEW 2026-05]:
+        - Blocks ephemeral predicates (from PROFILE_EPHEMERAL_RELATIONS config)
+        - Blocks boolean-only values ("true"/"false"/"yes"/"no")
         """
+
+# memory/llm_fact_extractor.py [ENHANCED 2026-05: ephemeral filtering]
+# _is_ephemeral_relation(rel) — checks against PROFILE_EPHEMERAL_RELATIONS config
+# _is_boolean_noise(obj) — rejects facts where object is just true/false/yes/no
+# _normalize_triple() blocks both ephemeral predicates and boolean noise before storage
+# LLM prompt updated to discourage transient state extraction
+
+# memory/memory_retriever.py [ENHANCED 2026-05: config-driven ephemeral filtering]
+# _get_ephemeral_predicates() — replaces hardcoded _EPHEMERAL_PREDICATES with config-driven set
+# TTL filter: drops stale ephemeral facts older than PROFILE_EPHEMERAL_TTL_HOURS (default 24h)
 
 # Helper functions [NEW 2026-03]:
 def _detect_entity_type(subject, nlp) -> str:
@@ -1078,7 +1092,7 @@ class ThreadExtractor:
 # Integration:
 # - Shutdown: step 6.5 in process_shutdown_memory() — extract new threads + resolve existing
 # - Prompt: [UNRESOLVED THREADS] section (after [KNOWLEDGE GRAPH])
-# - Collection: 'threads' in ChromaDB (13 total collections)
+# - Collection: 'threads' in ChromaDB (14 total collections)
 # - Builder: top threads retrieved via ThreadStore.get_top_threads() in build_prompt()
 
 # Config (app_config.py):
@@ -1359,6 +1373,11 @@ ENTITY_FACTS_PER_TURN_CAP = 4           # Max entity facts per turn
 USER_FACTS_PER_TURN_CAP = 6             # Max user facts per turn
 ENTITY_FACT_MIN_CONFIDENCE = 0.55        # Min confidence for entity facts
 
+# Ephemeral Fact Filtering [NEW 2026-05]
+PROFILE_EPHEMERAL_RELATIONS = [...]      # Config-driven list (mood, feelings, location, etc.)
+PROFILE_EPHEMERAL_TTL_HOURS = 24         # Stale ephemeral facts excluded from retrieval
+PROFILE_EPHEMERAL_MAX_HISTORY = 20       # Max historical entries per ephemeral relation
+
 # Schedule Extraction [NEW 2026-05]
 SCHEDULE_EXTRACTION_ENABLED = True       # Toggle schedule pattern detection in fact extraction
 SCHEDULE_PROMPT_MAX_EVENTS = 5           # Max events in [UPCOMING SCHEDULE] section
@@ -1623,14 +1642,16 @@ score = (
 [PROPOSED FEATURES]            # 16. Code proposals surfaced for project-related queries
 [KNOWLEDGE GRAPH]              # 17. Graph traversal: related entities as natural language
 [UNRESOLVED THREADS]           # 18. Open commitments, deadlines, unfinished topics
-[PROACTIVE INSIGHTS]           # 19. Cross-domain insights from knowledge graph
-[USER PROFILE]                 # 20. Categorized facts + anti-confabulation instruction + source excerpts (high-attention zone)
-[ACTIVE FEATURES]              # 21. Feature inventory (always present)
-[CODEBASE CHANGES SINCE LAST SESSION]  # 22. Git changes (first message only)
-[TIME CONTEXT]                 # 23. Current datetime (high-attention zone)
-[TEMPORAL GROUNDING]           # 24. Synthesized life context (monthly/weekly/daily notes)
-[SHORT-TERM CONTEXT SUMMARY]   # 25. STM analysis + reference_type + temporal_facts + open_threads + constraints
-[CURRENT USER QUERY]           # 26. Always last, protected from compression
+[UPCOMING SCHEDULE]            # 19. Extracted schedule facts (work, class, exams) [NEW 2026-05]
+[GOOGLE CALENDAR]              # 20. Real-time Google Calendar events via OAuth2 [NEW 2026-05]
+[PROACTIVE INSIGHTS]           # 21. Cross-domain insights from knowledge graph
+[USER PROFILE]                 # 22. Categorized facts + anti-confabulation instruction + source excerpts (high-attention zone)
+[ACTIVE FEATURES]              # 23. Feature inventory (always present)
+[CODEBASE CHANGES SINCE LAST SESSION]  # 24. Git changes (first message only)
+[TIME CONTEXT]                 # 25. Current datetime (high-attention zone)
+[TEMPORAL GROUNDING]           # 26. Synthesized life context (monthly/weekly/daily notes)
+[SHORT-TERM CONTEXT SUMMARY]   # 27. STM analysis + reference_type + temporal_facts + open_threads + constraints
+[CURRENT USER QUERY]           # 28. Always last, protected from compression
 ```
 
 ---
@@ -1872,7 +1893,7 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 # core/agentic/tools.py — ToolExecutor: dispatch routing + 19 execute methods + get_tool_health()
 # core/agentic/gate.py — 4-tier agentic gate: keyword → entity → tool-name → LLM fallback [NEW 2026-05]
 # core/agentic/formatters.py — AgenticFormatter: 18 pure formatting methods
-# core/actions/ — Internet action executors: telegram.py, discord.py, email.py, types.py, audit.py, executors.py [NEW 2026-05]
+# core/actions/ — Internet action executors: telegram.py, discord.py, email.py, google_auth.py, google_calendar.py, google_calendar_create.py, types.py, audit.py, executors.py [NEW 2026-05]
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
     Delegates tool execution to ToolExecutor, formatting to AgenticFormatter."""
@@ -1893,10 +1914,11 @@ class AgenticSearchController:
         5. Yield AgenticEvent for each stage (thinking/searching/computed/done)
         """
 
-    # ToolExecutor.get_tool_health() → "[TOOL STATUS]" prompt section [UPDATED 2026-05-18]
+    # ToolExecutor.get_tool_health() → "[TOOL STATUS]" prompt section [UPDATED 2026-05]
     # Reports per-tool availability: web_search (+ site param), wiki_knowledge (FAISS),
     # memory_search (ChromaDB), wolfram, file_access, git_stats, github, expand_memory, visual_memory,
-    # fetch_url, search_stackexchange, search_arxiv, search_pubmed, search_hackernews.
+    # fetch_url, search_stackexchange, search_arxiv, search_pubmed, search_hackernews,
+    # propose_action (lists calendar_create_event when GOOGLE_CALENDAR_ENABLED).
     # Dedicated API tools are always AVAILABLE (free, no auth).
     # Injected into agentic system prompt + iteration prompts + final prompt.
 
@@ -1986,14 +2008,18 @@ class AgenticSearchSession:
 # Calls WebSearchManager._tavily_extract([url]); result registered in web_source_map for [WEB_N] citations
 # Gated on web_search_manager.is_available(); auto-triggered for URLs in user messages
 
-# PROPOSE_ACTION_TOOL_DEFINITION — Internet write action proposal [NEW 2026-05]
+# PROPOSE_ACTION_TOOL_DEFINITION — Internet write action proposal [NEW 2026-05, ENHANCED 2026-05]
 # Function name: "propose_action"
 # Params: action_type (enum: send_telegram, send_discord, send_email,
 #   github_create_issue, github_comment_pr, calendar_create_event),
-#   recipient (str), subject (str), message (str), reason (str)
-# Required: action_type, message, reason
+#   recipient (str), subject (str), message (str), reason (str),
+#   summary (str, calendar only), description (str, calendar only),
+#   start_time (str, ISO 8601, calendar only), end_time (str, ISO 8601, calendar only),
+#   time_zone (str, IANA, calendar only), calendar_id (str, calendar only),
+#   location (str, calendar only)
+# Required: action_type, reason (relaxed from action_type, message, reason — calendar uses summary instead of message)
 # User sees confirmation prompt and can approve/reject; at most ONE action per turn
-# Execution via core/actions/ executors (Telegram, Discord, email, GitHub)
+# Execution via core/actions/ executors (Telegram, Discord, email, Gmail API, GitHub, Google Calendar)
 
 # core/git_stats_manager.py [NEW 2026-03-29]
 class GitStatsManager:
@@ -2116,12 +2142,14 @@ class MemoryExpander:
         """Reset cache between ReAct sessions"""
 
 
-# Protocol handlers (core/agentic/protocols.py) [ENHANCED 2026-05-20]
+# Protocol handlers (core/agentic/protocols.py) [ENHANCED 2026-05]
 # XMLMarkerHandler - for local models: <search>, <fetch_url>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <github>, <recall_image>, <done>
 #   Alias patterns: <web_search>/<web_search query="..."> → <search>, <search_memory query="..."> → <memory>
 #   Nested XML: <search_memory><query>X</query></search_memory> (DeepSeek-style) via MEMORY_NESTED_PATTERN
 #   Helpers: _strip_xml_tags() removes inner tags from content, _extract_nested_tag() extracts child elements
 #   Empty args defaulting: git_stats/github/search_memory with empty args fall back to original query
+#   Calendar fix: forwards calendar-specific params (summary, start_time, end_time, etc.) to action_params
+#   Text parser: only prepends send_ for messaging types (telegram, discord, email), not calendar/github
 # NativeToolsHandler - for API models: OpenAI/Anthropic function calling (tool defs gated by github_available param)
 ```
 
@@ -2161,7 +2189,7 @@ GIT_STATS_ENABLED = True
 GIT_STATS_TIMEOUT = 10                 # subprocess timeout (seconds)
 GIT_STATS_MAX_OUTPUT_LINES = 50        # cap git command output
 
-# Internet Actions [NEW 2026-05]
+# Internet Actions [NEW 2026-05, ENHANCED 2026-05]
 INTERNET_ACTIONS_ENABLED = False       # disabled by default
 INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN    # env: TELEGRAM_BOT_TOKEN
 INTERNET_ACTIONS_TELEGRAM_CHAT_ID      # env: TELEGRAM_CHAT_ID
@@ -2171,6 +2199,13 @@ INTERNET_ACTIONS_GITHUB_WRITE_ENABLED = False
 INTERNET_ACTIONS_TTL = 300             # action expiry (seconds)
 INTERNET_ACTIONS_MAX_PENDING = 5       # max queued actions
 INTERNET_ACTIONS_AUDIT_LOG = "logs/actions_audit.jsonl"
+# Google OAuth2 + Calendar [NEW 2026-05]
+INTERNET_ACTIONS_GOOGLE_CLIENT_ID     # env: GOOGLE_CLIENT_ID
+INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET  # env: GOOGLE_CLIENT_SECRET
+INTERNET_ACTIONS_GOOGLE_TOKEN_PATH = "data/google_token.json"
+GOOGLE_CALENDAR_ENABLED = False        # env: GOOGLE_CALENDAR_ENABLED
+GOOGLE_CALENDAR_MAX_EVENTS = 10        # max events in prompt
+GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 7     # days ahead to fetch
 #   YAML section: internet_actions
 ```
 
@@ -2589,7 +2624,7 @@ class VisualRetriever:
 # Prompt instruction: do not mention images unless user explicitly asks.
 
 # Integration:
-# - Collection: 'visual_memories' in ChromaDB (13 total collections)
+# - Collection: 'visual_memories' in ChromaDB (14 total collections)
 # - Prompt section: [VISUAL MEMORIES] (after [USER UPLOADED ITEMS])
 # - Agentic tool: recall_image — CLIP-based image recall in ReAct loop
 # - Backfill: scripts/backfill_visual_memory.py — re-index existing images
@@ -2606,6 +2641,103 @@ VISUAL_MEMORY_DEDUP_ENABLED = True      # SHA-256 content dedup
 # tests/unit/test_clip_manager.py — CLIPManager singleton, encode_image, encode_text
 # tests/unit/test_visual_memory_store.py — dual storage, dedup, FAISS/ChromaDB search
 # tests/unit/test_visual_retrieval.py — hybrid retrieval, prompt format, agentic tool
+```
+
+---
+
+## Google OAuth2 + Calendar Integration **[NEW 2026-05]**
+
+```python
+# core/actions/google_auth.py — OAuth2 credential management
+class GoogleAuthManager:
+    """Manages Google OAuth2 credentials for Gmail and Calendar APIs.
+    Handles installed-app OAuth2 flow, token persistence, automatic refresh,
+    and scope-upgrade detection."""
+
+    def __init__(client_id, client_secret, token_path="data/google_token.json", scopes=None): ...
+    def is_authenticated -> bool:
+        """True if valid token exists on disk (auto-refreshes expired tokens)."""
+    def get_credentials() -> Optional[google.oauth2.credentials.Credentials]:
+        """Return valid credentials or None (refreshes if expired)."""
+    def has_scope(scope: str) -> bool:
+        """Check if current token has a specific OAuth scope."""
+    def authorize() -> Credentials:
+        """Run browser-based OAuth consent flow. Persists token to disk."""
+
+def get_google_auth() -> GoogleAuthManager | None:
+    """Lazy singleton from config. Returns None if client_id/secret unconfigured."""
+
+# Scopes: gmail.send, calendar.readonly, calendar.events
+# One-time auth: python -m core.actions.google_auth
+
+
+# core/actions/google_calendar.py — Read-only calendar fetch
+async def fetch_upcoming_events(max_events=10, lookahead_days=7) -> List[Dict]:
+    """Fetch upcoming events from Google Calendar API. 5-min cache.
+    Returns: [{summary, start, end, all_day, location}, ...].
+    Silent [] on disabled/unconfigured/error."""
+
+def clear_cache() -> None:
+    """Reset module-level event cache."""
+
+
+# core/actions/google_calendar_create.py — Calendar event creation (write action)
+async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
+    """Create a Google Calendar event via Calendar API POST.
+    Requires calendar.events scope. Expects proposal.params:
+    summary (str), start_time (str, ISO 8601), end_time (str, ISO 8601),
+    description (optional), calendar_id (optional, default "primary"),
+    time_zone (optional, default "America/Chicago"), location (optional)."""
+
+
+# core/actions/email.py — Gmail API primary, SMTP fallback [REWRITTEN 2026-05]
+async def send_email(proposal: ActionProposal) -> ActionResult:
+    """Gmail API first → SMTP fallback only if Gmail unconfigured.
+    No SMTP fallback after Gmail API attempt (prevents duplicate sends)."""
+async def _try_gmail_send(proposal, recipient, message) -> ActionResult | None:
+    """Returns ActionResult on attempt, None if Gmail not configured."""
+async def _smtp_send(proposal, recipient, message) -> ActionResult:
+    """SMTP fallback path."""
+
+
+# core/actions/executors.py — Executor wiring
+# _execute_calendar_create_event() now calls google_calendar_create.create_calendar_event()
+# (was stub, now real implementation)
+
+
+# Prompt sections (formatter.py):
+# [UPCOMING SCHEDULE] — extracted schedule facts (work, class, exams) from fact_extractor
+# [GOOGLE CALENDAR]   — real-time events from Google Calendar API via OAuth2
+
+# Gatherer (gatherer_knowledge.py):
+# get_google_calendar_events(max_events=10) — async wrapper around fetch_upcoming_events()
+
+# Eval sections (section_registry.py): 31 entries total (was 29)
+# upcoming_schedule (order 29), google_calendar (order 30)
+
+# Config (app_config.py):
+INTERNET_ACTIONS_GOOGLE_CLIENT_ID      # env: GOOGLE_CLIENT_ID
+INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET   # env: GOOGLE_CLIENT_SECRET
+INTERNET_ACTIONS_GOOGLE_TOKEN_PATH = "data/google_token.json"
+GOOGLE_CALENDAR_ENABLED = False         # env: GOOGLE_CALENDAR_ENABLED
+GOOGLE_CALENDAR_MAX_EVENTS = 10
+GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 7
+
+# Tests: tests/unit/test_google_auth.py, test_google_calendar.py, test_calendar_create.py,
+#        test_calendar_prompt.py, test_gmail_send.py
+```
+
+---
+
+## Backup B2 Upload **[NEW 2026-05]**
+
+```bash
+# scripts/backup_data.sh — Enhanced with Backblaze B2 cloud upload
+# After local encrypted backup, uploads to B2 via rclone:
+#   rclone copy "$BACKUP_FILE" "b2-daemon-crypt:backups/" --progress
+# Prunes remote backups older than KEEP_DAYS:
+#   rclone delete "b2-daemon-crypt:backups/" --min-age "${KEEP_DAYS}d"
+# Requires: rclone configured with b2-daemon-crypt remote
 ```
 
 ---
@@ -2680,6 +2812,6 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-**Last verified**: 2026-05-11
+**Last verified**: 2026-05-27
 
 This document provides instant lookup for critical functions and patterns.

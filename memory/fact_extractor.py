@@ -708,7 +708,11 @@ class FactExtractor:
         from config.app_config import (
             ENTITY_FACTS_ENABLED, ENTITY_FACTS_PER_TURN_CAP,
             USER_FACTS_PER_TURN_CAP, ENTITY_FACT_MIN_CONFIDENCE,
+            PROFILE_EPHEMERAL_RELATIONS,
         )
+
+        # Load ephemeral relations once for the loop
+        _ephemeral_set = frozenset(r.lower().strip() for r in PROFILE_EPHEMERAL_RELATIONS)
 
         user_facts: List[MemoryNode] = []
         entity_facts: List[MemoryNode] = []
@@ -726,6 +730,22 @@ class FactExtractor:
             if not cleaned:
                 continue
             s2, r2, o2 = cleaned
+
+            # Block ephemeral predicates — transient state, not durable facts
+            if r2.lower().strip() in _ephemeral_set:
+                logger.debug(
+                    f"[FactExtractor] Blocked ephemeral predicate: "
+                    f"subj='{s2}' rel='{r2}' obj='{o2}'"
+                )
+                continue
+
+            # Block boolean-only values — no informational content
+            if o2.strip().lower() in {"true", "false", "yes", "no"}:
+                logger.debug(
+                    f"[FactExtractor] Blocked boolean noise: "
+                    f"subj='{s2}' rel='{r2}' obj='{o2}'"
+                )
+                continue
 
             # Canonicalize preferences (maps to Luke | favorite_* | X or Luke | likes | X when applicable)
             s3, r3, o3 = _canonicalize_preferences(query, response, s2, r2, o2, user_name="user")

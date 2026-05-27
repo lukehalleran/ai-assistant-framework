@@ -11,9 +11,9 @@ For formal notation see `FORMAL_MODEL.md`. For config constants see
 
 ## What the Pipeline Does
 
-Every user query triggers a full prompt build: 20 parallel async
-retrievals across memory, knowledge graph, web search, files, and
-profile data. Results are filtered, deduplicated, scored, compressed
+Every user query triggers a full prompt build: 21 parallel async
+retrievals across memory, knowledge graph, web search, Google Calendar,
+files, and profile data. Results are filtered, deduplicated, scored, compressed
 to fit a token budget, and assembled into a final prompt string with
 carefully ordered sections that exploit LLM attention patterns.
 
@@ -30,7 +30,7 @@ The pipeline lives in `core/prompt/` and is orchestrated by
 | `core/prompt/context_gatherer.py` | Mixin compositor (~379 lines): init, properties, utilities. Composes WebSearchMixin + MemoryRetrievalMixin + KnowledgeRetrievalMixin |
 | `core/prompt/gatherer_web.py` | WebSearchMixin (~216 lines): `_get_web_search_results()`, `should_trigger_web_search()` |
 | `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin (~834 lines): 17 memory/summary/reflection/facts/profile retrieval methods |
-| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin (~1,169 lines): 16 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, semantic chunks, dreams, codebase) |
+| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin (~1,233 lines): 17 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, semantic chunks, dreams, codebase, Google Calendar) |
 | `core/prompt/formatter.py` | Section formatting + prompt assembly (~1,642 lines): `_assemble_prompt()` (~780 lines), `_build_feature_inventory()`, `_staleness_prefix`, `_is_multimodal_model`, `_load_upload_image` |
 | `core/prompt/hygiene.py` | ContentHygiene (~345 lines): `_hygiene_and_caps()`, `_backfill_recent_conversations()` |
 | `core/prompt/token_manager.py` | Budget computation, priority trimming, middle-out compression |
@@ -70,7 +70,7 @@ key_points, tone, avoid list, and strategy. The plan is injected into
 the system prompt before `_assemble_prompt()`. If the planner times out
 or fails, the prompt proceeds without a plan.
 
-### Step 4 — Parallel Retrieval (20 tasks, 30s timeout)
+### Step 4 — Parallel Retrieval (21 tasks, 30s timeout)
 
 All tasks execute simultaneously via `asyncio.wait()` (not `asyncio.gather`).
 Completed tasks survive a timeout — only the still-pending sections fall back
@@ -99,6 +99,7 @@ default to `[]` without affecting other sections.
 | visual_memories | `get_visual_memories()` | varies |
 | web_search | `_get_web_search_results()` | 5 results |
 | upcoming_schedule | `get_upcoming_schedule()` | 5 events (gated by TEMPORAL_RECALL/PROJECT_WORK intent) |
+| google_calendar | `get_google_calendar_events()` | 10 events (gated by `GOOGLE_CALENDAR_ENABLED`) |
 
 Per-task timing is tracked and logged for bottleneck detection.
 
@@ -218,15 +219,17 @@ high-attention items (user profile, time, query) placed last:
 17. `[PROPOSED FEATURES]` — code proposals (1-3)
 18. `[KNOWLEDGE GRAPH]` — entity relationships, natural language (up to 12 sentences)
 19. `[UNRESOLVED THREADS]` — open commitments/deadlines (1-3)
-20. `[PROACTIVE INSIGHTS]` — cross-domain connections (1-2)
-21. `[UPCOMING SCHEDULE]` — schedule facts for next N days (intent-gated: TEMPORAL_RECALL/PROJECT_WORK, up to 5 events)
-22. `[USER PROFILE]` — categorized facts with inline anti-confabulation instruction and source excerpts when available (high-attention zone)
-23. `[ACTIVE FEATURES]` — feature inventory (always)
-24. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
-25. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
-26. `[TEMPORAL GROUNDING]` — narrative context (if available)
-27. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available). Includes `Reference Type:` line (`new_event` / `recall` / `clarification` / `correction` / `unclear`) with explicit WARNING directive when type ≠ `new_event`. Also renders `Resolved State:` from `temporal_facts`, `Open Threads:` from `open_threads` (ongoing commitments/topics), and `Constraints:` from `constraints` (implicit/explicit response limits). STM internally injects last 2 daily notes from the Obsidian vault for cross-day recall disambiguation.
-28. `[CURRENT USER QUERY]` — always last, protected from compression
+20. `[UPCOMING SCHEDULE]` — schedule facts for next N days (intent-gated: TEMPORAL_RECALL/PROJECT_WORK or keyword-gated, up to 5 events)
+21. `[GOOGLE CALENDAR]` — real-time Google Calendar events via OAuth2 (up to 10 events; gated by `GOOGLE_CALENDAR_ENABLED`). Numbered list: `date time_start – time_end: Summary (location)`. All-day events show `[all day]` instead of times.
+22. `[DAEMON SELF-NOTES]` — Daemon's own working notes from prior sessions (non-ground-truth, trust-weighted below user content). Includes disclaimer.
+23. `[PROACTIVE INSIGHTS]` — cross-domain connections (1-2)
+24. `[USER PROFILE]` — categorized facts with inline anti-confabulation instruction and source excerpts when available (high-attention zone)
+25. `[ACTIVE FEATURES]` — feature inventory (always)
+26. `[CODEBASE CHANGES SINCE LAST SESSION]` — git diff (first message only)
+27. `[TIME CONTEXT]` — current time + time deltas (high-attention zone)
+28. `[TEMPORAL GROUNDING]` — narrative context (if available)
+29. `[SHORT-TERM CONTEXT SUMMARY]` — STM analysis (if available). Includes `Reference Type:` line (`new_event` / `recall` / `clarification` / `correction` / `unclear`) with explicit WARNING directive when type ≠ `new_event`. Also renders `Resolved State:` from `temporal_facts`, `Open Threads:` from `open_threads` (ongoing commitments/topics), and `Constraints:` from `constraints` (implicit/explicit response limits). STM internally injects last 2 daily notes from the Obsidian vault for cross-day recall disambiguation.
+30. `[CURRENT USER QUERY]` — always last, protected from compression
 
 Items with `staleness_ratio >= 0.6` get `[HISTORICAL — PARTIALLY OUTDATED]` prefix.
 
@@ -315,6 +318,41 @@ for `[WEB_N]` citation tracking.
 
 ---
 
+## Google Calendar Integration
+
+`get_google_calendar_events()` (in `gatherer_knowledge.py`) fetches upcoming
+events from the user's Google Calendar via OAuth2:
+
+1. Check `GOOGLE_CALENDAR_ENABLED` config flag
+2. Call `core.actions.google_calendar.fetch_upcoming_events(max_events)`
+3. Returns list of event dicts: `{summary, start, end, all_day, location}`
+
+The task runs in parallel with all other retrieval tasks in Step 4.
+Rendering in `formatter.py` formats events as a numbered list:
+`1) 2026-05-27 9:00 AM – 10:00 AM: Meeting (Room 3)`. All-day events
+display as `2026-05-28 [all day]: Holiday`. All failures return `[]`
+silently — calendar is best-effort context.
+
+Config: `GOOGLE_CALENDAR_ENABLED`, `GOOGLE_CALENDAR_MAX_EVENTS`
+
+---
+
+## Upcoming Schedule (Extracted)
+
+Schedule facts extracted from past conversations (shift patterns, exams,
+appointments) are rendered in the `[UPCOMING SCHEDULE]` section. Retrieval
+is keyword-gated: activated when the query contains schedule trigger words
+(`schedule`, `shift`, `free`, `busy`, `exam`, `when do i`, etc.) combined
+with temporal signals (`today`, `tomorrow`, `this week`, `next`, etc.),
+or when the intent classifier returns TEMPORAL_RECALL or PROJECT_WORK.
+
+The `get_upcoming_schedule()` method (in `gatherer_memory.py`) queries
+schedule-tagged facts from ChromaDB. Events are rendered with human-readable
+times, confidence qualifiers for heuristic resolutions, and scope markers
+(`(one-time)` for non-recurring events).
+
+---
+
 ## Small-Talk Fast Path
 
 If `query_analysis.is_small_talk = True`, returns minimal context:
@@ -356,6 +394,10 @@ SKILL_ACTIVATION_MIN_SCORE = 0.25
 SKILL_ACTIVATION_COOLDOWN_HOURS = 48.0
 SKILL_ACTIVATION_FETCH_MULTIPLIER = 3
 SKILL_ACTIVATION_STM_BONUS = 0.10
+
+# Google Calendar
+GOOGLE_CALENDAR_ENABLED = False       # Requires OAuth2 setup
+GOOGLE_CALENDAR_MAX_EVENTS = 10
 ```
 
 ---

@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-05-11
+**Last Updated**: 2026-05-27
 
 ---
 
@@ -796,8 +796,8 @@ PROMPT_SECTION_GATING_ENABLED = True         # Phase 8 eval-driven section gatin
 
 ---
 
-### 2.3.2 memory/memory_retriever.py **[REFACTORED]**
-**Purpose**: Memory retrieval operations (~966 lines)
+### 2.3.2 memory/memory_retriever.py **[REFACTORED, ENHANCED 2026-05-27]**
+**Purpose**: Memory retrieval operations (~966 lines). Config-driven ephemeral predicate filtering and TTL-based expiry for transient facts.
 
 **Key Methods** (implements MemoryRetrieverProtocol):
 - `async get_memories(query, limit, topic_filter)` → Main retrieval pipeline
@@ -829,7 +829,9 @@ PROMPT_SECTION_GATING_ENABLED = True         # Phase 8 eval-driven section gatin
 4. Apply multi-stage gating
 5. Rank with MemoryScorer
 6. Deduplicate by memory key
-7. Return top K
+7. TTL filter: drop ephemeral facts (PROFILE_EPHEMERAL_RELATIONS predicates)
+   older than PROFILE_EPHEMERAL_TTL_HOURS [NEW 2026-05-27]
+8. Return top K
 ```
 
 **Dependencies**: CorpusManager, MultiCollectionChromaStore, MultiStageGateSystem, MemoryScorer, HybridRetriever
@@ -1019,7 +1021,7 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
    # All facts (user + entity) still stored in ChromaDB
    ```
 
-2. **memory/llm_fact_extractor.py** (Enhanced) [ENHANCED 2026-04]:
+2. **memory/llm_fact_extractor.py** (Enhanced) [ENHANCED 2026-05-27]:
    - Auto-categorization via `categorize_relation()` in `_normalize_triple()`
    - Enhanced prompt with 12 category descriptions
    - Confidence scoring (0.0-1.0)
@@ -1028,6 +1030,9 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
    - Accepts `existing_facts` parameter so LLM reuses relation names for updates/cancellations **[ENHANCED 2026-04-05]**
    - Update rules in prompt: when user updates/cancels/rescinds something, LLM reuses same relation name with new value
    - `_attach_source_excerpts()`: after extraction, keyword-matches each triple back to its source user message (200-char truncated) **[ENHANCED 2026-04-30]**
+   - Ephemeral predicate blocking: `_is_ephemeral_relation()` rejects transient predicates from `PROFILE_EPHEMERAL_RELATIONS` **[NEW 2026-05-27]**
+   - Boolean noise blocking: `_is_boolean_noise()` drops objects that are pure boolean values (true/false/yes/no) **[NEW 2026-05-27]**
+   - LLM prompt updated with "Do NOT extract transient/ephemeral state" instruction **[NEW 2026-05-27]**
 
 3. **core/prompt/gatherer_memory.py** (MemoryRetrievalMixin, composed via context_gatherer.py):
    - `get_user_profile_context(query, max_tokens=500)` → Calls UserProfile.get_context_injection()
@@ -1146,8 +1151,8 @@ UnifiedPromptBuilder (core/prompt/builder.py) — Thin orchestrator
 ├── ContextGatherer (context_gatherer.py) - Mixin compositor
 │   ├── WebSearchMixin (gatherer_web.py) - Web search retrieval
 │   ├── MemoryRetrievalMixin (gatherer_memory.py) - 17 memory retrieval methods
-│   └── KnowledgeRetrievalMixin (gatherer_knowledge.py) - 16 knowledge retrieval methods
-├── PromptFormatter (formatter.py) - 26-section assembly + feature inventory
+│   └── KnowledgeRetrievalMixin (gatherer_knowledge.py) - Knowledge retrieval methods incl. Google Calendar
+├── PromptFormatter (formatter.py) - Section assembly + feature inventory + [GOOGLE CALENDAR]
 ├── ContentHygiene (hygiene.py) - Dedup, caps, backfill
 ├── TokenManager (token_manager.py) - Budget management
 ├── LLMSummarizer (summarizer.py) - LLM operations
@@ -1187,6 +1192,7 @@ Priority order (with weights):
 - open_threads: 3              # Unresolved threads surfacing [NEW 2026-03-20]
 - proactive_insights: 3        # Cross-domain insights from knowledge graph [NEW 2026-03-25]
 - feature_inventory: 3         # Active features summary [NEW 2026-03-25]
+- google_calendar: 3           # Real-time Google Calendar events [NEW 2026-05-27]
 - reflections/dreams: 2
 - wiki: 1
 
@@ -1226,6 +1232,7 @@ Post-budget floors (Step 7.1) [ENHANCED 2026-03-28]:
   "proactive_insights": [...],  # Cross-domain insights from knowledge graph [NEW 2026-03-25]
   "codebase_changes": str,      # Git changes since last session (first message only) [NEW 2026-03-25]
   "feature_inventory": str,     # Active features summary [NEW 2026-03-25]
+  "google_calendar": [...],    # Google Calendar events (real-time via OAuth2) [NEW 2026-05-27]
 }
 ```
 
@@ -1340,6 +1347,11 @@ Uncommitted modified: config/app_config.py, ...
 Uncommitted new: memory/context_surfacer.py, ...
 ...
 
+[GOOGLE CALENDAR] n=N [NEW 2026-05-27]
+1) 2026-05-27 2:00 PM – 3:00 PM: Team standup
+2) 2026-05-28 [all day]: Dentist appointment (123 Main St)
+...
+
 [SHORT-TERM CONTEXT SUMMARY]
 Topic: Python debugging
 User Question: How to fix the timeout error
@@ -1449,10 +1461,10 @@ else:
 - `FETCH_URL_TOOL_DEFINITION`: Fetch URL content tool schema **[NEW 2026-05]**
 - `AGENTIC_SYSTEM_PROMPT_INJECTION`: Instructions for local models to use XML markers
 
-**core/agentic/protocols.py** - Protocol detection and parsing **[ENHANCED 2026-05-20]**
+**core/agentic/protocols.py** - Protocol detection and parsing **[ENHANCED 2026-05-27]**
 - `detect_protocol(model_name)` → `SearchProtocol` (native for gpt/claude, XML for local)
-- `NativeToolsHandler`: Parses OpenAI/Anthropic tool_calls from response. GitHub tool definitions gated by `github_available` param. Empty args for git_stats/github/search_memory default to original query.
-- `XMLMarkerHandler`: Parses `<search>query</search>`, `<fetch_url url="...">`, and `<done/>` from local model output. XML alias patterns: `<web_search>`/`<web_search query="...">` → `<search>`, `<search_memory query="...">` → `<memory>`. Nested XML: `MEMORY_NESTED_PATTERN` for DeepSeek-style `<search_memory><query>X</query></search_memory>`. Helpers: `_strip_xml_tags()`, `_extract_nested_tag()`.
+- `NativeToolsHandler`: Parses OpenAI/Anthropic tool_calls from response. GitHub tool definitions gated by `github_available` param. Empty args for git_stats/github/search_memory default to original query. Calendar-specific params (summary, start_time, end_time, time_zone, calendar_id, location, description) forwarded for `calendar_create_event` actions.
+- `XMLMarkerHandler`: Parses `<search>query</search>`, `<fetch_url url="...">`, and `<done/>` from local model output. XML alias patterns: `<web_search>`/`<web_search query="...">` → `<search>`, `<search_memory query="...">` → `<memory>`. Nested XML: `MEMORY_NESTED_PATTERN` for DeepSeek-style `<search_memory><query>X</query></search_memory>`. Calendar-specific param forwarding for XML protocol actions. Helpers: `_strip_xml_tags()`, `_extract_nested_tag()`.
 - `BaseProtocolHandler`: Common interface for both
 - `github_available` param threaded through `NativeToolsHandler` and `get_protocol_handler()`
 - Enhanced `search_memory` tool guidance with per-collection descriptions **[ENHANCED 2026-03-20]**
@@ -1473,9 +1485,9 @@ else:
   - `_compute_context_inventory(initial_context)` → Summarizes available context (user profile, summaries, memories, notes, docs, dreams, visual memories, git commits, knowledge graph, threads, proactive insights) for LLM awareness **[ENHANCED 2026-05-11]**
   - Memory search diversity tracking: per-collection search counts prevent redundant queries **[NEW 2026-03-20]**
 
-**core/agentic/tools.py** - Tool execution **[UPDATED 2026-05-25]**
+**core/agentic/tools.py** - Tool execution **[UPDATED 2026-05-27]**
 - `ToolExecutor`: Dispatch routing + 18 execute methods
-  - `get_tool_health()` → Returns diagnostic string of tool availability (web search, FAISS, sandbox, etc.)
+  - `get_tool_health()` → Returns diagnostic string of tool availability (web search, FAISS, sandbox, calendar_create_event, etc.)
   - `dispatch(decision, session)` → Routes to appropriate `_execute_*` / `_dispatch_*` method
   - Core: `_execute_search` (web, with optional `include_domains`), `_execute_fetch_url`, `_execute_wolfram`, `_execute_sandbox`
   - Memory: `_execute_memory_search`, `_execute_memory_expand`, `_execute_full_document`, `_execute_recall_image`
@@ -1565,7 +1577,7 @@ agentic_search:
 - FAISS Wikipedia fallback [NEW 2026-03-31]: `_search_wiki_faiss()` + `_format_wiki_faiss_results()` — when searching `wiki_knowledge`, always prefers FAISS semantic search (40M vectors, IVFPQ index) over sparse ChromaDB data
 - `generate_document` tool [NEW 2026-05]: Research & save markdown documents (report/summary). `SearchDecision` extended with `wants_generate_document`, `generate_document_topic`, `generate_document_type`, `generate_document_focus`, `generate_document_reason`.
 - `create_daemon_note` tool [NEW 2026-05]: Save working context as self-note for future sessions. `SearchDecision` extended with `wants_create_daemon_note`, `daemon_note_title`, `daemon_note_category`, `daemon_note_summary`, `daemon_note_reason`.
-- `propose_action` tool [NEW 2026-05-25]: Propose internet write action requiring user confirmation (human-in-the-loop). `SearchDecision` extended with `wants_action`, `action_type` (ActionType value: send_telegram, send_email, etc.), `action_params` (message, recipient, subject), `action_summary` (human-readable summary), `action_reason` (why the action was proposed). Does NOT execute — creates `ActionProposal` for GUI approval/rejection.
+- `propose_action` tool [NEW 2026-05-25, ENHANCED 2026-05-27]: Propose internet write action requiring user confirmation (human-in-the-loop). `SearchDecision` extended with `wants_action`, `action_type` (ActionType value: send_telegram, send_email, calendar_create_event, etc.), `action_params` (message, recipient, subject; calendar: summary, start_time, end_time, time_zone, calendar_id, location, description), `action_summary` (human-readable summary), `action_reason` (why the action was proposed). Does NOT execute — creates `ActionProposal` for GUI approval/rejection.
 
 **Provenance** **[NEW 2026-03-26]**:
 - `AgenticSearchSession.final_prompt_hash` — SHA-256[:16] of final assembled prompt
@@ -3050,7 +3062,7 @@ NARRATIVE_DAILIES_COUNT = 6           # [NEW 2026-03-10]
 
 ---
 
-### 2.15 memory/fact_extractor.py (Entity/Fact Extraction) [ENHANCED 2026-03]
+### 2.15 memory/fact_extractor.py (Entity/Fact Extraction) [ENHANCED 2026-05-27]
 **Purpose**: Extract structured facts (subject-relation-object triples) from user messages — both user-centric and entity-to-entity facts
 
 **Extraction Stages**:
@@ -3058,6 +3070,9 @@ NARRATIVE_DAILIES_COUNT = 6           # [NEW 2026-03-10]
 2. **spaCy dependency parsing** for grammar-based SRO extraction
 3. **REBEL neural extraction** (if enabled)
 4. **Regex fallback** patterns for common fact types
+5. **Post-extraction filters** [NEW 2026-05-27]:
+   - Ephemeral predicate blocking: transient predicates from `PROFILE_EPHEMERAL_RELATIONS` (current_feeling, is, has, thinks, etc.) are rejected before storage
+   - Boolean noise blocking: objects that are pure boolean values ("true", "false", "yes", "no") carry no informational content and are dropped
 
 **Dual-Budget System** [NEW 2026-03]:
 - User facts (subject="user"): capped at `USER_FACTS_PER_TURN_CAP` (default 6)
@@ -3903,8 +3918,8 @@ Phase 7-8: (not yet implemented) — intent-conditioned gating, production deplo
 - `EvalGenerationResult`, `PersistenceSnapshot`, `StoreFingerprint`
 - JSON roundtrip via orjson/stdlib, SHA-256 hashing (exact + normalized modes)
 
-**eval/section_registry.py** — 27-entry canonical section registry
-- Maps to `builder.py:_assemble_prompt()` sections
+**eval/section_registry.py** — 31-entry canonical section registry **[ENHANCED 2026-05-27]**
+- Maps to `formatter.py:_assemble_prompt()` sections
 - Categories: STRUCTURAL, SYSTEM, METADATA, RETRIEVED, GENERATED_CONTEXT
 - Helpers: `get_ablatable()`, `get_structurally_required()`, `match_header_to_key()`, `validate_registry_against_formatted_sections()`
 
@@ -4599,7 +4614,16 @@ INTERNET_ACTIONS_SMTP_FROM = ""
 INTERNET_ACTIONS_TTL = 300                   # Pending action expiry (seconds)
 INTERNET_ACTIONS_MAX_PENDING = 5             # Max pending actions
 INTERNET_ACTIONS_AUDIT_LOG = "logs/actions_audit.jsonl"
-# Config: INTERNET_ACTIONS_* constants; YAML section `internet_actions`
+
+# Google OAuth2 (Gmail API + Calendar API) [NEW 2026-05-27]
+INTERNET_ACTIONS_GOOGLE_CLIENT_ID = ""   # Via GOOGLE_CLIENT_ID env or config.yaml
+INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET = ""  # Via GOOGLE_CLIENT_SECRET env
+INTERNET_ACTIONS_GOOGLE_TOKEN_PATH = "data/google_token.json"
+GOOGLE_CALENDAR_ENABLED = False             # Via GOOGLE_CALENDAR_ENABLED env or config.yaml
+GOOGLE_CALENDAR_MAX_EVENTS = 10
+GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 7
+
+# Config: INTERNET_ACTIONS_* + GOOGLE_CALENDAR_* constants; YAML section `internet_actions`
 # Schema: InternetActionsSection in config/schema.py
 
 # File Upload [ENHANCED 2026-02-10]
@@ -4853,8 +4877,8 @@ daemon/
 │       ├── context_gatherer.py # Mixin compositor: init + properties (composes 3 gatherer mixins)
 │       ├── gatherer_web.py   # WebSearchMixin: web search retrieval + trigger logic [NEW 2026-05]
 │       ├── gatherer_memory.py # MemoryRetrievalMixin: 17 memory/summary/reflection/facts methods [NEW 2026-05]
-│       ├── gatherer_knowledge.py # KnowledgeRetrievalMixin: 16 knowledge retrieval methods [NEW 2026-05]
-│       ├── formatter.py      # 26-section assembly + feature inventory + staleness prefix
+│       ├── gatherer_knowledge.py # KnowledgeRetrievalMixin: knowledge retrieval methods incl. get_google_calendar_events() [ENHANCED 2026-05-27]
+│       ├── formatter.py      # Section assembly + feature inventory + staleness prefix + [GOOGLE CALENDAR] section [ENHANCED 2026-05-27]
 │       ├── hygiene.py        # ContentHygiene: dedup, caps, backfill [NEW 2026-05]
 │       ├── token_manager.py  # Budget management
 │       ├── summarizer.py     # LLM summarization + on-demand reflections
@@ -4865,15 +4889,15 @@ daemon/
 │   ├── memory_coordinator.py      # Thin orchestrator (~551 lines, delegates to components)
 │   ├── shutdown_processor.py      # Session-end summaries, facts, reflections [NEW - EXTRACTED]
 │   ├── memory_scorer.py           # Scoring and ranking operations [NEW - REFACTORED]
-│   ├── memory_retriever.py        # Retrieval operations [NEW - REFACTORED]
+│   ├── memory_retriever.py        # Retrieval operations + config-driven ephemeral predicates + TTL filter [ENHANCED 2026-05-27]
 │   ├── memory_storage.py          # Storage/persistence operations [NEW - REFACTORED]
 │   ├── thread_manager.py          # Thread tracking [NEW - REFACTORED]
 │   ├── memory_interface.py        # Protocol contracts [NEW - REFACTORED]
 │   ├── procedural_skill.py        # ProceduralSkill dataclass + SkillCategory enum [NEW 2026-01-27]
 │   ├── corpus_manager.py          # JSON persistence
 │   ├── memory_consolidator.py     # Summarization
-│   ├── fact_extractor.py          # Pattern-based extraction
-│   ├── llm_fact_extractor.py      # LLM-based extraction
+│   ├── fact_extractor.py          # Pattern-based extraction + ephemeral predicate blocking + boolean filtering [ENHANCED 2026-05-27]
+│   ├── llm_fact_extractor.py      # LLM-based extraction + ephemeral/boolean filtering [ENHANCED 2026-05-27]
 │   ├── graph_models.py            # Pydantic models: GraphNode, GraphEdge [NEW 2026-03]
 │   ├── graph_memory.py            # NetworkX DiGraph: CRUD, BFS, JSON persistence [NEW 2026-03]
 │   ├── graph_utils.py             # Shared graph helpers: entity extraction, neighbor lookups [NEW 2026-03]
@@ -4901,16 +4925,19 @@ daemon/
 │   ├── types.py               # Data structures (AgentState, SearchProtocol, etc.)
 │   ├── protocols.py           # Protocol detection and parsing
 │   ├── controller.py          # AgenticSearchController (orchestration, prompts, quality heuristics)
-│   ├── tools.py               # ToolExecutor (dispatch routing + 18 execute methods incl. StackExchange/arXiv/PubMed/HN/GitHub/actions) [UPDATED 2026-05-25]
+│   ├── tools.py               # ToolExecutor (dispatch routing + 18 execute methods incl. StackExchange/arXiv/PubMed/HN/GitHub/actions/calendar) [UPDATED 2026-05-27]
 │   ├── gate.py                # evaluate_agentic_gate() — 4-tier gate logic, returns AgenticDecision [NEW 2026-05-24]
 │   └── formatters.py          # AgenticFormatter (18 pure formatting methods) [NEW 2026-05]
 │
 ├── core/actions/              # Internet actions (human-in-the-loop) [NEW 2026-05-25]
 │   ├── types.py               # ActionType enum, ActionProposal, ActionResult, PendingActionsStore
-│   ├── executors.py           # ActionExecutorRegistry: routes to telegram/discord/email
+│   ├── executors.py           # ActionExecutorRegistry: routes to telegram/discord/email/calendar [ENHANCED 2026-05-27]
 │   ├── telegram.py            # Telegram Bot API sender (httpx)
 │   ├── discord.py             # Discord webhook sender (httpx)
-│   ├── email.py               # SMTP email sender (stdlib smtplib)
+│   ├── email.py               # Gmail API primary + SMTP fallback email sender [ENHANCED 2026-05-27]
+│   ├── google_auth.py         # Google OAuth2 credential management (installed-app flow, token persistence, refresh, scope checking) [NEW 2026-05-27]
+│   ├── google_calendar.py     # Fetch upcoming Google Calendar events (read-only, 5-min cache) [NEW 2026-05-27]
+│   ├── google_calendar_create.py  # Create Google Calendar events via Calendar API [NEW 2026-05-27]
 │   └── audit.py               # Append-only JSONL audit log
 │
 ├── processing/
@@ -5009,6 +5036,11 @@ daemon/
 │   │   ├── test_visual_memory_store.py  # [NEW 2026-05] 22 tests for visual memory storage
 │   │   ├── test_visual_memory_pipeline.py # [NEW 2026-05] 22 tests for image ingestion pipeline
 │   │   ├── test_fetch_url.py             # [NEW 2026-05] 76 tests for fetch_url agentic tool
+│   │   ├── test_google_auth.py          # [NEW 2026-05-27] Tests for Google OAuth manager
+│   │   ├── test_google_calendar.py      # [NEW 2026-05-27] Tests for calendar event fetching
+│   │   ├── test_calendar_create.py      # [NEW 2026-05-27] Tests for calendar event creation
+│   │   ├── test_calendar_prompt.py      # [NEW 2026-05-27] Tests for calendar prompt injection
+│   │   ├── test_gmail_send.py           # [NEW 2026-05-27] Tests for Gmail API send path
 │   │   └── ... (60+ unit test files total)
 │   ├── test_eval/             # Eval system tests (246 tests) [NEW 2026-04]
 │   │   ├── test_section_registry.py     # Registry validation
@@ -5039,6 +5071,7 @@ daemon/
 │   ├── mutation_*.py         # Mutation testing
 │   ├── backfill_visual_memory.py  # Backfill visual memories from image directories [NEW 2026-05]
 │   ├── benchmark_retrieval.py # Retrieval quality & latency benchmark runner [NEW 2026-05]
+│   ├── backup_data.sh        # Daily backup + B2 upload via rclone [ENHANCED 2026-05-27]
 │   ├── *.sh                  # Shell scripts
 │   └── ...
 │
@@ -5057,7 +5090,7 @@ daemon/
 │
 ├── eval/                      # Prompt section ablation & eval system [NEW 2026-04]
 │   ├── schema.py              # Pure data models (PromptSnapshot, SectionSnapshot, etc.)
-│   ├── section_registry.py    # 27-entry canonical section registry
+│   ├── section_registry.py    # 31-entry canonical section registry (added upcoming_schedule, google_calendar, daemon_self_notes, visual_memories) [ENHANCED 2026-05-27]
 │   ├── snapshots.py           # SnapshotCapture, SnapshotReplay, save/load
 │   ├── no_store_generation.py # Side-effect-free LLM generation via generate_once()
 │   ├── persistence_guard.py   # State fingerprinting (ChromaDB + JSON files)
@@ -5401,6 +5434,9 @@ python main.py inspect-summaries
 | synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking + audit queue (two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`) [ENHANCED 2026-04-01] |
 | synthesis_filter.py | Filter: 7-stage async pipeline (text/domain/distance/novelty/two-pass coherence/scoring) [NEW 2026-03-28] |
 | synthesis_generator.py | Generate: Cross-store sampling (facts via ChromaDB + wiki via FAISS) + LLM bridge articulation for synthesis candidates [NEW 2026-03-28] |
+| google_auth.py | Auth: Google OAuth2 credential management (installed-app flow, token persistence, refresh, scope checking) [NEW 2026-05-27] |
+| google_calendar.py | Fetch: Upcoming Google Calendar events (read-only, 5-min cache) [NEW 2026-05-27] |
+| google_calendar_create.py | Create: Google Calendar events via Calendar API [NEW 2026-05-27] |
 
 ---
 
@@ -5873,9 +5909,18 @@ See `docs/AGENT_SAFETY.md` for full workflow documentation.
 
 This document compresses a ~143K LOC codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2026-05-11
+**Last Updated**: 2026-05-27
 
-**Recent Changes** (2026-05-09):
+**Recent Changes** (2026-05-27):
+- **Google Calendar Integration** — New modules: `core/actions/google_auth.py` (OAuth2 credential management), `core/actions/google_calendar.py` (read-only event fetch with 5-min cache), `core/actions/google_calendar_create.py` (event creation via Calendar API). New `[GOOGLE CALENDAR]` prompt section in formatter.py. `gatherer_knowledge.py` adds `get_google_calendar_events()` method. Config: `GOOGLE_CALENDAR_*` constants under `internet_actions` YAML section.
+- **Gmail API Email** — `core/actions/email.py` upgraded from SMTP-only to Gmail API primary + SMTP fallback. `executors.py` now routes `CALENDAR_CREATE_EVENT` to google_calendar_create.
+- **Agentic Calendar Support** — `agentic/types.py` propose_action schema extended with calendar fields (summary, start_time, end_time, time_zone, calendar_id, location, description). `agentic/protocols.py` handles calendar-specific param forwarding for both native and XML protocols. `agentic/tools.py` get_tool_health() lists calendar_create_event.
+- **Ephemeral Fact Filtering** — `fact_extractor.py` and `llm_fact_extractor.py` now block ephemeral predicates (from `PROFILE_EPHEMERAL_RELATIONS`) and boolean-only values before storage. `memory_retriever.py` adds config-driven ephemeral predicate filtering and TTL-based expiry (`PROFILE_EPHEMERAL_TTL_HOURS`).
+- **Eval Registry Expansion** — `section_registry.py` expanded from 27 to 31 entries (added upcoming_schedule, google_calendar, daemon_self_notes, visual_memories).
+- **Backup to B2** — `scripts/backup_data.sh` now uploads encrypted backups to Backblaze B2 via rclone and prunes remote backups.
+- **New Tests** — test_google_auth.py, test_google_calendar.py, test_calendar_create.py, test_calendar_prompt.py, test_gmail_send.py
+
+**Previous Changes** (2026-05-09):
 - **Eval System** (Section 2.15j) — Full prompt section ablation & eval system (Phases 1-2, 4-6). Snapshot capture, variant generation (LOO/AOI/bundle/reorder), side-effect-free generation harness, pairwise judge, objective checks. 246 tests.
 - **Missing Modules Added** — Documented eval/, gui/tabs/, and multiple missing files in core/, memory/, knowledge/, utils/ directories.
 - **Line Count Updates** — memory_coordinator.py updated from ~632 to ~551 lines; unit test count from 20+ to 60+; total test files 152.

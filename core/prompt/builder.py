@@ -917,6 +917,17 @@ class UnifiedPromptBuilder:
                     _timed_task("visual_memories", self.context_gatherer.get_visual_memories(user_input, eff_max_visual_memories))
                 )
 
+            # Google Calendar events (real-time, cached 5 min)
+            try:
+                from config.app_config import GOOGLE_CALENDAR_ENABLED, GOOGLE_CALENDAR_MAX_EVENTS
+                if GOOGLE_CALENDAR_ENABLED:
+                    tasks["google_calendar"] = asyncio.create_task(
+                        _timed_task("google_calendar",
+                                    self.context_gatherer.get_google_calendar_events(GOOGLE_CALENDAR_MAX_EVENTS))
+                    )
+            except Exception:
+                pass
+
             # Daemon self-notes (working context from prior sessions)
             try:
                 from config.app_config import DAEMON_NOTES_ENABLED, DAEMON_NOTES_MAX_PER_PROMPT
@@ -1116,6 +1127,7 @@ class UnifiedPromptBuilder:
                 "graph_context": gathered.get("graph_context", []),  # Knowledge graph relationships
                 "unresolved_threads": gathered.get("unresolved_threads", []),  # Proactive thread surfacing
                 "upcoming_schedule": gathered.get("upcoming_schedule", []),  # Schedule events (gated)
+                "google_calendar": gathered.get("google_calendar", []),  # Real-time Google Calendar events
                 "proactive_insights": gathered.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": gathered.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
@@ -1439,6 +1451,7 @@ class UnifiedPromptBuilder:
                 "graph_context": context.get("graph_context", []),  # Knowledge graph relationships
                 "unresolved_threads": context.get("unresolved_threads", []),  # Proactive thread surfacing
                 "upcoming_schedule": context.get("upcoming_schedule", []),  # Schedule events (gated)
+                "google_calendar": context.get("google_calendar", []),  # Real-time Google Calendar events
                 "proactive_insights": context.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": context.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
@@ -1480,6 +1493,7 @@ class UnifiedPromptBuilder:
                 "graph_context": [],
                 "unresolved_threads": [],
                 "upcoming_schedule": [],
+                "google_calendar": [],
                 "proactive_insights": [],
                 "web_search_results": None,
                 "memory_id_map": {}
@@ -1638,6 +1652,7 @@ class UnifiedPromptBuilder:
                 "graph_context": [],
                 "unresolved_threads": [],
                 "upcoming_schedule": [],
+                "google_calendar": [],
                 "proactive_insights": [],
                 "web_search_results": None,
                 "codebase_changes": codebase_changes or {},
@@ -1759,6 +1774,7 @@ class PromptBuilder:
                 "graph_context": [],
                 "unresolved_threads": [],
                 "upcoming_schedule": [],
+                "google_calendar": [],
                 "proactive_insights": [],
             }
             return self.unified_builder._assemble_prompt(context, user_input)

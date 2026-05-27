@@ -44,6 +44,21 @@ def _snake(s: str) -> str:
     return s.lower().strip("_-")
 
 
+def _is_ephemeral_relation(rel: str) -> bool:
+    """Check if a relation is ephemeral and should not be stored as a durable fact."""
+    try:
+        from config.app_config import PROFILE_EPHEMERAL_RELATIONS
+        ephemeral = frozenset(r.lower().strip() for r in PROFILE_EPHEMERAL_RELATIONS)
+    except ImportError:
+        ephemeral = frozenset()
+    return rel.lower().strip() in ephemeral
+
+
+def _is_boolean_noise(obj: str) -> bool:
+    """Reject facts where the object is just 'true'/'false'/'yes'/'no'."""
+    return obj.strip().lower() in {"true", "false", "yes", "no"}
+
+
 def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
     """Normalize and categorize extracted triple."""
     # Coerce to strings defensively; models sometimes emit numbers/bools
@@ -60,6 +75,16 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
 
     # Relation snake_case
     rel = _snake(rel)
+
+    # Block ephemeral predicates — transient state, not durable facts
+    if _is_ephemeral_relation(rel):
+        logger.debug(f"[LLM Facts] Blocked ephemeral relation: {subj}|{rel}|{obj}")
+        return None
+
+    # Block boolean-only values — no informational content
+    if _is_boolean_noise(obj):
+        logger.debug(f"[LLM Facts] Blocked boolean noise: {subj}|{rel}|{obj}")
+        return None
 
     # Auto-categorize
     category = categorize_relation(rel)
@@ -224,8 +249,7 @@ Output: [
 
 Input: "I built this app and I'm testing it now"
 Output: [
-  {{"subject": "user", "relation": "role", "object": "app builder", "category": "projects", "confidence": 0.85}},
-  {{"subject": "user", "relation": "current_activity", "object": "testing", "category": "projects", "confidence": 0.8}}
+  {{"subject": "user", "relation": "role", "object": "app builder", "category": "projects", "confidence": 0.85}}
 ]
 
 Input: "My name is Luke, I created you"
@@ -248,11 +272,18 @@ ENTITY FACTS (in addition to user facts):
 RULES:
 - Subject is "user" for personal facts, or the entity name for entity facts
 - Relation must be snake_case (e.g., "squat_max", "lives_in", "favorite_beer")
-- Extract facts the user states about themselves - be generous, not restrictive
+- Extract DURABLE facts — things that are true across sessions, not just right now
 - Confidence: 0.9+ for direct statements, 0.7-0.8 for inferred, <0.7 for uncertain
 - Do NOT extract questions or hypotheticals
 - IMPORTANT: If user introduces themselves or describes their role/activity, extract those as facts
 - TEMPORAL: Today's date is {today}. When the user mentions relative dates ("tomorrow", "next Monday", "the following day"), resolve them to absolute dates in the object field. Example: "I work tomorrow" on 2026-03-12 → object: "work on Thu 2026-03-13"
+- Do NOT extract transient/ephemeral state that changes constantly:
+  * current_activity, current_mood, current_feeling, feeling, feels
+  * woke_at, walked_to, showered, tidied, will_drive_to, greeting
+  * Generic "is", "was", "has", "thinks", "plans", "wants", "needs" predicates
+  * Boolean-value facts like "showered=true" or "has_energy=true"
+  * One-time actions: "asked_about", "tested", "walked_to"
+  These pollute the fact store. Only extract facts that remain true over time.
 {existing_facts}
 MESSAGES (conversation pairs, newest last):
 {messages}

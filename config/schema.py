@@ -822,6 +822,13 @@ class InternetActionsSection(BaseModel):
     # Headless browser
     playwright_enabled: bool = False
     playwright_timeout_s: int = Field(default=30, ge=5, le=120)
+    # Google OAuth2
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_token_path: str = "data/google_token.json"
+    google_calendar_enabled: bool = False
+    google_calendar_max_events: int = Field(default=10, ge=1, le=50)
+    google_calendar_lookahead_days: int = Field(default=7, ge=1, le=30)
     # Safety
     action_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     max_pending_actions: int = Field(default=5, ge=1, le=20)
