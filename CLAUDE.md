@@ -68,7 +68,7 @@ UnifiedPromptBuilder (thin orchestrator)
 
 Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (47 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
 
-Key values: `PROMPT_TOKEN_BUDGET_DEFAULT=15000` (floor 8K, ceiling 16K), `COSINE_SIMILARITY_THRESHOLD=0.25`, 9 intent types, dual fact budget (user=6, entity=4). Web search requires `TAVILY_API_KEY`. Currently disabled: synthesis generators, graph walk.
+Key values: `PROMPT_TOKEN_BUDGET_DEFAULT=15000` (floor 8K, ceiling 16K), `COSINE_SIMILARITY_THRESHOLD=0.25`, 9 intent types, dual fact budget (user=6, entity=4). Web search requires `TAVILY_API_KEY`. Google Calendar/Gmail require `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` env vars. Currently disabled: synthesis generators, graph walk.
 
 ## Module Structure
 
@@ -92,7 +92,10 @@ core/                         # Request orchestration
 │   ├── executors.py          # ActionExecutorRegistry: routes to type-specific handlers
 │   ├── telegram.py           # Telegram Bot API sender
 │   ├── discord.py            # Discord webhook sender
-│   ├── email.py              # SMTP email sender
+│   ├── email.py              # Gmail API primary + SMTP fallback email sender
+│   ├── google_auth.py        # Google OAuth2 manager (token persistence, refresh, scope checking)
+│   ├── google_calendar.py    # Fetch upcoming Google Calendar events (read-only, 5-min cache)
+│   ├── google_calendar_create.py  # Create Google Calendar events via Calendar API
 │   └── audit.py              # Append-only JSONL audit log (logs/actions_audit.jsonl)
 ├── agentic/                  # ReAct search loop
 │   ├── gate.py               # 4-tier agentic gate: AgenticDecision + evaluate_agentic_gate()
@@ -107,7 +110,7 @@ core/                         # Request orchestration
     ├── context_gatherer.py   # Mixin compositor
     ├── gatherer_web.py       # Web search
     ├── gatherer_memory.py    # Conversations, summaries, reflections, facts, profile
-    ├── gatherer_knowledge.py # Notes, docs, wiki, git, graph, threads, insights
+    ├── gatherer_knowledge.py # Notes, docs, wiki, git, graph, threads, insights, calendar
     ├── formatter.py          # Section assembly + session boundaries + content object rendering
     ├── hygiene.py            # Dedup, caps, backfill
     ├── proposal_filter.py    # Code proposal retrieval + filtering
@@ -190,7 +193,7 @@ gui/                          # Gradio web interface
 
 eval/                         # Prompt ablation & eval (Phases 1-2, 4-6)
 ├── schema.py                 # Pure data models
-├── section_registry.py       # 27-entry canonical section registry
+├── section_registry.py       # 31-entry canonical section registry
 ├── snapshots.py              # Capture + replay
 ├── variants.py               # LOO/AOI/bundle/reorder variant generation
 ├── corpus.py                 # 27-query seed corpus (3 per intent)

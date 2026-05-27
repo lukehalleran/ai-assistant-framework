@@ -9,7 +9,7 @@ Read this document to understand **how the system works as a whole**. For
 deep dives into specific subsystems, see the cross-references to companion
 docs throughout.
 
-**Last Updated**: 2026-05-13
+**Last Updated**: 2026-05-27
 
 **Related docs**:
 - `README.md` — external audience, feature highlights, getting started
@@ -54,6 +54,9 @@ docs throughout.
 27. [Production Deployment](#27-production-deployment)
 28. [Testing & Benchmarks](#28-testing--benchmarks)
 29. [Prompt Eval System](#29-prompt-eval-system)
+30. [Google OAuth2 & Calendar Integration](#30-google-oauth2--calendar-integration)
+31. [Ephemeral Fact Filtering](#31-ephemeral-fact-filtering)
+32. [Backup & Disaster Recovery](#32-backup--disaster-recovery)
 
 ---
 
@@ -66,14 +69,14 @@ system — all data stays on disk, API calls go to LLM providers only.
 ### Key Numbers
 
 ```
-Python lines:           ~143,000 (incl. tests)
-Python files:           392
-Test files:             173
-Test functions:         3,559
-ChromaDB collections:   13
-Prompt sections:        27 (conditional)
+Python lines:           ~162,000 (incl. tests)
+Python files:           456+
+Test files:             211
+Test functions:         3,800+
+ChromaDB collections:   14
+Prompt sections:        28 (conditional)
 Intent types:           9
-Parallel retrieval:     19 async tasks
+Parallel retrieval:     20 async tasks
 Memory tiers:           5
 Agentic tools:          19
 Gating latency:         ~200ms
@@ -118,10 +121,13 @@ core/                    # Request orchestration, context pipeline, agentic loop
 ├── best_of_handler.py   # Best-of-N, duel, ensemble generation
 ├── escalation_tracker.py# Crisis cooldown FSM (4 states)
 ├── response_planner.py  # Pre-answer planning + post-answer review gate
-├── actions/             # Internet write actions (email, telegram, discord) with human-in-the-loop
+├── actions/             # Internet write actions (email, telegram, discord, calendar) with human-in-the-loop
 │   ├── types.py         # ProposedAction, ActionType, ActionStatus models
 │   ├── executors.py     # ActionExecutorRegistry: dispatch to per-channel executors
-│   ├── email.py         # SMTP email executor
+│   ├── google_auth.py   # GoogleAuthManager: OAuth2 installed-app flow, token persistence, scope detection
+│   ├── google_calendar.py       # fetch_upcoming_events(): read-only Calendar API + 5-min cache
+│   ├── google_calendar_create.py # create_calendar_event(): Calendar API write with scope validation
+│   ├── email.py         # Gmail API (preferred) + SMTP fallback email executor
 │   ├── telegram.py      # Telegram Bot API executor
 │   ├── discord.py       # Discord webhook executor
 │   └── audit.py         # Action audit logging
@@ -138,7 +144,7 @@ core/                    # Request orchestration, context pipeline, agentic loop
     ├── gatherer_web.py      # WebSearchMixin: web search retrieval + trigger logic
     ├── gatherer_memory.py   # MemoryRetrievalMixin: 17 memory/summary/reflection/facts methods
     ├── gatherer_knowledge.py # KnowledgeRetrievalMixin: 16 knowledge retrieval methods
-    ├── formatter.py     # 26-section assembly + attention ordering + feature inventory
+    ├── formatter.py     # 28-section assembly + attention ordering + feature inventory
     ├── hygiene.py       # ContentHygiene: dedup, caps, backfill
     └── token_manager.py # Priority-based budget management
 
@@ -213,6 +219,7 @@ scripts/
 ├── bin/                       # PATH-prefix wrappers (rm, mv, rmdir, chmod, truncate, find)
 ├── agent_session_start.sh     # Pre-agent-session snapshot
 ├── agent_session_audit.sh     # Post-agent-session audit
+├── backup_data.sh             # Daily backup: tar + encrypted upload to Backblaze B2 via rclone
 └── ...
 
 processing/gate_system.py  # Multi-stage retrieval gating
@@ -244,10 +251,11 @@ User types: "How's my squat progress looking?"
     │     "squat" resolves to graph entity → neighbors: powerlifting, deadlift
     │     Expanded query: "How's my squat progress looking? powerlifting deadlift"
     │
-    ├─ 4. Parallel Retrieval (19 async tasks, 30s timeout)
+    ├─ 4. Parallel Retrieval (20 async tasks, 30s timeout)
     │     Recent conversations, semantic memories, facts, summaries,
     │     reflections, wiki, personal notes, graph context, threads,
-    │     proactive insights, procedural skills, web search (if triggered)...
+    │     proactive insights, procedural skills, Google Calendar events,
+    │     web search (if triggered)...
     │
     ├─ 5. Multi-Stage Gating
     │     Batch cosine similarity → cross-encoder reranking (~200ms)
@@ -258,7 +266,7 @@ User types: "How's my squat progress looking?"
     │     continuity + structure + graph bonus − staleness penalty
     │     Intent FACTUAL_RECALL boosts truth weight to 0.30
     │
-    ├─ 7. Prompt Assembly (27 conditional sections)
+    ├─ 7. Prompt Assembly (28 conditional sections)
     │     Token-budgeted: priority-based trimming, middle-out compression,
     │     LLM compression for oversized items
     │     High-signal sections placed at end for transformer attention
@@ -499,7 +507,7 @@ Two additional collections serve as reference stores: `obsidian_notes`
 (user's personal notes, synced from Obsidian vault) and `reference_docs`
 (uploaded documents + auto-seeded docs/ directory).
 
-### 13 ChromaDB Collections
+### 14 ChromaDB Collections
 
 All persistent memory is stored in ChromaDB via
 `multi_collection_chroma_store.py`, which wraps the ChromaDB client and
@@ -660,7 +668,7 @@ The `WikidataEntityMapper` embedding threshold was also raised from 0.60 to
 
 ### Parallel Retrieval Architecture
 
-When a prompt is being built, `builder.py` launches 19 async retrieval
+When a prompt is being built, `builder.py` launches 20 async retrieval
 tasks via `asyncio.gather()` with a 30-second timeout. Each task is
 implemented across three gatherer mixins (composed by `context_gatherer.py`)
 and fetches from a different source or collection:
@@ -682,6 +690,7 @@ and fetches from a different source or collection:
 | Personal notes | ChromaDB `obsidian_notes` | 5 | Gated at 0.30 threshold |
 | Git commits | ChromaDB `procedural` | 10 | Project history |
 | Web search | Tavily API | if triggered | Cached 72 hours |
+| Google Calendar | Calendar API (OAuth2) | 10 | 5-min module cache, read-only |
 | Codebase changes | git diff | first msg only | Session-start awareness |
 | User profile | UserProfile | 3000 tokens | Categorized facts |
 
@@ -885,9 +894,9 @@ final_score:  0.805
 **Files**: `core/prompt/formatter.py` (`_assemble_prompt()`), `core/prompt/hygiene.py` (`ContentHygiene`),
 `core/prompt/token_manager.py`
 
-### 27 Conditional Sections
+### 28 Conditional Sections
 
-The prompt is assembled from up to 27 sections, ordered by transformer
+The prompt is assembled from up to 28 sections, ordered by transformer
 attention patterns — high-signal, low-token sections are placed at the
 end for maximum attention weight:
 
@@ -911,6 +920,9 @@ end for maximum attention weight:
 [PROPOSED FEATURES]                — if available (code proposals)
 [KNOWLEDGE GRAPH]                  — if available (entity relationships)
 [UNRESOLVED THREADS]               — if available (open commitments)
+[UPCOMING SCHEDULE]                — if available (extracted schedule events, gated by intent)
+[GOOGLE CALENDAR]                  — if available (real-time via OAuth2, 5-min cache)
+[DAEMON SELF-NOTES]                — if available (Daemon's own working notes, caveat-labeled)
 [PROACTIVE INSIGHTS]               — if available (cross-domain)
 [USER PROFILE]                     — if available (categorized facts)
 [ACTIVE FEATURES]                  — always (compact feature inventory)
@@ -1122,7 +1134,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
 | Hacker News | hn.algolia.com | Free API, no auth required. Dispatched via `_dispatch_api_search`. |
 | Generate Document | DocumentGenerator | Structured markdown reports/summaries from web search + ChromaDB sources. Output to `documents/`. Also triggered directly by "write a report about X". |
 | Create Daemon Note | DaemonNotesManager | Structured self-notes for future sessions (decisions, risks, next steps). Stored in `daemon_self_notes` collection with `ground_truth: False`. |
-| Propose Action | `core/actions/` (types + executors) | Propose internet write action requiring user confirmation (email, telegram, discord, GitHub issues). GUI shows approve/reject buttons; execution only on explicit approval. |
+| Propose Action | `core/actions/` (types + executors) | Propose internet write action requiring user confirmation (email, telegram, discord, GitHub issues, calendar events). GUI shows approve/reject buttons; execution only on explicit approval. |
 | Done Searching | Control signal | Model declares search complete, triggers final synthesis |
 
 ### ReAct Loop Structure
@@ -1176,6 +1188,8 @@ never confabulates about its own capabilities. Checked backends:
 - **memory_search (ChromaDB)** — chroma_store presence
 - **wolfram / file_access / git_stats / github / expand_memory / recall_image** —
   manager presence or config flag
+- **calendar_create_event** — Google Calendar enabled + OAuth authenticated
+  + `calendar.events` scope granted
 
 ### Protocol Support
 
@@ -1196,6 +1210,12 @@ Supported tool names (native / XML marker):
 `file_operation` / `<file_operation>`, `git_stats` / `<git_stats>`,
 `github` / `<github>`, `recall_image` / `<recall_image>`,
 `propose_action` / `<propose_action>`.
+
+The `propose_action` tool schema includes calendar-specific parameters
+(`summary`, `description`, `start_time`, `end_time`, `time_zone`,
+`calendar_id`, `location`) that are forwarded to `ActionProposal.params`
+when `action_type == "calendar_create_event"`. Both native and XML
+protocol parsers in `protocols.py` handle this forwarding.
 
 XML alias patterns: `<web_search>query</web_search>` and
 `<web_search query="...">` are accepted as aliases for `<search>`.
@@ -1279,6 +1299,20 @@ Facts are extracted from conversation through a prioritized pipeline:
    for more complex triples.
 4. **Regex fallback** — Pattern-based extraction for common fact
    structures ("I am X", "my X is Y").
+
+### Pre-Storage Filters (Dual Layer)
+
+Before any extracted fact reaches the verification gate, two blocking
+filters run in both `fact_extractor.py` and `llm_fact_extractor.py`:
+
+- **Ephemeral predicate block** — Predicates in `PROFILE_EPHEMERAL_RELATIONS`
+  (current_feeling, current_mood, etc.) are dropped. These are transient
+  state, not durable facts.
+- **Boolean-only value block** — Objects that are just "true"/"false"/"yes"/"no"
+  carry no informational content and are dropped.
+
+See [Section 31: Ephemeral Fact Filtering](#31-ephemeral-fact-filtering)
+for the full dual-layer system including retrieval-time TTL expiry.
 
 ### Dual Budget System
 
@@ -2130,7 +2164,7 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `wikidata_import` | Wikidata entity resolution | `WIKIDATA_*` constants |
 | `graph_walk` | Biased Markov walk synthesis | `GRAPH_WALK_ENABLED`, `GRAPH_WALK_MIN_BRIDGE_EDGES` |
 | `uncertainty_fallback` | "I don't know" detection + retry | `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD` |
-| `internet_actions` | Human-in-the-loop write actions | `INTERNET_ACTIONS_ENABLED`, channel-specific settings |
+| `internet_actions` | Human-in-the-loop write actions + Google OAuth2 | `INTERNET_ACTIONS_ENABLED`, `GOOGLE_CALENDAR_ENABLED`, `INTERNET_ACTIONS_GOOGLE_CLIENT_ID/SECRET/TOKEN_PATH`, channel-specific settings |
 
 ### Environment Variable Overrides
 
@@ -2340,6 +2374,184 @@ and checks.
 
 ---
 
+## 30. Google OAuth2 & Calendar Integration
+
+**Files**: `core/actions/google_auth.py`, `core/actions/google_calendar.py`,
+`core/actions/google_calendar_create.py`, `core/actions/email.py`,
+`core/actions/executors.py`
+
+Daemon can read and write Google Calendar events and send emails via the
+Gmail API, all gated behind a unified Google OAuth2 layer.
+
+### Google OAuth2 (google_auth.py)
+
+`GoogleAuthManager` implements the installed-app OAuth2 flow for Google
+APIs. A lazy singleton is obtained via `get_google_auth()`, which reads
+`INTERNET_ACTIONS_GOOGLE_CLIENT_ID` and `INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET`
+from config.
+
+**Token persistence**: Credentials are stored at `data/google_token.json`
+(configurable via `INTERNET_ACTIONS_GOOGLE_TOKEN_PATH`). On load, the
+manager attempts automatic refresh via the stored refresh token.
+
+**Scope management**: The manager requests three scopes:
+- `gmail.send` — Send emails via Gmail API
+- `calendar.readonly` — Read calendar events
+- `calendar.events` — Create/modify calendar events
+
+`has_scope(scope_url)` checks whether the current token includes a specific
+scope. If the user later needs a scope that wasn't originally granted,
+scope-upgrade detection flags the mismatch and the user re-runs the auth
+flow: `python -m core.actions.google_auth`.
+
+**First-time auth**: Running `python -m core.actions.google_auth` opens
+the browser for OAuth consent. The resulting token (with refresh token) is
+persisted for all future sessions.
+
+### Google Calendar Read (google_calendar.py)
+
+`fetch_upcoming_events(max_events, lookahead_days)` fetches events from
+the user's primary Google Calendar via the Calendar REST API (httpx).
+
+- **Module-level cache**: Results cached for 5 minutes (`_CACHE_TTL_SECONDS=300`)
+  to avoid repeated API calls within a session.
+- **Graceful fallback**: Returns empty list if disabled, unconfigured,
+  unauthenticated, or on API error.
+- **Return format**: List of dicts with keys `{summary, start, end,
+  all_day, location}`.
+- **Config**: `GOOGLE_CALENDAR_ENABLED`, `GOOGLE_CALENDAR_MAX_EVENTS` (10),
+  `GOOGLE_CALENDAR_LOOKAHEAD_DAYS` (7).
+
+### Google Calendar Create (google_calendar_create.py)
+
+`create_calendar_event(proposal)` creates events via the Calendar API.
+Integrated into the action executor registry as `ActionType.CALENDAR_CREATE_EVENT`.
+
+- **Scope validation**: Checks `has_scope(calendar.events)` before
+  attempting the write. Returns a descriptive error if the scope is missing.
+- **Required params**: `summary`, `start_time`, `end_time` in
+  `proposal.params`. Optional: `description`, `calendar_id` (default
+  "primary"), `time_zone` (default "America/Chicago"), `location`.
+- **Human-in-the-loop**: Like all write actions, calendar event creation
+  goes through the propose-approve flow — the GUI shows approve/reject
+  buttons before execution.
+
+### Gmail API Email (email.py)
+
+`send_email()` was rewritten to use the Gmail API as the primary send path,
+with SMTP as a fallback only when Gmail OAuth is unconfigured or
+unauthenticated.
+
+**Key behavior**: If the Gmail API was attempted but failed (e.g., token
+expired, API error), the system does NOT fall back to SMTP. This prevents
+duplicate sends — once a Gmail attempt is made, that result is final.
+SMTP fallback only activates when Gmail was never attempted (no client ID
+configured, or no authenticated token).
+
+### Prompt Integration
+
+Calendar events are retrieved via `get_google_calendar_events()` in
+`gatherer_knowledge.py` as a parallel task in `builder.py`. The
+`[GOOGLE CALENDAR]` prompt section is rendered by `formatter.py` after
+`[UPCOMING SCHEDULE]` and before `[DAEMON SELF-NOTES]`, showing event
+title, start/end times, location, and all-day status.
+
+### Agentic Integration
+
+The `propose_action` tool schema in `types.py` includes calendar-specific
+fields (`summary`, `description`, `start_time`, `end_time`, `time_zone`,
+`calendar_id`, `location`). Both native and XML protocol parsers in
+`protocols.py` detect `action_type == "calendar_create_event"` and forward
+these fields to `ActionProposal.params`. Tool health reporting in `tools.py`
+includes `calendar_create_event` availability based on OAuth status and
+scope grants.
+
+---
+
+## 31. Ephemeral Fact Filtering
+
+**Files**: `memory/fact_extractor.py`, `memory/llm_fact_extractor.py`,
+`memory/memory_retriever.py`
+
+Ephemeral facts (current mood, current activity, etc.) are transient state
+that pollutes long-term memory retrieval if stored permanently. A dual-layer
+filtering system blocks them at extraction time and expires survivors at
+retrieval time.
+
+### Extraction-Time Blocking (Dual Layer)
+
+Both fact extraction pipelines apply identical blocking:
+
+1. **Ephemeral predicate filter** — Predicates in `PROFILE_EPHEMERAL_RELATIONS`
+   (config list including `current_feeling`, `current_mood`, `is_feeling`,
+   `currently_doing`, etc.) are blocked before storage. In `fact_extractor.py`,
+   the set is loaded once per extraction pass as a frozen set. In
+   `llm_fact_extractor.py`, `_is_ephemeral_relation()` performs the same
+   check per-fact.
+
+2. **Boolean-only value filter** — Facts where the object is just
+   "true"/"false"/"yes"/"no" are rejected as containing no informational
+   content. In `fact_extractor.py` this is an inline check; in
+   `llm_fact_extractor.py` it's the `_is_boolean_noise()` helper.
+
+### Retrieval-Time TTL Filter
+
+Even if ephemeral facts make it past extraction (e.g., they predate the
+filter), `memory_retriever.py` applies a TTL filter after scoring:
+
+- `_is_ephemeral_fact()` checks whether a fact triple's predicate is in
+  the ephemeral set (loaded from config, cached after first call).
+- Facts older than `PROFILE_EPHEMERAL_TTL_HOURS` (default 24h) are dropped
+  from retrieval results.
+- This prevents stale "current_mood: tired" facts from appearing in context
+  the next day.
+
+---
+
+## 32. Backup & Disaster Recovery
+
+**File**: `scripts/backup_data.sh`
+
+Daily encrypted backups of all critical data to Backblaze B2 cloud storage.
+
+### What Gets Backed Up
+
+```
+data/chroma_multi/          — ChromaDB multi-collection store
+data/chroma_db_v4/          — ChromaDB v4 production store
+data/corpus_v4.json         — Conversation corpus
+data/corpus/                — Corpus directory
+data/knowledge_graph.json   — Knowledge graph
+data/entity_aliases.json    — Entity alias table
+data/user_profile.json      — User profile
+data/claim_index.json       — Claim staleness index
+data/surfacing_history.json — Insight surfacing cooldown
+data/benchmark_results.json — Benchmark results
+data/benchmark_history.json — Benchmark history
+```
+
+### Backup Pipeline
+
+1. **Create tarball** — `tar czf` compresses all data paths into a
+   timestamped archive (`daemon_data_YYYYMMDD_HHMMSS.tar.gz`)
+2. **Upload to B2** — `rclone copy` uploads the tarball to an encrypted
+   Backblaze B2 remote (`b2-daemon-crypt:backups`). The `crypt` rclone
+   remote provides at-rest encryption.
+3. **Prune local** — Local backups older than 7 days are deleted
+4. **Prune remote** — Remote backups older than 7 days are pruned via
+   `rclone delete --min-age`
+
+### Scheduling
+
+Install as a daily cron job:
+```
+0 3 * * * /home/lukeh/Daemon_v1/scripts/backup_data.sh
+```
+
+Or run manually: `bash scripts/backup_data.sh`
+
+---
+
 ## Appendix: Component Interaction Map
 
 This shows the primary data flow relationships between major components.
@@ -2369,7 +2581,7 @@ Arrows indicate "calls" or "data flows to."
        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ PromptBuilder                                                │
-│  ├─ ContextGatherer (19 parallel retrieval tasks)            │
+│  ├─ ContextGatherer (20 parallel retrieval tasks)            │
 │  │    ├─ MemoryRetriever (ChromaDB queries)                  │
 │  │    ├─ GraphMemory (BFS traversal + query expansion)       │
 │  │    ├─ WebSearchManager (Tavily API)                       │
@@ -2379,7 +2591,7 @@ Arrows indicate "calls" or "data flows to."
 │  ├─ GateSystem (cosine + cross-encoder filtering)            │
 │  ├─ MemoryScorer (12-step composite scoring)                 │
 │  ├─ TokenManager (priority-based budget + compression)       │
-│  ├─ Formatter (26-section assembly)                          │
+│  ├─ Formatter (28-section assembly)                          │
 │  └─ EvalSnapshot (optional capture, gated by env var)        │
 └──────┬───────────────────────────────────────────────────────┘
        │
@@ -2416,7 +2628,8 @@ Arrows indicate "calls" or "data flows to."
 │  ├─ Knowledge Graph (data/knowledge_graph.json)              │
 │  ├─ Entity Aliases (data/entity_aliases.json)                │
 │  ├─ Claim Index (data/claim_index.json)                      │
-│  └─ Surfacing History (data/surfacing_history.json)           │
+│  ├─ Surfacing History (data/surfacing_history.json)           │
+│  └─ Google OAuth Token (data/google_token.json)              │
 └──────────────────────────────────────────────────────────────┘
 ```
 

@@ -283,6 +283,28 @@ _register(SectionDef(
 ))
 
 _register(SectionDef(
+    internal_key="upcoming_schedule",
+    header="[UPCOMING SCHEDULE]",
+    source_field="upcoming_schedule",
+    category=SectionCategory.RETRIEVED,
+    eligible_for_ablation=True,
+    structurally_required=False,
+    assembly_order=29,
+    notes="Schedule facts extracted from conversation (shift patterns, exams, appointments). Keyword-gated.",
+))
+
+_register(SectionDef(
+    internal_key="google_calendar",
+    header="[GOOGLE CALENDAR]",
+    source_field="google_calendar",
+    category=SectionCategory.RETRIEVED,
+    eligible_for_ablation=True,
+    structurally_required=False,
+    assembly_order=30,
+    notes="Real-time Google Calendar events via OAuth2. Cached 5 min. Read-only, minimal fields.",
+))
+
+_register(SectionDef(
     internal_key="daemon_self_notes",
     header="[DAEMON SELF-NOTES]",
     source_field="daemon_self_notes",

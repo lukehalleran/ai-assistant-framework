@@ -34,7 +34,7 @@ events to the UI in real time.
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing, nested XML support, github_available gating |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
 | `core/github_manager.py` | GitHub API tool: read-only `gh` CLI access (issues, PRs, actions, releases) |
-| `core/actions/` | Internet action types, executors (telegram/discord/email), audit log, pending store |
+| `core/actions/` | Internet action types, executors (telegram/discord/email/calendar), audit log, pending store, Google Calendar create (`google_calendar_create.py`), Google OAuth (`google_auth.py`) |
 | `core/orchestrator.py` | Trigger logic and lazy initialization of controller |
 
 ---
@@ -309,8 +309,15 @@ Config: DAEMON_NOTES_* constants; YAML section daemon_notes:
 Propose an internet write action requiring user confirmation before execution.
 
 ```
-Parameters: action_type (required), recipient (required), message (required),
-            reason (optional), subject (optional, for email)
+Parameters:
+  Common:    action_type (required), reason (required)
+  Messaging: recipient, message, subject (for email)
+  Calendar:  summary (event title), start_time (ISO 8601), end_time (ISO 8601),
+             description, time_zone (IANA, default America/Chicago),
+             calendar_id (default "primary"), location
+Note: "message" is required for messaging types but NOT for calendar events,
+      which use "summary" instead. Required fields are ["action_type", "reason"].
+
 Action types: send_telegram, send_discord, send_email,
               github_create_issue, github_comment_pr, calendar_create_event
 Execution: Creates an ActionProposal stored in PendingActionsStore.
@@ -348,10 +355,18 @@ Uses OpenAI-style function calling. LLM response includes
 conditionally included based on `github_available` parameter. Empty
 arguments for git_stats, github, and search_memory default to the
 original query rather than failing. `propose_action` is parsed as a
-native tool call. `NativeToolsHandler` also has a
-`_parse_text_tool_calls()` fallback that detects text-embedded action
-proposals when the LLM narrates a proposal instead of emitting a
-proper tool call.
+native tool call — the handler detects `calendar_create_event` action
+type and accepts `summary` as an alternative to `message`, forwarding
+all 7 calendar-specific params (`summary`, `description`, `start_time`,
+`end_time`, `time_zone`, `calendar_id`, `location`) into `action_params`.
+`NativeToolsHandler` also has a `_parse_text_tool_calls()` fallback
+that detects text-embedded action proposals when the LLM narrates a
+proposal instead of emitting a proper tool call (Pattern 1:
+`[propose_action: <type>]` followed by JSON). The text-based parser
+also handles calendar events with the same calendar-param forwarding.
+The `send_` prefix normalization in the text parser only applies to
+messaging types (telegram, discord, email), not to calendar or github
+action types.
 
 ### XML Markers
 
@@ -405,7 +420,10 @@ XML markers.
 `ToolExecutor.get_tool_health()` probes each tool backend and returns a
 multi-line status summary (AVAILABLE / UNAVAILABLE / DISABLED per tool).
 Checked backends: web_search, wiki_knowledge (FAISS), memory_search
-(ChromaDB), wolfram, file_access, git_stats, github, expand_memory, recall_image.
+(ChromaDB), wolfram, file_access, git_stats, github, expand_memory,
+recall_image, propose_action. The propose_action AVAILABLE line
+dynamically lists `calendar_create_event` when `GOOGLE_CALENDAR_ENABLED`
+is true (e.g. "send_email, send_telegram, send_discord, calendar_create_event").
 
 The status block is injected at three points under the header
 `[TOOL STATUS — DO NOT LIE ABOUT THESE]`:
@@ -642,6 +660,9 @@ INTERNET_ACTIONS_PLAYWRIGHT_ENABLED # Playwright browser actions gate
 INTERNET_ACTIONS_TTL                # Pending action time-to-live
 INTERNET_ACTIONS_MAX_PENDING        # Max pending actions before rejection
 INTERNET_ACTIONS_AUDIT_LOG          # Audit log path (default logs/actions_audit.jsonl)
+
+# Google Calendar (YAML: google_calendar:)
+GOOGLE_CALENDAR_ENABLED             # Feature gate for calendar_create_event
 ```
 
 ---
@@ -663,8 +684,8 @@ a **propose → confirm → execute** flow with mandatory human approval.
    decides.
 3. **Execute** — On approval, `ActionExecutorRegistry` routes the
    proposal to the type-specific executor (e.g. `telegram.py`,
-   `discord.py`, `email.py`). On rejection, the proposal is discarded
-   and an audit log entry is written.
+   `discord.py`, `email.py`, `google_calendar_create.py`). On rejection,
+   the proposal is discarded and an audit log entry is written.
 
 ### Audit
 
@@ -679,9 +700,9 @@ per line).
 | `send_telegram` | Telegram Bot API via httpx | Requires bot token + chat ID |
 | `send_discord` | Discord webhook via httpx | Requires webhook URL |
 | `send_email` | stdlib `smtplib` (run in thread) | Requires SMTP config |
+| `calendar_create_event` | Google Calendar API via httpx | Requires Google OAuth + `calendar.events` scope. API error responses include the response body for debugging. Config: `GOOGLE_CALENDAR_ENABLED`. Implementation in `core/actions/google_calendar_create.py`. |
 
 ### Stubs (Not Yet Implemented)
 
 - `github_create_issue` — create a GitHub issue
 - `github_comment_pr` — comment on a GitHub pull request
-- `calendar_create_event` — create a calendar event

@@ -28,7 +28,7 @@ eval/
   PLAN.md                  # This file
   README.md                # Phase 1 usage guide
   schema.py                # Pure data models (PromptSnapshot, SectionSnapshot, etc.)
-  section_registry.py      # 28-entry canonical section registry
+  section_registry.py      # 31-entry canonical section registry
   snapshots.py             # SnapshotCapture, SnapshotReplay, save/load
   no_store_generation.py   # EvalGenerator + EvalGenerationConfig
   persistence_guard.py     # PersistenceGuard + file/collection fingerprinting
@@ -94,7 +94,7 @@ tests/test_eval/
 
 ## Overview
 
-Daemon's prompt is assembled from 27 optional context sections, a separately-composed
+Daemon's prompt is assembled from 30 optional context sections, a separately-composed
 system prompt, and the user's query. The eval system answers: **which sections actually
 help, which hurt, and under what query conditions?**
 
@@ -289,7 +289,7 @@ Production code changes (minimal, gated):
 
 ### What Phase 1 Does
 
-1. **Section Registry** — canonical definition of all 27 prompt sections with:
+1. **Section Registry** — canonical definition of all 30 prompt sections with:
    - internal key, header text, source field, category
    - whether ablatable, structurally required, assembly order
    - validation that registry matches actual builder output
@@ -326,7 +326,7 @@ Production code changes (minimal, gated):
 
 ### Exit Criteria
 
-1. Section registry covers all 27 sections from actual builder output
+1. Section registry covers all 30 sections from actual builder output
 2. Snapshot capture saves both layers with structured + formatted content
 3. Snapshot stores system/config/model provenance
 4. Replay from post_hygiene produces matching exact hash (stable formatting)

@@ -249,13 +249,23 @@ def _compute_reflection_overlap(
 # Ephemeral fact detection
 # ---------------------------------------------------------------------------
 
-# Predicates that represent current/transient state (newest value is most relevant)
-_EPHEMERAL_PREDICATES = frozenset({
-    "current_mood", "current_feeling", "current_activity", "current_focus",
-    "current_goal", "current_location", "current_state",
-    "feels", "feeling", "mood", "doing", "working_on",
-    "expressed_feeling", "emotional_state",
-})
+# Use canonical ephemeral list from config (lazy-loaded, cached)
+_EPHEMERAL_PREDICATES_CACHED: frozenset | None = None
+
+
+def _get_ephemeral_predicates() -> frozenset:
+    """Load ephemeral predicates from config (cached after first call)."""
+    global _EPHEMERAL_PREDICATES_CACHED
+    if _EPHEMERAL_PREDICATES_CACHED is not None:
+        return _EPHEMERAL_PREDICATES_CACHED
+    try:
+        from config.app_config import PROFILE_EPHEMERAL_RELATIONS
+        _EPHEMERAL_PREDICATES_CACHED = frozenset(
+            r.lower().strip() for r in PROFILE_EPHEMERAL_RELATIONS
+        )
+    except ImportError:
+        _EPHEMERAL_PREDICATES_CACHED = frozenset()
+    return _EPHEMERAL_PREDICATES_CACHED
 
 
 def _is_ephemeral_fact(content: str) -> bool:
@@ -266,7 +276,7 @@ def _is_ephemeral_fact(content: str) -> bool:
     if len(parts) < 2:
         return False
     predicate = parts[1].strip().lower().replace(" ", "_")
-    return predicate in _EPHEMERAL_PREDICATES
+    return predicate in _get_ephemeral_predicates()
 
 
 def _metadata_fallback_search(
@@ -602,7 +612,33 @@ class MemoryRetriever:
             )
 
         results.sort(key=_score, reverse=True)
-        return results[:limit]
+
+        # TTL filter: drop ephemeral facts older than PROFILE_EPHEMERAL_TTL_HOURS
+        # These are transient state (current_mood, woke_at, etc.) that pollute retrieval
+        try:
+            from config.app_config import PROFILE_EPHEMERAL_TTL_HOURS
+            ttl_hours = PROFILE_EPHEMERAL_TTL_HOURS
+        except ImportError:
+            ttl_hours = 24
+        now = datetime.now()
+        filtered = []
+        for r in results:
+            content = r.get("content", "")
+            if _is_ephemeral_fact(content):
+                ts = r.get("timestamp")
+                try:
+                    if isinstance(ts, str):
+                        ts = datetime.fromisoformat(ts)
+                    if ts:
+                        if hasattr(ts, 'tzinfo') and ts.tzinfo is not None:
+                            ts = ts.replace(tzinfo=None)
+                        age_h = (now - ts).total_seconds() / 3600.0
+                        if age_h > ttl_hours:
+                            continue  # skip stale ephemeral fact
+                except (ValueError, TypeError, AttributeError):
+                    pass
+            filtered.append(r)
+        return filtered[:limit]
 
     async def get_reflections(self, limit: int = 2) -> List[Dict]:
         """Fetch recent reflections."""

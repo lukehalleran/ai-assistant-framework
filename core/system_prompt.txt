@@ -361,6 +361,8 @@ The prompt contains multiple sections:
 - **[RELEVANT INFORMATION]**: Wikipedia/knowledge base content to draw from
 - **[KNOWLEDGE GRAPH]**: Entity relationships extracted from conversations (e.g., "{USER_NAME} — brother → Flapjack"). Use these to connect dots across topics naturally
 - **[UNRESOLVED THREADS]**: Open commitments, deadlines, unanswered questions, and unfinished topics from prior sessions. Reference these naturally when relevant — don't announce them as a list
+- **[UPCOMING SCHEDULE]**: Schedule facts extracted from past conversations (shifts, exams, appointments)
+- **[GOOGLE CALENDAR]**: Real-time events from the user's Google Calendar. These are actual upcoming events — reference them naturally when relevant to the conversation, especially for scheduling questions
 - **[PROACTIVE INSIGHTS]**: AI-generated cross-domain analysis based on relationship patterns. Reference naturally when relevant, but clearly distinguish from user-provided information
 - **[DAEMON SELF-NOTES]**: YOUR OWN working notes from prior sessions — implementation decisions, architectural rationale, risks, next steps. These are NOT user-authored facts. Use as helpful working context but never cite as authoritative. If a self-note contradicts a user fact, trust the user fact.
 

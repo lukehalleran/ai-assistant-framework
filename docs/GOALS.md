@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-05-24
+**Last Updated**: 2026-05-27
 
 ---
 
@@ -91,7 +91,7 @@ These systems are complete and working. Listed here for context, not as active w
 
 - **Consolidation (2026-05)**: Codebase hardened — 3,800+ tests (0 failures), module extractions (agentic gate, handler helpers, prompt formatter, context gatherer), retrieval benchmarks stable (MRR 0.88), orchestrator decomposed
 
-- **Memory system**: 6 types (episodic, semantic, procedural, summary, meta, fact), 12 ChromaDB collections, modular components with Protocol contracts, thin coordinator
+- **Memory system**: 6 types (episodic, semantic, procedural, summary, meta, fact), 14 ChromaDB collections, modular components with Protocol contracts, thin coordinator
 - **Multi-stage gating**: FAISS → Cosine → Cross-Encoder reranking
 - **Intent classification**: 9 types, regex-first, per-intent weight/retrieval/gate overrides, STM refinement, intent-conditioned section gating (eval-driven)
 - **Truth scoring**: Evidence-based (TruthScorer + CorrectionDetector), replaces access-count system
@@ -116,7 +116,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **Thread surfacing**: Proactive open-thread detection with resolution tracking
 - **Session awareness**: Codebase diff + active features inventory at session start
 - **Web search**: Tavily integration with WEB_N citation markers, broad news decomposition, semantic similarity trigger layer
-- **Prompt eval system**: Snapshot/replay infrastructure, variant generation (LOO/AOI/bundle/reorder), pairwise judge, objective checks, 246 tests (`eval/`)
+- **Prompt eval system**: Snapshot/replay infrastructure, variant generation (LOO/AOI/bundle/reorder), pairwise judge, objective checks, 31-entry section registry, 246 tests (`eval/`)
 - **Production**: PyInstaller desktop build (v1.0.0 shipped 2026-04-08), Docker deployment, graceful shutdown
 - **Privacy**: All data local, API calls only for LLM generation, no telemetry
 - **Testing**: 3,559 tests across 173 test files, retrieval quality benchmarks with 30 seed memories and 19 test cases
@@ -125,11 +125,30 @@ These systems are complete and working. Listed here for context, not as active w
 
 ## Recent Completions (April-May 2026)
 
+### Google OAuth2 + Calendar + Gmail Integration (2026-05)
+- **Google OAuth2**: `core/actions/google_auth.py` — OAuth2 flow with 3 scopes (`gmail.send`, `calendar.readonly`, `calendar.events`). Token persistence at `data/google_token.json`, automatic refresh, scope-upgrade detection (re-auth when new scopes needed).
+- **Google Calendar read**: `core/actions/google_calendar.py` — real-time calendar events fetched via Calendar API (read-only), 5-min in-memory cache, minimal fields (title, start, end, location). Injected as `[GOOGLE CALENDAR]` prompt section via `gatherer_knowledge.py`.
+- **Google Calendar write**: `core/actions/google_calendar_create.py` — event creation via `propose_action` agentic tool (human-in-the-loop confirmation through GUI approve/reject). Routed via `ActionExecutorRegistry`.
+- **Gmail API send**: `core/actions/email.py` — Gmail API (`gmail.send` scope) as primary email transport, SMTP as fallback. Eliminates need for app passwords when Google OAuth2 is configured.
+- Config: `GOOGLE_CALENDAR_ENABLED`, `GOOGLE_CALENDAR_MAX_EVENTS`, `GOOGLE_CALENDAR_LOOKAHEAD_DAYS` in `internet_actions` YAML section
+
+### Ephemeral Fact Filtering (2026-05)
+- Dual-layer filtering for transient-state predicates (current_feeling, is, has, thinks, etc.)
+- **Extraction-time blocking**: `fact_extractor.py` drops ephemeral predicates during `extract_facts()`, preventing storage entirely
+- **Retrieval-time TTL expiry**: `memory_retriever.py` filters stored ephemeral facts older than `PROFILE_EPHEMERAL_TTL_HOURS` (default 24h)
+- LLM fact extractor (`llm_fact_extractor.py`) also blocks ephemeral relations
+- Same `PROFILE_EPHEMERAL_RELATIONS` set governs both layers
+
+### B2 Encrypted Backup (2026-05)
+- `scripts/backup_data.sh` — encrypted backup upload to Backblaze B2 via rclone (`b2-daemon-crypt:backups` remote)
+- Automatic remote pruning of backups older than configurable retention period
+- Designed for cron scheduling
+
 ### Internet Actions System (2026-05)
 - `core/actions/` subsystem: propose→confirm→execute flow for internet write actions
 - 6 action types: send_telegram, send_discord, send_email, github_create_issue, github_comment_pr, calendar_create_event
 - `propose_action` agentic tool (19th tool), GUI approve/reject buttons, JSONL audit log
-- Implemented executors: Telegram (Bot API), Discord (webhook), Email (SMTP). GitHub + calendar stubs.
+- Working executors: Telegram (Bot API), Discord (webhook), Email (Gmail API primary, SMTP fallback), Calendar event creation (Google Calendar API). GitHub stubs.
 - Config: `internet_actions` YAML section, `INTERNET_ACTIONS_*` app_config constants
 
 ### Agentic Gate Extraction (2026-05)

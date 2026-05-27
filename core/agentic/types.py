@@ -1027,14 +1027,42 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message body or issue/comment content."
+                    "description": "Message body or issue/comment content. For calendar events, use 'summary' instead."
                 },
                 "reason": {
                     "type": "string",
                     "description": "Why you are proposing this action (shown to user for context)."
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Event title (calendar_create_event only)."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Event description (calendar_create_event only)."
+                },
+                "start_time": {
+                    "type": "string",
+                    "description": "ISO 8601 datetime for event start, e.g. '2026-05-28T14:00:00-05:00' (calendar_create_event only)."
+                },
+                "end_time": {
+                    "type": "string",
+                    "description": "ISO 8601 datetime for event end (calendar_create_event only)."
+                },
+                "time_zone": {
+                    "type": "string",
+                    "description": "IANA timezone, e.g. 'America/Chicago' (calendar_create_event only). Defaults to America/Chicago."
+                },
+                "calendar_id": {
+                    "type": "string",
+                    "description": "Google Calendar ID (calendar_create_event only). Defaults to 'primary'."
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Event location (calendar_create_event only)."
                 }
             },
-            "required": ["action_type", "message", "reason"]
+            "required": ["action_type", "reason"]
         }
     }
 }

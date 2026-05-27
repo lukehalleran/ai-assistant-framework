@@ -1,6 +1,6 @@
 # Memory System Operations Guide
 
-*Last verified: 2026-05-13*
+*Last verified: 2026-05-27*
 
 Operational guide for Daemon's 5-tier hierarchical memory system. Covers the
 full lifecycle from query to retrieval to storage, the scoring algorithm with
@@ -32,7 +32,7 @@ resolved, and stale information is penalized in ranking.
 | File | Purpose |
 |------|---------|
 | `memory/memory_coordinator.py` | Thin orchestrator (~551 lines), creates all components, delegates to retriever/storage/shutdown |
-| `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks |
+| `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks, ephemeral fact TTL filter |
 | `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 7 additive bonuses/penalties) with intent overrides, graph boost, size penalty |
 | `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion, reflection embedding cleanup |
 | `memory/skill_activation.py` | SkillActivationPolicy (post-retrieval skill filter) + SkillCooldownStore (JSON-backed TTL) |
@@ -49,8 +49,8 @@ resolved, and stale information is penalized in ranking.
 ### Fact & Truth Pipeline
 | File | Purpose |
 |------|---------|
-| `memory/fact_extractor.py` | Multi-stage extraction: corrections > spaCy > REBEL > regex, dual budget |
-| `memory/llm_fact_extractor.py` | LLM-assisted triple extraction with entity support; accepts existing profile facts for relation reuse; attaches source_excerpt via keyword matching |
+| `memory/fact_extractor.py` | Multi-stage extraction: corrections > spaCy > REBEL > regex, dual budget. Pre-canonicalization filters: ephemeral predicate blocking (config-driven), boolean-only value rejection |
+| `memory/llm_fact_extractor.py` | LLM-assisted triple extraction with entity support; accepts existing profile facts for relation reuse; attaches source_excerpt via keyword matching. `_normalize_triple()` applies `_is_ephemeral_relation()` + `_is_boolean_noise()` guards; LLM prompt explicitly discourages transient state extraction |
 | `memory/fact_verification.py` | Pre-storage conflict checking: ephemeral > candidates > trust > LLM adjudication |
 | `memory/truth_scorer.py` | Stateless truth computation: initial score + adjustments + time decay |
 | `memory/claim_tracker.py` | Claim extraction, hashing, reverse index, staleness cascade |
@@ -350,6 +350,28 @@ This replaced an earlier formula (`0.7*confidence + 0.3*recency`) that
 ignored the ChromaDB semantic similarity score entirely, causing facts to
 be ranked primarily by extraction confidence rather than query relevance.
 
+### Ephemeral Fact TTL in Retrieval
+
+After scoring and sorting, `get_facts()` applies a TTL filter that drops
+ephemeral facts older than `PROFILE_EPHEMERAL_TTL_HOURS` (default 24h).
+This prevents stale transient state (e.g., yesterday's mood, old wake-up
+times) from polluting retrieval results.
+
+```
+For each ranked fact:
+  1. _is_ephemeral_fact(content) — parses "subject | predicate | object",
+     checks predicate against _get_ephemeral_predicates() (config-driven,
+     lazy-loaded from PROFILE_EPHEMERAL_RELATIONS, cached after first call)
+  2. If ephemeral: parse timestamp, strip timezone if aware → compare age
+     against ttl_hours. If older → drop from results.
+  3. Non-ephemeral facts pass through unaffected.
+```
+
+The `_get_ephemeral_predicates()` function replaces an earlier hardcoded
+`_EPHEMERAL_PREDICATES` frozenset, so the retriever, fact extractors, and
+cross-collection deduplicator all share the same canonical list from
+`PROFILE_EPHEMERAL_RELATIONS` in `app_config.py`.
+
 ---
 
 ## Fact Pipeline
@@ -368,12 +390,41 @@ FactExtractor.extract_facts()
   │     → Auggie | has_pet | Biscuit       (entity fact, confidence 0.65)
   │     → Biscuit | is_a | golden retriever (entity fact, confidence 0.70)
   ├─ Stage 3: REBEL neural extraction (if available)
-  └─ Stage 4: Regex fallback (if < 5 triples)
+  ├─ Stage 4: Regex fallback (if < 5 triples)
+  │
+  └─ Pre-storage Filters (applied to every triple before budget/dedup):
+        ├─ Ephemeral predicate filter: predicate checked against
+        │     PROFILE_EPHEMERAL_RELATIONS config list (loaded once per call).
+        │     Blocks transient state like current_mood, woke_up_time, greeting, etc.
+        │     Applied before canonicalization so raw relation names are caught.
+        └─ Boolean noise filter: objects that are just "true"/"false"/"yes"/"no"
+              are dropped — no informational content.
 
 Dual budget applied:
   User facts (cap 6): [user | brother | Auggie]
   Entity facts (cap 4): [Auggie | has_pet | Biscuit, Biscuit | is_a | golden retriever]
 ```
+
+### LLM Fact Extraction Filtering
+
+`llm_fact_extractor.py` applies the same ephemeral and boolean guards during
+`_normalize_triple()`, which runs on every triple the LLM returns:
+
+1. **`_is_ephemeral_relation(rel)`** — loads `PROFILE_EPHEMERAL_RELATIONS` from
+   config, rejects matching predicates.
+2. **`_is_boolean_noise(obj)`** — rejects objects that are just "true"/"false"/"yes"/"no".
+
+Both checks happen after pronoun normalization and snake_case conversion but
+before category classification, so the triple is discarded early.
+
+The LLM prompt itself explicitly discourages transient state extraction. The
+RULES section lists examples of ephemeral predicates to avoid:
+`current_activity`, `current_mood`, `current_feeling`, `feeling`, `feels`,
+`woke_at`, `walked_to`, `showered`, `tidied`, `will_drive_to`, `greeting`,
+and generic predicates like `is`, `was`, `has`, `thinks`, `plans`, `wants`,
+`needs`. Boolean-value facts (e.g., "showered=true", "has_energy=true") are
+also called out. The few-shot examples were updated to remove ephemeral
+patterns (e.g., "current_activity: testing" was removed).
 
 ### Verification
 
@@ -811,7 +862,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 ### Profile Namespace
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `PROFILE_EPHEMERAL_RELATIONS` | list | Relations subject to TTL expiry (current_feeling, etc.) |
-| `PROFILE_EPHEMERAL_TTL_HOURS` | 24 | Hours before ephemeral facts expire |
+| `PROFILE_EPHEMERAL_RELATIONS` | list | Canonical source for ephemeral predicate definitions. Used by: fact_extractor (extraction blocking), llm_fact_extractor (extraction blocking), memory_retriever (TTL filter), cross_deduplicator (dedup skip) |
+| `PROFILE_EPHEMERAL_TTL_HOURS` | 24 | Hours before ephemeral facts are dropped from retrieval results (memory_retriever TTL filter) |
 | `PROFILE_EPHEMERAL_MAX_HISTORY` | 20 | Max historical entries kept per ephemeral relation |
 | `PROFILE_CATEGORY_SOFT_CAP` | 200 | Max facts per category before pruning kicks in |

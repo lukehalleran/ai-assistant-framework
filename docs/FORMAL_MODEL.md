@@ -1,6 +1,6 @@
 # Formal Model: Daemon RAG Agent
 
-**Last verified against codebase**: 2026-05-13
+**Last verified against codebase**: 2026-05-27
 
 ## 1. Primitive Sets
 
@@ -9,7 +9,7 @@ Let the following sets be given:
 - **Q** — the set of all natural-language query strings (user inputs)
 - **R** — the set of all natural-language response strings (agent outputs)
 - **D** — the set of all documents (memory entries), where each d in D is a tuple d = (content, metadata, embedding)
-- **T** — the set of all tool calls (web search, memory search, memory expansion, code execution, Wolfram Alpha, file access, git stats, GitHub API, propose_action)
+- **T** — the set of all tool calls (web search, memory search, memory expansion, code execution, Wolfram Alpha, file access, git stats, GitHub API, propose_action, calendar_create_event)
 - **A = R U T** — the action space (the agent either responds or invokes a tool)
 
 ---
@@ -26,7 +26,7 @@ where:
 
 | Symbol | Name | Type | Code |
 |--------|------|------|------|
-| C_t | Corpus | P(D) — typed multiset of documents | ChromaDB (13 collections) + JSON corpus |
+| C_t | Corpus | P(D) — typed multiset of documents | ChromaDB (14 collections) + JSON corpus |
 | G_t | Knowledge Graph | (V, E) — directed labeled graph | `graph_memory.py` (NetworkX DiGraph) + `entity_resolver.py` (alias table) |
 | H_t | Conversation History | (Q x R)* — ordered sequence of past turns | Recent corpus entries + STM window |
 | Theta_t | Conversation Thread | {thread_id, depth, topic, is_heavy} | `thread_manager.py` |
@@ -108,7 +108,7 @@ Example: "what about my brother" -> "what about my brother Auggie Mom Flapjack"
 candidates : X x C -> P(D)
 ```
 
-20 parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
+20+ parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
 - Conversations (recent by time + semantic by expanded query)
 - Facts (user profile: hybrid 2/3 semantic + 1/3 recent)
 - Summaries (recent + semantic, separate)
@@ -120,6 +120,9 @@ candidates : X x C -> P(D)
 - Open threads (priority-ranked)
 - Proactive cross-domain insights
 - Web search (Tavily API, if triggered and available)
+- Google Calendar events (OAuth2 Calendar API, 5-min cache, read-only)
+
+**External data sources**: Google Calendar events are fetched via OAuth2 (`core/actions/google_calendar.py`) using `calendar.readonly` scope, cached for 5 minutes, and injected as the `[GOOGLE CALENDAR]` prompt section. Calendar event creation is a write action routed through `propose_action` (human-in-the-loop confirmation). Email sending uses Gmail API (`gmail.send` scope) as primary transport with SMTP fallback (`core/actions/email.py`). OAuth2 token management (persistence, refresh, scope-upgrade detection) handled by `core/actions/google_auth.py` with 3 scopes: `gmail.send`, `calendar.readonly`, `calendar.events`.
 
 **Code**: `builder.py:build_prompt()` launches all tasks; retrieval methods split across `gatherer_memory.py`, `gatherer_knowledge.py`, and `gatherer_web.py` (composed via `context_gatherer.py`).
 
@@ -236,6 +239,17 @@ The final retrieval returns: rho(x, C) = top-K documents sorted by sigma descend
 
 **Code**: `memory_scorer.py` -> `rank_memories()`
 
+### 4.4 Ephemeral Fact Filtering
+
+Ephemeral predicates (current_feeling, is, has, thinks, etc.) represent transient state that should not persist as durable facts. Two filtering layers:
+
+1. **Extraction-time blocking** (`fact_extractor.py`): Triples with predicates in `PROFILE_EPHEMERAL_RELATIONS` are silently dropped during `extract_facts()`, preventing storage entirely.
+2. **Retrieval-time TTL expiry** (`memory_retriever.py`): Facts with ephemeral predicates that were stored before extraction-time blocking was added are filtered at retrieval time if older than `PROFILE_EPHEMERAL_TTL_HOURS` (default 24h). The age is computed from the document timestamp.
+
+The same `PROFILE_EPHEMERAL_RELATIONS` set governs both layers, ensuring consistency. The LLM fact extractor (`llm_fact_extractor.py`) also checks `_is_ephemeral_relation()` and skips ephemeral triples.
+
+**Code**: `memory/fact_extractor.py` (extraction blocking), `memory/memory_retriever.py` (retrieval TTL), `memory/llm_fact_extractor.py` (LLM extraction blocking)
+
 ---
 
 ## 5. Prompt Construction
@@ -248,7 +262,7 @@ where P is the **prompt space** (system prompt + context + query, token-budgeted
 
 The token budget is **model-aware**: computed as `min(context_window * 0.25, ceiling)` clamped to `[floor, ceiling]`, with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps. Post-budget **floor guarantees** ensure critical sections survive trimming: recent conversations (min 5), summaries (min 10), reflections (min 10). The agentic controller enforces its own budget on accumulated search context (`context_budget_tokens` default 8000) and trims low-value sections from the final prompt if total exceeds ceiling.
 
-Assembly produces an ordered sequence of 28 conditional sections:
+Assembly produces an ordered sequence of 30 conditional sections:
 
 ```
 prompt = [
@@ -271,8 +285,10 @@ prompt = [
     [PROPOSED FEATURES]                      // if available (code proposals)
     [KNOWLEDGE GRAPH]                        // if available (entity relationship sentences)
     [UNRESOLVED THREADS]                     // if available (open commitments/deadlines)
-    [PROACTIVE INSIGHTS]                     // if available (cross-domain connections)
     [UPCOMING SCHEDULE]                      // if available (schedule facts, intent-gated)
+    [GOOGLE CALENDAR]                        // if available (real-time Google Calendar events, 5-min cache)
+    [DAEMON SELF-NOTES]                      // if available (working notes from prior sessions)
+    [PROACTIVE INSIGHTS]                     // if available (cross-domain connections)
     [USER PROFILE]                           // if available (categorized facts + source excerpts + anti-confabulation instruction)
     [ACTIVE FEATURES]                        // always (compact feature inventory)
     [CODEBASE CHANGES SINCE LAST SESSION]    // first message only (git diff since last session)
@@ -389,7 +405,7 @@ Session-gated: `expand_count <= EXPAND_MAX_PER_SESSION` (default 3). Cached per 
 
 The agentic search controller is decomposed into three classes:
 - `AgenticSearchController` (`core/agentic/controller.py`) — main loop orchestration, prompt building, model interaction
-- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 19 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, signal done)
+- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 19 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, calendar_create_event, signal done)
 - `AgenticFormatter` (`core/agentic/formatters.py`) — pure stateless formatting for all result types (conversations, memories, web results, etc.)
 
 Protocol dispatch uses `detect_protocol()` (`core/agentic/protocols.py`) to choose between `NativeToolsHandler` (OpenAI/Anthropic function calling) and `XMLMarkerHandler` (local models using XML tags) based on model name. Both handlers parse responses into `SearchDecision` objects with a shared interface.
@@ -446,6 +462,7 @@ delta(s, q, r):
     // OPTIONAL (if FACTS_EXTRACT_EACH_TURN enabled, default: disabled)
     if FACTS_EXTRACT_EACH_TURN:
         facts <- extract_facts(q)                                            // regex + LLM
+        facts <- filter_ephemeral(facts)                                     // block ephemeral predicates at extraction time
         for fact in facts:
             verdict <- fact_verify(fact, s.C)                                // conflict detection
             if verdict != REJECT:
@@ -480,7 +497,7 @@ delta_shutdown(s):
     summaries <- consolidate(s.H, block_size=N)              // LLM compression of N-turn blocks
     s'.C <- s.C + summaries
 
-    // Step 2: Session facts (regex-based, last 10 turns)
+    // Step 2: Session facts (regex-based, last 10 turns, ephemeral predicates blocked)
     facts_regex <- extract_session_facts(s.H[-10:])
     for fact in facts_regex:
         verdict <- fact_verify(fact, s'.C)                    // conflict detection
@@ -490,7 +507,7 @@ delta_shutdown(s):
             s'.C <- s'.C + {fact}
             mark_old_as_superseded(s'.C, fact)                // metadata flag, no deletion
 
-    // Step 3: LLM-assisted facts (last 12 turns, batch verified)
+    // Step 3: LLM-assisted facts (last 12 turns, batch verified, ephemeral predicates blocked)
     facts_llm <- llm_extract_triples(s.H[-12:])
     verdicts <- fact_verify_batch(facts_llm, s'.C)
     for (fact, verdict) in zip(facts_llm, verdicts):
@@ -546,7 +563,7 @@ delta_shutdown(s):
 
 ## 9. Memory Types as a Typed Corpus
 
-The corpus C is a **typed multiset** partitioned across 13 ChromaDB collections in 8 categories:
+The corpus C is a **typed multiset** partitioned across 14 ChromaDB collections in 8 categories:
 
 ```
 C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U  C_meta  U  C_synthesis  U  C_visual
@@ -826,7 +843,7 @@ Agent(q, s_t) =
     let q'      = expand(q, s_t.G)                   in    // expand (graph-augmented query)
     let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (20 parallel retrievals)
     let pi_plan = plan(q, x) if should_plan(x)      in    // plan response (parallel with remember)
-    let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (28-section prompt + plan injection)
+    let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (30-section prompt + plan injection)
     let r       = generate_or_search(p)              in    // act (LLM + optional agentic loop)
     let r'      = review_or_retry(r, pi_plan)        in    // review (post-answer gate + optional retry)
     let Pi      = provenance(r', p, session)          in    // audit (provenance metadata)
@@ -845,7 +862,7 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | Q | Query space | User input strings |
 | R | Response space | Agent output strings |
 | S | State space | Distributed across all persistence |
-| C | Corpus (typed multiset, 13 collections) | ChromaDB + corpus JSON |
+| C | Corpus (typed multiset, 14 collections) | ChromaDB + corpus JSON |
 | G | Knowledge graph | `graph_memory.py` + `entity_resolver.py` |
 | H | Conversation history | Recent corpus + STM |
 | Theta | Conversation thread state | `thread_manager.py` |
@@ -853,7 +870,7 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | U | User model | `user_profile.py` |
 | E | Escalation FSM state | `escalation_tracker.py` |
 | X | Context space | `ContextResult` dataclass in `context_pipeline.py` |
-| P | Prompt space (28 sections) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
+| P | Prompt space (30 context sections + system prompt; 31 registry entries) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
 | A = R U T | Action space | Response or tool call |
 | phi | Context function (8 integer stages + 2 half-stages) | `context_pipeline.py` |
 | rho_iota | Retrieval function (20 parallel tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |

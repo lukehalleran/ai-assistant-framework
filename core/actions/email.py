@@ -2,14 +2,18 @@
 # core/actions/email.py
 
 Module Contract
-- Purpose: Send emails via SMTP.
+- Purpose: Send emails via Gmail API (preferred) or SMTP (fallback).
 - Public interface:
   - send_email(proposal: ActionProposal) -> ActionResult
-- Dependencies: aiosmtplib (async SMTP), or fallback to stdlib smtplib in thread
-- Side effects: Sends an email via configured SMTP server.
+  - _try_gmail_send(proposal, recipient, message) -> ActionResult | None
+  - _smtp_send(proposal, recipient, message) -> ActionResult
+- Dependencies: httpx (Gmail API), smtplib (SMTP fallback), core.actions.google_auth
+- Side effects: Sends an email. Gmail API attempted first; SMTP only if Gmail unconfigured.
+  No SMTP fallback after a Gmail API attempt (prevents duplicate sends).
 """
 
 import logging
+from typing import Optional
 
 from core.actions.types import ActionProposal, ActionResult
 
@@ -17,28 +21,17 @@ logger = logging.getLogger("actions_email")
 
 
 async def send_email(proposal: ActionProposal) -> ActionResult:
-    """Send an email via SMTP.
+    """Send an email via Gmail API or SMTP fallback.
+
+    Tries Gmail API first. Falls back to SMTP only if Gmail OAuth is
+    unconfigured or unauthenticated.  If Gmail API was attempted but
+    failed, does NOT fall back to SMTP (prevents duplicate sends).
 
     Expects proposal.params to contain:
         - message (str): Email body text.
         - recipient (str): Recipient email address.
         - subject (str, optional): Email subject line.
     """
-    from config.app_config import (
-        INTERNET_ACTIONS_SMTP_HOST,
-        INTERNET_ACTIONS_SMTP_PORT,
-        INTERNET_ACTIONS_SMTP_USER,
-        INTERNET_ACTIONS_SMTP_PASSWORD,
-        INTERNET_ACTIONS_SMTP_FROM,
-    )
-
-    if not INTERNET_ACTIONS_SMTP_HOST:
-        return ActionResult(
-            action_id=proposal.action_id,
-            success=False,
-            message="SMTP not configured. Set smtp_host in config.",
-        )
-
     recipient = proposal.params.get("recipient", "")
     if not recipient or "@" not in recipient:
         return ActionResult(
@@ -55,22 +48,144 @@ async def send_email(proposal: ActionProposal) -> ActionResult:
             message="No message content to send.",
         )
 
+    # Try Gmail API first
+    gmail_result = await _try_gmail_send(proposal, recipient, message_text)
+    if gmail_result is not None:
+        # Gmail was attempted — return result regardless of success/failure
+        return gmail_result
+
+    # Gmail not configured/authenticated — fall back to SMTP
+    return await _smtp_send(proposal, recipient, message_text)
+
+
+async def _try_gmail_send(
+    proposal: ActionProposal,
+    recipient: str,
+    message: str,
+) -> Optional[ActionResult]:
+    """Try sending via Gmail API.
+
+    Returns:
+        ActionResult(success=True)  — Gmail sent successfully.
+        ActionResult(success=False) — Gmail attempted but failed (no SMTP fallback).
+        None                        — Gmail not configured; caller should try SMTP.
+    """
+    from config.app_config import (
+        INTERNET_ACTIONS_GOOGLE_CLIENT_ID,
+        INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET,
+        INTERNET_ACTIONS_GOOGLE_TOKEN_PATH,
+        INTERNET_ACTIONS_SMTP_FROM,
+        INTERNET_ACTIONS_SMTP_USER,
+    )
+
+    # Not configured → return None so caller falls back to SMTP
+    if not INTERNET_ACTIONS_GOOGLE_CLIENT_ID or not INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET:
+        return None
+
+    from core.actions.google_auth import GoogleAuthManager
+
+    auth = GoogleAuthManager(
+        client_id=INTERNET_ACTIONS_GOOGLE_CLIENT_ID,
+        client_secret=INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET,
+        token_path=INTERNET_ACTIONS_GOOGLE_TOKEN_PATH,
+    )
+
+    if not auth.is_authenticated:
+        return None
+
+    creds = auth.get_credentials()
+    if not creds:
+        return ActionResult(
+            action_id=proposal.action_id,
+            success=False,
+            message="Gmail token refresh failed.",
+        )
+
+    # Build RFC 5322 message
+    import base64
+    import email.message
+
+    from_addr = INTERNET_ACTIONS_SMTP_FROM or INTERNET_ACTIONS_SMTP_USER
+    subject = proposal.params.get("subject", "Message from Daemon")
+
+    msg = email.message.EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = recipient
+    msg.set_content(message)
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                headers={"Authorization": f"Bearer {creds.token}"},
+                json={"raw": raw},
+                timeout=15.0,
+            )
+
+        if resp.status_code == 200:
+            logger.info(f"[Gmail] Sent to {recipient}: {subject}")
+            return ActionResult(
+                action_id=proposal.action_id,
+                success=True,
+                message=f"Gmail sent to {recipient} with subject: {subject}",
+            )
+
+        logger.warning(f"[Gmail] API error: HTTP {resp.status_code}")
+        return ActionResult(
+            action_id=proposal.action_id,
+            success=False,
+            message=f"Gmail API error: HTTP {resp.status_code}",
+        )
+
+    except Exception as e:
+        logger.error(f"[Gmail] Send failed: {e}")
+        return ActionResult(
+            action_id=proposal.action_id,
+            success=False,
+            message=f"Gmail send failed: {e}",
+        )
+
+
+async def _smtp_send(
+    proposal: ActionProposal,
+    recipient: str,
+    message: str,
+) -> ActionResult:
+    """Send via SMTP. Used as fallback when Gmail is not configured."""
+    from config.app_config import (
+        INTERNET_ACTIONS_SMTP_HOST,
+        INTERNET_ACTIONS_SMTP_PORT,
+        INTERNET_ACTIONS_SMTP_USER,
+        INTERNET_ACTIONS_SMTP_PASSWORD,
+        INTERNET_ACTIONS_SMTP_FROM,
+    )
+
+    if not INTERNET_ACTIONS_SMTP_HOST:
+        return ActionResult(
+            action_id=proposal.action_id,
+            success=False,
+            message="SMTP not configured. Set smtp_host in config.",
+        )
+
     subject = proposal.params.get("subject", "Message from Daemon")
     from_addr = INTERNET_ACTIONS_SMTP_FROM or INTERNET_ACTIONS_SMTP_USER
 
-    # Build email
     import email.message
     msg = email.message.EmailMessage()
     msg["Subject"] = subject
     msg["From"] = from_addr
     msg["To"] = recipient
-    msg.set_content(message_text)
+    msg.set_content(message)
 
     try:
         import asyncio
         import smtplib
 
-        # Use stdlib smtplib in a thread (aiosmtplib may not be installed)
         def _send():
             with smtplib.SMTP(INTERNET_ACTIONS_SMTP_HOST, INTERNET_ACTIONS_SMTP_PORT) as server:
                 server.starttls()
