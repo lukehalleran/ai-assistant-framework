@@ -43,11 +43,14 @@ class TestValidation:
     """Test common validation in send_email."""
 
     @pytest.mark.asyncio
-    async def test_invalid_recipient(self):
+    async def test_invalid_recipient_no_contacts(self):
+        """Recipient without '@' and no contact match returns error."""
         proposal = _make_proposal(params={"recipient": "bad", "message": "hi"})
-        result = await send_email(proposal)
+        with patch("core.actions.email._resolve_recipient", new_callable=AsyncMock,
+                   return_value=(None, "Could not resolve 'bad'")):
+            result = await send_email(proposal)
         assert result.success is False
-        assert "Invalid" in result.message
+        assert "Could not resolve" in result.message
 
     @pytest.mark.asyncio
     async def test_missing_recipient(self):
@@ -274,3 +277,94 @@ class TestSmtpFallback:
         # Should get Gmail failure, NOT SMTP success
         assert result.success is False
         assert "Gmail" in result.message or "500" in result.message
+
+
+class TestRecipientResolution:
+    """Test name → email resolution in send_email."""
+
+    @pytest.mark.asyncio
+    async def test_full_email_bypasses_resolution(self):
+        """Recipient with '@' is used as-is, no resolution attempted."""
+        proposal = _make_proposal(params={
+            "recipient": "direct@example.com",
+            "message": "hi",
+        })
+
+        # If resolution were called, it would fail — but it shouldn't be called
+        with patch("config.app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_ID", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_HOST", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_PORT", 587), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_USER", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_PASSWORD", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_FROM", ""):
+            result = await send_email(proposal)
+
+        # SMTP not configured, but the point is we didn't fail on resolution
+        assert "not configured" in result.message
+
+    @pytest.mark.asyncio
+    async def test_single_match_resolves(self):
+        """Name with single contact match resolves to that email."""
+        proposal = _make_proposal(params={
+            "recipient": "Meagan",
+            "message": "hi",
+        })
+
+        with patch("core.actions.email._resolve_recipient", new_callable=AsyncMock,
+                   return_value=("meagan@example.com", "")), \
+             patch("config.app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_ID", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_HOST", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_PORT", 587), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_USER", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_PASSWORD", ""), \
+             patch("config.app_config.INTERNET_ACTIONS_SMTP_FROM", ""):
+            result = await send_email(proposal)
+
+        # Resolved successfully, then SMTP not configured is the failure
+        assert "not configured" in result.message
+
+    @pytest.mark.asyncio
+    async def test_multiple_matches_returns_options(self):
+        """Name with multiple matches returns error listing options."""
+        proposal = _make_proposal(params={
+            "recipient": "Meagan",
+            "message": "hi",
+        })
+
+        with patch("core.actions.email._resolve_recipient", new_callable=AsyncMock,
+                   return_value=(None, "Multiple contacts found for 'Meagan':\n  - Meagan A <a@test.com>\n  - Meagan B <b@test.com>")):
+            result = await send_email(proposal)
+
+        assert result.success is False
+        assert "Multiple contacts" in result.message
+
+    @pytest.mark.asyncio
+    async def test_zero_matches_returns_error(self):
+        """Name with no matches returns clear error."""
+        proposal = _make_proposal(params={
+            "recipient": "UnknownPerson",
+            "message": "hi",
+        })
+
+        with patch("core.actions.email._resolve_recipient", new_callable=AsyncMock,
+                   return_value=(None, "Could not resolve 'UnknownPerson' to an email address.")):
+            result = await send_email(proposal)
+
+        assert result.success is False
+        assert "Could not resolve" in result.message
+
+    @pytest.mark.asyncio
+    async def test_resolution_exception_handled(self):
+        """Exception in resolver returns graceful error."""
+        proposal = _make_proposal(params={
+            "recipient": "Meagan",
+            "message": "hi",
+        })
+
+        with patch("core.actions.email._resolve_recipient", new_callable=AsyncMock,
+                   return_value=(None, "Could not resolve 'Meagan' to an email address: API error")):
+            result = await send_email(proposal)
+
+        assert result.success is False

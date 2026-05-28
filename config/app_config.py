@@ -1255,6 +1255,15 @@ GOOGLE_CALENDAR_ENABLED = bool(int(os.getenv("GOOGLE_CALENDAR_ENABLED", "1" if G
 GOOGLE_CALENDAR_MAX_EVENTS: int = int(INTERNET_ACTIONS_CFG.get("google_calendar_max_events", 10))
 GOOGLE_CALENDAR_LOOKAHEAD_DAYS: int = int(INTERNET_ACTIONS_CFG.get("google_calendar_lookahead_days", 7))
 
+# Google Contacts (People API)
+GOOGLE_CONTACTS_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("google_contacts_enabled", True))
+GOOGLE_CONTACTS_ENABLED = bool(int(os.getenv("GOOGLE_CONTACTS_ENABLED", "1" if GOOGLE_CONTACTS_ENABLED else "0")))
+GOOGLE_OTHER_CONTACTS_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("google_other_contacts_enabled", True))
+GOOGLE_OTHER_CONTACTS_ENABLED = bool(int(os.getenv("GOOGLE_OTHER_CONTACTS_ENABLED", "1" if GOOGLE_OTHER_CONTACTS_ENABLED else "0")))
+# Gmail header search (fallback for contact resolution)
+GOOGLE_GMAIL_SEARCH_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("google_gmail_search_enabled", True))
+GOOGLE_GMAIL_SEARCH_ENABLED = bool(int(os.getenv("GOOGLE_GMAIL_SEARCH_ENABLED", "1" if GOOGLE_GMAIL_SEARCH_ENABLED else "0")))
+
 # Environment variable override
 INTERNET_ACTIONS_ENABLED = bool(int(os.getenv("INTERNET_ACTIONS_ENABLED", "1" if INTERNET_ACTIONS_ENABLED else "0")))
 

@@ -19,7 +19,7 @@ Modular Architecture (2026-05-09):
     - AgenticFormatter (core/agentic/formatters.py): Pure stateless formatting methods
       for all result types (search, memory, file, wiki, etc.)
     - ToolExecutor (core/agentic/tools.py): Dispatch routing + low-level tool execution
-      for all 10 tool types (web search, wolfram, sandbox, memory, files, git stats, etc.)
+      for all 20 tool types (web search, wolfram, sandbox, memory, files, git stats, contacts, etc.)
     - Controller retains: orchestration loop, prompt building, model interaction,
       quality heuristics, and delegation wrappers for backward compatibility
 

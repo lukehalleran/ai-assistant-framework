@@ -5,12 +5,18 @@ Contract:
     - Provides ToolExecutor for dispatching and executing agentic search tools
     - Routes SearchDecision objects to appropriate tool handlers
     - Handles web search, Wolfram, sandbox, memory search/expand, file access,
-      full document retrieval, git stats, and internet action proposals (email, calendar, etc.)
+      full document retrieval, git stats, internet action proposals (email, calendar, etc.),
+      and contact lookup (Google Contacts + Gmail header search)
+    - Contact resolution at proposal time: _resolve_email_recipient() resolves
+      name -> email via resolve_contact() before creating email ActionProposals
+    - _dispatch_lookup_contact / _execute_lookup_contact: standalone read-only
+      contact lookup tool (no confirmation needed)
     - Extracted from AgenticSearchController to reduce god-object size
 
 Dependencies:
     - core.agentic.formatters.AgenticFormatter (result formatting)
     - core.agentic.types (SearchDecision, _ToolResult, ProgressEvent, etc.)
+    - core.actions.google_contacts (resolve_contact for email resolution)
     - Various manager classes via constructor injection
 """
 
@@ -269,6 +275,8 @@ class ToolExecutor:
             return await self._dispatch_create_daemon_note(decision, round_number)
         elif decision.wants_action and decision.action_type:
             return await self._dispatch_action_proposal(decision, round_number)
+        elif decision.wants_lookup_contact and decision.lookup_contact_name:
+            return await self._dispatch_lookup_contact(decision, round_number)
         else:
             return _ToolResult(
                 decision=decision, round_data=None,
@@ -1087,6 +1095,26 @@ class ToolExecutor:
                 start_events=start_events, end_events=[],
             )
 
+        # Resolve recipient name → email for send_email actions
+        if action_type_str == "send_email":
+            recipient = params.get("recipient", "")
+            if recipient and "@" not in recipient:
+                resolved, resolve_msg = await self._resolve_email_recipient(recipient)
+                if resolved:
+                    params = dict(params)  # don't mutate original
+                    params["recipient"] = resolved
+                    logger.info(f"[ToolExecutor] Resolved '{recipient}' -> {resolved}")
+                else:
+                    formatted = (
+                        f"\n---\n**Round {round_number}: Recipient Resolution Failed**\n"
+                        f"{resolve_msg}\n---\n"
+                    )
+                    return _ToolResult(
+                        decision=decision, round_data=None,
+                        formatted_context=formatted,
+                        start_events=start_events, end_events=[],
+                    )
+
         # Create proposal
         proposal = ActionProposal(
             action_type=action_type,
@@ -1151,6 +1179,105 @@ class ToolExecutor:
             formatted_context=formatted,
             start_events=start_events,
             end_events=end_events,
+        )
+
+    async def _dispatch_lookup_contact(
+        self, decision: SearchDecision, round_number: int,
+    ) -> _ToolResult:
+        """Look up a contact's email via Google Contacts (read-only, no confirmation)."""
+        name = decision.lookup_contact_name or ""
+
+        start_events = [ProgressEvent(
+            event_type="looking_up_contact",
+            message=f"Looking up contact: {name}",
+            round_number=round_number,
+            metadata={"name": name, "reason": decision.lookup_contact_reason}
+        )]
+
+        start_time = time.time()
+        result_text = await self._execute_lookup_contact(name)
+        duration = (time.time() - start_time) * 1000
+
+        round_data = SearchRound(
+            round_number=round_number,
+            request=SearchRequest(
+                query=f"[Contacts] {name}",
+                reason=decision.lookup_contact_reason,
+                round_number=round_number
+            ),
+            results=None,
+            duration_ms=duration
+        )
+        round_data.summary = result_text
+
+        end_events = [ProgressEvent(
+            event_type="contact_found",
+            message="Contact lookup complete",
+            round_number=round_number,
+            metadata={"duration_ms": duration}
+        )]
+
+        return _ToolResult(
+            decision=decision,
+            round_data=round_data,
+            formatted_context=(
+                f"\n---\n**Round {round_number}: Contact Lookup**\n"
+                f"{result_text}\n---\n"
+            ),
+            start_events=start_events,
+            end_events=end_events,
+        )
+
+    async def _execute_lookup_contact(self, name: str) -> str:
+        """Execute Google Contacts + Gmail header lookup and format results."""
+        try:
+            from config.app_config import (
+                GOOGLE_CONTACTS_ENABLED, GOOGLE_OTHER_CONTACTS_ENABLED,
+                GOOGLE_GMAIL_SEARCH_ENABLED,
+            )
+            if not GOOGLE_CONTACTS_ENABLED and not GOOGLE_OTHER_CONTACTS_ENABLED and not GOOGLE_GMAIL_SEARCH_ENABLED:
+                return "[Contact lookup disabled in config]"
+            from core.actions.google_contacts import resolve_contact
+            results = await resolve_contact(name, max_results=10)
+            if not results:
+                return f"[No contacts found matching '{name}']"
+            lines = [f"[CONTACTS LOOKUP] '{name}'"]
+            for r in results:
+                lines.append(f"  - {r['name']} <{r['email']}> ({r['source']})")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"[ToolExecutor] Contact lookup failed: {e}")
+            return f"[Contact lookup error: {e}]"
+
+    async def _resolve_email_recipient(self, name: str) -> tuple:
+        """Resolve a name to an email address via Google Contacts.
+
+        Returns:
+            (email, "") on single match.
+            (None, message) on zero or multiple matches.
+        """
+        try:
+            from core.actions.google_contacts import resolve_contact
+            matches = await resolve_contact(name, max_results=10)
+        except Exception as e:
+            logger.debug(f"[ToolExecutor] Contact resolution failed: {e}")
+            return None, f"Could not resolve '{name}' to an email address: {e}"
+
+        if not matches:
+            return None, (
+                f"Could not resolve '{name}' to an email address. "
+                f"No matches found in Google Contacts."
+            )
+
+        if len(matches) == 1:
+            return matches[0]["email"], ""
+
+        # Multiple matches — list them so LLM can retry with specific address
+        match_lines = [f"  - {m['name']} <{m['email']}> ({m['source']})" for m in matches[:10]]
+        match_str = "\n".join(match_lines)
+        return None, (
+            f"Multiple contacts found for '{name}':\n{match_str}\n"
+            f"Please specify the exact email address."
         )
 
     # Module-level pending actions store singleton

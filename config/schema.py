@@ -829,6 +829,11 @@ class InternetActionsSection(BaseModel):
     google_calendar_enabled: bool = False
     google_calendar_max_events: int = Field(default=10, ge=1, le=50)
     google_calendar_lookahead_days: int = Field(default=7, ge=1, le=30)
+    # Google Contacts (People API)
+    google_contacts_enabled: bool = True
+    google_other_contacts_enabled: bool = True
+    # Gmail header search (fallback for contact resolution)
+    google_gmail_search_enabled: bool = True
     # Safety
     action_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     max_pending_actions: int = Field(default=5, ge=1, le=20)

@@ -122,7 +122,7 @@ candidates : X x C -> P(D)
 - Web search (Tavily API, if triggered and available)
 - Google Calendar events (OAuth2 Calendar API, 5-min cache, read-only)
 
-**External data sources**: Google Calendar events are fetched via OAuth2 (`core/actions/google_calendar.py`) using `calendar.readonly` scope, cached for 5 minutes, and injected as the `[GOOGLE CALENDAR]` prompt section. Calendar event creation is a write action routed through `propose_action` (human-in-the-loop confirmation). Email sending uses Gmail API (`gmail.send` scope) as primary transport with SMTP fallback (`core/actions/email.py`). OAuth2 token management (persistence, refresh, scope-upgrade detection) handled by `core/actions/google_auth.py` with 3 scopes: `gmail.send`, `calendar.readonly`, `calendar.events`.
+**External data sources**: Google Calendar events are fetched via OAuth2 (`core/actions/google_calendar.py`) using `calendar.readonly` scope, cached for 5 minutes, and injected as the `[GOOGLE CALENDAR]` prompt section. Calendar event creation is a write action routed through `propose_action` (human-in-the-loop confirmation). Email sending uses Gmail API (`gmail.send` scope) as primary transport with SMTP fallback (`core/actions/email.py`); recipient names auto-resolved via Google Contacts (`core/actions/google_contacts.py`) with Gmail header search fallback (`core/actions/gmail_search.py`). OAuth2 token management (persistence, refresh, scope-upgrade detection) handled by `core/actions/google_auth.py` with 6 scopes: `gmail.send`, `gmail.readonly`, `calendar.readonly`, `calendar.events`, `contacts.readonly`, `contacts.other.readonly`.
 
 **Code**: `builder.py:build_prompt()` launches all tasks; retrieval methods split across `gatherer_memory.py`, `gatherer_knowledge.py`, and `gatherer_web.py` (composed via `context_gatherer.py`).
 
@@ -405,7 +405,7 @@ Session-gated: `expand_count <= EXPAND_MAX_PER_SESSION` (default 3). Cached per 
 
 The agentic search controller is decomposed into three classes:
 - `AgenticSearchController` (`core/agentic/controller.py`) — main loop orchestration, prompt building, model interaction
-- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 19 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, calendar_create_event, signal done)
+- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 20 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, lookup_contact, calendar_create_event, signal done)
 - `AgenticFormatter` (`core/agentic/formatters.py`) — pure stateless formatting for all result types (conversations, memories, web results, etc.)
 
 Protocol dispatch uses `detect_protocol()` (`core/agentic/protocols.py`) to choose between `NativeToolsHandler` (OpenAI/Anthropic function calling) and `XMLMarkerHandler` (local models using XML tags) based on model name. Both handlers parse responses into `SearchDecision` objects with a shared interface.

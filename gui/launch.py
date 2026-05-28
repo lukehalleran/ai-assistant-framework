@@ -24,7 +24,9 @@ Module Contract
     - Syncs docs/ directory using file mtime for idempotency (skips unchanged files)
     - Non-blocking (runs in daemon thread)
     - Respects REFERENCE_DOCS_ENABLED and REFERENCE_DOCS_AUTO_SEED config flags
-  - submit_chat(): async driver that streams tokens + timer updates
+  - submit_chat(): async driver that streams tokens + timer updates.
+    Safety-net XML stripping before final UI render (catches <function_calls>,
+    <invoke>, <propose_action>, <lookup_contact> artifacts that slip through handlers).
   - Tabs:
     • Chat: chat UI, file upload, raw toggle, Sync Notes button
     • Debug Trace: renders debug_state entries
@@ -1018,6 +1020,19 @@ def launch_gui(orchestrator, force_wizard=False):
         typing_text = ""
         timer_text = f"<div style='text-align:right'>⏱️ {_t.time() - _t0:.1f} s</div>"
         _final_content = chat_history[-1].get("content", "") if (chat_history and isinstance(chat_history[-1], dict)) else ""
+        # Safety strip: catch any XML tool-call artifacts that slipped through handlers
+        if _final_content and ('<function_calls>' in _final_content or '<invoke' in _final_content
+                               or '<lookup_contact' in _final_content or '<propose_action' in _final_content):
+            import re as _re_final
+            _fc_orig = _final_content
+            _final_content = _re_final.sub(r'<function_calls>.*?</function_calls>', '', _final_content, flags=_re_final.DOTALL).strip()
+            _final_content = _re_final.sub(r'<function_calls>.*$', '', _final_content, flags=_re_final.DOTALL).strip()
+            _final_content = _re_final.sub(r'<invoke\s[^>]*>.*?</invoke>', '', _final_content, flags=_re_final.DOTALL).strip()
+            _final_content = _re_final.sub(r'<propose_action[^>]*>.*?</propose_action>', '', _final_content, flags=_re_final.DOTALL).strip()
+            _final_content = _re_final.sub(r'<lookup_contact[^>]*>.*?</lookup_contact>', '', _final_content, flags=_re_final.DOTALL).strip()
+            if _final_content != _fc_orig:
+                chat_history[-1]["content"] = _final_content
+                logging.warning("[GUI LAUNCH] Stripped XML tool-call artifacts from final content")
         logging.warning(f"[GUI LAUNCH] FINAL YIELD content preview: '{_final_content[:150]}'")
         _chatbot_view = copy.deepcopy(chat_history)
         _state_view = _chatbot_view

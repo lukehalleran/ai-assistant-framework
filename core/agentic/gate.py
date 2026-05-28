@@ -16,6 +16,10 @@ Module Contract
   - knowledge.daemon_notes_manager.detect_self_note_intent (self-note detection)
   All imports are lazy (inside the function) with try/except guards.
 - Side effects: None. Pure decision logic + one optional async LLM call.
+- Email-by-name patterns: Tier 1 TOOL_KEYWORDS includes contact lookup keywords
+  ('look up contact', 'find email', "'s email", etc.) and email-by-name regex
+  patterns (e.g. "email <name>", "send <name> an email") that trigger agentic
+  routing for contact resolution + propose_action.
 """
 
 import logging
@@ -72,6 +76,9 @@ TOOL_KEYWORDS = [
     'email them', 'send a message to', 'send message to',
     'send telegram', 'send discord', 'message on telegram',
     'message on discord', 'notify ', 'text him', 'text her',
+    # Contact lookup / email by name (no @ required)
+    'look up contact', 'lookup contact', 'find email', 'find contact',
+    "what is ", "'s email", "'s contact",
 ]
 
 MEMORY_KEYWORDS = [
@@ -197,8 +204,21 @@ async def evaluate_agentic_gate(
         _has_email_addr = bool(_re_gate.search(r'\S+@\S+\.\S+', user_text))
         if _has_email_addr and any(w in _lower for w in ('email', 'send', 'message', 'write', 'mail', 'contact')):
             needs_tools = True
-            logger.debug("[Agentic Gate] Tier 1: email address + action verb detected")
-        logger.debug("[Agentic Gate] Tier 1: agentic tool name detected in query")
+
+    # Email-by-name patterns: "email Meagan", "send Meagan an email", "email her about X"
+    if not needs_tools:
+        import re as _re_gate2
+        # "email <name>" at start of message
+        if _re_gate2.match(r'^email\s+[a-z]', _lower):
+            needs_tools = True
+        # "send <name> an email/message" or "send an email to <name>"
+        elif _re_gate2.search(r'\bsend\b.*\b(email|message)\b', _lower):
+            needs_tools = True
+        # "email" as a verb anywhere + action-like context
+        elif 'email' in _lower and any(w in _lower for w in ('send', 'draft', 'write', 'compose', 'fire off')):
+            needs_tools = True
+        if needs_tools:
+            logger.debug("[Agentic Gate] Tier 1: email-by-name intent detected")
 
     needs_memory = any(kw in _lower for kw in MEMORY_KEYWORDS)
 

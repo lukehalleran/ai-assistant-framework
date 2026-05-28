@@ -2,7 +2,7 @@
 # core/actions/google_auth.py
 
 Module Contract
-- Purpose: Google OAuth2 credential management for Gmail send + Calendar read/write.
+- Purpose: Google OAuth2 credential management for Gmail send + Calendar read/write + Contacts read.
 - Public interface:
   - GoogleAuthManager: OAuth2 flow, token persistence, refresh, scope-upgrade detection, has_scope().
   - get_google_auth() -> GoogleAuthManager | None: Lazy singleton from config.
@@ -22,8 +22,11 @@ logger = get_logger("google_auth")
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/contacts.other.readonly",
 ]
 
 # Lazy singleton

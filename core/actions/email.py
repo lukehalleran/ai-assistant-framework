@@ -3,11 +3,14 @@
 
 Module Contract
 - Purpose: Send emails via Gmail API (preferred) or SMTP (fallback).
+  Resolves recipient names to emails via Google Contacts when recipient lacks '@'.
 - Public interface:
   - send_email(proposal: ActionProposal) -> ActionResult
+  - _resolve_recipient(name: str) -> tuple[Optional[str], str]
   - _try_gmail_send(proposal, recipient, message) -> ActionResult | None
   - _smtp_send(proposal, recipient, message) -> ActionResult
-- Dependencies: httpx (Gmail API), smtplib (SMTP fallback), core.actions.google_auth
+- Dependencies: httpx (Gmail API), smtplib (SMTP fallback), core.actions.google_auth,
+  core.actions.google_contacts (for name resolution)
 - Side effects: Sends an email. Gmail API attempted first; SMTP only if Gmail unconfigured.
   No SMTP fallback after a Gmail API attempt (prevents duplicate sends).
 """
@@ -33,12 +36,26 @@ async def send_email(proposal: ActionProposal) -> ActionResult:
         - subject (str, optional): Email subject line.
     """
     recipient = proposal.params.get("recipient", "")
-    if not recipient or "@" not in recipient:
+    if not recipient:
         return ActionResult(
             action_id=proposal.action_id,
             success=False,
-            message=f"Invalid or missing recipient email address: {recipient!r}",
+            message="Missing recipient.",
         )
+
+    # If recipient lacks '@', try to resolve name → email (defense in depth;
+    # the agentic proposal path already resolves at proposal time)
+    if "@" not in recipient:
+        resolved, resolve_msg = await _resolve_recipient(recipient)
+        if resolved:
+            recipient = resolved
+            logger.info(f"[Email] Resolved '{proposal.params.get('recipient')}' -> {recipient}")
+        else:
+            return ActionResult(
+                action_id=proposal.action_id,
+                success=False,
+                message=resolve_msg,
+            )
 
     message_text = proposal.params.get("message", "")
     if not message_text:
@@ -208,3 +225,35 @@ async def _smtp_send(
             success=False,
             message=f"Failed to send email: {e}",
         )
+
+
+async def _resolve_recipient(name: str) -> tuple:
+    """Resolve a name to an email address using Google Contacts.
+
+    Returns:
+        (email, "") on single match — auto-resolve.
+        (None, message) on zero or multiple matches.
+    """
+    try:
+        from core.actions.google_contacts import resolve_contact
+        matches = await resolve_contact(name, max_results=10)
+    except Exception as e:
+        logger.debug(f"[Email] Contact resolution failed: {e}")
+        return None, f"Could not resolve '{name}' to an email address: {e}"
+
+    if not matches:
+        return None, (
+            f"Could not resolve '{name}' to an email address. "
+            f"No matches found in Google Contacts."
+        )
+
+    if len(matches) == 1:
+        return matches[0]["email"], ""
+
+    # Multiple matches — list them so caller can specify
+    match_lines = [f"  - {m['name']} <{m['email']}> ({m['source']})" for m in matches[:10]]
+    match_str = "\n".join(match_lines)
+    return None, (
+        f"Multiple contacts found for '{name}':\n{match_str}\n"
+        f"Please specify the exact email address."
+    )
