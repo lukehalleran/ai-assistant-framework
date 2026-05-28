@@ -28,7 +28,11 @@ Module Contract
 - Extracted helpers [REFACTORED 2026-05-22]:
   - _safe_count_tokens(), _safe_extract_citations(), _build_debug_record(), _build_provenance(),
     _attach_agentic_provenance(), _sanitize_response_text(), _strip_echoed_headers(),
-    _dispatch_storage(), _silent_agentic_retry(), _get_session_id()
+    _dispatch_storage(), _silent_agentic_retry(), _get_session_id(), _find_email_draft()
+  - Inline contact resolution: both agentic and enhanced paths resolve recipient names
+    to emails via google_contacts.resolve_contact() before creating ActionProposals.
+    Auto-email-proposal creation when propose_action XML detected in response.
+    XML stripping at 3 layers (agentic response, enhanced response, final UI render).
   - Consolidate patterns repeated 2-4x across mode paths; handle_submit 1541→1200 LOC
 - Side effects:
   - Writes to conversation logger; stores to memory_system (with provenance metadata); updates debug_state for Debug Trace tab.
@@ -385,6 +389,58 @@ def _build_debug_record(
         ),
         'gather_elapsed': round(gather_elapsed, 3) if gather_elapsed else 0.0,
     }
+
+
+def _find_email_draft(chat_history: list, fallback: str) -> str:
+    """Search chat history for the most recent email draft content.
+
+    Looks backward through assistant messages for substantial content that
+    looks like an email draft (bullet points, summaries, multiple lines).
+    Returns None if no suitable draft is found — callers should NOT
+    auto-send with meta-commentary as the body.
+    """
+    if not chat_history:
+        return None
+
+    # Search recent assistant messages (last 10) for draft-like content
+    assistant_msgs = []
+    for msg in reversed(chat_history):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            if content and len(content) > 100:
+                assistant_msgs.append(content)
+        if len(assistant_msgs) >= 10:
+            break
+
+    for content in assistant_msgs:
+        # Strip XML artifacts before checking
+        import re as _re_draft
+        clean = _re_draft.sub(r'<function_calls>.*?</function_calls>', '', content, flags=_re_draft.DOTALL)
+        clean = _re_draft.sub(r'<function_calls>.*$', '', clean, flags=_re_draft.DOTALL)
+        clean = _re_draft.sub(r'<invoke\s[^>]*>.*?</invoke>', '', clean, flags=_re_draft.DOTALL)
+        clean = _re_draft.sub(r'<thinking>.*?</thinking>', '', clean, flags=_re_draft.DOTALL)
+        clean = clean.strip()
+
+        # Look for draft-like indicators: bullet points, multiple paragraphs, summary-like content
+        has_bullets = '- **' in clean or '- ' in clean
+        has_length = len(clean) > 200
+        has_structure = clean.count('\n') >= 3
+
+        if has_bullets and has_length and has_structure:
+            # Found a draft — extract just the substantive content
+            # Remove meta-commentary lines (first line is often "Let me..." or "Here's...")
+            lines = clean.split('\n')
+            # Find where the actual content starts (first bullet or substantial line)
+            start_idx = 0
+            for i, line in enumerate(lines):
+                if line.strip().startswith('- ') or line.strip().startswith('* '):
+                    start_idx = i
+                    break
+            draft = '\n'.join(lines[start_idx:]).strip()
+            if len(draft) > 100:
+                return draft
+
+    return None
 
 
 def _sanitize_response_text(text):
@@ -1211,6 +1267,27 @@ async def handle_submit(
                                         r'\[propose_action:\s*\w+\]\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}',
                                         '', display_output, count=1,
                                     ).strip()
+                                    # Also strip <function_calls>/<invoke>/<propose_action>/<lookup_contact> blocks
+                                    display_output = _re_action.sub(
+                                        r'<function_calls>.*?</function_calls>',
+                                        '', display_output, flags=_re_action.DOTALL,
+                                    ).strip()
+                                    display_output = _re_action.sub(
+                                        r'<function_calls>.*$',
+                                        '', display_output, flags=_re_action.DOTALL,
+                                    ).strip()
+                                    display_output = _re_action.sub(
+                                        r'<invoke\s[^>]*>.*?</invoke>',
+                                        '', display_output, flags=_re_action.DOTALL,
+                                    ).strip()
+                                    display_output = _re_action.sub(
+                                        r'<propose_action[^>]*>.*?</propose_action>',
+                                        '', display_output, flags=_re_action.DOTALL,
+                                    ).strip()
+                                    display_output = _re_action.sub(
+                                        r'<lookup_contact[^>]*>.*?</lookup_contact>',
+                                        '', display_output, flags=_re_action.DOTALL,
+                                    ).strip()
                                     break  # Only one action per turn
                 except (ImportError, Exception) as e:
                     logger.warning(f"[Handle Submit] Text action parse failed: {e}")
@@ -1280,6 +1357,98 @@ async def handle_submit(
                 )
                 # Yield final response with debug record (response was already streamed
                 # chunk-by-chunk during the loop, so only one yield needed here)
+                # Strip any XML tool call artifacts the model emitted in its final answer
+                import re as _re_strip
+                # Complete <function_calls>...</function_calls> blocks
+                display_output = _re_strip.sub(
+                    r'<function_calls>.*?</function_calls>',
+                    '', display_output, flags=_re_strip.DOTALL,
+                ).strip()
+                # Incomplete/unclosed <function_calls> blocks (model didn't close tag)
+                display_output = _re_strip.sub(
+                    r'<function_calls>.*$',
+                    '', display_output, flags=_re_strip.DOTALL,
+                ).strip()
+                # Individual <invoke ...>...</invoke> tags
+                display_output = _re_strip.sub(
+                    r'<invoke\s[^>]*>.*?</invoke>',
+                    '', display_output, flags=_re_strip.DOTALL,
+                ).strip()
+                # <propose_action ...>...</propose_action> tags
+                display_output = _re_strip.sub(
+                    r'<propose_action[^>]*>.*?</propose_action>',
+                    '', display_output, flags=_re_strip.DOTALL,
+                ).strip()
+                # <lookup_contact ...>...</lookup_contact> tags
+                display_output = _re_strip.sub(
+                    r'<lookup_contact[^>]*>.*?</lookup_contact>',
+                    '', display_output, flags=_re_strip.DOTALL,
+                ).strip()
+                # If model emitted contact lookup in final answer, resolve inline + auto-propose
+                if not _pending_action_id:
+                    try:
+                        from config.app_config import INTERNET_ACTIONS_ENABLED
+                        if INTERNET_ACTIONS_ENABLED:
+                            from core.agentic.protocols import NativeToolsHandler
+                            _ag_handler = NativeToolsHandler(actions_available=True)
+                            _ag_decisions = _ag_handler._parse_text_tool_calls(final_output or display_output)
+                            for _agd in _ag_decisions:
+                                if _agd.wants_lookup_contact and _agd.lookup_contact_name:
+                                    from core.actions.google_contacts import resolve_contact
+                                    _ag_contacts = await resolve_contact(_agd.lookup_contact_name, max_results=5)
+                                    if _ag_contacts:
+                                        _ag_email = _ag_contacts[0]['email']
+                                        _ag_name = _ag_contacts[0]['name']
+                                        _ag_alt = ""
+                                        if len(_ag_contacts) > 1:
+                                            _ag_alts = [f"{c['name']} <{c['email']}>" for c in _ag_contacts[1:]]
+                                            _ag_alt = f"\n*(Also found: {', '.join(_ag_alts)})*"
+                                        # Auto-create send_email proposal if email intent detected
+                                        _ag_email_intent = any(w in user_text.lower() for w in (
+                                            'send', 'email', 'mail', 'draft', 'fire', 'message', 'try',
+                                        ))
+                                        if _ag_email_intent:
+                                            from core.actions.types import ActionProposal, ActionType
+                                            from core.actions.audit import ActionAuditLog
+                                            from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
+                                            from core.agentic.tools import ToolExecutor
+                                            _ag_store = ToolExecutor._get_pending_actions_store()
+                                            # Search chat history for the actual email draft
+                                            # Search chat history for a proper email draft
+                                            _ag_body = _find_email_draft(history, display_output)
+                                            if _ag_body:
+                                                _ag_proposal = ActionProposal(
+                                                    action_type=ActionType.SEND_EMAIL,
+                                                    params={
+                                                        "recipient": _ag_email,
+                                                        "message": _ag_body,
+                                                        "subject": "Weekly Summary",
+                                                    },
+                                                    summary=f"send_email to {_ag_name} <{_ag_email}>",
+                                                    reasoning=f"Resolved '{_agd.lookup_contact_name}' via contact search",
+                                                )
+                                                _ag_store.propose(_ag_proposal)
+                                                ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(_ag_proposal)
+                                                _pending_action_id = _ag_proposal.action_id
+                                                _ag_header = f"**send_email** to {_ag_name} <{_ag_email}>"
+                                                _ag_card = f"\n\n---\n{_ag_header}\n"
+                                                _ag_card += f"> {_ag_body[:300]}\n\n"
+                                                if _ag_alt:
+                                                    _ag_card += _ag_alt + "\n"
+                                                display_output += _ag_card
+                                                logger.info(f"[Handle Submit] Agentic: auto-created send_email proposal to {_ag_email}")
+                                            else:
+                                                # No draft found — show contact but don't auto-send
+                                                display_output += f"\n\n**Contact found:** {_ag_name} <{_ag_email}>{_ag_alt}\n\nI found the email address but couldn't locate the draft in this session. Could you paste or describe what you'd like to send?"
+                                                logger.info(f"[Handle Submit] Agentic: contact resolved but no draft found, skipping auto-proposal")
+                                        else:
+                                            display_output += f"\n\n**Contact found:** {_ag_name} <{_ag_email}>{_ag_alt}"
+                                    else:
+                                        display_output += f"\n\nNo contacts found for '{_agd.lookup_contact_name}'."
+                                    break
+                    except Exception as _ag_err:
+                        logger.warning(f"[Handle Submit] Agentic contact resolution failed: {_ag_err}")
+
                 # If display_output is empty (entire response was thinking/reasoning), show fallback
                 if not display_output.strip():
                     display_output = "I processed your request but my response was caught by the thinking filter. Let me try again — could you rephrase or retry?"
@@ -1633,6 +1802,80 @@ async def handle_submit(
                     from core.agentic.protocols import NativeToolsHandler
                     _enh_handler = NativeToolsHandler(actions_available=True)
                     _enh_decisions = _enh_handler._parse_text_tool_calls(_resp_for_debug)
+                    # Handle lookup_contact inline: resolve contact, auto-create email proposal if context indicates sending
+                    for _etd in _enh_decisions:
+                        if _etd.wants_lookup_contact and _etd.lookup_contact_name:
+                            try:
+                                from core.actions.google_contacts import resolve_contact
+                                _contacts = await resolve_contact(_etd.lookup_contact_name, max_results=5)
+                                import re as _re_lc
+                                # Strip XML tool artifacts from display
+                                _resp_for_debug = _re_lc.sub(
+                                    r'<function_calls>.*?</function_calls>',
+                                    '', _resp_for_debug, flags=_re_lc.DOTALL,
+                                ).strip()
+                                _resp_for_debug = _re_lc.sub(
+                                    r'<function_calls>.*$',
+                                    '', _resp_for_debug, flags=_re_lc.DOTALL,
+                                ).strip()
+                                _resp_for_debug = _re_lc.sub(
+                                    r'<invoke\s[^>]*>.*?</invoke>',
+                                    '', _resp_for_debug, flags=_re_lc.DOTALL,
+                                ).strip()
+
+                                if _contacts:
+                                    # Use first match (user can reject if wrong)
+                                    _resolved_email = _contacts[0]['email']
+                                    _resolved_name = _contacts[0]['name']
+                                    _alt_note = ""
+                                    if len(_contacts) > 1:
+                                        _alts = [f"{c['name']} <{c['email']}>" for c in _contacts[1:]]
+                                        _alt_note = f"\n*(Also found: {', '.join(_alts)})*"
+                                    logger.info(f"[Handle Submit] Enhanced: resolved '{_etd.lookup_contact_name}' -> {_resolved_email} ({len(_contacts)} total)")
+
+                                    # Auto-create send_email proposal if context indicates sending
+                                    _email_intent = any(w in user_text.lower() for w in (
+                                        'send', 'email', 'mail', 'draft', 'fire', 'message', 'try',
+                                    ))
+                                    if _email_intent:
+                                        from core.actions.types import ActionProposal, ActionType
+                                        from core.actions.audit import ActionAuditLog
+                                        from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
+                                        # Search chat history for a proper email draft
+                                        _email_body = _find_email_draft(history, _resp_for_debug)
+                                        if _email_body:
+                                            _ea_proposal = ActionProposal(
+                                                action_type=ActionType.SEND_EMAIL,
+                                                params={
+                                                    "recipient": _resolved_email,
+                                                    "message": _email_body,
+                                                    "subject": "Weekly Summary",
+                                                },
+                                                summary=f"send_email to {_resolved_name} <{_resolved_email}>",
+                                                reasoning=f"Resolved '{_etd.lookup_contact_name}' via contact search",
+                                            )
+                                            _enh_store.propose(_ea_proposal)
+                                            ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(_ea_proposal)
+                                            _enh_pending_action_id = _ea_proposal.action_id
+                                            _enh_header = f"**send_email** to {_resolved_name} <{_resolved_email}>"
+                                            _card = f"\n\n---\n{_enh_header}\n"
+                                            _card += f"> {_email_body[:300]}\n\n"
+                                            if _alt_note:
+                                                _card += _alt_note + "\n"
+                                            _resp_for_debug += _card
+                                            logger.info(f"[Handle Submit] Enhanced: auto-created send_email proposal to {_resolved_email}")
+                                        else:
+                                            # No draft found — show contact but don't auto-send
+                                            _resp_for_debug += f"\n\n**Contact found:** {_resolved_name} <{_resolved_email}>{_alt_note}\n\nI found the email address but couldn't locate the draft in this session. Could you paste or describe what you'd like to send?"
+                                            logger.info(f"[Handle Submit] Enhanced: contact resolved but no draft found")
+                                    else:
+                                        _resp_for_debug += f"\n\n**Contact found:** {_resolved_name} <{_resolved_email}>{_alt_note}"
+                                else:
+                                    _resp_for_debug += f"\n\nNo contacts found for '{_etd.lookup_contact_name}' in Google Contacts or Gmail."
+                                logger.info(f"[Handle Submit] Enhanced: resolved contact '{_etd.lookup_contact_name}' inline ({len(_contacts)} matches)")
+                            except Exception as _lc_err:
+                                logger.warning(f"[Handle Submit] Enhanced: contact lookup failed: {_lc_err}")
+                            break
                     for _etd in _enh_decisions:
                         if _etd.wants_action and _etd.action_type:
                             logger.info(f"[Handle Submit] Enhanced: parsed text action: {_etd.action_type}")
@@ -1657,6 +1900,27 @@ async def handle_submit(
                             _resp_for_debug = _re_enh_action.sub(
                                 r'\[propose_action:\s*\w+\]\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}',
                                 '', _resp_for_debug, count=1,
+                            ).strip()
+                            # Also strip <function_calls>/<invoke>/<propose_action>/<lookup_contact> blocks
+                            _resp_for_debug = _re_enh_action.sub(
+                                r'<function_calls>.*?</function_calls>',
+                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
+                            ).strip()
+                            _resp_for_debug = _re_enh_action.sub(
+                                r'<function_calls>.*$',
+                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
+                            ).strip()
+                            _resp_for_debug = _re_enh_action.sub(
+                                r'<invoke\s[^>]*>.*?</invoke>',
+                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
+                            ).strip()
+                            _resp_for_debug = _re_enh_action.sub(
+                                r'<propose_action[^>]*>.*?</propose_action>',
+                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
+                            ).strip()
+                            _resp_for_debug = _re_enh_action.sub(
+                                r'<lookup_contact[^>]*>.*?</lookup_contact>',
+                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
                             ).strip()
                             _pending = _enh_store.get_pending()
                             if _pending:

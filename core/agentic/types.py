@@ -23,7 +23,8 @@ Public Types:
     - FETCH_URL_TOOL_DEFINITION (direct URL content fetching tool schema)
     - GITHUB_TOOL_DEFINITION (read-only GitHub API tool schema)
     - GENERATE_DOCUMENT_TOOL_DEFINITION (research & save document tool schema)
-    - PROPOSE_ACTION_TOOL_DEFINITION (internet write action proposal tool schema)
+    - PROPOSE_ACTION_TOOL_DEFINITION (internet write action proposal tool schema, with auto-resolution guidance for email-by-name)
+    - LOOKUP_CONTACT_TOOL_DEFINITION (Google Contacts + Gmail header contact lookup tool schema) [NEW 2026-05-28]
 
 SearchDecision Fields (extended for multi-tool support):
     - wants_search, search_query, search_reason (web search)
@@ -38,6 +39,7 @@ SearchDecision Fields (extended for multi-tool support):
     - wants_full_document, full_document_title, full_document_reason (full document retrieval)
     - wants_recall_image, recall_image_query, recall_image_reason (CLIP visual memory search)
     - wants_fetch_url, fetch_url, fetch_url_reason (direct URL content fetching)
+    - wants_lookup_contact, lookup_contact_name, lookup_contact_reason (Google Contacts lookup) [NEW 2026-05-28]
     - is_done, done_reason, wants_answer, partial_response
 
 Dependencies:
@@ -205,6 +207,10 @@ class SearchDecision:
     daemon_note_category: Optional[str] = None  # implementation | architecture | research | decisions
     daemon_note_summary: Optional[str] = None
     daemon_note_reason: Optional[str] = None
+    # Google Contacts lookup (read-only, no confirmation needed)
+    wants_lookup_contact: bool = False
+    lookup_contact_name: Optional[str] = None
+    lookup_contact_reason: Optional[str] = None
     # Internet action (propose write action requiring user confirmation)
     wants_action: bool = False
     action_type: Optional[str] = None  # ActionType value
@@ -1019,7 +1025,7 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                 },
                 "recipient": {
                     "type": "string",
-                    "description": "Who/where to send (chat ID, webhook, email address, repo, etc.)."
+                    "description": "Who/where to send (chat ID, webhook, email address or contact name, repo, etc.). For email, a contact name (e.g. 'Meagan') will be resolved via Google Contacts."
                 },
                 "subject": {
                     "type": "string",
@@ -1063,6 +1069,33 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                 }
             },
             "required": ["action_type", "reason"]
+        }
+    }
+}
+
+LOOKUP_CONTACT_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "lookup_contact",
+        "description": (
+            "Look up a contact's email address from Google Contacts. "
+            "Use when the user asks for someone's email, or when you need "
+            "to resolve a name to an email address before sending a message. "
+            "Returns name, email, and source (contacts or other_contacts)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The person's name to search for."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of why this lookup is needed."
+                }
+            },
+            "required": ["name"]
         }
     }
 }
@@ -1153,6 +1186,12 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
     <github>contributors</github>
     <github>closed PRs</github>
 
+14. **Propose Action**: <propose_action type="send_email" recipient="name_or_email" subject="Subject" reason="why">message body</propose_action>
+    Propose a write action (email, Telegram, Discord, calendar event) that requires user confirmation.
+    **For email, the recipient can be just a name (e.g. "Meaghan") — the system resolves it to an email via Google Contacts automatically.** You do NOT need to look up the contact first.
+    Supported types: send_email, send_telegram, send_discord, calendar_create_event
+    Example: <propose_action type="send_email" recipient="Meaghan" subject="Weekly Update" reason="User asked to email Meaghan">Hey Meaghan, here's a quick recap of the week...</propose_action>
+
 **Tool Selection Guidelines:**
 | Task Type | Best Tool |
 |-----------|-----------|
@@ -1178,6 +1217,10 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | Read a specific URL (GitHub, article, docs) | Fetch URL |
 | GitHub issues, PRs, CI status, releases | GitHub |
 | GitHub code search, contributors, labels | GitHub |
+| Send email, Telegram, Discord, create event | Propose Action |
+
+**IMPORTANT — sending email:**
+To email someone by name, use propose_action directly with their name as recipient. The system resolves names to email addresses via Google Contacts automatically.
 
 **IMPORTANT — fetch_url vs search:**
 When you know a specific URL (from profile facts, memory, or the user's message), use fetch_url to read it directly.

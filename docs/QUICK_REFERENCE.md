@@ -1890,10 +1890,10 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 #   nudge retry (re-prompts model when it narrates tools instead of calling them),
 #   no-reasoning decision phase (_generate_decision_no_reasoning bypasses chain-of-thought for XML tool emission),
 #   tool hints (_detect_tool_hints injects usage hints when query mentions tool names)
-# core/agentic/tools.py — ToolExecutor: dispatch routing + 19 execute methods + get_tool_health()
-# core/agentic/gate.py — 4-tier agentic gate: keyword → entity → tool-name → LLM fallback [NEW 2026-05]
+# core/agentic/tools.py — ToolExecutor: dispatch routing + 20 execute methods + get_tool_health() (incl. lookup_contact + email recipient resolution)
+# core/agentic/gate.py — 4-tier agentic gate: keyword → entity → tool-name → LLM fallback, email-by-name patterns [NEW 2026-05]
 # core/agentic/formatters.py — AgenticFormatter: 18 pure formatting methods
-# core/actions/ — Internet action executors: telegram.py, discord.py, email.py, google_auth.py, google_calendar.py, google_calendar_create.py, types.py, audit.py, executors.py [NEW 2026-05]
+# core/actions/ — Internet action executors: telegram.py, discord.py, email.py, google_auth.py, google_calendar.py, google_calendar_create.py, google_contacts.py, gmail_search.py, types.py, audit.py, executors.py [NEW 2026-05]
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
     Delegates tool execution to ToolExecutor, formatting to AgenticFormatter."""
@@ -2667,7 +2667,8 @@ class GoogleAuthManager:
 def get_google_auth() -> GoogleAuthManager | None:
     """Lazy singleton from config. Returns None if client_id/secret unconfigured."""
 
-# Scopes: gmail.send, calendar.readonly, calendar.events
+# Scopes: gmail.send, gmail.readonly, calendar.readonly, calendar.events,
+#         contacts.readonly, contacts.other.readonly
 # One-time auth: python -m core.actions.google_auth
 
 
@@ -2690,14 +2691,34 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
     time_zone (optional, default "America/Chicago"), location (optional)."""
 
 
-# core/actions/email.py — Gmail API primary, SMTP fallback [REWRITTEN 2026-05]
+# core/actions/email.py — Gmail API primary, SMTP fallback, contact resolution [ENHANCED 2026-05-28]
 async def send_email(proposal: ActionProposal) -> ActionResult:
     """Gmail API first → SMTP fallback only if Gmail unconfigured.
-    No SMTP fallback after Gmail API attempt (prevents duplicate sends)."""
+    No SMTP fallback after Gmail API attempt (prevents duplicate sends).
+    Resolves recipient names to emails via _resolve_recipient() if no '@'."""
+async def _resolve_recipient(name: str) -> tuple[Optional[str], str]:
+    """Resolve name → email via google_contacts.resolve_contact(). Single match auto-resolves."""
 async def _try_gmail_send(proposal, recipient, message) -> ActionResult | None:
     """Returns ActionResult on attempt, None if Gmail not configured."""
 async def _smtp_send(proposal, recipient, message) -> ActionResult:
     """SMTP fallback path."""
+
+
+# core/actions/google_contacts.py — People API contact search [NEW 2026-05-28]
+async def search_contacts(query, max_results=10) -> List[Dict]:
+    """Search saved Google Contacts by name. Returns [{name, email, source="contacts"}]."""
+async def search_other_contacts(query, max_results=10) -> List[Dict]:
+    """Search 'Other Contacts' (auto-saved). Returns [{name, email, source="other_contacts"}]."""
+async def resolve_contact(name, max_results=10) -> List[Dict]:
+    """Combined: saved → other → Gmail header fallback. Deduped by email."""
+def clear_cache() -> None:
+    """Clear the contacts cache."""
+
+# core/actions/gmail_search.py — Gmail header search fallback [NEW 2026-05-28]
+async def search_gmail_contacts(query, max_results=10) -> List[Dict]:
+    """Search Gmail From/To headers for email addresses matching a name.
+    Returns [{name, email, direction, source="gmail_headers"}].
+    Concurrency-limited (_MAX_CONCURRENT_FETCHES=5), own-email filtered."""
 
 
 # core/actions/executors.py — Executor wiring
@@ -2722,9 +2743,12 @@ INTERNET_ACTIONS_GOOGLE_TOKEN_PATH = "data/google_token.json"
 GOOGLE_CALENDAR_ENABLED = False         # env: GOOGLE_CALENDAR_ENABLED
 GOOGLE_CALENDAR_MAX_EVENTS = 10
 GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 7
+GOOGLE_CONTACTS_ENABLED = True          # env: GOOGLE_CONTACTS_ENABLED
+GOOGLE_OTHER_CONTACTS_ENABLED = True    # env: GOOGLE_OTHER_CONTACTS_ENABLED
+GOOGLE_GMAIL_SEARCH_ENABLED = True      # env: GOOGLE_GMAIL_SEARCH_ENABLED
 
 # Tests: tests/unit/test_google_auth.py, test_google_calendar.py, test_calendar_create.py,
-#        test_calendar_prompt.py, test_gmail_send.py
+#        test_calendar_prompt.py, test_gmail_send.py, test_google_contacts.py
 ```
 
 ---
@@ -2812,6 +2836,6 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 
 **End of Quick Reference**
 
-**Last verified**: 2026-05-27
+**Last verified**: 2026-05-28
 
 This document provides instant lookup for critical functions and patterns.

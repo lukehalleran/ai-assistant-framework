@@ -30,9 +30,9 @@ Query → ContextPipeline (tone‖topic parallel, intent gates heavy-topic skip)
       → UnifiedPromptBuilder (context assembly + web search, cached query embedding)
         + ResponsePlanner (parallel: lightweight plan)
       → Agentic search (if triggered, replaces standard generation)
-        19 tools: web, wolfram, sandbox, memory, files, git, github, fetch_url,
+        20 tools: web, wolfram, sandbox, memory, files, git, github, fetch_url,
                   stackexchange, arxiv, pubmed, hackernews, recall_image,
-                  generate_document, propose_action, ...
+                  generate_document, propose_action, lookup_contact, ...
       → BestOfHandler | ResponseGenerator (streaming)
       → ResponseParser (thinking block, artifact stripping)
       → MemoryCoordinator (persist)
@@ -68,7 +68,7 @@ UnifiedPromptBuilder (thin orchestrator)
 
 Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (47 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
 
-Key values: `PROMPT_TOKEN_BUDGET_DEFAULT=15000` (floor 8K, ceiling 16K), `COSINE_SIMILARITY_THRESHOLD=0.25`, 9 intent types, dual fact budget (user=6, entity=4). Web search requires `TAVILY_API_KEY`. Google Calendar/Gmail require `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` env vars. Currently disabled: synthesis generators, graph walk.
+Key values: `PROMPT_TOKEN_BUDGET_DEFAULT=15000` (floor 8K, ceiling 16K), `COSINE_SIMILARITY_THRESHOLD=0.25`, 9 intent types, dual fact budget (user=6, entity=4). Web search requires `TAVILY_API_KEY`. Google Calendar/Gmail/Contacts require `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` env vars. Contact resolution: `GOOGLE_CONTACTS_ENABLED`, `GOOGLE_OTHER_CONTACTS_ENABLED`, `GOOGLE_GMAIL_SEARCH_ENABLED` (all default true). Currently disabled: synthesis generators, graph walk.
 
 ## Module Structure
 
@@ -92,18 +92,20 @@ core/                         # Request orchestration
 │   ├── executors.py          # ActionExecutorRegistry: routes to type-specific handlers
 │   ├── telegram.py           # Telegram Bot API sender
 │   ├── discord.py            # Discord webhook sender
-│   ├── email.py              # Gmail API primary + SMTP fallback email sender
-│   ├── google_auth.py        # Google OAuth2 manager (token persistence, refresh, scope checking)
+│   ├── email.py              # Gmail API primary + SMTP fallback email sender + contact name resolution
+│   ├── google_auth.py        # Google OAuth2 manager (token persistence, refresh, scope checking, contacts + gmail scopes)
 │   ├── google_calendar.py    # Fetch upcoming Google Calendar events (read-only, 5-min cache)
 │   ├── google_calendar_create.py  # Create Google Calendar events via Calendar API
+│   ├── google_contacts.py    # People API saved + other contacts search, resolve_contact() with Gmail fallback
+│   ├── gmail_search.py       # Gmail header search (From/To) for contact resolution fallback
 │   └── audit.py              # Append-only JSONL audit log (logs/actions_audit.jsonl)
 ├── agentic/                  # ReAct search loop
 │   ├── gate.py               # 4-tier agentic gate: AgenticDecision + evaluate_agentic_gate()
 │   ├── controller.py         # Loop orchestration, [TOOL STATUS] injection
-│   ├── tools.py              # 18 tool types + get_tool_health() (incl. GitHub, StackExchange, arXiv, PubMed, HN, propose_action)
+│   ├── tools.py              # 20 tool types + get_tool_health() (incl. GitHub, StackExchange, arXiv, PubMed, HN, propose_action, lookup_contact)
 │   ├── formatters.py         # Stateless result formatting
-│   ├── types.py              # SearchDecision, tool definitions
-│   └── protocols.py          # Native tools + XML parsing
+│   ├── types.py              # SearchDecision, tool definitions, LOOKUP_CONTACT_TOOL_DEFINITION
+│   └── protocols.py          # Native tools + XML parsing + contact lookup aliases
 └── prompt/                   # Modular prompt system
     ├── builder.py            # Thin orchestrator + ambiguity detection wiring
     ├── base.py               # Base utilities + fallback classes

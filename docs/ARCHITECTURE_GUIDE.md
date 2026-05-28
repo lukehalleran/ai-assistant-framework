@@ -121,21 +121,23 @@ core/                    # Request orchestration, context pipeline, agentic loop
 ├── best_of_handler.py   # Best-of-N, duel, ensemble generation
 ├── escalation_tracker.py# Crisis cooldown FSM (4 states)
 ├── response_planner.py  # Pre-answer planning + post-answer review gate
-├── actions/             # Internet write actions (email, telegram, discord, calendar) with human-in-the-loop
+├── actions/             # Internet write actions (email, telegram, discord, calendar) + contact resolution with human-in-the-loop
 │   ├── types.py         # ProposedAction, ActionType, ActionStatus models
 │   ├── executors.py     # ActionExecutorRegistry: dispatch to per-channel executors
-│   ├── google_auth.py   # GoogleAuthManager: OAuth2 installed-app flow, token persistence, scope detection
+│   ├── google_auth.py   # GoogleAuthManager: OAuth2 installed-app flow, token persistence, scope detection (contacts + gmail scopes)
 │   ├── google_calendar.py       # fetch_upcoming_events(): read-only Calendar API + 5-min cache
 │   ├── google_calendar_create.py # create_calendar_event(): Calendar API write with scope validation
-│   ├── email.py         # Gmail API (preferred) + SMTP fallback email executor
+│   ├── google_contacts.py       # People API search + resolve_contact() with Gmail fallback
+│   ├── gmail_search.py  # Gmail header search (From/To) for contact resolution fallback
+│   ├── email.py         # Gmail API (preferred) + SMTP fallback + contact name resolution
 │   ├── telegram.py      # Telegram Bot API executor
 │   ├── discord.py       # Discord webhook executor
 │   └── audit.py         # Action audit logging
 ├── agentic/             # ReAct tool loop
 │   ├── controller.py    # Loop orchestration, prompt building, quality heuristics
-│   ├── tools.py         # ToolExecutor: dispatch routing + 19 execute methods
+│   ├── tools.py         # ToolExecutor: dispatch routing + 20 execute methods (incl. lookup_contact)
 │   ├── formatters.py    # AgenticFormatter: 18 pure formatting methods
-│   ├── types.py         # Tool definitions, state types
+│   ├── types.py         # Tool definitions, state types, LOOKUP_CONTACT_TOOL_DEFINITION
 │   ├── gate.py          # 5-tier agentic gate evaluation
 │   └── protocols.py     # Native + XML tool calling
 └── prompt/              # Prompt assembly pipeline
@@ -2374,14 +2376,16 @@ and checks.
 
 ---
 
-## 30. Google OAuth2 & Calendar Integration
+## 30. Google OAuth2, Calendar & Contacts Integration
 
 **Files**: `core/actions/google_auth.py`, `core/actions/google_calendar.py`,
-`core/actions/google_calendar_create.py`, `core/actions/email.py`,
+`core/actions/google_calendar_create.py`, `core/actions/google_contacts.py`,
+`core/actions/gmail_search.py`, `core/actions/email.py`,
 `core/actions/executors.py`
 
-Daemon can read and write Google Calendar events and send emails via the
-Gmail API, all gated behind a unified Google OAuth2 layer.
+Daemon can read and write Google Calendar events, send emails via the
+Gmail API, and resolve contact names to email addresses via Google Contacts
+and Gmail header search, all gated behind a unified Google OAuth2 layer.
 
 ### Google OAuth2 (google_auth.py)
 
@@ -2394,10 +2398,13 @@ from config.
 (configurable via `INTERNET_ACTIONS_GOOGLE_TOKEN_PATH`). On load, the
 manager attempts automatic refresh via the stored refresh token.
 
-**Scope management**: The manager requests three scopes:
+**Scope management**: The manager requests six scopes:
 - `gmail.send` — Send emails via Gmail API
+- `gmail.readonly` — Search Gmail message headers (contact resolution fallback)
 - `calendar.readonly` — Read calendar events
 - `calendar.events` — Create/modify calendar events
+- `contacts.readonly` — Search saved Google Contacts
+- `contacts.other.readonly` — Search Other Contacts (auto-saved from interactions)
 
 `has_scope(scope_url)` checks whether the current token includes a specific
 scope. If the user later needs a scope that wasn't originally granted,
@@ -2438,15 +2445,45 @@ Integrated into the action executor registry as `ActionType.CALENDAR_CREATE_EVEN
 
 ### Gmail API Email (email.py)
 
-`send_email()` was rewritten to use the Gmail API as the primary send path,
-with SMTP as a fallback only when Gmail OAuth is unconfigured or
-unauthenticated.
+`send_email()` uses the Gmail API as the primary send path, with SMTP as a
+fallback only when Gmail OAuth is unconfigured or unauthenticated.
+
+**Contact resolution**: If the recipient field lacks an `@` sign,
+`_resolve_recipient()` calls `google_contacts.resolve_contact()` to
+look up the email address. Single matches auto-resolve; multiple matches
+return a descriptive error listing all candidates. This is a defense-in-depth
+fallback — the agentic proposal path already resolves at proposal time.
 
 **Key behavior**: If the Gmail API was attempted but failed (e.g., token
 expired, API error), the system does NOT fall back to SMTP. This prevents
 duplicate sends — once a Gmail attempt is made, that result is final.
 SMTP fallback only activates when Gmail was never attempted (no client ID
 configured, or no authenticated token).
+
+### Google Contacts Resolution (google_contacts.py, gmail_search.py)
+
+`resolve_contact(name)` provides 3-tier contact resolution:
+1. **Saved Contacts** — `search_contacts()` queries the People API
+   `people:searchContacts` endpoint (requires `contacts.readonly` scope)
+2. **Other Contacts** — `search_other_contacts()` queries
+   `otherContacts:search` (requires `contacts.other.readonly` scope)
+3. **Gmail Header Fallback** — `gmail_search.search_gmail_contacts()`
+   searches Gmail message metadata headers (From/To) when contacts return
+   nothing (requires `gmail.readonly` scope)
+
+Results are deduplicated by email address across all tiers. Each tier is
+independently gated by its own config flag (`GOOGLE_CONTACTS_ENABLED`,
+`GOOGLE_OTHER_CONTACTS_ENABLED`, `GOOGLE_GMAIL_SEARCH_ENABLED`). All
+three default to `true`.
+
+**Caching**: Both People API and Gmail header results are cached for 5
+minutes (`_CACHE_TTL_SECONDS=300`) at the module level. The People API
+sends a warmup request on first real call as recommended by the API docs.
+
+**Gmail search specifics**: Messages are fetched via the Gmail list
+endpoint, then headers are retrieved in parallel with a concurrency
+semaphore (`_MAX_CONCURRENT_FETCHES=5`). The user's own email address
+is filtered out of results.
 
 ### Prompt Integration
 
@@ -2460,11 +2497,28 @@ title, start/end times, location, and all-day status.
 
 The `propose_action` tool schema in `types.py` includes calendar-specific
 fields (`summary`, `description`, `start_time`, `end_time`, `time_zone`,
-`calendar_id`, `location`). Both native and XML protocol parsers in
-`protocols.py` detect `action_type == "calendar_create_event"` and forward
-these fields to `ActionProposal.params`. Tool health reporting in `tools.py`
-includes `calendar_create_event` availability based on OAuth status and
-scope grants.
+`calendar_id`, `location`) and auto-resolution guidance for email-by-name
+(the system resolves names to email addresses via Google Contacts
+automatically when `recipient` is a name without `@`). Both native and XML
+protocol parsers in `protocols.py` detect `action_type ==
+"calendar_create_event"` and forward these fields to
+`ActionProposal.params`. Tool health reporting in `tools.py` includes
+`calendar_create_event` availability based on OAuth status and scope grants.
+
+The `lookup_contact` tool allows read-only contact lookup without
+proposing an action. Both `NativeToolsHandler` and `XMLMarkerHandler`
+recognize multiple aliases for this tool (`search_contacts`,
+`find_contact`, `search_gmail`, `search_email`, `gmail_search`,
+`search_inbox`) to handle LLM variations. The `_dispatch_lookup_contact`
+method in `tools.py` calls `resolve_contact()` and formats results for
+the agentic context. Email proposals go through
+`_resolve_email_recipient()` at proposal time, so the user sees the
+resolved email address in the confirmation prompt.
+
+The agentic gate in `gate.py` includes email-by-name patterns in its
+Tier 1 keyword heuristics (e.g., "email Meagan", "send X an email",
+"find email", "'s contact") to ensure contact resolution queries route
+through the agentic loop.
 
 ---
 

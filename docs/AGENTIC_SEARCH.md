@@ -28,13 +28,13 @@ events to the UI in real time.
 |------|---------|
 | `core/agentic/gate.py` | 4-tier agentic gate: `evaluate_agentic_gate()` → `AgenticDecision` (keyword → entity → doc/note → LLM fallback) |
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics, nudge retry, no-reasoning decision phase, tool hints |
-| `core/agentic/tools.py` | ToolExecutor: 16 dispatch methods + 14 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary |
+| `core/agentic/tools.py` | ToolExecutor: 17 dispatch methods + 15 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary + `_resolve_email_recipient()` |
 | `core/agentic/formatters.py` | AgenticFormatter: 20 pure formatting methods (context, results, prompts) |
-| `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas |
-| `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing, nested XML support, github_available gating |
+| `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas, LOOKUP_CONTACT_TOOL_DEFINITION |
+| `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing, nested XML support, github_available gating, contact lookup aliases |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
 | `core/github_manager.py` | GitHub API tool: read-only `gh` CLI access (issues, PRs, actions, releases) |
-| `core/actions/` | Internet action types, executors (telegram/discord/email/calendar), audit log, pending store, Google Calendar create (`google_calendar_create.py`), Google OAuth (`google_auth.py`) |
+| `core/actions/` | Internet action types, executors (telegram/discord/email/calendar), audit log, pending store, Google Calendar create, Google OAuth, Google Contacts (`google_contacts.py`), Gmail search (`gmail_search.py`) |
 | `core/orchestrator.py` | Trigger logic and lazy initialization of controller |
 
 ---
@@ -317,6 +317,10 @@ Parameters:
              calendar_id (default "primary"), location
 Note: "message" is required for messaging types but NOT for calendar events,
       which use "summary" instead. Required fields are ["action_type", "reason"].
+Email auto-resolution: For send_email, if recipient is a name (no '@'),
+  _resolve_email_recipient() resolves it via google_contacts.resolve_contact()
+  before creating the ActionProposal. Single match auto-resolves; multiple
+  matches return a descriptive error listing candidates.
 
 Action types: send_telegram, send_discord, send_email,
               github_create_issue, github_comment_pr, calendar_create_event
@@ -325,6 +329,20 @@ Execution: Creates an ActionProposal stored in PendingActionsStore.
            dispatched to the type-specific executor. On rejection, the proposal
            is discarded and an audit log entry is written.
 Audit: All proposals and outcomes logged to logs/actions_audit.jsonl
+```
+
+### lookup_contact
+
+Look up a contact's email address from Google Contacts (read-only, no confirmation needed).
+
+```
+Parameters: name (required), reason (optional)
+Execution: resolve_contact() from google_contacts.py — searches saved contacts,
+           then other contacts, then Gmail headers as fallback.
+Aliases: search_contacts, find_contact, search_gmail, search_email,
+         gmail_search, search_inbox (all parsed by NativeToolsHandler + XMLMarkerHandler)
+Config: GOOGLE_CONTACTS_ENABLED, GOOGLE_OTHER_CONTACTS_ENABLED,
+        GOOGLE_GMAIL_SEARCH_ENABLED (all default true)
 ```
 
 ### done_searching
@@ -366,7 +384,11 @@ proposal instead of emitting a proper tool call (Pattern 1:
 also handles calendar events with the same calendar-param forwarding.
 The `send_` prefix normalization in the text parser only applies to
 messaging types (telegram, discord, email), not to calendar or github
-action types.
+action types. `lookup_contact` is parsed with aliases: `search_contacts`,
+`find_contact`, `search_gmail`, `search_email`, `gmail_search`,
+`search_inbox` — all map to `wants_lookup_contact=True` in SearchDecision.
+`<invoke name="...">` XML patterns are also parsed as a fallback for
+both contact lookup and propose_action.
 
 ### XML Markers
 
@@ -386,6 +408,8 @@ For models without native tool support. Markers embedded in text:
 <github>open issues labeled bug</github>
 <recall_image>query</recall_image>
 <action type="send_email" recipient="..." reason="...">message</action>
+<propose_action type="send_email" recipient="..." subject="..." reason="...">body</propose_action>
+<lookup_contact name="Meaghan">reason</lookup_contact>
 <done/>
 ```
 
@@ -393,6 +417,7 @@ For models without native tool support. Markers embedded in text:
 - `<web_search>query</web_search>` and `<web_search query="...">` as aliases for `<search>`
 - `<search_memory query="...">` as an alias for `<memory>`
 - `<search_memory><query>X</query></search_memory>` nested-tag pattern (DeepSeek-style) via `MEMORY_NESTED_PATTERN`
+- `<invoke name="lookup_contact">` / `<invoke name="search_contacts">` etc. as Anthropic-style fallback for contact lookup
 
 **Nested XML Support**: `_strip_xml_tags()` removes inner XML tags from
 extracted content, and `_extract_nested_tag()` extracts specific child
@@ -403,10 +428,11 @@ Parsed by `XMLMarkerHandler` using regex. `<done/>` is checked first
 and returns immediately if present. Remaining markers are collected
 in order: python -> wolfram -> memory -> expand_memory ->
 get_full_document -> file_read -> file_grep -> git_stats -> github ->
-file_list -> fetch_url -> recall_image -> action -> search ->
-implicit answer (if no markers found). `propose_action` is parsed
-from `<action type="..." recipient="..." reason="...">message</action>`
-XML markers.
+file_list -> fetch_url -> recall_image -> action -> propose_action ->
+lookup_contact -> search -> implicit answer (if no markers found).
+`propose_action` is parsed from both `<action type="...">` and
+`<propose_action type="...">` XML markers. `lookup_contact` is parsed
+from `<lookup_contact name="...">` markers.
 
 ### System Prompt Augmentation
 
@@ -663,6 +689,11 @@ INTERNET_ACTIONS_AUDIT_LOG          # Audit log path (default logs/actions_audit
 
 # Google Calendar (YAML: google_calendar:)
 GOOGLE_CALENDAR_ENABLED             # Feature gate for calendar_create_event
+
+# Google Contacts (YAML: internet_actions:)
+GOOGLE_CONTACTS_ENABLED             # Search saved contacts (default True)
+GOOGLE_OTHER_CONTACTS_ENABLED       # Search other/auto contacts (default True)
+GOOGLE_GMAIL_SEARCH_ENABLED         # Gmail header search fallback (default True)
 ```
 
 ---
@@ -677,8 +708,10 @@ a **propose → confirm → execute** flow with mandatory human approval.
 
 1. **Propose** — The `propose_action` agentic tool creates an
    `ActionProposal` (action type, recipient, message, reason) and
-   stores it in `PendingActionsStore`. The proposal is returned to the
-   GUI as a pending action.
+   stores it in `PendingActionsStore`. For `send_email` actions, if the
+   recipient is a name (no `@`), `_resolve_email_recipient()` resolves
+   it via `google_contacts.resolve_contact()` before creating the
+   proposal. The proposal is returned to the GUI as a pending action.
 2. **Confirm** — The GUI displays approve/reject buttons when a
    pending action exists. The user reviews the proposed action and
    decides.
@@ -699,7 +732,7 @@ per line).
 |-------------|---------|-------|
 | `send_telegram` | Telegram Bot API via httpx | Requires bot token + chat ID |
 | `send_discord` | Discord webhook via httpx | Requires webhook URL |
-| `send_email` | stdlib `smtplib` (run in thread) | Requires SMTP config |
+| `send_email` | Gmail API (preferred) + SMTP fallback | Auto-resolves recipient names via Google Contacts + Gmail header search. Defense-in-depth `_resolve_recipient()` in `email.py`. |
 | `calendar_create_event` | Google Calendar API via httpx | Requires Google OAuth + `calendar.events` scope. API error responses include the response body for debugging. Config: `GOOGLE_CALENDAR_ENABLED`. Implementation in `core/actions/google_calendar_create.py`. |
 
 ### Stubs (Not Yet Implemented)

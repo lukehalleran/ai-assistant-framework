@@ -4925,8 +4925,8 @@ daemon/
 │   ├── types.py               # Data structures (AgentState, SearchProtocol, etc.)
 │   ├── protocols.py           # Protocol detection and parsing
 │   ├── controller.py          # AgenticSearchController (orchestration, prompts, quality heuristics)
-│   ├── tools.py               # ToolExecutor (dispatch routing + 18 execute methods incl. StackExchange/arXiv/PubMed/HN/GitHub/actions/calendar) [UPDATED 2026-05-27]
-│   ├── gate.py                # evaluate_agentic_gate() — 4-tier gate logic, returns AgenticDecision [NEW 2026-05-24]
+│   ├── tools.py               # ToolExecutor (dispatch routing + 20 execute methods incl. StackExchange/arXiv/PubMed/HN/GitHub/actions/calendar/contacts) [UPDATED 2026-05-28]
+│   ├── gate.py                # evaluate_agentic_gate() — 4-tier gate logic + email-by-name patterns, returns AgenticDecision [ENHANCED 2026-05-28]
 │   └── formatters.py          # AgenticFormatter (18 pure formatting methods) [NEW 2026-05]
 │
 ├── core/actions/              # Internet actions (human-in-the-loop) [NEW 2026-05-25]
@@ -4934,10 +4934,12 @@ daemon/
 │   ├── executors.py           # ActionExecutorRegistry: routes to telegram/discord/email/calendar [ENHANCED 2026-05-27]
 │   ├── telegram.py            # Telegram Bot API sender (httpx)
 │   ├── discord.py             # Discord webhook sender (httpx)
-│   ├── email.py               # Gmail API primary + SMTP fallback email sender [ENHANCED 2026-05-27]
-│   ├── google_auth.py         # Google OAuth2 credential management (installed-app flow, token persistence, refresh, scope checking) [NEW 2026-05-27]
+│   ├── email.py               # Gmail API primary + SMTP fallback email sender + contact name resolution [ENHANCED 2026-05-28]
+│   ├── google_auth.py         # Google OAuth2 credential management (installed-app flow, token persistence, refresh, scope checking, contacts + gmail scopes) [ENHANCED 2026-05-28]
 │   ├── google_calendar.py     # Fetch upcoming Google Calendar events (read-only, 5-min cache) [NEW 2026-05-27]
 │   ├── google_calendar_create.py  # Create Google Calendar events via Calendar API [NEW 2026-05-27]
+│   ├── google_contacts.py     # People API saved + other contacts search, resolve_contact() with Gmail fallback [NEW 2026-05-28]
+│   ├── gmail_search.py        # Gmail header search (From/To) for contact resolution fallback [NEW 2026-05-28]
 │   └── audit.py               # Append-only JSONL audit log
 │
 ├── processing/
@@ -5040,7 +5042,8 @@ daemon/
 │   │   ├── test_google_calendar.py      # [NEW 2026-05-27] Tests for calendar event fetching
 │   │   ├── test_calendar_create.py      # [NEW 2026-05-27] Tests for calendar event creation
 │   │   ├── test_calendar_prompt.py      # [NEW 2026-05-27] Tests for calendar prompt injection
-│   │   ├── test_gmail_send.py           # [NEW 2026-05-27] Tests for Gmail API send path
+│   │   ├── test_gmail_send.py           # [ENHANCED 2026-05-28] Tests for Gmail API send + recipient resolution (5 tests)
+│   │   ├── test_google_contacts.py      # [NEW 2026-05-28] 27 tests for Google Contacts + Gmail search resolution
 │   │   └── ... (60+ unit test files total)
 │   ├── test_eval/             # Eval system tests (246 tests) [NEW 2026-04]
 │   │   ├── test_section_registry.py     # Registry validation
@@ -5434,9 +5437,11 @@ python main.py inspect-summaries
 | synthesis_memory.py | Store: Synthesis results persistence in ChromaDB + convergence tracking + audit queue (two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`) [ENHANCED 2026-04-01] |
 | synthesis_filter.py | Filter: 7-stage async pipeline (text/domain/distance/novelty/two-pass coherence/scoring) [NEW 2026-03-28] |
 | synthesis_generator.py | Generate: Cross-store sampling (facts via ChromaDB + wiki via FAISS) + LLM bridge articulation for synthesis candidates [NEW 2026-03-28] |
-| google_auth.py | Auth: Google OAuth2 credential management (installed-app flow, token persistence, refresh, scope checking) [NEW 2026-05-27] |
+| google_auth.py | Auth: Google OAuth2 credential management (installed-app flow, token persistence, refresh, scope checking, contacts + gmail scopes) [ENHANCED 2026-05-28] |
 | google_calendar.py | Fetch: Upcoming Google Calendar events (read-only, 5-min cache) [NEW 2026-05-27] |
 | google_calendar_create.py | Create: Google Calendar events via Calendar API [NEW 2026-05-27] |
+| google_contacts.py | Search: People API saved + other contacts, resolve_contact() with Gmail fallback [NEW 2026-05-28] |
+| gmail_search.py | Search: Gmail header search (From/To) for contact resolution fallback [NEW 2026-05-28] |
 
 ---
 
@@ -5909,9 +5914,15 @@ See `docs/AGENT_SAFETY.md` for full workflow documentation.
 
 This document compresses a ~143K LOC codebase by focusing on architecture, data flow, and patterns rather than implementation details.
 
-**Last Updated**: 2026-05-27
+**Last Updated**: 2026-05-28
 
-**Recent Changes** (2026-05-27):
+**Recent Changes** (2026-05-28):
+- **Google Contacts + Gmail Search Contact Resolution** — New modules: `core/actions/google_contacts.py` (People API saved + other contacts search, resolve_contact() with Gmail fallback), `core/actions/gmail_search.py` (Gmail header search for contact resolution). `email.py` adds `_resolve_recipient()` fallback for non-agentic paths. `google_auth.py` adds contacts.readonly, contacts.other.readonly, gmail.readonly scopes. Config: `GOOGLE_CONTACTS_ENABLED`, `GOOGLE_OTHER_CONTACTS_ENABLED`, `GOOGLE_GMAIL_SEARCH_ENABLED` (all default true).
+- **Agentic Contact Lookup** — `agentic/types.py` adds `LOOKUP_CONTACT_TOOL_DEFINITION` and `wants_lookup_contact` SearchDecision fields. `agentic/protocols.py` adds `<lookup_contact>` XML parsing + tool name aliases (search_contacts, find_contact, search_email, etc.) in both NativeToolsHandler and XMLMarkerHandler. `agentic/tools.py` adds `_dispatch_lookup_contact`, `_execute_lookup_contact`, `_resolve_email_recipient` for proposal-time resolution. `agentic/gate.py` broadens email-by-name patterns.
+- **GUI Contact Resolution** — `gui/handlers.py` adds inline contact resolution in both agentic and enhanced paths, auto-email-proposal creation, `_find_email_draft()`, XML stripping at 3 layers. `gui/launch.py` adds safety-net XML stripping for `<lookup_contact>` and `<propose_action>` tags.
+- **New Tests** — test_google_contacts.py (27 tests), test_gmail_send.py enhanced with TestRecipientResolution (5 tests)
+
+**Previous Changes** (2026-05-27):
 - **Google Calendar Integration** — New modules: `core/actions/google_auth.py` (OAuth2 credential management), `core/actions/google_calendar.py` (read-only event fetch with 5-min cache), `core/actions/google_calendar_create.py` (event creation via Calendar API). New `[GOOGLE CALENDAR]` prompt section in formatter.py. `gatherer_knowledge.py` adds `get_google_calendar_events()` method. Config: `GOOGLE_CALENDAR_*` constants under `internet_actions` YAML section.
 - **Gmail API Email** — `core/actions/email.py` upgraded from SMTP-only to Gmail API primary + SMTP fallback. `executors.py` now routes `CALENDAR_CREATE_EVENT` to google_calendar_create.
 - **Agentic Calendar Support** — `agentic/types.py` propose_action schema extended with calendar fields (summary, start_time, end_time, time_zone, calendar_id, location, description). `agentic/protocols.py` handles calendar-specific param forwarding for both native and XML protocols. `agentic/tools.py` get_tool_health() lists calendar_create_event.

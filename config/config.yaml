@@ -69,7 +69,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: deepseek-v4
+  active: claude-opus-4.6
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -455,13 +455,16 @@ internet_actions:
   smtp_password: ''
   smtp_from: lukehalleran@gmail.com
   github_write_enabled: false
-  # Google OAuth2 (secrets via env vars GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET)
   google_client_id: ''
   google_client_secret: ''
   google_token_path: data/google_token.json
   google_calendar_enabled: true
   google_calendar_max_events: 10
   google_calendar_lookahead_days: 7
+  google_contacts_enabled: true
+  google_other_contacts_enabled: true
+  # Gmail header search (fallback — requires gmail.readonly scope)
+  google_gmail_search_enabled: true
   playwright_enabled: false
   playwright_timeout_s: 30
   action_ttl_seconds: 300

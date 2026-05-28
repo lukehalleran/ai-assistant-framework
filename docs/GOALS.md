@@ -111,7 +111,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **PDF/DOCX support**: Full pipeline with table extraction (pdfplumber + python-docx), chunking with header detection
 - **Multi-provider LLM**: Duel mode, best-of-N, ensemble, fallback chains
 - **Code proposals**: LLM-generated, ChromaDB-stored, GUI management, shutdown integration
-- **Agentic search**: ReAct loop with 19 tools (Tavily, Wolfram Alpha, E2B sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, signal done), context inventory, collection diversity tracking, uncertainty fallback (auto-retry via agentic search when standard response indicates "I don't know")
+- **Agentic search**: ReAct loop with 20 tools (Tavily, Wolfram Alpha, E2B sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, lookup_contact, signal done), context inventory, collection diversity tracking, uncertainty fallback (auto-retry via agentic search when standard response indicates "I don't know")
 - **Response planning**: Pre-answer plan + post-answer review gate with silent agentic retry on low-confidence reviews
 - **Thread surfacing**: Proactive open-thread detection with resolution tracking
 - **Session awareness**: Codebase diff + active features inventory at session start
@@ -126,7 +126,7 @@ These systems are complete and working. Listed here for context, not as active w
 ## Recent Completions (April-May 2026)
 
 ### Google OAuth2 + Calendar + Gmail Integration (2026-05)
-- **Google OAuth2**: `core/actions/google_auth.py` — OAuth2 flow with 3 scopes (`gmail.send`, `calendar.readonly`, `calendar.events`). Token persistence at `data/google_token.json`, automatic refresh, scope-upgrade detection (re-auth when new scopes needed).
+- **Google OAuth2**: `core/actions/google_auth.py` — OAuth2 flow with 6 scopes (`gmail.send`, `gmail.readonly`, `calendar.readonly`, `calendar.events`, `contacts.readonly`, `contacts.other.readonly`). Token persistence at `data/google_token.json`, automatic refresh, scope-upgrade detection (re-auth when new scopes needed). Contact resolution via `google_contacts.py` + `gmail_search.py`.
 - **Google Calendar read**: `core/actions/google_calendar.py` — real-time calendar events fetched via Calendar API (read-only), 5-min in-memory cache, minimal fields (title, start, end, location). Injected as `[GOOGLE CALENDAR]` prompt section via `gatherer_knowledge.py`.
 - **Google Calendar write**: `core/actions/google_calendar_create.py` — event creation via `propose_action` agentic tool (human-in-the-loop confirmation through GUI approve/reject). Routed via `ActionExecutorRegistry`.
 - **Gmail API send**: `core/actions/email.py` — Gmail API (`gmail.send` scope) as primary email transport, SMTP as fallback. Eliminates need for app passwords when Google OAuth2 is configured.

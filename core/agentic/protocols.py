@@ -11,7 +11,7 @@ Contract:
 
 Public Interface:
     - detect_protocol(model_name: str) -> SearchProtocol
-    - get_protocol_handler(protocol, wolfram_available, sandbox_available) -> BaseProtocolHandler
+    - get_protocol_handler(protocol, wolfram_available, sandbox_available, ...) -> BaseProtocolHandler
     - BaseProtocolHandler.parse_response() -> List[SearchDecision]
     - NativeToolsHandler.parse_response() -> List[SearchDecision] (parses ALL tool_calls)
     - XMLMarkerHandler.parse_response() -> List[SearchDecision] (parses ALL XML markers)
@@ -29,7 +29,10 @@ Supported Tools:
     - github / <github>: Read-only GitHub API (issues, PRs, actions, releases, search)
     - get_full_document / <get_full_document>: Retrieve complete uploaded document by title
     - fetch_url / <fetch_url>: Fetch web page content by URL
-    - propose_action: Propose internet write actions (email, telegram, discord, calendar)
+    - propose_action / <propose_action>: Propose internet write actions (email, telegram, discord, calendar)
+    - lookup_contact / <lookup_contact>: Google Contacts + Gmail header lookup [NEW 2026-05-28]
+      Tool name aliases: search_contacts, find_contact, search_gmail, search_email, gmail_search, search_inbox
+      Also parsed from <invoke name="..."> XML fallback
     - signal_done / <done>: Signal task completion
 
 Dependencies:
@@ -624,6 +627,21 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning("[AgenticProtocol] propose_action called without action_type/message")
                 return None
 
+        elif func_name in ("lookup_contact", "search_contacts", "find_contact",
+                           "search_gmail", "search_email", "gmail_search", "search_inbox"):
+            name = args.get("name", "") or args.get("query", "")
+            reason = args.get("reason")
+            if name:
+                logger.debug(f"[AgenticProtocol] Native tool lookup_contact (via {func_name}): {name}")
+                return SearchDecision(
+                    wants_lookup_contact=True,
+                    lookup_contact_name=name,
+                    lookup_contact_reason=reason,
+                )
+            else:
+                logger.warning(f"[AgenticProtocol] {func_name} called without name/query")
+                return None
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return None
@@ -708,7 +726,32 @@ class NativeToolsHandler(BaseProtocolHandler):
                         action_reason=reason,
                     ))
 
-        # Pattern 2: XML-style <action type="..."> (delegate to XML handler)
+        # Pattern 2: XML-style <invoke name="..."> (Anthropic XML function calling)
+        if not decisions:
+            for invoke_match in re.finditer(
+                r'<invoke\s+name="(\w+)"[^>]*>(.*?)</invoke>',
+                content,
+                re.DOTALL,
+            ):
+                func_name = invoke_match.group(1)
+                body = invoke_match.group(2)
+                # Extract <parameter name="key">value</parameter> pairs
+                args = {}
+                for param_match in re.finditer(
+                    r'<parameter\s+name="(\w+)"[^>]*>(.*?)</parameter>',
+                    body,
+                    re.DOTALL,
+                ):
+                    args[param_match.group(1)] = param_match.group(2).strip()
+
+                parsed = self._parse_single_tool_call({
+                    "function": {"name": func_name, "arguments": json.dumps(args)}
+                })
+                if parsed is not None:
+                    logger.info(f"[AgenticProtocol] Parsed XML invoke '{func_name}' from text")
+                    decisions.append(parsed)
+
+        # Pattern 3: XML-style <action type="..."> (legacy XML tag format)
         if not decisions:
             action_xml = re.search(
                 r'<action\s+type="(\w+)"[^>]*>(.*?)</action>',
@@ -980,6 +1023,29 @@ class XMLMarkerHandler(BaseProtocolHandler):
         r'\s*>(.*?)</action>',
         re.DOTALL | re.IGNORECASE
     )
+    # Contact lookup pattern: <lookup_contact name="Meaghan">reason</lookup_contact>
+    LOOKUP_CONTACT_PATTERN = re.compile(
+        r'<lookup_contact\s+name=["\']([^"\']+)["\']\s*>(.*?)</lookup_contact>',
+        re.DOTALL | re.IGNORECASE
+    )
+    # Propose action pattern: <propose_action type="send_email" recipient="..." subject="..." reason="...">body</propose_action>
+    PROPOSE_ACTION_PATTERN = re.compile(
+        r'<propose_action\s+type=["\']([^"\']+)["\']'
+        r'(?:\s+recipient=["\']([^"\']*)["\'])?'
+        r'(?:\s+subject=["\']([^"\']*)["\'])?'
+        r'(?:\s+reason=["\']([^"\']*)["\'])?'
+        r'\s*>(.*?)</propose_action>',
+        re.DOTALL | re.IGNORECASE
+    )
+    # Fallback: Anthropic-style <invoke name="tool"><parameter name="key">val</parameter></invoke>
+    INVOKE_PATTERN = re.compile(
+        r'<invoke\s+name=["\'](\w+)["\'][^>]*>(.*?)</invoke>',
+        re.DOTALL | re.IGNORECASE
+    )
+    INVOKE_PARAM_PATTERN = re.compile(
+        r'<parameter\s+name=["\'](\w+)["\'][^>]*>(.*?)</parameter>',
+        re.DOTALL | re.IGNORECASE
+    )
 
     def parse_response(self, response: Any) -> List[SearchDecision]:
         """
@@ -1214,6 +1280,81 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     action_summary=summary,
                     action_reason=reason,
                 ))
+
+        # Check for <propose_action> markers
+        for pa_match in self.PROPOSE_ACTION_PATTERN.finditer(text):
+            action_type = pa_match.group(1).strip()
+            recipient = pa_match.group(2) or ""
+            subject = pa_match.group(3) or ""
+            reason = pa_match.group(4) or ""
+            message = pa_match.group(5).strip()
+            if action_type:
+                params = {}
+                if message:
+                    params["message"] = message
+                if recipient:
+                    params["recipient"] = recipient
+                if subject:
+                    params["subject"] = subject
+                summary = f"{action_type} to {recipient}: {message[:60]}" if recipient else f"{action_type}: {message[:80]}"
+                logger.info(f"[AgenticProtocol] XML propose_action marker found: {summary}")
+                decisions.append(SearchDecision(
+                    wants_action=True,
+                    action_type=action_type,
+                    action_params=params,
+                    action_summary=summary,
+                    action_reason=reason or "User requested",
+                ))
+
+        # Check for <lookup_contact> markers
+        for lc_match in self.LOOKUP_CONTACT_PATTERN.finditer(text):
+            name = lc_match.group(1).strip()
+            reason = lc_match.group(2).strip()
+            if name:
+                logger.debug(f"[AgenticProtocol] XML lookup_contact marker found: {name}")
+                decisions.append(SearchDecision(
+                    wants_lookup_contact=True,
+                    lookup_contact_name=name,
+                    lookup_contact_reason=reason,
+                ))
+
+        # Fallback: <invoke name="..."> (Anthropic-style function calls emitted as text)
+        if not decisions:
+            for invoke_match in self.INVOKE_PATTERN.finditer(text):
+                func_name = invoke_match.group(1)
+                body = invoke_match.group(2)
+                args = {}
+                for param_match in self.INVOKE_PARAM_PATTERN.finditer(body):
+                    args[param_match.group(1)] = param_match.group(2).strip()
+                # Delegate to NativeToolsHandler parsing for known tools
+                if func_name in ("lookup_contact", "search_contacts", "find_contact",
+                               "search_gmail", "search_email", "gmail_search", "search_inbox"):
+                    name = args.get("name", "") or args.get("query", "")
+                    if name:
+                        logger.debug(f"[AgenticProtocol] XML invoke lookup_contact (via {func_name}): {name}")
+                        decisions.append(SearchDecision(
+                            wants_lookup_contact=True,
+                            lookup_contact_name=name,
+                            lookup_contact_reason=args.get("reason"),
+                        ))
+                elif func_name == "propose_action":
+                    action_type = args.get("action_type") or args.get("type", "")
+                    if action_type:
+                        params = {}
+                        for k in ("message", "recipient", "subject"):
+                            if args.get(k):
+                                params[k] = args[k]
+                        summary = f"{action_type}: {args.get('message', '')[:80]}"
+                        logger.info(f"[AgenticProtocol] XML invoke propose_action: {summary}")
+                        decisions.append(SearchDecision(
+                            wants_action=True,
+                            action_type=action_type,
+                            action_params=params,
+                            action_summary=summary,
+                            action_reason=args.get("reason", "User requested"),
+                        ))
+                else:
+                    logger.debug(f"[AgenticProtocol] XML invoke unknown tool: {func_name}")
 
         # No markers found - model wants to answer
         if not decisions:

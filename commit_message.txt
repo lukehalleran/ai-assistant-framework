@@ -1,60 +1,81 @@
-feat: Google OAuth2 + Calendar integration, Gmail API email, ephemeral fact filtering
+feat: Google Contacts + Gmail search contact resolution, email-by-name support
 
-Google OAuth2 (core/actions/google_auth.py): installed-app flow with
-3 scopes (gmail.send, calendar.readonly, calendar.events). Token
-persistence at data/google_token.json, auto-refresh, scope-upgrade
-detection, has_scope() gate. Singleton via get_google_auth().
+Contact resolution system enabling "email Maegan" without requiring
+a full email address. Three-tier lookup: saved Google Contacts →
+Other Contacts → Gmail header search fallback.
 
-Google Calendar read (core/actions/google_calendar.py): fetch_upcoming_events()
-with 5-min module-level cache, httpx GET to Calendar API, returns
-minimal fields (summary, start, end, all_day, location). Injected
-into prompt as [GOOGLE CALENDAR] section via gatherer_knowledge.py
-get_google_calendar_events() + builder.py parallel task.
+Google Contacts (core/actions/google_contacts.py): People API
+integration with search_contacts() (saved), search_other_contacts()
+(auto/other), resolve_contact() (combined 3-tier with Gmail fallback).
+5-min module-level cache keyed by (endpoint, normalized_query).
+Lazy warmup request per People API recommendation. Skips contacts
+without email addresses. Returns minimal fields: name, email, source.
 
-Google Calendar write (core/actions/google_calendar_create.py):
-create_calendar_event() validates scope, POSTs to Calendar API.
-Executor wired (was stub). Protocol fix: protocols.py now detects
-calendar_create_event, accepts summary instead of message, forwards
-all 7 calendar params (summary, description, start_time, end_time,
-time_zone, calendar_id, location). Text parser no longer blindly
-prepends send_ to non-messaging action types. Tool health in
-tools.py now lists calendar_create_event when enabled. types.py
-propose_action schema extended with calendar fields, required
-relaxed to ["action_type", "reason"].
+Gmail header search (core/actions/gmail_search.py): Searches Gmail
+messages matching a name query, fetches From/To metadata headers only
+(never reads message bodies). Concurrency-limited to 5 parallel
+message fetches via asyncio.Semaphore. Deduplicates by email, filters
+out user's own address. Requires gmail.readonly scope.
 
-Gmail API email (core/actions/email.py): rewritten — Gmail API
-primary path via google_auth (httpx POST to gmail/v1/users/me/
-messages/send with base64 RFC 5322). SMTP fallback only if Gmail
-unconfigured/unauthenticated. No SMTP fallback after Gmail attempt
-(prevents duplicate sends).
+OAuth2 scopes: Added contacts.readonly, contacts.other.readonly,
+gmail.readonly to SCOPES list (now 6 total). Existing
+needs_scope_upgrade() detects mismatch and prompts re-auth.
 
-Ephemeral fact filtering: dual-layer blocking in fact_extractor.py
-and llm_fact_extractor.py — blocks PROFILE_EPHEMERAL_RELATIONS
-predicates and boolean-only values at extraction time. LLM prompt
-updated to explicitly discourage transient state. memory_retriever.py
-replaces hardcoded _EPHEMERAL_PREDICATES with config-driven
-_get_ephemeral_predicates(), adds TTL filter (PROFILE_EPHEMERAL_TTL_HOURS
-default 24h) to drop stale ephemeral facts from retrieval.
+Recipient resolution — two layers:
+1. Proposal-time (core/agentic/tools.py): _resolve_email_recipient()
+   in _dispatch_action_proposal() resolves name→email before storing
+   proposal, so confirmation card shows resolved address.
+2. Execution-time (core/actions/email.py): _resolve_recipient()
+   fallback in send_email() for non-agentic paths.
 
-Backup: scripts/backup_data.sh uploads encrypted backup to Backblaze
-B2 via rclone after local backup, prunes remote backups older than
-KEEP_DAYS.
+Agentic gate (core/agentic/gate.py): Broadened email-by-name
+patterns — now catches "send [name] an email", "email" + "send"/
+"draft"/"compose" co-occurrence, and "email [name]" at start of
+message. Triggers agentic routing for contact resolution.
 
-Prompt changes: new [UPCOMING SCHEDULE] and [GOOGLE CALENDAR]
-sections in formatter.py. Section registry now 31 entries (was 29).
-system_prompt.txt updated with section documentation.
+Protocol parsing (core/agentic/protocols.py): Added <propose_action>
+and <lookup_contact> XML marker patterns for XMLMarkerHandler. Added
+<invoke> fallback parser for Anthropic-style function call XML. Tool
+name aliases: search_contacts, find_contact, search_gmail,
+search_email, gmail_search, search_inbox — all route to
+wants_lookup_contact. Both NativeToolsHandler and XMLMarkerHandler
+handle these.
 
-Config: InternetActionsSection extended with google_client_id,
-google_client_secret, google_token_path, google_calendar_enabled,
-google_calendar_max_events, google_calendar_lookahead_days. YAML
-section updated. app_config.py adds GOOGLE_CALENDAR_* and
-INTERNET_ACTIONS_GOOGLE_* constants with env var overrides.
+XML stripping (gui/handlers.py, gui/launch.py): 3-layer defense
+strips <function_calls>, <invoke>, <propose_action>, <lookup_contact>
+blocks from response text. Handles both closed and unclosed tags.
+Safety-net strip in launch.py before final UI render.
 
-New files: core/actions/google_auth.py, google_calendar.py,
-google_calendar_create.py, tests/unit/test_calendar_create.py,
-test_calendar_prompt.py, test_gmail_send.py, test_google_auth.py,
-test_google_calendar.py
+Inline contact resolution (gui/handlers.py): When models emit
+<invoke name="lookup_contact/search_email"> as text (both agentic
+and enhanced paths), handler resolves contact inline via
+resolve_contact(), auto-creates send_email ActionProposal if email
+intent detected. _find_email_draft() searches chat_history for
+structured draft content; returns None if no draft found to prevent
+sending meta-commentary as email body.
+
+Agentic tools (core/agentic/tools.py): _dispatch_lookup_contact
+and _execute_lookup_contact for search-round dispatch. Config guard
+checks all three enable flags. Tool health reports lookup_contact
+status (removed from tool offerings to prevent model confusion, but
+dispatch handles it if models call it from context).
+
+XML prompt (core/agentic/types.py): Added propose_action as tool #14
+in AGENTIC_SYSTEM_PROMPT_INJECTION with auto-resolution guidance.
+Tool selection guidelines table updated. Strong emphasis: "for email,
+just use propose_action with the name — no lookup needed."
+
+Config: google_contacts_enabled (default true), google_other_contacts_enabled
+(default true), google_gmail_search_enabled (default true) in schema.py,
+app_config.py, config.yaml. All support env var overrides.
+
+New files: core/actions/google_contacts.py, core/actions/gmail_search.py,
+tests/unit/test_google_contacts.py
+
+Tests: 27 new in test_google_contacts.py (config gating, API parsing,
+dedup, cache, error handling). 5 new in test_gmail_send.py
+(TestRecipientResolution). All 72 related tests passing.
 
 Docs: updated CLAUDE.md, QUICK_REFERENCE.md, PROJECT_SKELETON.md,
-ARCHITECTURE_GUIDE.md, FORMAL_MODEL.md, GOALS.md, MEMORY_SYSTEM.md,
-PROMPT_BUILDING_PIPELINE.md, AGENTIC_SEARCH.md
+ARCHITECTURE_GUIDE.md, AGENTIC_SEARCH.md, FORMAL_MODEL.md, GOALS.md.
+Module contracts updated in all changed .py files.
