@@ -5,6 +5,18 @@ import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
+# Skip all tests if google-auth packages not installed (CI environment)
+try:
+    import google.oauth2.credentials  # noqa: F401
+    _HAS_GOOGLE_AUTH = True
+except ImportError:
+    _HAS_GOOGLE_AUTH = False
+
+pytestmark = pytest.mark.skipif(
+    not _HAS_GOOGLE_AUTH,
+    reason="google-auth / google-auth-oauthlib not installed",
+)
+
 from core.actions.google_auth import GoogleAuthManager, SCOPES
 
 
