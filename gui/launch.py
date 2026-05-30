@@ -1149,7 +1149,7 @@ def launch_gui(orchestrator, force_wizard=False):
                         _model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
                         _current_active = _mm.get_active_model_name() or (_model_choices[0] if _model_choices else 'gpt-4-turbo')
                     except (AttributeError, TypeError, KeyError):
-                        _model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5']
+                        _model_choices = ['claude-opus-4.8', 'gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5']
                         _current_active = 'gpt-5.1'
 
                     model_dd = gr.Dropdown(

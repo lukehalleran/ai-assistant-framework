@@ -651,7 +651,7 @@ check_conflicts(files) -> List[FeatureEntry]    # File overlap detection
 
 # knowledge/proposal_generator.py — LLM-based proposal generation
 class GoalDirectedGenerator:
-    def __init__(model_manager, repo_path=".", model_alias="claude-opus-4.6", max_proposals=5):
+    def __init__(model_manager, repo_path=".", model_alias="claude-opus-4.8", max_proposals=5):
         pass
 
     async def generate_proposals(extra_context="", max_proposals=None) -> List[CodeProposal]:
@@ -2435,7 +2435,7 @@ SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88   # Claim sim gate — only near-verbat
 SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.70  # Label threshold
 SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # Co-occurrence gate — 40M-scale recalibrated
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
-SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"  # code default; config.yaml overrides to "claude-opus-4.6"
+SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"  # code default; config.yaml overrides to "claude-opus-4.8"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
 SYNTHESIS_WEIGHT_COHERENCE = 0.30
 SYNTHESIS_WEIGHT_NOVELTY = 0.40
@@ -2463,7 +2463,7 @@ SYNTHESIS_AUDIT_MIN_GRADED = 10            # Minimum graded results before auto-
 #   distance_min: 0.20
 #   distance_max: 0.90
 #   cooccurrence_known_threshold: 0.85   # 40M-scale recalibrated
-#   coherence_model: claude-opus-4.6
+#   coherence_model: claude-opus-4.8
 #   coherence_min_level: MODERATE
 #   weights: {coherence: 0.30, novelty: 0.40, distance: 0.15, structural: 0.15}
 #   novelty_weights: {claim: 0.25, cooccurrence: 0.30, specificity: 0.25, internal: 0.20}

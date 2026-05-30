@@ -58,7 +58,7 @@ class GoalDirectedGenerator:
         self,
         model_manager=None,
         repo_path: str = ".",
-        model_alias: str = "claude-opus-4.6",
+        model_alias: str = "claude-opus-4.8",
         max_proposals: int = 5,
     ):
         self.model_manager = model_manager

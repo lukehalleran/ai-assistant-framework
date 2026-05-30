@@ -105,7 +105,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **Knowledge integration**: Obsidian vault (multimodal, mtime-based re-embedding), reference docs, git commits, procedural skills, Wikipedia (FAISS IVFPQ 40M vectors)
 - **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring, wiki enrichment at shutdown
 - **Proactive surfacing**: Cross-domain insight generation from knowledge graph, session-cached LLM calls, novelty-filtered
-- **Synthesis pipeline**: Cross-store candidate generation, 7-stage filter (`claude-opus-4.6` coherence judge), LLM bridge articulation, convergence tracking, human audit queue with two-layer grading and auto-halt. All three generators currently disabled pending grading validation (see `docs/grading_plan.md`)
+- **Synthesis pipeline**: Cross-store candidate generation, 7-stage filter (`claude-opus-4.8` coherence judge), LLM bridge articulation, convergence tracking, human audit queue with two-layer grading and auto-halt. All three generators currently disabled pending grading validation (see `docs/grading_plan.md`)
 - **Implementation tracking**: 4-stage proposal detection (file → grep → git → LLM), cooldown-gated
 - **Fast Mode**: Reduced retrieval for mobile/slow connections with progress keepalives
 - **PDF/DOCX support**: Full pipeline with table extraction (pdfplumber + python-docx), chunking with header detection
@@ -210,7 +210,7 @@ These systems are complete and working. Listed here for context, not as active w
 - `SynthesisFilter.process_batch()` stores composite-rejected candidates for FN review
 - GUI "Synthesis" tab with two-layer grading UI: 3 binary screening toggles (changes thinking? / real mechanism? / heard before?) + 1-5 gut-feel slider. See `docs/grading_plan.md` for full grading protocol.
 - Auto-halt in `shutdown_processor.py`: skips synthesis if FP rate > `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` (0.50)
-- Coherence judge model: `claude-opus-4.6` (set in config.yaml `synthesis_filter.coherence_model`)
+- Coherence judge model: `claude-opus-4.8` (set in config.yaml `synthesis_filter.coherence_model`)
 - Config: `SYNTHESIS_AUDIT_ENABLED`, `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`, `SYNTHESIS_AUDIT_MIN_GRADED`; YAML section `synthesis_audit`
 - 34 tests in `tests/unit/test_synthesis_audit.py`
 

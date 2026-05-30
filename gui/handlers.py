@@ -25,20 +25,38 @@ Module Contract
 - Provenance [NEW 2026-03-26]:
   - All 5 response modes build provenance dicts (response_mode, model_name, thinking_block, cited_ids, prompt_hash, agentic_summary)
   - _background_store_interaction() accepts session_id, provenance, mode params and forwards to memory system
-- Extracted helpers [REFACTORED 2026-05-22]:
+- Structure [REFACTORED 2026-05-30]: handle_submit is now a thin (~150-line) async-generator
+  dispatcher. It builds a SubmitContext (threaded state) and routes to per-mode handler
+  generators, each of which yields the same chunk shapes the old inline blocks did and signals
+  completion via ctx.handled (the dispatcher returns when set, else falls through):
+  - _prepare_submit_context(ctx): shared prelude (fast-mode limits, prepare_prompt keepalive,
+    image inject) for all non-raw paths.
+  - _run_raw / _run_duel / _run_agentic_search / _run_enhanced: the 4 mutually-exclusive parent
+    modes. _run_duel and _run_agentic_search leave ctx.handled False on bail to fall through.
+  - _run_doc_generation / _run_self_note: agentic-gate bypasses (do their own store_interaction).
+  - _run_enhanced owns the post-answer passes (uncertainty fallback, review gate) and the
+    finally cleanup (fast-mode restore + storage). Its finally is enhanced-path-only by design
+    (see "latent fast-mode-restore" note below) — do NOT hoist it to the dispatcher.
+- Extracted helpers:
   - _safe_count_tokens(), _safe_extract_citations(), _build_debug_record(), _build_provenance(),
     _attach_agentic_provenance(), _sanitize_response_text(), _strip_echoed_headers(),
     _dispatch_storage(), _silent_agentic_retry(), _get_session_id(), _find_email_draft()
-  - Inline contact resolution: both agentic and enhanced paths resolve recipient names
-    to emails via google_contacts.resolve_contact() before creating ActionProposals.
-    Auto-email-proposal creation when propose_action XML detected in response.
-    XML stripping at 3 layers (agentic response, enhanced response, final UI render).
-  - Consolidate patterns repeated 2-4x across mode paths; handle_submit 1541→1200 LOC
+  - _strip_inline_tool_xml(text, full=): consolidates the leaked tool-call XML stripping
+    (5-pattern full set; 3-pattern subset for the enhanced lookup_contact site).
+  - _make_text_action_proposal(decision, store): shared propose+audit for text tool-calls.
+  - _resolve_contact_and_propose_email(...): shared contact resolution + auto-email proposal
+    for the agentic and enhanced lookup_contact paths (no_contacts_suffix keeps each path's
+    exact not-found wording).
+- KNOWN latent bug (preserved, NOT fixed here): under fast_mode, the duel/doc-gen/self-note/
+  agentic-success paths return before the enhanced finally, so fast-mode flags + _original_limits
+  are never restored on those paths. Pinned by test_fast_mode_agentic_leaves_flag_set.
 - Side effects:
   - Writes to conversation logger; stores to memory_system (with provenance metadata); updates debug_state for Debug Trace tab.
 """
 import asyncio
 import logging
+from dataclasses import dataclass, field
+from typing import Any
 from core.response_parser import ResponseParser
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
@@ -597,117 +615,196 @@ async def _silent_agentic_retry(
         return None, None
 
 
-@log_and_time("Handle Submit")
-async def handle_submit(
-    user_text,
-    files,
-    history,
-    use_raw_gpt,
-    orchestrator,
-    system_prompt=DEFAULT_SYSTEM_PROMPT,
-    force_summarize=False,
-    include_summaries=True,
-    personality=None,
-    fast_mode=False
-):
-    logger.info(f"[Handle Submit] ENTRY - raw_mode={use_raw_gpt}, fast_mode={fast_mode}")
-    logger.info(f"[Handle Submit] Query: {user_text[:100]}...")
+# Tool-call XML blocks the model sometimes leaks into its final answer. Shared by the
+# agentic + enhanced display-cleanup sites. The full set (5 patterns) is used at the
+# final-answer and text-action sites; the 3-pattern subset is used at the enhanced
+# lookup_contact site (which historically stripped only function_calls + invoke).
+_TOOL_XML_STRIP_PATTERNS = [
+    (_re.compile(r'<function_calls>.*?</function_calls>', _re.DOTALL), ''),
+    (_re.compile(r'<function_calls>.*$', _re.DOTALL), ''),
+    (_re.compile(r'<invoke\s[^>]*>.*?</invoke>', _re.DOTALL), ''),
+    (_re.compile(r'<propose_action[^>]*>.*?</propose_action>', _re.DOTALL), ''),
+    (_re.compile(r'<lookup_contact[^>]*>.*?</lookup_contact>', _re.DOTALL), ''),
+]
 
-    # Update activity timestamp for idle monitor
+
+def _strip_inline_tool_xml(text, *, full=True):
+    """Strip leaked tool-call XML blocks from a display string.
+
+    ``full=True`` strips function_calls/invoke/propose_action/lookup_contact (the 5-pattern
+    set used at the agentic + enhanced final-answer and text-action sites). ``full=False``
+    strips only function_calls(complete+unclosed)/invoke (the 3-pattern subset used at the
+    enhanced lookup_contact site). Mirrors the per-substitution ``.strip()`` of the inline
+    originals exactly.
+    """
+    patterns = _TOOL_XML_STRIP_PATTERNS if full else _TOOL_XML_STRIP_PATTERNS[:3]
+    for pat, repl in patterns:
+        text = pat.sub(repl, text).strip()
+    return text
+
+
+def _make_text_action_proposal(decision, store):
+    """Create + audit an ActionProposal from a parsed text tool-call decision.
+
+    Shared by the agentic and enhanced text-action paths (the ActionType guard + propose +
+    audit block). Returns the new ``action_id``, or ``None`` if the action type is unknown
+    (caller should ``break`` in that case, matching the originals).
+    """
+    from core.actions.types import ActionProposal, ActionType
+    from core.actions.audit import ActionAuditLog
+    from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
     try:
-        import main
-        if hasattr(main, 'update_activity_timestamp'):
-            main.update_activity_timestamp()
-    except (ImportError, AttributeError) as e:
-        logger.debug(f"[Handlers] Could not update activity timestamp: {e}")
+        action_type = ActionType(decision.action_type)
+    except ValueError:
+        logger.warning(f"[Handle Submit] Unknown action type from text: {decision.action_type}")
+        return None
+    proposal = ActionProposal(
+        action_type=action_type,
+        params=decision.action_params or {},
+        summary=decision.action_summary or f"{decision.action_type}: action",
+        reasoning=decision.action_reason or "",
+    )
+    store.propose(proposal)
+    ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(proposal)
+    return proposal.action_id
 
-    # Get conversation logger
-    conversation_logger = get_conversation_logger()
 
-    if not user_text.strip():
-        yield {"role": "assistant", "content": "⚠️ Empty input received."}
-        return
+async def _resolve_contact_and_propose_email(
+    contact_name, user_text, history, display_text, store, *, no_contacts_suffix="",
+):
+    """Resolve a contact name and, when email intent is present, auto-create a send_email
+    proposal. Shared by the agentic and enhanced lookup_contact paths.
 
-    # Process files using security-hardened FileProcessor
-    # Supports .txt, .md, .json, .yaml, .yml, .log, .html, .xml, .csv, .py, .docx, .xlsx, .pdf files and .png, .jpg, .jpeg, .gif, .webp images
-    file_names = [file.name for file in files] if files else []
-    files_result = await file_processor.process_files_structured(user_text, files or [])
-    merged_input = files_result.text_content
+    Appends a contact / proposal card (or a not-found message) to ``display_text`` and
+    returns ``(updated_display_text, action_id_or_None)``. The ``no_contacts_suffix`` lets
+    each caller keep its exact not-found wording (agentic: ""; enhanced: " in Google
+    Contacts or Gmail"). Callers do their own XML stripping and own the surrounding
+    try/except, matching the originals.
+    """
+    from core.actions.google_contacts import resolve_contact
 
-    # Persist uploads to ChromaDB in background (fire-and-forget)
-    if files_result.documents or files_result.images:
-        persist_task = asyncio.create_task(_persist_uploads(orchestrator, files_result))
-        _pending_storage_tasks.add(persist_task)
-        persist_task.add_done_callback(_pending_storage_tasks.discard)
+    contacts = await resolve_contact(contact_name, max_results=5)
+    action_id = None
+    if contacts:
+        email = contacts[0]['email']
+        name = contacts[0]['name']
+        alt = ""
+        if len(contacts) > 1:
+            alts = [f"{c['name']} <{c['email']}>" for c in contacts[1:]]
+            alt = f"\n*(Also found: {', '.join(alts)})*"
+        email_intent = any(w in user_text.lower() for w in (
+            'send', 'email', 'mail', 'draft', 'fire', 'message', 'try',
+        ))
+        if email_intent:
+            from core.actions.types import ActionProposal, ActionType
+            from core.actions.audit import ActionAuditLog
+            from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
+            body = _find_email_draft(history, display_text)
+            if body:
+                proposal = ActionProposal(
+                    action_type=ActionType.SEND_EMAIL,
+                    params={
+                        "recipient": email,
+                        "message": body,
+                        "subject": "Weekly Summary",
+                    },
+                    summary=f"send_email to {name} <{email}>",
+                    reasoning=f"Resolved '{contact_name}' via contact search",
+                )
+                store.propose(proposal)
+                ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(proposal)
+                action_id = proposal.action_id
+                card = f"\n\n---\n**send_email** to {name} <{email}>\n"
+                card += f"> {body[:300]}\n\n"
+                if alt:
+                    card += alt + "\n"
+                display_text += card
+                logger.info(f"[Handle Submit] Auto-created send_email proposal to {email}")
+            else:
+                display_text += (
+                    f"\n\n**Contact found:** {name} <{email}>{alt}\n\nI found the email "
+                    f"address but couldn't locate the draft in this session. Could you "
+                    f"paste or describe what you'd like to send?"
+                )
+        else:
+            display_text += f"\n\n**Contact found:** {name} <{email}>{alt}"
+    else:
+        display_text += f"\n\nNo contacts found for '{contact_name}'{no_contacts_suffix}."
+    return display_text, action_id
 
-    # RAW MODE: go straight through orchestrator (personality hook is handled inside process_user_query)
-    if use_raw_gpt:
-        logger.info("[Handle Submit] RAW MODE ENABLED – skipping memory and prompt building.")
 
-        # Send immediate progress to prevent mobile timeout
-        yield {"role": "assistant", "content": "💭 Processing...", "is_progress": True}
+@dataclass
+class SubmitContext:
+    """Threaded state for a single handle_submit() turn, passed to the per-mode handlers.
 
-        response_text, debug_info = await orchestrator.process_user_query(
-            user_input=merged_input,
-            files=None,
-            use_raw_mode=True,
-            personality=personality
-        )
+    Built once in the dispatcher; the prelude (_prepare_submit_context) fills the prompt
+    fields and the agentic gate fills the routing fields. Mode handlers read from it and
+    set the control signals (handled / storage_dispatched).
+    """
+    # --- immutable inputs ---
+    user_text: str
+    files: Any
+    history: Any
+    use_raw_gpt: bool
+    orchestrator: Any
+    personality: Any
+    fast_mode: bool
+    conversation_logger: Any
+    file_names: list
+    merged_input: str
+    files_result: Any
+    agentic_enabled: bool = False
+    # --- set by _prepare_submit_context ---
+    full_prompt: str = ""
+    system_prompt: str = ""
+    raw_context: dict = field(default_factory=dict)
+    note_images: list = field(default_factory=list)
+    original_limits: dict = field(default_factory=dict)
+    t_prepare_start: float = 0.0
+    t_prepare_elapsed: float = 0.0
+    # --- set after the agentic gate (evaluate_agentic_gate) ---
+    gate_decision: Any = None
+    should_use_agentic: bool = False
+    search_terms: list = field(default_factory=list)
+    doc_gen_intent: Any = None
+    self_note_intent: Any = None
+    skip_initial_search: bool = False
+    # --- control signals set by mode handlers ---
+    handled: bool = False
+    storage_dispatched: bool = False
 
-        # Log the raw mode conversation
-        conversation_logger.log_interaction(
-            user_input=user_text,  # Log original input without file content for clarity
-            assistant_response=response_text,
-            metadata={
-                'mode': 'raw',
-                'files': file_names if file_names else None,
-                'personality': personality or "default",
-            }
-        )
 
-        # Emit final chunk including debug record for UI tracing
-        _raw_model = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
-        _raw_ptok, _, _raw_ttok = _safe_count_tokens(merged_input, None, _raw_model, orchestrator)
-        debug_record = _build_debug_record(
-            mode='raw', user_text=user_text, prompt=merged_input,
-            system_prompt=None, response=response_text, model=_raw_model,
-            prompt_tokens=_raw_ptok, system_tokens=0, total_tokens=_raw_ttok,
-            citations=[], orchestrator=orchestrator,
-        )
-        yield {"role": "assistant", "content": response_text, "debug": debug_record}
-        return
+async def _prepare_submit_context(ctx):
+    """Enhanced-path prelude: apply Fast Mode limits, run prepare_prompt (yielding keepalive
+    progress), then extract + inject multimodal images. Mutates ``ctx`` with
+    full_prompt / system_prompt / raw_context / note_images / original_limits / prepare timings.
 
-    # Check if agentic search might be used (need to know before calling prepare_prompt)
-    _cfg = getattr(orchestrator, 'config', {}) or {}
-    agentic_cfg = _cfg.get('agentic_search', {}) if isinstance(_cfg, dict) else {}
-    agentic_enabled = bool(agentic_cfg.get('enabled', False))
-
-    # ENHANCED MODE: build prompt first via orchestrator.prepare_prompt (do NOT pass personality here)
-    # Always request raw context (needed for images in multimodal models and agentic search)
+    Shared by the duel / agentic / enhanced paths (everything except raw mode). Yields the
+    same progress chunks the inline prelude did, in the same order.
+    """
+    orchestrator = ctx.orchestrator
 
     # Send immediate progress to prevent mobile timeout during prompt preparation
     yield {"role": "assistant", "content": "💭 Thinking...", "is_progress": True}
 
     logger.info("[Handle Submit] >>> Starting prepare_prompt...")
 
-    # Send periodic keepalive during slow prepare_prompt (prevents mobile timeout)
-
     # Apply Fast Mode limits BEFORE prepare_prompt starts
-    _original_limits = {}
-    if fast_mode:
+    ctx.original_limits = {}
+    if ctx.fast_mode:
         logger.warning("[Handle Submit] ⚡⚡⚡ FAST MODE ENABLED ⚡⚡⚡")
         import core.prompt.builder as builder_module
         # Override builder module constants (the REAL location of these limits)
-        _original_limits['PROMPT_MAX_MEMS'] = builder_module.PROMPT_MAX_MEMS
+        ctx.original_limits['PROMPT_MAX_MEMS'] = builder_module.PROMPT_MAX_MEMS
         logger.warning(f"[Fast Mode] PROMPT_MAX_MEMS: {builder_module.PROMPT_MAX_MEMS} → 10")
         builder_module.PROMPT_MAX_MEMS = 10
 
-        _original_limits['PROMPT_MAX_RECENT'] = builder_module.PROMPT_MAX_RECENT
+        ctx.original_limits['PROMPT_MAX_RECENT'] = builder_module.PROMPT_MAX_RECENT
         logger.warning(f"[Fast Mode] PROMPT_MAX_RECENT: {builder_module.PROMPT_MAX_RECENT} → 5")
         builder_module.PROMPT_MAX_RECENT = 5
 
         if hasattr(builder_module, 'PROMPT_MAX_SEMANTIC'):
-            _original_limits['PROMPT_MAX_SEMANTIC'] = builder_module.PROMPT_MAX_SEMANTIC
+            ctx.original_limits['PROMPT_MAX_SEMANTIC'] = builder_module.PROMPT_MAX_SEMANTIC
             logger.warning(f"[Fast Mode] PROMPT_MAX_SEMANTIC: {builder_module.PROMPT_MAX_SEMANTIC} → 8")
             builder_module.PROMPT_MAX_SEMANTIC = 8
 
@@ -724,12 +821,11 @@ async def handle_submit(
                 logger.warning("[Fast Mode] Set hybrid_retriever._fast_mode = True (2150 → ~40 candidates)")
 
     # Use merged_input (user text + file contents) so file content appears in the prompt.
-    # Still pass files for context pipeline's file_context detection (has_files flag).
     import time as _time_mod
-    _t_prepare_start = _time_mod.perf_counter()
+    ctx.t_prepare_start = _time_mod.perf_counter()
     prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
-        user_input=merged_input,
-        files=files,
+        user_input=ctx.merged_input,
+        files=ctx.files,
         use_raw_mode=False,  # enhanced mode
         return_context=True  # Always get raw context for images and agentic search
     ))
@@ -744,7 +840,7 @@ async def handle_submit(
             progress_idx += 1
 
     prep_result = await prepare_task
-    _t_prepare_elapsed = _time_mod.perf_counter() - _t_prepare_start
+    ctx.t_prepare_elapsed = _time_mod.perf_counter() - ctx.t_prepare_start
 
     # Unpack result - always expect 3 values now
     full_prompt, system_prompt, raw_context = prep_result
@@ -756,8 +852,8 @@ async def handle_submit(
         logger.warning(f"[Handle Submit] Extracted {len(note_images)} images from raw_context for multimodal generation")
 
     # Inject uploaded images into note_images for immediate multimodal use
-    if files_result.images:
-        for img in files_result.images:
+    if ctx.files_result.images:
+        for img in ctx.files_result.images:
             if img.base64_data and not img.error:
                 note_images.append({
                     "note_index": 0,
@@ -768,727 +864,722 @@ async def handle_submit(
                     "data": img.base64_data,
                 })
         raw_context["note_images"] = note_images
-        logger.warning(f"[Handle Submit] Injected {len(files_result.images)} upload images, total note_images={len(note_images)}")
+        logger.warning(f"[Handle Submit] Injected {len(ctx.files_result.images)} upload images, total note_images={len(note_images)}")
+
+    ctx.full_prompt = full_prompt
+    ctx.system_prompt = system_prompt
+    ctx.raw_context = raw_context
+    ctx.note_images = note_images
 
     logger.info(f"[Handle Submit] <<< prepare_prompt done, prompt_len={len(full_prompt)}")
-
     logger.debug(f"[Handle Submit] Final prompt being passed to model:\n{full_prompt}")
-    logger.debug(f"[Handle Submit] Agentic pre-check: enabled={agentic_enabled}")
+    logger.debug(f"[Handle Submit] Agentic pre-check: enabled={ctx.agentic_enabled}")
 
-    # ── DUEL MODE: Two models + judge, takes priority over agentic ──
-    _cfg_duel = getattr(orchestrator, 'config', {}) or {}
-    _features_duel = _cfg_duel.get('features', {}) if isinstance(_cfg_duel, dict) else {}
-    _DUEL_ON = bool(_features_duel.get('best_of_duel_mode', False))
-    _DUEL_GENS = list(_features_duel.get('best_of_generator_models', []))
-    _DUEL_SELS = list(_features_duel.get('best_of_selector_models', []))
-    duel_active = bool(_DUEL_ON and len(_DUEL_GENS) >= 2 and len(_DUEL_SELS) >= 1)
-    logger.info(f"[Handle Submit] Duel check: on={_DUEL_ON}, gens={_DUEL_GENS}, sels={_DUEL_SELS}, active={duel_active}")
 
-    if duel_active:
-        logger.warning(f"[Handle Submit] DUEL MODE — {_DUEL_GENS[0]} vs {_DUEL_GENS[1]}, judge={_DUEL_SELS[0]}")
-        yield {"role": "assistant", "content": "⚖️ Duel mode — generating two responses...", "is_progress": True}
+async def _run_raw(ctx):
+    """RAW mode: bypass memory + prompt building, stream a one-shot response.
 
+    Yields a progress chunk then the final chunk (with debug record). Always sets
+    ctx.handled (raw always services the request).
+    """
+    orchestrator = ctx.orchestrator
+    logger.info("[Handle Submit] RAW MODE ENABLED – skipping memory and prompt building.")
+
+    # Send immediate progress to prevent mobile timeout
+    yield {"role": "assistant", "content": "💭 Processing...", "is_progress": True}
+
+    response_text, debug_info = await orchestrator.process_user_query(
+        user_input=ctx.merged_input,
+        files=None,
+        use_raw_mode=True,
+        personality=ctx.personality
+    )
+
+    # Log the raw mode conversation
+    ctx.conversation_logger.log_interaction(
+        user_input=ctx.user_text,  # Log original input without file content for clarity
+        assistant_response=response_text,
+        metadata={
+            'mode': 'raw',
+            'files': ctx.file_names if ctx.file_names else None,
+            'personality': ctx.personality or "default",
+        }
+    )
+
+    # Emit final chunk including debug record for UI tracing
+    _raw_model = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
+    _raw_ptok, _, _raw_ttok = _safe_count_tokens(ctx.merged_input, None, _raw_model, orchestrator)
+    debug_record = _build_debug_record(
+        mode='raw', user_text=ctx.user_text, prompt=ctx.merged_input,
+        system_prompt=None, response=response_text, model=_raw_model,
+        prompt_tokens=_raw_ptok, system_tokens=0, total_tokens=_raw_ttok,
+        citations=[], orchestrator=orchestrator,
+    )
+    yield {"role": "assistant", "content": response_text, "debug": debug_record}
+    ctx.handled = True
+
+
+async def _run_duel(ctx, gens, sels, features_duel):
+    """DUEL mode: two generator models compete, a judge picks the winner.
+
+    Yields a progress chunk (before the try, so it is emitted even on failure), optional
+    duel-thinking, and the final chunk; dispatches storage and sets ctx.handled +
+    ctx.storage_dispatched on success. On asyncio.TimeoutError or any Exception it logs and
+    returns with ctx.handled still False, so the dispatcher falls through to agentic/enhanced.
+    """
+    orchestrator = ctx.orchestrator
+    logger.warning(f"[Handle Submit] DUEL MODE — {gens[0]} vs {gens[1]}, judge={sels[0]}")
+    yield {"role": "assistant", "content": "⚖️ Duel mode — generating two responses...", "is_progress": True}
+
+    try:
+        # Read temps from config
         try:
-            # Read temps from config
-            try:
-                from config.app_config import BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_SELECTOR_MAX_TOKENS
-                _duel_temps = tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7)
-                _duel_max_tok = int(BEST_OF_MAX_TOKENS)
-                _duel_judge_tok = int(BEST_OF_SELECTOR_MAX_TOKENS)
-            except (ImportError, TypeError, ValueError):
-                _duel_temps = (0.2, 0.7)
-                _duel_max_tok = 512
-                _duel_judge_tok = 64
+            from config.app_config import BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_SELECTOR_MAX_TOKENS
+            _duel_temps = tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7)
+            _duel_max_tok = int(BEST_OF_MAX_TOKENS)
+            _duel_judge_tok = int(BEST_OF_SELECTOR_MAX_TOKENS)
+        except (ImportError, TypeError, ValueError):
+            _duel_temps = (0.2, 0.7)
+            _duel_max_tok = 512
+            _duel_judge_tok = 64
 
-            # Read latency budget
-            try:
-                from config.app_config import BEST_OF_LATENCY_BUDGET_S
-                _duel_budget = float(_features_duel.get('best_of_latency_budget_s', BEST_OF_LATENCY_BUDGET_S))
-            except (ImportError, TypeError, ValueError):
-                _duel_budget = 0.0
+        # Read latency budget
+        try:
+            from config.app_config import BEST_OF_LATENCY_BUDGET_S
+            _duel_budget = float(features_duel.get('best_of_latency_budget_s', BEST_OF_LATENCY_BUDGET_S))
+        except (ImportError, TypeError, ValueError):
+            _duel_budget = 0.0
 
-            m1, m2 = _DUEL_GENS[0], _DUEL_GENS[1]
-            judge = _DUEL_SELS[0]
+        m1, m2 = gens[0], gens[1]
+        judge = sels[0]
 
-            duel_coro = orchestrator.response_generator.generate_duel_and_judge(
-                prompt=full_prompt,
-                model_a=m1,
-                model_b=m2,
-                judge_model=judge,
-                system_prompt=system_prompt,
-                question_text=user_text,
-                context_hint=full_prompt,
-                max_tokens=_duel_max_tok,
-                temperature_a=_duel_temps[0] if len(_duel_temps) > 0 else None,
-                temperature_b=_duel_temps[1] if len(_duel_temps) > 1 else None,
-                judge_max_tokens=_duel_judge_tok,
-            )
-
-            if _duel_budget > 0:
-                best = await asyncio.wait_for(duel_coro, timeout=_duel_budget)
-            else:
-                best = await duel_coro
-
-            # Unpack dict result from generate_duel_and_judge
-            if isinstance(best, dict) and 'answer' in best:
-                final_output = best['answer']
-                display_output = final_output
-
-                # Yield thinking data for GUI accordion
-                thinking_data = {
-                    'thinking_a': best.get('thinking_a', ''),
-                    'thinking_b': best.get('thinking_b', ''),
-                    'model_a': best.get('model_a', ''),
-                    'model_b': best.get('model_b', ''),
-                    'winner': best.get('winner', ''),
-                    'scores': best.get('scores', {}),
-                }
-                logger.info(f"[DUEL] Winner: Model {thinking_data['winner']}, scores={thinking_data['scores']}")
-                yield {"role": "assistant", "content": "", "thinking": thinking_data}
-            else:
-                final_output = str(best)
-                _, final_answer = ResponseParser.parse_thinking_block(final_output)
-                display_output = final_answer if final_answer else final_output
-
-            # Token counts, citations, provenance, debug record
-            model_name = orchestrator.model_manager.get_active_model_name()
-            prompt_tokens, system_tokens, total_tokens = _safe_count_tokens(
-                full_prompt, system_prompt, model_name, orchestrator,
-            )
-            _, citations = _safe_extract_citations(final_output, orchestrator)
-
-            _duel_session_id = _get_session_id(orchestrator)
-            _duel_extra = {}
-            if isinstance(best, dict):
-                for _dk in ('thinking_a', 'thinking_b', 'model_a', 'model_b', 'winner'):
-                    _duel_extra[_dk] = best.get(_dk, '')
-            _duel_prov = _build_provenance(
-                "best-of-duel", _duel_session_id, f"{m1} vs {m2}",
-                citations, **_duel_extra,
-            )
-
-            debug_record = _build_debug_record(
-                mode='best-of-duel', user_text=user_text, prompt=full_prompt,
-                system_prompt=system_prompt, response=final_output,
-                model=f"{m1} vs {m2}", prompt_tokens=prompt_tokens,
-                system_tokens=system_tokens, total_tokens=total_tokens,
-                citations=citations, orchestrator=orchestrator,
-                provenance=_duel_prov,
-            )
-
-            yield {"role": "assistant", "content": display_output, "debug": debug_record}
-
-            _dispatch_storage(
-                orchestrator, merged_input, final_output, user_text,
-                final_output, personality, file_names, conversation_logger,
-                _duel_session_id, _duel_prov, 'best-of-duel',
-            )
-
-            return  # Done — duel mode complete
-
-        except asyncio.TimeoutError:
-            logger.warning(f"[DUEL] Timed out after {_duel_budget}s, falling back to streaming")
-        except Exception as e:
-            logger.error(f"[DUEL] Failed, falling back to standard: {e}")
-            import traceback
-            logger.debug(f"[DUEL] Traceback:\n{traceback.format_exc()}")
-        # Fall through to agentic/streaming on failure
-
-    if agentic_enabled:
-        from core.agentic.gate import evaluate_agentic_gate
-        _gate_decision = await evaluate_agentic_gate(
-            user_text=user_text,
-            entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
-            model_manager=orchestrator.model_manager,
-            corpus_manager=getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None),
-            intent_info=raw_context.get("intent") if raw_context else None,
+        duel_coro = orchestrator.response_generator.generate_duel_and_judge(
+            prompt=ctx.full_prompt,
+            model_a=m1,
+            model_b=m2,
+            judge_model=judge,
+            system_prompt=ctx.system_prompt,
+            question_text=ctx.user_text,
+            context_hint=ctx.full_prompt,
+            max_tokens=_duel_max_tok,
+            temperature_a=_duel_temps[0] if len(_duel_temps) > 0 else None,
+            temperature_b=_duel_temps[1] if len(_duel_temps) > 1 else None,
+            judge_max_tokens=_duel_judge_tok,
         )
-        should_use_agentic = _gate_decision.should_trigger
-        search_terms = _gate_decision.search_terms
-        needs_computation = "computation" in _gate_decision.modes
-        needs_memory = "memory" in _gate_decision.modes
-        needs_knowledge = "knowledge" in _gate_decision.modes
-        needs_web_search = "web_search" in _gate_decision.modes
-        needs_tools = "tools" in _gate_decision.modes
-        _matched_entities = _gate_decision.matched_entities
-        _doc_gen_intent = _gate_decision.doc_gen_intent
-        _self_note_intent = _gate_decision.self_note_intent
 
-        # --- Direct document generation (bypasses agentic loop) ---
-        if _doc_gen_intent and should_use_agentic:
-            logger.warning(f"[Handle Submit] DIRECT DOCUMENT GENERATION: {_doc_gen_intent}")
+        if _duel_budget > 0:
+            best = await asyncio.wait_for(duel_coro, timeout=_duel_budget)
+        else:
+            best = await duel_coro
+
+        # Unpack dict result from generate_duel_and_judge
+        if isinstance(best, dict) and 'answer' in best:
+            final_output = best['answer']
+            display_output = final_output
+
+            # Yield thinking data for GUI accordion
+            thinking_data = {
+                'thinking_a': best.get('thinking_a', ''),
+                'thinking_b': best.get('thinking_b', ''),
+                'model_a': best.get('model_a', ''),
+                'model_b': best.get('model_b', ''),
+                'winner': best.get('winner', ''),
+                'scores': best.get('scores', {}),
+            }
+            logger.info(f"[DUEL] Winner: Model {thinking_data['winner']}, scores={thinking_data['scores']}")
+            yield {"role": "assistant", "content": "", "thinking": thinking_data}
+        else:
+            final_output = str(best)
+            _, final_answer = ResponseParser.parse_thinking_block(final_output)
+            display_output = final_answer if final_answer else final_output
+
+        # Token counts, citations, provenance, debug record
+        model_name = orchestrator.model_manager.get_active_model_name()
+        prompt_tokens, system_tokens, total_tokens = _safe_count_tokens(
+            ctx.full_prompt, ctx.system_prompt, model_name, orchestrator,
+        )
+        _, citations = _safe_extract_citations(final_output, orchestrator)
+
+        _duel_session_id = _get_session_id(orchestrator)
+        _duel_extra = {}
+        if isinstance(best, dict):
+            for _dk in ('thinking_a', 'thinking_b', 'model_a', 'model_b', 'winner'):
+                _duel_extra[_dk] = best.get(_dk, '')
+        _duel_prov = _build_provenance(
+            "best-of-duel", _duel_session_id, f"{m1} vs {m2}",
+            citations, **_duel_extra,
+        )
+
+        debug_record = _build_debug_record(
+            mode='best-of-duel', user_text=ctx.user_text, prompt=ctx.full_prompt,
+            system_prompt=ctx.system_prompt, response=final_output,
+            model=f"{m1} vs {m2}", prompt_tokens=prompt_tokens,
+            system_tokens=system_tokens, total_tokens=total_tokens,
+            citations=citations, orchestrator=orchestrator,
+            provenance=_duel_prov,
+        )
+
+        yield {"role": "assistant", "content": display_output, "debug": debug_record}
+
+        _dispatch_storage(
+            orchestrator, ctx.merged_input, final_output, ctx.user_text,
+            final_output, ctx.personality, ctx.file_names, ctx.conversation_logger,
+            _duel_session_id, _duel_prov, 'best-of-duel',
+        )
+
+        ctx.handled = True
+        ctx.storage_dispatched = True
+        return  # Done — duel mode complete
+
+    except asyncio.TimeoutError:
+        logger.warning(f"[DUEL] Timed out after {_duel_budget}s, falling back to streaming")
+    except Exception as e:
+        logger.error(f"[DUEL] Failed, falling back to standard: {e}")
+        import traceback
+        logger.debug(f"[DUEL] Traceback:\n{traceback.format_exc()}")
+    # Fall through to agentic/streaming on failure (ctx.handled stays False)
+
+
+async def _run_doc_generation(ctx):
+    """Direct document-generation bypass (agentic gate doc_gen_intent).
+
+    Yields a progress chunk + the result chunk; does its own store_interaction and sets
+    ctx.handled on success. On exception, logs and returns with ctx.handled False so the
+    dispatcher falls through to the agentic-search path.
+    """
+    orchestrator = ctx.orchestrator
+    _doc_gen_intent = ctx.doc_gen_intent
+    logger.warning(f"[Handle Submit] DIRECT DOCUMENT GENERATION: {_doc_gen_intent}")
+    try:
+        from knowledge.document_generator import DocumentGenerator
+
+        # Resolve web_search_manager: same path the orchestrator uses
+        _wsm = None
+        _pb = getattr(orchestrator, 'prompt_builder', None)
+        if _pb:
+            _cg = getattr(_pb, 'context_gatherer', None)
+            if _cg:
+                _wsm = getattr(_cg, 'web_search_manager', None)
+
+        # Resolve chroma_store
+        _cs = None
+        _ms = getattr(orchestrator, 'memory_system', None)
+        if _ms:
+            _cs = getattr(_ms, 'chroma_store', None)
+
+        _dg = DocumentGenerator(
+            model_manager=orchestrator.model_manager,
+            web_search_manager=_wsm,
+            chroma_store=_cs,
+        )
+
+        yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
+
+        _doc_result = await _dg.generate(
+            topic=_doc_gen_intent["topic"],
+            doc_type=_doc_gen_intent["doc_type"],
+            focus=_doc_gen_intent.get("focus"),
+        )
+
+        _doc_response = (
+            f"Document saved: **{_doc_result.title}**\n\n"
+            f"- **Path**: `{_doc_result.path}`\n"
+            f"- **Type**: {_doc_result.doc_type}\n"
+            f"- **Sources**: {len(_doc_result.sources)}\n"
+            f"- **Sections**: {_doc_result.sections_count}\n"
+            f"- **Words**: {_doc_result.word_count}\n"
+        )
+        logger.info(f"[Handle Submit] Document generated: {_doc_result.path}")
+
+        # Store interaction
+        if orchestrator.memory_system:
             try:
-                from knowledge.document_generator import DocumentGenerator
-
-                # Resolve web_search_manager: same path the orchestrator uses
-                _wsm = None
-                _pb = getattr(orchestrator, 'prompt_builder', None)
-                if _pb:
-                    _cg = getattr(_pb, 'context_gatherer', None)
-                    if _cg:
-                        _wsm = getattr(_cg, 'web_search_manager', None)
-
-                # Resolve chroma_store
-                _cs = None
-                _ms = getattr(orchestrator, 'memory_system', None)
-                if _ms:
-                    _cs = getattr(_ms, 'chroma_store', None)
-
-                _dg = DocumentGenerator(
-                    model_manager=orchestrator.model_manager,
-                    web_search_manager=_wsm,
-                    chroma_store=_cs,
+                await orchestrator.memory_system.store_interaction(
+                    query=ctx.user_text,
+                    response=_doc_response,
+                    tags=["document_generation"],
                 )
+            except Exception:
+                pass
 
-                yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
+        yield {"role": "assistant", "content": _doc_response}
+        ctx.handled = True
+        return
 
-                _doc_result = await _dg.generate(
-                    topic=_doc_gen_intent["topic"],
-                    doc_type=_doc_gen_intent["doc_type"],
-                    focus=_doc_gen_intent.get("focus"),
-                )
+    except Exception as e:
+        logger.error(f"[Handle Submit] Direct document generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
 
-                _doc_response = (
-                    f"Document saved: **{_doc_result.title}**\n\n"
-                    f"- **Path**: `{_doc_result.path}`\n"
-                    f"- **Type**: {_doc_result.doc_type}\n"
-                    f"- **Sources**: {len(_doc_result.sources)}\n"
-                    f"- **Sections**: {_doc_result.sections_count}\n"
-                    f"- **Words**: {_doc_result.word_count}\n"
-                )
-                logger.info(f"[Handle Submit] Document generated: {_doc_result.path}")
 
-                # Store interaction
-                if orchestrator.memory_system:
-                    try:
-                        await orchestrator.memory_system.store_interaction(
-                            query=user_text,
-                            response=_doc_response,
-                            tags=["document_generation"],
-                        )
-                    except Exception:
-                        pass
+async def _run_self_note(ctx):
+    """Direct daemon self-note bypass (agentic gate self_note_intent).
 
-                yield {"role": "assistant", "content": _doc_response}
-                return
+    Yields a progress chunk + the result chunk; does its own store_interaction and sets
+    ctx.handled on success. On exception, logs and returns with ctx.handled False.
+    """
+    orchestrator = ctx.orchestrator
+    _self_note_intent = ctx.self_note_intent
+    logger.warning(f"[Handle Submit] DIRECT SELF-NOTE CREATION: {_self_note_intent}")
+    try:
+        from knowledge.daemon_notes_manager import DaemonNotesManager
 
-            except Exception as e:
-                logger.error(f"[Handle Submit] Direct document generation failed: {e}")
-                import traceback
-                traceback.print_exc()
-                # Fall through to normal agentic/enhanced mode
+        _cs = None
+        _ms = getattr(orchestrator, 'memory_system', None)
+        if _ms:
+            _cs = getattr(_ms, 'chroma_store', None)
 
-        # --- Direct daemon self-note creation (bypasses agentic loop) ---
-        if _self_note_intent and should_use_agentic:
-            logger.warning(f"[Handle Submit] DIRECT SELF-NOTE CREATION: {_self_note_intent}")
+        _dnm = DaemonNotesManager(
+            model_manager=orchestrator.model_manager,
+            chroma_store=_cs,
+        )
+
+        yield {"role": "assistant", "content": f"🗒️ Saving self-note: {_self_note_intent['topic']}...", "is_progress": True}
+
+        # Use the LLM to generate a proper summary from context
+        _note_summary = await _dnm._generate_summary(
+            _self_note_intent["topic"],
+            orchestrator.model_manager,
+        )
+
+        _note_result = await _dnm.create_note(
+            title=_self_note_intent["topic"],
+            category=_self_note_intent["category"],
+            summary=_note_summary,
+            confidence="medium",
+        )
+
+        _note_response = (
+            f"Self-note saved: **{_note_result.title}**\n\n"
+            f"- **Path**: `{_note_result.path}`\n"
+            f"- **Category**: {_note_result.category}\n"
+            f"- **Confidence**: {_note_result.confidence}\n"
+            f"- **ID**: {_note_result.id}\n"
+        )
+        logger.info(f"[Handle Submit] Self-note created: {_note_result.path}")
+
+        if orchestrator.memory_system:
             try:
-                from knowledge.daemon_notes_manager import DaemonNotesManager
-
-                _cs = None
-                _ms = getattr(orchestrator, 'memory_system', None)
-                if _ms:
-                    _cs = getattr(_ms, 'chroma_store', None)
-
-                _dnm = DaemonNotesManager(
-                    model_manager=orchestrator.model_manager,
-                    chroma_store=_cs,
+                await orchestrator.memory_system.store_interaction(
+                    query=ctx.user_text,
+                    response=_note_response,
+                    tags=["daemon_self_note"],
                 )
+            except Exception:
+                pass
 
-                yield {"role": "assistant", "content": f"🗒️ Saving self-note: {_self_note_intent['topic']}...", "is_progress": True}
+        yield {"role": "assistant", "content": _note_response}
+        ctx.handled = True
+        return
 
-                # Use the LLM to generate a proper summary from context
-                _note_summary = await _dnm._generate_summary(
-                    _self_note_intent["topic"],
-                    orchestrator.model_manager,
-                )
+    except Exception as e:
+        logger.error(f"[Handle Submit] Direct self-note creation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
 
-                _note_result = await _dnm.create_note(
-                    title=_self_note_intent["topic"],
-                    category=_self_note_intent["category"],
-                    summary=_note_summary,
-                    confidence="medium",
-                )
 
-                _note_response = (
-                    f"Self-note saved: **{_note_result.title}**\n\n"
-                    f"- **Path**: `{_note_result.path}`\n"
-                    f"- **Category**: {_note_result.category}\n"
-                    f"- **Confidence**: {_note_result.confidence}\n"
-                    f"- **ID**: {_note_result.id}\n"
-                )
-                logger.info(f"[Handle Submit] Self-note created: {_note_result.path}")
+async def _run_agentic_search(ctx):
+    """AGENTIC SEARCH mode: ReAct loop via the agentic controller.
 
-                if orchestrator.memory_system:
-                    try:
-                        await orchestrator.memory_system.store_interaction(
-                            query=user_text,
-                            response=_note_response,
-                            tags=["daemon_self_note"],
-                        )
-                    except Exception:
-                        pass
+    Yields keepalive/progress/streamed chunks then the final chunk (with optional
+    pending_action_id); dispatches storage and sets ctx.handled + ctx.storage_dispatched
+    on success. On exception it logs and returns with ctx.handled False, so the dispatcher
+    falls through to enhanced streaming.
+    """
+    orchestrator = ctx.orchestrator
+    _gate_decision = ctx.gate_decision
+    full_prompt = ctx.full_prompt
+    system_prompt = ctx.system_prompt
+    raw_context = ctx.raw_context
+    note_images = ctx.note_images
+    search_terms = ctx.search_terms
+    skip_initial_search = ctx.skip_initial_search
+    merged_input = ctx.merged_input
+    user_text = ctx.user_text
+    history = ctx.history
+    personality = ctx.personality
+    file_names = ctx.file_names
+    conversation_logger = ctx.conversation_logger
+    _t_prepare_start = ctx.t_prepare_start
+    _t_prepare_elapsed = ctx.t_prepare_elapsed
+    import time as _time_mod
+    logger.warning("[Handle Submit] AGENTIC SEARCH MODE - routing through agentic controller")
+    try:
+        from core.agentic import AgenticSearchController, ProgressEvent
 
-                yield {"role": "assistant", "content": _note_response}
-                return
+        # Get the agentic controller from orchestrator
+        agentic_controller = orchestrator.agentic_controller
+        model_name = orchestrator.model_manager.get_active_model_name()
 
-            except Exception as e:
-                logger.error(f"[Handle Submit] Direct self-note creation failed: {e}")
-                import traceback
-                traceback.print_exc()
+        # Get initial search terms from the trigger decision we already have
+        initial_terms = search_terms if search_terms else []
+        logger.debug(f"[Handle Submit] Agentic initial terms: {initial_terms}")
 
-        if should_use_agentic:
-            logger.warning("[Handle Submit] AGENTIC SEARCH MODE - routing through agentic controller")
+        # Extract URLs from the user message for direct fetch
+        import re as _re_url
+        _url_pattern = _re_url.compile(r'https?://[^\s<>"\')\]]+')
+        _extracted_urls = _url_pattern.findall(user_text)
+
+        # Run agentic search loop with RAG context
+        agentic_response = ""
+        logger.debug(f"[Handle Submit] Starting agentic loop with RAG context keys: {list(raw_context.keys())}")
+
+        # Keepalive wrapper: if the agentic loop stalls for >8s without
+        # yielding (e.g. waiting on a slow LLM API call mid-stream), emit
+        # a heartbeat progress message so the browser WebSocket stays alive
+        # and the final response is actually delivered to the UI.
+        _agentic_gen = agentic_controller.run_agentic_search(
+            query=merged_input,
+            system_prompt=system_prompt,
+            model_name=model_name,
+            initial_search_terms=initial_terms,
+            initial_context=raw_context,
+            skip_initial_search=_gate_decision.skip_initial_search and not _extracted_urls,
+            initial_urls=_extracted_urls if _extracted_urls else None,
+        )
+
+        async def _agentic_next():
             try:
-                from core.agentic import AgenticSearchController, ProgressEvent
+                return await _agentic_gen.__anext__(), False
+            except StopAsyncIteration:
+                return None, True
 
-                # Get the agentic controller from orchestrator
-                agentic_controller = orchestrator.agentic_controller
-                model_name = orchestrator.model_manager.get_active_model_name()
+        _KEEPALIVE_S = 8.0
+        _keepalive_n = 0
 
-                # Get initial search terms from the trigger decision we already have
-                initial_terms = search_terms if search_terms else []
-                logger.debug(f"[Handle Submit] Agentic initial terms: {initial_terms}")
-
-                # Extract URLs from the user message for direct fetch
-                import re as _re_url
-                _url_pattern = _re_url.compile(r'https?://[^\s<>"\')\]]+')
-                _extracted_urls = _url_pattern.findall(user_text)
-
-                # Run agentic search loop with RAG context
-                agentic_response = ""
-                logger.debug(f"[Handle Submit] Starting agentic loop with RAG context keys: {list(raw_context.keys())}")
-
-                # Keepalive wrapper: if the agentic loop stalls for >8s without
-                # yielding (e.g. waiting on a slow LLM API call mid-stream), emit
-                # a heartbeat progress message so the browser WebSocket stays alive
-                # and the final response is actually delivered to the UI.
-                _agentic_gen = agentic_controller.run_agentic_search(
-                    query=merged_input,
-                    system_prompt=system_prompt,
-                    model_name=model_name,
-                    initial_search_terms=initial_terms,
-                    initial_context=raw_context,
-                    skip_initial_search=_gate_decision.skip_initial_search and not _extracted_urls,
-                    initial_urls=_extracted_urls if _extracted_urls else None,
-                )
-
-                async def _agentic_next():
-                    try:
-                        return await _agentic_gen.__anext__(), False
-                    except StopAsyncIteration:
-                        return None, True
-
-                _KEEPALIVE_S = 8.0
-                _keepalive_n = 0
-
-                while True:
-                    _task = asyncio.ensure_future(_agentic_next())
-                    while True:
-                        _done, _ = await asyncio.wait({_task}, timeout=_KEEPALIVE_S)
-                        if _done:
-                            break
-                        _keepalive_n += 1
-                        _elapsed = int(_keepalive_n * _KEEPALIVE_S)
-                        yield {"role": "assistant", "content": f"🔄 Processing... ({_elapsed}s)", "is_progress": True}
-                    item, _exhausted = _task.result()
-                    if _exhausted:
-                        break
-                    if isinstance(item, ProgressEvent):
-                        # Don't overwrite streamed response with late progress events
-                        if agentic_response:
-                            logger.debug(f"[Handle Submit] Skipping post-content progress: {item.event_type}")
-                            continue
-                        # Yield progress events as status messages
-                        status_icon = {
-                            "thinking": "💭",
-                            "searching": "🔍",
-                            "searching_memory": "🧠",
-                            "found_results": "📄",
-                            "computing": "🔢",
-                            "computed": "✓",
-                            "executing_code": "🐍",
-                            "code_executed": "✅",
-                            "code_error": "⚠️",
-                            "reading_file": "📄",
-                            "file_read": "✅",
-                            "searching_files": "🔎",
-                            "files_searched": "✅",
-                            "listing_files": "📂",
-                            "files_listed": "✅",
-                            "expanding_memory": "🧠",
-                            "memory_expanded": "✅",
-                            "synthesizing": "✨",
-                            "generating_document": "📝",
-                            "document_generated": "✅",
-                            "saving_note": "🗒️",
-                            "note_saved": "✅",
-                            "proposing_action": "📨",
-                            "action_proposed": "✅",
-                            "done": "✅",
-                            "error": "❌",
-                        }.get(item.event_type, "•")
-                        # Override display message for specific event types
-                        _display_msg = {
-                            "computing": "Computing...",
-                            "executing_code": "Coding...",
-                        }.get(item.event_type, item.message)
-                        status_msg = f"{status_icon} {_display_msg}"
-                        logger.debug(f"[Handle Submit] Agentic progress: {item.event_type}")
-                        yield {"role": "assistant", "content": status_msg, "is_progress": True}
+        while True:
+            _task = asyncio.ensure_future(_agentic_next())
+            while True:
+                _done, _ = await asyncio.wait({_task}, timeout=_KEEPALIVE_S)
+                if _done:
+                    break
+                _keepalive_n += 1
+                _elapsed = int(_keepalive_n * _KEEPALIVE_S)
+                yield {"role": "assistant", "content": f"🔄 Processing... ({_elapsed}s)", "is_progress": True}
+            item, _exhausted = _task.result()
+            if _exhausted:
+                break
+            if isinstance(item, ProgressEvent):
+                # Don't overwrite streamed response with late progress events
+                if agentic_response:
+                    logger.debug(f"[Handle Submit] Skipping post-content progress: {item.event_type}")
+                    continue
+                # Yield progress events as status messages
+                status_icon = {
+                    "thinking": "💭",
+                    "searching": "🔍",
+                    "searching_memory": "🧠",
+                    "found_results": "📄",
+                    "computing": "🔢",
+                    "computed": "✓",
+                    "executing_code": "🐍",
+                    "code_executed": "✅",
+                    "code_error": "⚠️",
+                    "reading_file": "📄",
+                    "file_read": "✅",
+                    "searching_files": "🔎",
+                    "files_searched": "✅",
+                    "listing_files": "📂",
+                    "files_listed": "✅",
+                    "expanding_memory": "🧠",
+                    "memory_expanded": "✅",
+                    "synthesizing": "✨",
+                    "generating_document": "📝",
+                    "document_generated": "✅",
+                    "saving_note": "🗒️",
+                    "note_saved": "✅",
+                    "proposing_action": "📨",
+                    "action_proposed": "✅",
+                    "done": "✅",
+                    "error": "❌",
+                }.get(item.event_type, "•")
+                # Override display message for specific event types
+                _display_msg = {
+                    "computing": "Computing...",
+                    "executing_code": "Coding...",
+                }.get(item.event_type, item.message)
+                status_msg = f"{status_icon} {_display_msg}"
+                logger.debug(f"[Handle Submit] Agentic progress: {item.event_type}")
+                yield {"role": "assistant", "content": status_msg, "is_progress": True}
+            else:
+                # Response chunk - accumulate and stream
+                agentic_response += item
+                # Hide incomplete thinking blocks during streaming
+                if ResponseParser.has_incomplete_thinking_block(agentic_response):
+                    yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
+                elif ResponseParser.likely_untagged_thinking(agentic_response):
+                    # Heuristic: suppress untagged thinking during streaming
+                    yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
+                else:
+                    # Strip any completed thinking block before display
+                    thinking_detected, clean_answer = ResponseParser.parse_thinking_block(agentic_response)
+                    # Only use clean_answer if non-empty; if thinking was detected but
+                    # answer is empty, show indicator instead of falling back to raw
+                    if thinking_detected and not clean_answer:
+                        yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
                     else:
-                        # Response chunk - accumulate and stream
-                        agentic_response += item
-                        # Hide incomplete thinking blocks during streaming
-                        if ResponseParser.has_incomplete_thinking_block(agentic_response):
-                            yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
-                        elif ResponseParser.likely_untagged_thinking(agentic_response):
-                            # Heuristic: suppress untagged thinking during streaming
-                            yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
-                        else:
-                            # Strip any completed thinking block before display
-                            thinking_detected, clean_answer = ResponseParser.parse_thinking_block(agentic_response)
-                            # Only use clean_answer if non-empty; if thinking was detected but
-                            # answer is empty, show indicator instead of falling back to raw
-                            if thinking_detected and not clean_answer:
-                                yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
-                            else:
-                                _stream_display = _strip_leaked_xml_blocks(clean_answer or agentic_response)
-                                yield {"role": "assistant", "content": _stream_display}
+                        _stream_display = _strip_leaked_xml_blocks(clean_answer or agentic_response)
+                        yield {"role": "assistant", "content": _stream_display}
 
-                # Final output from agentic search - strip thinking blocks
-                final_output = agentic_response
-                thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
-                # Also try untagged thinking detection
-                if not thinking_part:
-                    untagged_thinking, untagged_answer = ResponseParser._detect_untagged_thinking(final_output)
-                    if untagged_thinking:
-                        thinking_part = untagged_thinking
-                        final_answer = untagged_answer
-                display_output = final_answer if final_answer else final_output
-                # If entire response was thinking (no answer), don't show it
-                if thinking_part and not final_answer:
-                    display_output = ""
-                display_output = ResponseParser.strip_thinking_tag_leaks(display_output)
-                display_output = _strip_leaked_xml_blocks(display_output)
+        # Final output from agentic search - strip thinking blocks
+        final_output = agentic_response
+        thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
+        # Also try untagged thinking detection
+        if not thinking_part:
+            untagged_thinking, untagged_answer = ResponseParser._detect_untagged_thinking(final_output)
+            if untagged_thinking:
+                thinking_part = untagged_thinking
+                final_answer = untagged_answer
+        display_output = final_answer if final_answer else final_output
+        # If entire response was thinking (no answer), don't show it
+        if thinking_part and not final_answer:
+            display_output = ""
+        display_output = ResponseParser.strip_thinking_tag_leaks(display_output)
+        display_output = _strip_leaked_xml_blocks(display_output)
 
-                # If agentic loop ran but no tools were actually dispatched (model
-                # just narrated what it would do), strip bare tool-call-like lines
-                # that leaked as plain text (e.g. "list_repos", "Lines added...")
-                _agentic_session = getattr(
-                    getattr(orchestrator, '_agentic_controller', None),
-                    '_last_session', None
-                )
-                _had_real_rounds = (
-                    _agentic_session
-                    and hasattr(_agentic_session, 'rounds')
-                    and len(_agentic_session.rounds) > 0
-                )
-                if not _had_real_rounds and display_output:
-                    # Response is just narration — strip lines that look like
-                    # bare tool queries (short lines without sentence structure)
-                    # But preserve [propose_action] blocks for text parsing
-                    _cleaned_lines = []
-                    _in_action_block = False
-                    for _line in display_output.split('\n'):
-                        _stripped_line = _line.strip()
-                        # Track action JSON blocks — don't strip them
-                        if _stripped_line.startswith('[propose_action'):
-                            _in_action_block = True
-                        if _in_action_block:
-                            _cleaned_lines.append(_line)
-                            if _stripped_line == '}':
-                                _in_action_block = False
-                            continue
-                        # Keep empty lines and lines with sentence structure
-                        if (not _stripped_line
-                                or len(_stripped_line.split()) >= 4
-                                or _stripped_line.endswith(('.', '!', '?', ':', ';', ','))
-                                or _stripped_line.startswith(('#', '-', '*', '>', '{', '"'))):
-                            _cleaned_lines.append(_line)
-                        else:
-                            logger.debug(f"[Handle Submit] Stripped bare tool-call line: {_stripped_line!r}")
-                    display_output = '\n'.join(_cleaned_lines).strip()
-                    display_output = _re.sub(r'\n{3,}', '\n\n', display_output)
+        # If agentic loop ran but no tools were actually dispatched (model
+        # just narrated what it would do), strip bare tool-call-like lines
+        # that leaked as plain text (e.g. "list_repos", "Lines added...")
+        _agentic_session = getattr(
+            getattr(orchestrator, '_agentic_controller', None),
+            '_last_session', None
+        )
+        _had_real_rounds = (
+            _agentic_session
+            and hasattr(_agentic_session, 'rounds')
+            and len(_agentic_session.rounds) > 0
+        )
+        if not _had_real_rounds and display_output:
+            # Response is just narration — strip lines that look like
+            # bare tool queries (short lines without sentence structure)
+            # But preserve [propose_action] blocks for text parsing
+            _cleaned_lines = []
+            _in_action_block = False
+            for _line in display_output.split('\n'):
+                _stripped_line = _line.strip()
+                # Track action JSON blocks — don't strip them
+                if _stripped_line.startswith('[propose_action'):
+                    _in_action_block = True
+                if _in_action_block:
+                    _cleaned_lines.append(_line)
+                    if _stripped_line == '}':
+                        _in_action_block = False
+                    continue
+                # Keep empty lines and lines with sentence structure
+                if (not _stripped_line
+                        or len(_stripped_line.split()) >= 4
+                        or _stripped_line.endswith(('.', '!', '?', ':', ';', ','))
+                        or _stripped_line.startswith(('#', '-', '*', '>', '{', '"'))):
+                    _cleaned_lines.append(_line)
+                else:
+                    logger.debug(f"[Handle Submit] Stripped bare tool-call line: {_stripped_line!r}")
+            display_output = '\n'.join(_cleaned_lines).strip()
+            display_output = _re.sub(r'\n{3,}', '\n\n', display_output)
 
-                # Append web sources footer if [WEB_N] citations present
-                _web_map = getattr(agentic_controller, '_current_web_source_map', None) or {}
-                if _web_map:
-                    import re as _re_cite
-                    _cited_ids = set(_re_cite.findall(r'\[WEB_(\d+)\]', display_output))
-                    if _cited_ids:
-                        _footer_lines = []
-                        for _n in sorted(_cited_ids, key=int):
-                            _key = f"WEB_{_n}"
-                            _src = _web_map.get(_key)
-                            if _src:
-                                _footer_lines.append(f"[{_key}] [{_src.get('title', '')}]({_src.get('url', '')})")
-                        if _footer_lines:
-                            display_output += "\n\n---\n**Sources:**\n" + "\n".join(_footer_lines)
-                    # Also set on orchestrator for provenance
-                    orchestrator._web_source_map = _web_map
+        # Append web sources footer if [WEB_N] citations present
+        _web_map = getattr(agentic_controller, '_current_web_source_map', None) or {}
+        if _web_map:
+            import re as _re_cite
+            _cited_ids = set(_re_cite.findall(r'\[WEB_(\d+)\]', display_output))
+            if _cited_ids:
+                _footer_lines = []
+                for _n in sorted(_cited_ids, key=int):
+                    _key = f"WEB_{_n}"
+                    _src = _web_map.get(_key)
+                    if _src:
+                        _footer_lines.append(f"[{_key}] [{_src.get('title', '')}]({_src.get('url', '')})")
+                if _footer_lines:
+                    display_output += "\n\n---\n**Sources:**\n" + "\n".join(_footer_lines)
+            # Also set on orchestrator for provenance
+            orchestrator._web_source_map = _web_map
 
-                # Parse text-based action proposals from the final response.
-                # The model sometimes outputs [propose_action: send_email] {...}
-                # as text in the final generation instead of calling the tool
-                # during the agentic loop.
-                try:
-                    from config.app_config import INTERNET_ACTIONS_ENABLED
-                    if INTERNET_ACTIONS_ENABLED and display_output:
-                        from core.agentic.tools import ToolExecutor
-                        _actions_store = ToolExecutor._get_pending_actions_store()
-                        if not _actions_store.get_pending():
-                            # No action was proposed via tool call — check text
-                            from core.agentic.protocols import NativeToolsHandler
-                            _text_handler = NativeToolsHandler(actions_available=True)
-                            _text_decisions = _text_handler._parse_text_tool_calls(display_output)
-                            for _td in _text_decisions:
-                                if _td.wants_action and _td.action_type:
-                                    logger.info(f"[Handle Submit] Parsed text action proposal: {_td.action_type}")
-                                    # Create the proposal via the dispatch path
-                                    from core.actions.types import ActionProposal, ActionType
-                                    from core.actions.audit import ActionAuditLog
-                                    from config.app_config import INTERNET_ACTIONS_TTL, INTERNET_ACTIONS_AUDIT_LOG
-                                    try:
-                                        _action_type = ActionType(_td.action_type)
-                                    except ValueError:
-                                        logger.warning(f"[Handle Submit] Unknown action type from text: {_td.action_type}")
-                                        break
-                                    _proposal = ActionProposal(
-                                        action_type=_action_type,
-                                        params=_td.action_params or {},
-                                        summary=_td.action_summary or f"{_td.action_type}: action",
-                                        reasoning=_td.action_reason or "",
-                                    )
-                                    _actions_store.propose(_proposal)
-                                    ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(_proposal)
-                                    # Strip the raw tool text from display
-                                    import re as _re_action
-                                    display_output = _re_action.sub(
-                                        r'\[propose_action:\s*\w+\]\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}',
-                                        '', display_output, count=1,
-                                    ).strip()
-                                    # Also strip <function_calls>/<invoke>/<propose_action>/<lookup_contact> blocks
-                                    display_output = _re_action.sub(
-                                        r'<function_calls>.*?</function_calls>',
-                                        '', display_output, flags=_re_action.DOTALL,
-                                    ).strip()
-                                    display_output = _re_action.sub(
-                                        r'<function_calls>.*$',
-                                        '', display_output, flags=_re_action.DOTALL,
-                                    ).strip()
-                                    display_output = _re_action.sub(
-                                        r'<invoke\s[^>]*>.*?</invoke>',
-                                        '', display_output, flags=_re_action.DOTALL,
-                                    ).strip()
-                                    display_output = _re_action.sub(
-                                        r'<propose_action[^>]*>.*?</propose_action>',
-                                        '', display_output, flags=_re_action.DOTALL,
-                                    ).strip()
-                                    display_output = _re_action.sub(
-                                        r'<lookup_contact[^>]*>.*?</lookup_contact>',
-                                        '', display_output, flags=_re_action.DOTALL,
-                                    ).strip()
-                                    break  # Only one action per turn
-                except (ImportError, Exception) as e:
-                    logger.warning(f"[Handle Submit] Text action parse failed: {e}")
+        # Parse text-based action proposals from the final response.
+        # The model sometimes outputs [propose_action: send_email] {...}
+        # as text in the final generation instead of calling the tool
+        # during the agentic loop.
+        try:
+            from config.app_config import INTERNET_ACTIONS_ENABLED
+            if INTERNET_ACTIONS_ENABLED and display_output:
+                from core.agentic.tools import ToolExecutor
+                _actions_store = ToolExecutor._get_pending_actions_store()
+                if not _actions_store.get_pending():
+                    # No action was proposed via tool call — check text
+                    from core.agentic.protocols import NativeToolsHandler
+                    _text_handler = NativeToolsHandler(actions_available=True)
+                    _text_decisions = _text_handler._parse_text_tool_calls(display_output)
+                    for _td in _text_decisions:
+                        if _td.wants_action and _td.action_type:
+                            logger.info(f"[Handle Submit] Parsed text action proposal: {_td.action_type}")
+                            if _make_text_action_proposal(_td, _actions_store) is None:
+                                break
+                            # Strip the raw tool text + leaked XML blocks from display
+                            import re as _re_action
+                            display_output = _re_action.sub(
+                                r'\[propose_action:\s*\w+\]\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}',
+                                '', display_output, count=1,
+                            ).strip()
+                            display_output = _strip_inline_tool_xml(display_output)
+                            break  # Only one action per turn
+        except (ImportError, Exception) as e:
+            logger.warning(f"[Handle Submit] Text action parse failed: {e}")
 
-                # Check for pending action proposals → append card to display
-                _pending_action_id = None
-                try:
-                    from config.app_config import INTERNET_ACTIONS_ENABLED
-                    if INTERNET_ACTIONS_ENABLED:
-                        from core.agentic.tools import ToolExecutor
-                        _actions_store = ToolExecutor._get_pending_actions_store()
-                        _pending_proposal = _actions_store.get_pending()
-                        if _pending_proposal:
-                            _pending_action_id = _pending_proposal.action_id
-                            _recipient = _pending_proposal.params.get("recipient", "")
-                            _subject = _pending_proposal.params.get("subject", "")
-                            _msg = _pending_proposal.params.get("message", "")
-                            _action_header = f"**{_pending_proposal.action_type.value}**"
-                            if _recipient:
-                                _action_header += f" to {_recipient}"
-                            if _subject:
-                                _action_header += f" — *{_subject}*"
-                            _action_card = f"\n\n---\n{_action_header}\n"
-                            if _msg:
-                                _action_card += f"> {_msg[:300]}\n\n"
-                            display_output += _action_card
-                except ImportError:
-                    pass
+        # Check for pending action proposals → append card to display
+        _pending_action_id = None
+        try:
+            from config.app_config import INTERNET_ACTIONS_ENABLED
+            if INTERNET_ACTIONS_ENABLED:
+                from core.agentic.tools import ToolExecutor
+                _actions_store = ToolExecutor._get_pending_actions_store()
+                _pending_proposal = _actions_store.get_pending()
+                if _pending_proposal:
+                    _pending_action_id = _pending_proposal.action_id
+                    _recipient = _pending_proposal.params.get("recipient", "")
+                    _subject = _pending_proposal.params.get("subject", "")
+                    _msg = _pending_proposal.params.get("message", "")
+                    _action_header = f"**{_pending_proposal.action_type.value}**"
+                    if _recipient:
+                        _action_header += f" to {_recipient}"
+                    if _subject:
+                        _action_header += f" — *{_subject}*"
+                    _action_card = f"\n\n---\n{_action_header}\n"
+                    if _msg:
+                        _action_card += f"> {_msg[:300]}\n\n"
+                    display_output += _action_card
+        except ImportError:
+            pass
 
-                logger.debug(f"[Handle Submit] Agentic loop done, response_len={len(final_output)}, display_len={len(display_output)}")
+        logger.debug(f"[Handle Submit] Agentic loop done, response_len={len(final_output)}, display_len={len(display_output)}")
 
-                # Token counts, citations, provenance, debug record
-                prompt_tokens, system_tokens, total_tokens = _safe_count_tokens(
-                    full_prompt, system_prompt, model_name, orchestrator,
-                )
-                _, citations = _safe_extract_citations(final_output, orchestrator)
+        # Token counts, citations, provenance, debug record
+        prompt_tokens, system_tokens, total_tokens = _safe_count_tokens(
+            full_prompt, system_prompt, model_name, orchestrator,
+        )
+        _, citations = _safe_extract_citations(final_output, orchestrator)
 
-                _agentic_session_id = _get_session_id(orchestrator)
-                _agentic_prov = _build_provenance(
-                    "agentic-search", _agentic_session_id, model_name,
-                    citations, thinking_block=thinking_part or "",
-                )
-                _attach_agentic_provenance(_agentic_prov, orchestrator)
+        _agentic_session_id = _get_session_id(orchestrator)
+        _agentic_prov = _build_provenance(
+            "agentic-search", _agentic_session_id, model_name,
+            citations, thinking_block=thinking_part or "",
+        )
+        _attach_agentic_provenance(_agentic_prov, orchestrator)
 
-                _agentic_phase = getattr(orchestrator, '_last_phase_timings', {})
-                _agentic_tasks = getattr(orchestrator, '_last_task_timings', {})
-                _agentic_gather = getattr(orchestrator, '_last_gather_elapsed', 0.0)
-                _agentic_handler_timings = {
-                    "prepare_prompt": round(_t_prepare_elapsed, 3),
-                    "agentic_loop": round(_time_mod.perf_counter() - _t_prepare_start - _t_prepare_elapsed, 3),
-                    "total_wall": round(_time_mod.perf_counter() - _t_prepare_start, 3),
-                }
-                if _agentic_phase:
-                    _agentic_handler_timings["context_pipeline"] = _agentic_phase.get("context_pipeline", 0.0)
-                    _agentic_handler_timings["prompt_build"] = _agentic_phase.get("prompt_build", 0.0)
+        _agentic_phase = getattr(orchestrator, '_last_phase_timings', {})
+        _agentic_tasks = getattr(orchestrator, '_last_task_timings', {})
+        _agentic_gather = getattr(orchestrator, '_last_gather_elapsed', 0.0)
+        _agentic_handler_timings = {
+            "prepare_prompt": round(_t_prepare_elapsed, 3),
+            "agentic_loop": round(_time_mod.perf_counter() - _t_prepare_start - _t_prepare_elapsed, 3),
+            "total_wall": round(_time_mod.perf_counter() - _t_prepare_start, 3),
+        }
+        if _agentic_phase:
+            _agentic_handler_timings["context_pipeline"] = _agentic_phase.get("context_pipeline", 0.0)
+            _agentic_handler_timings["prompt_build"] = _agentic_phase.get("prompt_build", 0.0)
 
-                debug_record = _build_debug_record(
-                    mode='agentic-search', user_text=user_text, prompt=full_prompt,
-                    system_prompt=system_prompt, response=final_output,
-                    model=model_name, prompt_tokens=prompt_tokens,
-                    system_tokens=system_tokens, total_tokens=total_tokens,
-                    citations=citations, orchestrator=orchestrator,
-                    provenance=_agentic_prov,
-                    phase_timings=_agentic_handler_timings,
-                    task_timings=_agentic_tasks,
-                    gather_elapsed=_agentic_gather,
-                )
-                # Yield final response with debug record (response was already streamed
-                # chunk-by-chunk during the loop, so only one yield needed here)
-                # Strip any XML tool call artifacts the model emitted in its final answer
-                import re as _re_strip
-                # Complete <function_calls>...</function_calls> blocks
-                display_output = _re_strip.sub(
-                    r'<function_calls>.*?</function_calls>',
-                    '', display_output, flags=_re_strip.DOTALL,
-                ).strip()
-                # Incomplete/unclosed <function_calls> blocks (model didn't close tag)
-                display_output = _re_strip.sub(
-                    r'<function_calls>.*$',
-                    '', display_output, flags=_re_strip.DOTALL,
-                ).strip()
-                # Individual <invoke ...>...</invoke> tags
-                display_output = _re_strip.sub(
-                    r'<invoke\s[^>]*>.*?</invoke>',
-                    '', display_output, flags=_re_strip.DOTALL,
-                ).strip()
-                # <propose_action ...>...</propose_action> tags
-                display_output = _re_strip.sub(
-                    r'<propose_action[^>]*>.*?</propose_action>',
-                    '', display_output, flags=_re_strip.DOTALL,
-                ).strip()
-                # <lookup_contact ...>...</lookup_contact> tags
-                display_output = _re_strip.sub(
-                    r'<lookup_contact[^>]*>.*?</lookup_contact>',
-                    '', display_output, flags=_re_strip.DOTALL,
-                ).strip()
-                # If model emitted contact lookup in final answer, resolve inline + auto-propose
-                if not _pending_action_id:
-                    try:
-                        from config.app_config import INTERNET_ACTIONS_ENABLED
-                        if INTERNET_ACTIONS_ENABLED:
-                            from core.agentic.protocols import NativeToolsHandler
-                            _ag_handler = NativeToolsHandler(actions_available=True)
-                            _ag_decisions = _ag_handler._parse_text_tool_calls(final_output or display_output)
-                            for _agd in _ag_decisions:
-                                if _agd.wants_lookup_contact and _agd.lookup_contact_name:
-                                    from core.actions.google_contacts import resolve_contact
-                                    _ag_contacts = await resolve_contact(_agd.lookup_contact_name, max_results=5)
-                                    if _ag_contacts:
-                                        _ag_email = _ag_contacts[0]['email']
-                                        _ag_name = _ag_contacts[0]['name']
-                                        _ag_alt = ""
-                                        if len(_ag_contacts) > 1:
-                                            _ag_alts = [f"{c['name']} <{c['email']}>" for c in _ag_contacts[1:]]
-                                            _ag_alt = f"\n*(Also found: {', '.join(_ag_alts)})*"
-                                        # Auto-create send_email proposal if email intent detected
-                                        _ag_email_intent = any(w in user_text.lower() for w in (
-                                            'send', 'email', 'mail', 'draft', 'fire', 'message', 'try',
-                                        ))
-                                        if _ag_email_intent:
-                                            from core.actions.types import ActionProposal, ActionType
-                                            from core.actions.audit import ActionAuditLog
-                                            from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
-                                            from core.agentic.tools import ToolExecutor
-                                            _ag_store = ToolExecutor._get_pending_actions_store()
-                                            # Search chat history for the actual email draft
-                                            # Search chat history for a proper email draft
-                                            _ag_body = _find_email_draft(history, display_output)
-                                            if _ag_body:
-                                                _ag_proposal = ActionProposal(
-                                                    action_type=ActionType.SEND_EMAIL,
-                                                    params={
-                                                        "recipient": _ag_email,
-                                                        "message": _ag_body,
-                                                        "subject": "Weekly Summary",
-                                                    },
-                                                    summary=f"send_email to {_ag_name} <{_ag_email}>",
-                                                    reasoning=f"Resolved '{_agd.lookup_contact_name}' via contact search",
-                                                )
-                                                _ag_store.propose(_ag_proposal)
-                                                ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(_ag_proposal)
-                                                _pending_action_id = _ag_proposal.action_id
-                                                _ag_header = f"**send_email** to {_ag_name} <{_ag_email}>"
-                                                _ag_card = f"\n\n---\n{_ag_header}\n"
-                                                _ag_card += f"> {_ag_body[:300]}\n\n"
-                                                if _ag_alt:
-                                                    _ag_card += _ag_alt + "\n"
-                                                display_output += _ag_card
-                                                logger.info(f"[Handle Submit] Agentic: auto-created send_email proposal to {_ag_email}")
-                                            else:
-                                                # No draft found — show contact but don't auto-send
-                                                display_output += f"\n\n**Contact found:** {_ag_name} <{_ag_email}>{_ag_alt}\n\nI found the email address but couldn't locate the draft in this session. Could you paste or describe what you'd like to send?"
-                                                logger.info(f"[Handle Submit] Agentic: contact resolved but no draft found, skipping auto-proposal")
-                                        else:
-                                            display_output += f"\n\n**Contact found:** {_ag_name} <{_ag_email}>{_ag_alt}"
-                                    else:
-                                        display_output += f"\n\nNo contacts found for '{_agd.lookup_contact_name}'."
-                                    break
-                    except Exception as _ag_err:
-                        logger.warning(f"[Handle Submit] Agentic contact resolution failed: {_ag_err}")
+        debug_record = _build_debug_record(
+            mode='agentic-search', user_text=user_text, prompt=full_prompt,
+            system_prompt=system_prompt, response=final_output,
+            model=model_name, prompt_tokens=prompt_tokens,
+            system_tokens=system_tokens, total_tokens=total_tokens,
+            citations=citations, orchestrator=orchestrator,
+            provenance=_agentic_prov,
+            phase_timings=_agentic_handler_timings,
+            task_timings=_agentic_tasks,
+            gather_elapsed=_agentic_gather,
+        )
+        # Yield final response with debug record (response was already streamed
+        # chunk-by-chunk during the loop, so only one yield needed here)
+        # Strip any XML tool call artifacts the model emitted in its final answer
+        display_output = _strip_inline_tool_xml(display_output)
+        # If model emitted contact lookup in final answer, resolve inline + auto-propose
+        if not _pending_action_id:
+            try:
+                from config.app_config import INTERNET_ACTIONS_ENABLED
+                if INTERNET_ACTIONS_ENABLED:
+                    from core.agentic.protocols import NativeToolsHandler
+                    _ag_handler = NativeToolsHandler(actions_available=True)
+                    _ag_decisions = _ag_handler._parse_text_tool_calls(final_output or display_output)
+                    for _agd in _ag_decisions:
+                        if _agd.wants_lookup_contact and _agd.lookup_contact_name:
+                            from core.agentic.tools import ToolExecutor
+                            _ag_store = ToolExecutor._get_pending_actions_store()
+                            display_output, _ag_aid = await _resolve_contact_and_propose_email(
+                                _agd.lookup_contact_name, user_text, history,
+                                display_output, _ag_store,
+                            )
+                            if _ag_aid:
+                                _pending_action_id = _ag_aid
+                            break
+            except Exception as _ag_err:
+                logger.warning(f"[Handle Submit] Agentic contact resolution failed: {_ag_err}")
 
-                # If display_output is empty (entire response was thinking/reasoning), show fallback
-                if not display_output.strip():
-                    display_output = "I processed your request but my response was caught by the thinking filter. Let me try again — could you rephrase or retry?"
-                    logger.warning("[Handle Submit] Agentic response was entirely thinking content, showing fallback")
-                logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
-                _final_chunk = {"role": "assistant", "content": display_output, "debug": debug_record}
-                if _pending_action_id:
-                    _final_chunk["pending_action_id"] = _pending_action_id
-                yield _final_chunk
-                logger.debug("[Handle Submit] Agentic final response yielded")
+        # If display_output is empty (entire response was thinking/reasoning), show fallback
+        if not display_output.strip():
+            display_output = "I processed your request but my response was caught by the thinking filter. Let me try again — could you rephrase or retry?"
+            logger.warning("[Handle Submit] Agentic response was entirely thinking content, showing fallback")
+        logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
+        _final_chunk = {"role": "assistant", "content": display_output, "debug": debug_record}
+        if _pending_action_id:
+            _final_chunk["pending_action_id"] = _pending_action_id
+        yield _final_chunk
+        logger.debug("[Handle Submit] Agentic final response yielded")
 
-                # Store interaction in background (fire-and-forget, same as enhanced path).
-                # Avoids a ~5s blocking await after the final yield that kept the
-                # Gradio generator open and could prevent the response from rendering.
-                try:
-                    from core.prompt import _truncate_at_spurious_turns
-                    final_output_sanitized = _truncate_at_spurious_turns(final_output)
-                except Exception as e:
-                    logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
-                    final_output_sanitized = final_output
+        # Store interaction in background (fire-and-forget, same as enhanced path).
+        # Avoids a ~5s blocking await after the final yield that kept the
+        # Gradio generator open and could prevent the response from rendering.
+        try:
+            from core.prompt import _truncate_at_spurious_turns
+            final_output_sanitized = _truncate_at_spurious_turns(final_output)
+        except Exception as e:
+            logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
+            final_output_sanitized = final_output
 
-                # Prevent context pollution: strip leaked XML/tool text
-                final_output_sanitized = _strip_leaked_xml_blocks(final_output_sanitized)
-                if len(final_output_sanitized.strip()) < 20 and display_output.strip():
-                    final_output_sanitized = display_output
+        # Prevent context pollution: strip leaked XML/tool text
+        final_output_sanitized = _strip_leaked_xml_blocks(final_output_sanitized)
+        if len(final_output_sanitized.strip()) < 20 and display_output.strip():
+            final_output_sanitized = display_output
 
-                _dispatch_storage(
-                    orchestrator, merged_input, final_output_sanitized, user_text,
-                    final_output, personality, file_names, conversation_logger,
-                    _agentic_session_id, _agentic_prov, 'agentic-search',
-                )
-                logger.info("[Handle Submit] Agentic storage dispatched to background")
+        _dispatch_storage(
+            orchestrator, merged_input, final_output_sanitized, user_text,
+            final_output, personality, file_names, conversation_logger,
+            _agentic_session_id, _agentic_prov, 'agentic-search',
+        )
+        logger.info("[Handle Submit] Agentic storage dispatched to background")
 
-                return  # Exit after agentic search completes
+        ctx.handled = True
+        ctx.storage_dispatched = True
+        return  # Exit after agentic search completes
 
-            except Exception as e:
-                logger.error(f"[Handle Submit] Agentic search failed, falling back to standard: {e}")
-                import traceback
-                logger.debug(f"[Agentic] Exception traceback:\n{traceback.format_exc()}")
+    except Exception as e:
+        logger.error(f"[Handle Submit] Agentic search failed, falling back to standard: {e}")
+        import traceback
+        logger.debug(f"[Agentic] Exception traceback:\n{traceback.format_exc()}")
 
+
+async def _run_enhanced(ctx):
+    """ENHANCED (default) path: streaming generation + thinking detection, the
+    post-answer passes (uncertainty fallback, review gate), action parsing, and the
+    finally cleanup (fast-mode flag/limit restore + background storage dispatch).
+    Terminal handler — always the last path tried.
+    """
+    orchestrator = ctx.orchestrator
+    full_prompt = ctx.full_prompt
+    system_prompt = ctx.system_prompt
+    note_images = ctx.note_images
+    raw_context = ctx.raw_context
+    merged_input = ctx.merged_input
+    user_text = ctx.user_text
+    personality = ctx.personality
+    file_names = ctx.file_names
+    conversation_logger = ctx.conversation_logger
+    history = ctx.history
+    agentic_enabled = ctx.agentic_enabled
+    fast_mode = ctx.fast_mode
+    _original_limits = ctx.original_limits
+    _t_prepare_start = ctx.t_prepare_start
+    _t_prepare_elapsed = ctx.t_prepare_elapsed
+    import time as _time_mod
     final_output = ""
     display_output = ""
     debug_emitted = False
@@ -1806,122 +1897,33 @@ async def handle_submit(
                     for _etd in _enh_decisions:
                         if _etd.wants_lookup_contact and _etd.lookup_contact_name:
                             try:
-                                from core.actions.google_contacts import resolve_contact
-                                _contacts = await resolve_contact(_etd.lookup_contact_name, max_results=5)
-                                import re as _re_lc
-                                # Strip XML tool artifacts from display
-                                _resp_for_debug = _re_lc.sub(
-                                    r'<function_calls>.*?</function_calls>',
-                                    '', _resp_for_debug, flags=_re_lc.DOTALL,
-                                ).strip()
-                                _resp_for_debug = _re_lc.sub(
-                                    r'<function_calls>.*$',
-                                    '', _resp_for_debug, flags=_re_lc.DOTALL,
-                                ).strip()
-                                _resp_for_debug = _re_lc.sub(
-                                    r'<invoke\s[^>]*>.*?</invoke>',
-                                    '', _resp_for_debug, flags=_re_lc.DOTALL,
-                                ).strip()
-
-                                if _contacts:
-                                    # Use first match (user can reject if wrong)
-                                    _resolved_email = _contacts[0]['email']
-                                    _resolved_name = _contacts[0]['name']
-                                    _alt_note = ""
-                                    if len(_contacts) > 1:
-                                        _alts = [f"{c['name']} <{c['email']}>" for c in _contacts[1:]]
-                                        _alt_note = f"\n*(Also found: {', '.join(_alts)})*"
-                                    logger.info(f"[Handle Submit] Enhanced: resolved '{_etd.lookup_contact_name}' -> {_resolved_email} ({len(_contacts)} total)")
-
-                                    # Auto-create send_email proposal if context indicates sending
-                                    _email_intent = any(w in user_text.lower() for w in (
-                                        'send', 'email', 'mail', 'draft', 'fire', 'message', 'try',
-                                    ))
-                                    if _email_intent:
-                                        from core.actions.types import ActionProposal, ActionType
-                                        from core.actions.audit import ActionAuditLog
-                                        from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
-                                        # Search chat history for a proper email draft
-                                        _email_body = _find_email_draft(history, _resp_for_debug)
-                                        if _email_body:
-                                            _ea_proposal = ActionProposal(
-                                                action_type=ActionType.SEND_EMAIL,
-                                                params={
-                                                    "recipient": _resolved_email,
-                                                    "message": _email_body,
-                                                    "subject": "Weekly Summary",
-                                                },
-                                                summary=f"send_email to {_resolved_name} <{_resolved_email}>",
-                                                reasoning=f"Resolved '{_etd.lookup_contact_name}' via contact search",
-                                            )
-                                            _enh_store.propose(_ea_proposal)
-                                            ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(_ea_proposal)
-                                            _enh_pending_action_id = _ea_proposal.action_id
-                                            _enh_header = f"**send_email** to {_resolved_name} <{_resolved_email}>"
-                                            _card = f"\n\n---\n{_enh_header}\n"
-                                            _card += f"> {_email_body[:300]}\n\n"
-                                            if _alt_note:
-                                                _card += _alt_note + "\n"
-                                            _resp_for_debug += _card
-                                            logger.info(f"[Handle Submit] Enhanced: auto-created send_email proposal to {_resolved_email}")
-                                        else:
-                                            # No draft found — show contact but don't auto-send
-                                            _resp_for_debug += f"\n\n**Contact found:** {_resolved_name} <{_resolved_email}>{_alt_note}\n\nI found the email address but couldn't locate the draft in this session. Could you paste or describe what you'd like to send?"
-                                            logger.info(f"[Handle Submit] Enhanced: contact resolved but no draft found")
-                                    else:
-                                        _resp_for_debug += f"\n\n**Contact found:** {_resolved_name} <{_resolved_email}>{_alt_note}"
-                                else:
-                                    _resp_for_debug += f"\n\nNo contacts found for '{_etd.lookup_contact_name}' in Google Contacts or Gmail."
-                                logger.info(f"[Handle Submit] Enhanced: resolved contact '{_etd.lookup_contact_name}' inline ({len(_contacts)} matches)")
+                                # Strip XML tool artifacts from display (3-pattern subset)
+                                _resp_for_debug = _strip_inline_tool_xml(_resp_for_debug, full=False)
+                                _resp_for_debug, _lc_aid = await _resolve_contact_and_propose_email(
+                                    _etd.lookup_contact_name, user_text, history,
+                                    _resp_for_debug, _enh_store,
+                                    no_contacts_suffix=" in Google Contacts or Gmail",
+                                )
+                                if _lc_aid:
+                                    _enh_pending_action_id = _lc_aid
+                                logger.info(f"[Handle Submit] Enhanced: resolved contact '{_etd.lookup_contact_name}' inline")
                             except Exception as _lc_err:
                                 logger.warning(f"[Handle Submit] Enhanced: contact lookup failed: {_lc_err}")
                             break
                     for _etd in _enh_decisions:
                         if _etd.wants_action and _etd.action_type:
                             logger.info(f"[Handle Submit] Enhanced: parsed text action: {_etd.action_type}")
-                            from core.actions.types import ActionProposal, ActionType
-                            from core.actions.audit import ActionAuditLog
-                            from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
-                            try:
-                                _ea_type = ActionType(_etd.action_type)
-                            except ValueError:
+                            _ea_aid = _make_text_action_proposal(_etd, _enh_store)
+                            if _ea_aid is None:
                                 break
-                            _ea_proposal = ActionProposal(
-                                action_type=_ea_type,
-                                params=_etd.action_params or {},
-                                summary=_etd.action_summary or f"{_etd.action_type}: action",
-                                reasoning=_etd.action_reason or "",
-                            )
-                            _enh_store.propose(_ea_proposal)
-                            ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(_ea_proposal)
-                            _enh_pending_action_id = _ea_proposal.action_id
-                            # Strip raw tool text and append proper action card
+                            _enh_pending_action_id = _ea_aid
+                            # Strip raw tool text + leaked XML and append proper action card
                             import re as _re_enh_action
                             _resp_for_debug = _re_enh_action.sub(
                                 r'\[propose_action:\s*\w+\]\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}',
                                 '', _resp_for_debug, count=1,
                             ).strip()
-                            # Also strip <function_calls>/<invoke>/<propose_action>/<lookup_contact> blocks
-                            _resp_for_debug = _re_enh_action.sub(
-                                r'<function_calls>.*?</function_calls>',
-                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
-                            ).strip()
-                            _resp_for_debug = _re_enh_action.sub(
-                                r'<function_calls>.*$',
-                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
-                            ).strip()
-                            _resp_for_debug = _re_enh_action.sub(
-                                r'<invoke\s[^>]*>.*?</invoke>',
-                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
-                            ).strip()
-                            _resp_for_debug = _re_enh_action.sub(
-                                r'<propose_action[^>]*>.*?</propose_action>',
-                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
-                            ).strip()
-                            _resp_for_debug = _re_enh_action.sub(
-                                r'<lookup_contact[^>]*>.*?</lookup_contact>',
-                                '', _resp_for_debug, flags=_re_enh_action.DOTALL,
-                            ).strip()
+                            _resp_for_debug = _strip_inline_tool_xml(_resp_for_debug)
                             _pending = _enh_store.get_pending()
                             if _pending:
                                 _enh_recip = _pending.params.get("recipient", "")
@@ -2049,6 +2051,160 @@ async def handle_submit(
                 setattr(app_config, key, value)
                 logger.warning(f"[Fast Mode] Restored {key} = {value}")
             logger.warning("[Handle Submit] ⚡ Fast Mode limits RESTORED to normal")
+
+
+@log_and_time("Handle Submit")
+async def handle_submit(
+    user_text,
+    files,
+    history,
+    use_raw_gpt,
+    orchestrator,
+    system_prompt=DEFAULT_SYSTEM_PROMPT,
+    force_summarize=False,
+    include_summaries=True,
+    personality=None,
+    fast_mode=False
+):
+    logger.info(f"[Handle Submit] ENTRY - raw_mode={use_raw_gpt}, fast_mode={fast_mode}")
+    logger.info(f"[Handle Submit] Query: {user_text[:100]}...")
+
+    # Update activity timestamp for idle monitor
+    try:
+        import main
+        if hasattr(main, 'update_activity_timestamp'):
+            main.update_activity_timestamp()
+    except (ImportError, AttributeError) as e:
+        logger.debug(f"[Handlers] Could not update activity timestamp: {e}")
+
+    # Get conversation logger
+    conversation_logger = get_conversation_logger()
+
+    if not user_text.strip():
+        yield {"role": "assistant", "content": "⚠️ Empty input received."}
+        return
+
+    # Process files using security-hardened FileProcessor
+    # Supports .txt, .md, .json, .yaml, .yml, .log, .html, .xml, .csv, .py, .docx, .xlsx, .pdf files and .png, .jpg, .jpeg, .gif, .webp images
+    file_names = [file.name for file in files] if files else []
+    files_result = await file_processor.process_files_structured(user_text, files or [])
+    merged_input = files_result.text_content
+
+    # Persist uploads to ChromaDB in background (fire-and-forget)
+    if files_result.documents or files_result.images:
+        persist_task = asyncio.create_task(_persist_uploads(orchestrator, files_result))
+        _pending_storage_tasks.add(persist_task)
+        persist_task.add_done_callback(_pending_storage_tasks.discard)
+
+    # Threaded state for this turn, shared by the per-mode handlers.
+    ctx = SubmitContext(
+        user_text=user_text,
+        files=files,
+        history=history,
+        use_raw_gpt=use_raw_gpt,
+        orchestrator=orchestrator,
+        personality=personality,
+        fast_mode=fast_mode,
+        conversation_logger=conversation_logger,
+        file_names=file_names,
+        merged_input=merged_input,
+        files_result=files_result,
+    )
+
+    # RAW MODE: go straight through orchestrator (personality hook is handled inside process_user_query)
+    if use_raw_gpt:
+        async for _c in _run_raw(ctx):
+            yield _c
+        return
+
+    # Check if agentic search might be used (need to know before calling prepare_prompt)
+    _cfg = getattr(orchestrator, 'config', {}) or {}
+    agentic_cfg = _cfg.get('agentic_search', {}) if isinstance(_cfg, dict) else {}
+    agentic_enabled = bool(agentic_cfg.get('enabled', False))
+
+    # Build the enhanced-path prompt context (fast-mode limits, prepare_prompt, image inject).
+    ctx.agentic_enabled = agentic_enabled
+    async for _c in _prepare_submit_context(ctx):
+        yield _c
+
+    # Alias prelude results back to locals for the inline mode bodies not yet extracted.
+    full_prompt = ctx.full_prompt
+    system_prompt = ctx.system_prompt
+    raw_context = ctx.raw_context
+    note_images = ctx.note_images
+    _original_limits = ctx.original_limits
+    _t_prepare_start = ctx.t_prepare_start
+    _t_prepare_elapsed = ctx.t_prepare_elapsed
+    import time as _time_mod
+
+    # ── DUEL MODE: Two models + judge, takes priority over agentic ──
+    _cfg_duel = getattr(orchestrator, 'config', {}) or {}
+    _features_duel = _cfg_duel.get('features', {}) if isinstance(_cfg_duel, dict) else {}
+    _DUEL_ON = bool(_features_duel.get('best_of_duel_mode', False))
+    _DUEL_GENS = list(_features_duel.get('best_of_generator_models', []))
+    _DUEL_SELS = list(_features_duel.get('best_of_selector_models', []))
+    duel_active = bool(_DUEL_ON and len(_DUEL_GENS) >= 2 and len(_DUEL_SELS) >= 1)
+    logger.info(f"[Handle Submit] Duel check: on={_DUEL_ON}, gens={_DUEL_GENS}, sels={_DUEL_SELS}, active={duel_active}")
+
+    if duel_active:
+        async for _c in _run_duel(ctx, _DUEL_GENS, _DUEL_SELS, _features_duel):
+            yield _c
+        if ctx.handled:
+            return
+        # else duel bailed (timeout/exception) — fall through to agentic/streaming
+
+    if agentic_enabled:
+        from core.agentic.gate import evaluate_agentic_gate
+        _gate_decision = await evaluate_agentic_gate(
+            user_text=user_text,
+            entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
+            model_manager=orchestrator.model_manager,
+            corpus_manager=getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None),
+            intent_info=raw_context.get("intent") if raw_context else None,
+        )
+        should_use_agentic = _gate_decision.should_trigger
+        search_terms = _gate_decision.search_terms
+        needs_computation = "computation" in _gate_decision.modes
+        needs_memory = "memory" in _gate_decision.modes
+        needs_knowledge = "knowledge" in _gate_decision.modes
+        needs_web_search = "web_search" in _gate_decision.modes
+        needs_tools = "tools" in _gate_decision.modes
+        _matched_entities = _gate_decision.matched_entities
+        _doc_gen_intent = _gate_decision.doc_gen_intent
+        _self_note_intent = _gate_decision.self_note_intent
+
+        # Populate the gate outputs on ctx for the agentic-path handlers.
+        ctx.gate_decision = _gate_decision
+        ctx.should_use_agentic = should_use_agentic
+        ctx.search_terms = search_terms
+        ctx.doc_gen_intent = _doc_gen_intent
+        ctx.self_note_intent = _self_note_intent
+        ctx.skip_initial_search = getattr(_gate_decision, 'skip_initial_search', False)
+
+        # --- Direct document generation (bypasses agentic loop) ---
+        if _doc_gen_intent and should_use_agentic:
+            async for _c in _run_doc_generation(ctx):
+                yield _c
+            if ctx.handled:
+                return
+            # else doc-gen failed — fall through to self-note / agentic / enhanced
+
+        # --- Direct daemon self-note creation (bypasses agentic loop) ---
+        if _self_note_intent and should_use_agentic:
+            async for _c in _run_self_note(ctx):
+                yield _c
+            if ctx.handled:
+                return
+
+        if should_use_agentic:
+            async for _c in _run_agentic_search(ctx):
+                yield _c
+            if ctx.handled:
+                return
+            # else agentic failed — fall through to enhanced
+
+    async for _c in _run_enhanced(ctx):
+        yield _c
 
 
 # ---------------------------------------------------------------------------

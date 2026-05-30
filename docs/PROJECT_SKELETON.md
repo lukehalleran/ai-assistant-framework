@@ -1595,9 +1595,14 @@ agentic_search:
 
 **Key Components**:
 
-**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[REFACTORED 2026-05-22]**
-- `handle_submit()` → Main async generator yielding response chunks to GUI (1200 LOC, down from 1541)
-- **Extracted helpers** [NEW 2026-05-22]: `_safe_count_tokens()`, `_safe_extract_citations()`, `_build_debug_record()`, `_build_provenance()`, `_attach_agentic_provenance()`, `_sanitize_response_text()`, `_strip_echoed_headers()`, `_dispatch_storage()`, `_silent_agentic_retry()`, `_get_session_id()` — consolidate patterns repeated 2-4x across mode paths
+**gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[REFACTORED 2026-05-30]**
+- `handle_submit()` → thin (~150 LOC) async-generator dispatcher (down from ~1450). Builds a `SubmitContext` dataclass (threaded state) and routes to per-mode handler generators; each yields response chunks and signals completion via `ctx.handled` (dispatcher returns when set, else falls through):
+  - `_prepare_submit_context()` — shared prelude (Fast Mode limits, `prepare_prompt` keepalive, image inject) for all non-raw paths
+  - `_run_raw()` / `_run_duel()` / `_run_agentic_search()` / `_run_enhanced()` — the 4 mutually-exclusive parent modes (`_run_duel` and `_run_agentic_search` leave `ctx.handled` False on bail to fall through)
+  - `_run_doc_generation()` / `_run_self_note()` — agentic-gate bypasses (own `store_interaction`)
+  - `_run_enhanced()` owns the post-answer passes (uncertainty fallback, review gate) + the `finally` cleanup (Fast Mode restore + storage dispatch); its `finally` is enhanced-path-only by design — do NOT hoist it
+- **Extracted helpers**: `_safe_count_tokens()`, `_safe_extract_citations()`, `_build_debug_record()`, `_build_provenance()`, `_attach_agentic_provenance()`, `_sanitize_response_text()`, `_strip_echoed_headers()`, `_dispatch_storage()`, `_silent_agentic_retry()`, `_get_session_id()`, `_find_email_draft()`, plus `_strip_inline_tool_xml()`, `_make_text_action_proposal()`, `_resolve_contact_and_propose_email()` (shared by the agentic + enhanced action/contact paths)
+- **Known latent bug** (pinned, not fixed): under Fast Mode the duel/doc-gen/self-note/agentic-success paths return before the enhanced `finally`, so Fast Mode flags + `_original_limits` are never restored on those paths
   - **Fast Mode** [NEW 2026-03-10]: When `fast_mode=True`, temporarily reduces retrieval limits (PROMPT_MAX_MEMS→10, PROMPT_MAX_RECENT→5, PROMPT_MAX_SEMANTIC→8), sets `context_gatherer._fast_mode` and `hybrid_retriever._fast_mode`. Yields progress keepalive messages ("Thinking...", "Analyzing context...", etc.) every 2s during `prepare_prompt()` to prevent mobile timeouts. All overrides restored in `finally` block.
   - **Agentic Search Path** [REFACTORED 2026-05-24]:
     - Gate logic extracted to `core/agentic/gate.py:evaluate_agentic_gate()` — returns `AgenticDecision` dataclass
@@ -3827,7 +3832,7 @@ SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88 # Stage 3a: near-verbatim rehashes only
 SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.70  # Stage 3a: novel vs adjacent label
 SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85 # Stage 3b: 40M-scale recalibrated
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85 # Stage 4: above = same insight
-SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.6"    # Stage 5: LLM for coherence judge
+SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.8"    # Stage 5: LLM for coherence judge
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"   # Stage 5: minimum to pass
 SYNTHESIS_WEIGHT_COHERENCE = 0.30        # Stage 6: composite weights
 SYNTHESIS_WEIGHT_NOVELTY = 0.40
@@ -5554,7 +5559,7 @@ SYNTHESIS_DISTANCE_MAX = 0.90
 SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88   # Near-verbatim rehashes only
 SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # 40M-scale recalibrated
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
-SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.6"
+SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.8"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
 SYNTHESIS_NOVELTY_W_CLAIM = 0.25
 SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30

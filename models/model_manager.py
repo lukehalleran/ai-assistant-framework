@@ -184,6 +184,7 @@ class ModelManager:
         self.api_models["claude-opus-4.5"] = "anthropic/claude-opus-4.5"
         self.api_models["claude-opus-4.6"] = "anthropic/claude-opus-4.6"
         self.api_models["claude-opus-4.7"] = "anthropic/claude-opus-4.7"
+        self.api_models["claude-opus-4.8"] = "anthropic/claude-opus-4.8"
         self.api_models["sonnet-4.5"] = "anthropic/claude-sonnet-4.5"
         self.api_models["sonnet-4.6"] = "anthropic/claude-sonnet-4.6"
         self.api_models["haiku-4.5"] = "anthropic/claude-haiku-4.5"

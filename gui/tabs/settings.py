@@ -140,7 +140,7 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
             _local_models = list(getattr(_mm, 'models', {}).keys())
             _all_model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
         except (AttributeError, TypeError):
-            _all_model_choices = ['gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5', 'gpt-4o', 'gpt-4o-mini']
+            _all_model_choices = ['claude-opus-4.8', 'gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5', 'gpt-4o', 'gpt-4o-mini']
 
         _m1_value = _gens_default[0] if len(_gens_default) > 0 else (_all_model_choices[0] if _all_model_choices else None)
         _m2_value = _gens_default[1] if len(_gens_default) > 1 else (next((m for m in _all_model_choices if m != _m1_value), _m1_value))

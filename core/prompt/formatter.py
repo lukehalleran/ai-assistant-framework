@@ -3,7 +3,7 @@
 
 Module Contract
 - Purpose: Text formatting and final prompt assembly from context dict into LLM-ready string.
-  Contains both the legacy simple assembler and the full-featured assembler moved from builder.py.
+  Contains the full-featured assembler moved from builder.py.
 - Class: PromptFormatter(token_manager, time_manager)
 - Key methods:
   - _assemble_prompt(context, user_input, directives, system_prompt, **kwargs) -> str
@@ -18,8 +18,6 @@ Module Contract
     UPCOMING SCHEDULE → GOOGLE CALENDAR →
     PROACTIVE INSIGHTS → USER PROFILE → ACTIVE FEATURES → CODEBASE CHANGES →
     TIME CONTEXT → TEMPORAL GROUNDING → STM SUMMARY → CURRENT USER QUERY.
-  - _assemble_prompt_legacy(context, user_input, directives) -> str
-    Original simpler assembler (may be deprecated). Uses emergency middle-out compression.
   - _build_feature_inventory(context) -> str
     Generates [ACTIVE FEATURES] section from config flags and context counts.
   - _format_memory(mem) -> str  [single memory → "timestamp: User: Q / Daemon: A" with tags; uses format_relative_timestamp for day labels]
@@ -656,244 +654,6 @@ class PromptFormatter:
         except Exception as e:
             logger.warning(f"[FORMATTING] Error formatting web search results: {e}")
             return ""
-
-    def _assemble_prompt_legacy(self, context: Dict[str, Any], user_input: str, directives: str = "") -> str:
-        """
-        Assemble final prompt from context and user input (legacy simple version).
-
-        This is the original simple assembler. For the full-featured version with
-        numbered entries, web citation IDs, feature inventory, etc., see _assemble_prompt().
-
-        Section order (optimized for attention and token efficiency):
-        1. Recent conversations (baseline context)
-        2. Relevant memories (semantic hits)
-        3. User profile (personalization) [MOVED from early position]
-        4. Summaries (compressed history)
-        5. Reflections (meta insights)
-        6. Wiki content (background knowledge)
-        7. Semantic chunks (relevant information)
-        8. Dreams (if enabled)
-        9. Time context (temporal grounding) [MOVED from first position]
-        10. User input (always last)
-        """
-        sections = []
-
-        # Recent conversations
-        recent = context.get("recent_conversations", [])
-        recent_text = []
-        logger.debug(f"[ASSEMBLY] Processing {len(recent or [])} recent conversations")
-        for i, mem in enumerate(recent or [], 1):
-            logger.debug(f"[ASSEMBLY] Formatting recent memory #{i}, type: {type(mem)}")
-            formatted = self._format_memory(mem)
-            if formatted:
-                recent_text.append(f"{i}) {formatted}")
-            else:
-                logger.warning(f"[ASSEMBLY] Recent memory #{i} formatted to empty string")
-        # Always include header to keep structure stable
-        sections.append(
-            f"[RECENT CONVERSATION] n={len(recent_text)}" + (
-                "\n" + "\n\n".join(recent_text) if recent_text else ""
-            )
-        )
-
-        # Relevant memories
-        memories = context.get("memories", [])
-        memory_text = []
-        logger.debug(f"[ASSEMBLY] Processing {len(memories or [])} relevant memories")
-        for i, mem in enumerate(memories or [], 1):
-            logger.debug(f"[ASSEMBLY] Formatting relevant memory #{i}, type: {type(mem)}")
-            formatted = self._format_memory(mem)
-            if formatted:
-                memory_text.append(f"{i}) {formatted}")
-            else:
-                logger.warning(f"[ASSEMBLY] Relevant memory #{i} formatted to empty string")
-        # Always include header
-        sections.append(
-            f"[RELEVANT MEMORIES] n={len(memory_text)}" + (
-                "\n" + "\n\n".join(memory_text) if memory_text else ""
-            )
-        )
-
-        # Summaries
-        summaries = context.get("summaries", [])
-        summary_text = []
-        for summ in (summaries or []):
-            if isinstance(summ, dict):
-                content = summ.get("content", "")
-                timestamp = summ.get("timestamp", "")
-                if content:
-                    if timestamp:
-                        summary_text.append(f"{content} | {timestamp}")
-                    else:
-                        summary_text.append(content)
-            else:
-                summary_text.append(str(summ))
-        sections.append(
-            f"[SUMMARIES] n={len(summary_text)}" + (
-                "\n" + "\n\n".join(summary_text) if summary_text else ""
-            )
-        )
-
-        # Reflections
-        reflections = context.get("reflections", [])
-        reflection_text = []
-        for refl in (reflections or []):
-            if isinstance(refl, dict):
-                content = refl.get("content", "")
-                timestamp = refl.get("timestamp", "")
-                if content:
-                    if timestamp:
-                        reflection_text.append(f"{content} | {timestamp}")
-                    else:
-                        reflection_text.append(content)
-            else:
-                reflection_text.append(str(refl))
-        sections.append(
-            f"[RECENT REFLECTIONS] n={len(reflection_text)}" + (
-                "\n" + "\n\n".join(reflection_text) if reflection_text else ""
-            )
-        )
-
-        # Wiki content
-        wiki = context.get("wiki", [])
-        wiki_text = []
-        for w in (wiki or []):
-            if isinstance(w, dict):
-                content = w.get("content", "")
-                title = w.get("title", "")
-                if content:
-                    if title:
-                        wiki_text.append(f"**{title}**\n{content}")
-                    else:
-                        wiki_text.append(content)
-            else:
-                wiki_text.append(str(w))
-        sections.append(
-            f"[BACKGROUND KNOWLEDGE] n={len(wiki_text)}" + (
-                "\n" + "\n\n".join(wiki_text) if wiki_text else ""
-            )
-        )
-
-        # Web search results (real-time web content)
-        web_search = context.get("web_search_results")
-        if web_search is not None:
-            web_text = self._format_web_search_results(web_search)
-            if web_text:
-                sections.append(web_text)
-
-        # Semantic chunks
-        semantic_chunks = context.get("semantic_chunks", [])
-        semantic_text = []
-        for chunk in (semantic_chunks or []):
-            if isinstance(chunk, dict):
-                content = chunk.get("filtered_content", "") or chunk.get("content", "")
-                title = chunk.get("title", "")
-                if content:
-                    if title:
-                        semantic_text.append(f"**{title}**\n{content}")
-                    else:
-                        semantic_text.append(content)
-            else:
-                semantic_text.append(str(chunk))
-        sections.append(
-            f"[RELEVANT INFORMATION] n={len(semantic_text)}" + (
-                "\n" + "\n\n".join(semantic_text) if semantic_text else ""
-            )
-        )
-
-        # Dreams
-        dreams = context.get("dreams", [])
-        if dreams:
-            dream_text = []
-            for dream in dreams:
-                if isinstance(dream, dict):
-                    content = dream.get("content", "")
-                    timestamp = dream.get("timestamp", "")
-                    if content:
-                        if timestamp:
-                            dream_text.append(f"{content} | {timestamp}")
-                        else:
-                            dream_text.append(content)
-                else:
-                    dream_text.append(str(dream))
-            if dream_text:
-                sections.append(f"[DREAMS] n={len(dream_text)}\n" + "\n\n".join(dream_text))
-
-        # User Profile (replaces semantic_facts + fresh_facts)
-        # MOVED: Placed here (after bulk knowledge, before query) for high attention with low token cost
-        user_profile = context.get("user_profile", "")
-        if user_profile and isinstance(user_profile, str):
-            # Count facts (each fact ends with [timestamp])
-            fact_count = user_profile.count('[20')  # Count timestamp brackets starting with [20xx
-            # Profile is already formatted from UserProfile.get_context_injection()
-            sections.append(
-                f"[USER PROFILE] n={fact_count}\n"
-                "Stored facts — reference naturally but do not add names, apps, or details not written here.\n"
-                f"{user_profile}")
-
-        # Time context
-        # MOVED: Placed here (right before query) for temporal grounding with high attention
-        time_ctx = self._get_time_context()
-        if time_ctx:
-            sections.append(f"[TIME CONTEXT]\n{time_ctx}")
-
-        # User input with last Q/A pair for coherence
-        if user_input:
-            query_section = f"[CURRENT USER QUERY]\n"
-
-            # Attach last Q/A pair for maximum coherence (high attention area)
-            recent = context.get("recent_conversations", [])
-            if recent and len(recent) > 0:
-                last_exchange = recent[0]  # First item is most recent (list ordered newest-first)
-                last_q = last_exchange.get("query", "")
-                last_a = last_exchange.get("response", "")
-                if last_q and last_a:
-                    query_section += f"[LAST EXCHANGE FOR CONTEXT]\n"
-                    query_section += f"User: {last_q}\n"
-                    query_section += f"Assistant: {last_a}\n\n"
-
-            query_section += f"[CURRENT QUERY]\n{user_input}"
-            sections.append(query_section)
-
-        # Join all sections with double newlines
-        full_prompt = "\n\n".join(sections)
-
-        # Emergency whole-prompt compression if still over budget after per-item compression
-        # CRITICAL: Protect [CURRENT USER QUERY] section from compression
-        if hasattr(self.token_manager, 'token_budget') and hasattr(self.token_manager, 'model_manager'):
-            try:
-                model_name = self.token_manager.model_manager.get_active_model_name()
-                token_count = self.token_manager.get_token_count(full_prompt, model_name)
-                budget = self.token_manager.token_budget
-
-                if token_count > budget:
-                    logger.warning(f"[EMERGENCY MIDDLE-OUT] Prompt STILL exceeds budget after per-item compression: {token_count} > {budget} tokens")
-                    logger.warning(f"[EMERGENCY MIDDLE-OUT] Applying whole-prompt compression as last resort...")
-
-                    # Split off [CURRENT USER QUERY] section to protect it
-                    query_marker = "[CURRENT USER QUERY]"
-                    if query_marker in full_prompt:
-                        parts = full_prompt.split(query_marker, 1)
-                        before_query = parts[0]
-                        query_section = query_marker + parts[1]
-
-                        # Compress only the context BEFORE the query
-                        compressed_before = self.token_manager._middle_out(before_query, budget - 500, force=True)
-                        full_prompt = compressed_before + "\n\n" + query_section
-
-                        new_count = self.token_manager.get_token_count(full_prompt, model_name)
-                        logger.warning(f"[EMERGENCY MIDDLE-OUT] Compressed context (protected query): {token_count} → {new_count} tokens")
-                    else:
-                        # Fallback: compress entire prompt if no query marker found
-                        full_prompt = self.token_manager._middle_out(full_prompt, budget, force=True)
-                        new_count = self.token_manager.get_token_count(full_prompt, model_name)
-                        logger.warning(f"[EMERGENCY MIDDLE-OUT] Compressed entire prompt: {token_count} → {new_count} tokens")
-                else:
-                    logger.debug(f"[PROMPT] Final token count: {token_count}/{budget} (within budget)")
-            except Exception as e:
-                logger.warning(f"[EMERGENCY MIDDLE-OUT] Compression failed: {e}, using full prompt")
-
-        return full_prompt
 
     def _build_feature_inventory(self, context: Dict[str, Any]) -> str:
         """Build a compact feature inventory showing which systems are active and what they returned.
@@ -1819,12 +1579,15 @@ class PromptFormatter:
             query_section = f"[CURRENT USER QUERY]\n"
 
             # Attach last Q/A pair for maximum coherence (high attention area)
+            # Truncate assistant response to keep topic signal clear without dilution
             recent = context.get("recent_conversations", [])
             if recent and len(recent) > 0:
                 last_exchange = recent[0]  # First item is most recent (list ordered newest-first)
                 last_q = last_exchange.get("query", "")
                 last_a = last_exchange.get("response", "")
                 if last_q and last_a:
+                    if len(last_a) > 700:
+                        last_a = last_a[:400] + "\n[...truncated...]\n" + last_a[-200:]
                     query_section += f"[LAST EXCHANGE FOR CONTEXT]\n"
                     query_section += f"User: {last_q}\n"
                     query_section += f"Assistant: {last_a}\n\n"
