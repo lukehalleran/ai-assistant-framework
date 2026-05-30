@@ -1,5 +1,6 @@
 # --- JUNK TO IGNORE ---
 mutants/
+/test_corpus.json
 stitched.txt
 stitched_project.txt
 *DEBUG.txt
@@ -14,6 +15,7 @@ devtools/
 # --- LOGS ---
 *.log
 conversation_logs/
+logs/
 
 # --- PYTHON ---
 __pycache__/

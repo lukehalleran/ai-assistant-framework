@@ -439,7 +439,7 @@ Rating: <INVALID|WEAK|MODERATE|STRONG>
 **Gate:** `coherence_level >= MODERATE` (`SYNTHESIS_COHERENCE_MIN_LEVEL`)
 
 **Model:** `SYNTHESIS_COHERENCE_MODEL` (default in app_config: `sonnet-4.5`,
-overridden in config.yaml to `claude-opus-4.6`). System prompt forces
+overridden in config.yaml to `claude-opus-4.8`). System prompt forces
 skeptical stance: "Most cross-domain claims are surface metaphor. When in
 doubt, rate WEAK." Result: coherence rejections rose from 3.6% to 44%,
 acceptance dropped from 67% to 30%, accepted claims now name transferable
@@ -832,7 +832,7 @@ defaults.
 | `SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD` | `0.70` | 3 | Label threshold (novel vs adjacent) |
 | `SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD` | `0.85` | 3 | Co-occurrence hard gate — 40M-scale recalibrated |
 | `SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD` | `0.85` | 4 | Internal duplicate threshold |
-| `SYNTHESIS_COHERENCE_MODEL` | `sonnet-4.5` (YAML override: `claude-opus-4.6`) | 5 | LLM for coherence + skeptic |
+| `SYNTHESIS_COHERENCE_MODEL` | `sonnet-4.5` (YAML override: `claude-opus-4.8`) | 5 | LLM for coherence + skeptic |
 | `SYNTHESIS_COHERENCE_MIN_LEVEL` | `MODERATE` | 5 | Minimum coherence gate |
 | `SYNTHESIS_WEIGHT_COHERENCE` | `0.30` | 6 | Composite weight |
 | `SYNTHESIS_WEIGHT_NOVELTY` | `0.40` | 6 | Composite weight |

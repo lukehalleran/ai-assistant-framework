@@ -313,9 +313,16 @@ orchestrator:
 | **Agentic** | 4-tier gate triggers | ReAct loop with web search, code sandbox, memory search |
 | **Enhanced** | Default | Full retrieval pipeline + streaming generation |
 
-The agentic gate runs before enhanced mode. If any of the three tiers
-trigger (keyword match, entity match in knowledge graph, or LLM decision),
-the request routes through the agentic controller instead.
+The agentic gate runs before enhanced mode. If any tier of the 4-tier gate
+triggers (keyword match, entity match in knowledge graph, doc/note intent, or
+LLM decision), the request routes through the agentic controller instead.
+
+`handle_submit()` is a thin async-generator dispatcher **[REFACTORED 2026-05-30]**:
+it builds a `SubmitContext` and delegates each mode to its own handler generator
+(`_run_raw` / `_run_duel` / `_run_agentic_search` / `_run_enhanced`, plus the
+`_run_doc_generation` / `_run_self_note` gate bypasses), which signal completion
+via `ctx.handled`. Duel/agentic leave `ctx.handled` False on failure to fall
+through to the next mode.
 
 ---
 
@@ -1011,7 +1018,7 @@ The thinking content is captured separately for provenance storage.
 variation (e.g., temp 0.7 vs temp 0.9), then a selector model picks the
 best. Useful for quality improvement without multiple model providers.
 
-**Duel mode**: Two different models (e.g., claude-opus-4.6 and gpt-5)
+**Duel mode**: Two different models (e.g., claude-opus-4.8 and gpt-5)
 generate in parallel. A judge model reads both responses and picks the
 winner. The system prompt tells the judge to evaluate for accuracy,
 completeness, and naturalness.
@@ -1795,7 +1802,7 @@ dreaming auto-halts to prevent accumulating miscalibrated output. Config:
 ### Benchmark Performance
 
 Tested against 72 labeled candidates (7 tiers). Current coherence judge
-model: `claude-opus-4.6` (upgraded from `gpt-4o-mini`, then `sonnet-4.5`).
+model: `claude-opus-4.8` (upgraded from `gpt-4o-mini`, then `sonnet-4.5`).
 
 | Model | Precision | Recall | F1 |
 |-------|-----------|--------|-----|

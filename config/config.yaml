@@ -69,7 +69,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: claude-opus-4.6
+  active: deepseek-v4
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -114,7 +114,7 @@ features:
   best_of_max_tokens: 8816
   best_of_min_question: false
   best_of_generator_models:
-  - claude-opus-4.6
+  - claude-opus-4.8
   - gemini-3-pro
   best_of_selector_models:
   - gpt-4o-mini
@@ -319,7 +319,7 @@ synthesis:
   novelty_adjacent_threshold: 0.7
   cooccurrence_known_threshold: 0.85
   memory_similarity_threshold: 0.85
-  coherence_model: claude-opus-4.6
+  coherence_model: claude-opus-4.8
   coherence_min_level: MODERATE
   weights:
     coherence: 0.3
@@ -463,7 +463,6 @@ internet_actions:
   google_calendar_lookahead_days: 7
   google_contacts_enabled: true
   google_other_contacts_enabled: true
-  # Gmail header search (fallback — requires gmail.readonly scope)
   google_gmail_search_enabled: true
   playwright_enabled: false
   playwright_timeout_s: 30

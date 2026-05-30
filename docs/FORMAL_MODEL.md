@@ -768,7 +768,7 @@ The pipeline short-circuits: if any g_i.passed = false, subsequent stages do not
 | g_2 | Semantic distance | 0.20 <= dist <= 0.90 | O(1) |
 | g_3 | External novelty | 3 sub-checks: (a) max_sim(claim, C_wiki) < 0.88 (near-verbatim only), (b) max_sim("a b", C_wiki) < 0.85 (co-occurrence, 40M-scale recalibrated), (c) template_sim(claim) via regex generic pattern detection | O(log n) vector search |
 | g_4 | Internal novelty | path_hash not in existing.unique_paths (convergence pass) OR no match | O(log m) vector search |
-| g_5 | Coherence judge (`claude-opus-4.6`) | Two-pass: Pass 1 LLM_structural_coherence(a, b, claim) >= MODERATE; Pass 2 (MODERATE only) LLM_factual_skeptic(claim) = PASS | O(1-2) LLM calls |
+| g_5 | Coherence judge (`claude-opus-4.8`) | Two-pass: Pass 1 LLM_structural_coherence(a, b, claim) >= MODERATE; Pass 2 (MODERATE only) LLM_factual_skeptic(claim) = PASS | O(1-2) LLM calls |
 | g_6 | Composite score | composite(c) >= 0.65 | O(1) arithmetic |
 
 ### 13.3 Composite Scoring

@@ -49,7 +49,7 @@ def format_relative_timestamp(ts: datetime, now: datetime = None) -> str:
         return f"{time_str} (today)"
     elif delta_days == 1:
         return f"{time_str} (yesterday)"
-    elif delta_days < 7:
+    elif delta_days < 14:
         return f"{time_str} ({delta_days} days ago)"
     elif delta_days < 30:
         weeks = delta_days // 7

@@ -1,12 +1,15 @@
 #tests/test_summaries.py
 import asyncio
+import os
+import tempfile
 from memory.corpus_manager import CorpusManager
 from utils.logging_utils import get_logger
 
 logger = get_logger("test_summaries")
 
 async def test_summary_integration():
-    corpus_manager = CorpusManager("test_corpus.json")
+    # Use a throwaway temp dir so this never writes to the repo-root test_corpus.json
+    corpus_manager = CorpusManager(os.path.join(tempfile.mkdtemp(), "test_corpus.json"))
 
     logger.info("Adding 25 test entries...")
     for i in range(25):

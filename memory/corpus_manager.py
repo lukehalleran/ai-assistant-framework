@@ -444,6 +444,13 @@ class CorpusManager:
             with open(narrative_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
+            # Prepend generation timestamp so the LLM knows how stale this is
+            mtime = os.path.getmtime(narrative_path)
+            gen_dt = datetime.fromtimestamp(mtime)
+            from utils.time_manager import format_relative_timestamp
+            gen_label = format_relative_timestamp(gen_dt)
+            content = f"[Generated: {gen_label}]\n{content}"
+
             logger.debug(f"[CorpusManager] Loaded narrative context ({len(content)} chars)")
             return content
 

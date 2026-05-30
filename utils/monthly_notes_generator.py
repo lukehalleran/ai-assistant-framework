@@ -533,11 +533,12 @@ generated: {datetime.now().isoformat()}
 
         # Call LLM with fallback models
         fallback_models = [
+            "claude-opus-4.8",  # Anthropic Claude (best)
             "sonnet-4.5",       # Anthropic Claude (fast)
             "gpt-4o-mini",      # Fast, cheap OpenAI
             "deepseek-v3.1",    # DeepSeek
             "gpt-4o",           # Standard OpenAI
-            "claude-opus-4.5",  # Anthropic Claude (best)
+            "claude-opus-4.5",  # Anthropic Claude
             "gemini-3-pro",     # Google Gemini
             "gpt-5",            # Newer OpenAI
             "deepseek-r1",      # DeepSeek reasoning

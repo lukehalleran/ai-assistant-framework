@@ -197,12 +197,15 @@ Synthesize a 250-300 word "Current Life State" narrative covering:
 3. EMOTIONAL TRAJECTORY: How is mood/stress trending? Use daily notes for recent shifts. (2-3 sentences)
 4. RECURRING THEMES: Patterns visible across all three time scales.
 
+TODAY'S DATE: {today}
+
 TEMPORAL ACCURACY RULES — these are critical:
 - Each daily note has a date in its frontmatter. Use those dates as ground truth.
 - When a note references events from EARLIER days ("yesterday was rough", "on Saturday I..."),
   attribute those events to the correct calendar date, not the note's own date.
 - For multi-day events (illness, travel, projects), state the full date range explicitly
-  (e.g. "sick Saturday through Monday, better Tuesday") — never collapse to a single day.
+  (e.g. "sick May 12-14", "started homework at 2:30 on May 15") — never collapse to a single day.
+- ALWAYS use absolute dates (e.g. "May 18-20"), never vague relative terms like "recently" or "a few days ago".
 - Use day-of-week names anchored to actual dates, not vague relative terms.
 
 Write in third person ("The user is..."). Be specific and grounded in the data.
@@ -500,7 +503,9 @@ Do NOT make up information not present in the summaries."""
                 return ""
 
             # Build prompt from template
+            from datetime import date as _date
             prompt = self.NARRATIVE_SYNTHESIS_PROMPT.format(
+                today=_date.today().strftime("%A, %B %d, %Y"),
                 monthly_summaries=monthly_text,
                 weekly_summaries=weekly_text,
                 daily_notes=daily_text,

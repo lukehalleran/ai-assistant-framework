@@ -429,6 +429,10 @@ class TestUncertaintyFallback:
 
         content = _final_content(results)
         assert "information you wanted" in content
+        # After a successful uncertainty retry the debug mode flips (handlers.py:1772)
+        debug = _debug_record(results)
+        assert debug is not None
+        assert debug["mode"] == "uncertainty-fallback"
 
     @pytest.mark.asyncio
     async def test_uncertainty_rejects_similar(self):
@@ -542,3 +546,422 @@ class TestStorageOnce:
         call_kwargs = mock_dispatch.call_args
         # Verify mode is correct
         assert call_kwargs[1].get("mode", call_kwargs[0][-1] if call_kwargs[0] else None) is not None
+
+
+# ===========================================================================
+# CHARACTERIZATION TESTS (Stage 0) — pin behavior of the untested tails
+# before the handle_submit decomposition refactor.
+# ===========================================================================
+
+
+def _count_debug_chunks(results):
+    """Count yields carrying a non-None debug dict (should be exactly 1 per mode)."""
+    return sum(1 for r in results if "debug" in r and r["debug"] is not None)
+
+
+def _gate_decision(**overrides):
+    """Build an AgenticDecision-like mock for patching evaluate_agentic_gate.
+
+    Defaults trigger nothing; override per-test (e.g. doc_gen_intent=...).
+    """
+    d = MagicMock()
+    d.should_trigger = overrides.get("should_trigger", True)
+    d.search_terms = overrides.get("search_terms", [])
+    d.modes = overrides.get("modes", set())
+    d.matched_entities = overrides.get("matched_entities", [])
+    d.doc_gen_intent = overrides.get("doc_gen_intent", None)
+    d.self_note_intent = overrides.get("self_note_intent", None)
+    d.skip_initial_search = overrides.get("skip_initial_search", False)
+    return d
+
+
+def _raising_stream_factory(chunks_before_error, exc=None):
+    """Async-gen-returning callable that yields some chunks then raises."""
+    if exc is None:
+        exc = RuntimeError("stream boom")
+
+    async def _gen(*args, **kwargs):
+        for c in chunks_before_error:
+            yield c
+        raise exc
+    return _gen
+
+
+def _builder_const_isolation():
+    """Patches that roll back core.prompt.builder constants mutated by fast mode.
+
+    Fast mode rebinds builder_module.PROMPT_MAX_* in place (handlers.py:701-712)
+    and (due to a latent restore-to-wrong-module bug) never restores them. These
+    patches ensure a fast-mode test does not pollute global module state.
+    """
+    import core.prompt.builder as _bm
+    return [
+        patch("core.prompt.builder.PROMPT_MAX_MEMS", _bm.PROMPT_MAX_MEMS),
+        patch("core.prompt.builder.PROMPT_MAX_RECENT", _bm.PROMPT_MAX_RECENT),
+        patch("core.prompt.builder.PROMPT_MAX_SEMANTIC", getattr(_bm, "PROMPT_MAX_SEMANTIC", 8)),
+    ]
+
+
+class TestDocGenPath:
+    """Direct document-generation bypass (handlers.py:918-979)."""
+
+    def _doc_result(self):
+        r = MagicMock()
+        r.title = "Quantum Computing"
+        r.path = "documents/reports/quantum.md"
+        r.doc_type = "report"
+        r.sources = ["a", "b"]
+        r.sections_count = 4
+        r.word_count = 1200
+        return r
+
+    @pytest.mark.asyncio
+    async def test_doc_gen_path(self):
+        orch = _make_orchestrator(agentic_enabled=True)
+        dg = MagicMock()
+        dg.generate = AsyncMock(return_value=self._doc_result())
+        extra = [
+            patch(
+                "core.agentic.gate.evaluate_agentic_gate",
+                new_callable=AsyncMock,
+                return_value=_gate_decision(
+                    doc_gen_intent={"topic": "Quantum Computing", "doc_type": "report", "focus": None},
+                ),
+            ),
+            patch("knowledge.document_generator.DocumentGenerator", return_value=dg),
+        ]
+        results = await _run_submit("write a report on quantum computing", orch, extra_patches=extra)
+
+        content = _final_content(results)
+        assert "Document saved" in content
+        assert "Quantum Computing" in content
+        # Doc-gen does its own store_interaction and emits NO debug chunk
+        orch.memory_system.store_interaction.assert_awaited_once()
+        assert _debug_record(results) is None
+
+    @pytest.mark.asyncio
+    async def test_doc_gen_failure_falls_through_to_agentic(self):
+        # When doc-gen raises, should_use_agentic is still True -> agentic search runs.
+        orch = _make_orchestrator(agentic_enabled=True, agentic_items=["The answer is 55 today."])
+        dg = MagicMock()
+        dg.generate = AsyncMock(side_effect=RuntimeError("doc boom"))
+        extra = [
+            patch(
+                "core.agentic.gate.evaluate_agentic_gate",
+                new_callable=AsyncMock,
+                return_value=_gate_decision(
+                    doc_gen_intent={"topic": "X", "doc_type": "report", "focus": None},
+                ),
+            ),
+            patch("knowledge.document_generator.DocumentGenerator", return_value=dg),
+        ]
+        results = await _run_submit("write a report on X", orch, extra_patches=extra)
+
+        dg.generate.assert_awaited_once()
+        debug = _debug_record(results)
+        assert debug is not None
+        assert debug["mode"] == "agentic-search"
+
+
+class TestSelfNotePath:
+    """Direct self-note bypass (handlers.py:982-1037)."""
+
+    @pytest.mark.asyncio
+    async def test_self_note_path(self):
+        orch = _make_orchestrator(agentic_enabled=True)
+        note_result = MagicMock()
+        note_result.title = "Project status"
+        note_result.path = "daemon_notes/project_status.md"
+        note_result.category = "project"
+        note_result.confidence = "medium"
+        note_result.id = "note-1"
+        dnm = MagicMock()
+        dnm._generate_summary = AsyncMock(return_value="A concise summary.")
+        dnm.create_note = AsyncMock(return_value=note_result)
+        extra = [
+            patch(
+                "core.agentic.gate.evaluate_agentic_gate",
+                new_callable=AsyncMock,
+                return_value=_gate_decision(
+                    self_note_intent={"topic": "Project status", "category": "project"},
+                ),
+            ),
+            patch("knowledge.daemon_notes_manager.DaemonNotesManager", return_value=dnm),
+        ]
+        results = await _run_submit("make a note about the project status", orch, extra_patches=extra)
+
+        content = _final_content(results)
+        assert "Self-note saved" in content
+        assert "Project status" in content
+        orch.memory_system.store_interaction.assert_awaited_once()
+        assert _debug_record(results) is None
+
+
+class TestDuelFallthrough:
+    """Duel timeout/exception falls through (handlers.py:889-895)."""
+
+    def _duel_orch(self, side_effect):
+        orch = _make_orchestrator(
+            duel_enabled=True,
+            duel_gens=["model-a", "model-b"],
+            duel_sels=["judge-model"],
+            streaming_chunks=["Fallback enhanced answer."],
+        )
+        orch.response_generator.generate_duel_and_judge = AsyncMock(side_effect=side_effect)
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_duel_timeout_fallthrough(self):
+        orch = self._duel_orch(asyncio.TimeoutError())
+        results = await _run_submit("What is the meaning of life?", orch)
+
+        # Duel progress chunk emitted before the try, so present even on bail
+        assert any("Duel mode" in r.get("content", "") for r in results)
+        debug = _debug_record(results)
+        assert debug is not None
+        assert debug["mode"] == "enhanced"
+        orch.response_generator.generate_duel_and_judge.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_duel_exception_fallthrough(self):
+        orch = self._duel_orch(ValueError("duel boom"))
+        results = await _run_submit("What is the meaning of life?", orch)
+
+        assert any("Duel mode" in r.get("content", "") for r in results)
+        debug = _debug_record(results)
+        assert debug is not None
+        assert debug["mode"] == "enhanced"
+
+
+class TestEnhancedStreamError:
+    """Enhanced streaming exception path (handlers.py:1958-1973) + finally cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_enhanced_stream_error_yields_error_and_clears_fast_mode(self):
+        orch = _make_orchestrator()
+        orch.response_generator.generate_streaming_response = _raising_stream_factory(["partial "])
+
+        results = await _run_submit(
+            "How are you?", orch, fast_mode=True, extra_patches=_builder_const_isolation(),
+        )
+
+        assert any(r.get("content", "").startswith("⚠️ Streaming error:") for r in results)
+        # finally still ran -> fast-mode flag cleared for the enhanced path
+        assert orch.prompt_builder.context_gatherer._fast_mode is False
+
+
+class TestFastModeCleanup:
+    """Pin that the finally (and thus fast-mode flag restore) is enhanced-path-only."""
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_flag_cleared_enhanced(self):
+        orch = _make_orchestrator(streaming_chunks=["A normal answer."])
+        await _run_submit(
+            "How are you?", orch, fast_mode=True, extra_patches=_builder_const_isolation(),
+        )
+        assert orch.prompt_builder.context_gatherer._fast_mode is False
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_agentic_leaves_flag_set(self):
+        # LATENT BUG (pinned, do NOT fix in this refactor): agentic returns before
+        # the enhanced finally, so fast-mode flags are never restored on that path.
+        orch = _make_orchestrator(
+            agentic_enabled=True,
+            agentic_items=["The 10th Fibonacci number is 55."],
+        )
+        await _run_submit(
+            "calculate fibonacci 10", orch, fast_mode=True, extra_patches=_builder_const_isolation(),
+        )
+        assert orch.prompt_builder.context_gatherer._fast_mode is True
+
+
+class TestDebugChunkInvariant:
+    """Exactly one debug-bearing chunk per mode (single-final-chunk guarantee)."""
+
+    @pytest.mark.asyncio
+    async def test_one_debug_chunk_enhanced(self):
+        orch = _make_orchestrator(streaming_chunks=["Hello world here."])
+        results = await _run_submit("How are you?", orch)
+        assert _count_debug_chunks(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_one_debug_chunk_raw(self):
+        orch = _make_orchestrator(raw_result=("Raw answer.", {}))
+        results = await _run_submit("test", orch, use_raw_gpt=True)
+        assert _count_debug_chunks(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_one_debug_chunk_duel(self):
+        orch = _make_orchestrator(
+            duel_enabled=True, duel_gens=["a", "b"], duel_sels=["j"],
+        )
+        results = await _run_submit("test", orch)
+        assert _count_debug_chunks(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_one_debug_chunk_agentic(self):
+        orch = _make_orchestrator(
+            agentic_enabled=True, agentic_items=["The 10th Fibonacci number is 55."],
+        )
+        results = await _run_submit("calculate fibonacci 10", orch)
+        assert _count_debug_chunks(results) == 1
+
+
+class TestStorageOnceAllModes:
+    """Storage dispatched exactly once for duel and agentic (extends TestStorageOnce)."""
+
+    @pytest.mark.asyncio
+    async def test_storage_once_duel(self):
+        orch = _make_orchestrator(
+            duel_enabled=True, duel_gens=["a", "b"], duel_sels=["j"],
+        )
+        with patch("gui.handlers._dispatch_storage") as mock_dispatch:
+            await _run_submit("test", orch)
+        assert mock_dispatch.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_storage_once_agentic(self):
+        orch = _make_orchestrator(
+            agentic_enabled=True, agentic_items=["The 10th Fibonacci number is 55."],
+        )
+        with patch("gui.handlers._dispatch_storage") as mock_dispatch:
+            await _run_submit("calculate fibonacci 10", orch)
+        assert mock_dispatch.call_count == 1
+
+
+# ===========================================================================
+# STAGE 1 — direct unit tests for the extracted dedup helpers.
+# These integration paths aren't exercised by the mode tests above, so the
+# helpers are verified in isolation.
+# ===========================================================================
+
+
+class TestStripInlineToolXml:
+    def test_strips_full_function_calls_block(self):
+        from gui.handlers import _strip_inline_tool_xml
+        out = _strip_inline_tool_xml(
+            "Hello <function_calls><invoke name='x'>p</invoke></function_calls> world"
+        )
+        assert "<function_calls>" not in out and "<invoke" not in out
+        assert "Hello" in out and "world" in out
+
+    def test_strips_unclosed_function_calls(self):
+        from gui.handlers import _strip_inline_tool_xml
+        out = _strip_inline_tool_xml("Answer here\n<function_calls>\n<invoke name='send'>")
+        assert "<function_calls>" not in out
+        assert out.startswith("Answer here")
+
+    def test_full_strips_propose_and_lookup(self):
+        from gui.handlers import _strip_inline_tool_xml
+        out = _strip_inline_tool_xml(
+            "A<propose_action x>p</propose_action>B<lookup_contact y>l</lookup_contact>C",
+            full=True,
+        )
+        assert "propose_action" not in out and "lookup_contact" not in out
+
+    def test_subset_keeps_propose_and_lookup(self):
+        from gui.handlers import _strip_inline_tool_xml
+        out = _strip_inline_tool_xml(
+            "A<propose_action x>p</propose_action>B", full=False,
+        )
+        assert "propose_action" in out  # 3-pattern subset must NOT strip it
+
+    def test_preserves_plain_text(self):
+        from gui.handlers import _strip_inline_tool_xml
+        assert _strip_inline_tool_xml("just normal text") == "just normal text"
+
+
+class TestMakeTextActionProposal:
+    def test_creates_proposal_returns_id(self):
+        from gui.handlers import _make_text_action_proposal
+        decision = MagicMock()
+        decision.action_type = "send_email"
+        decision.action_params = {"recipient": "a@b.com", "message": "hi", "subject": "s"}
+        decision.action_summary = "send it"
+        decision.action_reason = "user asked"
+        store = MagicMock()
+        with patch("core.actions.audit.ActionAuditLog"):
+            action_id = _make_text_action_proposal(decision, store)
+        assert action_id is not None
+        store.propose.assert_called_once()
+
+    def test_unknown_action_type_returns_none(self):
+        from gui.handlers import _make_text_action_proposal
+        decision = MagicMock()
+        decision.action_type = "not_a_real_action_xyz"
+        store = MagicMock()
+        with patch("core.actions.audit.ActionAuditLog"):
+            assert _make_text_action_proposal(decision, store) is None
+        store.propose.assert_not_called()
+
+
+class TestResolveContactAndProposeEmail:
+    @pytest.mark.asyncio
+    async def test_no_contacts_uses_suffix(self):
+        from gui import handlers
+        store = MagicMock()
+        with patch("core.actions.google_contacts.resolve_contact",
+                   new_callable=AsyncMock, return_value=[]):
+            text, aid = await handlers._resolve_contact_and_propose_email(
+                "Bob", "send email to bob", [], "Body.", store,
+                no_contacts_suffix=" in Google Contacts or Gmail",
+            )
+        assert aid is None
+        assert "No contacts found for 'Bob' in Google Contacts or Gmail." in text
+        store.propose.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_contacts_agentic_suffix_empty(self):
+        from gui import handlers
+        store = MagicMock()
+        with patch("core.actions.google_contacts.resolve_contact",
+                   new_callable=AsyncMock, return_value=[]):
+            text, aid = await handlers._resolve_contact_and_propose_email(
+                "Bob", "who is bob", [], "Body.", store,
+            )
+        assert "No contacts found for 'Bob'." in text  # agentic default: no suffix
+
+    @pytest.mark.asyncio
+    async def test_email_intent_with_draft_creates_proposal(self):
+        from gui import handlers
+        store = MagicMock()
+        contacts = [{"email": "bob@x.com", "name": "Bob"}]
+        with patch("core.actions.google_contacts.resolve_contact",
+                   new_callable=AsyncMock, return_value=contacts), \
+             patch("gui.handlers._find_email_draft", return_value="Weekly summary draft text."), \
+             patch("core.actions.audit.ActionAuditLog"):
+            text, aid = await handlers._resolve_contact_and_propose_email(
+                "Bob", "send an email to bob", [], "display", store,
+            )
+        assert aid is not None
+        store.propose.assert_called_once()
+        assert "send_email" in text and "bob@x.com" in text
+
+    @pytest.mark.asyncio
+    async def test_email_intent_no_draft_shows_contact_message(self):
+        from gui import handlers
+        store = MagicMock()
+        contacts = [{"email": "bob@x.com", "name": "Bob"}]
+        with patch("core.actions.google_contacts.resolve_contact",
+                   new_callable=AsyncMock, return_value=contacts), \
+             patch("gui.handlers._find_email_draft", return_value=""):
+            text, aid = await handlers._resolve_contact_and_propose_email(
+                "Bob", "send an email to bob", [], "display", store,
+            )
+        assert aid is None
+        assert "couldn't locate the draft" in text
+        store.propose.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_email_intent_shows_contact_only(self):
+        from gui import handlers
+        store = MagicMock()
+        contacts = [{"email": "bob@x.com", "name": "Bob"}]
+        with patch("core.actions.google_contacts.resolve_contact",
+                   new_callable=AsyncMock, return_value=contacts):
+            text, aid = await handlers._resolve_contact_and_propose_email(
+                "Bob", "who is bob", [], "display", store,
+            )
+        assert aid is None
+        assert "**Contact found:** Bob <bob@x.com>" in text
+        store.propose.assert_not_called()
