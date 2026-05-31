@@ -1200,6 +1200,14 @@ def launch_gui(orchestrator, force_wizard=False):
                     submit_chat,
                     inputs=[user_input, chat_state, files, use_raw, enable_citations, fast_mode, personality, debug_state],
                     outputs=[chatbot, chat_state, user_input, debug_state, typing_md, timer_md, thinking_accordion, thinking_a_md, thinking_b_md, winner_md, pending_action_id, action_row],
+                ).then(
+                    # Gradio does not reliably apply a gr.Row visibility change from the FINAL
+                    # yield of a streaming generator, so the approve/reject buttons can fail to
+                    # appear even when a proposal exists. This non-streaming post-stream pass
+                    # re-checks the pending-actions store and shows the buttons reliably.
+                    _check_pending_action,
+                    inputs=[],
+                    outputs=[pending_action_id, action_row],
                 )
 
                 # Clear chat handler

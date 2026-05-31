@@ -869,22 +869,27 @@ class ModelManager:
         if target_model in self.models:
             return False
 
-        # Check API models for tool support
-        if target_model in self.api_models:
-            full_model = self.api_models[target_model].lower()
+        # Resolve to the full provider model name. target_model may be an ALIAS
+        # (a key in api_models) OR an already-resolved name (e.g.
+        # "deepseek/deepseek-v4-pro") — the agentic path passes the latter via
+        # get_active_model_name(). Handle both, or tools get silently dropped and
+        # the model can only narrate instead of calling propose_action/etc.
+        full_model = (
+            self.api_models[target_model].lower()
+            if target_model in self.api_models
+            else str(target_model).lower()
+        )
 
-            # Models known to support tool calling
-            tool_capable_patterns = [
-                "gpt-4", "gpt-5",
-                "claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
-                "deepseek-chat", "deepseek-coder",
-                "gemini",
-                "glm-5",
-            ]
+        # Models known to support tool calling
+        tool_capable_patterns = [
+            "gpt-4", "gpt-5",
+            "claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
+            "deepseek-chat", "deepseek-coder", "deepseek-v4",
+            "gemini",
+            "glm-5",
+        ]
 
-            return any(pattern in full_model for pattern in tool_capable_patterns)
-
-        return False
+        return any(pattern in full_model for pattern in tool_capable_patterns)
 
     async def generate_once_with_tools(
         self,
@@ -957,8 +962,12 @@ class ModelManager:
                     request_params["tools"] = tools
                     request_params["tool_choice"] = tool_choice
 
-                # Request native reasoning separation for supported models
-                if self.supports_reasoning(target_model):
+                # Request native reasoning separation for supported models — but NOT
+                # when tools are in play. Reasoning models (DeepSeek) otherwise spend
+                # the turn on chain-of-thought ("let me create it…") and never emit a
+                # structured tool_call. Tool selection should be a direct, non-reasoning
+                # decision (mirrors _generate_decision_no_reasoning on the XML path).
+                if not tools and self.supports_reasoning(target_model):
                     request_params["extra_body"] = {
                         "reasoning": {"effort": "medium"},
                     }

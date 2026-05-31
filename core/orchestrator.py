@@ -12,8 +12,19 @@ Module Contract
 - Key methods:
   - handle_commands(): simple topic switching commands
   - prepare_prompt(): topic update, file processing, optional query rewrite, resolve system prompt, build prompt via prompt_builder
-  - process_user_query(): deictic check, generate streamed response, store memory (with provenance), schedule consolidation (now at shutdown)
+  - build_full_prompt(): assembles final prompt; delegates system-prompt assembly to _build_system_prompt()
+  - process_user_query(): thin coordinator — builds a _QueryFlow and routes through per-phase
+    helper methods (behavior-preserving decomposition; final answer + debug_info returned).
   - _check_narrative_freshness(): Startup check for stale narrative context (>24h) [NEW 2026-01-17]
+- process_user_query decomposition [REFACTOR 2026-05-30]:
+  - State threads through a _QueryFlow dataclass; the coordinator calls, in order:
+    _handle_command → _handle_deictic → _resolve_model_name → _build_prompt_phase →
+    _maybe_document_generation → _maybe_agentic_search → _resolve_max_tokens →
+    _generate_response → _postprocess_response → _store_interaction →
+    _run_post_response_detectors → _finalize_debug.
+  - Early-exit helpers (_handle_command, _handle_deictic, _maybe_document_generation,
+    _maybe_agentic_search) return (text, debug_info) or None (None = fall through).
+  - The outer try/except logs, sets debug_info["error"], and re-raises.
 - System prompt flow:
   - Composed from file-based personality (config/prompts/default_personality.txt or custom_personality.txt) + immutable operating principles (config/prompts/operating_principles.txt) via load_personality_text() + load_operating_principles(). Falls back to load_system_prompt() if files fail.
   - Performs placeholder substitution: {USER_NAME}, {USER_PRONOUNS}, {PRONOUN_SUBJ}, {PRONOUN_OBJ}, {PRONOUN_POSS}. Forwarded to response generation as system role message.
@@ -39,6 +50,7 @@ import re
 import processing.gate_system as gate_system
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List, Union
+from dataclasses import dataclass, field
 from core.response_parser import ResponseParser
 from utils.logging_utils import get_logger
 logger = get_logger("orchestrator")
@@ -129,6 +141,36 @@ class _FallbackMemoryCoordinator:
             "hierarchical": 0,
         }
         return {"memories": memories, "counts": counts}
+
+@dataclass
+class _QueryFlow:
+    """Threaded state for DaemonOrchestrator.process_user_query (behavior-preserving refactor)."""
+    user_input: str
+    files: Optional[List[Any]] = None
+    use_raw_mode: bool = False
+    personality: Optional[str] = None
+    use_agentic_search: bool = False
+    debug_info: Dict[str, Any] = field(default_factory=dict)
+    model_name: Optional[str] = None
+    context: Any = None
+    prompt: str = ""
+    system_prompt: Optional[str] = None
+    prompt_ctx: Optional[Dict[str, Any]] = None
+    note_images: List[Any] = field(default_factory=list)
+    is_heavy_topic: bool = False
+    tone_level: Any = None
+    task_timings: Dict[str, Any] = field(default_factory=dict)
+    gather_elapsed: float = 0.0
+    t_ctx_elapsed: float = 0.0
+    t_build_elapsed: float = 0.0
+    t_gen_start: float = 0.0
+    t_gen_elapsed: float = 0.0
+    t_store_elapsed: float = 0.0
+    response_max_tokens: Optional[int] = None
+    full_response: str = ""
+    answer_for_storage: str = ""
+    citations: List[Any] = field(default_factory=list)
+
 
 class DaemonOrchestrator:
     """
@@ -844,33 +886,14 @@ class DaemonOrchestrator:
 
         return context
 
-    async def build_full_prompt(
-        self,
-        context: ContextResult,
-        use_raw_mode: bool = False,
-        return_raw_context: bool = False,
-    ) -> Union[Tuple[str, str], Tuple[str, str, Dict[str, Any]]]:
+    def _build_system_prompt(self, context: ContextResult, use_raw_mode: bool = False) -> str:
         """
-        Build the full prompt and system prompt from a ContextResult.
+        Assemble the system prompt from personality/principles + all contextual injections.
 
-        This method:
-        1. Builds the system prompt with all injections (identity, tone, thread, etc.)
-        2. Calls prompt_builder.build_prompt_from_context() for context gathering
-        3. Assembles the final prompt
-
-        Args:
-            context: ContextResult from build_context()
-            use_raw_mode: If True, skip enrichment
-            return_raw_context: If True, also return the raw context dict (for agentic search)
-
-        Returns:
-            If return_raw_context=False: (prompt_string, system_prompt_string)
-            If return_raw_context=True: (prompt_string, system_prompt_string, raw_context_dict)
+        Extracted verbatim from build_full_prompt (behavior-preserving). Reads only self
+        collaborators (enable_citations, escalation_tracker, model_manager, time_manager,
+        user_profile) and the ContextResult; returns the fully assembled system prompt.
         """
-        import time
-        _t_start = time.perf_counter()
-
-        # --- 1) Build System Prompt ---
         SYSTEM_PROMPT_FALLBACK = (
             "You are Daemon, a helpful assistant with memory and RAG. "
             "Be direct, truthful, concise."
@@ -1052,6 +1075,36 @@ class DaemonOrchestrator:
                     "then provide your answer outside the tags."
                 )
                 system_prompt = system_prompt.rstrip() + thinking_instruction
+        return system_prompt
+
+    async def build_full_prompt(
+        self,
+        context: ContextResult,
+        use_raw_mode: bool = False,
+        return_raw_context: bool = False,
+    ) -> Union[Tuple[str, str], Tuple[str, str, Dict[str, Any]]]:
+        """
+        Build the full prompt and system prompt from a ContextResult.
+
+        This method:
+        1. Builds the system prompt with all injections (identity, tone, thread, etc.)
+        2. Calls prompt_builder.build_prompt_from_context() for context gathering
+        3. Assembles the final prompt
+
+        Args:
+            context: ContextResult from build_context()
+            use_raw_mode: If True, skip enrichment
+            return_raw_context: If True, also return the raw context dict (for agentic search)
+
+        Returns:
+            If return_raw_context=False: (prompt_string, system_prompt_string)
+            If return_raw_context=True: (prompt_string, system_prompt_string, raw_context_dict)
+        """
+        import time
+        _t_start = time.perf_counter()
+
+        # --- 1) Build System Prompt ---
+        system_prompt = self._build_system_prompt(context, use_raw_mode)
 
         # --- 2) Build prompt context (+ optional response plan in parallel) ---
         _plan_result = None
@@ -1248,495 +1301,49 @@ class DaemonOrchestrator:
             - Web search trigger to indicate search is needed
             - Will fall back to standard flow if conditions not met
         """
-        debug_info: Dict[str, Any] = {
+        flow = _QueryFlow(
+            user_input=user_input,
+            files=files,
+            use_raw_mode=use_raw_mode,
+            personality=personality,
+            use_agentic_search=use_agentic_search,
+        )
+        flow.debug_info = {
             "start_time": datetime.now(),
             "user_input": user_input[:100],
             "files_count": len(files) if files else 0,
             "mode": "raw" if use_raw_mode else "enhanced",
         }
+        debug_info = flow.debug_info
 
         try:
-            # --- Commands: early exit ---
-            cmd = self.handle_commands(user_input)
-            if cmd:
-                # shape matches handler expectations: (text, debug_info)
-                text, meta = cmd
-                debug_info.update(meta)
-                return text, debug_info
+            early = self._handle_command(flow)
+            if early is not None:
+                return early
 
-            # --- Deictic pre-check (clarify before we build/stream) ---
-            if not use_raw_mode and is_deictic(user_input) and self.memory_system:
-                try:
-                    retrieval_result = await self.memory_system.get_memories(user_input, limit=10)
-                    if retrieval_result and retrieval_result[0].get("metadata", {}).get("needs_clarification"):
-                        response = "I'm not sure what you're referring to. Could you be more specific?"
-                        try:
-                            await self.memory_system.store_interaction(
-                                query=user_input, response=response, tags=["clarification"]
-                            )
-                        except Exception as e:
-                            logger.warning(f"[Orchestrator] Failed to store clarification interaction: {e}")
-                        debug_info.update({
-                            "response_length": len(response),
-                            "end_time": datetime.now(),
-                            "prompt_length": 0,
-                        })
-                        debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
-                        return response, debug_info
-                except Exception as e:
-                    if self.logger:
-                        self.logger.debug(f"[Orchestrator] Deictic pre-retrieval failed or skipped: {e}")
+            early = await self._handle_deictic(flow)
+            if early is not None:
+                return early
 
-            # --- Determine Model Name FIRST (needed for multimodal image loading) ---
-            active_name_getter = getattr(self.model_manager, "get_active_model_name", None)
-            model_name = active_name_getter() if callable(active_name_getter) else None
-            model_name = model_name or "gpt-4-turbo"
+            self._resolve_model_name(flow)
+            await self._build_prompt_phase(flow)
 
-            if self.logger:
-                self.logger.info(f"[Orchestrator] Target model for response: {model_name}")
+            early = await self._maybe_document_generation(flow)
+            if early is not None:
+                return early
 
-            # --- Build Prompt (NEW: via ContextPipeline) ---
-            import time as _time_mod
-            _t_ctx_start = _time_mod.perf_counter()
-            context = await self.build_context(
-                user_input=user_input,
-                files=files,
-                use_raw_mode=use_raw_mode,
-                personality=personality,
-            )
-            _t_ctx_elapsed = _time_mod.perf_counter() - _t_ctx_start
+            early = await self._maybe_agentic_search(flow)
+            if early is not None:
+                return early
 
-            _t_build_start = _time_mod.perf_counter()
-            prompt, system_prompt, prompt_ctx = await self.build_full_prompt(
-                context=context,
-                use_raw_mode=use_raw_mode,
-                return_raw_context=True,  # Get prompt context for images
-            )
-            _t_build_elapsed = _time_mod.perf_counter() - _t_build_start
+            self._resolve_max_tokens(flow)
+            await self._generate_response(flow)
+            self._postprocess_response(flow)
+            await self._store_interaction(flow)
+            self._run_post_response_detectors(flow)
+            self._finalize_debug(flow)
 
-            # Extract per-task timings stashed by builder
-            _task_timings = prompt_ctx.pop("_task_timings", {}) if prompt_ctx else {}
-            _gather_elapsed = prompt_ctx.pop("_gather_elapsed", 0.0) if prompt_ctx else 0.0
-            _builder_time = prompt_ctx.pop("_build_time", 0.0) if prompt_ctx else 0.0
-
-            # Extract images for multimodal models
-            note_images = prompt_ctx.get("note_images", []) if prompt_ctx else []
-            if self.logger:
-                if note_images:
-                    total_size = sum(len(img.get("data", "")) for img in note_images)
-                    self.logger.warning(f"[Orchestrator] IMAGE DEBUG: {len(note_images)} images extracted from prompt_ctx, total base64={total_size//1024}KB")
-                else:
-                    self.logger.warning(f"[Orchestrator] IMAGE DEBUG: No images in prompt_ctx. Keys={list(prompt_ctx.keys()) if prompt_ctx else 'None'}")
-
-            # Update escalation tracker with detected tone
-            if self.escalation_tracker:
-                need_type_str = None
-                if context.emotional_context and hasattr(context.emotional_context, 'need_type'):
-                    need_type_str = (
-                        context.emotional_context.need_type.value
-                        if hasattr(context.emotional_context.need_type, 'value')
-                        else str(context.emotional_context.need_type)
-                    )
-                self.escalation_tracker.update(
-                    context.tone_level,
-                    user_input,
-                    need_type=need_type_str,
-                )
-
-            debug_info["context_pipeline"] = {
-                "tone_level": context.tone_level.value,
-                "topics": context.topics[:3] if context.topics else [],
-                "has_stm": context.has_stm,
-                "has_thread": context.has_thread,
-                "note_images_count": len(note_images),
-            }
-            if self.escalation_tracker:
-                debug_info["escalation"] = self.escalation_tracker.get_debug_info()
-
-            # Extract values needed for token limit logic
-            is_heavy_topic = context.is_heavy_topic
-            tone_level = context.tone_level
-
-            # --- Generate Response ---
-            # (model_name already determined earlier for image loading)
-            _t_gen_start = _time_mod.perf_counter()
-
-            # --- Document Generation Check ---
-            # Check for document generation intent BEFORE generic agentic search.
-            # If detected, enter agentic mode with generate_document as primary action.
-            _doc_intent = None
-            if use_agentic_search and not use_raw_mode and self.agentic_controller:
-                try:
-                    from knowledge.document_generator import detect_document_intent
-                    _doc_intent = detect_document_intent(user_input)
-                except Exception:
-                    pass
-
-            if _doc_intent and self.agentic_controller:
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            f"[Orchestrator] Document generation detected: "
-                            f"topic={_doc_intent['topic']}, type={_doc_intent['doc_type']}"
-                        )
-
-                    from core.agentic import ProgressEvent
-
-                    # Augment user query with explicit generate_document instruction
-                    doc_query = (
-                        f"{user_input}\n\n"
-                        f"[SYSTEM: The user wants a {_doc_intent['doc_type']} document. "
-                        f"Use the generate_document tool with topic=\"{_doc_intent['topic']}\", "
-                        f"doc_type=\"{_doc_intent['doc_type']}\""
-                        + (f", focus=\"{_doc_intent['focus']}\"" if _doc_intent.get("focus") else "")
-                        + ".]"
-                    )
-
-                    full_response = ""
-                    async for event_or_chunk in self.agentic_controller.run_agentic_search(
-                        query=doc_query,
-                        system_prompt=system_prompt or "",
-                        model_name=model_name,
-                        initial_search_terms=[_doc_intent["topic"]],
-                        initial_context=prompt_ctx,
-                        crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
-                    ):
-                        if isinstance(event_or_chunk, ProgressEvent):
-                            if self.logger:
-                                self.logger.debug(
-                                    f"[AgenticSearch] {event_or_chunk.event_type}: {event_or_chunk.message}"
-                                )
-                            debug_info.setdefault("agentic_events", []).append({
-                                "type": event_or_chunk.event_type,
-                                "message": event_or_chunk.message,
-                                "round": event_or_chunk.round_number,
-                            })
-                        else:
-                            full_response += event_or_chunk
-
-                    if self.memory_system:
-                        try:
-                            await self.memory_system.store_interaction(
-                                query=user_input,
-                                response=full_response.strip(),
-                                tags=["document_generation"]
-                            )
-                        except Exception:
-                            pass
-
-                    debug_info.update({
-                        "response_length": len(full_response),
-                        "end_time": datetime.now(),
-                        "prompt_length": len(prompt),
-                        "document_generation_used": True,
-                        "doc_intent": _doc_intent,
-                    })
-                    debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
-
-                    return full_response.strip(), debug_info
-
-                except Exception as e:
-                    if self.logger:
-                        self.logger.warning(f"[Orchestrator] Document generation failed, falling back: {e}")
-                    debug_info["doc_gen_error"] = str(e)
-
-            # --- Agentic Search Check ---
-            # If agentic search is requested and available, check if we should use it
-            if use_agentic_search and not use_raw_mode and self.agentic_controller:
-                try:
-                    # Get web search decision from LLM-first trigger
-                    from utils.web_search_trigger import analyze_for_web_search_llm
-
-                    web_decision = await analyze_for_web_search_llm(
-                        query=user_input,
-                        model_manager=self.model_manager,
-                        crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
-                        web_search_enabled=True,
-                    )
-
-                    if web_decision and web_decision.should_search and web_decision.search_terms:
-                        if self.logger:
-                            self.logger.info(
-                                f"[Orchestrator] Using agentic search: terms={web_decision.search_terms}"
-                            )
-
-                        # Run agentic search loop
-                        from core.agentic import ProgressEvent
-
-                        full_response = ""
-                        async for event_or_chunk in self.agentic_controller.run_agentic_search(
-                            query=user_input,
-                            system_prompt=system_prompt or "",
-                            model_name=model_name,
-                            initial_search_terms=web_decision.search_terms,
-                            initial_context=prompt_ctx,
-                            crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
-                        ):
-                            if isinstance(event_or_chunk, ProgressEvent):
-                                # Log progress events
-                                if self.logger:
-                                    self.logger.debug(
-                                        f"[AgenticSearch] {event_or_chunk.event_type}: {event_or_chunk.message}"
-                                    )
-                                debug_info.setdefault("agentic_events", []).append({
-                                    "type": event_or_chunk.event_type,
-                                    "message": event_or_chunk.message,
-                                    "round": event_or_chunk.round_number,
-                                })
-                            else:
-                                # Accumulate response chunks
-                                full_response += event_or_chunk
-
-                        # Store interaction
-                        if self.memory_system:
-                            try:
-                                await self.memory_system.store_interaction(
-                                    query=user_input,
-                                    response=full_response.strip(),
-                                    tags=["agentic_search"]
-                                )
-                            except Exception:
-                                pass
-
-                        debug_info.update({
-                            "response_length": len(full_response),
-                            "end_time": datetime.now(),
-                            "prompt_length": len(prompt),
-                            "agentic_search_used": True,
-                        })
-                        debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
-                        debug_info["phase_timings"] = {
-                            "context_pipeline": round(_t_ctx_elapsed, 3),
-                            "prompt_build": round(_t_build_elapsed, 3),
-                            "llm_generation": round(debug_info["duration"] - _t_ctx_elapsed - _t_build_elapsed, 3),
-                        }
-                        debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
-                        debug_info["gather_elapsed"] = round(_gather_elapsed, 3)
-
-                        return full_response.strip(), debug_info
-
-                except Exception as e:
-                    if self.logger:
-                        self.logger.warning(f"[Orchestrator] Agentic search failed, falling back: {e}")
-                    debug_info["agentic_error"] = str(e)
-
-            # ---------------------------------------------------------------------
-            # Determine max_tokens based on tone level AND topic heaviness
-            # ---------------------------------------------------------------------
-            try:
-                from config.app_config import DEFAULT_MAX_TOKENS, HEAVY_TOPIC_MAX_TOKENS
-
-                # Heavy topics override tone-based limits
-                if is_heavy_topic:
-                    response_max_tokens = HEAVY_TOPIC_MAX_TOKENS
-                    token_reason = "HEAVY topic"
-                # Adjust max_tokens based on tone level for speed and brevity
-                # tone_level is ToneLevel from context_pipeline
-                elif tone_level == ToneLevel.CONVERSATIONAL:
-                    response_max_tokens = 600  # Force brief responses in conversational mode
-                    token_reason = "CONVERSATIONAL mode"
-                elif tone_level == ToneLevel.CONCERN:
-                    response_max_tokens = 1000  # Light support responses
-                    token_reason = "CONCERN mode"
-                elif tone_level == ToneLevel.ELEVATED:
-                    response_max_tokens = 1500  # Allow more room for supportive responses
-                    token_reason = "ELEVATED mode"
-                elif tone_level == ToneLevel.CRISIS:
-                    response_max_tokens = 2000  # Maximum room for crisis responses
-                    token_reason = "CRISIS mode"
-                else:
-                    response_max_tokens = DEFAULT_MAX_TOKENS
-                    token_reason = "DEFAULT"
-
-                # Escalation tracker may override token budget for brevity
-                if self.escalation_tracker:
-                    budget_override = self.escalation_tracker.get_token_budget_override()
-                    if budget_override is not None:
-                        response_max_tokens = budget_override
-                        token_reason = f"{self.escalation_tracker.current_strategy.value} (escalation override)"
-
-                if self.logger:
-                    self.logger.info(
-                        f"[Orchestrator] Token limit: {response_max_tokens} ({token_reason})"
-                    )
-            except Exception as e:
-                response_max_tokens = None  # Use model defaults
-                if self.logger:
-                    self.logger.debug(f"[Orchestrator] Failed to load token config: {e}")
-
-            # ---------------------------------------------------------------------
-            # Best-of / Duel / Ensemble generation (delegated to BestOfHandler)
-            # ---------------------------------------------------------------------
-            if self.best_of_handler.should_use_best_of(user_input, use_raw_mode):
-                best_of_result = await self.best_of_handler.generate(
-                    prompt=prompt,
-                    user_input=user_input,
-                    system_prompt=system_prompt,
-                    model_name=model_name,
-                    response_max_tokens=response_max_tokens
-                )
-                full_response = best_of_result.response
-                debug_info["best_of_mode"] = best_of_result.mode
-                debug_info["best_of_used"] = best_of_result.used_best_of
-                # For duel mode, propagate metadata for thinking display
-                if best_of_result.mode == "duel" and isinstance(best_of_result.metadata.get("raw"), dict):
-                    duel_data = best_of_result.metadata["raw"]
-                    debug_info["duel_thinking_a"] = duel_data.get("thinking_a", "")
-                    debug_info["duel_thinking_b"] = duel_data.get("thinking_b", "")
-                    debug_info["duel_winner"] = duel_data.get("winner", "")
-                    debug_info["duel_models"] = duel_data.get("models", {})
-            else:
-                # Standard streaming path
-                full_response = ""
-                async for chunk in self.response_generator.generate_streaming_response(
-                    prompt,
-                    model_name,
-                    system_prompt=system_prompt,
-                    max_tokens=response_max_tokens,
-                    images=note_images if note_images else None  # Pass images for multimodal models
-                ):
-                    full_response += (chunk + " ")
-                full_response = full_response.strip()
-
-            _t_gen_elapsed = _time_mod.perf_counter() - _t_gen_start
-
-            # --- Parse thinking block and extract final answer ---
-            thinking_part, final_answer = ResponseParser.parse_thinking_block(full_response)
-            # Strip XML-like wrappers (e.g., <result> … </result>) from final answer
-            final_answer = ResponseParser.strip_xml_wrappers(final_answer)
-
-            # Log thinking part for debugging if present
-            if thinking_part:
-                if self.logger:
-                    self.logger.debug(f"[THINKING BLOCK]\n{thinking_part}")
-                debug_info["thinking_length"] = len(thinking_part)
-
-            # Store final answer (not the thinking part) in memory
-            answer_for_storage = final_answer if final_answer else ResponseParser.strip_xml_wrappers(full_response)
-            # Strip reflection blocks (they're stored separately as reflection memories)
-            answer_for_storage = ResponseParser.strip_reflection_blocks(answer_for_storage)
-            # Sanitize prompt header echoes before returning/storing
-            answer_for_storage = ResponseParser.strip_prompt_artifacts(answer_for_storage)
-
-            # Extract citations — auto-enable when web search results present
-            citations = []
-            has_web_sources = bool(getattr(self, '_web_source_map', None))
-            should_extract = self.enable_citations or has_web_sources
-            if should_extract and (
-                (hasattr(self, '_current_memory_id_map') and self._current_memory_id_map)
-                or has_web_sources
-            ):
-                raw_response_with_citations = answer_for_storage
-                answer_for_storage, citations = self._extract_citations(
-                    answer_for_storage,
-                    self._current_memory_id_map if hasattr(self, '_current_memory_id_map') else {}
-                )
-                debug_info['raw_response_with_citations'] = raw_response_with_citations
-                if has_web_sources:
-                    debug_info['web_source_map'] = self._web_source_map
-
-            # Record response in escalation tracker for engagement detection
-            if self.escalation_tracker:
-                self.escalation_tracker.record_response(answer_for_storage)
-
-            # --- Store Interaction ---
-            _t_store_start = _time_mod.perf_counter()
-            if self.memory_system and not use_raw_mode:
-                try:
-                    await self.memory_system.store_interaction(
-                        query=user_input,
-                        response=answer_for_storage,
-                        tags=["conversation"],
-                        session_id=getattr(self.memory_system, 'session_id', None),
-                    )
-                except Exception as e:
-                    self.logger.error(f"[Orchestrator] CRITICAL: Failed to store interaction - data loss: {e}")
-            _t_store_elapsed = _time_mod.perf_counter() - _t_store_start
-            # Use instance logger
-            if self.logger:
-                self.logger.debug("[orchestrator] Persisted exchange; considering consolidation")
-
-            # --- Truth Score: correction/confirmation detection ---
-            if self.user_profile and self.correction_detector:
-                try:
-                    recent_facts = self._get_recent_profile_facts()
-                    events = self.correction_detector.detect_corrections(user_input, recent_facts)
-                    events += self.correction_detector.detect_confirmations(user_input, recent_facts)
-                    correction_events = []
-                    for event in events:
-                        self._apply_truth_event(event)
-                        if event.event_type == "correction":
-                            correction_events.append(event)
-
-                    # --- Staleness cascade for corrections ---
-                    if correction_events:
-                        try:
-                            from config.app_config import STALENESS_ENABLED
-                            claim_index = getattr(self.memory_system, 'claim_index', None) if self.memory_system else None
-                            if STALENESS_ENABLED and claim_index:
-                                from memory.claim_tracker import canonicalize_claim
-                                entity_resolver = getattr(self.memory_system, 'entity_resolver', None)
-                                for event in correction_events:
-                                    ck = canonicalize_claim(
-                                        "user", event.relation,
-                                        entity_resolver=entity_resolver,
-                                    )
-                                    affected = claim_index.cascade_staleness(
-                                        ck,
-                                        chroma_store=self.memory_system.chroma_store if self.memory_system else None,
-                                    )
-                                    if affected:
-                                        self.logger.info(
-                                            f"[Staleness] Cascade from correction on '{event.relation}': "
-                                            f"{len(affected)} document(s) updated"
-                                        )
-                        except Exception as se:
-                            self.logger.debug(f"[Staleness] Cascade failed (non-fatal): {se}")
-
-                except Exception as e:
-                    self.logger.warning(f"[Orchestrator] Truth event detection failed: {e}")
-
-            # --- Entity correction detection (non-profile entities) ---
-            if self.correction_detector:
-                try:
-                    entity_corrections = self.correction_detector.detect_entity_corrections(user_input)
-                    if entity_corrections:
-                        self._cascade_entity_resolution(entity_corrections)
-                except Exception as e:
-                    self.logger.debug(f"[Orchestrator] Entity correction detection failed (non-fatal): {e}")
-
-            # --- Retroactive content attribution ---
-            if self.correction_detector:
-                try:
-                    attributions = self.correction_detector.detect_attributions(user_input)
-                    if attributions:
-                        self._apply_content_attributions(attributions)
-                except Exception as e:
-                    self.logger.debug(f"[Orchestrator] Attribution detection failed (non-fatal): {e}")
-
-            # Summaries now run on shutdown; skip mid-session consolidation
-            debug_info.update({
-                "response_length": len(answer_for_storage),
-                "full_response_length": len(full_response),
-                "end_time": datetime.now(),
-                "prompt_length": len(prompt),
-                "citations": citations,  # Add extracted citations
-                "citations_enabled": self.enable_citations,
-            })
-            debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
-
-            # Phase-level timing for interpretability
-            debug_info["phase_timings"] = {
-                "context_pipeline": round(_t_ctx_elapsed, 3),
-                "prompt_build": round(_t_build_elapsed, 3),
-                "llm_generation": round(_t_gen_elapsed, 3),
-                "memory_store": round(_t_store_elapsed, 3),
-            }
-            debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
-            debug_info["gather_elapsed"] = round(_gather_elapsed, 3)
-
-            # Return only the final answer (thinking block removed)
-            return answer_for_storage, debug_info
+            return flow.answer_for_storage, debug_info
 
         except Exception as e:
             if self.logger:
@@ -1748,3 +1355,570 @@ class DaemonOrchestrator:
                     pass  # Logging failure shouldn't mask the original error
             debug_info["error"] = str(e)
             raise
+
+    def _handle_command(self, flow):
+        """Commands: early exit. Returns (text, debug_info) or None to fall through."""
+        user_input = flow.user_input
+        debug_info = flow.debug_info
+        cmd = self.handle_commands(user_input)
+        if cmd:
+            # shape matches handler expectations: (text, debug_info)
+            text, meta = cmd
+            debug_info.update(meta)
+            return text, debug_info
+        return None
+
+    async def _handle_deictic(self, flow):
+        """Deictic pre-check: clarify before we build/stream. Returns clarification tuple or None."""
+        user_input = flow.user_input
+        use_raw_mode = flow.use_raw_mode
+        debug_info = flow.debug_info
+        if not use_raw_mode and is_deictic(user_input) and self.memory_system:
+            try:
+                retrieval_result = await self.memory_system.get_memories(user_input, limit=10)
+                if retrieval_result and retrieval_result[0].get("metadata", {}).get("needs_clarification"):
+                    response = "I'm not sure what you're referring to. Could you be more specific?"
+                    try:
+                        await self.memory_system.store_interaction(
+                            query=user_input, response=response, tags=["clarification"]
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Orchestrator] Failed to store clarification interaction: {e}")
+                    debug_info.update({
+                        "response_length": len(response),
+                        "end_time": datetime.now(),
+                        "prompt_length": 0,
+                    })
+                    debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
+                    return response, debug_info
+            except Exception as e:
+                if self.logger:
+                    self.logger.debug(f"[Orchestrator] Deictic pre-retrieval failed or skipped: {e}")
+        return None
+
+    def _resolve_model_name(self, flow):
+        """Determine target model name (needed for multimodal image loading)."""
+        active_name_getter = getattr(self.model_manager, "get_active_model_name", None)
+        model_name = active_name_getter() if callable(active_name_getter) else None
+        model_name = model_name or "gpt-4-turbo"
+
+        if self.logger:
+            self.logger.info(f"[Orchestrator] Target model for response: {model_name}")
+        flow.model_name = model_name
+
+    async def _build_prompt_phase(self, flow):
+        """Build context + full prompt (timed), update escalation tracker, stash phase state."""
+        user_input = flow.user_input
+        files = flow.files
+        use_raw_mode = flow.use_raw_mode
+        personality = flow.personality
+        debug_info = flow.debug_info
+        import time as _time_mod
+        _t_ctx_start = _time_mod.perf_counter()
+        context = await self.build_context(
+            user_input=user_input,
+            files=files,
+            use_raw_mode=use_raw_mode,
+            personality=personality,
+        )
+        _t_ctx_elapsed = _time_mod.perf_counter() - _t_ctx_start
+
+        _t_build_start = _time_mod.perf_counter()
+        prompt, system_prompt, prompt_ctx = await self.build_full_prompt(
+            context=context,
+            use_raw_mode=use_raw_mode,
+            return_raw_context=True,  # Get prompt context for images
+        )
+        _t_build_elapsed = _time_mod.perf_counter() - _t_build_start
+
+        # Extract per-task timings stashed by builder
+        _task_timings = prompt_ctx.pop("_task_timings", {}) if prompt_ctx else {}
+        _gather_elapsed = prompt_ctx.pop("_gather_elapsed", 0.0) if prompt_ctx else 0.0
+        _builder_time = prompt_ctx.pop("_build_time", 0.0) if prompt_ctx else 0.0
+
+        # Extract images for multimodal models
+        note_images = prompt_ctx.get("note_images", []) if prompt_ctx else []
+        if self.logger:
+            if note_images:
+                total_size = sum(len(img.get("data", "")) for img in note_images)
+                self.logger.warning(f"[Orchestrator] IMAGE DEBUG: {len(note_images)} images extracted from prompt_ctx, total base64={total_size//1024}KB")
+            else:
+                self.logger.warning(f"[Orchestrator] IMAGE DEBUG: No images in prompt_ctx. Keys={list(prompt_ctx.keys()) if prompt_ctx else 'None'}")
+
+        # Update escalation tracker with detected tone
+        if self.escalation_tracker:
+            need_type_str = None
+            if context.emotional_context and hasattr(context.emotional_context, 'need_type'):
+                need_type_str = (
+                    context.emotional_context.need_type.value
+                    if hasattr(context.emotional_context.need_type, 'value')
+                    else str(context.emotional_context.need_type)
+                )
+            self.escalation_tracker.update(
+                context.tone_level,
+                user_input,
+                need_type=need_type_str,
+            )
+
+        debug_info["context_pipeline"] = {
+            "tone_level": context.tone_level.value,
+            "topics": context.topics[:3] if context.topics else [],
+            "has_stm": context.has_stm,
+            "has_thread": context.has_thread,
+            "note_images_count": len(note_images),
+        }
+        if self.escalation_tracker:
+            debug_info["escalation"] = self.escalation_tracker.get_debug_info()
+
+        # Extract values needed for token limit logic
+        is_heavy_topic = context.is_heavy_topic
+        tone_level = context.tone_level
+
+        # --- Generate Response ---
+        # (model_name already determined earlier for image loading)
+        _t_gen_start = _time_mod.perf_counter()
+        flow.context = context
+        flow.prompt = prompt
+        flow.system_prompt = system_prompt
+        flow.prompt_ctx = prompt_ctx
+        flow.note_images = note_images
+        flow.is_heavy_topic = is_heavy_topic
+        flow.tone_level = tone_level
+        flow.t_ctx_elapsed = _t_ctx_elapsed
+        flow.t_build_elapsed = _t_build_elapsed
+        flow.task_timings = _task_timings
+        flow.gather_elapsed = _gather_elapsed
+        flow.t_gen_start = _t_gen_start
+
+    async def _maybe_document_generation(self, flow):
+        """Document-generation bypass. Returns (text, debug) on success, else None (fall through)."""
+        user_input = flow.user_input
+        use_raw_mode = flow.use_raw_mode
+        use_agentic_search = flow.use_agentic_search
+        debug_info = flow.debug_info
+        system_prompt = flow.system_prompt
+        model_name = flow.model_name
+        prompt_ctx = flow.prompt_ctx
+        prompt = flow.prompt
+        _doc_intent = None
+        if use_agentic_search and not use_raw_mode and self.agentic_controller:
+            try:
+                from knowledge.document_generator import detect_document_intent
+                _doc_intent = detect_document_intent(user_input)
+            except Exception:
+                pass
+
+        if _doc_intent and self.agentic_controller:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        f"[Orchestrator] Document generation detected: "
+                        f"topic={_doc_intent['topic']}, type={_doc_intent['doc_type']}"
+                    )
+
+                from core.agentic import ProgressEvent
+
+                # Augment user query with explicit generate_document instruction
+                doc_query = (
+                    f"{user_input}\n\n"
+                    f"[SYSTEM: The user wants a {_doc_intent['doc_type']} document. "
+                    f"Use the generate_document tool with topic=\"{_doc_intent['topic']}\", "
+                    f"doc_type=\"{_doc_intent['doc_type']}\""
+                    + (f", focus=\"{_doc_intent['focus']}\"" if _doc_intent.get("focus") else "")
+                    + ".]"
+                )
+
+                full_response = ""
+                async for event_or_chunk in self.agentic_controller.run_agentic_search(
+                    query=doc_query,
+                    system_prompt=system_prompt or "",
+                    model_name=model_name,
+                    initial_search_terms=[_doc_intent["topic"]],
+                    initial_context=prompt_ctx,
+                    crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
+                ):
+                    if isinstance(event_or_chunk, ProgressEvent):
+                        if self.logger:
+                            self.logger.debug(
+                                f"[AgenticSearch] {event_or_chunk.event_type}: {event_or_chunk.message}"
+                            )
+                        debug_info.setdefault("agentic_events", []).append({
+                            "type": event_or_chunk.event_type,
+                            "message": event_or_chunk.message,
+                            "round": event_or_chunk.round_number,
+                        })
+                    else:
+                        full_response += event_or_chunk
+
+                if self.memory_system:
+                    try:
+                        await self.memory_system.store_interaction(
+                            query=user_input,
+                            response=full_response.strip(),
+                            tags=["document_generation"]
+                        )
+                    except Exception:
+                        pass
+
+                debug_info.update({
+                    "response_length": len(full_response),
+                    "end_time": datetime.now(),
+                    "prompt_length": len(prompt),
+                    "document_generation_used": True,
+                    "doc_intent": _doc_intent,
+                })
+                debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
+
+                return full_response.strip(), debug_info
+
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"[Orchestrator] Document generation failed, falling back: {e}")
+                debug_info["doc_gen_error"] = str(e)
+        return None
+
+    async def _maybe_agentic_search(self, flow):
+        """Agentic-search bypass. Returns (text, debug) on success, else None (fall through)."""
+        user_input = flow.user_input
+        use_raw_mode = flow.use_raw_mode
+        use_agentic_search = flow.use_agentic_search
+        debug_info = flow.debug_info
+        system_prompt = flow.system_prompt
+        model_name = flow.model_name
+        prompt_ctx = flow.prompt_ctx
+        prompt = flow.prompt
+        _t_ctx_elapsed = flow.t_ctx_elapsed
+        _t_build_elapsed = flow.t_build_elapsed
+        _task_timings = flow.task_timings
+        _gather_elapsed = flow.gather_elapsed
+        if use_agentic_search and not use_raw_mode and self.agentic_controller:
+            try:
+                # Get web search decision from LLM-first trigger
+                from utils.web_search_trigger import analyze_for_web_search_llm
+
+                web_decision = await analyze_for_web_search_llm(
+                    query=user_input,
+                    model_manager=self.model_manager,
+                    crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
+                    web_search_enabled=True,
+                )
+
+                if web_decision and web_decision.should_search and web_decision.search_terms:
+                    if self.logger:
+                        self.logger.info(
+                            f"[Orchestrator] Using agentic search: terms={web_decision.search_terms}"
+                        )
+
+                    # Run agentic search loop
+                    from core.agentic import ProgressEvent
+
+                    full_response = ""
+                    async for event_or_chunk in self.agentic_controller.run_agentic_search(
+                        query=user_input,
+                        system_prompt=system_prompt or "",
+                        model_name=model_name,
+                        initial_search_terms=web_decision.search_terms,
+                        initial_context=prompt_ctx,
+                        crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
+                    ):
+                        if isinstance(event_or_chunk, ProgressEvent):
+                            # Log progress events
+                            if self.logger:
+                                self.logger.debug(
+                                    f"[AgenticSearch] {event_or_chunk.event_type}: {event_or_chunk.message}"
+                                )
+                            debug_info.setdefault("agentic_events", []).append({
+                                "type": event_or_chunk.event_type,
+                                "message": event_or_chunk.message,
+                                "round": event_or_chunk.round_number,
+                            })
+                        else:
+                            # Accumulate response chunks
+                            full_response += event_or_chunk
+
+                    # Store interaction
+                    if self.memory_system:
+                        try:
+                            await self.memory_system.store_interaction(
+                                query=user_input,
+                                response=full_response.strip(),
+                                tags=["agentic_search"]
+                            )
+                        except Exception:
+                            pass
+
+                    debug_info.update({
+                        "response_length": len(full_response),
+                        "end_time": datetime.now(),
+                        "prompt_length": len(prompt),
+                        "agentic_search_used": True,
+                    })
+                    debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
+                    debug_info["phase_timings"] = {
+                        "context_pipeline": round(_t_ctx_elapsed, 3),
+                        "prompt_build": round(_t_build_elapsed, 3),
+                        "llm_generation": round(debug_info["duration"] - _t_ctx_elapsed - _t_build_elapsed, 3),
+                    }
+                    debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
+                    debug_info["gather_elapsed"] = round(_gather_elapsed, 3)
+
+                    return full_response.strip(), debug_info
+
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"[Orchestrator] Agentic search failed, falling back: {e}")
+                debug_info["agentic_error"] = str(e)
+        return None
+
+    def _resolve_max_tokens(self, flow):
+        """Determine max_tokens based on tone level and topic heaviness (+ escalation override)."""
+        is_heavy_topic = flow.is_heavy_topic
+        tone_level = flow.tone_level
+        try:
+            from config.app_config import DEFAULT_MAX_TOKENS, HEAVY_TOPIC_MAX_TOKENS
+
+            # Heavy topics override tone-based limits
+            if is_heavy_topic:
+                response_max_tokens = HEAVY_TOPIC_MAX_TOKENS
+                token_reason = "HEAVY topic"
+            # Adjust max_tokens based on tone level for speed and brevity
+            # tone_level is ToneLevel from context_pipeline
+            elif tone_level == ToneLevel.CONVERSATIONAL:
+                response_max_tokens = 600  # Force brief responses in conversational mode
+                token_reason = "CONVERSATIONAL mode"
+            elif tone_level == ToneLevel.CONCERN:
+                response_max_tokens = 1000  # Light support responses
+                token_reason = "CONCERN mode"
+            elif tone_level == ToneLevel.ELEVATED:
+                response_max_tokens = 1500  # Allow more room for supportive responses
+                token_reason = "ELEVATED mode"
+            elif tone_level == ToneLevel.CRISIS:
+                response_max_tokens = 2000  # Maximum room for crisis responses
+                token_reason = "CRISIS mode"
+            else:
+                response_max_tokens = DEFAULT_MAX_TOKENS
+                token_reason = "DEFAULT"
+
+            # Escalation tracker may override token budget for brevity
+            if self.escalation_tracker:
+                budget_override = self.escalation_tracker.get_token_budget_override()
+                if budget_override is not None:
+                    response_max_tokens = budget_override
+                    token_reason = f"{self.escalation_tracker.current_strategy.value} (escalation override)"
+
+            if self.logger:
+                self.logger.info(
+                    f"[Orchestrator] Token limit: {response_max_tokens} ({token_reason})"
+                )
+        except Exception as e:
+            response_max_tokens = None  # Use model defaults
+            if self.logger:
+                self.logger.debug(f"[Orchestrator] Failed to load token config: {e}")
+        flow.response_max_tokens = response_max_tokens
+
+    async def _generate_response(self, flow):
+        """Best-of / duel / ensemble or standard streaming generation."""
+        import time as _time_mod
+        user_input = flow.user_input
+        use_raw_mode = flow.use_raw_mode
+        prompt = flow.prompt
+        system_prompt = flow.system_prompt
+        model_name = flow.model_name
+        response_max_tokens = flow.response_max_tokens
+        note_images = flow.note_images
+        debug_info = flow.debug_info
+        _t_gen_start = flow.t_gen_start
+        if self.best_of_handler.should_use_best_of(user_input, use_raw_mode):
+            best_of_result = await self.best_of_handler.generate(
+                prompt=prompt,
+                user_input=user_input,
+                system_prompt=system_prompt,
+                model_name=model_name,
+                response_max_tokens=response_max_tokens
+            )
+            full_response = best_of_result.response
+            debug_info["best_of_mode"] = best_of_result.mode
+            debug_info["best_of_used"] = best_of_result.used_best_of
+            # For duel mode, propagate metadata for thinking display
+            if best_of_result.mode == "duel" and isinstance(best_of_result.metadata.get("raw"), dict):
+                duel_data = best_of_result.metadata["raw"]
+                debug_info["duel_thinking_a"] = duel_data.get("thinking_a", "")
+                debug_info["duel_thinking_b"] = duel_data.get("thinking_b", "")
+                debug_info["duel_winner"] = duel_data.get("winner", "")
+                debug_info["duel_models"] = duel_data.get("models", {})
+        else:
+            # Standard streaming path
+            full_response = ""
+            async for chunk in self.response_generator.generate_streaming_response(
+                prompt,
+                model_name,
+                system_prompt=system_prompt,
+                max_tokens=response_max_tokens,
+                images=note_images if note_images else None  # Pass images for multimodal models
+            ):
+                full_response += (chunk + " ")
+            full_response = full_response.strip()
+
+        _t_gen_elapsed = _time_mod.perf_counter() - _t_gen_start
+        flow.full_response = full_response
+        flow.t_gen_elapsed = _t_gen_elapsed
+
+    def _postprocess_response(self, flow):
+        """Parse thinking block, strip artifacts, extract citations, record response in escalation."""
+        full_response = flow.full_response
+        debug_info = flow.debug_info
+        thinking_part, final_answer = ResponseParser.parse_thinking_block(full_response)
+        # Strip XML-like wrappers (e.g., <result> … </result>) from final answer
+        final_answer = ResponseParser.strip_xml_wrappers(final_answer)
+
+        # Log thinking part for debugging if present
+        if thinking_part:
+            if self.logger:
+                self.logger.debug(f"[THINKING BLOCK]\n{thinking_part}")
+            debug_info["thinking_length"] = len(thinking_part)
+
+        # Store final answer (not the thinking part) in memory
+        answer_for_storage = final_answer if final_answer else ResponseParser.strip_xml_wrappers(full_response)
+        # Strip reflection blocks (they're stored separately as reflection memories)
+        answer_for_storage = ResponseParser.strip_reflection_blocks(answer_for_storage)
+        # Sanitize prompt header echoes before returning/storing
+        answer_for_storage = ResponseParser.strip_prompt_artifacts(answer_for_storage)
+
+        # Extract citations — auto-enable when web search results present
+        citations = []
+        has_web_sources = bool(getattr(self, '_web_source_map', None))
+        should_extract = self.enable_citations or has_web_sources
+        if should_extract and (
+            (hasattr(self, '_current_memory_id_map') and self._current_memory_id_map)
+            or has_web_sources
+        ):
+            raw_response_with_citations = answer_for_storage
+            answer_for_storage, citations = self._extract_citations(
+                answer_for_storage,
+                self._current_memory_id_map if hasattr(self, '_current_memory_id_map') else {}
+            )
+            debug_info['raw_response_with_citations'] = raw_response_with_citations
+            if has_web_sources:
+                debug_info['web_source_map'] = self._web_source_map
+
+        # Record response in escalation tracker for engagement detection
+        if self.escalation_tracker:
+            self.escalation_tracker.record_response(answer_for_storage)
+        flow.answer_for_storage = answer_for_storage
+        flow.citations = citations
+
+    async def _store_interaction(self, flow):
+        """Persist the exchange to memory (skipped in raw mode)."""
+        import time as _time_mod
+        user_input = flow.user_input
+        use_raw_mode = flow.use_raw_mode
+        answer_for_storage = flow.answer_for_storage
+        _t_store_start = _time_mod.perf_counter()
+        if self.memory_system and not use_raw_mode:
+            try:
+                await self.memory_system.store_interaction(
+                    query=user_input,
+                    response=answer_for_storage,
+                    tags=["conversation"],
+                    session_id=getattr(self.memory_system, 'session_id', None),
+                )
+            except Exception as e:
+                self.logger.error(f"[Orchestrator] CRITICAL: Failed to store interaction - data loss: {e}")
+        _t_store_elapsed = _time_mod.perf_counter() - _t_store_start
+        # Use instance logger
+        if self.logger:
+            self.logger.debug("[orchestrator] Persisted exchange; considering consolidation")
+        flow.t_store_elapsed = _t_store_elapsed
+
+    def _run_post_response_detectors(self, flow):
+        """Truth/correction/confirmation detection, staleness cascade, entity + attribution detection."""
+        user_input = flow.user_input
+        if self.user_profile and self.correction_detector:
+            try:
+                recent_facts = self._get_recent_profile_facts()
+                events = self.correction_detector.detect_corrections(user_input, recent_facts)
+                events += self.correction_detector.detect_confirmations(user_input, recent_facts)
+                correction_events = []
+                for event in events:
+                    self._apply_truth_event(event)
+                    if event.event_type == "correction":
+                        correction_events.append(event)
+
+                # --- Staleness cascade for corrections ---
+                if correction_events:
+                    try:
+                        from config.app_config import STALENESS_ENABLED
+                        claim_index = getattr(self.memory_system, 'claim_index', None) if self.memory_system else None
+                        if STALENESS_ENABLED and claim_index:
+                            from memory.claim_tracker import canonicalize_claim
+                            entity_resolver = getattr(self.memory_system, 'entity_resolver', None)
+                            for event in correction_events:
+                                ck = canonicalize_claim(
+                                    "user", event.relation,
+                                    entity_resolver=entity_resolver,
+                                )
+                                affected = claim_index.cascade_staleness(
+                                    ck,
+                                    chroma_store=self.memory_system.chroma_store if self.memory_system else None,
+                                )
+                                if affected:
+                                    self.logger.info(
+                                        f"[Staleness] Cascade from correction on '{event.relation}': "
+                                        f"{len(affected)} document(s) updated"
+                                    )
+                    except Exception as se:
+                        self.logger.debug(f"[Staleness] Cascade failed (non-fatal): {se}")
+
+            except Exception as e:
+                self.logger.warning(f"[Orchestrator] Truth event detection failed: {e}")
+
+        # --- Entity correction detection (non-profile entities) ---
+        if self.correction_detector:
+            try:
+                entity_corrections = self.correction_detector.detect_entity_corrections(user_input)
+                if entity_corrections:
+                    self._cascade_entity_resolution(entity_corrections)
+            except Exception as e:
+                self.logger.debug(f"[Orchestrator] Entity correction detection failed (non-fatal): {e}")
+
+        # --- Retroactive content attribution ---
+        if self.correction_detector:
+            try:
+                attributions = self.correction_detector.detect_attributions(user_input)
+                if attributions:
+                    self._apply_content_attributions(attributions)
+            except Exception as e:
+                self.logger.debug(f"[Orchestrator] Attribution detection failed (non-fatal): {e}")
+
+    def _finalize_debug(self, flow):
+        """Finalize debug_info: response/prompt lengths, duration, phase + task timings."""
+        debug_info = flow.debug_info
+        answer_for_storage = flow.answer_for_storage
+        full_response = flow.full_response
+        prompt = flow.prompt
+        citations = flow.citations
+        _t_ctx_elapsed = flow.t_ctx_elapsed
+        _t_build_elapsed = flow.t_build_elapsed
+        _t_gen_elapsed = flow.t_gen_elapsed
+        _t_store_elapsed = flow.t_store_elapsed
+        _task_timings = flow.task_timings
+        _gather_elapsed = flow.gather_elapsed
+        debug_info.update({
+            "response_length": len(answer_for_storage),
+            "full_response_length": len(full_response),
+            "end_time": datetime.now(),
+            "prompt_length": len(prompt),
+            "citations": citations,  # Add extracted citations
+            "citations_enabled": self.enable_citations,
+        })
+        debug_info["duration"] = (debug_info["end_time"] - debug_info["start_time"]).total_seconds()
+
+        # Phase-level timing for interpretability
+        debug_info["phase_timings"] = {
+            "context_pipeline": round(_t_ctx_elapsed, 3),
+            "prompt_build": round(_t_build_elapsed, 3),
+            "llm_generation": round(_t_gen_elapsed, 3),
+            "memory_store": round(_t_store_elapsed, 3),
+        }
+        debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
+        debug_info["gather_elapsed"] = round(_gather_elapsed, 3)

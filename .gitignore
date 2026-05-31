@@ -47,6 +47,9 @@ eval/runs/
 eval/snapshots/
 eval/phase2_output/
 eval/corpus.json
+# Benchmark per-case output is a test artifact (written by tests/benchmarks/conftest.py).
+# Already covered by data/* above; listed explicitly to document intent.
+data/benchmark_per_case.csv
 
 # --- EXCEPTIONS (White-list) ---
 !data/pipeline/

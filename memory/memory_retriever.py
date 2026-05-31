@@ -29,7 +29,7 @@ Module Contract
   - Optional strict top-up controlled by MEM_TOPUP_ENABLE env var
 - Dependencies:
   - memory.storage.multi_collection_chroma_store (vector queries)
-  - processing.gate_system (multi-stage filtering: FAISS → cosine → cross-encoder)
+  - processing.gate_system (multi-stage filtering: ChromaDB HNSW candidates → cosine → cross-encoder)
   - memory.memory_scorer (ranking with weight/graph overrides)
   - memory.utils.format_recent_conversations (corpus formatting)
   - utils.query_checker (is_meta_conversational, extract_temporal_window, _is_heavy_topic_heuristic)

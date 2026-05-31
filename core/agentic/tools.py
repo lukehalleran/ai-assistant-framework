@@ -49,6 +49,61 @@ logger = logging.getLogger(__name__)
 DEFAULT_COMPRESSION_MAX_TOKENS = 1500
 
 
+# ---------------------------------------------------------------------------
+# Unified dispatch table — the SINGLE source of truth for routing a SearchDecision
+# to a tool handler. BOTH ToolExecutor.dispatch_single and the controller's
+# _dispatch_single_inner iterate this table, so the two routers can never drift
+# (add a new tool's row here once and both routers pick it up). Each row is:
+#   (predicate(decision) -> bool, handler_method_name, arg_builder)
+# where arg_builder(decision, round_number, crisis_level, sandbox_session) -> positional args.
+# ---------------------------------------------------------------------------
+def _args_basic(d, rn, cl, ss):
+    return (d, rn)
+
+
+DISPATCH_TABLE = [
+    (lambda d: d.wants_search and d.search_query, "_dispatch_web_search", lambda d, rn, cl, ss: (d, rn, cl)),
+    (lambda d: d.wants_wolfram and d.wolfram_query, "_dispatch_wolfram", _args_basic),
+    (lambda d: d.wants_sandbox and d.sandbox_code, "_dispatch_sandbox", lambda d, rn, cl, ss: (d, rn, ss)),
+    (lambda d: d.wants_memory_search and d.memory_query, "_dispatch_memory_search", _args_basic),
+    (lambda d: d.wants_memory_expand and d.expand_memory_id, "_dispatch_memory_expand", _args_basic),
+    (lambda d: d.wants_file_read and d.file_read_path, "_dispatch_file_read", _args_basic),
+    (lambda d: d.wants_file_grep and d.file_grep_pattern, "_dispatch_file_grep", _args_basic),
+    (lambda d: d.wants_file_list and d.file_list_path, "_dispatch_file_list", _args_basic),
+    (lambda d: d.wants_full_document and d.full_document_title, "_dispatch_full_document", _args_basic),
+    (lambda d: d.wants_git_stats and d.git_stats_query, "_dispatch_git_stats", _args_basic),
+    (lambda d: d.wants_recall_image and d.recall_image_query, "_dispatch_recall_image", _args_basic),
+    (lambda d: d.wants_fetch_url and d.fetch_url, "_dispatch_fetch_url", _args_basic),
+    (lambda d: d.wants_github and d.github_query, "_dispatch_github", _args_basic),
+    (lambda d: d.wants_stackexchange and d.stackexchange_query, "_dispatch_api_search", lambda d, rn, cl, ss: (d, rn, "stackexchange")),
+    (lambda d: d.wants_arxiv and d.arxiv_query, "_dispatch_api_search", lambda d, rn, cl, ss: (d, rn, "arxiv")),
+    (lambda d: d.wants_pubmed and d.pubmed_query, "_dispatch_api_search", lambda d, rn, cl, ss: (d, rn, "pubmed")),
+    (lambda d: d.wants_hackernews and d.hackernews_query, "_dispatch_api_search", lambda d, rn, cl, ss: (d, rn, "hackernews")),
+    (lambda d: d.wants_generate_document and d.generate_document_topic, "_dispatch_generate_document", _args_basic),
+    (lambda d: d.wants_create_daemon_note and d.daemon_note_title, "_dispatch_create_daemon_note", _args_basic),
+    (lambda d: d.wants_action and d.action_type, "_dispatch_action_proposal", _args_basic),
+    (lambda d: d.wants_lookup_contact and d.lookup_contact_name, "_dispatch_lookup_contact", _args_basic),
+]
+
+
+def reroute_url_search(decision: "SearchDecision") -> "SearchDecision":
+    """If a web_search query is actually a URL, reroute it to fetch_url.
+
+    Returns the (possibly rewritten) decision; the dispatch loop then routes it to the
+    fetch_url handler. Applied by BOTH routers so behavior is identical."""
+    if decision.wants_search and decision.search_query:
+        import re as _re
+        m = _re.search(r'(https?://[^\s<>"\')\]]+)', decision.search_query.strip())
+        if m:
+            logger.info(f"[ToolExecutor] Rerouting URL from web_search to fetch_url: {m.group(1)}")
+            return SearchDecision(
+                wants_fetch_url=True,
+                fetch_url=m.group(1),
+                fetch_url_reason=decision.search_reason,
+            )
+    return decision
+
+
 class ToolExecutor:
     """
     Dispatches and executes agentic search tools.
@@ -164,7 +219,17 @@ class ToolExecutor:
 
         # GitHub API
         if self.github_manager:
-            lines.append("github: AVAILABLE (issues, PRs, actions, releases, search — read-only)")
+            gh_line = "github: AVAILABLE (query issues, PRs, actions, releases, search)."
+            try:
+                from config.app_config import INTERNET_ACTIONS_GITHUB_WRITE_ENABLED
+                if INTERNET_ACTIONS_GITHUB_WRITE_ENABLED:
+                    gh_line += (
+                        " To CREATE an issue or comment on a PR, use propose_action "
+                        "(github_create_issue / github_comment_pr) — not this query tool."
+                    )
+            except Exception:
+                pass
+            lines.append(gh_line)
         else:
             lines.append("github: UNAVAILABLE (gh CLI not installed or not authenticated)")
 
@@ -194,13 +259,13 @@ class ToolExecutor:
         except Exception:
             lines.append("create_daemon_note: DISABLED")
 
-        # Internet actions (email, telegram, discord, calendar)
+        # Internet actions — list comes from the action registry (each spec gates on its own flag).
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED, GOOGLE_CALENDAR_ENABLED
+            from config.app_config import INTERNET_ACTIONS_ENABLED
             if INTERNET_ACTIONS_ENABLED:
-                action_list = "send_email, send_telegram, send_discord"
-                if GOOGLE_CALENDAR_ENABLED:
-                    action_list += ", calendar_create_event"
+                from core.actions.registry import enabled_action_types
+                names = [at.value for at in enabled_action_types()]
+                action_list = ", ".join(names) if names else "(no actions enabled)"
                 lines.append(f"propose_action: AVAILABLE ({action_list} — requires user confirmation)")
             else:
                 lines.append("propose_action: DISABLED (internet actions not enabled)")
@@ -221,67 +286,16 @@ class ToolExecutor:
         crisis_level: Optional[str],
         sandbox_session: Optional[Any],
     ) -> _ToolResult:
-        """Route a single SearchDecision to the appropriate dispatch method."""
-        if decision.wants_search and decision.search_query:
-            # If the search query contains a URL, reroute to fetch_url
-            import re as _re
-            q = decision.search_query.strip()
-            _url_match = _re.search(r'(https?://[^\s<>"\')\]]+)', q)
-            if _url_match:
-                url = _url_match.group(1)
-                logger.info(f"[ToolExecutor] Rerouting URL from web_search to fetch_url: {url}")
-                decision = SearchDecision(
-                    wants_fetch_url=True,
-                    fetch_url=url,
-                    fetch_url_reason=decision.search_reason,
-                )
-                return await self._dispatch_fetch_url(decision, round_number)
-            return await self._dispatch_web_search(decision, round_number, crisis_level)
-        elif decision.wants_wolfram and decision.wolfram_query:
-            return await self._dispatch_wolfram(decision, round_number)
-        elif decision.wants_sandbox and decision.sandbox_code:
-            return await self._dispatch_sandbox(decision, round_number, sandbox_session)
-        elif decision.wants_memory_search and decision.memory_query:
-            return await self._dispatch_memory_search(decision, round_number)
-        elif decision.wants_memory_expand and decision.expand_memory_id:
-            return await self._dispatch_memory_expand(decision, round_number)
-        elif decision.wants_file_read and decision.file_read_path:
-            return await self._dispatch_file_read(decision, round_number)
-        elif decision.wants_file_grep and decision.file_grep_pattern:
-            return await self._dispatch_file_grep(decision, round_number)
-        elif decision.wants_file_list and decision.file_list_path:
-            return await self._dispatch_file_list(decision, round_number)
-        elif decision.wants_full_document and decision.full_document_title:
-            return await self._dispatch_full_document(decision, round_number)
-        elif decision.wants_git_stats and decision.git_stats_query:
-            return await self._dispatch_git_stats(decision, round_number)
-        elif decision.wants_recall_image and decision.recall_image_query:
-            return await self._dispatch_recall_image(decision, round_number)
-        elif decision.wants_fetch_url and decision.fetch_url:
-            return await self._dispatch_fetch_url(decision, round_number)
-        elif decision.wants_stackexchange and decision.stackexchange_query:
-            return await self._dispatch_api_search(decision, round_number, "stackexchange")
-        elif decision.wants_arxiv and decision.arxiv_query:
-            return await self._dispatch_api_search(decision, round_number, "arxiv")
-        elif decision.wants_pubmed and decision.pubmed_query:
-            return await self._dispatch_api_search(decision, round_number, "pubmed")
-        elif decision.wants_hackernews and decision.hackernews_query:
-            return await self._dispatch_api_search(decision, round_number, "hackernews")
-        elif decision.wants_github and decision.github_query:
-            return await self._dispatch_github(decision, round_number)
-        elif decision.wants_generate_document and decision.generate_document_topic:
-            return await self._dispatch_generate_document(decision, round_number)
-        elif decision.wants_create_daemon_note and decision.daemon_note_title:
-            return await self._dispatch_create_daemon_note(decision, round_number)
-        elif decision.wants_action and decision.action_type:
-            return await self._dispatch_action_proposal(decision, round_number)
-        elif decision.wants_lookup_contact and decision.lookup_contact_name:
-            return await self._dispatch_lookup_contact(decision, round_number)
-        else:
-            return _ToolResult(
-                decision=decision, round_data=None,
-                formatted_context="", start_events=[], end_events=[],
-            )
+        """Route a single SearchDecision to its handler via the shared DISPATCH_TABLE."""
+        decision = reroute_url_search(decision)
+        for predicate, handler_name, arg_builder in DISPATCH_TABLE:
+            if predicate(decision):
+                handler = getattr(self, handler_name)
+                return await handler(*arg_builder(decision, round_number, crisis_level, sandbox_session))
+        return _ToolResult(
+            decision=decision, round_data=None,
+            formatted_context="", start_events=[], end_events=[],
+        )
 
     # ------------------------------------------------------------------
     # Dispatch methods

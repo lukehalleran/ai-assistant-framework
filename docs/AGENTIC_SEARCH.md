@@ -734,8 +734,57 @@ per line).
 | `send_discord` | Discord webhook via httpx | Requires webhook URL |
 | `send_email` | Gmail API (preferred) + SMTP fallback | Auto-resolves recipient names via Google Contacts + Gmail header search. Defense-in-depth `_resolve_recipient()` in `email.py`. |
 | `calendar_create_event` | Google Calendar API via httpx | Requires Google OAuth + `calendar.events` scope. API error responses include the response body for debugging. Config: `GOOGLE_CALENDAR_ENABLED`. Implementation in `core/actions/google_calendar_create.py`. |
+| `github_create_issue` | `gh` CLI (`gh issue create`) | Requires `gh` installed + `gh auth login`. Config: `INTERNET_ACTIONS_GITHUB_WRITE_ENABLED`. Two-entry write-allowlist + explicit arg lists + timeout. Implementation in `core/actions/github_write.py`. |
+| `github_comment_pr` | `gh` CLI (`gh pr comment`) | Same gate/safety. PR number parsed from `pr_number`/recipient/subject. |
 
-### Stubs (Not Yet Implemented)
+> All executors are now declared once in `core/actions/registry.py` (`ACTION_SPECS`),
+> the single source of truth — see "Registry-Driven Write Actions + `github_write`" below.
 
-- `github_create_issue` — create a GitHub issue
-- `github_comment_pr` — comment on a GitHub pull request
+---
+
+## Registry-Driven Write Actions + `github_write` [2026-05-31]
+
+<!-- registry-driven write actions + github_write [2026-05-31] -->
+
+The agentic loop now exposes **21 tools** (was 20): `github_write` is a dedicated
+GitHub write proposal (`github_create_issue`, `github_comment_pr`) alongside the
+generic `propose_action`.
+
+**`ACTION_SPECS` — single source of truth.** Every write action is declared once
+in `core/actions/registry.py` as an `ActionSpec` (`executor_ref`, `required`/
+`optional` params, `intent_patterns`, `enabled_flag`, tool-health line,
+`field_hint`, deterministic `backfill`, `summary`). All consumers derive behavior
+from the registry instead of hand-wiring per action:
+
+- `core/actions/executors.py` — `ActionExecutorRegistry.execute()` resolves the
+  executor via `spec.resolve_executor()` (lazy `"module:function"` import).
+- `core/agentic/protocols.py` — native-tool `propose_action` parse accepts when
+  all `spec.required` present OR `spec.backfill` can fill them; forwards only
+  `spec.forward_params` (a model-supplied `repo` is dropped).
+- `core/agentic/tools.py` — `get_tool_health()` lists `enabled_action_types()`;
+  the github query line now points writers at `propose_action`.
+- `core/agentic/controller.py` — `detect_action_intent(query)` forces a
+  `propose_action` call on the first round (restricting offered tools to just
+  `propose_action` so research-eager models can't wander), then
+  `backfill_params()` fills blank content (e.g. a GitHub issue title/body) from
+  the user's request.
+
+**Shared `DISPATCH_TABLE`.** Both routers — `ToolExecutor.dispatch_single` and
+the controller's `_dispatch_single_inner` — now iterate the single
+`DISPATCH_TABLE` in `core/agentic/tools.py` (with `reroute_url_search()` applied
+first), so they can no longer drift. The controller previously lacked branches
+for `generate_document` / `create_daemon_note` / `lookup_contact` / `action`,
+silently dropping those calls; the table fixes that class of bug.
+
+**`github_write` executor** (`core/actions/github_write.py`): `create_github_issue`
+and `comment_github_pr` shell out to the `gh` CLI behind a two-entry
+`WRITE_ALLOWLIST` (`("issue","create")`, `("pr","comment")`), explicit arg lists
+(never `shell=True`), a subprocess timeout, and a config gate
+(`INTERNET_ACTIONS_GITHUB_WRITE_ENABLED`). It is a separate path from the
+read-only `core/github_manager.py`. All failures degrade to a failed
+`ActionResult`; execution is human-gated (GUI Approve).
+
+**Parity guard:** `tests/unit/test_tool_wiring_parity.py` fails loudly if a
+SearchDecision tool flag has no `DISPATCH_TABLE` row, if the two routers stop
+using the table, or if any `ActionType` / advertised `propose_action` enum value
+lacks an executor.

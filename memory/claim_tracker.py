@@ -281,8 +281,11 @@ class ClaimIndex:
             stale_count = 0
             if chroma_store:
                 try:
-                    # Read current stale_claims list from metadata
-                    existing = chroma_store.get_document_metadata(collection, doc_id)
+                    # Read current stale_claims list from metadata.
+                    # MultiCollectionChromaStore.get_by_id returns {id, content, metadata};
+                    # we want the metadata dict (or None if the doc is gone).
+                    _doc = chroma_store.get_by_id(collection, doc_id)
+                    existing = _doc.get("metadata") if _doc else None
                     if existing:
                         stale_claims_str = existing.get("stale_claims", "")
                         stale_set = set(stale_claims_str.split(",")) if stale_claims_str else set()

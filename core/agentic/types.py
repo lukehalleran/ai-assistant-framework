@@ -1009,7 +1009,11 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
             "Propose a write action on an external service that requires user confirmation. "
             "Use this to send messages (Telegram, Discord, email), create GitHub issues, "
             "or perform other internet write operations. The user will see a confirmation "
-            "prompt and can approve or reject the action. Propose at most ONE action per turn."
+            "prompt and can approve or reject the action. Propose at most ONE action per turn. "
+            "REQUIRED fields per action_type: github_create_issue needs subject (the issue TITLE) "
+            "and message (the issue BODY); github_comment_pr needs pr_number and message (the comment); "
+            "send_email/send_telegram/send_discord need recipient and message; calendar_create_event "
+            "needs summary, start_time, end_time. Do NOT specify a repo — it is auto-detected."
         ),
         "parameters": {
             "type": "object",
@@ -1066,6 +1070,10 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                 "location": {
                     "type": "string",
                     "description": "Event location (calendar_create_event only)."
+                },
+                "pr_number": {
+                    "type": "integer",
+                    "description": "Pull request number to comment on (github_comment_pr only)."
                 }
             },
             "required": ["action_type", "reason"]

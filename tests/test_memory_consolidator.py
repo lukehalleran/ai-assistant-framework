@@ -3,7 +3,12 @@ import pytest
 from unittest.mock import Mock, AsyncMock
 from datetime import datetime, timedelta
 
-from memory.memory_consolidator import MemoryConsolidator, _format_recent_for_summary
+from memory.memory_consolidator import (
+    MemoryConsolidator,
+    ConsolidatedSummary,
+    EXTRACTIVE_SUMMARY_PROMPT,
+    _format_recent_for_summary,
+)
 from memory.corpus_manager import CorpusManager
 import tempfile
 from pathlib import Path
@@ -237,6 +242,95 @@ def test_format_recent_unicode():
     assert len(result) == 1
     assert "你好" in result[0]
     assert "中文" in result[0]
+
+
+# ---------------------------------------------------------------------------
+# consolidate_memories — single extractive path (mid-session + shutdown)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memories_corpus_shape(consolidator, mock_model_manager):
+    """Raw corpus entries ({'query','response'}) summarize via the LLM."""
+    memories = [{"query": f"Q{i}", "response": f"A{i}"} for i in range(5)]
+
+    summary = await consolidator.consolidate_memories(memories)
+
+    assert isinstance(summary, ConsolidatedSummary)
+    assert summary.content == "Summary of recent conversations"
+    assert summary.importance_score == 0.7
+    assert "summary:consolidated" in summary.tags
+    mock_model_manager.generate_once.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memories_shutdown_shape(consolidator, mock_model_manager):
+    """Pre-formatted block slices ({'content','q','a'}) are accepted too."""
+    memories = [
+        {"content": f"User: Q{i}\nAssistant: A{i}", "q": f"Q{i}", "a": f"A{i}"}
+        for i in range(5)
+    ]
+
+    summary = await consolidator.consolidate_memories(memories)
+
+    assert isinstance(summary, ConsolidatedSummary)
+    assert summary.content == "Summary of recent conversations"
+    mock_model_manager.generate_once.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memories_tiny_block_skips_llm(consolidator, mock_model_manager):
+    """Blocks of <=2 exchanges are passed through extractively with no LLM call."""
+    memories = [{"query": "Only question", "response": "Only answer"}]
+
+    summary = await consolidator.consolidate_memories(memories)
+
+    assert isinstance(summary, ConsolidatedSummary)
+    assert "- User: Only question" in summary.content
+    assert "- Assistant: Only answer" in summary.content
+    mock_model_manager.generate_once.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memories_empty_returns_none(consolidator):
+    """No usable material -> None (no summary node)."""
+    assert await consolidator.consolidate_memories([]) is None
+    assert await consolidator.consolidate_memories(
+        [{"query": "", "response": ""}, {"not_a_key": "x"}, 123]
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memories_no_model_manager_large_block():
+    """Large block with no model_manager degrades to None, not a crash."""
+    consolidator = MemoryConsolidator(consolidation_threshold=5, model_manager=None)
+    memories = [{"query": f"Q{i}", "response": f"A{i}"} for i in range(5)]
+
+    assert await consolidator.consolidate_memories(memories) is None
+
+
+def test_entries_to_excerpts_mixed_shapes():
+    """_entries_to_excerpts normalizes both shapes and skips junk."""
+    excerpts = MemoryConsolidator._entries_to_excerpts([
+        {"query": "Q1", "response": "A1"},
+        {"q": "Q2", "a": "A2"},
+        {"content": "User: Q3\nAssistant: A3"},
+        {"nope": "x"},
+        123,
+    ])
+
+    assert len(excerpts) == 3
+    assert "User: Q1" in excerpts[0] and "Assistant: A1" in excerpts[0]
+    assert "User: Q2" in excerpts[1]
+    assert excerpts[2] == "User: Q3\nAssistant: A3"
+
+
+def test_extractive_prompt_has_quality_requirements():
+    """The shared prompt carries the self-contained / temporal / salience rules."""
+    assert "{excerpts}" in EXTRACTIVE_SUMMARY_PROMPT
+    assert "self-contained" in EXTRACTIVE_SUMMARY_PROMPT
+    assert "dates, times, or timeframes" in EXTRACTIVE_SUMMARY_PROMPT
+    assert "durability" in EXTRACTIVE_SUMMARY_PROMPT
 
 
 if __name__ == "__main__":

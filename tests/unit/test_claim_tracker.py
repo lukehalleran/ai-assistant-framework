@@ -26,6 +26,7 @@ from memory.claim_tracker import (
     canonicalize_claim,
     extract_claims_from_text,
 )
+from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 
 
 # ── ClaimKey Model ───────────────────────────────────────────────────
@@ -367,9 +368,16 @@ class TestCascadeStaleness:
         assert ratios["doc_2"] == round(1 / 3, 3)
 
     def test_cascade_with_chroma(self, populated_index):
-        """With chroma_store, updates metadata on affected docs."""
-        mock_chroma = MagicMock()
-        mock_chroma.get_document_metadata.return_value = {"staleness_ratio": 0.0, "stale_claims": ""}
+        """With chroma_store, updates metadata on affected docs.
+
+        spec= binds the mock to the real MultiCollectionChromaStore interface, so
+        accessing a nonexistent method (e.g. the old get_document_metadata) raises
+        AttributeError — this is what guards against the cascade calling a phantom method.
+        """
+        mock_chroma = MagicMock(spec=MultiCollectionChromaStore)
+        mock_chroma.get_by_id.return_value = {
+            "id": "doc_1", "content": "x", "metadata": {"staleness_ratio": 0.0, "stale_claims": ""},
+        }
 
         ck = ClaimKey(subject="luke", relation="lives_in")
         results = populated_index.cascade_staleness(ck, chroma_store=mock_chroma)
@@ -378,9 +386,11 @@ class TestCascadeStaleness:
 
     def test_cascade_accumulates_stale_claims(self, populated_index):
         """Multiple cascades should accumulate stale claims, increasing ratio."""
-        mock_chroma = MagicMock()
+        mock_chroma = MagicMock(spec=MultiCollectionChromaStore)
         # First cascade: no existing stale claims
-        mock_chroma.get_document_metadata.return_value = {"staleness_ratio": 0.0, "stale_claims": ""}
+        mock_chroma.get_by_id.return_value = {
+            "id": "doc_1", "content": "x", "metadata": {"staleness_ratio": 0.0, "stale_claims": ""},
+        }
 
         ck1 = ClaimKey(subject="luke", relation="lives_in")
         populated_index.cascade_staleness(ck1, chroma_store=mock_chroma)
@@ -399,11 +409,29 @@ class TestCascadeStaleness:
 
     def test_cascade_missing_doc_cleaned_up(self, populated_index):
         """If chroma says doc doesn't exist, it should be removed from index."""
-        mock_chroma = MagicMock()
-        mock_chroma.get_document_metadata.return_value = None  # doc deleted
+        mock_chroma = MagicMock(spec=MultiCollectionChromaStore)
+        mock_chroma.get_by_id.return_value = None  # doc deleted
 
         ck = ClaimKey(subject="luke", relation="lives_in")
         results = populated_index.cascade_staleness(ck, chroma_store=mock_chroma)
         # Should clean up the missing doc from the index
         # Results won't include docs that were cleaned up
         assert all(r.get("staleness_ratio") is not None for r in results if r)
+
+    def test_cascade_uses_real_chroma_interface(self, populated_index):
+        """Regression guard for the get_document_metadata bug.
+
+        The cascade must read metadata via get_by_id() (a real MultiCollectionChromaStore
+        method that returns {id, content, metadata}), then write via update_metadata().
+        A spec'd mock raises AttributeError if the cascade calls any method the real store
+        does not expose, so this fails loudly if a phantom method is reintroduced.
+        """
+        mock_chroma = MagicMock(spec=MultiCollectionChromaStore)
+        mock_chroma.get_by_id.return_value = {
+            "id": "doc_1", "content": "x", "metadata": {"stale_claims": ""},
+        }
+        ck = ClaimKey(subject="luke", relation="lives_in")
+        results = populated_index.cascade_staleness(ck, chroma_store=mock_chroma)
+        assert mock_chroma.get_by_id.called
+        assert mock_chroma.update_metadata.called
+        assert len(results) >= 1
