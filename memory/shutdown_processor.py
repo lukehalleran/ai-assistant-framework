@@ -314,46 +314,20 @@ class ShutdownProcessor:
         )
 
     async def _consolidate_block(self, content_list: list) -> Optional[str]:
-        """Try consolidator API, fall back to micro-summary or extractive LLM prompt."""
-        summary_text: Optional[str] = None
+        """Compress one block of exchanges into an extractive summary.
 
-        if hasattr(self.consolidator, 'consolidate_memories'):
-            try:
-                summary_node = await self.consolidator.consolidate_memories(content_list)
-                if summary_node and getattr(summary_node, 'content', None):
-                    summary_text = summary_node.content
-            except Exception as e:
-                logger.warning(f"[Shutdown] LLM consolidation failed: {e}, falling back to micro-summary")
-                summary_text = None
-
-        if summary_text is None:
-            try:
-                if len(content_list) <= 2:
-                    def _clip(s, n=160):
-                        s = s or ''
-                        return s if len(s) <= n else (s[:n] + '\u2026')
-                    lines = []
-                    for it in content_list:
-                        if it.get('q'):
-                            lines.append(f"- User: {_clip(it['q'])}")
-                        if it.get('a'):
-                            lines.append(f"- Assistant: {_clip(it['a'])}")
-                    summary_text = "\n".join(lines).strip()
-                else:
-                    excerpts = "\n\n".join(x['content'] for x in content_list if x.get('content'))
-                    prompt = (
-                        "You are an extractive note-taker. Using ONLY the EXCERPTS below, "
-                        "write 3\u20135 factual bullets. Do NOT infer or invent anything not present. "
-                        "If information is minimal, output 1\u20132 bullets that quote/paraphrase the text.\n\n"
-                        f"EXCERPTS:\n{excerpts}\n\nBullets (no headers):"
-                    )
-                    if hasattr(self, 'model_manager') and hasattr(self.model_manager, 'generate_once'):
-                        summary_text = await self.model_manager.generate_once(prompt, max_tokens=220)
-            except Exception as e:
-                logger.warning(f"[Shutdown] Extractive summary generation failed: {e}")
-                summary_text = None
-
-        return summary_text
+        Delegates to MemoryConsolidator.consolidate_memories() \u2014 the single
+        consolidation path \u2014 so the extractive prompt lives in exactly one
+        place (memory_consolidator.EXTRACTIVE_SUMMARY_PROMPT). Tiny blocks and
+        the missing-model-manager fallback are handled inside that path.
+        """
+        try:
+            summary_node = await self.consolidator.consolidate_memories(content_list)
+            if summary_node and getattr(summary_node, 'content', None):
+                return summary_node.content.strip()
+        except Exception as e:
+            logger.warning(f"[Shutdown] Block consolidation failed: {e}")
+        return None
 
     def _store_summary(self, summary_text: str, N: int, b: int, start: int, end: int, block: list):
         """Store summary into corpus and Chroma."""

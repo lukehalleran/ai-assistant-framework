@@ -2928,3 +2928,46 @@ that incorporated the old fact still carry outdated information. The
 staleness cascade propagates the correction to downstream documents,
 ensuring the scoring function penalizes stale summaries rather than
 presenting them as current.
+
+---
+
+## Registry-Driven Write Actions + `github_write` [2026-05-31]
+
+<!-- registry-driven write actions + github_write [2026-05-31] -->
+
+Write actions are now declared once in `core/actions/registry.py` as `ACTION_SPECS`
+(the single source of truth). An `ActionSpec` carries `executor_ref`, required/
+optional params, `intent_patterns`, `enabled_flag`, tool-health line, `field_hint`,
+a deterministic `backfill`, and a `summary`. Adding an action = one spec entry
+plus its executor module; `executors.py`, `agentic/protocols.py`,
+`agentic/tools.py`, and `agentic/controller.py` all read from the registry rather
+than hardcoding per action, so they cannot drift.
+
+Action types: `send_telegram`, `send_discord`, `send_email`,
+`calendar_create_event`, plus `github_create_issue` / `github_comment_pr`.
+
+`github_write` (`core/actions/github_write.py`) creates issues / comments on PRs
+via the `gh` CLI behind a two-entry write-allowlist, explicit arg lists (no
+`shell=True`), a timeout, and the `INTERNET_ACTIONS_GITHUB_WRITE_ENABLED` gate
+(default on in `config.yaml`). It is a distinct path from the read-only
+`core/github_manager.py`. Like all write actions it is human-gated (GUI Approve)
+and degrades to a failed `ActionResult` rather than raising.
+
+Both agentic dispatch routers (`ToolExecutor.dispatch_single` and the
+controller's `_dispatch_single_inner`) now iterate the shared `DISPATCH_TABLE`
+(`core/agentic/tools.py`), ending the dual-router drift that had silently dropped
+several tool calls. `tests/unit/test_tool_wiring_parity.py` enforces this and the
+action↔executor coverage.
+
+Related reliability fixes shipped alongside:
+- `models/model_manager.py`: `is_tool_capable()` resolves aliases *and* already-
+  resolved provider names (e.g. `deepseek/deepseek-v4-pro`), adds `deepseek-v4`;
+  native reasoning is suppressed when tools are in play so reasoning models emit
+  a real tool_call instead of narrating.
+- `core/orchestrator.py`: `process_user_query()` decomposed into a `_QueryFlow`
+  coordinator + per-phase helpers (behavior-preserving); `_build_system_prompt()`
+  extracted from `build_full_prompt()`.
+- Consolidation unified on `MemoryConsolidator.consolidate_memories()` /
+  `EXTRACTIVE_SUMMARY_PROMPT` (one copy of the extractive prompt); shutdown
+  delegates to it. `ClaimIndex.cascade_staleness()` reads metadata via the real
+  `get_by_id()` store method (was a phantom `get_document_metadata`).

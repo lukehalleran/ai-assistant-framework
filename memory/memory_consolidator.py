@@ -5,6 +5,9 @@ Module Contract
 - Purpose: Generate concise conversation summaries from recent exchanges. Used by shutdown summarizer and optionally mid‑session consolidation. Also synthesizes narrative context from Obsidian monthly/weekly/daily notes.
 - Inputs:
   - consolidation_threshold (N): target block size for summaries
+  - consolidate_memories(memories) -> Optional[ConsolidatedSummary]: single extractive
+    summary path shared by mid-session (corpus entries) and shutdown (block slices);
+    the extractive prompt lives in EXTRACTIVE_SUMMARY_PROMPT (one copy)
   - maybe_consolidate(corpus_manager): returns True if a new summary node is stored
   - generate_narrative_context(weeklies?, monthlies?, max_tokens?) -> str [NEW 2026-01-17]
 - Outputs:
@@ -30,6 +33,9 @@ Narrative Context System (2026-01-17, updated 2026-03-10 for 3-tier):
 import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+
+from pydantic import BaseModel, Field
+
 from utils.logging_utils import get_logger
 
 logger = get_logger("memory_consolidator")
@@ -39,6 +45,22 @@ SUMMARY_LOOKBACK = int(os.getenv("SUMMARY_LOOKBACK", "40"))
 SUMMARY_MIN_GAP_MIN = int(os.getenv("SUMMARY_MIN_GAP_MIN", "20"))
 SUMMARY_MODEL_ALIAS = os.getenv("LLM_SUMMARY_ALIAS", "gpt-4o-mini")
 SUMMARY_MAX_TOKENS = int(os.getenv("SUMMARY_MAX_TOKENS", "220"))
+
+# Single source of truth for the extractive block-summary prompt. Referenced by
+# MemoryConsolidator.consolidate_memories() (the mid-session + shutdown paths) so
+# the instructions live in exactly one place.
+EXTRACTIVE_SUMMARY_PROMPT = (
+    "You are an extractive note-taker. Using ONLY the EXCERPTS below, "
+    "write 3–5 factual bullets. Do NOT infer or invent anything not present. "
+    "If information is minimal, output 1–2 bullets that quote/paraphrase the text.\n"
+    "Requirements:\n"
+    "- Each bullet must be self-contained: name its subject explicitly "
+    "(no bare pronouns; do not rely on other bullets for context).\n"
+    "- Preserve any dates, times, or timeframes exactly as stated in the text.\n"
+    "- Order bullets by durability: decisions, commitments, facts, and "
+    "emotional-state changes first; incidental chatter last.\n\n"
+    "EXCERPTS:\n{excerpts}\n\nBullets (no headers):"
+)
 
 
 def _format_recent_for_summary(recent: List[Dict[str, Any]],
@@ -69,6 +91,23 @@ def _format_recent_for_summary(recent: List[Dict[str, Any]],
             continue
     return out
 
+
+class ConsolidatedSummary(BaseModel):
+    """Summary node returned by MemoryConsolidator.consolidate_memories().
+
+    Lightweight value object consumed by callers that expect attribute access
+    (.content / .timestamp / .tags / .importance_score) — e.g. memory_storage
+    and shutdown_processor.
+    """
+
+    content: str
+    timestamp: datetime = Field(default_factory=datetime.now)
+    tags: List[str] = Field(
+        default_factory=lambda: ["summary:consolidated", "source:consolidator"]
+    )
+    importance_score: float = 0.7
+
+
 class MemoryConsolidator:
     def __init__(
         self,
@@ -94,6 +133,70 @@ class MemoryConsolidator:
         logger.debug(
             "[Consolidator] init threshold=%s lookback=%s min_gap_min=%s",
             self.consolidation_threshold, self.lookback, self.min_gap_minutes
+        )
+
+    # ------------------------------------------------------------------
+    # Core consolidation (single source of truth for the extractive path)
+    # ------------------------------------------------------------------
+
+    async def consolidate_memories(
+        self, memories: List[Dict[str, Any]]
+    ) -> Optional[ConsolidatedSummary]:
+        """Compress conversation entries into one extractive summary node.
+
+        Single entry point for both mid-session consolidation (raw corpus
+        episodic memories shaped ``{'query':..., 'response':...}``) and shutdown
+        block summaries (pre-formatted slices shaped
+        ``{'content': 'User: ...\\nAssistant: ...', 'q':..., 'a':...}``). Returns
+        a ConsolidatedSummary, or None when there is nothing to summarize.
+        """
+        excerpts = self._entries_to_excerpts(memories or [])
+        if not excerpts:
+            return None
+        text = (await self._summarize_excerpts(excerpts) or "").strip()
+        if not text:
+            return None
+        return ConsolidatedSummary(content=text)
+
+    @staticmethod
+    def _entries_to_excerpts(memories: List[Dict[str, Any]]) -> List[str]:
+        """Normalize heterogeneous entry shapes into 'User:/Assistant:' slices."""
+        out: List[str] = []
+        for m in memories:
+            if not isinstance(m, dict):
+                continue
+            q = (m.get("query") or m.get("q") or "").strip()
+            a = (m.get("response") or m.get("a") or "").strip()
+            if q or a:
+                out.append(f"User: {q[:240]}\nAssistant: {a[:300]}")
+                continue
+            c = (m.get("content") or "").strip()
+            if c:
+                out.append(c)
+        return out
+
+    async def _summarize_excerpts(self, excerpts: List[str]) -> Optional[str]:
+        """Render excerpts into bullets.
+
+        Tiny blocks (<=2 slices) are passed through extractively with no LLM
+        call (cheap + deterministic); larger blocks use the shared
+        EXTRACTIVE_SUMMARY_PROMPT.
+        """
+        if not excerpts:
+            return None
+        if len(excerpts) <= 2:
+            lines: List[str] = []
+            for slice_text in excerpts:
+                for ln in slice_text.splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        lines.append(f"- {ln if len(ln) <= 160 else ln[:160] + '…'}")
+            return "\n".join(lines).strip() or None
+        if not hasattr(self.model_manager, "generate_once"):
+            return None
+        prompt = EXTRACTIVE_SUMMARY_PROMPT.format(excerpts="\n\n".join(excerpts))
+        return await self.model_manager.generate_once(
+            prompt, max_tokens=SUMMARY_MAX_TOKENS
         )
 
     async def maybe_consolidate(self, corpus_manager) -> bool:
@@ -131,29 +234,13 @@ class MemoryConsolidator:
                     )
                     return False
 
-            # 3) Gather the recent exchanges to compress
+            # 3) Gather + compress the recent exchanges via the shared path
             recent = corpus_manager.get_recent_memories(self.lookback)
-            convo_slices = _format_recent_for_summary(recent)
-            if not convo_slices:
+            summary = await self.consolidate_memories(recent)
+            if not summary:
                 logger.debug("[Consolidation] No material to summarize")
                 return False
-
-            # 4) LLM summarize (bounded by your model_manager’s timeout policies)
-            excerpts = "\n\n".join(convo_slices)
-            prompt = (
-                "You are an extractive note-taker. Using ONLY the EXCERPTS below, write 3–5 factual bullets. "
-                "Do NOT infer or invent anything not present. If information is minimal, output 1–2 bullets that "
-                "quote or paraphrase the text. No headers, just bullets.\n\nEXCERPTS:\n" + excerpts + "\n\nBullets:"
-            )
-            if not hasattr(self.model_manager, "generate_once"):
-                logger.debug("[Consolidation] No generate_once on model_manager")
-                return False
-
-            text = await self.model_manager.generate_once(prompt, max_tokens=SUMMARY_MAX_TOKENS)
-            text = (text or "").strip()
-            if not text:
-                logger.debug("[Consolidation] LLM returned empty text")
-                return False
+            text = summary.content
 
             # 5) Persist as a summary node
             add_summary = getattr(corpus_manager, "add_summary", None)

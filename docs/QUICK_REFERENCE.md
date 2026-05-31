@@ -903,17 +903,17 @@ class TokenizerManager:
 ## Consolidation & Facts
 
 ```python
-# memory/memory_consolidator.py
+# memory/memory_consolidator.py [REFACTOR 2026-05-31: single extractive path]
+EXTRACTIVE_SUMMARY_PROMPT   # one copy of the extractive-bullets prompt (was duplicated)
+class ConsolidatedSummary(BaseModel):  # content, timestamp, tags, importance_score
+    ...
 class MemoryConsolidator:
-    async def consolidate_memories(conversations: List[Dict], max_tokens: int = 300) -> str:
-        """
-        1. Format conversations into prompt
-        2. Call LLM to summarize
-        3. Return summary text
-        """
-        prompt = self._build_consolidation_prompt(conversations)
-        summary = await self.model_manager.generate(prompt, model="gpt-4o-mini", max_tokens=max_tokens)
-        return summary
+    async def consolidate_memories(memories: List[Dict]) -> Optional[ConsolidatedSummary]:
+        """Single entry point for BOTH mid-session ({'query','response'}) and shutdown
+        ({'content','q','a'}) shapes. Normalizes via _entries_to_excerpts(), then:
+        <=2 slices -> pass through extractively (NO LLM); larger -> EXTRACTIVE_SUMMARY_PROMPT.
+        Returns None when there is nothing to summarize (empty material / no model_manager)."""
+    # shutdown_processor._consolidate_block() now delegates here (one prompt, one place).
 
 
 # memory/fact_extractor.py [ENHANCED 2026-03: entity facts, 2026-05: ephemeral filtering]
@@ -2721,9 +2721,10 @@ async def search_gmail_contacts(query, max_results=10) -> List[Dict]:
     Concurrency-limited (_MAX_CONCURRENT_FETCHES=5), own-email filtered."""
 
 
-# core/actions/executors.py — Executor wiring
-# _execute_calendar_create_event() now calls google_calendar_create.create_calendar_event()
-# (was stub, now real implementation)
+# core/actions/executors.py — Executor wiring [REFACTOR 2026-05-31]
+# ActionExecutorRegistry.execute() now routes via core/actions/registry.py ACTION_SPECS
+# (spec.resolve_executor()), replacing the hand-wired per-type _execute_* methods.
+# Adding an action = one ACTION_SPECS entry + its executor module. See registry section below.
 
 
 # Prompt sections (formatter.py):
@@ -2839,3 +2840,64 @@ python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPro
 **Last verified**: 2026-05-28
 
 This document provides instant lookup for critical functions and patterns.
+
+---
+
+## Registry-Driven Write Actions + `github_write` [2026-05-31]
+
+<!-- registry-driven write actions + github_write [2026-05-31] -->
+
+```python
+# core/actions/registry.py — ACTION_SPECS: single source of truth per write action
+@dataclass(frozen=True)
+class ActionSpec:
+    action_type: ActionType
+    executor_ref: str          # "module:function" — resolved lazily at call time
+    required: Tuple[str, ...]
+    optional: Tuple[str, ...] = ()
+    intent_patterns: Tuple[str, ...] = ()   # explicit-action (forced) detection
+    backfill: Optional[Callable[[str], Dict[str, str]]] = None
+    health: str = ""           # tool-health line
+    field_hint: str = ""       # required-field directive for forced rounds
+    enabled_flag: Optional[str] = None       # extra app_config gate
+    summary: Optional[Callable[[dict], str]] = None
+    def resolve_executor(self) -> Callable: ...   # lazy import of executor_ref
+
+is_action_enabled(spec) -> bool
+enabled_action_types() -> Tuple[ActionType, ...]
+detect_action_intent(query) -> Optional[ActionType]   # explicit write-action intent
+backfill_params(action_type, query) -> Dict[str, str] # deterministic field fill
+# Specs: github_create_issue, github_comment_pr, send_email, send_telegram,
+#        send_discord, calendar_create_event
+
+# core/actions/github_write.py — GitHub writes via gh CLI (human-gated)
+WRITE_ALLOWLIST = frozenset({("issue", "create"), ("pr", "comment")})
+async def create_github_issue(proposal) -> ActionResult   # gh issue create --title/--body
+async def comment_github_pr(proposal) -> ActionResult     # gh pr comment <n> --body
+# Gated on INTERNET_ACTIONS_GITHUB_WRITE_ENABLED + gh auth; failures -> failed ActionResult.
+
+# core/agentic/tools.py — DISPATCH_TABLE: the ONE decision->handler routing table.
+# Both ToolExecutor.dispatch_single AND controller._dispatch_single_inner iterate it
+# (after reroute_url_search()), so the two routers can never drift. 21 agentic tools.
+
+# core/actions/executors.py — ActionExecutorRegistry.execute() routes via ACTION_SPECS:
+spec = ACTION_SPECS.get(proposal.action_type)
+return await spec.resolve_executor()(proposal)
+
+# models/model_manager.py
+async def generate_once(prompt, model_name=None, system_prompt=..., max_tokens=256,
+                        temperature=None, top_p=None)   # native reasoning suppressed w/ tools
+# is_tool_capable() handles aliases + resolved names; adds "deepseek-v4" pattern.
+
+# memory/memory_consolidator.py — single extractive path (mid-session + shutdown)
+EXTRACTIVE_SUMMARY_PROMPT                  # one copy of the extractive prompt
+class ConsolidatedSummary(BaseModel): ...  # content/timestamp/tags/importance_score
+async def consolidate_memories(memories) -> Optional[ConsolidatedSummary]
+# <=2 slices pass through extractively (no LLM); empty -> None. shutdown_processor delegates here.
+
+# memory/claim_tracker.py — cascade reads metadata via store.get_by_id() (real method),
+# skips missing docs, swallows resolver failures, skips headers/bullets/short lines.
+```
+
+Config: `config.yaml internet_actions.github_write_enabled: true`. Tests:
+`test_github_write.py`, `test_tool_wiring_parity.py`, `test_process_user_query.py`.

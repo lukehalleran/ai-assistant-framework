@@ -44,13 +44,15 @@ Query → ContextPipeline (tone‖topic parallel, intent gates heavy-topic skip)
 
 **14 ChromaDB Collections:** `conversations` (protected), `facts`, `summaries`, `reflections`, `wiki_knowledge` (protected), `obsidian_notes` (protected), `reference_docs` (protected), `procedural`, `procedural_skills`, `proposals`, `threads`, `synthesis_results`, `visual_memories`, `daemon_self_notes`
 
+*Note:* document-level parent/child hierarchy (`parent_id`/`child_ids`) is currently **disabled** in the Chroma store (it caused retrieval issues — see `multi_collection_chroma_store.py:411`); retrieval is flat-within-collection. The "hierarchy" is the abstraction tiers (conversations → summaries → reflections), not document links.
+
 **Knowledge Graph:** NetworkX DiGraph at `data/knowledge_graph.json`. Entity alias resolution at `data/entity_aliases.json`. Ingestion via `memory_storage.py:_ingest_fact_to_graph()`. Retrieval via BFS in `context_gatherer.py`. Graph-boosted scoring (0.05/entity, cap 0.15) + query expansion with graph neighbors.
 
 **Scoring:** `final = w.relevance*R + w.recency*T + w.truth*Tr + w.importance*I + w.continuity*C + w.structure*S + graph_bonus`. Defaults: 0.35/0.25/0.20/0.05/0.10/0.05. Per-intent weight overrides via IntentClassifier. Two-regime temporal decay. Stemmed continuity + tag-keyword bonus.
 
-**Multi-Stage Gating (~200ms):** FAISS→50 candidates → Cosine filter (0.15) → CrossEncoder→top K
+**Multi-Stage Gating (~200ms):** ChromaDB HNSW→~50 candidates → cosine filter → CrossEncoder rerank→top K. (No FAISS in the live memory path — candidate generation is ChromaDB's HNSW; FAISS is used only for the wiki index and visual memory.)
 
-**Embedding model:** BAAI/bge-small-en-v1.5 (384d). Cross-encoder reranker: ms-marco-MiniLM-L-6-v2 (top-15 post-scoring rerank in retriever).
+**Embedding model:** ChromaDB retrieval uses BAAI/bge-small-en-v1.5 (384d). Note: the gate, tone detector, and web-search trigger re-embed text with `all-MiniLM-L6-v2` (the shared `ModelManager` SentenceTransformer, also 384d) — a *different* model from the one ChromaDB retrieved with. Cross-encoder reranker: ms-marco-MiniLM-L-6-v2 (top-15 post-scoring rerank in retriever).
 
 ## Prompt Building
 
@@ -89,7 +91,12 @@ core/                         # Request orchestration
 ├── response_generator.py
 ├── actions/                  # Internet actions (human-in-the-loop write actions)
 │   ├── types.py              # ActionType enum, ActionProposal, ActionResult, PendingActionsStore
-│   ├── executors.py          # ActionExecutorRegistry: routes to type-specific handlers
+│   ├── registry.py           # ACTION_SPECS — SINGLE source of truth per write action (executor,
+│   │                         #   required/optional params, intent patterns, backfill, tool-health,
+│   │                         #   enable-flag). Adding an action = one spec here. Consumed by
+│   │                         #   executors.py, agentic/protocols.py (parse), agentic/tools.py
+│   │                         #   (tool-health), agentic/controller.py (detect/backfill/instruction).
+│   ├── executors.py          # ActionExecutorRegistry: routes via ACTION_SPECS to each executor
 │   ├── telegram.py           # Telegram Bot API sender
 │   ├── discord.py            # Discord webhook sender
 │   ├── email.py              # Gmail API primary + SMTP fallback email sender + contact name resolution
@@ -102,7 +109,9 @@ core/                         # Request orchestration
 ├── agentic/                  # ReAct search loop
 │   ├── gate.py               # 4-tier agentic gate: AgenticDecision + evaluate_agentic_gate()
 │   ├── controller.py         # Loop orchestration, [TOOL STATUS] injection
-│   ├── tools.py              # 20 tool types + get_tool_health() (incl. GitHub, StackExchange, arXiv, PubMed, HN, propose_action, lookup_contact)
+│   ├── tools.py              # 20 tool types + get_tool_health() + DISPATCH_TABLE (the single
+│   │                         #   decision→handler routing table; ToolExecutor.dispatch_single AND
+│   │                         #   controller._dispatch_single_inner both iterate it — no drift)
 │   ├── formatters.py         # Stateless result formatting
 │   ├── types.py              # SearchDecision, tool definitions, LOOKUP_CONTACT_TOOL_DEFINITION
 │   └── protocols.py          # Native tools + XML parsing + contact lookup aliases
@@ -168,10 +177,10 @@ knowledge/                    # External knowledge
 ├── synthesis_generator.py    # Cross-store sampling (Tier 2, disabled)
 ├── synthesis_retriever.py    # FAISS structural query (Tier 0, disabled)
 ├── graph_walk_generator.py   # Biased Markov walks (Tier 1, disabled)
-├── clip_manager.py           # OpenCLIP ViT-B/32 singleton (disabled)
-├── visual_memory_store.py    # ChromaDB + FAISS for images (disabled)
-├── visual_memory_pipeline.py # CLIP → caption → entity → store (disabled)
-├── visual_retrieval.py       # CLIP text→image search (disabled)
+├── clip_manager.py           # OpenCLIP ViT-B/32 singleton (enabled)
+├── visual_memory_store.py    # ChromaDB + FAISS for images (enabled)
+├── visual_memory_pipeline.py # CLIP → caption → entity → store (enabled)
+├── visual_retrieval.py       # CLIP text→image search (enabled; recall_image excluded from agentic loop to save API credits)
 ├── wiki_tracker.py           # Session-level wiki article tracking
 ├── wiki_enrichment.py        # Shutdown: wiki articles → graph nodes
 ├── wikidata_resolver.py      # Personal ↔ Wikidata entity resolution
@@ -211,7 +220,7 @@ models/
 └── tokenizer_manager.py
 
 processing/
-└── gate_system.py            # FAISS → Cosine → CrossEncoder
+└── gate_system.py            # Cosine (over ChromaDB HNSW candidates) → CrossEncoder
 
 utils/
 ├── tone_detector.py          # Crisis detection (250+ keywords)
@@ -249,3 +258,5 @@ Agents may **not** run `git restore`, `git reset --hard`, `git clean`, `git push
 ## Testing
 
 Config in `pytest.ini`. Markers: `slow`, `semantic`, `benchmark`. Excluded dirs: `venv/`, `data/`, `integration.bak/`. Tests in `tests/` and `tests/unit/` (named `test_<component>.py`). Eval tests in `tests/test_eval/` (246 tests).
+
+**Tool/action wiring parity** (`tests/unit/test_tool_wiring_parity.py`): asserts every SearchDecision tool flag has a `DISPATCH_TABLE` row, both routers iterate that table, and every `ActionType`/`propose_action` enum entry has a registered executor. If you add a tool or action and forget a wiring point, this fails loudly instead of the call being silently dropped (the failure mode that historically made additions painful).

@@ -95,6 +95,16 @@ _ERROR_PATTERN = re.compile(r'error|exception|traceback|bug|issue', re.IGNORECAS
 _STOP_WORDS = frozenset({'the', 'a', 'an', 'is', 'are', 'was', 'were', 'to', 'of', 'for', 'in', 'on', 'with', 'and', 'or'})
 
 
+# Forced write-action detection + deterministic param backfill now live in the action registry
+# (core/actions/registry.py) — the single source of truth, so adding an action is one place.
+# Re-exported here for the controller body and for tests that import these names.
+from core.actions.registry import (  # noqa: E402
+    detect_action_intent,
+    backfill_params,
+    _extract_issue_fields_from_query,
+)
+
+
 class AgenticSearchController:
     """
     Controls the ReAct-style agentic search loop.
@@ -360,6 +370,8 @@ class AgenticSearchController:
         try:
             from config.app_config import INTERNET_ACTIONS_ENABLED
             if INTERNET_ACTIONS_ENABLED:
+                from core.actions.registry import enabled_action_types
+                _action_types = ", ".join(at.value for at in enabled_action_types())
                 augmented_system_prompt += (
                     "\n\n[AVAILABLE ACTIONS]\n"
                     "You can propose write actions requiring user confirmation via the propose_action tool.\n"
@@ -368,9 +380,17 @@ class AgenticSearchController:
                     "- A follow-up the user said they'd do but hasn't yet\n"
                     "- Information that should be shared with someone mentioned in conversation\n"
                     "- The user explicitly asks you to send/create/post something\n\n"
-                    "Available action types: send_telegram, send_discord, send_email, "
-                    "github_create_issue, github_comment_pr, calendar_create_event\n"
-                    "Propose at most ONE action per turn. The user will see a confirmation prompt."
+                    f"Available action types: {_action_types}\n"
+                    "Propose at most ONE action per turn. The user will see a confirmation prompt.\n\n"
+                    "CRITICAL — DO NOT JUST DRAFT, AND DO NOT OVER-RESEARCH: When the user EXPLICITLY asks "
+                    "you to create/file an issue, send a message, comment on a PR, or post something, your "
+                    "FIRST action MUST be to call the propose_action tool — not to research. Writing the "
+                    "issue/message as your text answer does NOTHING; only a propose_action call gives the "
+                    "user an Approve button. For GitHub issues/PR comments the repo is AUTO-DETECTED from "
+                    "the local git remote — do NOT look it up, and do NOT read files or call git_stats / "
+                    "github to 'write a better body'; the title and body the user gave you are enough. "
+                    "Call propose_action immediately as your first action. For a GitHub issue: "
+                    "propose_action(action_type=\"github_create_issue\", subject=<title>, message=<body>)."
                 )
         except ImportError:
             pass
@@ -531,6 +551,17 @@ class AgenticSearchController:
                     f"{session.context_inventory.count(chr(10))} sections"
                 )
 
+            # Detect explicit write-action intent. If present, force the model to call
+            # propose_action on the first decision round (native-tools protocol only) so
+            # research-eager models don't spend every round reading code and never act.
+            _forced_action = detect_action_intent(query)  # ActionType or None (from the registry)
+            _force_propose_pending = _forced_action is not None
+            if _forced_action:
+                logger.info(
+                    f"[AgenticSearch] Explicit action intent ({_forced_action.value}) — forcing "
+                    f"propose_action on first decision round"
+                )
+
             # === ROUNDS 2-N: Model-driven iteration ===
             while session.can_continue and session.current_round <= self.max_rounds:
                 session.state = AgentState.THINKING
@@ -543,13 +574,50 @@ class AgenticSearchController:
                     session=session
                 )
 
+                # Force propose_action once when an explicit action was requested. Forced
+                # tool_choice alone isn't honored by every provider (e.g. deepseek-v4), so we
+                # ALSO restrict the offered tools to just propose_action — with no research
+                # tools available, the model can only propose. (Native-tools protocol only;
+                # tools_override is ignored on the XML path.)
+                _round_tool_choice: Any = "auto"
+                _round_tools_override: Optional[List[Dict]] = None
+                _round_system_prompt = augmented_system_prompt
+                _round_prompt = iteration_prompt
+                if _force_propose_pending:
+                    _round_tool_choice = {"type": "function", "function": {"name": "propose_action"}}
+                    _ptool = getattr(handler, "propose_action_tool", None)
+                    if _ptool is not None:
+                        _round_tools_override = [_ptool]
+                    # Use the user's actual request as the prompt (not the generic "what tool
+                    # next?" iteration prompt) so the model fills the content fields from it.
+                    _round_prompt = (
+                        f"The user asked: {query}\n\n"
+                        f"Call propose_action now to do exactly this, filling in ALL content "
+                        f"fields (e.g. subject=title, message=body) from the request above."
+                    )
+                    # An explicit per-round directive — the generic [AVAILABLE ACTIONS] block is
+                    # too soft; models otherwise emit a propose_action call with the content fields
+                    # blank. The required-field hint for THIS action comes from its registry spec.
+                    from core.actions.registry import ACTION_SPECS
+                    _spec = ACTION_SPECS.get(_forced_action)
+                    _hint = (_spec.field_hint if _spec and _spec.field_hint else "the required fields")
+                    _round_system_prompt = augmented_system_prompt + (
+                        f"\n\n[ACTION REQUIRED] The user explicitly asked you to perform a write "
+                        f"action ({_forced_action.value}). Call propose_action NOW and FILL IN the "
+                        f"content fields from the user's request — for this action: {_hint}. "
+                        f"Do NOT leave required fields empty, and do NOT specify a repo (auto-detected)."
+                    )
+                    _force_propose_pending = False  # force on this round only
+
                 # Generate with protocol-appropriate method
                 decisions = await self._get_model_decision(
-                    prompt=iteration_prompt,
-                    system_prompt=augmented_system_prompt,
+                    prompt=_round_prompt,
+                    system_prompt=_round_system_prompt,
                     model_name=model_name,
                     handler=handler,
-                    session=session
+                    session=session,
+                    tool_choice=_round_tool_choice,
+                    tools_override=_round_tools_override,
                 )
 
                 # Dispatch action proposals BEFORE honoring done signal.
@@ -561,6 +629,24 @@ class AgenticSearchController:
                 ]
                 if _action_decisions:
                     for _ad in _action_decisions:
+                        # Backfill blank fields from the user's request for any action whose spec
+                        # has a deterministic extractor (e.g. github issue title/body). Models call
+                        # propose_action but unreliably leave content empty under a large context.
+                        try:
+                            from core.actions.types import ActionType as _AT
+                            _bf = backfill_params(_AT(_ad.action_type), query)
+                        except ValueError:
+                            _bf = {}
+                        if _bf:
+                            _params = dict(_ad.action_params or {})
+                            _filled = [k for k, v in _bf.items() if not _params.get(k) and v]
+                            for _k in _filled:
+                                _params[_k] = _bf[_k]
+                            if _filled:
+                                _ad.action_params = _params
+                                logger.info(
+                                    f"[AgenticSearch] Backfilled {_filled} from query for {_ad.action_type}"
+                                )
                         _ad_round = session.current_round
                         _ad_result = await self._dispatch_single(
                             _ad, _ad_round, session, crisis_level, sandbox_session
@@ -804,46 +890,21 @@ class AgenticSearchController:
             )
 
     async def _dispatch_single_inner(self, decision, round_number, session, crisis_level, sandbox_session):
-        """Inner dispatch logic, always runs under agent_mode() context."""
-        if decision.wants_search and decision.search_query:
-            return await self._dispatch_web_search(decision, round_number, crisis_level)
-        elif decision.wants_wolfram and decision.wolfram_query:
-            return await self._dispatch_wolfram(decision, round_number)
-        elif decision.wants_sandbox and decision.sandbox_code:
-            return await self._dispatch_sandbox(decision, round_number, sandbox_session)
-        elif decision.wants_memory_search and decision.memory_query:
-            return await self._dispatch_memory_search(decision, round_number)
-        elif decision.wants_memory_expand and decision.expand_memory_id:
-            return await self._dispatch_memory_expand(decision, round_number)
-        elif decision.wants_file_read and decision.file_read_path:
-            return await self._dispatch_file_read(decision, round_number)
-        elif decision.wants_file_grep and decision.file_grep_pattern:
-            return await self._dispatch_file_grep(decision, round_number)
-        elif decision.wants_file_list and decision.file_list_path:
-            return await self._dispatch_file_list(decision, round_number)
-        elif decision.wants_full_document and decision.full_document_title:
-            return await self._dispatch_full_document(decision, round_number)
-        elif decision.wants_git_stats and decision.git_stats_query:
-            return await self._dispatch_git_stats(decision, round_number)
-        elif decision.wants_recall_image and decision.recall_image_query:
-            return await self._tool_executor._dispatch_recall_image(decision, round_number)
-        elif decision.wants_fetch_url and decision.fetch_url:
-            return await self._tool_executor._dispatch_fetch_url(decision, round_number)
-        elif decision.wants_github and decision.github_query:
-            return await self._tool_executor._dispatch_github(decision, round_number)
-        elif decision.wants_stackexchange and decision.stackexchange_query:
-            return await self._tool_executor._dispatch_api_search(decision, round_number, "stackexchange")
-        elif decision.wants_arxiv and decision.arxiv_query:
-            return await self._tool_executor._dispatch_api_search(decision, round_number, "arxiv")
-        elif decision.wants_pubmed and decision.pubmed_query:
-            return await self._tool_executor._dispatch_api_search(decision, round_number, "pubmed")
-        elif decision.wants_hackernews and decision.hackernews_query:
-            return await self._tool_executor._dispatch_api_search(decision, round_number, "hackernews")
-        else:
-            return _ToolResult(
-                decision=decision, round_data=None,
-                formatted_context="", start_events=[], end_events=[],
-            )
+        """Inner dispatch — iterates the SHARED DISPATCH_TABLE (core.agentic.tools) so this router
+        cannot drift from ToolExecutor.dispatch_single. Each handler resolves to the controller's
+        own method if it defines one (preserving test-mockability), otherwise to the ToolExecutor's.
+        Always runs under agent_mode() context.
+        """
+        from core.agentic.tools import DISPATCH_TABLE, reroute_url_search
+        decision = reroute_url_search(decision)
+        for predicate, handler_name, arg_builder in DISPATCH_TABLE:
+            if predicate(decision):
+                handler = getattr(self, handler_name, None) or getattr(self._tool_executor, handler_name)
+                return await handler(*arg_builder(decision, round_number, crisis_level, sandbox_session))
+        return _ToolResult(
+            decision=decision, round_data=None,
+            formatted_context="", start_events=[], end_events=[],
+        )
 
     async def _dispatch_web_search(self, decision, round_number, crisis_level=None):
         """Dispatch web search. Calls self._execute_search/_format_* for mock compatibility."""
@@ -942,7 +1003,9 @@ class AgenticSearchController:
         system_prompt: str,
         model_name: str,
         handler: BaseProtocolHandler,
-        session: AgenticSearchSession
+        session: AgenticSearchSession,
+        tool_choice: Any = "auto",
+        tools_override: Optional[List[Dict]] = None,
     ) -> List[SearchDecision]:
         """
         Get the model's decision(s) on what to do next.
@@ -962,12 +1025,15 @@ class AgenticSearchController:
         """
         try:
             if session.protocol == SearchProtocol.NATIVE_TOOLS:
-                # Use tool calling
+                # Use tool calling. tools_override lets a caller restrict the tool set
+                # (e.g. to just propose_action) so research-eager models can't wander.
+                _tools = tools_override if tools_override is not None else handler.get_tools()
                 response = await self._generate_with_tools(
                     prompt=prompt,
                     system_prompt=system_prompt,
                     model_name=model_name,
-                    tools=handler.get_tools()
+                    tools=_tools,
+                    tool_choice=tool_choice,
                 )
             else:
                 # Use standard generation for XML markers.
@@ -1037,7 +1103,8 @@ class AgenticSearchController:
         prompt: str,
         system_prompt: str,
         model_name: str,
-        tools: List[Dict]
+        tools: List[Dict],
+        tool_choice: Any = "auto",
     ) -> Any:
         """
         Generate with tool calling support.
@@ -1058,7 +1125,7 @@ class AgenticSearchController:
                 model_name=model_name,
                 system_prompt=system_prompt,
                 tools=tools,
-                tool_choice="auto"
+                tool_choice=tool_choice,
             )
         else:
             # Fallback to standard generation

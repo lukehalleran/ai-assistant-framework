@@ -57,8 +57,9 @@ NATIVE_TOOL_MODELS = [
     # Anthropic
     "claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
     "anthropic/claude-3", "anthropic/claude-opus", "anthropic/claude-sonnet",
-    # DeepSeek (supports function calling)
-    "deepseek-chat", "deepseek-coder",
+    # DeepSeek (supports function calling). "deepseek-v4" matches the v4-pro / v4-flash
+    # routes; "deepseek-chat" already covers v3.1 (deepseek-chat-v3.1).
+    "deepseek-chat", "deepseek-coder", "deepseek-v4",
 ]
 
 
@@ -581,40 +582,27 @@ class NativeToolsHandler(BaseProtocolHandler):
                 return None
 
         elif func_name == "propose_action":
+            # Registry-driven: acceptance, param-forwarding, and summary all come from the
+            # action's spec (core/actions/registry.py) — no per-action-type hardcoding here.
+            from core.actions.registry import ACTION_SPECS
+            from core.actions.types import ActionType as _ActionType
             action_type = args.get("action_type", "")
-            message = args.get("message", "")
             reason = args.get("reason", "")
-            recipient = args.get("recipient", "")
-            subject = args.get("subject", "")
+            try:
+                spec = ACTION_SPECS.get(_ActionType(action_type))
+            except ValueError:
+                spec = None
 
-            # Calendar events use summary/start_time/end_time instead of message
-            is_calendar = action_type == "calendar_create_event"
-            cal_summary = args.get("summary", "")
-
-            if action_type and (message or (is_calendar and cal_summary)):
-                params = {}
-                if message:
-                    params["message"] = message
-                if recipient:
-                    params["recipient"] = recipient
-                if subject:
-                    params["subject"] = subject
-
-                # Forward calendar-specific params
-                if is_calendar:
-                    for key in ("summary", "description", "start_time", "end_time",
-                                "time_zone", "calendar_id", "location"):
-                        val = args.get(key)
-                        if val:
-                            params[key] = val
-
-                if is_calendar and cal_summary:
-                    display = f"calendar_create_event: {cal_summary}"
-                    summary_text = display
-                elif recipient:
-                    summary_text = f"{action_type} to {recipient}: {message[:60]}"
-                else:
-                    summary_text = f"{action_type}: {message[:80]}"
+            # Accept when all required fields are present, OR a backfill can fill them later
+            # (e.g. the controller backfills a GitHub issue's title/body from the user's request,
+            # since models leave those blank unreliably). Forward only the spec's known params —
+            # never trust a model-supplied repo, etc. (it's not in forward_params, so it's dropped).
+            accepted = bool(spec) and (
+                all(args.get(f) for f in spec.required) or spec.backfill is not None
+            )
+            if accepted:
+                params = {k: args[k] for k in spec.forward_params if args.get(k) not in (None, "")}
+                summary_text = spec.summary(params) if spec.summary else f"{action_type}: {str(params)[:60]}"
                 logger.info(f"[AgenticProtocol] Native tool propose_action: {summary_text}")
                 return SearchDecision(
                     wants_action=True,
@@ -624,7 +612,10 @@ class NativeToolsHandler(BaseProtocolHandler):
                     action_reason=reason,
                 )
             else:
-                logger.warning("[AgenticProtocol] propose_action called without action_type/message")
+                logger.warning(
+                    f"[AgenticProtocol] propose_action rejected: action_type={action_type!r} "
+                    "is unknown or missing required fields"
+                )
                 return None
 
         elif func_name in ("lookup_contact", "search_contacts", "find_contact",

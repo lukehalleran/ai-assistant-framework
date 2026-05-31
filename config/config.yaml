@@ -454,7 +454,7 @@ internet_actions:
   smtp_user: lukehalleran@gmail.com
   smtp_password: ''
   smtp_from: lukehalleran@gmail.com
-  github_write_enabled: false
+  github_write_enabled: true
   google_client_id: ''
   google_client_secret: ''
   google_token_path: data/google_token.json

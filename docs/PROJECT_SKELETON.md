@@ -109,15 +109,18 @@ The incomplete V2 `memory/coordinator.py` has been deleted.
 
 **Key Methods**:
 - `process_user_query(user_input, files, use_raw_mode, personality)` → Main entry point
-  - Detects tone/crisis level via ToneDetector
-  - Extracts topics via TopicManager
-  - Checks for heavy topics (triggers inline fact extraction)
-  - Builds prompt via PromptBuilder
-  - Generates response with thinking blocks
-  - Parses thinking block and strips from final response
-  - Stores interaction back to memory (with provenance metadata)
+  - **Thin coordinator [REFACTOR 2026-05-30]**: builds a `_QueryFlow` dataclass (threaded state)
+    and routes through per-phase helper methods, returning `(answer, debug_info)`:
+    `_handle_command` → `_handle_deictic` → `_resolve_model_name` → `_build_prompt_phase` →
+    `_maybe_document_generation` → `_maybe_agentic_search` → `_resolve_max_tokens` →
+    `_generate_response` → `_postprocess_response` → `_store_interaction` →
+    `_run_post_response_detectors` → `_finalize_debug`.
+  - Early-exit helpers return `(text, debug_info)` or `None` (None = fall through to next phase).
+  - Detects tone/crisis level, builds prompt, generates (best-of/duel/standard or agentic),
+    parses + strips thinking block, extracts citations, stores interaction (with provenance),
+    runs correction/truth/staleness/entity/attribution detectors.
 
-- System prompt composed inline in `prepare_prompt()` via `load_personality_text()` + `load_operating_principles()` **[NEW 2026-03-26]**
+- System prompt assembled by `_build_system_prompt()` (called from `build_full_prompt()`) via `load_personality_text()` + `load_operating_principles()` **[NEW 2026-03-26; extracted 2026-05-30]**
   - Loads `default_personality.txt` or `custom_personality.txt` via `load_personality_text()`
   - Appends immutable `operating_principles.txt` via `load_operating_principles()`
   - Performs placeholder substitution: `{USER_NAME}`, `{USER_PRONOUNS}`, `{PRONOUN_SUBJ}`, `{PRONOUN_OBJ}`, `{PRONOUN_POSS}`
@@ -6012,3 +6015,52 @@ This document compresses a ~143K LOC codebase by focusing on architecture, data 
 - Documented new files: memory_retriever.py, memory_storage.py, thread_manager.py, memory_interface.py
 - Updated architecture diagrams to show modular memory flow
 - Added refactoring notes and protocol contract information
+
+---
+
+## Registry-Driven Write Actions + `github_write` [2026-05-31]
+
+<!-- registry-driven write actions + github_write [2026-05-31] -->
+
+**New files**
+- `core/actions/registry.py` — `ACTION_SPECS`: the single declarative source of
+  truth per write action (`ActionSpec`: `executor_ref`, required/optional params,
+  `intent_patterns`, `enabled_flag`, tool-health line, `field_hint`, deterministic
+  `backfill`, `summary`). Helpers: `is_action_enabled`, `enabled_action_types`,
+  `detect_action_intent`, `backfill_params`. Specs registered: github_create_issue,
+  github_comment_pr, send_email, send_telegram, send_discord, calendar_create_event.
+- `core/actions/github_write.py` — `create_github_issue` / `comment_github_pr`
+  via the `gh` CLI behind `WRITE_ALLOWLIST` (issue create, pr comment), explicit
+  arg lists (no `shell=True`), subprocess timeout, and the
+  `INTERNET_ACTIONS_GITHUB_WRITE_ENABLED` gate. Separate from the read-only
+  `core/github_manager.py`; human-gated; failures -> failed `ActionResult`.
+- `tests/unit/test_tool_wiring_parity.py`, `tests/unit/test_github_write.py`,
+  `tests/unit/test_process_user_query.py`.
+
+**Refactors consuming the registry**
+- `core/actions/executors.py` — `ActionExecutorRegistry.execute()` routes via
+  `ACTION_SPECS` (`spec.resolve_executor()`), replacing the hand-wired map.
+- `core/agentic/protocols.py` — registry-driven native `propose_action` parse.
+- `core/agentic/tools.py` — registry-driven `get_tool_health()`; new shared
+  `DISPATCH_TABLE` (+ `reroute_url_search`) — the ONE decision->handler routing
+  table. 21 agentic tools (added `github_write`).
+- `core/agentic/controller.py` — `_dispatch_single_inner` iterates the shared
+  `DISPATCH_TABLE` (no more dual-router drift); forced `propose_action` on
+  explicit action intent + `backfill_params()` content fill.
+- `core/agentic/types.py` — `SearchDecision.use_github_write`; PROPOSE_ACTION tool
+  schema gains `pr_number` + per-action required-field guidance.
+
+**Reliability fixes**
+- `models/model_manager.py` — `is_tool_capable()` handles aliases + resolved
+  provider names, adds `deepseek-v4`; native reasoning suppressed when tools are
+  passed (reasoning models emit real tool_calls instead of narrating).
+- `memory/memory_consolidator.py` — unified `consolidate_memories()` +
+  `EXTRACTIVE_SUMMARY_PROMPT` (one copy); `shutdown_processor.py` delegates to it.
+- `memory/claim_tracker.py` — `cascade_staleness()` reads via real
+  `store.get_by_id()` (was phantom `get_document_metadata`), skips missing docs,
+  swallows resolver failures, skips markdown headers/bullets/short lines.
+- `memory/memory_retriever.py` — null-safe fact scores + stable recency tie-break;
+  `_dedup_by_content()` now actually dedups.
+- `gui/launch.py` — post-stream `_check_pending_action` pass so approve/reject
+  buttons appear reliably after a streamed proposal.
+- `config/config.yaml` — `internet_actions.github_write_enabled: true`.
