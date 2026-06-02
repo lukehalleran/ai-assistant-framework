@@ -532,22 +532,39 @@ def _run_shutdown_tasks(orchestrator):
             except Exception as e:
                 logger.warning(f"[Shutdown] wait_for_pending_storage failed: {e}")
 
+            # Reflection and summary/fact processing are independent — overlap
+            # them so the reflection LLM call isn't a serial bookend. Both use
+            # explicit model_name internally now, so there's no active-model race.
+            # Bounded by SHUTDOWN_TASK_TIMEOUT_S so a hung LLM call (e.g. a slow
+            # reasoning model) can't block exit — we persist whatever finished.
+            from config.app_config import SHUTDOWN_TASK_TIMEOUT_S
             try:
-                await orchestrator.memory_system.run_shutdown_reflection(
-                    session_conversations=session_convos,
-                    session_summaries=session_summaries
+                _refl, _proc = await asyncio.wait_for(
+                    asyncio.gather(
+                        orchestrator.memory_system.run_shutdown_reflection(
+                            session_conversations=session_convos,
+                            session_summaries=session_summaries
+                        ),
+                        orchestrator.memory_system.process_shutdown_memory(
+                            session_conversations=session_convos
+                        ),
+                        return_exceptions=True,
+                    ),
+                    timeout=SHUTDOWN_TASK_TIMEOUT_S,
                 )
-                logger.info("[Shutdown] Reflection completed")
-            except Exception as e:
-                logger.error(f"[Shutdown] Reflection failed: {e}")
-
-            try:
-                await orchestrator.memory_system.process_shutdown_memory(
-                    session_conversations=session_convos
+                if isinstance(_refl, Exception):
+                    logger.error(f"[Shutdown] Reflection failed: {_refl}")
+                else:
+                    logger.info("[Shutdown] Reflection completed")
+                if isinstance(_proc, Exception):
+                    logger.error(f"[Shutdown] Summary/fact processing failed: {_proc}")
+                else:
+                    logger.info("[Shutdown] Summary/fact processing completed")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"[Shutdown] reflection/summary tasks exceeded "
+                    f"{SHUTDOWN_TASK_TIMEOUT_S}s — proceeding with whatever completed"
                 )
-                logger.info("[Shutdown] Summary/fact processing completed")
-            except Exception as e:
-                logger.error(f"[Shutdown] Summary/fact processing failed: {e}")
 
             # Generate today's daily note from this session's conversations
             try:
@@ -1439,8 +1456,24 @@ if __name__ == "__main__":
                         loop.create_task(_do_shutdown_summaries_and_facts())
                         scheduled_shutdown_tasks = True
                     else:
-                        _a.run(_do_shutdown_reflection())
-                        _a.run(_do_shutdown_summaries_and_facts())
+                        # Overlap the two independent shutdown jobs (each guards
+                        # its own exceptions), bounded by a timeout so a hung LLM
+                        # call can't block exit.
+                        from config.app_config import SHUTDOWN_TASK_TIMEOUT_S
+                        async def _both_shutdown_tasks():
+                            try:
+                                await _a.wait_for(
+                                    _a.gather(
+                                        _do_shutdown_reflection(),
+                                        _do_shutdown_summaries_and_facts(),
+                                    ),
+                                    timeout=SHUTDOWN_TASK_TIMEOUT_S,
+                                )
+                            except _a.TimeoutError:
+                                logger.warning(
+                                    f"[Shutdown] tasks exceeded {SHUTDOWN_TASK_TIMEOUT_S}s — proceeding"
+                                )
+                        _a.run(_both_shutdown_tasks())
                 except RuntimeError:
                     pass  # Event loop issues at shutdown
         finally:

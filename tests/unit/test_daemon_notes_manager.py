@@ -525,3 +525,54 @@ class TestAutonomousGuardrails:
         call_args = mock_chroma_store.add_to_collection.call_args
         collection_name = call_args[0][0] if call_args[0] else call_args[1].get("name", "")
         assert collection_name == "daemon_self_notes"
+
+
+# ############################################################################
+#
+#  Persistence outcome flags (anti-confabulation support)
+#
+# ############################################################################
+
+class TestPersistenceFlags:
+
+    @pytest.mark.asyncio
+    async def test_flags_all_true_on_clean_save(self, manager):
+        note = await manager.create_note(
+            title="Clean Save", category="implementation",
+            summary="A note that persists fully across disk, embed, and index.",
+        )
+        assert note.disk_written is True
+        assert note.embedded is True
+        assert note.indexed is True
+        assert note.fully_persisted is True
+
+    @pytest.mark.asyncio
+    async def test_embedded_vacuously_true_without_store(self, mock_model_manager, tmp_path):
+        mgr = DaemonNotesManager(
+            model_manager=mock_model_manager, chroma_store=None,
+            output_dir=tmp_path / "daemon_notes", repo_root=tmp_path,
+        )
+        note = await mgr.create_note(
+            title="No Store", category="implementation",
+            summary="No chroma store means embedding is vacuously satisfied.",
+        )
+        assert note.embedded is True
+        assert note.fully_persisted is True
+
+    @pytest.mark.asyncio
+    async def test_embed_failure_surfaces_in_flags(self, mock_model_manager, tmp_path):
+        store = MagicMock()
+        store.add_to_collection = MagicMock(side_effect=RuntimeError("chroma down"))
+        mgr = DaemonNotesManager(
+            model_manager=mock_model_manager, chroma_store=store,
+            output_dir=tmp_path / "daemon_notes", repo_root=tmp_path,
+        )
+        note = await mgr.create_note(
+            title="Embed Fails", category="implementation",
+            summary="Disk write succeeds but the ChromaDB embed raises.",
+        )
+        # Disk file still written, but the partial save is observable.
+        assert note.disk_written is True
+        assert Path(note.path).exists()
+        assert note.embedded is False
+        assert note.fully_persisted is False

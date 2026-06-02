@@ -121,6 +121,43 @@ def load_yaml_config(config_path="config.yaml"):
 
     return config
 
+
+def _deep_merge_dict(base: dict, override: dict) -> dict:
+    """Recursively merge `override` into `base` (in place). Dict values merge
+    recursively; scalars and lists are replaced by the override value."""
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge_dict(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+def load_local_overrides(filename="config.local.yaml"):
+    """Load a gitignored local override file (personal/sensitive values) if present.
+
+    Searched next to config.yaml. Deep-merged over the base config so personal data
+    (e.g. user_profile.personal_vocabulary, private paths) stays out of the committed
+    config.yaml. Missing file → {} (fully generic install).
+    """
+    paths_to_try = list(dict.fromkeys([
+        Path(filename),
+        Path(__file__).parent / filename,
+        Path(__file__).parent.parent / filename,
+        Path.cwd() / filename,
+    ]))
+    for path in paths_to_try:
+        if path.exists():
+            try:
+                with open(path, "r") as f:
+                    data = yaml.safe_load(f)
+                if isinstance(data, dict):
+                    logger.info(f"Loading local config overrides from: {path}")
+                    return resolve_vars(data)
+            except Exception as e:
+                logger.warning(f"Error loading local overrides {path}: {e}")
+    return {}
+
 # --------------------------------------------------------------------
 # Defaults
 # --------------------------------------------------------------------
@@ -164,6 +201,8 @@ def ensure_config_defaults(config):
 
 logger.info("Loading configuration...")
 config = load_yaml_config("config.yaml")
+# Merge gitignored local overrides (personal/sensitive values) over the base config.
+config = _deep_merge_dict(config, load_local_overrides())
 config = ensure_config_defaults(config)
 
 # Validate config against Pydantic schema (fail-fast on startup)
@@ -508,6 +547,11 @@ CROSS_DEDUP_DUPLICATE_THRESHOLD = float(os.getenv("CROSS_DEDUP_DUPLICATE_THRESHO
 CROSS_DEDUP_CONTRADICTION_THRESHOLD = float(os.getenv("CROSS_DEDUP_CONTRADICTION_THRESHOLD", str(CROSS_DEDUP_CONTRADICTION_THRESHOLD)))
 CROSS_DEDUP_ON_SHUTDOWN = bool(int(os.getenv("CROSS_DEDUP_ON_SHUTDOWN", "1" if CROSS_DEDUP_ON_SHUTDOWN else "0")))
 
+# Max seconds the session-end reflection + summary/fact gather may run before
+# shutdown gives up on whatever is still in flight and proceeds to exit. Bounds
+# a hung LLM call (e.g. a slow reasoning model) so it can't block the process.
+SHUTDOWN_TASK_TIMEOUT_S: int = int(os.getenv("SHUTDOWN_TASK_TIMEOUT_S", "60"))
+
 # --------------------------------------------------------------------
 # Truth Scorer Configuration
 # --------------------------------------------------------------------
@@ -567,13 +611,37 @@ PROFILE_EPHEMERAL_RELATIONS: list = PROFILE_CFG.get("ephemeral_relations", [
 PROFILE_EPHEMERAL_MAX_HISTORY: int = int(PROFILE_CFG.get("ephemeral_max_history", 20))
 # TTL in hours for ephemeral facts — stale ephemeral facts excluded from prompt context
 PROFILE_EPHEMERAL_TTL_HOURS: int = int(PROFILE_CFG.get("ephemeral_ttl_hours", 24))
+# TTL in hours for health-transient facts (illness / recovery / symptom episode
+# state). Longer than the standard ephemeral TTL but still only "a few days" —
+# an acute "recovering from illness" fact is useful briefly but must not surface
+# as current for weeks. Durable conditions (disability, chronic_*, diagnosis)
+# are NOT health-transient and never expire. See memory/relation_classifier.py.
+PROFILE_HEALTH_TRANSIENT_TTL_HOURS: int = int(PROFILE_CFG.get("health_transient_ttl_hours", 96))
 # Soft cap on total facts per category before pruning triggers
 PROFILE_CATEGORY_SOFT_CAP: int = int(PROFILE_CFG.get("category_soft_cap", 200))
 
 # Environment variable overrides for User Profile
 PROFILE_EPHEMERAL_MAX_HISTORY = int(os.getenv("PROFILE_EPHEMERAL_MAX_HISTORY", str(PROFILE_EPHEMERAL_MAX_HISTORY)))
 PROFILE_EPHEMERAL_TTL_HOURS = int(os.getenv("PROFILE_EPHEMERAL_TTL_HOURS", str(PROFILE_EPHEMERAL_TTL_HOURS)))
+PROFILE_HEALTH_TRANSIENT_TTL_HOURS = int(os.getenv("PROFILE_HEALTH_TRANSIENT_TTL_HOURS", str(PROFILE_HEALTH_TRANSIENT_TTL_HOURS)))
 PROFILE_CATEGORY_SOFT_CAP = int(os.getenv("PROFILE_CATEGORY_SOFT_CAP", str(PROFILE_CATEGORY_SOFT_CAP)))
+
+# --------------------------------------------------------------------
+# Per-user personal vocabulary (externalized owner-specific terms)
+# --------------------------------------------------------------------
+# Keeps shipped source general. A user's own domain terms (medications,
+# hobbies, project names, niche relations) live in config.yaml under
+# user_profile.personal_vocabulary and are merged into the general defaults
+# at load time by the consumers (user_profile_schema, context_surfacer,
+# memory_storage, fact_extractor). Empty = generic install.
+_PERSONAL_VOCAB_CFG = PROFILE_CFG.get("personal_vocabulary", {}) or {}
+PROFILE_PERSONAL_CATEGORY_TOKENS: dict = _PERSONAL_VOCAB_CFG.get("category_tokens", {}) or {}
+PROFILE_PERSONAL_RELATION_CATEGORIES: dict = _PERSONAL_VOCAB_CFG.get("relation_categories", {}) or {}
+PROFILE_PERSONAL_PROJECT_AREAS: dict = _PERSONAL_VOCAB_CFG.get("project_areas", {}) or {}
+PROFILE_PERSONAL_ENTITY_CASING: dict = _PERSONAL_VOCAB_CFG.get("entity_casing", {}) or {}
+PROFILE_PERSONAL_GENERIC_SUBJECTS: list = _PERSONAL_VOCAB_CFG.get("generic_subjects", []) or []
+PROFILE_PERSONAL_PREFERENCE_SLOTS: list = _PERSONAL_VOCAB_CFG.get("preference_slots", []) or []
+
 ESCALATION_THRESHOLD = int(os.getenv("ESCALATION_THRESHOLD", str(ESCALATION_THRESHOLD)))
 ESCALATION_DEESCALATION_WINDOW = int(os.getenv("ESCALATION_DEESCALATION_WINDOW", str(ESCALATION_DEESCALATION_WINDOW)))
 ESCALATION_MAX_HISTORY = int(os.getenv("ESCALATION_MAX_HISTORY", str(ESCALATION_MAX_HISTORY)))
@@ -586,7 +654,7 @@ ESCALATION_MAX_HISTORY = int(os.getenv("ESCALATION_MAX_HISTORY", str(ESCALATION_
 OBSIDIAN_CFG = config.get("obsidian", {})
 OBSIDIAN_ENABLED: bool = bool(OBSIDIAN_CFG.get("enabled", True))
 # Path to Obsidian vault directory
-OBSIDIAN_VAULT_PATH: str = OBSIDIAN_CFG.get("vault_path", "") or os.path.expanduser("~/Documents/Luke Notes")
+OBSIDIAN_VAULT_PATH: str = OBSIDIAN_CFG.get("vault_path", "") or os.path.expanduser("~/Documents/Notes")
 # Character threshold for chunking (notes < threshold = whole, >= threshold = chunk by headers)
 OBSIDIAN_CHUNK_THRESHOLD: int = int(OBSIDIAN_CFG.get("chunk_threshold", 1500))
 # Maximum notes to include in prompt
@@ -1523,6 +1591,30 @@ DAEMON_NOTES_COLLECTION_BOOST: float = float(DAEMON_NOTES_CFG.get("collection_bo
 # Environment variable overrides
 DAEMON_NOTES_ENABLED = bool(int(os.getenv(
     "DAEMON_NOTES_ENABLED", "1" if DAEMON_NOTES_ENABLED else "0"
+)))
+
+# --------------------------------------------------------------------
+# Action Guard: pending-proposal capture + claimed-action verification
+# (anti-confabulation for note/doc/email/calendar side effects)
+# --------------------------------------------------------------------
+ACTION_GUARD_CFG = config.get("action_guard", {})
+# Capture "Want me to save this?" offers and execute them on a later affirmation.
+PENDING_PROPOSAL_ENABLED: bool = bool(ACTION_GUARD_CFG.get("pending_proposal_enabled", True))
+PENDING_PROPOSAL_TTL_TURNS: int = int(ACTION_GUARD_CFG.get("pending_proposal_ttl_turns", 2))
+# Verify completion claims ("Done — saved the note") against what actually ran.
+ACTION_CLAIM_GUARD_ENABLED: bool = bool(ACTION_GUARD_CFG.get("claim_guard_enabled", True))
+# When a self-repairable claim (note/doc) is unbacked, actually perform it.
+ACTION_CLAIM_SELF_REPAIR_ENABLED: bool = bool(ACTION_GUARD_CFG.get("claim_self_repair_enabled", True))
+
+# Environment variable overrides
+PENDING_PROPOSAL_ENABLED = bool(int(os.getenv(
+    "PENDING_PROPOSAL_ENABLED", "1" if PENDING_PROPOSAL_ENABLED else "0"
+)))
+ACTION_CLAIM_GUARD_ENABLED = bool(int(os.getenv(
+    "ACTION_CLAIM_GUARD_ENABLED", "1" if ACTION_CLAIM_GUARD_ENABLED else "0"
+)))
+ACTION_CLAIM_SELF_REPAIR_ENABLED = bool(int(os.getenv(
+    "ACTION_CLAIM_SELF_REPAIR_ENABLED", "1" if ACTION_CLAIM_SELF_REPAIR_ENABLED else "0"
 )))
 
 # --------------------------------------------------------------------

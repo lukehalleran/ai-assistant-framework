@@ -1054,7 +1054,7 @@ class MultiStageGateSystem:
             # Optional reranking when a lot survives (topical tie-breaker).
             if self.gate_system.use_reranking and len(gated) > 5:
                 pairs = [[query, _extract_gate_content(mem)[:300]] for mem in gated]
-                rerank_scores = self.gate_system.cross_encoder.predict(pairs)
+                rerank_scores = await asyncio.to_thread(self.gate_system.cross_encoder.predict, pairs)
                 for mem, score in zip(gated, rerank_scores):
                     mem["rerank_score"] = float(score)
                 gated = sorted(gated, key=lambda x: x.get("rerank_score", 0), reverse=True)
@@ -1274,10 +1274,9 @@ class MultiStageGateSystem:
 
         try:
             logger.info(f"[Semantic Filter] Processing {len(chunks)} semantic chunks")
-            query_emb = self.embed_model.encode(query or "", convert_to_numpy=True)
-
-            scored_chunks: List[Dict] = []
-            for i, chunk in enumerate(chunks[:30]):  # soft cap for latency
+            # Pass 1: clean + skip, collecting valid chunks and their embed text.
+            prepared = []  # list of (chunk, title, text, src, content_for_emb)
+            for chunk in chunks[:30]:  # soft cap for latency
                 text = chunk.get("text") or chunk.get("content") or ""
                 title = chunk.get("title") or ""
                 src = chunk.get("source") or chunk.get("namespace") or "unknown"
@@ -1295,9 +1294,25 @@ class MultiStageGateSystem:
                     logger.debug(f"[Semantic Filter] Skip redirect stub for title='{title}'")
                     continue
 
-                # 2) Encode + cosine
                 content_for_emb = f"{title} {text[:300]}".strip()
-                chunk_emb = self.embed_model.encode(content_for_emb, convert_to_numpy=True)
+                prepared.append((chunk, title, text, src, content_for_emb))
+
+            # Encode the query + all chunk texts in ONE batched, threaded call.
+            # (Was a per-chunk sync encode inside the loop — up to 30 blocking
+            # encodes that stalled the event loop and the concurrent retrieval.)
+            all_embs = await asyncio.to_thread(
+                lambda: self.embed_model.encode(
+                    [query or ""] + [p[4] for p in prepared],
+                    convert_to_numpy=True,
+                )
+            )
+            query_emb = all_embs[0]
+            chunk_embs = all_embs[1:]
+
+            # Pass 2: score from the precomputed embeddings (cosine math unchanged).
+            scored_chunks: List[Dict] = []
+            for i, ((chunk, title, text, src, _cfe), chunk_emb) in enumerate(zip(prepared, chunk_embs)):
+                # 2) Cosine
                 cosine_score = float(cosine_similarity([query_emb], [chunk_emb])[0][0])
 
                 # 3) Lexical overlap
@@ -1345,7 +1360,7 @@ class MultiStageGateSystem:
                     [query, f"{c.get('title','')} {(c.get('text') or c.get('content') or '')[:300]}"]
                     for c in prefiltered
                 ]
-                rerank_scores = self.gate_system.cross_encoder.predict(pairs)
+                rerank_scores = await asyncio.to_thread(self.gate_system.cross_encoder.predict, pairs)
                 for chunk, score in zip(prefiltered, rerank_scores):
                     chunk["rerank_score"] = float(score)
                 sorted_chunks = sorted(prefiltered, key=lambda x: x.get("rerank_score", 0), reverse=True)

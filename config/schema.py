@@ -393,7 +393,7 @@ class GraphWalkSection(BaseModel):
 class ObsidianSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
-    vault_path: str = "~/Documents/Luke Notes"
+    vault_path: str = "~/Documents/Notes"
     chunk_threshold: int = Field(default=1500, ge=100)
     max_notes_prompt: int = Field(default=5, ge=0)
     gate_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
@@ -517,12 +517,30 @@ class TruthScorerSection(BaseModel):
     source_scores: TruthSourceScores = Field(default_factory=TruthSourceScores)
 
 
+class PersonalVocabularySection(BaseModel):
+    """Per-user owner-specific terms, kept out of shipped source.
+
+    Each field is merged into a general default at load time by its consumer
+    (user_profile_schema, context_surfacer, memory_storage, fact_extractor).
+    All optional — an empty block yields a fully generic install.
+    """
+    model_config = ConfigDict(extra="ignore")
+    category_tokens: Dict[str, List[str]] = Field(default_factory=dict)
+    relation_categories: Dict[str, str] = Field(default_factory=dict)
+    project_areas: Dict[str, List[str]] = Field(default_factory=dict)
+    entity_casing: Dict[str, str] = Field(default_factory=dict)
+    generic_subjects: List[str] = Field(default_factory=list)
+    preference_slots: List[str] = Field(default_factory=list)
+
+
 class UserProfileSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     ephemeral_relations: List[str] = Field(default_factory=list)
     ephemeral_max_history: int = Field(default=20, ge=1)
     ephemeral_ttl_hours: int = Field(default=24, ge=1)
+    health_transient_ttl_hours: int = Field(default=96, ge=1)
     category_soft_cap: int = Field(default=200, ge=1)
+    personal_vocabulary: PersonalVocabularySection = Field(default_factory=PersonalVocabularySection)
 
 
 class IntentClassifierSection(BaseModel):
@@ -803,6 +821,16 @@ class DaemonNotesSection(BaseModel):
     collection_boost: float = Field(default=-0.05, ge=-1.0, le=1.0)
 
 
+class ActionGuardSection(BaseModel):
+    """Pending-proposal capture + claimed-action verification (anti-confabulation)."""
+
+    model_config = ConfigDict(extra="ignore")
+    pending_proposal_enabled: bool = True
+    pending_proposal_ttl_turns: int = Field(default=2, ge=1, le=10)
+    claim_guard_enabled: bool = True
+    claim_self_repair_enabled: bool = True
+
+
 class InternetActionsSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = False
@@ -857,6 +885,7 @@ class DaemonConfig(BaseModel):
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
     file_access: FileAccessSection = Field(default_factory=FileAccessSection)
     memory_expansion: MemoryExpansionSection = Field(default_factory=MemoryExpansionSection)
+    obsidian: ObsidianSection = Field(default_factory=ObsidianSection)
     daily_notes: DailyNotesSection = Field(default_factory=DailyNotesSection)
     tag_generation: TagGenerationSection = Field(default_factory=TagGenerationSection)
     narrative_context: NarrativeContextSection = Field(default_factory=NarrativeContextSection)
@@ -899,6 +928,7 @@ class DaemonConfig(BaseModel):
     truth_scorer: TruthScorerSection = Field(default_factory=TruthScorerSection)
     document_generation: DocumentGenerationSection = Field(default_factory=DocumentGenerationSection)
     daemon_notes: DaemonNotesSection = Field(default_factory=DaemonNotesSection)
+    action_guard: ActionGuardSection = Field(default_factory=ActionGuardSection)
     internet_actions: InternetActionsSection = Field(default_factory=InternetActionsSection)
 
 

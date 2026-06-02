@@ -92,3 +92,7 @@ RECOVERY_*.tar.gz
 *.sqlite3
 *.bak
 *.backup
+
+# Local config overrides (personal/sensitive values — never commit)
+config.local.yaml
+config/config.local.yaml

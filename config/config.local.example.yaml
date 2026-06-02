@@ -1,0 +1,48 @@
+# config.local.example.yaml — TEMPLATE (this file is committed; safe to share).
+#
+# Copy to config/config.local.yaml (which is gitignored) and fill in your own
+# personal / machine-specific values. The override is deep-merged OVER
+# config/config.yaml at load time (app_config.load_local_overrides()):
+#   - dict values merge recursively
+#   - scalars and lists are REPLACED by the override value
+# Any config.yaml key can be overridden here. With no override file present,
+# the install is fully generic.
+
+# ----------------------------------------------------------------------------
+# Personal vocabulary that aids fact categorization (all sub-keys optional).
+# Keeps owner-specific terms (medications, personal relations, project jargon)
+# out of the committed config.yaml.
+# ----------------------------------------------------------------------------
+user_profile:
+  personal_vocabulary:
+    category_tokens:          # profile domain -> [keywords that map to it]
+      health: [my_med_name]
+      hobbies: [my_game]
+    relation_categories:      # extracted relation -> profile category
+      my_custom_relation: health
+    project_areas:            # project name -> [keywords identifying it]
+      myproject: [keyword1, keyword2]
+    entity_casing:            # lowercase form -> canonical Proper Case
+      myentity: MyEntity
+    generic_subjects: [some_term]
+    preference_slots: [coffee, beer]
+
+# ----------------------------------------------------------------------------
+# Private filesystem paths (keep your real home / notes paths out of the repo).
+# ----------------------------------------------------------------------------
+paths:
+  system_prompt_file:
+    system_prompt_file: core/system_prompt.txt   # or an absolute path if you keep it elsewhere
+file_access:
+  approved_folders:           # REPLACES the committed list — include the generics you still want
+  - .
+  - ~/Documents
+  - ~/Documents/My Notes
+  - ~/Downloads
+obsidian:
+  vault_path: ~/Documents/My Notes
+
+# Personal email for the SMTP email-send action (smtp_password comes from env).
+internet_actions:
+  smtp_user: you@example.com
+  smtp_from: you@example.com

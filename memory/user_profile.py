@@ -18,6 +18,11 @@ Module Contract
   - JSON persistence with atomic writes (temp file swap)
   - Append-only fact storage: facts are never deleted, only marked is_current=False
   - Conflict resolution: same (relation,value) → confidence boost; same relation, diff value → supersede
+  - get_category TTL: transient facts are dropped past a per-relation TTL via the
+    shared classifier (memory/relation_classifier.py). Health-transient relations
+    (illness/recovery/symptom) age out over a few days (PROFILE_HEALTH_TRANSIENT_TTL_HOURS);
+    standard ephemeral (mood/activity) over ~24h (PROFILE_EPHEMERAL_TTL_HOURS);
+    durable identity + permanent-condition relations never expire.
   - Automatic categorization via user_profile_schema
   - Quick profile for identity fields (name, location, age)
   - Chronological raw_log like ChatGPT's memory system
@@ -382,55 +387,31 @@ class UserProfile:
 
         return added
 
-    # Suffix patterns that indicate ephemeral/transient facts
-    _EPHEMERAL_SUFFIXES = (
-        "_status", "_condition", "_concern", "_intent",
-        "_taken", "_left", "_duration", "_activity",
-        "_time", "_deadline", "_variant", "_feeling",
-        "_experience", "_plans", "_event",
-        "_appointment", "_meeting", "_reschedule",
-        "_intake", "_consumption",
-    )
-    # Prefix patterns that indicate ephemeral/transient facts
-    _EPHEMERAL_PREFIXES = (
-        "current_", "recent_", "upcoming_", "last_", "next_",
-        "time_", "waiting_", "took_", "woke_",
-        "scheduled_", "signed_up_", "needs_reschedule",
-        "meeting_with_", "needs_meeting",
-    )
-    # Exact-match relations that are always ephemeral (one-time events)
-    _EPHEMERAL_EXACT = frozenset({
-        "meeting", "activities", "meeting_with",
-        "energy_level", "activity_preference",
-        "meal", "meal_choice", "drank_alcohol",
-    })
-
     def _is_ephemeral_relation(self, relation: str) -> bool:
-        """Check if a relation is ephemeral (transient state, not stable identity)."""
-        # Explicit list from config
-        if relation in set(app_config.PROFILE_EPHEMERAL_RELATIONS):
-            return True
-        # Exact match for known ephemeral one-time event relations
-        if relation in self._EPHEMERAL_EXACT:
-            return True
-        # Pattern matching
-        if any(relation.startswith(p) for p in self._EPHEMERAL_PREFIXES):
-            return True
-        if any(relation.endswith(s) for s in self._EPHEMERAL_SUFFIXES):
-            return True
-        return False
+        """Check if a relation is ephemeral (transient state, not stable identity).
+
+        Delegates to the shared classifier (memory/relation_classifier.py) so the
+        profile section, the facts-collection retriever, and any other read-side
+        TTL all agree on what counts as transient. The pattern tables that used
+        to live here now live in that module (single source of truth).
+        """
+        from memory.relation_classifier import is_ephemeral_relation
+        return is_ephemeral_relation(relation)
 
     def get_category(self, category: ProfileCategory, include_historical: bool = False) -> List[Dict]:
         """Get facts in a category.
 
-        Default returns only is_current=True facts, excluding stale ephemeral facts
-        (older than PROFILE_EPHEMERAL_TTL_HOURS).
+        Default returns only is_current=True facts, excluding stale transient
+        facts past their per-relation TTL. Health-transient relations
+        (illness/recovery) age out on a longer horizon
+        (PROFILE_HEALTH_TRANSIENT_TTL_HOURS) than standard ephemeral state
+        (PROFILE_EPHEMERAL_TTL_HOURS); durable relations never expire.
         """
         facts = self.profile["categories"].get(category.value, [])
         if include_historical:
             return facts
 
-        ttl_hours = app_config.PROFILE_EPHEMERAL_TTL_HOURS
+        from memory.relation_classifier import ephemeral_ttl_hours
         now = datetime.now()
 
         result = []
@@ -439,9 +420,10 @@ class UserProfile:
                 continue
             if not f.get("is_current", True):
                 continue
-            # Drop stale ephemeral facts beyond TTL
+            # Drop stale transient facts beyond their per-relation TTL
             rel = f.get("relation", "")
-            if self._is_ephemeral_relation(rel) and ttl_hours > 0:
+            ttl_hours = ephemeral_ttl_hours(rel)
+            if ttl_hours is not None and ttl_hours > 0:
                 ts_str = f.get("timestamp", "")
                 try:
                     ts = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else ts_str
