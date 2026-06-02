@@ -4,7 +4,7 @@
 
 Daemon is a production-grade conversational RAG system with a 5-tier hierarchical memory architecture. Features multi-stage semantic gating, crisis-aware tone detection, multi-provider LLM support, knowledge graph, synthesis dreaming, visual memory, and agentic search.
 
-**Stats:** ~162K lines across 456+ files (440+ Python), 216 test files, ~3,875 tests. Last full run: 2026-05-17 (2417 unit + 305 benchmark passed, 0 failures); newer suites (action guard, relation classifier, health-transient TTL) verified via targeted runs.
+**Stats:** 541 files, ~171K lines of code (217K total incl. comments/blanks; test corpus excluded), 216 test files, ~3,875 tests. Last full run: 2026-05-17 (2417 unit + 305 benchmark passed, 0 failures); newer suites (action guard, relation classifier, health-transient TTL) verified via targeted runs.
 
 ## Critical Rules
 
