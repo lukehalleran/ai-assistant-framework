@@ -252,9 +252,9 @@ Output: [
   {{"subject": "user", "relation": "role", "object": "app builder", "category": "projects", "confidence": 0.85}}
 ]
 
-Input: "My name is Luke, I created you"
+Input: "My name is Alex, I created you"
 Output: [
-  {{"subject": "user", "relation": "name", "object": "Luke", "category": "identity", "confidence": 0.95}},
+  {{"subject": "user", "relation": "name", "object": "Alex", "category": "identity", "confidence": 0.95}},
   {{"subject": "user", "relation": "role", "object": "creator", "category": "projects", "confidence": 0.9}}
 ]
 
@@ -264,10 +264,10 @@ ENTITY FACTS (in addition to user facts):
 - Add "user_connection" field explaining relation to user (if known)
 - Only extract when clearly stated, not hypothetical
 - Pay special attention to pets, family members, and recurring people — these are high-value entities
-- Example: "My boss Oliver moved from London"
-  → {{"subject": "Oliver", "relation": "moved_from", "object": "London", "category": "relationships", "confidence": 0.75, "user_connection": "user's boss"}}
-- Example: Daemon says "Poppy is your mom's black cat, male, with long fur"
-  → {{"subject": "Poppy", "relation": "species", "object": "cat, black, long fur, male", "category": "hobbies", "confidence": 0.85, "user_connection": "user's mom's cat"}}
+- Example: "My boss Jordan moved from London"
+  → {{"subject": "Jordan", "relation": "moved_from", "object": "London", "category": "relationships", "confidence": 0.75, "user_connection": "user's boss"}}
+- Example: Daemon says "Clover is your mom's black cat, male, with long fur"
+  → {{"subject": "Clover", "relation": "species", "object": "cat, black, long fur, male", "category": "hobbies", "confidence": 0.85, "user_connection": "user's mom's cat"}}
 
 RULES:
 - Subject is "user" for personal facts, or the entity name for entity facts

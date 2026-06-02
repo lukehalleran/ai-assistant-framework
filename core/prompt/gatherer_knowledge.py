@@ -651,7 +651,7 @@ class KnowledgeRetrievalMixin:
         """Retrieve CLIP-matched visual memories for the query.
 
         Entity-gated: only retrieves when the query mentions an entity that has
-        stored images (e.g. "Flapjack" → cat photos). Prevents irrelevant images
+        stored images (e.g. "Whiskers" → cat photos). Prevents irrelevant images
         from being injected into unrelated conversations.
 
         Args:
@@ -747,7 +747,7 @@ class KnowledgeRetrievalMixin:
                             i for i, w in enumerate(words)
                             if eid in re.sub(r'[^\w]', '', w.lower())
                         ]
-                        # Check aliases too (e.g. "Coco" in text resolved to "flapjack")
+                        # Check aliases too (e.g. "Bella" in text resolved to "whiskers")
                         if not eid_positions and resolver:
                             for i, w in enumerate(words):
                                 clean_w = re.sub(r'[^\w]', '', w.lower())

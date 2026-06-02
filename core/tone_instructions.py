@@ -92,7 +92,7 @@ def get_tone_instructions(tone_level: CrisisLevel, user_profile=None) -> str:
             "❌ TOO TERSE: \"Cool.\" (1 word when 2-3 sentences would be more natural)\n"
             "✓ JUST RIGHT: \"Ha, glad that's better. The refactor sounds solid — should make the codebase way easier to navigate. Hope work goes smooth.\"\n\n"
             "Core Principles:\n"
-            "1. **Match his energy** - casual when he's casual, focused when he's technical\n"
+            "1. **Match their energy** - casual when they're casual, focused when they're technical\n"
             "   - ✓ \"Nice work on that.\" / \"Solid progress.\"\n"
             "   - ✗ \"Thanks so much, that's awesome to hear! Always striving to provide value!\"\n\n"
             "2. **Substantive but natural** - even brief topics deserve complete thoughts\n"

@@ -4,7 +4,7 @@
 
 Daemon is a production-grade conversational RAG system with a 5-tier hierarchical memory architecture. Features multi-stage semantic gating, crisis-aware tone detection, multi-provider LLM support, knowledge graph, synthesis dreaming, visual memory, and agentic search.
 
-**Stats:** ~162K lines across 456+ files (440+ Python), 211 test files, 3,800+ tests. Last full run: 2026-05-17 (2417 unit + 305 benchmark passed, 0 failures).
+**Stats:** ~162K lines across 456+ files (440+ Python), 216 test files, ~3,875 tests. Last full run: 2026-05-17 (2417 unit + 305 benchmark passed, 0 failures); newer suites (action guard, relation classifier, health-transient TTL) verified via targeted runs.
 
 ## Critical Rules
 
@@ -68,9 +68,9 @@ UnifiedPromptBuilder (thin orchestrator)
 
 ## Key Config
 
-Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (47 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
+Central: `config/app_config.py` (module-level constants) + `config/schema.py` (Pydantic v2 validation) + `config/config.yaml` (52 sections). Config pattern: YAML → schema validation → app_config constants with env var overrides.
 
-Key values: `PROMPT_TOKEN_BUDGET_DEFAULT=15000` (floor 8K, ceiling 16K), `COSINE_SIMILARITY_THRESHOLD=0.25`, 9 intent types, dual fact budget (user=6, entity=4). Web search requires `TAVILY_API_KEY`. Google Calendar/Gmail/Contacts require `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` env vars. Contact resolution: `GOOGLE_CONTACTS_ENABLED`, `GOOGLE_OTHER_CONTACTS_ENABLED`, `GOOGLE_GMAIL_SEARCH_ENABLED` (all default true). Currently disabled: synthesis generators, graph walk.
+Key values: `PROMPT_TOKEN_BUDGET_DEFAULT=15000` (floor 8K, ceiling 16K), `COSINE_SIMILARITY_THRESHOLD=0.25`, 9 intent types, dual fact budget (user=6, entity=4). Web search requires `TAVILY_API_KEY`. Google Calendar/Gmail/Contacts require `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` env vars. Contact resolution: `GOOGLE_CONTACTS_ENABLED`, `GOOGLE_OTHER_CONTACTS_ENABLED`, `GOOGLE_GMAIL_SEARCH_ENABLED` (all default true). Action guard (anti-confabulation): `PENDING_PROPOSAL_ENABLED`, `PENDING_PROPOSAL_TTL_TURNS`, `ACTION_CLAIM_GUARD_ENABLED`, `ACTION_CLAIM_SELF_REPAIR_ENABLED` — YAML section `action_guard`. Memory TTL: `PROFILE_EPHEMERAL_TTL_HOURS=24`, `PROFILE_HEALTH_TRANSIENT_TTL_HOURS=96` (illness/recovery facts age out in ~days, not weeks; durable conditions never expire — see `relation_classifier.py`). Shutdown: `SHUTDOWN_TASK_TIMEOUT_S=60` (bounds the session-end reflection+summary gather so a hung LLM call can't block exit). Personal vocabulary is externalized — owner-specific terms (medications, personal relations, project terms) live in the **gitignored** `config/config.local.yaml`, deep-merged over `config.yaml` at load via `app_config.load_local_overrides()` → `PROFILE_PERSONAL_*` constants. Committed `config.yaml` ships generic (`personal_vocabulary: {}`, blank `smtp_user`/`smtp_from`, generic vault/notes/system-prompt paths); a fresh clone with no override is fully generic. Any config key can be overridden in `config.local.yaml` — see the committed `config/config.local.example.yaml` template. Currently disabled: synthesis generators, graph walk.
 
 ## Module Structure
 
@@ -85,6 +85,11 @@ core/                         # Request orchestration
 ├── uncertainty_detector.py   # "I don't know" detection → agentic retry
 ├── content_type_detector.py  # Regex detection of shared content (lyrics, poems, code, quotes)
 ├── ambiguity_detector.py     # Cross-session phrase ambiguity detection → disambiguation notes
+├── action_claim_guard.py     # Anti-confabulation: detect action proposals/completion claims,
+│                             #   verify claims vs what actually ran (note/doc self-repairable;
+│                             #   email/calendar/etc. external → corrected, never auto-executed)
+├── pending_proposal.py       # Capture a "Want me to save this?" offer + content; execute it on
+│                             #   a later affirmation ("sure") — closes the proposal→affirm→do loop
 ├── response_planner.py       # Pre-answer plan + post-answer review gate
 ├── git_stats_manager.py      # Read-only git repo stats (agentic tool)
 ├── github_manager.py         # Read-only GitHub API via gh CLI (agentic tool)
@@ -134,6 +139,9 @@ memory/                       # Memory system
 ├── memory_storage.py         # Persistence + graph ingestion + reflection retrieval text + content type metadata
 ├── memory_scorer.py          # Scoring with intent overrides + graph boost
 ├── memory_retriever.py       # Retrieval + reflection v2 subsystem + semantic-primary fact ranking
+│                             #   + facts-collection supersession (is_current=False) + per-relation TTL filter
+├── relation_classifier.py    # Single source of truth: relation→TTL (health-transient ~days /
+│                             #   ephemeral ~24h / durable) + permanent-condition (disability) overrides
 ├── fact_extractor.py         # Dual-budget fact extraction (user + entity) + schedule extraction (5 patterns, _enrich_schedule_metadata)
 ├── llm_fact_extractor.py     # LLM-assisted extraction with relation reuse
 ├── truth_scorer.py           # Evidence-based truth (confirmation/correction/contradiction)
@@ -148,8 +156,8 @@ memory/                       # Memory system
 ├── synthesis_memory.py       # Synthesis persistence + audit queue
 ├── procedural_skill.py       # ProceduralSkill + SkillCategory
 ├── skill_activation.py       # Post-retrieval skill filtering + cooldown
-├── user_profile.py           # User profile with source excerpts + relative timestamps
-├── user_profile_schema.py    # Relation canonicalization, 5-layer categorization
+├── user_profile.py           # User profile with source excerpts + relative timestamps + per-relation transient TTL
+├── user_profile_schema.py    # Relation canonicalization, 5-layer categorization (+ personal_vocabulary merge from config)
 ├── thread_manager.py
 ├── thread_store.py           # ChromaDB thread persistence + quick resolution
 ├── thread_extractor.py       # LLM thread extraction + resolution detection
@@ -192,8 +200,8 @@ knowledge/                    # External knowledge
 
 config/                       # Configuration
 ├── app_config.py             # YAML loader + ~300 module-level constants
-├── schema.py                 # Pydantic v2 validation (46 section models)
-├── config.yaml               # 47 sections, ~360 keys
+├── schema.py                 # Pydantic v2 validation (59 section models)
+├── config.yaml               # 52 sections, ~380 keys
 ├── feature_registry.yaml     # Retrospective shipped-feature catalog (branch supervision)
 └── feature_registry.py       # Typed loader: dependency resolution, conflict detection
 

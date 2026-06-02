@@ -21,12 +21,12 @@ logger = get_logger(__name__)
 # Domain-specific synonym expansion
 SYNONYM_GROUPS = {
     'gym': ['gym', 'workout', 'exercise', 'fitness', 'training', 'lift', 'bench', 'squat', 'deadlift'],
-    'work': ['work', 'job', 'shift', 'brewery', 'employment'],
+    'work': ['work', 'job', 'shift', 'employment'],
     'tired': ['tired', 'exhausted', 'beat', 'fatigued', 'drained', 'worn out'],
-    'health': ['health', 'medication', 'med', 'amantadine', 'covid', 'sick', 'illness'],
+    'health': ['health', 'medication', 'med', 'covid', 'sick', 'illness'],
     'body': ['body', 'physique', 'shape', 'fit', 'fitness', 'weight', 'muscle'],
-    'code': ['code', 'coding', 'programming', 'debug', 'refactor', 'project', 'daemon'],
-    'cat': ['cat', 'flapjack', 'poppy', 'pumpernickel', 'pickle', 'pet'],
+    'code': ['code', 'coding', 'programming', 'debug', 'refactor', 'project'],
+    'cat': ['cat', 'kitty', 'kitten', 'pet', 'feline'],
 }
 
 # Noise words to remove
@@ -141,7 +141,7 @@ if __name__ == "__main__":
         "No more body image issue than determination lmao",
         "I'm tired from work today",
         "At the gym working out",
-        "Flapjack is being crazy again haha",
+        "Whiskers is being crazy again haha",
         "Fixing the daemon project code",
     ]
 

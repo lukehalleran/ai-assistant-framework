@@ -16,12 +16,18 @@ Module Contract
   - Markdown file written to daemon_notes/{slug}-{date}.md
   - ChromaDB embedding in daemon_self_notes collection
   - Index entry appended to daemon_notes/index.json
+  - Persistence outcome flags on the returned note (disk_written / embedded /
+    indexed, plus the fully_persisted property) so callers can detect a PARTIAL
+    save (disk file written but embed/index silently failed) instead of assuming
+    a clean success. _update_index() returns bool for the same reason.
 - Key behaviors:
   - Notes always have ground_truth=False in ChromaDB metadata
   - Notes always have source_type=daemon_self_note
   - Versioned filenames (never overwrites)
   - Path safety: output always inside daemon_notes/
   - Trigger detection: explicit only (no autonomous creation)
+  - A hard disk-write failure raises (propagates to the caller); only the embed
+    and index steps degrade to flags, since the file is the source of truth.
 - Side effects:
   - File writes to daemon_notes/ directory
   - ChromaDB inserts to daemon_self_notes collection
@@ -75,10 +81,22 @@ class DaemonNote:
     status: str = "active"  # active | stale | superseded | resolved
     path: str = ""
 
+    # Persistence outcome flags (set by create_note). Let callers detect a
+    # partial save instead of assuming success — the disk file may exist while
+    # the ChromaDB embed or index update silently failed.
+    disk_written: bool = False
+    embedded: bool = False
+    indexed: bool = False
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     session_id: str = ""  # Originating session for audit trail
+
+    @property
+    def fully_persisted(self) -> bool:
+        """True iff the note hit disk, was embedded (when a store exists), and indexed."""
+        return self.disk_written and self.embedded and self.indexed
 
     def to_chromadb_metadata(self) -> dict[str, Any]:
         """Metadata for ChromaDB embedding. ALWAYS marks as non-ground-truth."""
@@ -186,12 +204,15 @@ class DaemonNotesManager:
             md_body += f"\n{body}\n"
         content = frontmatter + "\n" + md_body
 
-        # Write to disk
+        # Write to disk (raises on failure — propagates to caller, no false success)
         path = self._write_versioned_file(slug, content)
         note.path = str(path)
         note.id = path.stem  # Update id to match actual filename
+        note.disk_written = True
 
-        # Embed into ChromaDB
+        # Embed into ChromaDB. When there is no store, embedding is vacuously
+        # satisfied; when there is one, a failure leaves embedded=False so the
+        # caller can tell the note is saved-but-not-searchable.
         if self.chroma_store:
             try:
                 embed_text = f"{note.title}\n{note.summary}"
@@ -202,12 +223,15 @@ class DaemonNotesManager:
                     text=embed_text,
                     metadata=note.to_chromadb_metadata(),
                 )
+                note.embedded = True
                 logger.info(f"[DaemonNotes] Embedded note '{note.title}' into ChromaDB")
             except Exception as e:
                 logger.warning(f"[DaemonNotes] ChromaDB embed failed (note still saved to disk): {e}")
+        else:
+            note.embedded = True  # nothing to embed into
 
         # Update index
-        self._update_index({
+        note.indexed = self._update_index({
             "id": note.id,
             "path": str(path.resolve().relative_to(self.repo_root.resolve()))
             if self.repo_root else str(path),
@@ -393,7 +417,8 @@ class DaemonNotesManager:
     # Index management
     # ------------------------------------------------------------------
 
-    def _update_index(self, entry: dict[str, Any]) -> None:
+    def _update_index(self, entry: dict[str, Any]) -> bool:
+        """Append an entry to index.json. Returns True on a successful write."""
         index_path = self.output_dir / "index.json"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -414,8 +439,10 @@ class DaemonNotesManager:
                 json.dumps(index, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
             )
+            return True
         except OSError as e:
             logger.error(f"[DaemonNotes] Failed to write index.json: {e}")
+            return False
 
 
 # ============================================================================

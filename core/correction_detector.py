@@ -3,7 +3,7 @@
 
 Module Contract
 - Purpose: Detect when a user corrects or confirms previously stored facts,
-  including entity-level corrections (e.g., "Flapjack did not die").
+  including entity-level corrections (e.g., "Whiskers did not die").
   Feeds correction/confirmation events to the TruthScorer so that fact
   truth_scores evolve based on real evidence rather than access counts.
   Entity corrections trigger resolution annotations on crisis-era summaries.
@@ -46,7 +46,7 @@ class CorrectionEvent(BaseModel):
 
 
 class EntityCorrectionEvent(BaseModel):
-    """An event indicating an entity-level correction (e.g., 'Flapjack is alive').
+    """An event indicating an entity-level correction (e.g., 'Whiskers is alive').
 
     Unlike CorrectionEvent, this does not reference a specific stored fact —
     it detects when the user corrects an assumption about a named entity
@@ -107,19 +107,19 @@ _CONFIRMATION_PATTERNS = [
 
 # Each tuple: (compiled regex, confidence, correction_type)
 # Named group (?P<entity>...) captures the entity name.
-# re.I makes [A-Z] match lowercase too — intentional so "flapjack did not die" works.
+# re.I makes [A-Z] match lowercase too — intentional so "whiskers did not die" works.
 _ENTITY_CORRECTION_PATTERNS = [
-    # "Flapjack did not die" / "Flapjack didn't die"
+    # "Whiskers did not die" / "Whiskers didn't die"
     (re.compile(r"\b(?P<entity>[A-Z]\w+)\s+did\s*n[o']t\s+die\b", re.I), 0.90, "not_dead"),
-    # "Flapjack is not dead / still alive / still here / alive"
+    # "Whiskers is not dead / still alive / still here / alive"
     (re.compile(r"\b(?P<entity>[A-Z]\w+)\s+is\s+(?:not\s+dead|still\s+alive|still\s+here|alive)\b", re.I), 0.90, "alive"),
-    # "Flapjack survived / made it / is fine / is okay / pulled through"
+    # "Whiskers survived / made it / is fine / is okay / pulled through"
     (re.compile(r"\b(?P<entity>[A-Z]\w+)\s+(?:survived|made\s+it|is\s+fine|is\s+okay|is\s+ok|pulled\s+through)\b", re.I), 0.85, "survived"),
-    # "my cat Flapjack is alive" / "my dog Rex survived"
+    # "my cat Whiskers is alive" / "my dog Rex survived"
     (re.compile(r"\bmy\s+\w+\s+(?P<entity>[A-Z]\w+)\s+(?:is\s+(?:not\s+dead|still\s+alive|alive|fine|okay|ok)|survived|made\s+it|pulled\s+through)\b", re.I), 0.90, "alive"),
-    # "Flapjack is still with us / still around / still kicking"
+    # "Whiskers is still with us / still around / still kicking"
     (re.compile(r"\b(?P<entity>[A-Z]\w+)\s+is\s+still\s+(?:with\s+us|around|kicking)\b", re.I), 0.85, "alive"),
-    # "no, Flapjack didn't die" / "no Flapjack is alive"
+    # "no, Whiskers didn't die" / "no Whiskers is alive"
     (re.compile(r"\bno[,.]?\s*(?P<entity>[A-Z]\w+)\s+(?:did\s*n[o']t\s+die|is\s+(?:alive|fine|okay|ok|not\s+dead))\b", re.I), 0.90, "not_dead"),
 ]
 
@@ -229,7 +229,7 @@ class CorrectionDetector:
     def detect_entity_corrections(
         self, user_message: str
     ) -> List["EntityCorrectionEvent"]:
-        """Detect entity-level corrections (e.g., 'Flapjack did not die').
+        """Detect entity-level corrections (e.g., 'Whiskers did not die').
 
         Unlike detect_corrections(), this does NOT require a fact list —
         it's pure pattern matching on the user's message text.

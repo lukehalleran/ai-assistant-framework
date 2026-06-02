@@ -32,7 +32,8 @@ resolved, and stale information is penalized in ranking.
 | File | Purpose |
 |------|---------|
 | `memory/memory_coordinator.py` | Thin orchestrator (~551 lines), creates all components, delegates to retriever/storage/shutdown |
-| `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks, ephemeral fact TTL filter |
+| `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks, supersession + per-relation TTL filter |
+| `memory/relation_classifier.py` | Single source of truth for relation→TTL: health-transient vs standard-ephemeral vs durable (+ permanent-condition overrides). Used by user_profile + memory_retriever |
 | `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 7 additive bonuses/penalties) with intent overrides, graph boost, size penalty |
 | `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion, reflection embedding cleanup |
 | `memory/skill_activation.py` | SkillActivationPolicy (post-retrieval skill filter) + SkillCooldownStore (JSON-backed TTL) |
@@ -104,6 +105,10 @@ resolved, and stale information is penalized in ranking.
 Retrieved via `get_daemon_self_notes()` in the context gatherer (max 2 per
 prompt), displayed in `[DAEMON SELF-NOTES]` with a caveat label. Scoring
 applies `COLLECTION_BOOSTS['daemon_self_notes'] = -0.05` (slight demotion).
+`DaemonNote` carries per-step persistence flags (`disk_written` / `embedded` /
+`indexed`) and a `fully_persisted` property, so the GUI save path can report a
+*partial* save honestly (disk written but embed/index failed) instead of
+claiming success — anti-confabulation support for the action guard.
 Registered in eval `section_registry` (assembly_order=28, ablatable).
 
 ---
@@ -350,33 +355,59 @@ This replaced an earlier formula (`0.7*confidence + 0.3*recency`) that
 ignored the ChromaDB semantic similarity score entirely, causing facts to
 be ranked primarily by extraction confidence rather than query relevance.
 
-### Ephemeral Fact TTL in Retrieval
+### Transient Fact TTL + Supersession in Retrieval
 
-After scoring and sorting, `get_facts()` applies a TTL filter that drops
-ephemeral facts older than `PROFILE_EPHEMERAL_TTL_HOURS` (default 24h).
-This prevents stale transient state (e.g., yesterday's mood, old wake-up
-times) from polluting retrieval results.
+After scoring and sorting, `get_facts()` filters the facts collection on two
+signals, so stale transient state (yesterday's mood, *last month's illness*) and
+explicitly retracted facts don't pollute retrieval:
 
 ```
 For each ranked fact:
-  1. _is_ephemeral_fact(content) — parses "subject | predicate | object",
-     checks predicate against _get_ephemeral_predicates() (config-driven,
-     lazy-loaded from PROFILE_EPHEMERAL_RELATIONS, cached after first call)
-  2. If ephemeral: parse timestamp, strip timezone if aware → compare age
-     against ttl_hours. If older → drop from results.
-  3. Non-ephemeral facts pass through unaffected.
+  1. Supersession: if metadata is_current is False or superseded_by is set
+     → drop immediately, regardless of age (set by fact verification or the
+     scripts/cleanup_stale_illness.py remediation).
+  2. Per-relation TTL: _fact_ephemeral_ttl(content) parses the predicate from
+     "subject | predicate | object" and asks the shared classifier for its TTL.
+     Parse timestamp, strip tz, compare age → if older than the TTL, drop.
+  3. Durable facts (TTL is None) pass through unaffected.
 ```
 
-The `_get_ephemeral_predicates()` function replaces an earlier hardcoded
-`_EPHEMERAL_PREDICATES` frozenset, so the retriever, fact extractors, and
-cross-collection deduplicator all share the same canonical list from
-`PROFILE_EPHEMERAL_RELATIONS` in `app_config.py`.
+**Single source of truth — `memory/relation_classifier.py`.** Relation→TTL now
+lives in one module that the profile section (`UserProfile.get_category`) and the
+facts retriever both call, ending an earlier three-way drift where each path had
+its own copy. `ephemeral_ttl_hours(relation)` returns:
+
+| Tier | Examples | TTL |
+|------|----------|-----|
+| Health-transient | `illness`/`recover`/`sick`/`symptom`-named, `health_status`, `*condition` | `PROFILE_HEALTH_TRANSIENT_TTL_HOURS` (default 96h / a few days) |
+| Standard ephemeral | `current_*`, `woke_*`, `*_status`, mood/activity | `PROFILE_EPHEMERAL_TTL_HOURS` (default 24h) |
+| Durable | `name`, `birthday`, `brother_name`, … | `None` (never expires) |
+
+Health-transient is checked **before** standard-ephemeral (so `recovery_status`,
+which also matches the `_status` suffix, gets the longer horizon). Permanent
+conditions / disabilities (`disability`, `chronic_condition`, `diagnosis`) are
+pinned durable via `_DURABLE_OVERRIDES` — a disability is not an illness episode
+and must not age out, even though `chronic_condition` matches the `_condition`
+suffix.
+
+> The fact extractors' **storage-side** ephemeral block intentionally still uses
+> the exact `PROFILE_EPHEMERAL_RELATIONS` list — health-transient facts *should*
+> be stored (useful for a few days), just aged out on read.
 
 ---
 
 ## Fact Pipeline
 
 ### Extraction
+
+> **Personal vocabulary is config-driven and gitignored.** Owner-specific
+> vocabulary (preference slots, entity casing, generic subjects, project-area
+> keywords, category tokens, relation→category overrides) is merged at **import**
+> from `user_profile.personal_vocabulary` (`PROFILE_PERSONAL_*` constants) across
+> `fact_extractor`, `user_profile_schema`, `memory_storage`, and `context_surfacer`.
+> The committed `config.yaml` ships this block empty; real values live in the
+> **gitignored `config/config.local.yaml`**, deep-merged over `config.yaml` at load
+> (`app_config.load_local_overrides()`). An empty/absent override = a fully generic install.
 
 User says: *"My brother Auggie just got a golden retriever named Biscuit"*
 

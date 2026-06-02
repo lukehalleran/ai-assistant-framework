@@ -7,7 +7,9 @@ Module Contract
   - MemoryRetriever(corpus_manager, chroma_store, gate_system, scorer, hybrid_retriever, time_manager)
   - get_memories(query, limit, topic_filter) -> List[Dict]  [main pipeline]
   - get_semantic_top_memories(query, limit) -> List[Dict]  [gated semantic across collections]
-  - get_facts(query, limit) -> List[Dict]  [semantic-primary ranked facts with confidence/recency tiebreak]
+  - get_facts(query, limit) -> List[Dict]  [semantic-primary ranked facts with confidence/recency tiebreak;
+      drops facts marked is_current=False / superseded_by, and ages out transient relations past their
+      per-relation TTL via memory/relation_classifier.py (health-transient illness/recovery vs ~24h ephemeral)]
   - get_recent_facts(limit) -> List[Dict]
   - get_reflections(limit) -> List[Dict]  [corpus-first, semantic fallback]
   - get_reflections_hybrid(query, limit) -> List[Dict]  [n/3 recent + 2n/3 semantic]
@@ -249,34 +251,36 @@ def _compute_reflection_overlap(
 # Ephemeral fact detection
 # ---------------------------------------------------------------------------
 
-# Use canonical ephemeral list from config (lazy-loaded, cached)
-_EPHEMERAL_PREDICATES_CACHED: frozenset | None = None
+def _fact_predicate(content: str) -> str | None:
+    """Extract the predicate from a 'subject | predicate | object' fact triple."""
+    if not content or "|" not in content:
+        return None
+    parts = content.split("|")
+    if len(parts) < 2:
+        return None
+    return parts[1].strip().lower().replace(" ", "_")
 
 
-def _get_ephemeral_predicates() -> frozenset:
-    """Load ephemeral predicates from config (cached after first call)."""
-    global _EPHEMERAL_PREDICATES_CACHED
-    if _EPHEMERAL_PREDICATES_CACHED is not None:
-        return _EPHEMERAL_PREDICATES_CACHED
-    try:
-        from config.app_config import PROFILE_EPHEMERAL_RELATIONS
-        _EPHEMERAL_PREDICATES_CACHED = frozenset(
-            r.lower().strip() for r in PROFILE_EPHEMERAL_RELATIONS
-        )
-    except ImportError:
-        _EPHEMERAL_PREDICATES_CACHED = frozenset()
-    return _EPHEMERAL_PREDICATES_CACHED
+def _fact_ephemeral_ttl(content: str) -> float | None:
+    """Per-relation TTL (hours) for a fact triple, or None if durable.
+
+    Uses the shared relation classifier (memory/relation_classifier.py) so the
+    facts collection ages out the same health-transient / ephemeral relations
+    the profile section does. Previously this path matched only the *exact*
+    config list, so pattern-named relations (health_status, recovery_status,
+    post_illness_recovery, …) never expired here and surfaced by recency
+    indefinitely.
+    """
+    pred = _fact_predicate(content)
+    if not pred:
+        return None
+    from memory.relation_classifier import ephemeral_ttl_hours
+    return ephemeral_ttl_hours(pred)
 
 
 def _is_ephemeral_fact(content: str) -> bool:
-    """Check if a fact triple has an ephemeral (current-state) predicate."""
-    if not content or "|" not in content:
-        return False
-    parts = content.split("|")
-    if len(parts) < 2:
-        return False
-    predicate = parts[1].strip().lower().replace(" ", "_")
-    return predicate in _get_ephemeral_predicates()
+    """Check if a fact triple has a transient (current-state) predicate."""
+    return _fact_ephemeral_ttl(content) is not None
 
 
 def _metadata_fallback_search(
@@ -613,18 +617,24 @@ class MemoryRetriever:
 
         results.sort(key=_score, reverse=True)
 
-        # TTL filter: drop ephemeral facts older than PROFILE_EPHEMERAL_TTL_HOURS
-        # These are transient state (current_mood, woke_at, etc.) that pollute retrieval
-        try:
-            from config.app_config import PROFILE_EPHEMERAL_TTL_HOURS
-            ttl_hours = PROFILE_EPHEMERAL_TTL_HOURS
-        except ImportError:
-            ttl_hours = 24
+        # Supersession + TTL filter for the facts collection.
+        #   1. Drop facts explicitly marked not-current / superseded (set by the
+        #      data cleanup or fact verification) so a retracted state stops
+        #      surfacing immediately, regardless of age.
+        #   2. Drop transient facts past their per-relation TTL. Health-transient
+        #      (illness/recovery) and standard ephemeral (mood/activity) age out
+        #      on different horizons via the shared relation classifier — these
+        #      are transient state (current_mood, recovering from illness, etc.)
+        #      that otherwise pollutes retrieval by recency forever.
         now = datetime.now()
         filtered = []
         for r in results:
+            meta = r.get("metadata", {}) or {}
+            if meta.get("is_current") is False or meta.get("superseded_by"):
+                continue
             content = r.get("content", "")
-            if _is_ephemeral_fact(content):
+            ttl_hours = _fact_ephemeral_ttl(content)
+            if ttl_hours is not None and ttl_hours > 0:
                 ts = r.get("timestamp")
                 try:
                     if isinstance(ts, str):
@@ -634,7 +644,7 @@ class MemoryRetriever:
                             ts = ts.replace(tzinfo=None)
                         age_h = (now - ts).total_seconds() / 3600.0
                         if age_h > ttl_hours:
-                            continue  # skip stale ephemeral fact
+                            continue  # skip stale transient fact
                 except (ValueError, TypeError, AttributeError):
                     pass
             filtered.append(r)
@@ -825,7 +835,7 @@ class MemoryRetriever:
         pool.sort(key=lambda x: x.get('final_score', 0), reverse=True)
 
         # Cross-encoder rerank expanded candidate set
-        pool = self._maybe_cross_encoder_rerank(pool[:REFLECTION_RERANK_TOP], query)
+        pool = await self._maybe_cross_encoder_rerank(pool[:REFLECTION_RERANK_TOP], query)
 
         return pool[:limit]
 
@@ -1249,7 +1259,7 @@ class MemoryRetriever:
         query_lower = query.lower()
         is_gym_health_query = any(word in query_lower for word in [
             'gym', 'workout', 'work out', 'exercise', 'fitness', 'bench', 'squat',
-            'amantadine', 'medication', 'health', 'body', 'tired'
+            'medication', 'health', 'body', 'tired'
         ])
 
         if is_gym_health_query:
@@ -1352,7 +1362,7 @@ class MemoryRetriever:
         # pair scoring.  This runs AFTER the multi-factor scorer so it sees
         # all memories including episodic (which bypass the gate filter).
         # The cross-encoder can discriminate "related" from "best answer".
-        top_memories = self._maybe_cross_encoder_rerank(accepted[:limit], query)
+        top_memories = await self._maybe_cross_encoder_rerank(accepted[:limit], query)
 
         # Update truth scores
         if self.scorer:
@@ -1366,7 +1376,7 @@ class MemoryRetriever:
 
     _cross_encoder = None  # Lazy-loaded singleton
 
-    def _maybe_cross_encoder_rerank(
+    async def _maybe_cross_encoder_rerank(
         self, memories: List[Dict], query: str
     ) -> List[Dict]:
         """
@@ -1417,7 +1427,9 @@ class MemoryRetriever:
                 return f"{q} {r}"[:500]
 
             pairs = [[query, _mem_text(m)] for m in to_rerank]
-            scores = MemoryRetriever._cross_encoder.predict(pairs)
+            # Offload the sync CPU-bound predict so it doesn't stall the event
+            # loop (and the other concurrent retrieval tasks) during a turn.
+            scores = await asyncio.to_thread(MemoryRetriever._cross_encoder.predict, pairs)
 
             # Normalize cross-encoder scores to [0, 1]
             min_s, max_s = float(min(scores)), float(max(scores))

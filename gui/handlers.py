@@ -1113,71 +1113,258 @@ async def _run_doc_generation(ctx):
         # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
 
 
+# ============================================================================
+# Action guard: pending-proposal capture + claimed-action verification
+# (anti-confabulation — see core/pending_proposal.py + core/action_claim_guard.py)
+# ============================================================================
+
+
+def _get_pending_proposal_store(orchestrator):
+    """Lazily create + return the session-scoped pending-proposal store, or None."""
+    try:
+        from config.app_config import PENDING_PROPOSAL_ENABLED, PENDING_PROPOSAL_TTL_TURNS
+        if not PENDING_PROPOSAL_ENABLED:
+            return None
+        store = getattr(orchestrator, "_pending_proposal_store", None)
+        if store is None:
+            from core.pending_proposal import PendingProposalStore
+            store = PendingProposalStore(ttl_turns=PENDING_PROPOSAL_TTL_TURNS)
+            orchestrator._pending_proposal_store = store
+        return store
+    except Exception as e:
+        logger.debug(f"[ActionGuard] pending-proposal store unavailable: {e}")
+        return None
+
+
+def _summary_from_body(body: str) -> str:
+    """A short (>=10 char) summary from a note body, or '' to defer to the LLM."""
+    text = (body or "").strip()
+    if not text:
+        return ""
+    snippet = " ".join(text.split())
+    if len(snippet) > 240:
+        snippet = snippet[:240].rsplit(" ", 1)[0] + "…"
+    return snippet if len(snippet) >= 10 else ""
+
+
+def _recent_conversation_text(orchestrator) -> str:
+    """The last couple of assistant responses (e.g. a plan from a prior turn)."""
+    try:
+        cm = getattr(getattr(orchestrator, "memory_system", None), "corpus_manager", None)
+        if cm and hasattr(cm, "get_recent_memories"):
+            parts = []
+            for r in cm.get_recent_memories(2) or []:
+                resp = (r.get("response") or "").strip()
+                if resp:
+                    parts.append(resp)
+            return "\n\n".join(parts)[:4000]
+    except Exception as e:
+        logger.debug(f"[ActionGuard] recent-conversation lookup failed: {e}")
+    return ""
+
+
+async def _save_daemon_note(ctx, *, title, body="", category="implementation", summary="", confidence="medium"):
+    """Persist a daemon self-note + store_interaction; yields progress + result.
+
+    Honest about partial saves: if the disk write succeeds but the ChromaDB embed
+    or index update failed, the result message says so instead of claiming a clean
+    save. Sets ctx.handled on success. Shared by _run_self_note, the affirmation
+    follow-through, and claim self-repair.
+    """
+    orchestrator = ctx.orchestrator
+    from knowledge.daemon_notes_manager import DaemonNotesManager
+
+    _cs = getattr(getattr(orchestrator, "memory_system", None), "chroma_store", None)
+    _dnm = DaemonNotesManager(model_manager=orchestrator.model_manager, chroma_store=_cs)
+
+    title = (title or "").strip()[:100] or "Conversation note"
+    yield {"role": "assistant", "content": f"🗒️ Saving note: {title}...", "is_progress": True}
+
+    if not summary:
+        summary = _summary_from_body(body) or await _dnm._generate_summary(title, orchestrator.model_manager)
+
+    note = await _dnm.create_note(
+        title=title, category=category, summary=summary, confidence=confidence,
+        body=body or "",
+    )
+
+    _resp = (
+        f"Self-note saved: **{note.title}**\n\n"
+        f"- **Path**: `{note.path}`\n"
+        f"- **Category**: {note.category}\n"
+        f"- **ID**: {note.id}\n"
+    )
+    if not note.fully_persisted:
+        _missing = []
+        if not note.embedded:
+            _missing.append("semantic search index")
+        if not note.indexed:
+            _missing.append("notes index")
+        _resp += (
+            f"\n> ⚠️ Saved to disk, but couldn't update the {', '.join(_missing)} — "
+            f"it may not resurface automatically in future sessions."
+        )
+    logger.info(f"[ActionGuard] Note saved: {note.path} (fully_persisted={note.fully_persisted})")
+
+    if orchestrator.memory_system:
+        try:
+            await orchestrator.memory_system.store_interaction(
+                query=ctx.user_text, response=_resp, tags=["daemon_self_note"],
+            )
+        except Exception:
+            pass
+
+    yield {"role": "assistant", "content": _resp}
+    ctx.handled = True
+
+
+def _capture_proposal(orchestrator, response_text):
+    """Detect a daemon-note OFFER in a response and stash it for the next turn.
+
+    Only NOTE offers are captured here — external actions (email/calendar) already
+    flow through the propose_action / PendingActionsStore card approval path.
+    """
+    try:
+        from config.app_config import PENDING_PROPOSAL_ENABLED
+        if not PENDING_PROPOSAL_ENABLED or not response_text:
+            return
+        from core.action_claim_guard import ActionKind, detect_proposals
+        from core.pending_proposal import build_proposal_from_response
+        props = [p for p in detect_proposals(response_text) if p.kind == ActionKind.NOTE]
+        if not props:
+            return
+        store = _get_pending_proposal_store(orchestrator)
+        if store is None:
+            return
+        proposal = build_proposal_from_response(
+            response_text, props[-1], turn=store.turn,
+            session_id=_get_session_id(orchestrator),
+        )
+        store.capture(proposal)
+        logger.info(f"[ActionGuard] Captured pending note proposal: {proposal.title!r}")
+    except Exception as e:
+        logger.debug(f"[ActionGuard] Proposal capture failed (non-fatal): {e}")
+
+
+async def _self_repair_note(ctx, detected):
+    """Back an unbacked NOTE claim by actually saving a note. Returns DaemonNote|None."""
+    orchestrator = ctx.orchestrator
+    body, title, category = "", (detected.topic or ""), "implementation"
+
+    store = _get_pending_proposal_store(orchestrator)
+    if store is not None:
+        from core.action_claim_guard import ActionKind
+        p = store.peek()
+        if p is not None and p.kind == ActionKind.NOTE:
+            body, title, category = p.body, p.title, p.category
+            store.clear()
+    if not body:
+        body = _recent_conversation_text(orchestrator)
+    if not title:
+        first = next((ln.strip() for ln in body.splitlines() if len(ln.strip()) >= 3), "")
+        title = first[:80] or "Conversation note"
+
+    try:
+        from knowledge.daemon_notes_manager import DaemonNotesManager
+        _cs = getattr(getattr(orchestrator, "memory_system", None), "chroma_store", None)
+        _dnm = DaemonNotesManager(model_manager=orchestrator.model_manager, chroma_store=_cs)
+        summary = _summary_from_body(body) or f"Auto-saved from conversation: {title}"
+        note = await _dnm.create_note(
+            title=title[:100], category=category, summary=summary,
+            confidence="low", body=body or "",
+        )
+        logger.warning(f"[ActionGuard] Self-repaired unbacked note claim → {note.path}")
+        return note
+    except Exception as e:
+        logger.error(f"[ActionGuard] Note self-repair failed: {e}")
+        return None
+
+
+async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_kinds, self_repair):
+    """Reconcile completion claims in a response against what actually ran.
+
+    Always captures a fresh proposal for next turn. Returns a suffix string to
+    append to the response: a confirmation when a note claim was self-repaired,
+    and/or an honest correction when an external action was claimed but neither
+    executed nor proposed. Never auto-executes external actions.
+    """
+    _capture_proposal(ctx.orchestrator, response_text)
+
+    suffix = ""
+    try:
+        from config.app_config import ACTION_CLAIM_GUARD_ENABLED, ACTION_CLAIM_SELF_REPAIR_ENABLED
+        if not ACTION_CLAIM_GUARD_ENABLED or not response_text:
+            return suffix
+        from core.action_claim_guard import (
+            ActionKind, build_correction_notice, detect_completion_claims, verify_claims,
+        )
+        claims = detect_completion_claims(response_text)
+        if not claims:
+            return suffix
+        rec = verify_claims(claims, executed_kinds=set(executed_kinds), proposed_kinds=set(proposed_kinds))
+        if not rec.has_issue:
+            return suffix
+
+        if self_repair and ACTION_CLAIM_SELF_REPAIR_ENABLED:
+            for a in rec.repairable:
+                if a.kind == ActionKind.NOTE:
+                    saved = await _self_repair_note(ctx, a)
+                    if saved is not None:
+                        suffix += f"\n\n> 🗒️ (I went ahead and actually saved that note: `{saved.path}`)"
+
+        external = [a for a in rec.external_unbacked if a.kind not in set(proposed_kinds)]
+        suffix += build_correction_notice(external)
+    except Exception as e:
+        logger.warning(f"[ActionGuard] Claim guard failed (non-fatal): {e}")
+    return suffix
+
+
 async def _run_self_note(ctx):
     """Direct daemon self-note bypass (agentic gate self_note_intent).
 
     Yields a progress chunk + the result chunk; does its own store_interaction and sets
     ctx.handled on success. On exception, logs and returns with ctx.handled False.
     """
-    orchestrator = ctx.orchestrator
     _self_note_intent = ctx.self_note_intent
     logger.warning(f"[Handle Submit] DIRECT SELF-NOTE CREATION: {_self_note_intent}")
     try:
-        from knowledge.daemon_notes_manager import DaemonNotesManager
-
-        _cs = None
-        _ms = getattr(orchestrator, 'memory_system', None)
-        if _ms:
-            _cs = getattr(_ms, 'chroma_store', None)
-
-        _dnm = DaemonNotesManager(
-            model_manager=orchestrator.model_manager,
-            chroma_store=_cs,
-        )
-
-        yield {"role": "assistant", "content": f"🗒️ Saving self-note: {_self_note_intent['topic']}...", "is_progress": True}
-
-        # Use the LLM to generate a proper summary from context
-        _note_summary = await _dnm._generate_summary(
-            _self_note_intent["topic"],
-            orchestrator.model_manager,
-        )
-
-        _note_result = await _dnm.create_note(
+        async for _c in _save_daemon_note(
+            ctx,
             title=_self_note_intent["topic"],
-            category=_self_note_intent["category"],
-            summary=_note_summary,
-            confidence="medium",
-        )
-
-        _note_response = (
-            f"Self-note saved: **{_note_result.title}**\n\n"
-            f"- **Path**: `{_note_result.path}`\n"
-            f"- **Category**: {_note_result.category}\n"
-            f"- **Confidence**: {_note_result.confidence}\n"
-            f"- **ID**: {_note_result.id}\n"
-        )
-        logger.info(f"[Handle Submit] Self-note created: {_note_result.path}")
-
-        if orchestrator.memory_system:
-            try:
-                await orchestrator.memory_system.store_interaction(
-                    query=ctx.user_text,
-                    response=_note_response,
-                    tags=["daemon_self_note"],
-                )
-            except Exception:
-                pass
-
-        yield {"role": "assistant", "content": _note_response}
-        ctx.handled = True
+            category=_self_note_intent.get("category", "implementation"),
+        ):
+            yield _c
         return
-
     except Exception as e:
         logger.error(f"[Handle Submit] Direct self-note creation failed: {e}")
         import traceback
         traceback.print_exc()
         # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
+
+
+async def _run_pending_proposal(ctx, proposal):
+    """Execute a previously-captured action proposal after the user affirmed it.
+
+    Currently handles NOTE proposals (the captured kind). Yields progress + result
+    and sets ctx.handled on success; on failure, logs and leaves ctx.handled False
+    so the dispatcher falls through to the normal flow.
+    """
+    from core.action_claim_guard import ActionKind
+    logger.warning(
+        f"[ActionGuard] Affirmation → executing pending {proposal.kind.value}: {proposal.title!r}"
+    )
+    try:
+        if proposal.kind == ActionKind.NOTE:
+            async for _c in _save_daemon_note(
+                ctx, title=proposal.title, body=proposal.body, category=proposal.category,
+            ):
+                yield _c
+            return
+    except Exception as e:
+        logger.error(f"[ActionGuard] Pending proposal execution failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fall through to normal flow (ctx.handled stays False)
 
 
 async def _run_agentic_search(ctx):
@@ -1518,6 +1705,26 @@ async def _run_agentic_search(ctx):
         if not display_output.strip():
             display_output = "I processed your request but my response was caught by the thinking filter. Let me try again — could you rephrase or retry?"
             logger.warning("[Handle Submit] Agentic response was entirely thinking content, showing fallback")
+
+        # ── Action guard: capture note offers (e.g. "Want me to save this?") for
+        # the next turn, and honestly correct external claims that weren't backed.
+        # No note/doc self-repair here — the agentic loop may have genuinely run
+        # those tools, so auto-saving would risk a duplicate. External actions are
+        # human-in-the-loop (never auto-executed by the loop), so a bare "I sent
+        # it" with no proposal is safe to correct.
+        try:
+            from core.action_claim_guard import EXTERNAL as _EXTERNAL_KINDS
+            _ag_proposed = _EXTERNAL_KINDS if _pending_action_id else set()
+            _ag_guard_suffix = await _apply_action_guard(
+                ctx, display_output, executed_kinds=set(),
+                proposed_kinds=_ag_proposed, self_repair=False,
+            )
+            if _ag_guard_suffix:
+                display_output = display_output.rstrip() + _ag_guard_suffix
+                final_output = (final_output or "").rstrip() + _ag_guard_suffix
+        except Exception as _ag_guard_err:
+            logger.warning(f"[Handle Submit] Agentic action guard failed (non-fatal): {_ag_guard_err}")
+
         logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
         _final_chunk = {"role": "assistant", "content": display_output, "debug": debug_record}
         if _pending_action_id:
@@ -1576,6 +1783,25 @@ async def _run_enhanced(ctx):
     history = ctx.history
     agentic_enabled = ctx.agentic_enabled
     fast_mode = ctx.fast_mode
+
+    # Enhanced is a tool-less generation path. Tell the model so it doesn't claim
+    # to have performed side effects it can't (the confabulation backstop — the
+    # action guard below catches it after the fact, this prevents it up front).
+    # NOTE: scoped to the streaming call via _stream_system_prompt — the
+    # uncertainty/review agentic RETRIES below reuse `system_prompt` and DO have
+    # tools, so they must not inherit the "no tools" claim.
+    _stream_system_prompt = system_prompt
+    try:
+        from config.app_config import ACTION_CLAIM_GUARD_ENABLED
+        if ACTION_CLAIM_GUARD_ENABLED:
+            _stream_system_prompt = (system_prompt or "") + (
+                "\n\n[ACTION HONESTY] You have no tools available this turn. Do NOT "
+                "claim you saved, sent, created, scheduled, emailed, or added anything. "
+                "If the user wants such an action, OFFER it (\"Want me to …?\") and the "
+                "system will carry it out — never state it is already done."
+            )
+    except Exception:
+        pass
     _original_limits = ctx.original_limits
     _t_prepare_start = ctx.t_prepare_start
     _t_prepare_elapsed = ctx.t_prepare_elapsed
@@ -1604,7 +1830,7 @@ async def _run_enhanced(ctx):
         async for chunk in orchestrator.response_generator.generate_streaming_response(
             prompt=full_prompt,
             model_name=model_name,
-            system_prompt=system_prompt,
+            system_prompt=_stream_system_prompt,
             images=note_images if note_images else None  # Pass images for multimodal models
         ):
             chunk_count += 1
@@ -1942,6 +2168,23 @@ async def _run_enhanced(ctx):
         except (ImportError, Exception) as e:
             logger.warning(f"[Handle Submit] Enhanced text action parse failed: {e}")
 
+        # ── Action guard: capture proposals + verify completion claims ──
+        # Enhanced is a TOOL-LESS path, so any "Done — saved the note" claim is
+        # unbacked. Self-repair note/doc claims; honestly correct external claims
+        # that weren't even proposed. (proposed kinds suppressed via the card.)
+        try:
+            from core.action_claim_guard import EXTERNAL as _EXTERNAL_KINDS
+            _enh_proposed = _EXTERNAL_KINDS if _enh_pending_action_id else set()
+            _guard_suffix = await _apply_action_guard(
+                ctx, _resp_for_debug, executed_kinds=set(),
+                proposed_kinds=_enh_proposed, self_repair=True,
+            )
+            if _guard_suffix:
+                _resp_for_debug = (_resp_for_debug or "").rstrip() + _guard_suffix
+                final_output = (final_output or "").rstrip() + _guard_suffix
+        except Exception as e:
+            logger.warning(f"[Handle Submit] Enhanced action guard failed (non-fatal): {e}")
+
         debug_record = _build_debug_record(
             mode=_enh_mode, user_text=user_text, prompt=full_prompt,
             system_prompt=system_prompt, response=_resp_for_debug,
@@ -2116,6 +2359,24 @@ async def handle_submit(
         async for _c in _run_raw(ctx):
             yield _c
         return
+
+    # ── Pending-proposal follow-through ──────────────────────────────────────
+    # When the previous turn OFFERED an action ("Want me to save this as a note?")
+    # and this turn is a short affirmation ("sure that makes sense"), execute the
+    # captured proposal directly — BEFORE the agentic gate's casual/short skip can
+    # route it into a tool-less mode where the action would never fire (and the
+    # model would confabulate success). Also bumps the per-turn counter used for
+    # proposal TTL.
+    _pp_store = _get_pending_proposal_store(orchestrator)
+    if _pp_store is not None:
+        _pp_store.bump_turn()
+        _affirmed = _pp_store.consume_if_affirmed(user_text)
+        if _affirmed is not None:
+            async for _c in _run_pending_proposal(ctx, _affirmed):
+                yield _c
+            if ctx.handled:
+                return
+            # else execution failed — fall through to the normal flow
 
     # Check if agentic search might be used (need to know before calling prepare_prompt)
     _cfg = getattr(orchestrator, 'config', {}) or {}

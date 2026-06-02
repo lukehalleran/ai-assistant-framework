@@ -25,24 +25,33 @@ from utils.logging_utils import get_logger
 
 logger = get_logger("backfill_visual_entities")
 
-# Profile context injected into the captioning prompt so the LLM can
-# name entities it recognizes (pets, people, locations).
-PROFILE_CONTEXT = """
-The user is Luke. Key entities in his life:
-- Flapjack: his black cat (male, large, green/yellow eyes, fluffy)
-- Paczki: his previous cat (female, gray and white, pink nose, passed away)
-- The user has dark curly hair and a beard/mustache
-""".strip()
+# Profile context injected into the captioning prompt so the LLM can name
+# entities it recognizes (pets, people). Kept OUT of source — no personal data
+# ships in the repo. Provide your own at data/visual_profile_context.txt
+# (gitignored) or via the VISUAL_PROFILE_CONTEXT_PATH env var. Empty yields
+# generic captions with no personal entity names.
+def _load_profile_context() -> str:
+    path = os.getenv("VISUAL_PROFILE_CONTEXT_PATH") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", "visual_profile_context.txt",
+    )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
 
-RECAPTION_PROMPT = f"""You are re-captioning a personal photo for a memory system.
 
-{PROFILE_CONTEXT}
+PROFILE_CONTEXT = _load_profile_context()
 
-Describe this image in 2-3 sentences. Use proper names for any recognized people or pets.
-Be specific about details (colors, setting, activity, expressions).
-If you see a black cat, that is likely Flapjack. If you see a gray/white cat, that is likely Paczki.
-If you see a man with dark curly hair and a beard, that is Luke.
-"""
+_context_block = (PROFILE_CONTEXT + "\n\n") if PROFILE_CONTEXT else ""
+RECAPTION_PROMPT = (
+    "You are re-captioning a personal photo for a memory system.\n\n"
+    f"{_context_block}"
+    "Describe this image in 2-3 sentences. Use proper names for any recognized "
+    "people or pets named in the context above.\n"
+    "Be specific about details (colors, setting, activity, expressions)."
+)
 
 
 async def recaption_image(model_manager, image_path: str) -> str:

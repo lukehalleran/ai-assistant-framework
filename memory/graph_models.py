@@ -23,7 +23,7 @@ class GraphNode(BaseModel):
 
     entity_id: str = Field(
         ...,
-        description="Normalized lowercase key, e.g. 'daemon', 'spain', 'flapjack'",
+        description="Normalized lowercase key, e.g. 'daemon', 'spain', 'whiskers'",
     )
     display_name: str = Field(
         ...,

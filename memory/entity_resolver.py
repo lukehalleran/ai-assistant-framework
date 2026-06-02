@@ -93,7 +93,7 @@ def extract_possessive_aliases(text: str) -> list[tuple[str, str]]:
     """Extract possessive phrases that could be aliases.
 
     Returns list of (alias_phrase, entity_type_hint) tuples.
-    E.g. "my cat Flapjack" -> [("my cat", "pet")]
+    E.g. "my cat Whiskers" -> [("my cat", "pet")]
     """
     type_map = {
         "cat": "pet", "dog": "pet", "pet": "pet", "kitten": "pet", "puppy": "pet",

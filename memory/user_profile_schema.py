@@ -108,9 +108,7 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "project_status": ProfileCategory.PROJECTS,
     "building": ProfileCategory.PROJECTS,
     "lines_of_code": ProfileCategory.PROJECTS,
-    "python_lines_of_code": ProfileCategory.PROJECTS,
     "total_lines_added": ProfileCategory.PROJECTS,
-    "article_count": ProfileCategory.PROJECTS,
 
     # Health
     "condition": ProfileCategory.HEALTH,
@@ -131,8 +129,6 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "beverage": ProfileCategory.HEALTH,
     "headache": ProfileCategory.HEALTH,
     "blood_pressure": ProfileCategory.HEALTH,
-    "kratom_dose": ProfileCategory.HEALTH,
-    "kratom_effects": ProfileCategory.HEALTH,
 
     # Fitness
     "squat_max": ProfileCategory.FITNESS,
@@ -149,7 +145,6 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "likes": ProfileCategory.PREFERENCES,
     "dislikes": ProfileCategory.PREFERENCES,
     "favorite_color": ProfileCategory.PREFERENCES,
-    "favorite_beer": ProfileCategory.PREFERENCES,
     "favorite_video_game": ProfileCategory.PREFERENCES,
     "formatting_preference": ProfileCategory.PREFERENCES,
     "opinion": ProfileCategory.PREFERENCES,
@@ -175,7 +170,6 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "insurance": ProfileCategory.FINANCE,
     "budget": ProfileCategory.FINANCE,
     "financial_goal": ProfileCategory.FINANCE,
-    "spending_on_deepseek": ProfileCategory.FINANCE,
     "fafsa_filed": ProfileCategory.FINANCE,
     "need_to_refile": ProfileCategory.FINANCE,
     "credit_card_debt": ProfileCategory.FINANCE,
@@ -186,7 +180,6 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "manager": ProfileCategory.RELATIONSHIPS,
     "reports_to": ProfileCategory.RELATIONSHIPS,
     "dinner_with": ProfileCategory.RELATIONSHIPS,
-    "matches_on_bumble": ProfileCategory.RELATIONSHIPS,
     "matches_on_dating_app": ProfileCategory.RELATIONSHIPS,
     "dating_app_usage": ProfileCategory.RELATIONSHIPS,
     "language_exchange": ProfileCategory.RELATIONSHIPS,
@@ -431,7 +424,7 @@ _PREFIX_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "spending": ProfileCategory.FINANCE, "fafsa": ProfileCategory.FINANCE,
     # Health (nutrition / substance)
     "meal": ProfileCategory.HEALTH, "caloric": ProfileCategory.HEALTH,
-    "food": ProfileCategory.HEALTH, "kratom": ProfileCategory.HEALTH,
+    "food": ProfileCategory.HEALTH,
     "energy": ProfileCategory.HEALTH, "caffeine": ProfileCategory.HEALTH,
     # Hobbies
     "pet": ProfileCategory.HOBBIES, "hobby": ProfileCategory.HOBBIES,
@@ -461,9 +454,9 @@ _CATEGORY_TOKENS: Dict[ProfileCategory, Set[str]] = {
         "sleep", "therapy", "medication", "med", "health", "symptom", "condition",
         "supplement", "dosage", "vitamin", "anxiety", "depression", "fatigue",
         "sick", "illness", "pain", "doctor", "diagnosis", "prescription",
-        "nap", "insomnia", "apnea", "disorder", "mental", "vyvanse", "vryalar",
+        "nap", "insomnia", "apnea", "disorder", "mental",
         "meal", "food", "drink", "energy", "caffeine", "alcohol", "headache",
-        "blood", "pressure", "kratom", "feeling",
+        "blood", "pressure", "feeling",
     },
     ProfileCategory.STUDY: {
         "homework", "study", "exam", "midterm", "final", "course", "lecture",
@@ -477,7 +470,7 @@ _CATEGORY_TOKENS: Dict[ProfileCategory, Set[str]] = {
     },
     ProfileCategory.PROJECTS: {
         "project", "tech", "stack", "codebase", "feature", "code", "build",
-        "deploy", "refactor", "bug", "test", "api", "daemon", "repo",
+        "deploy", "refactor", "bug", "test", "api", "repo",
         "lines", "nodes", "edges", "tool",
     },
     ProfileCategory.GOALS: {
@@ -513,6 +506,42 @@ _CATEGORY_TOKENS: Dict[ProfileCategory, Set[str]] = {
         "certification", "graduate", "enrolled",
     },
 }
+
+
+# ------------------------------------------------------------------------
+# Per-user personal vocabulary merge
+# ------------------------------------------------------------------------
+# Owner-specific terms (medications, hobbies, niche relations) are NOT shipped
+# in the maps above — they live in config.yaml under
+# user_profile.personal_vocabulary and are merged in here at import time so the
+# shipped source stays general. config keys are lowercase ProfileCategory names
+# (e.g. "health"); unknown categories are skipped. See config/app_config.py.
+def _merge_personal_vocabulary() -> None:
+    try:
+        from config.app_config import (
+            PROFILE_PERSONAL_CATEGORY_TOKENS,
+            PROFILE_PERSONAL_RELATION_CATEGORIES,
+        )
+    except Exception:
+        return
+
+    for cat_name, tokens in (PROFILE_PERSONAL_CATEGORY_TOKENS or {}).items():
+        try:
+            cat = ProfileCategory(str(cat_name).lower())
+        except ValueError:
+            continue
+        _CATEGORY_TOKENS.setdefault(cat, set()).update(
+            str(t).lower() for t in (tokens or [])
+        )
+
+    for relation, cat_name in (PROFILE_PERSONAL_RELATION_CATEGORIES or {}).items():
+        try:
+            RELATION_CATEGORY_MAP[str(relation).lower()] = ProfileCategory(str(cat_name).lower())
+        except ValueError:
+            continue
+
+
+_merge_personal_vocabulary()
 
 
 # ========================================================================

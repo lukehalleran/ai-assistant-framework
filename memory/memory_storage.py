@@ -305,7 +305,7 @@ def _clean_entities(entities: set) -> set:
         # Skip fragments starting with 's or possessive leftovers
         if e.startswith("s ") or e.startswith("'s"):
             continue
-        # Remove trailing 's from possessives: "Auggie's" → "Auggie"
+        # Remove trailing 's from possessives: "Max's" → "Max"
         if e.endswith("'s"):
             e = e[:-2]
         # Skip very short or common
@@ -354,7 +354,7 @@ def _extract_specifics(text: str, entities: set, topics: set):
                 and not clean.isupper() and clean not in _HEADER_WORDS):
             entities.add(clean)
 
-    # Multi-word proper nouns: "Auggie's name" → extract "Auggie"
+    # Multi-word proper nouns: "Max's name" → extract "Max"
     for m in re.finditer(r"(?<!\w')(?<!\w)\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]+)*)\b", text):
         term = m.group(1).strip()
         if len(term) > 2 and term.lower() not in _COMMON_WORDS and term not in _HEADER_WORDS:
@@ -370,7 +370,7 @@ def _extract_specifics(text: str, entities: set, topics: set):
 
     # Technical/specific terms (patterns)
     tech_patterns = [
-        r'\b(FAISS|ChromaDB|LLM|API|RAG|NLP|ML|AI|GPU|CPU|OMSA|SVM|GAN|BGE|IVF)\b',
+        r'\b(FAISS|ChromaDB|LLM|API|RAG|NLP|ML|AI|GPU|CPU|SVM|GAN|BGE|IVF)\b',
         r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b',  # CamelCase
         r'\b\w+\.py\b',  # Python files
         r'\b(?:Python|JavaScript|TypeScript|React|FastAPI|Django|Flask|Gradio)\b',
@@ -504,11 +504,22 @@ def _detect_reflection_tone(text: str) -> str:
 
 
 def _detect_project_area(text: str) -> str:
-    """Detect project/domain area from reflection text."""
+    """Detect project/domain area from reflection text.
+
+    Per-user project areas (e.g. a specific codebase name) come from config
+    (user_profile.personal_vocabulary.project_areas) and are checked first;
+    the branches below are general life domains kept in source.
+    """
     lower = text.lower()
-    if any(w in lower for w in ("daemon", "rag", "retrieval", "chromadb", "embedding")):
-        return "daemon"
-    if any(w in lower for w in ("school", "course", "study", "homework", "lecture", "omsa", "exam")):
+    # Per-user project areas (config-defined, keeps source general)
+    try:
+        from config.app_config import PROFILE_PERSONAL_PROJECT_AREAS
+        for area, keywords in (PROFILE_PERSONAL_PROJECT_AREAS or {}).items():
+            if any(str(w).lower() in lower for w in (keywords or [])):
+                return str(area)
+    except Exception:
+        pass
+    if any(w in lower for w in ("school", "course", "study", "homework", "lecture", "exam")):
         return "academic"
     if any(w in lower for w in ("health", "medication", "doctor", "sleep", "exercise", "gym")):
         return "health"
@@ -1049,7 +1060,7 @@ class MemoryStorage:
         """Check if a triple's object value is a real entity worth graphing.
 
         Entities/attributes (1-3 words) are kept as nodes — they're valid
-        hop targets (e.g. auggie --breed--> golden retriever).  Phrases
+        hop targets (e.g. max --breed--> golden retriever).  Phrases
         (4+ words), temporal durations, measurements, and verb phrases
         are stored as subject-node metadata instead.
         """

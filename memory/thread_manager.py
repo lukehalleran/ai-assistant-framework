@@ -85,7 +85,7 @@ class ThreadManager:
             else:
                 # Fallback: simple keyword-based topic detection
                 query_lower = query.lower()
-                if any(word in query_lower for word in ["flapjack", "cat", "kitty"]):
+                if any(word in query_lower for word in ["cat", "kitty", "kitten"]):
                     return "cats"
                 elif any(word in query_lower for word in ["glm", "claude", "model", "ai"]):
                     return "ai models"

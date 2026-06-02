@@ -85,7 +85,7 @@ class ObsidianManager:
             self.max_notes = OBSIDIAN_MAX_NOTES_PROMPT
         except ImportError:
             # Fallback defaults if config not available
-            self.vault_path = vault_path or os.path.expanduser("~/Documents/Luke Notes")
+            self.vault_path = vault_path or os.path.expanduser("~/Documents/Notes")
             self.chunk_threshold = 1500
             self.max_notes = 5
 

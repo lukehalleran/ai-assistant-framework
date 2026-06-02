@@ -47,7 +47,7 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
                "illness", "doctor", "therapy", "anxiety", "depression", "adhd",
                "diagnosis", "treatment", "chronic", "pain", "fatigue"],
     "career": ["work", "job", "career", "boss", "coworker", "company", "salary",
-               "promotion", "office", "manager", "employed", "brewery", "shift"],
+               "promotion", "office", "manager", "employed", "shift"],
     "fitness": ["gym", "workout", "lift", "squat", "bench", "deadlift", "weight",
                 "bulk", "cut", "macro", "protein", "cardio", "exercise", "training"],
     "education": ["school", "class", "course", "degree", "study", "exam", "grade",
@@ -62,8 +62,28 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
     "goals": ["goal", "plan", "resolution", "ambition", "aspiration", "dream",
               "want to", "going to", "planning to"],
     "projects": ["project", "app", "build", "code", "develop", "feature",
-                 "deploy", "release", "launch", "repo", "daemon"],
+                 "deploy", "release", "launch", "repo"],
 }
+
+
+# Merge per-user personal domain terms from config (keeps source general).
+# config keys are lowercase category names; only those matching an existing
+# domain are merged. See config/app_config.py PROFILE_PERSONAL_CATEGORY_TOKENS.
+def _merge_personal_domain_keywords() -> None:
+    try:
+        from config.app_config import PROFILE_PERSONAL_CATEGORY_TOKENS
+    except Exception:
+        return
+    for domain, tokens in (PROFILE_PERSONAL_CATEGORY_TOKENS or {}).items():
+        key = str(domain).lower()
+        if key in _DOMAIN_KEYWORDS:
+            for t in (tokens or []):
+                tl = str(t).lower()
+                if tl not in _DOMAIN_KEYWORDS[key]:
+                    _DOMAIN_KEYWORDS[key].append(tl)
+
+
+_merge_personal_domain_keywords()
 
 
 class ContextSurfacer:

@@ -834,7 +834,7 @@ WEB SEARCH CRITERIA:
 
 MEMORY SEARCH CRITERIA (needs_memory_search):
 - TRUE if: the user wants to recall past conversations, stored facts about themselves or people they know, personal notes, uploaded documents, or anything from their history with this assistant
-- Examples: "tell me more about Flapjack", "what was that thing we discussed?", "remind me about my dog", "what do my notes say about X", "what have I told you about my job"
+- Examples: "tell me more about Whiskers", "what was that thing we discussed?", "remind me about my dog", "what do my notes say about X", "what have I told you about my job"
 - FALSE if: general knowledge question, web search query, casual chat, or creative request
 
 KNOWLEDGE SEARCH CRITERIA (needs_knowledge_search):

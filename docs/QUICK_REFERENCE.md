@@ -935,6 +935,10 @@ class FactExtractor:
         Ephemeral filtering [NEW 2026-05]:
         - Blocks ephemeral predicates (from PROFILE_EPHEMERAL_RELATIONS config)
         - Blocks boolean-only values ("true"/"false"/"yes"/"no")
+
+        Personal vocab [NEW 2026-06]: preference slots, entity casing, and
+        generic subjects are merged at import from the user_profile.personal_vocabulary
+        config block (PROFILE_PERSONAL_* constants) — source ships generic.
         """
 
 # memory/llm_fact_extractor.py [ENHANCED 2026-05: ephemeral filtering]
@@ -943,9 +947,18 @@ class FactExtractor:
 # _normalize_triple() blocks both ephemeral predicates and boolean noise before storage
 # LLM prompt updated to discourage transient state extraction
 
-# memory/memory_retriever.py [ENHANCED 2026-05: config-driven ephemeral filtering]
-# _get_ephemeral_predicates() — replaces hardcoded _EPHEMERAL_PREDICATES with config-driven set
-# TTL filter: drops stale ephemeral facts older than PROFILE_EPHEMERAL_TTL_HOURS (default 24h)
+# memory/memory_retriever.py [ENHANCED 2026-06: supersession + per-relation TTL]
+# get_facts() now: (1) drops facts marked is_current=False / superseded_by (explicit
+#   supersession, set by fact verification or scripts/cleanup_stale_illness.py), then
+#   (2) ages out transient facts past their per-relation TTL via relation_classifier:
+#   health-transient (illness/recovery/symptom) → PROFILE_HEALTH_TRANSIENT_TTL_HOURS (~96h),
+#   standard ephemeral (mood/activity) → PROFILE_EPHEMERAL_TTL_HOURS (~24h), durable → never.
+#   CrossEncoder rerank predict() now offloaded via asyncio.to_thread (non-blocking).
+
+# memory/relation_classifier.py [NEW 2026-06] — SINGLE source of truth for relation→TTL
+# ephemeral_ttl_hours(relation) -> Optional[float]; is_ephemeral_relation(relation) -> bool
+#   Used by user_profile.get_category() (profile TTL) AND memory_retriever (facts TTL) — ends an
+#   earlier 3-way drift. _DURABLE_OVERRIDES pins disability/chronic_condition/diagnosis durable.
 
 # Helper functions [NEW 2026-03]:
 def _detect_entity_type(subject, nlp) -> str:

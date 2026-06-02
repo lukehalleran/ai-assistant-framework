@@ -263,14 +263,51 @@ def _get_rebel():
 
 # ---------------- Preference helpers (new) ----------------
 # Add quick patterns for canonicalizing "my favorite X is Y" etc.
+# General "my favorite X" slots. Per-user slots (e.g. beer, coffee) are added
+# from config at import time — see _append_personal_preference_slots below.
 PREF_PATTERNS = [
     (r"\bmy favorite (?P<slot>video game|game)\b", "favorite_video_game"),
-    (r"\bmy favorite (?P<slot>beer)\b", "favorite_beer"),
-    (r"\bmy favorite (?P<slot>coffee)\b", "favorite_coffee"),
     (r"\bmy favorite (?P<slot>color)\b", "favorite_color"),
 ]
 
-def _normalize_subject_obj(subj: str, rel: str, obj: str, user_name: str = "Luke") -> Tuple[str, str, str]:
+
+# Per-user personal vocabulary for extraction (config-driven; keeps source
+# general). Owner-specific generic subjects, entity casing, and preference
+# slots live in config.yaml under user_profile.personal_vocabulary.
+def _load_personal_extractor_vocab():
+    try:
+        from config.app_config import (
+            PROFILE_PERSONAL_GENERIC_SUBJECTS,
+            PROFILE_PERSONAL_ENTITY_CASING,
+        )
+        gs = {str(x).lower() for x in (PROFILE_PERSONAL_GENERIC_SUBJECTS or [])}
+        casing = {str(k).lower(): str(v) for k, v in (PROFILE_PERSONAL_ENTITY_CASING or {}).items()}
+        return gs, casing
+    except Exception:
+        return set(), {}
+
+
+_PERSONAL_GENERIC_SUBJECTS, _PERSONAL_ENTITY_CASING = _load_personal_extractor_vocab()
+
+
+def _append_personal_preference_slots() -> None:
+    """Add per-user 'my favorite X' slots from config (keeps source general)."""
+    try:
+        from config.app_config import PROFILE_PERSONAL_PREFERENCE_SLOTS
+    except Exception:
+        return
+    for slot in (PROFILE_PERSONAL_PREFERENCE_SLOTS or []):
+        s = str(slot).strip().lower()
+        if not s:
+            continue
+        relname = "favorite_" + re.sub(r"\s+", "_", s)
+        PREF_PATTERNS.append((rf"\bmy favorite (?P<slot>{re.escape(s)})\b", relname))
+
+
+_append_personal_preference_slots()
+
+
+def _normalize_subject_obj(subj: str, rel: str, obj: str, user_name: str = "user") -> Tuple[str, str, str]:
     """Promote generic subjects, keep obvious entity casing lightly."""
     s, r, o = (subj or "").strip(), (rel or "").strip(), (obj or "").strip()
 
@@ -279,20 +316,20 @@ def _normalize_subject_obj(subj: str, rel: str, obj: str, user_name: str = "Luke
         s = user_name
 
     # If subject is too generic and object looks like the real entity, promote object to subject
-    generic_subjects = {"game", "brew", "coffee", "beer", "dunkel", "dunkels"}
+    generic_subjects = {"game", "brew", "coffee", "beer"} | _PERSONAL_GENERIC_SUBJECTS
     if s.lower() in generic_subjects and o:
         s = o
 
-    # Light normalization for well-known entities (examples; harmless if not matched)
-    if s.lower() == "skyrim":
-        s = "Skyrim"
-    if o.lower() == "skyrim":
-        o = "Skyrim"
+    # Light casing normalization for per-user known entities (config-driven)
+    if s.lower() in _PERSONAL_ENTITY_CASING:
+        s = _PERSONAL_ENTITY_CASING[s.lower()]
+    if o.lower() in _PERSONAL_ENTITY_CASING:
+        o = _PERSONAL_ENTITY_CASING[o.lower()]
 
     return s, r, o
 
-def _canonicalize_preferences(q_text: str, r_text: str, s: str, r: str, o: str, user_name: str = "Luke") -> Tuple[str, str, str]:
-    """Map preference phrasing to canonical triples like (Luke, favorite_*, Y) or (Luke, likes, X)."""
+def _canonicalize_preferences(q_text: str, r_text: str, s: str, r: str, o: str, user_name: str = "user") -> Tuple[str, str, str]:
+    """Map preference phrasing to canonical triples like (user, favorite_*, Y) or (user, likes, X)."""
     ql = (q_text or "").lower()
     rl = (r_text or "").lower()
 
@@ -393,7 +430,7 @@ class FactExtractor:
         ]
 
         # Possessive-like attribute statements without apostrophes
-        # e.g., "my cats name is Flapjack", "my car make is Honda"
+        # e.g., "my cats name is Whiskers", "my car make is Honda"
         self.possessive_attr_patterns = [
             r"\bmy\s+([a-zA-Z]+?)(?:'s|s)?\s+(name|make|model|color|birthday|birth\s*date)\s*(?:is|=|:)\s+([^\.;,!?:]+)"
         ]
@@ -908,7 +945,7 @@ class FactExtractor:
                         continue
                     rel = "is"
 
-                # Prefer proper-name subjects in span (e.g., “my kitten Flapjack is …”)
+                # Prefer proper-name subjects in span (e.g., “my kitten Whiskers is …”)
                 s_candidate = None
                 for t in subj.subtree:
                     if t.pos_ == "PROPN":
@@ -917,7 +954,7 @@ class FactExtractor:
                 if s_candidate:
                     s = s_candidate
 
-                # Preserve proper-case for PROPN complements (e.g., Skyrim, Flapjack)
+                # Preserve proper-case for PROPN complements (e.g., Skyrim, Whiskers)
                 if comp.ent_type_ in {"PERSON","ORG","WORK_OF_ART","PRODUCT"} or comp.pos_ == "PROPN":
                     o = comp.text
 
@@ -930,7 +967,7 @@ class FactExtractor:
                 attr = next((c for c in name_tok.children if c.dep_ in {"attr","acomp","oprd"}), None)
 
                 # Common case: "name" is nsubj, head is copula (ROOT or AUX)
-                # e.g., "My cat's name is Flapjack" → name --nsubj--> is --attr--> Flapjack
+                # e.g., "My cat's name is Whiskers" → name --nsubj--> is --attr--> Whiskers
                 if not (cop and attr):
                     head = name_tok.head
                     if head and head != name_tok:

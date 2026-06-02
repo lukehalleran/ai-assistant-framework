@@ -920,26 +920,18 @@ JSON:"""
         )
 
         model_alias = os.getenv("LLM_SKILLS_MODEL", REFLECTION_MODEL_ALIAS)
+        api_models = getattr(self.model_manager, "api_models", {}) or {}
+        skills_model = model_alias if model_alias in api_models else None
 
-        prev_model = None
         try:
-            if hasattr(self.model_manager, "get_active_model_name"):
-                prev_model = self.model_manager.get_active_model_name()
-            if hasattr(self.model_manager, "switch_model"):
-                api_models = getattr(self.model_manager, "api_models", {}) or {}
-                if model_alias in api_models:
-                    self.model_manager.switch_model(model_alias)
-
-            raw = await self.model_manager.generate_once(prompt, max_tokens=600)
+            # Explicit model_name (no switch_model) so this is safe to run
+            # concurrently with other shutdown LLM calls.
+            raw = await self.model_manager.generate_once(
+                prompt, model_name=skills_model, max_tokens=600
+            )
         except Exception as e:
             logger.warning(f"[Shutdown] Skill extraction LLM call failed: {e}")
             return
-        finally:
-            try:
-                if prev_model and hasattr(self.model_manager, "switch_model"):
-                    self.model_manager.switch_model(prev_model)
-            except (AttributeError, TypeError):
-                pass
 
         if not raw or not raw.strip():
             return
@@ -1345,21 +1337,38 @@ JSON:"""
 
         extractor = ThreadExtractor(model_manager=self.model_manager)
 
-        # Phase 1: Detect resolutions of existing threads
+        # Phase 1 (resolution detection) and Phase 2 (new-thread extraction) each
+        # make an independent LLM call with no dependency on the other — run them
+        # concurrently, then apply their ChromaDB writes sequentially afterward.
+        existing_open = []
         try:
             existing_open = self.thread_store.list_open_threads()
-            if existing_open:
-                resolutions = await extractor.detect_resolutions(sess_items, existing_open)
-                for thread_id, resolution in resolutions:
-                    self.thread_store.resolve_thread(thread_id, resolution)
-                if resolutions:
-                    logger.info(f"[Shutdown] Resolved {len(resolutions)} thread(s)")
         except Exception as e:
-            logger.warning(f"[Shutdown] Thread resolution detection failed: {e}")
+            logger.warning(f"[Shutdown] Listing open threads failed: {e}")
 
-        # Phase 2: Extract new threads
-        try:
-            new_threads = await extractor.extract_new_threads(sess_items)
+        async def _detect_resolutions():
+            if not existing_open:
+                return []
+            return await extractor.detect_resolutions(sess_items, existing_open)
+
+        resolutions, new_threads = await asyncio.gather(
+            _detect_resolutions(),
+            extractor.extract_new_threads(sess_items),
+            return_exceptions=True,
+        )
+
+        # Phase 1 result: apply resolutions
+        if isinstance(resolutions, Exception):
+            logger.warning(f"[Shutdown] Thread resolution detection failed: {resolutions}")
+        elif resolutions:
+            for thread_id, resolution in resolutions:
+                self.thread_store.resolve_thread(thread_id, resolution)
+            logger.info(f"[Shutdown] Resolved {len(resolutions)} thread(s)")
+
+        # Phase 2 result: store new threads
+        if isinstance(new_threads, Exception):
+            logger.warning(f"[Shutdown] Thread extraction failed: {new_threads}")
+        elif new_threads:
             stored = 0
             for thread in new_threads:
                 doc_id = self.thread_store.store_thread(thread)
@@ -1367,8 +1376,6 @@ JSON:"""
                     stored += 1
             if stored:
                 logger.info(f"[Shutdown] Stored {stored} new thread(s)")
-        except Exception as e:
-            logger.warning(f"[Shutdown] Thread extraction failed: {e}")
 
         # Phase 3: Enforce cap
         try:
@@ -1698,10 +1705,10 @@ JSON:"""
             "You are a session reviewer for an AI assistant.\n"
             "Produce a reflection with these sections:\n\n"
             "1) SESSION TOPIC: One line stating the primary topic/domain discussed "
-            "(e.g., \"OMSA homework on regression\", \"Daemon retrieval benchmarks\", "
+            "(e.g., \"statistics homework on regression\", \"Daemon retrieval benchmarks\", "
             "\"anxiety about work deadlines\").\n\n"
             "2) KEY ENTITIES: List specific names, projects, tools, people, places, "
-            "or concepts mentioned (e.g., \"FAISS, Auggie, Georgia Tech, ChromaDB\"). "
+            "or concepts mentioned (e.g., \"FAISS, Maria, Stanford, ChromaDB\"). "
             "Do NOT list generic words like \"the user\" or \"the assistant\".\n\n"
             "3) WHAT HAPPENED: 3-5 bullets describing specific events, decisions, "
             "breakthroughs, or problems from this session. Use concrete nouns and "
@@ -1719,33 +1726,17 @@ JSON:"""
         prompt += "CONVERSATION EXCERPTS:\n" + "\n\n".join(conv_use) + "\n\n"
         prompt += "Produce the three sections now."
 
-        prev_model = None
-        try:
-            if hasattr(self.model_manager, "get_active_model_name"):
-                prev_model = self.model_manager.get_active_model_name()
-            if hasattr(self.model_manager, "switch_model"):
-                api_models = getattr(self.model_manager, "api_models", {}) or {}
-                if REFLECTION_MODEL_ALIAS in api_models:
-                    self.model_manager.switch_model(REFLECTION_MODEL_ALIAS)
-            text = await self.model_manager.generate_once(
-                prompt,
-                max_tokens=REFLECTION_MAX_TOKENS
-            )
-        finally:
-            try:
-                if prev_model and hasattr(self.model_manager, "switch_model"):
-                    self.model_manager.switch_model(prev_model)
-                    try:
-                        cur = (
-                            self.model_manager.get_active_model_name()
-                            if hasattr(self.model_manager, "get_active_model_name")
-                            else prev_model
-                        )
-                        logger.info(f"[Reflections] restored active model after shutdown reflection: {cur}")
-                    except (AttributeError, TypeError):
-                        pass
-            except (AttributeError, TypeError) as e:
-                logger.debug(f"[Shutdown] Could not restore model after reflection: {e}")
+        # Pass the reflection model explicitly rather than switch_model() — the
+        # latter mutates the shared active_model_name, which races when shutdown
+        # LLM calls run concurrently (reflection ‖ process_shutdown_memory).
+        # generate_once(model_name=...) routes without touching global state.
+        api_models = getattr(self.model_manager, "api_models", {}) or {}
+        reflection_model = REFLECTION_MODEL_ALIAS if REFLECTION_MODEL_ALIAS in api_models else None
+        text = await self.model_manager.generate_once(
+            prompt,
+            model_name=reflection_model,
+            max_tokens=REFLECTION_MAX_TOKENS,
+        )
 
         text = (text or "").strip()
         if not text:

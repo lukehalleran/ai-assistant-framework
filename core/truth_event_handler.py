@@ -83,8 +83,8 @@ def apply_truth_event(event: CorrectionEvent, user_profile) -> None:
 def cascade_entity_resolution(events: list, memory_system) -> None:
     """Annotate crisis-era summaries/reflections with resolution metadata.
 
-    When the user says "Flapjack did not die", finds summaries mentioning
-    Flapjack + crisis keywords and marks them with a resolution note +
+    When the user says "Whiskers did not die", finds summaries mentioning
+    Whiskers + crisis keywords and marks them with a resolution note +
     elevated staleness_ratio so the prompt prefix signals resolution.
     """
     from config.app_config import STALENESS_ENABLED

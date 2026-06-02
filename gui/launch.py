@@ -238,11 +238,16 @@ def _run_monthly_notes_catchup():
     print("[MonthlyNotes] Started background catch-up check...")
 
 
-def _run_reference_docs_seed():
+def _run_reference_docs_seed(chroma_store=None):
     """
     Auto-seed docs/ directory into reference_docs ChromaDB collection on startup.
     Uses content hash for idempotency — unchanged files are skipped.
     Non-blocking - runs in background daemon thread.
+
+    Pass the app's existing chroma_store so the seed reuses the already-loaded
+    BGE embedder + open ChromaDB client instead of constructing a second store
+    (which reloaded the ~90MB BGE model and opened a duplicate client on the
+    same data dir during the startup window).
     """
     import threading
 
@@ -258,7 +263,7 @@ def _run_reference_docs_seed():
             from knowledge.reference_docs_manager import ReferenceDocsManager
             from pathlib import Path
 
-            manager = ReferenceDocsManager()
+            manager = ReferenceDocsManager(chroma_store=chroma_store)
             total_uploaded = 0
             total_skipped = 0
             total_failed = 0
@@ -293,6 +298,63 @@ def _run_reference_docs_seed():
     thread = threading.Thread(target=_seed_task, daemon=True)
     thread.start()
     print("[RefDocs] Started background auto-seed...")
+
+
+def _run_model_warmup(orchestrator):
+    """
+    Warm the models that otherwise cold-load on the user's FIRST message, in a
+    background daemon thread, so turn 1 doesn't pay their init / first-inference
+    latency. Net memory is unchanged — these all load on turn 1 regardless; this
+    only moves the cost off the user's critical path.
+
+    Safety: call this only AFTER build_orchestrator() has fully returned. By then
+    every build-time SentenceTransformer construction is done, so the lone
+    CrossEncoder construction below can't race the meta-tensor _st_load_lock.
+    Each step is independently guarded — warmup must never affect startup.
+    """
+    import threading
+
+    def _warm_task():
+        import time as _t
+        t0 = _t.time()
+        # 1) Cross-encoder reranker (MemoryRetriever lazy singleton) — the biggest
+        #    cold cost on turn 1; the gate's cross-encoder already loads at init.
+        try:
+            from memory.memory_retriever import MemoryRetriever
+            if MemoryRetriever._cross_encoder is None:
+                from sentence_transformers import CrossEncoder
+                MemoryRetriever._cross_encoder = CrossEncoder(
+                    "cross-encoder/ms-marco-MiniLM-L-6-v2"
+                )
+            if MemoryRetriever._cross_encoder:
+                MemoryRetriever._cross_encoder.predict([["warm", "warm up the reranker"]])
+        except Exception as e:
+            print(f"[Warmup] cross-encoder skip: {e}")
+        # 2) Shared MiniLM embedder first-inference (gate / tone / web-trigger).
+        try:
+            mm = getattr(orchestrator, "model_manager", None)
+            if mm is not None and getattr(mm, "embed_model", None) is not None:
+                mm.embed_model.encode(["warm"])
+        except Exception as e:
+            print(f"[Warmup] embedder skip: {e}")
+        # 3) ChromaDB BGE first-inference via the query-embedding cache path.
+        try:
+            store = orchestrator.memory_system.chroma_store
+            cached_embed = getattr(store, "_cached_embed", None)
+            if callable(cached_embed):
+                cached_embed("warm")
+        except Exception as e:
+            print(f"[Warmup] bge skip: {e}")
+        # 4) Web-search trigger anchor embeddings (computed once per process).
+        try:
+            from utils.web_search_trigger import _get_search_anchors
+            _get_search_anchors()
+        except Exception as e:
+            print(f"[Warmup] anchors skip: {e}")
+        print(f"[Warmup] Model warmup complete ({_t.time() - t0:.1f}s)")
+
+    threading.Thread(target=_warm_task, daemon=True).start()
+    print("[Warmup] Started background model warmup...")
 
 
 def _launch_wizard_ui(orchestrator, share, server_name, port):
@@ -529,8 +591,13 @@ def launch_gui(orchestrator, force_wizard=False):
     _run_monthly_notes_catchup()
 
     # ------- Reference docs auto-seed (run in background) -------
-    # Seeds docs/ directory into ChromaDB reference_docs collection (mtime-based idempotency)
-    _run_reference_docs_seed()
+    # Seeds docs/ directory into ChromaDB reference_docs collection (mtime-based idempotency).
+    # Reuse the app's store so it doesn't load a second BGE model / open a duplicate client.
+    _run_reference_docs_seed(orchestrator.memory_system.chroma_store)
+
+    # ------- Model warmup (run in background) -------
+    # Pre-load/first-infer the models that otherwise cold-load on the first message.
+    _run_model_warmup(orchestrator)
 
     # ------- Normal chat UI (non-first-run) -------
     def get_summary_status():

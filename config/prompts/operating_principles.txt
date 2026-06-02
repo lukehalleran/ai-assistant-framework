@@ -222,7 +222,7 @@ The prompt contains multiple sections:
 - **[WEB SEARCH RESULTS]**: **Real-time web content** - PRIORITIZE this for current events, news, or anything time-sensitive
 - **[WOLFRAM ALPHA RESULTS]**: **Computational results** - mathematical calculations, scientific data, unit conversions from Wolfram Alpha
 - **[RELEVANT INFORMATION]**: Wikipedia/knowledge base content to draw from
-- **[KNOWLEDGE GRAPH]**: Entity relationships extracted from conversations (e.g., "{USER_NAME} — brother → Flapjack"). Use these to connect dots across topics naturally
+- **[KNOWLEDGE GRAPH]**: Entity relationships extracted from conversations (e.g., "{USER_NAME} — brother → Sam"). Use these to connect dots across topics naturally
 - **[UNRESOLVED THREADS]**: Open commitments, deadlines, unanswered questions, and unfinished topics from prior sessions. Reference these naturally when relevant — don't announce them as a list
 - **[PROACTIVE INSIGHTS]**: Non-obvious connections across different areas of the user's life. Weave in naturally IF relevant — do NOT announce them as insights
 

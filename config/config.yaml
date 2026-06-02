@@ -98,7 +98,7 @@ paths:
   directives: structured_directives.txt
   system_prompt_file:
     name: daemon
-    system_prompt_file: /home/lukeh/Daemon_RAG_Agent_working/core/system_prompt.txt
+    system_prompt_file: core/system_prompt.txt
 features:
   enable_wikipedia: true
   enable_semantic_search: true
@@ -161,9 +161,9 @@ response_planning:
   review_timeout: 5.0
 file_access:
   enabled: true
+  # Personal note folders are added via the gitignored config/config.local.yaml override.
   approved_folders:
   - .
-  - ~/Documents/Luke Notes
   - ~/Documents
   - ~/Downloads
   max_read_bytes: 100000
@@ -422,6 +422,16 @@ user_profile:
   - recent_activity
   - feeling
   - feels
+  health_transient_ttl_hours: 96
+  # Owner-specific vocabulary (medications, personal relations, project terms, etc.)
+  # lives in the gitignored config/config.local.yaml and is deep-merged at load time
+  # (see app_config.load_local_overrides()). Ships empty/generic in the repo so no
+  # personal data is committed. A fresh install with no override is fully generic.
+  personal_vocabulary: {}
+obsidian:
+  enabled: true
+  # Real vault path is set in the gitignored config/config.local.yaml override.
+  vault_path: ~/Documents/Notes
 git_stats:
   enabled: true
   timeout_s: 10
@@ -444,6 +454,11 @@ daemon_notes:
   output_dir: daemon_notes
   max_per_prompt: 2
   collection_boost: -0.05
+action_guard:
+  pending_proposal_enabled: true
+  pending_proposal_ttl_turns: 2
+  claim_guard_enabled: true
+  claim_self_repair_enabled: true
 internet_actions:
   enabled: true
   telegram_bot_token: ''
@@ -451,9 +466,10 @@ internet_actions:
   discord_webhook_url: ''
   smtp_host: smtp.gmail.com
   smtp_port: 587
-  smtp_user: lukehalleran@gmail.com
+  # smtp_user / smtp_from (your email) are set via the gitignored config/config.local.yaml override.
+  smtp_user: ''
   smtp_password: ''
-  smtp_from: lukehalleran@gmail.com
+  smtp_from: ''
   github_write_enabled: true
   google_client_id: ''
   google_client_secret: ''

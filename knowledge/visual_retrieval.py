@@ -60,7 +60,7 @@ class VisualRetriever:
         When target_entities is provided, results are hard-filtered to only include
         images tagged with at least one of the target entities. This prevents
         entity confusion when multiple entity names appear in the query
-        (e.g. "I asked about Paczki but got Flapjack").
+        (e.g. "I asked about Mittens but got Whiskers").
 
         Returns:
             {
@@ -83,8 +83,8 @@ class VisualRetriever:
         merged = self._merge_results(clip_results, text_results, query=query)
 
         # Entity hard-filter: keep only images matching at least one target entity.
-        # When CLIP can't rank the target above other images (e.g. 8 Flapjack
-        # images outrank 2 Paczki images because CLIP just sees "cat"), fall
+        # When CLIP can't rank the target above other images (e.g. 8 Whiskers
+        # images outrank 2 Mittens images because CLIP just sees "cat"), fall
         # back to direct entity lookup from metadata.
         if target_entities and len(merged) > 0:
             filtered = [

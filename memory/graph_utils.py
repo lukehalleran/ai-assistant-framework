@@ -195,7 +195,7 @@ def extract_graph_entities(text: str, resolver, graph_memory=None) -> Set[str]:
     # Common English words that should never resolve as entities on their own.
     # These cause false positives in query expansion (e.g. "speed test" →
     # the node "speed" → user's pet, coworker, etc. via graph walk).
-    # Named entities (Flapjack, Auggie, Portland) aren't in this set.
+    # Named entities (Whiskers, Max, Denver) aren't in this set.
     _COMMON_WORDS = _STOPWORDS | frozenset({
         "test", "speed", "light", "water", "fire", "time", "work",
         "part", "point", "line", "end", "run", "set", "day", "way",
