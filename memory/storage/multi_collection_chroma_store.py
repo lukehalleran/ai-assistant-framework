@@ -94,6 +94,7 @@ class MultiCollectionChromaStore:
 
         # Single, shared embedder for this store instance
         model_name = os.getenv("CHROMA_ST_MODEL", "BAAI/bge-small-en-v1.5")
+        self.embedding_model_name = model_name
         device = os.getenv("CHROMA_DEVICE", "cpu")  # set to "cuda" if desired
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=model_name, device=device
@@ -137,20 +138,34 @@ class MultiCollectionChromaStore:
         except ValueError as e:
             if "Embedding function name mismatch" not in str(e):
                 raise
-            # Embedder mismatch — delete and recreate
+            # Embedder mismatch. NEVER auto-delete here — deleting + recreating would
+            # silently wipe EVERY document in the collection (including protected ones:
+            # conversations, obsidian_notes, reference_docs, wiki_knowledge), violating
+            # the critical no-auto-delete rule (deletions only via explicit action, never
+            # silently on access). Open the existing collection AS-IS so its data is
+            # preserved; it keeps the embedder it was created with. Switching embedders
+            # requires an explicit re-embed migration, not a destroy-on-access.
             try:
                 existing = self.client.get_collection(name=name)
             except Exception:
                 existing = None
-            existing_fn = self._collection_embedder_name(existing) if existing else "default"
-            logger.warning(f"[Chroma] '{name}' uses embedder '{existing_fn}', expected 'sentence_transformer'. Recreating…")
-            try:
-                self.client.delete_collection(name=name)
-            except Exception as de:
-                logger.error(f"[Chroma] CRITICAL: Could not delete stale collection '{name}': {de}")
-            self.collections[name] = self.client.get_or_create_collection(
-                name=name, embedding_function=self.embedding_fn
+            existing_fn = self._collection_embedder_name(existing) if existing else "unknown"
+            logger.error(
+                f"[Chroma] Collection '{name}' was created with embedder '{existing_fn}', "
+                f"but '{self.embedding_model_name}' is configured. Opening it AS-IS to "
+                f"preserve its documents (queries will use the collection's original "
+                f"embedder). To switch embedders, run an explicit re-embed migration — "
+                f"this path will NOT delete data."
             )
+            if existing is not None:
+                self.collections[name] = existing
+            else:
+                # Could not open it; do NOT delete. Surface loudly instead of wiping.
+                raise RuntimeError(
+                    f"[Chroma] Embedder mismatch on '{name}' and could not open it "
+                    f"as-is. Refusing to auto-delete (no-auto-delete rule); run an "
+                    f"explicit migration to rebuild this collection."
+                ) from e
         return self.collections[name]
 
     def _collection_embedder_name(self, coll) -> str:
