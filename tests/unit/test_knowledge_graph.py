@@ -349,6 +349,49 @@ class TestGraphMemoryTraversal:
         # First sentence should be the stronger edge (likes a, weight=6)
         assert "likes" in sentences[0]
 
+    def test_context_sentences_ages_out_stale_illness(self, graph):
+        """Stale transient (illness/recovery) edges must not surface as current.
+
+        Regression: the graph had no TTL/is_current, so a "currently sick" edge
+        kept being injected long after recovery (the profile + facts collection
+        already aged these out). get_context_sentences now applies the shared
+        relation_classifier TTL.
+        """
+        from datetime import datetime, timedelta
+        old = datetime.now() - timedelta(hours=500)  # well past the 96h health TTL
+        graph.add_relation(GraphEdge(
+            source_id="user", relation="health_status",
+            target_id="recovering_from_illness", last_seen=old, first_seen=old,
+        ))
+        graph.add_relation(GraphEdge(source_id="user", relation="brother_name", target_id="auggie"))
+
+        sentences = graph.get_context_sentences("user", depth=1, max_sentences=20)
+        joined = " ".join(sentences).lower()
+        assert "illness" not in joined and "recovering" not in joined
+        assert any("auggie" in s.lower() for s in sentences)  # durable edge survives
+
+    def test_context_sentences_keeps_fresh_illness(self, graph):
+        """A fresh illness edge is still surfaced (only stale ones age out)."""
+        from datetime import datetime, timedelta
+        recent = datetime.now() - timedelta(hours=2)
+        graph.add_relation(GraphEdge(
+            source_id="user", relation="health_status",
+            target_id="recovering_from_illness", last_seen=recent, first_seen=recent,
+        ))
+        sentences = graph.get_context_sentences("user", depth=1, max_sentences=20)
+        assert any("illness" in s.lower() for s in sentences)
+
+    def test_context_sentences_keeps_old_durable_edge(self, graph):
+        """A durable (non-transient) edge is kept regardless of age."""
+        from datetime import datetime, timedelta
+        old = datetime.now() - timedelta(days=400)
+        graph.add_relation(GraphEdge(
+            source_id="user", relation="lives_in", target_id="spain",
+            last_seen=old, first_seen=old,
+        ))
+        sentences = graph.get_context_sentences("user", depth=1, max_sentences=20)
+        assert any("spain" in s.lower() for s in sentences)
+
     def test_neighbors_nonexistent(self, graph):
         assert graph.neighbors("nonexistent") == {}
 

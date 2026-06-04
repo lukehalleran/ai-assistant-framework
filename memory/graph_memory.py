@@ -13,6 +13,15 @@ fast serialization (falls back to stdlib json if unavailable).
 
 Stats helpers: count_by_source() for provenance counts,
 count_bridge_edges() for cross-provenance edge counts.
+
+Read-side staleness: get_context_sentences() (the prompt-injection path) drops
+transient-state edges past their per-relation TTL via the shared
+relation_classifier, so illness/recovery/mood/activity relationships age out of
+graph context on the same horizon as the user profile and the ChromaDB `facts`
+collection. The graph has no `is_current` flag; this read-time filter is what
+keeps a once-stored "currently sick" edge from surfacing as present-tense
+indefinitely. Edges are never deleted — they just stop being injected once stale
+(a fresh re-mention refreshes last_seen and brings them back).
 """
 
 import os
@@ -292,10 +301,48 @@ class GraphMemory:
     # Natural Language Context (for prompt injection)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _edge_is_stale_transient(edge: GraphEdge, now: Optional[datetime] = None) -> bool:
+        """True if `edge` names a transient state past its per-relation TTL.
+
+        Mirrors the read-side TTL already applied to the user profile
+        (``user_profile.get_category``) and the ChromaDB ``facts`` collection
+        (``memory_retriever``) so a once-stored "currently sick" / "recovering
+        from illness" relationship does not keep surfacing as present-tense
+        indefinitely. The graph had no ``is_current`` flag and no TTL, so these
+        edges were emitted at full weight every time the query resolved to the
+        ``user`` node — the gap behind "the agent still thinks I'm sick".
+
+        Uses the shared single source of truth (``relation_classifier``):
+        illness/recovery/symptom relations age out on the health horizon
+        (~days), mood/activity state on the standard ephemeral horizon (~24h),
+        durable identity relations never age out. Age is measured from
+        ``last_seen`` (refreshed on every re-mention), so a fresh illness
+        mention surfaces again and only ages out once it stops being mentioned.
+        Edges with no/unparseable timestamp are kept (can't judge age).
+        """
+        from memory.relation_classifier import ephemeral_ttl_hours
+        ttl_hours = ephemeral_ttl_hours(edge.relation)
+        if ttl_hours is None or ttl_hours <= 0:
+            return False  # durable relation — never ages out
+        ts = edge.last_seen or edge.first_seen
+        if ts is None:
+            return False
+        try:
+            if ts.tzinfo is not None:
+                ts = ts.replace(tzinfo=None)
+            age_hours = ((now or datetime.now()) - ts).total_seconds() / 3600.0
+        except (TypeError, AttributeError):
+            return False
+        return age_hours > ttl_hours
+
     def get_context_sentences(self, entity_id: str, depth: int = 2, max_sentences: int = 15, with_attribution: bool = False) -> list[str]:
         """Return natural language sentences about an entity's neighborhood.
 
-        Sorted by edge weight (strongest relationships first).
+        Sorted by edge weight (strongest relationships first). Stale transient
+        edges (illness/recovery/mood/activity past their per-relation TTL) are
+        dropped first so the graph respects the same read-side staleness as the
+        profile and the ``facts`` collection — see ``_edge_is_stale_transient``.
 
         Args:
             entity_id: Entity to get context for
@@ -304,6 +351,9 @@ class GraphMemory:
             with_attribution: If True, append derivation markers to sentences
         """
         edges = self.subgraph_around(entity_id, depth=depth)
+        # Drop transient-state edges past their TTL (illness/recovery/mood/...)
+        now = datetime.now()
+        edges = [e for e in edges if not self._edge_is_stale_transient(e, now)]
         # Sort by weight descending
         edges.sort(key=lambda e: e.weight, reverse=True)
 
