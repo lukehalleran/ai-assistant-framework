@@ -96,3 +96,7 @@ RECOVERY_*.tar.gz
 # Local config overrides (personal/sensitive values — never commit)
 config.local.yaml
 config/config.local.yaml
+
+# Commit-message scratchpad (git log is the real archive) + gh token
+commit_message.txt
+.gh_token
