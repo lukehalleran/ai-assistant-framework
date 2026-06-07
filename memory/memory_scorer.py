@@ -17,18 +17,25 @@ Module Contract
   - 12-step scoring pipeline: base relevance + collection boost, recency decay (active-day or hourly),
     evidence-based truth (TruthScorer), importance, continuity (token overlap + last-10m),
     structural alignment (numeric/op density), topic match, analogy penalty, anchor bonus
-    (deictic follow-ups), meta-conversational bonus, graph proximity bonus, staleness penalty
+    (deictic follow-ups), meta-conversational bonus, graph proximity bonus, staleness penalty,
+    health-framing decay
   - Intent-driven weight overrides: instance attribute _intent_weight_overrides set/cleared by
     PromptBuilder to thread IntentClassifier overrides through deep call chains
   - Graph-boosted scoring: _graph_memory + _entity_resolver set by PromptBuilder; adds 0.05 per
     graph-connected entity mention (capped at GRAPH_SCORING_BOOST_CAP=0.15)
   - Temporal anchor: _temporal_anchor_hours weight key reshapes recency decay for TEMPORAL_RECALL
   - Staleness penalty: staleness_ratio from ClaimIndex, 2x multiplier at >=0.8, reflections at 60%
+  - Health-framing decay: free-text illness/recovery narrative (post-viral, recovering from illness,
+    "been sick") past the shared health-transient TTL is down-weighted in personal-narrative
+    collections (relation_classifier.health_transient_text_ttl_hours); the free-text analog of the
+    structured relation TTL already applied to graph edges, facts, and the profile
   - Size penalty for large docs lacking keyword relevance (>10KB threshold)
   - Deictic drift guardrail: 0.85x multiplier when continuity + anchor are both low
 - Dependencies:
-  - config.app_config (SCORE_WEIGHTS, RECENCY_DECAY_RATE, COLLECTION_BOOSTS, STALENESS_*, GRAPH_*)
+  - config.app_config (SCORE_WEIGHTS, RECENCY_DECAY_RATE, COLLECTION_BOOSTS, STALENESS_*,
+    HEALTH_FRAMING_DECAY_*, GRAPH_*)
   - memory.truth_scorer.TruthScorer (evidence-based truth at read time)
+  - memory.relation_classifier.health_transient_text_ttl_hours (free-text illness staleness horizon)
   - memory.graph_utils (extract_graph_entities, get_related_display_names) [optional]
   - utils.time_manager (active-day decay) [optional]
 - Side effects:
@@ -54,8 +61,13 @@ from config.app_config import (
     STALENESS_STEEP_THRESHOLD,
     STALENESS_STEEP_MULTIPLIER,
     STALENESS_REFLECTION_WEIGHT_FACTOR,
+    HEALTH_FRAMING_DECAY_ENABLED,
+    HEALTH_FRAMING_DECAY_WEIGHT,
+    HEALTH_FRAMING_DECAY_MAX_PENALTY,
+    HEALTH_FRAMING_DECAY_COLLECTIONS,
 )
 from memory.truth_scorer import TruthScorer
+from memory.relation_classifier import health_transient_text_ttl_hours
 
 logger = get_logger("memory_scorer")
 
@@ -554,6 +566,26 @@ class MemoryScorer:
                         base_penalty *= STALENESS_REFLECTION_WEIGHT_FACTOR
                     staleness_penalty = -min(base_penalty, STALENESS_MAX_PENALTY)
 
+            # 12b) health-framing decay (stale free-text illness/recovery
+            # narrative). Structured illness relations already age out via
+            # relation_classifier (graph edges, facts collection, profile); this
+            # applies the SAME health-transient horizon to narrative memory text
+            # so an old "post-viral" / "recovering from illness" line in a
+            # conversation/reflection/note stops surfacing as present-tense.
+            # Scoped to personal-narrative collections only (never wiki/refs,
+            # whose "viral disease" articles are factual, not user state).
+            health_framing_penalty = 0.0
+            if HEALTH_FRAMING_DECAY_ENABLED:
+                hf_collection = m.get('collection', m.get('source', ''))
+                if hf_collection in HEALTH_FRAMING_DECAY_COLLECTIONS:
+                    hf_ttl = health_transient_text_ttl_hours(blob)
+                    if hf_ttl and age_hours > hf_ttl:
+                        # Ramp: base at the boundary, growing with overage,
+                        # capped. age_hours/hf_ttl already computed above.
+                        overage = (age_hours - hf_ttl) / hf_ttl
+                        base = HEALTH_FRAMING_DECAY_WEIGHT * (1.0 + overage)
+                        health_framing_penalty = -min(base, HEALTH_FRAMING_DECAY_MAX_PENALTY)
+
             # Timeline bonus: summaries/reflections are more useful for
             # progression queries ("how long", "over time") because they
             # aggregate across multiple interactions.
@@ -575,6 +607,7 @@ class MemoryScorer:
                 meta_bonus +
                 graph_bonus +
                 staleness_penalty +
+                health_framing_penalty +
                 timeline_bonus +
                 penalty
             )
@@ -588,6 +621,7 @@ class MemoryScorer:
                     'meta_bonus': meta_bonus,
                     'graph_bonus': graph_bonus,
                     'staleness_penalty': staleness_penalty,
+                    'health_framing_penalty': health_framing_penalty,
                     'size_penalty': size_penalty,
                     'penalty': penalty,
                 }

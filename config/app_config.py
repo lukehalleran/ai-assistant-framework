@@ -1162,6 +1162,30 @@ STALENESS_INDEX_PATH: str = os.getenv("STALENESS_INDEX_PATH", str(STALENESS_CFG.
 STALENESS_ENABLED = bool(int(os.getenv("STALENESS_ENABLED", "1" if STALENESS_ENABLED else "0")))
 
 # --------------------------------------------------------------------
+# Health-Framing Decay (read-time staleness for free-text illness narrative)
+# --------------------------------------------------------------------
+# Structured illness/recovery relations already age out via relation_classifier
+# (graph, facts, profile). This applies the SAME health-transient horizon
+# (PROFILE_HEALTH_TRANSIENT_TTL_HOURS) to narrative memory *text* so a stale
+# "post-viral" / "recovering from illness" line in a conversation/note/reflection
+# stops reading as present-tense health context. Episode horizon is shared; only
+# the penalty shape + collection scope are configured here.
+HEALTH_FRAMING_DECAY_CFG = config.get("health_framing_decay", {})
+HEALTH_FRAMING_DECAY_ENABLED: bool = bool(HEALTH_FRAMING_DECAY_CFG.get("enabled", True))
+# Base penalty applied at the TTL boundary (grows with how far past TTL the memory is)
+HEALTH_FRAMING_DECAY_WEIGHT: float = float(HEALTH_FRAMING_DECAY_CFG.get("weight", 0.25))
+# Cap on the total deduction (mirrors STALENESS_MAX_PENALTY)
+HEALTH_FRAMING_DECAY_MAX_PENALTY: float = float(HEALTH_FRAMING_DECAY_CFG.get("max_penalty", 0.4))
+# Personal-narrative collections this penalty applies to (never wiki/reference)
+HEALTH_FRAMING_DECAY_COLLECTIONS = set(
+    HEALTH_FRAMING_DECAY_CFG.get(
+        "collections",
+        ["conversations", "obsidian_notes", "reflections", "summaries", "daemon_self_notes"],
+    )
+)
+HEALTH_FRAMING_DECAY_ENABLED = bool(int(os.getenv("HEALTH_FRAMING_DECAY_ENABLED", "1" if HEALTH_FRAMING_DECAY_ENABLED else "0")))
+
+# --------------------------------------------------------------------
 # Agentic Memory Search
 # --------------------------------------------------------------------
 AGENTIC_CFG = config.get("agentic_search", {})

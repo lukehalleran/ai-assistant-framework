@@ -483,6 +483,29 @@ class StalenessSection(BaseModel):
     index_path: str = "data/claim_index.json"
 
 
+class HealthFramingDecaySection(BaseModel):
+    """Read-time decay for stale *free-text* health framing.
+
+    Structured illness/recovery relations already age out via
+    ``relation_classifier`` (graph edges, facts collection, profile). This
+    applies the SAME health-transient horizon
+    (``user_profile.health_transient_ttl_hours``) to narrative memory text so an
+    old "post-viral" / "recovering from illness" line in a conversation, note,
+    or reflection stops reading as present-tense. The episode horizon is shared;
+    only the penalty shape + collection scope live here.
+    """
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    weight: float = Field(default=0.25, ge=0.0, le=1.0)
+    max_penalty: float = Field(default=0.4, ge=0.0, le=1.0)
+    collections: List[str] = Field(
+        default_factory=lambda: [
+            "conversations", "obsidian_notes", "reflections",
+            "summaries", "daemon_self_notes",
+        ]
+    )
+
+
 class EscalationSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
@@ -901,6 +924,7 @@ class DaemonConfig(BaseModel):
     llm_compression: LlmCompressionSection = Field(default_factory=LlmCompressionSection)
     thread_surfacing: ThreadSurfacingSection = Field(default_factory=ThreadSurfacingSection)
     staleness: StalenessSection = Field(default_factory=StalenessSection)
+    health_framing_decay: HealthFramingDecaySection = Field(default_factory=HealthFramingDecaySection)
     implementation_tracking: ImplTrackingSection = Field(default_factory=ImplTrackingSection)
     provenance: ProvenanceSection = Field(default_factory=ProvenanceSection)
     synthesis: SynthesisSection = Field(default_factory=SynthesisSection)

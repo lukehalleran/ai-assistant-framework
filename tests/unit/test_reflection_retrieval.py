@@ -119,7 +119,14 @@ class TestReflectionMetadata:
         assert "FAISS" in entities
         assert "Daemon" in entities
 
-    def test_detects_project_area_daemon(self):
+    def test_detects_project_area_from_personal_vocab(self, monkeypatch):
+        """Per-user project areas come from config (gitignored personal vocab),
+        not source, so inject one and assert it is detected and takes priority.
+        """
+        import config.app_config as app_config
+        monkeypatch.setattr(
+            app_config, "PROFILE_PERSONAL_PROJECT_AREAS", {"daemon": ["daemon"]}
+        )
         text = "The retrieval system in Daemon uses RAG architecture."
         meta = extract_reflection_metadata(text)
         assert meta["project_area"] == "daemon"
