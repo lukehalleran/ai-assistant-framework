@@ -37,6 +37,14 @@ Public API
       the relation is durable.
   is_ephemeral_relation(relation) -> bool
       Convenience: ``ephemeral_ttl_hours(relation) is not None``.
+  health_transient_text_ttl_hours(text) -> Optional[float]
+      TTL for *free-text* narrative that frames a transient illness/recovery
+      episode (no structured relation), or None. Shares the health-transient
+      horizon so a "post-viral fatigue" line in a three-week-old reflection
+      ages out of read-time context on the same clock as the structured
+      ``health_status -> recovering_from_illness`` graph edge / profile fact.
+  is_health_transient_text(text) -> bool
+      Convenience: ``health_transient_text_ttl_hours(text) is not None``.
 
 Notes
 -----
@@ -49,6 +57,10 @@ Notes
     block intentionally still uses the exact config list — health-transient
     facts should be *stored* (they're useful for a few days), just aged out on
     read.
+  * The free-text detector is deliberately phrase-based and conservative: bare
+    "viral" (viral video), "cold" (cold weather), "recovery" (workout recovery)
+    are NOT cues — they false-positive in narrative. Only illness-anchored
+    phrases match. Durable/chronic language suppresses the match entirely.
 """
 
 from __future__ import annotations
@@ -109,6 +121,35 @@ _DURABLE_OVERRIDES = frozenset({
     "chronic_condition", "chronic_conditions", "chronic_illness",
     "medical_condition", "diagnosis", "diagnosed_with",
 })
+
+# --------------------------------------------------------------------------
+# Free-text health-framing patterns (narrative memories — conversations,
+# reflections, summaries, notes). Narrative text has no structured predicate,
+# so we match curated transient-illness *phrases*. The TTL horizon is the same
+# health-transient horizon used for structured relations (single source of
+# truth): a "post-viral fatigue" line in a weeks-old reflection should stop
+# reading as present-tense exactly like the graph edge / profile fact already
+# do. Conservative on purpose — illness-anchored phrases only.
+# --------------------------------------------------------------------------
+
+_HEALTH_TRANSIENT_TEXT_PHRASES = (
+    "post-viral", "post viral", "postviral",
+    "post-illness", "post illness",
+    "recovering from", "still recovering",
+    "fighting a virus", "fighting the virus", "fighting the flu",
+    "fighting a bug", "fighting a cold", "fighting off a",
+    "been sick", "was sick", "still sick", "feeling sick", "feel sick",
+    "got sick", "getting sick", "so sick", "i'm sick", "im sick",
+    "the flu", "stomach bug", "head cold", "under the weather",
+)
+
+# Durable / chronic health language that must NOT be read as a transient
+# episode (mirrors _DURABLE_OVERRIDES for relation names). Presence of any of
+# these in the text suppresses the transient classification entirely.
+_DURABLE_HEALTH_TEXT_PHRASES = (
+    "chronic", "disability", "disabled", "autoimmune",
+    "diagnosed with", "diagnosis", "permanent", "lifelong",
+)
 
 
 def _config_exact_set() -> frozenset:
@@ -178,3 +219,30 @@ def ephemeral_ttl_hours(relation: str) -> Optional[float]:
 def is_ephemeral_relation(relation: str) -> bool:
     """True if the relation names any transient state (has a finite TTL)."""
     return ephemeral_ttl_hours(relation) is not None
+
+
+def health_transient_text_ttl_hours(text: str) -> Optional[float]:
+    """
+    Return the health-transient TTL (hours) for *narrative text* that frames a
+    transient illness/recovery episode, or None when the text has no such
+    framing — or names a durable/chronic condition, which never ages out.
+
+    Unlike :func:`ephemeral_ttl_hours` (which keys on a structured relation
+    name), this scans free-text memory content (conversation turns, reflections,
+    summaries, notes) for curated illness phrases. The horizon returned is the
+    shared health-transient TTL, so narrative ages out of read-time context on
+    the same clock as structured relations.
+    """
+    if not text:
+        return None
+    t = text.lower()
+    if any(p in t for p in _DURABLE_HEALTH_TEXT_PHRASES):
+        return None
+    if any(p in t for p in _HEALTH_TRANSIENT_TEXT_PHRASES):
+        return _health_transient_ttl_hours()
+    return None
+
+
+def is_health_transient_text(text: str) -> bool:
+    """True if narrative text frames a transient illness/recovery state."""
+    return health_transient_text_ttl_hours(text) is not None

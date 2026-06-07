@@ -115,3 +115,65 @@ def test_disability_not_swept_by_value_independent_relation():
     an illness episode and must never get a finite TTL on relation name alone."""
     for rel in ("disability", "permanent_disability", "chronic_condition"):
         assert rc.is_ephemeral_relation(rel) is False
+
+
+# --------------------------------------------------------------------------
+# Free-text health-framing detection (narrative memories)
+# --------------------------------------------------------------------------
+
+HEALTH_TRANSIENT_TEXT = [
+    "That post-viral drag is stubborn — you've been fighting it",
+    "Still post-viral and grinding through homework",
+    "You were fighting a virus like 3-4 days ago, man",
+    "That's your body still recovering from the flu",
+    "Post-viral fatigue hit hard this afternoon",
+    "honestly worried I was sick or something",
+    "I think I'm getting sick again",
+    "feeling under the weather today",
+]
+
+
+@pytest.mark.parametrize("text", HEALTH_TRANSIENT_TEXT)
+def test_health_transient_text_detected(text):
+    from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS
+    assert rc.health_transient_text_ttl_hours(text) == float(PROFILE_HEALTH_TRANSIENT_TTL_HOURS)
+    assert rc.is_health_transient_text(text) is True
+
+
+NOT_HEALTH_TEXT = [
+    "that video went viral on twitter overnight",   # bare "viral" is not a cue
+    "it was cold weather on the walk but otherwise fine",  # bare "cold"
+    "my workout recovery time is 2-3 days",         # bare "recovery"
+    "we shipped a retrieval overhaul and OAuth2 pipeline today",
+    "the simulation homework is due soon",
+    "",
+]
+
+
+@pytest.mark.parametrize("text", NOT_HEALTH_TEXT)
+def test_non_health_text_not_detected(text):
+    assert rc.health_transient_text_ttl_hours(text) is None
+    assert rc.is_health_transient_text(text) is False
+
+
+DURABLE_HEALTH_TEXT = [
+    "I have a chronic illness so fatigue is just part of life",
+    "diagnosed with an autoimmune condition years ago",
+    "it's a permanent disability, not something I recover from",
+    "managing a lifelong condition, was sick of explaining it",  # durable cue wins
+]
+
+
+@pytest.mark.parametrize("text", DURABLE_HEALTH_TEXT)
+def test_durable_health_text_suppresses_transient(text):
+    """Chronic / permanent condition language must NOT be treated as a transient
+    episode even if a transient phrase also appears (mirrors _DURABLE_OVERRIDES
+    for relation names — a disability is not an illness episode)."""
+    assert rc.health_transient_text_ttl_hours(text) is None
+    assert rc.is_health_transient_text(text) is False
+
+
+def test_health_text_ttl_reads_config_live(monkeypatch):
+    import config.app_config as cfg
+    monkeypatch.setattr(cfg, "PROFILE_HEALTH_TRANSIENT_TTL_HOURS", 12)
+    assert rc.health_transient_text_ttl_hours("still post-viral and tired") == 12.0

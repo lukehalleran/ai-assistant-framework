@@ -164,3 +164,81 @@ def test_fact_ephemeral_ttl_helper():
     assert _fact_ephemeral_ttl("user | current_activity | x") == float(E)
     assert _fact_ephemeral_ttl("user | name | Luke") is None
     assert _fact_ephemeral_ttl("no pipes here") is None
+
+
+# ==========================================================================
+# Read-time scorer: free-text health-framing decay (MemoryScorer.rank_memories)
+# ==========================================================================
+#
+# The structured paths above (profile, facts) age out illness *relations*. But
+# the "post-viral" framing the user complained about also lived as free text in
+# conversations / reflections / notes, which carry no relation and so were never
+# aged out. These tests cover the scorer-level decay that closes that gap.
+
+from memory.memory_scorer import MemoryScorer
+
+
+def _mem(content, collection, age_hours, rel_score=0.8):
+    return {
+        "content": content,
+        "collection": collection,
+        "relevance_score": rel_score,
+        "timestamp": (datetime.now() - timedelta(hours=age_hours)).isoformat(),
+        "metadata": {},
+    }
+
+
+def _score_one(mem):
+    """Score a single memory and return its final_score."""
+    ranked = MemoryScorer().rank_memories([dict(mem)], "how have i been feeling lately")
+    return ranked[0]["final_score"]
+
+
+def test_stale_health_framing_is_penalized():
+    from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS as H
+    stale = "You were fighting a virus — that post-viral drag is stubborn"
+    fresh_score = _score_one(_mem(stale, "conversations", age_hours=2))          # within TTL
+    stale_score = _score_one(_mem(stale, "conversations", age_hours=H + 400))    # well past TTL
+    assert stale_score < fresh_score - 0.1  # meaningfully down-weighted
+
+
+def test_non_health_narrative_not_penalized():
+    """A stale non-health memory of the same age/collection is untouched, so the
+    penalty is health-specific, not a generic recency effect (recency is handled
+    separately and is identical for both)."""
+    from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS as H
+    health = _mem("still recovering from illness, feeling wiped", "conversations", H + 400)
+    other = _mem("we shipped the retrieval overhaul and OAuth2 pipeline", "conversations", H + 400)
+    assert _score_one(health) < _score_one(other)
+
+
+def test_health_framing_decay_scoped_to_narrative_collections():
+    """A factual wiki article mentioning illness is NOT user state and must not
+    be penalized — collection scoping keeps the penalty off reference content."""
+    from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS as H
+    text = "Post viral fatigue syndrome is managed with rest and nutrition"
+    wiki = _score_one(_mem(text, "wiki_knowledge", H + 400))     # not in scoped set
+    convo = _score_one(_mem(text, "conversations", H + 400))     # scoped → penalized
+    assert convo < wiki
+
+
+def test_durable_condition_narrative_not_penalized():
+    """Chronic/permanent condition language never ages out, even old and in a
+    scoped collection (a disability is not an illness episode)."""
+    from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS as H
+    durable = _mem("Luke has a chronic autoimmune condition he manages daily",
+                   "obsidian_notes", H + 400)
+    transient = _mem("Luke is recovering from illness and feeling wiped",
+                     "obsidian_notes", H + 400)
+    assert _score_one(durable) > _score_one(transient)
+
+
+def test_health_framing_decay_respects_disabled_flag(monkeypatch):
+    import memory.memory_scorer as ms
+    from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS as H
+    stale = _mem("still post-viral and dragging", "conversations", H + 400)
+    monkeypatch.setattr(ms, "HEALTH_FRAMING_DECAY_ENABLED", False)
+    disabled_score = ms.MemoryScorer().rank_memories([dict(stale)], "q")[0]["final_score"]
+    monkeypatch.setattr(ms, "HEALTH_FRAMING_DECAY_ENABLED", True)
+    enabled_score = ms.MemoryScorer().rank_memories([dict(stale)], "q")[0]["final_score"]
+    assert disabled_score > enabled_score

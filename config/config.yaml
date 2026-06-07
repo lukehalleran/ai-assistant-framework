@@ -293,6 +293,21 @@ staleness:
   historical_threshold: 0.6
   reflection_weight_factor: 0.6
   index_path: data/claim_index.json
+# Read-time decay for stale *free-text* health framing (post-viral / recovering
+# from illness / "been sick" narrative in conversations, notes, reflections).
+# Structured illness relations already age out via relation_classifier; this
+# applies the SAME horizon (user_profile.health_transient_ttl_hours) to
+# narrative memory text so an old illness mention stops reading as present-tense.
+health_framing_decay:
+  enabled: true
+  weight: 0.25          # base penalty at the TTL boundary
+  max_penalty: 0.4      # cap on the deduction (mirrors staleness)
+  collections:          # only personal-narrative collections (never wiki/refs)
+    - conversations
+    - obsidian_notes
+    - reflections
+    - summaries
+    - daemon_self_notes
 implementation_tracking:
   enabled: true
   cooldown_seconds: 86400
