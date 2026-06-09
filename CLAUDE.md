@@ -113,6 +113,8 @@ core/                         # Request orchestration
 │   └── audit.py              # Append-only JSONL audit log (logs/actions_audit.jsonl)
 ├── agentic/                  # ReAct search loop
 │   ├── gate.py               # 4-tier agentic gate: AgenticDecision + evaluate_agentic_gate()
+│   │                         #   Tier 1 also routes file/saved-document RETRIEVAL intent
+│   │                         #   (keywords + regex + pronoun/affirmation continuation) to tools
 │   ├── controller.py         # Loop orchestration, [TOOL STATUS] injection
 │   ├── tools.py              # 20 tool types + get_tool_health() + DISPATCH_TABLE (the single
 │   │                         #   decision→handler routing table; ToolExecutor.dispatch_single AND
@@ -120,6 +122,9 @@ core/                         # Request orchestration
 │   ├── formatters.py         # Stateless result formatting
 │   ├── types.py              # SearchDecision, tool definitions, LOOKUP_CONTACT_TOOL_DEFINITION
 │   └── protocols.py          # Native tools + XML parsing + contact lookup aliases
+│                             #   (native handler recovers XML tool markers from plain
+│                             #   text when no tool_calls; nested <file_read><path>X</path>
+│                             #   ...</file_read> child-tag forms for file/doc/url tools)
 └── prompt/                   # Modular prompt system
     ├── builder.py            # Thin orchestrator + ambiguity detection wiring
     ├── base.py               # Base utilities + fallback classes
@@ -193,7 +198,9 @@ knowledge/                    # External knowledge
 ├── wiki_enrichment.py        # Shutdown: wiki articles → graph nodes
 ├── wikidata_resolver.py      # Personal ↔ Wikidata entity resolution
 ├── proposal_generator.py     # Goal-directed code proposals
-├── document_generator.py     # Research & save markdown docs (report/summary)
+├── document_generator.py     # Research & save markdown docs (report/summary). Bounded
+│                             #   trigger (doc-noun must be object of save-verb) + LLM
+│                             #   API-error sentinel guard (never writes a corrupt file)
 ├── daemon_notes_manager.py   # Daemon self-notes for future sessions (non-ground-truth)
 ├── implementation_detector.py # 4-stage proposal status detection
 └── synthesis_models.py       # Synthesis data models + enums

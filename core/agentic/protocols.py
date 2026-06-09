@@ -13,8 +13,13 @@ Public Interface:
     - detect_protocol(model_name: str) -> SearchProtocol
     - get_protocol_handler(protocol, wolfram_available, sandbox_available, ...) -> BaseProtocolHandler
     - BaseProtocolHandler.parse_response() -> List[SearchDecision]
-    - NativeToolsHandler.parse_response() -> List[SearchDecision] (parses ALL tool_calls)
-    - XMLMarkerHandler.parse_response() -> List[SearchDecision] (parses ALL XML markers)
+    - NativeToolsHandler.parse_response() -> List[SearchDecision] (parses ALL tool_calls;
+      falls back to text parsing — incl. XML markers — when the API returns no tool_calls,
+      as OpenRouter-proxied models often emit the call as plain content)
+    - XMLMarkerHandler.parse_response() -> List[SearchDecision] (parses ALL XML markers;
+      accepts both attribute form <file_read path="x"> and nested child-tag form
+      <file_read><path>x</path></file_read> for file_read/file_grep/file_list/fetch_url/
+      get_full_document — models commonly emit the nested form)
 
 Supported Tools:
     - web_search / <search>: Web search queries
@@ -780,6 +785,22 @@ class NativeToolsHandler(BaseProtocolHandler):
                         action_reason=reason or "User requested",
                     ))
 
+        # Pattern 4: generic XML tool markers emitted as text. OpenRouter-proxied
+        # native models (e.g. DeepSeek) frequently emit <file_read>, <search>,
+        # <memory>, <fetch_url>, etc. as plain content instead of structured
+        # tool_calls. Delegate to the XML marker parser — which handles both the
+        # attribute and nested child-tag forms — so these execute instead of
+        # leaking the raw XML into the answer.
+        if not decisions:
+            xml_decisions = XMLMarkerHandler().parse_response(content)
+            actionable = [d for d in xml_decisions if not d.wants_answer]
+            if actionable:
+                logger.info(
+                    f"[AgenticProtocol] Recovered {len(actionable)} XML tool marker(s) "
+                    f"from native-model text content"
+                )
+                decisions.extend(actionable)
+
         return decisions
 
     def _extract_content(self, response: Any) -> Optional[str]:
@@ -997,6 +1018,18 @@ class XMLMarkerHandler(BaseProtocolHandler):
         r'<get_full_document\s+title=["\']([^"\']+)["\']\s*>(.*?)</get_full_document>',
         re.DOTALL | re.IGNORECASE
     )
+    # Nested-form fallbacks for the attribute-style file/doc/url tools. Some models
+    # (notably OpenRouter-proxied DeepSeek) emit the params as nested child tags
+    # — e.g. <file_read><path>foo.md</path></file_read> — instead of the documented
+    # attribute form <file_read path="foo.md">. Without these, the marker fails to
+    # parse and the raw XML leaks into the answer (the tool is never executed).
+    # Mirrors the MEMORY_NESTED_PATTERN idiom. These match ONLY the attribute-less
+    # opening tag (\s*>), so they never collide with the attribute patterns above.
+    FILE_READ_NESTED_PATTERN = re.compile(r'<file_read\s*>(.*?)</file_read>', re.DOTALL | re.IGNORECASE)
+    FILE_GREP_NESTED_PATTERN = re.compile(r'<file_grep\s*>(.*?)</file_grep>', re.DOTALL | re.IGNORECASE)
+    FILE_LIST_NESTED_PATTERN = re.compile(r'<file_list\s*>(.*?)</file_list>', re.DOTALL | re.IGNORECASE)
+    FETCH_URL_NESTED_PATTERN = re.compile(r'<fetch_url\s*>(.*?)</fetch_url>', re.DOTALL | re.IGNORECASE)
+    GET_FULL_DOCUMENT_NESTED_PATTERN = re.compile(r'<get_full_document\s*>(.*?)</get_full_document>', re.DOTALL | re.IGNORECASE)
     # Expand memory pattern: <expand_memory id="abc12345" collection="conversations" window="3">reason</expand_memory>
     EXPAND_MEMORY_PATTERN = re.compile(
         r'<expand_memory\s+id=["\']([^"\']+)["\']'
@@ -1202,6 +1235,84 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     wants_file_list=True,
                     file_list_path=dirpath,
                     file_list_recursive=recursive.lower() == "true",
+                ))
+
+        # Nested-form fallbacks: <file_read><path>X</path></file_read>, etc.
+        # (params as child tags rather than attributes — a common model error).
+        for m in self.FILE_READ_NESTED_PATTERN.finditer(text):
+            body = m.group(1)
+            filepath = _extract_nested_tag(body, "path") or _extract_nested_tag(body, "filepath")
+            if not filepath:
+                # Bare-content form: <file_read>foo/bar.md</file_read>. Only accept a
+                # single path-like token so reason prose isn't mistaken for a path.
+                bare = (_strip_xml_tags(body) if '<' in body else body).strip()
+                if bare and ' ' not in bare and ('/' in bare or '.' in bare):
+                    filepath = bare
+            if filepath:
+                sl = _extract_nested_tag(body, "start_line")
+                el = _extract_nested_tag(body, "end_line")
+                logger.debug(f"[AgenticProtocol] XML file_read nested marker found: {filepath}")
+                decisions.append(SearchDecision(
+                    wants_file_read=True,
+                    file_read_path=filepath,
+                    file_read_start_line=int(sl) if sl and sl.isdigit() else None,
+                    file_read_end_line=int(el) if el and el.isdigit() else None,
+                    file_read_reason=_extract_nested_tag(body, "reason"),
+                ))
+
+        for m in self.FILE_GREP_NESTED_PATTERN.finditer(text):
+            body = m.group(1)
+            pattern = _extract_nested_tag(body, "pattern")
+            if pattern:
+                logger.debug(f"[AgenticProtocol] XML file_grep nested marker found: {pattern}")
+                decisions.append(SearchDecision(
+                    wants_file_grep=True,
+                    file_grep_pattern=pattern,
+                    file_grep_glob=_extract_nested_tag(body, "glob"),
+                    file_grep_folder=_extract_nested_tag(body, "folder"),
+                    file_grep_reason=_extract_nested_tag(body, "reason"),
+                ))
+
+        for m in self.FILE_LIST_NESTED_PATTERN.finditer(text):
+            body = m.group(1)
+            dirpath = _extract_nested_tag(body, "path") or _extract_nested_tag(body, "dirpath")
+            if not dirpath:
+                bare = (_strip_xml_tags(body) if '<' in body else body).strip()
+                if bare and ' ' not in bare:
+                    dirpath = bare
+            if dirpath:
+                recursive = (_extract_nested_tag(body, "recursive") or "false")
+                logger.debug(f"[AgenticProtocol] XML file_list nested marker found: {dirpath}")
+                decisions.append(SearchDecision(
+                    wants_file_list=True,
+                    file_list_path=dirpath,
+                    file_list_recursive=recursive.lower() == "true",
+                ))
+
+        for m in self.FETCH_URL_NESTED_PATTERN.finditer(text):
+            body = m.group(1)
+            url = _extract_nested_tag(body, "url")
+            if not url:
+                bare = (_strip_xml_tags(body) if '<' in body else body).strip()
+                if bare and ' ' not in bare and ('http://' in bare or 'https://' in bare):
+                    url = bare
+            if url:
+                logger.debug(f"[AgenticProtocol] XML fetch_url nested marker found: {url}")
+                decisions.append(SearchDecision(
+                    wants_fetch_url=True,
+                    fetch_url=url,
+                    fetch_url_reason=_extract_nested_tag(body, "reason"),
+                ))
+
+        for m in self.GET_FULL_DOCUMENT_NESTED_PATTERN.finditer(text):
+            body = m.group(1)
+            title = _extract_nested_tag(body, "title")
+            if title:
+                logger.debug(f"[AgenticProtocol] XML get_full_document nested marker found: {title}")
+                decisions.append(SearchDecision(
+                    wants_full_document=True,
+                    full_document_title=title,
+                    full_document_reason=_extract_nested_tag(body, "reason"),
                 ))
 
         # Check for search markers (content-style: <search>query</search> or <web_search>query</web_search>)

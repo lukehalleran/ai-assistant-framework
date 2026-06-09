@@ -27,6 +27,17 @@ Module Contract
   - Path safety: output always inside documents/, slug sanitized
   - Atomic index: file written first, then index updated
   - Summary: single LLM draft call; Report: outline then structured draft
+  - LLM-failure safety: generate_once() returns API-error sentinel strings
+    ("[API Error] ...", "[CREDITS EXHAUSTED] ...") rather than raising; these
+    are detected (topic refine, outline, draft) and abort generation with a
+    RuntimeError so a corrupt frontmatter-only file is never written/indexed
+  - Trigger detection: detect_document_intent() requires the doc-noun to be the
+    (near) OBJECT of the save-verb via DOCUMENT_TRIGGER_PATTERN's bounded gap
+    (_VERB_NOUN_GAP, ~4 words). Incidental co-occurrence of a save-verb and a
+    doc-noun across a long multi-sentence message (e.g. a pasted homework prompt:
+    "Create a new dataframe ... Print the model summary") does NOT trigger — that
+    false-fire previously hijacked the turn with a "Document saved" receipt and
+    swallowed the conversational reply (see gui/handlers.py:_run_doc_generation)
 - Side effects:
   - File writes to documents/ directory
   - LLM API calls via model_manager
@@ -52,6 +63,30 @@ from config import app_config
 from utils.logging_utils import get_logger
 
 logger = get_logger("document_generator")
+
+# LLM failure sentinels returned by ModelManager._classify_api_error(). These
+# are graceful-degradation strings (e.g. "[API Error] Error code: 402 ...",
+# "[CREDITS EXHAUSTED] ...") that generate_once() returns INSTEAD of raising.
+# They are not content — they must never be written to disk as a document body,
+# nor used as a topic or outline. See _looks_like_llm_error().
+_LLM_ERROR_SENTINELS = (
+    "[API Error]", "[API unavailable]", "[CREDITS EXHAUSTED]", "[RATE LIMITED]",
+    "[AUTH ERROR]", "[MODEL NOT SUPPORTED]", "[MODEL NOT FOUND]", "[SERVER ERROR]",
+)
+
+
+def _looks_like_llm_error(text: str | None) -> bool:
+    """True if an LLM call returned an error sentinel instead of real content.
+
+    The sentinel is the leading content of the returned string, so we only scan
+    the head to avoid false positives from a legitimate doc that mentions an
+    error tag deep in its body.
+    """
+    if not text:
+        return False
+    head = text.lstrip()[:120]
+    return any(sentinel in head for sentinel in _LLM_ERROR_SENTINELS)
+
 
 # ============================================================================
 # Data models
@@ -155,7 +190,9 @@ class DocumentGenerator:
 
         Raises:
             ValueError: If no model_manager is available.
-            RuntimeError: If LLM returns empty content.
+            RuntimeError: If the LLM returns empty content, or returns an API
+                error sentinel (e.g. "[API Error] ...") — in which case no file
+                is written.
         """
         if not self.model_manager:
             raise ValueError("No model_manager available — cannot generate documents")
@@ -185,10 +222,25 @@ class DocumentGenerator:
             markdown = await self._draft_summary(topic, focus, sources, max_sections)
         else:
             outline = await self._generate_outline(topic, focus, sources, max_sections)
+            if _looks_like_llm_error(outline):
+                raise RuntimeError(
+                    f"LLM call failed during outline — not saving document. "
+                    f"Provider returned: {outline.strip()[:160]}"
+                )
             markdown = await self._draft_report(topic, focus, outline, sources)
 
         if not markdown or not markdown.strip():
             raise RuntimeError("LLM returned empty document content")
+
+        # Critical: generate_once() returns API-error sentinels as plain strings
+        # rather than raising (e.g. "[API Error] Error code: 402 ..."). Never
+        # write one as the document body — abort so the caller reports the
+        # failure instead of saving a corrupt frontmatter-only file.
+        if _looks_like_llm_error(markdown):
+            raise RuntimeError(
+                f"LLM call failed during draft — not saving document. "
+                f"Provider returned: {markdown.strip()[:160]}"
+            )
 
         # 3. Validate citations
         markdown, sections_count = self._validate_and_clean(markdown, sources, max_sections)
@@ -275,7 +327,8 @@ class DocumentGenerator:
                 max_tokens=30,
                 temperature=0.0,
             )
-            if result and result.strip() and len(result.strip()) >= 3:
+            if (result and result.strip() and len(result.strip()) >= 3
+                    and not _looks_like_llm_error(result)):
                 refined = result.strip().strip('"').strip("'").strip()
                 logger.info(f"[DocGen] Topic refined: {topic!r} → {refined!r}")
                 return refined
@@ -728,9 +781,22 @@ class DocumentGenerator:
 _SAVE_VERBS = r"(?:save|write|prepare|create|generate|make|produce|draft)"
 _DOC_NOUNS = r"(?:report|document|summary|research\s+note|research\s+document|markdown)"
 
+# Bounded gap between the save-verb and the doc-noun: up to ~4 intervening words
+# (article + a modifier or two), tolerant of punctuation. This requires the
+# doc-noun to be the (near) OBJECT of the save-verb — "write a report",
+# "generate a markdown summary", "save the research document" — instead of
+# matching the incidental co-occurrence of a save-verb and a doc-noun ANYWHERE
+# in a long, multi-sentence message.
+#
+# Regression: a pasted homework prompt ("Create a new dataframe ... Print the
+# model summary") matched the old unbounded `.*` and spuriously fired document
+# generation, which then hijacked the whole turn with a "Document saved" receipt
+# (see gui/handlers.py:_run_doc_generation) and swallowed the real reply.
+_VERB_NOUN_GAP = r"(?:\W+\w+){0,4}?\W+"
+
 DOCUMENT_TRIGGER_PATTERN = re.compile(
-    rf"\b{_SAVE_VERBS}\b.*\b{_DOC_NOUNS}\b"
-    rf"|\b{_DOC_NOUNS}\b.*\b{_SAVE_VERBS}\b",
+    rf"\b{_SAVE_VERBS}\b{_VERB_NOUN_GAP}\b{_DOC_NOUNS}\b"
+    rf"|\b{_DOC_NOUNS}\b{_VERB_NOUN_GAP}\b{_SAVE_VERBS}\b",
     re.IGNORECASE,
 )
 
