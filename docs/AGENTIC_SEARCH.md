@@ -46,15 +46,42 @@ Agentic search activates when ALL conditions are met:
 1. `use_agentic_search=True` passed to `process_user_query()`
 2. Config: `agentic_search.enabled = true`
 3. `evaluate_agentic_gate()` in `core/agentic/gate.py` returns `AgenticDecision.should_trigger=True`:
-   - Tier 1: Keyword heuristic — computation, memory, knowledge, web search, and tool name keywords
+   - Tier 1: Keyword heuristic — computation, memory, knowledge, web search, and tool name keywords; also **file/saved-document retrieval** intent (so `file_read` / `file_list` / `get_full_document` are offered) and email-by-name patterns
    - Tier 2: Entity match — query mentions known knowledge graph entity + recall signal
-   - Tier 3: Document generation or self-note intent detection
+   - Tier 3: Document *generation* or self-note intent detection
    - Tier 4: LLM fallback — piggybacks on web search trigger call (`needs_memory_search`, `needs_knowledge_search`, `needs_document_generation`)
    - Casual skip filter, continuation override, and intent-based veto all handled inside gate
    - `AgenticDecision.skip_initial_search` computed by gate (True for computation, memory, knowledge, tools modes)
 
 The controller is lazy-initialized on first use via the orchestrator's
 `agentic_controller` property.
+
+### File / Saved-Document Retrieval Routing [2026-06-08]
+
+A request to read or print a saved file/document must reach the agentic loop so
+the `file_read` / `file_list` / `get_full_document` tools are actually offered —
+otherwise it falls through to enhanced (tool-less) mode and the model
+confabulates "I don't have file access". The gate detects this in three layers
+(`core/agentic/gate.py`):
+
+- `FILE_ACCESS_KEYWORDS` — literal fast-path for noun phrases ("the full
+  document", "file you saved", "document you wrote").
+- `FILE_ACCESS_PATTERNS` — robust regexes tolerant of verb inflection and
+  intervening words ("pulling up and printing the document"), capability
+  assertions ("you have the tool", "use the file_read tool"), and bare tool
+  names.
+- **Continuation** — terse follow-ups route to tools when the *previous* turn
+  was file/document themed: a pronoun retrieval ("pull it up") gated on prior
+  file/doc context (`FILE_DOC_CONTEXT_WORDS`), or a bare affirmation ("yes
+  please") right after the model OFFERED to pull a file (`FILE_OFFER_MARKERS`).
+  This is what lets the enhanced-mode honesty offer ("Want me to pull that up?")
+  get carried out on the next turn.
+
+File access counts as an **explicit request**, so the intent-based veto cannot
+suppress it. Distinct from Tier 3 document *generation*. When the gate still
+misses, the enhanced (tool-less) path carries an `[ACTION HONESTY]` note
+(`gui/handlers.py`) so the degraded turn is an honest "I can't this turn" + offer
+— never a confabulated reason (e.g. "I'm on mobile").
 
 ### Uncertainty Fallback (Post-Generation Trigger)
 
@@ -290,6 +317,20 @@ Direct trigger: "write a report about X" bypasses agentic loop for direct invoca
 Config: DOCUMENT_* constants; YAML section document_generation:
 ```
 
+**Trigger guard** [2026-06-08]: `detect_document_intent()` requires the doc-noun
+to be the (near) OBJECT of the save-verb (`DOCUMENT_TRIGGER_PATTERN` bounded gap,
+~4 words). Incidental save-verb + doc-noun co-occurrence across a long
+multi-sentence message ("Create a new dataframe … Print the model summary") no
+longer fires — that false-fire previously routed to the direct
+`_run_doc_generation` bypass (`gui/handlers.py`), which hijacks the whole turn
+with a "Document saved" receipt and emits no conversational reply.
+
+**LLM-failure safety** [2026-06-08]: `generate_once()` returns API-error
+sentinel strings ("[API Error] … 402", "[CREDITS EXHAUSTED] …") instead of
+raising. `DocumentGenerator` detects these on the topic-refine, outline, and
+draft calls and aborts with a `RuntimeError` so a corrupt frontmatter-only file
+is never written or indexed.
+
 ### create_daemon_note
 
 Save a structured note for Daemon's future sessions (architecture decisions, risks, next steps).
@@ -390,6 +431,13 @@ action types. `lookup_contact` is parsed with aliases: `search_contacts`,
 `<invoke name="...">` XML patterns are also parsed as a fallback for
 both contact lookup and propose_action.
 
+**Text-leak recovery (Pattern 4)** [2026-06-08]: when the API returns NO
+structured `tool_calls` — common with OpenRouter-proxied native models like
+DeepSeek, which emit the call as plain content — `NativeToolsHandler` delegates
+the text to `XMLMarkerHandler` and recovers any actionable tool markers
+(`<file_read>`, `<search>`, `<memory>`, `<fetch_url>`, …). Without this the raw
+XML leaks into the answer and the tool never executes.
+
 ### XML Markers
 
 For models without native tool support. Markers embedded in text:
@@ -423,6 +471,18 @@ For models without native tool support. Markers embedded in text:
 extracted content, and `_extract_nested_tag()` extracts specific child
 elements from nested XML structures (e.g. `<query>` and `<collection>`
 inside `<search_memory>`).
+
+**Nested file/doc/url tool forms** [2026-06-08]: models (notably
+OpenRouter-proxied DeepSeek) frequently emit the params as nested child tags
+instead of attributes — e.g. `<file_read><path>foo.md</path></file_read>` rather
+than `<file_read path="foo.md">`. Dedicated nested-form fallbacks
+(`FILE_READ_NESTED_PATTERN`, `FILE_GREP_NESTED_PATTERN`,
+`FILE_LIST_NESTED_PATTERN`, `FETCH_URL_NESTED_PATTERN`,
+`GET_FULL_DOCUMENT_NESTED_PATTERN`) parse these, plus a bare-content path form
+(`<file_read>foo/bar.md</file_read>`). The nested patterns match only the
+attribute-less opening tag (`\s*>`), so they never double-parse the attribute
+form. Without them the marker failed to parse and the raw XML leaked into the
+answer (tool never executed).
 
 Parsed by `XMLMarkerHandler` using regex. `<done/>` is checked first
 and returns immediately if present. Remaining markers are collected

@@ -71,7 +71,7 @@ When a query needs more than stored memory, Daemon enters a multi-round ReAct lo
 | **Git Stats** | Read-only git commands: commit counts, contributors, diff stats with temporal windows |
 | **Done** | Signal synthesis complete |
 
-The agent receives a **context inventory** of what RAG already gathered, preventing redundant searches. A 3-tier agentic gate (keyword heuristic -> knowledge graph entity match -> LLM fallback) decides when to enter the loop at all. Memory search takes priority over web search when the LLM detects recall intent.
+The agent receives a **context inventory** of what RAG already gathered, preventing redundant searches. A 4-tier agentic gate (keyword heuristic -> knowledge graph entity match -> document/note intent -> LLM fallback) decides when to enter the loop at all; Tier 1 also routes file/saved-document **retrieval** requests to the file tools (so the model never confabulates "I don't have file access"). Memory search takes priority over web search when the LLM detects recall intent. Tool calls emitted as plain text or in nested-XML form by proxied models are recovered rather than leaked into the answer.
 
 ### Intent-Parameterized Retrieval
 

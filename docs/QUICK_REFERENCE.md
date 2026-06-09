@@ -1905,6 +1905,7 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 #   tool hints (_detect_tool_hints injects usage hints when query mentions tool names)
 # core/agentic/tools.py — ToolExecutor: dispatch routing + 20 execute methods + get_tool_health() (incl. lookup_contact + email recipient resolution)
 # core/agentic/gate.py — 4-tier agentic gate: keyword → entity → tool-name → LLM fallback, email-by-name patterns [NEW 2026-05]
+#   Tier 1 also routes file/saved-document RETRIEVAL → tools (FILE_ACCESS_KEYWORDS + regex + pronoun/affirmation continuation); counts as explicit request (bypasses intent veto) [2026-06-08]
 # core/agentic/formatters.py — AgenticFormatter: 18 pure formatting methods
 # core/actions/ — Internet action executors: telegram.py, discord.py, email.py, google_auth.py, google_calendar.py, google_calendar_create.py, google_contacts.py, gmail_search.py, types.py, audit.py, executors.py [NEW 2026-05]
 class AgenticSearchController:
@@ -2159,11 +2160,13 @@ class MemoryExpander:
 # XMLMarkerHandler - for local models: <search>, <fetch_url>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <github>, <recall_image>, <done>
 #   Alias patterns: <web_search>/<web_search query="..."> → <search>, <search_memory query="..."> → <memory>
 #   Nested XML: <search_memory><query>X</query></search_memory> (DeepSeek-style) via MEMORY_NESTED_PATTERN
+#   Nested file/doc/url forms [2026-06-08]: <file_read><path>X</path></file_read> etc. via FILE_*/FETCH_URL/GET_FULL_DOCUMENT _NESTED_PATTERN (+ bare-content path); match attribute-less opening tag only (no double-parse)
 #   Helpers: _strip_xml_tags() removes inner tags from content, _extract_nested_tag() extracts child elements
 #   Empty args defaulting: git_stats/github/search_memory with empty args fall back to original query
 #   Calendar fix: forwards calendar-specific params (summary, start_time, end_time, etc.) to action_params
 #   Text parser: only prepends send_ for messaging types (telegram, discord, email), not calendar/github
 # NativeToolsHandler - for API models: OpenAI/Anthropic function calling (tool defs gated by github_available param)
+#   Text-leak recovery (Pattern 4) [2026-06-08]: no tool_calls (OpenRouter DeepSeek emits call as text) → delegate to XMLMarkerHandler, recover markers so raw XML doesn't leak into the answer
 ```
 
 ### Agentic Config Constants

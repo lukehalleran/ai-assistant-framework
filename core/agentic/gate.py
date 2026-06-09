@@ -20,9 +20,21 @@ Module Contract
   ('look up contact', 'find email', "'s email", etc.) and email-by-name regex
   patterns (e.g. "email <name>", "send <name> an email") that trigger agentic
   routing for contact resolution + propose_action.
+- File/document retrieval: Tier 1 routes file/saved-document requests to the
+  agentic loop so the file_read / file_list / get_full_document tools are offered.
+  Detection is three-layered: FILE_ACCESS_KEYWORDS (literal fast-path),
+  FILE_ACCESS_PATTERNS (regex tolerant of inflection/intervening words and
+  capability assertions like "you have the tool"), and a pronoun/affirmation
+  continuation ("pull it", or "yes" after the model offered "Want me to pull
+  that up?") gated on prior file/document context. Distinct from Tier 3 document
+  *generation*. Also counts as an explicit request so the intent veto can't
+  suppress it. The enhanced (tool-less) streaming path carries a matching
+  [ACTION HONESTY] note so a gate miss degrades to an honest "I can't this turn"
+  + offer, never a confabulated reason.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
@@ -100,6 +112,75 @@ KNOWLEDGE_KEYWORDS = [
     'what is a ', 'what are ', 'what causes ',
     'history of ', 'science behind', 'mechanism of ',
 ]
+
+# File / saved-document RETRIEVAL intent (distinct from doc *generation* in
+# Tier 3). These route to the agentic loop so the file_read / file_list /
+# get_full_document tools are actually offered. Without them, requests like
+# "pull and print the full document" fall through to enhanced mode — where no
+# tools exist — and the model confabulates "I don't have file access". The
+# tools themselves are wired and available; only the gate was missing them.
+#
+# NOTE: literal substrings alone proved too brittle — real phrasings inflect
+# verbs and separate words ("pulling up and printing the document"), use
+# pronouns ("pull it"), or assert the capability ("you have the tool"). The
+# FILE_ACCESS_PATTERNS regexes below are the robust layer; the literal list
+# stays as a cheap fast-path for noun-only phrases that have no retrieval verb.
+FILE_ACCESS_KEYWORDS = [
+    'full document', 'the full doc', 'whole document', 'entire document',
+    'the saved file', 'the saved document', 'that document you', 'document you wrote',
+    'document you saved', 'file you wrote', 'file you saved', 'file contents',
+]
+
+# Robust regex fallbacks — tolerate inflection, intervening words, and
+# capability assertions. Validated against the actual failing transcripts.
+FILE_ACCESS_PATTERNS = [
+    # retrieval verb (any inflection) + file/doc/note object within a few words:
+    # "read the file", "pulling up and printing the document", "show me the doc"
+    re.compile(
+        r'\b(?:pull|print|fetch|open|read|show|display|retriev|grab|load|cat|view|render|reprint|output|spit|bring)\w*'
+        r'(?:\W+\w+){0,6}?\W+'
+        r'(?:files?|docs?|documents?|notes?|pdfs?|markdown)\b',
+        re.IGNORECASE,
+    ),
+    # explicit assertion that a tool exists / should be used:
+    # "you have the tool", "use the file_read tool", "with your file access"
+    re.compile(
+        r'\b(?:you\s+(?:have|do\s+have|already\s+have|still\s+have|got)|use|using|via|invoke|call|with\s+your)\b'
+        r'(?:\W+\w+){0,4}?\W+'
+        r'(?:tools?|file[_\s-]?read|file\s+access|file[_\s-]?tool)\b',
+        re.IGNORECASE,
+    ),
+    # explicit tool / capability name anywhere
+    re.compile(r'\bfile[_\s-]?read\b|\bfile\s+access\b', re.IGNORECASE),
+]
+
+# Pronoun retrieval ("pull it", "print that", "grab it up") — ambiguous on its
+# own ("pull it together"), so this only counts as file access when the PREVIOUS
+# turn was file/document themed (see the continuation handling below).
+FILE_RETRIEVAL_PRONOUN_PATTERN = re.compile(
+    r'\b(?:pull|print|fetch|grab|open|show|display|load|retriev|render|reprint|spit|bring)\w*'
+    r'\s+(?:it|that|this|them|those)(?:\s+(?:up|out|here|over|in))?\b',
+    re.IGNORECASE,
+)
+
+# Markers that a previous turn was about a saved file/document — used to
+# disambiguate the pronoun-retrieval pattern above.
+FILE_DOC_CONTEXT_WORDS = (
+    'document', 'doc ', ' doc.', 'file', '.md', 'markdown', 'pdf', '.txt',
+    'saved', 'on disk', 'implementation plan', 'file_read', 'file access',
+    'reconstruct', 'print',
+)
+
+# Markers that the model OFFERED to read/pull a file last turn ("Want me to pull
+# that up?"). A bare affirmation ("yes", "do it") after one of these routes to
+# tools — this is what makes the enhanced-mode honesty offer actually get
+# carried out on the follow-up turn.
+FILE_OFFER_MARKERS = (
+    'want me to pull', 'want me to read', 'want me to grab', 'want me to print',
+    'want me to open', 'want me to fetch', 'want me to retrieve',
+    'pull that up', 'pull it up', 'i can pull', 'i can read', 'i can print',
+    'shall i pull', 'should i pull',
+)
 
 RECALL_SIGNAL_WORDS = [
     'what', 'when', 'where', 'who', 'how', 'why',
@@ -220,6 +301,16 @@ async def evaluate_agentic_gate(
         if needs_tools:
             logger.debug("[Agentic Gate] Tier 1: email-by-name intent detected")
 
+    # File / saved-document retrieval intent → route to agentic so file_read /
+    # file_list / get_full_document are offered. Literal fast-path + robust regex.
+    needs_files = (
+        any(kw in _lower for kw in FILE_ACCESS_KEYWORDS)
+        or any(p.search(_lower) for p in FILE_ACCESS_PATTERNS)
+    )
+    if needs_files:
+        needs_tools = True
+        logger.debug("[Agentic Gate] Tier 1: file/document access intent detected")
+
     needs_memory = any(kw in _lower for kw in MEMORY_KEYWORDS)
 
     # Knowledge keywords require 4+ words and no computation trigger
@@ -298,6 +389,40 @@ async def evaluate_agentic_gate(
                         break
             except Exception as e:
                 logger.debug(f"[Agentic Gate] Previous-turn check failed (non-fatal): {e}")
+
+    # ── File retrieval continuation (pronoun or affirmation) ──────────
+    # Two terse follow-up shapes route to tools when the prior turn was about a
+    # saved file/document:
+    #   • pronoun retrieval ("pull it", "print that") after any file/doc turn —
+    #     catches "No. I mean can you pull it."
+    #   • a bare affirmation ("yes", "do it") right after the model OFFERED to
+    #     read/pull a file ("Want me to pull that up?") — makes the enhanced-mode
+    #     honesty offer actually get carried out on the next turn.
+    if not needs_files and corpus_manager is not None:
+        _is_pronoun_retrieval = bool(FILE_RETRIEVAL_PRONOUN_PATTERN.search(_lower))
+        _is_affirmation = (
+            any(p in _lower for p in CONTINUATION_PHRASES)
+            or (bool(_words) and all(w in FILLER_WORDS for w in _words))
+        )
+        if _is_pronoun_retrieval or _is_affirmation:
+            try:
+                _recent = corpus_manager.get_recent_memories(2)
+                for _prev in _recent:
+                    _resp = (_prev.get('response', '') or '')[:800].lower()
+                    _blob = (_prev.get('query', '') or '').lower() + ' ' + _resp
+                    _prev_was_file = any(w in _blob for w in FILE_DOC_CONTEXT_WORDS)
+                    _prev_offered_file = any(o in _resp for o in FILE_OFFER_MARKERS)
+                    # pronoun → needs file/doc context; affirmation → needs explicit offer
+                    if ((_is_pronoun_retrieval and _prev_was_file)
+                            or (_is_affirmation and _prev_offered_file)):
+                        needs_files = True
+                        needs_tools = True
+                        logger.debug(
+                            "[Agentic Gate] File retrieval continuation — routing to tools"
+                        )
+                        break
+            except Exception as e:
+                logger.debug(f"[Agentic Gate] File continuation check failed (non-fatal): {e}")
 
     # ── Tier 3: Document generation + self-note intent ────────────────
     try:
@@ -393,7 +518,7 @@ async def evaluate_agentic_gate(
 
     # ── Intent-based veto ─────────────────────────────────────────────
     _has_explicit_search = (
-        any(kw in _lower for kw in EXPLICIT_SEARCH_KEYWORDS) or _has_url
+        any(kw in _lower for kw in EXPLICIT_SEARCH_KEYWORDS) or _has_url or needs_files
     )
     if should_trigger and not _has_explicit_search and not doc_gen_intent and not self_note_intent:
         if intent_info is not None:

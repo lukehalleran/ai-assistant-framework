@@ -1795,10 +1795,15 @@ async def _run_enhanced(ctx):
         from config.app_config import ACTION_CLAIM_GUARD_ENABLED
         if ACTION_CLAIM_GUARD_ENABLED:
             _stream_system_prompt = (system_prompt or "") + (
-                "\n\n[ACTION HONESTY] You have no tools available this turn. Do NOT "
-                "claim you saved, sent, created, scheduled, emailed, or added anything. "
-                "If the user wants such an action, OFFER it (\"Want me to …?\") and the "
-                "system will carry it out — never state it is already done."
+                "\n\n[ACTION HONESTY] You have no tools available this turn — no file "
+                "access, no web search, no memory search, no sending. Do NOT claim you "
+                "saved, sent, created, scheduled, emailed, added, read, opened, fetched, "
+                "or pulled up anything. If you cannot read a file or retrieve a saved "
+                "document right now, say so plainly — do NOT invent a reason for it "
+                "(for example, never claim it's because you're \"on mobile\" or similar). "
+                "If the user wants such an action — including reading or printing a saved "
+                "file/document — OFFER it (\"Want me to pull that up?\") and the system "
+                "will carry it out on a follow-up. Never state it is already done."
             )
     except Exception:
         pass

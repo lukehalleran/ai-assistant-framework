@@ -138,8 +138,8 @@ core/                    # Request orchestration, context pipeline, agentic loop
 │   ├── tools.py         # ToolExecutor: dispatch routing + 20 execute methods (incl. lookup_contact)
 │   ├── formatters.py    # AgenticFormatter: 18 pure formatting methods
 │   ├── types.py         # Tool definitions, state types, LOOKUP_CONTACT_TOOL_DEFINITION
-│   ├── gate.py          # 5-tier agentic gate evaluation
-│   └── protocols.py     # Native + XML tool calling
+│   ├── gate.py          # 4-tier agentic gate evaluation (incl. file-retrieval routing)
+│   └── protocols.py     # Native + XML tool calling (nested forms + text-leak recovery)
 └── prompt/              # Prompt assembly pipeline
     ├── builder.py       # Thin orchestrator: parallel task dispatch, intent overrides, budget
     ├── context_gatherer.py  # Mixin compositor: init + properties (composes 3 gatherer mixins)
@@ -1073,7 +1073,13 @@ The agentic gate in `core/agentic/gate.py` (`evaluate_agentic_gate()`) decides w
    ("github", "git stats", "wolfram", "sandbox", "pull request",
    "open issues", etc. via `needs_tools`). URL detection
    (`http://`/`https://`) also triggers agentic mode. Explicit search
-   keywords bypass intent veto.
+   keywords bypass intent veto. **File/saved-document RETRIEVAL intent
+   [2026-06-08]** — `FILE_ACCESS_KEYWORDS` + inflection-tolerant
+   `FILE_ACCESS_PATTERNS` + a pronoun/affirmation continuation (terse
+   "pull it up" / "yes please" gated on a prior file/doc turn or a model
+   file-offer) route to tools so `file_read`/`file_list`/`get_full_document`
+   are offered; this also counts as an explicit request (bypasses the
+   intent veto), and a gate miss degrades to an honest enhanced-mode offer.
 1b. **Knowledge keywords** (instant, added 2026-03-31) — Domain-specific
    keywords for reference docs and knowledge base queries.
 2. **Entity match** (instant) — Query terms checked against knowledge
@@ -2030,6 +2036,15 @@ written to `documents/reports/` or `documents/summaries/` with YAML
 frontmatter, inline `[WEB_N]` citations, and a Sources section. All
 generated documents are tracked in `documents/index.json`. Config:
 `DOCUMENT_*` constants; YAML section `document_generation:`.
+
+The "write a report about X" direct trigger (`detect_document_intent()`) uses a
+**bounded** `DOCUMENT_TRIGGER_PATTERN` [2026-06-08]: the doc-noun must be the
+near-object of the save-verb, so incidental co-occurrence across a long message
+("Create a new dataframe … Print the model summary") no longer false-fires the
+`_run_doc_generation` bypass — which would otherwise hijack the whole turn with
+a "Document saved" receipt and emit no conversational reply. Generation also
+aborts (no file written) if an LLM call returns an API-error sentinel
+("[API Error] … 402", "[CREDITS EXHAUSTED]") instead of content.
 
 ### Daemon Self-Notes
 

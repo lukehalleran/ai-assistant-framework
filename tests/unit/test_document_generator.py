@@ -509,6 +509,52 @@ class TestGenerate:
             await generator.generate("test")
 
     @pytest.mark.asyncio
+    async def test_api_error_sentinel_body_raises_and_writes_nothing(self, generator, tmp_path):
+        """Regression: a 402 made generate_once return '[API Error] ...', which
+        was written as the document body (frontmatter + error, title 'Sources').
+        It must now abort and leave no file / index entry behind.
+        """
+        generator.model_manager.generate_once = AsyncMock(
+            return_value="[API Error] Error code: 402 - requires more credits"
+        )
+        with pytest.raises(RuntimeError, match="LLM call failed"):
+            await generator.generate("daemon implementation plan", doc_type="summary")
+
+        # No corrupt artifacts written
+        summaries = tmp_path / "documents" / "summaries"
+        assert not summaries.exists() or not list(summaries.glob("*.md"))
+        assert not (tmp_path / "documents" / "index.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_credits_exhausted_sentinel_raises(self, generator):
+        generator.model_manager.generate_once = AsyncMock(
+            return_value="[CREDITS EXHAUSTED] You've run out of API credits."
+        )
+        with pytest.raises(RuntimeError, match="LLM call failed"):
+            await generator.generate("test topic", doc_type="summary")
+
+    @pytest.mark.asyncio
+    async def test_report_outline_error_sentinel_raises(self, generator):
+        """An error sentinel on the outline call aborts before drafting/writing."""
+        generator.model_manager.generate_once = AsyncMock(
+            return_value="[SERVER ERROR] The API provider is experiencing issues (HTTP 503)."
+        )
+        with pytest.raises(RuntimeError, match="LLM call failed"):
+            await generator.generate("test topic", doc_type="report")
+
+    @pytest.mark.asyncio
+    async def test_refine_topic_ignores_error_sentinel(self, generator):
+        """A sentinel from the topic-refine call must not become the topic."""
+        generator.model_manager.generate_once = AsyncMock(
+            return_value="[API Error] Error code: 402 - requires more credits"
+        )
+        # Noisy topic triggers refinement; sentinel result must be discarded,
+        # falling back to the original topic string.
+        refined = await generator._refine_topic("please write the plan again now", None)
+        assert not refined.startswith("[API Error]")
+        assert refined == "please write the plan again now"
+
+    @pytest.mark.asyncio
     async def test_focus_passed_through(self, generator):
         result = await generator.generate("climate", focus="economic impact")
         content = Path(result.path).read_text()
@@ -578,6 +624,41 @@ class TestTriggerDetection:
     def test_case_insensitive(self):
         result = detect_document_intent("WRITE A REPORT about artificial intelligence")
         assert result is not None
+
+    @pytest.mark.parametrize("query", [
+        # Regression: a long, multi-sentence message where a save-verb and a
+        # doc-noun merely CO-OCCUR (across sentences) must NOT trigger doc gen.
+        # The old unbounded `.*` matched these and hijacked the turn with a
+        # "Document saved" receipt, swallowing the real conversational reply.
+        (
+            "5c) Create a new dataframe from train_sales_data and call it "
+            "train_sales_data_cook. This dataframe should exclude the outliers. "
+            "Sort by Purchase_Amount and print the first 5 rows. 6b) create a new "
+            "model and call it model_no_age. Print the model summary. 6c) Perform "
+            "a partial F-test. What conclusion do you make regarding multicolinearity?"
+        ),
+        "create a new dataframe and then print the model summary",
+        "generate the model object and read off the summary statistics",
+        "I need to write code and later summarize the document I read",
+    ])
+    def test_incidental_cooccurrence_does_not_trigger(self, query):
+        """Save-verb + doc-noun far apart in a long message must not fire."""
+        assert detect_document_intent(query) is None, (
+            f"Should NOT trigger (incidental co-occurrence): {query[:60]}"
+        )
+
+    @pytest.mark.parametrize("query", [
+        # The doc-noun must still trigger when it is the (near) object of the
+        # save-verb, even with an article + a modifier or two in between.
+        "generate a markdown summary of the meeting",
+        "save the research document on data centers",
+        "can you write me a quick summary document",
+        "create a brief report focusing on economic impact",
+    ])
+    def test_object_of_save_verb_still_triggers(self, query):
+        assert detect_document_intent(query) is not None, (
+            f"Should trigger (doc-noun is object of save-verb): {query}"
+        )
 
 
 # ############################################################################

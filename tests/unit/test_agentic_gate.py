@@ -74,6 +74,129 @@ class TestTier1Keywords:
         assert "web_search" in d.modes
 
 
+class TestFileAccessKeywords:
+    """File / saved-document RETRIEVAL must route to agentic so the
+    file_read / file_list / get_full_document tools are offered. Regression:
+    these fell through to enhanced mode and the model confabulated
+    "I don't have file access tools right now".
+    """
+
+    @pytest.mark.asyncio
+    async def test_pull_and_print_full_document(self):
+        """The exact reported request."""
+        d = await evaluate_agentic_gate(
+            "can you pull and print the full document for me"
+        )
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
+    async def test_read_the_file(self):
+        d = await evaluate_agentic_gate("read the file config/config.yaml please")
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
+    async def test_document_you_wrote(self):
+        d = await evaluate_agentic_gate(
+            "print the document you wrote yesterday about the plan"
+        )
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
+    async def test_file_access_survives_intent_veto(self):
+        """A casual_social-classified file request must NOT be vetoed —
+        file access counts as an explicit request.
+        """
+        intent = MagicMock()
+        intent.intent_type = MagicMock(value="casual_social")
+        intent.confidence = 0.95
+        d = await evaluate_agentic_gate(
+            "yeah pull the document for me",
+            intent_info=intent,
+        )
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
+    async def test_inflected_verbs_and_intervening_words(self):
+        """Regression from transcript: 'pulling up and printing the document'.
+        Inflected verbs + words between verb and object must still trigger.
+        """
+        d = await evaluate_agentic_gate(
+            "Can we verify the fix by pulling up and printing the document "
+            "we have been discussing"
+        )
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
+    async def test_capability_assertion_you_have_the_tool(self):
+        """Regression from transcript: 'No. I mean can you pull it. You have the tool'."""
+        d = await evaluate_agentic_gate("No. I mean can you pull it. You have the tool")
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
+    async def test_use_the_file_read_tool(self):
+        d = await evaluate_agentic_gate("use the file_read tool to grab it")
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
+    async def test_pronoun_retrieval_after_document_turn(self):
+        """Terse 'pull it up' routes to tools when the previous turn was about
+        a saved document (pronoun pattern is gated on prior file/doc context).
+        """
+        corpus = MagicMock()
+        corpus.get_recent_memories.return_value = [
+            {"query": "pull the implementation plan document",
+             "response": "Here is the document I saved to disk..."},
+        ]
+        d = await evaluate_agentic_gate("can you pull it up", corpus_manager=corpus)
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
+    async def test_pronoun_retrieval_without_doc_context_does_not_trigger(self):
+        """'pull it together' (motivational) must NOT trigger — no prior doc turn."""
+        corpus = MagicMock()
+        corpus.get_recent_memories.return_value = [
+            {"query": "I'm feeling overwhelmed today", "response": "That's rough, hang in there."},
+        ]
+        d = await evaluate_agentic_gate(
+            "lets pull it together",
+            corpus_manager=corpus,
+            model_manager=None,
+        )
+        assert "tools" not in d.modes
+
+    @pytest.mark.asyncio
+    async def test_affirmation_after_file_offer_triggers(self):
+        """'yes please' right after the model OFFERED to pull a file routes to
+        tools — this makes the enhanced-mode honesty offer get carried out.
+        """
+        corpus = MagicMock()
+        corpus.get_recent_memories.return_value = [
+            {"query": "verify the save",
+             "response": "I can't read files this turn. Want me to pull that up next turn?"},
+        ]
+        d = await evaluate_agentic_gate("yes please", corpus_manager=corpus)
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
+    async def test_affirmation_without_file_offer_does_not_trigger(self):
+        """A bare 'yeah' after a turn that did NOT offer a file must NOT trigger."""
+        corpus = MagicMock()
+        corpus.get_recent_memories.return_value = [
+            {"query": "how are you", "response": "Doing well, thanks for asking!"},
+        ]
+        d = await evaluate_agentic_gate("yeah", corpus_manager=corpus, model_manager=None)
+        assert "tools" not in d.modes
+
+
 # ===========================================================================
 # Tier 2: Entity match
 # ===========================================================================

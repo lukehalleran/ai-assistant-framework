@@ -376,6 +376,102 @@ class TestXMLMarkerHandler:
         assert "5" in augmented  # max_rounds
 
 
+class TestXMLFileToolParsing:
+    """File/doc tool parsing — attribute form AND the nested child-tag form.
+
+    Regression: models (esp. OpenRouter-proxied DeepSeek) emit
+    <file_read><path>X</path></file_read> instead of the documented
+    <file_read path="X">. Without a nested fallback the marker failed to
+    parse and the raw XML leaked into the answer (tool never executed).
+    """
+
+    def _handler(self):
+        from core.agentic.protocols import XMLMarkerHandler
+        return XMLMarkerHandler()
+
+    def test_file_read_attribute_form(self):
+        """The documented attribute form still parses (no regression)."""
+        response = '<file_read path="core/orchestrator.py">checking handler</file_read>'
+        decisions = self._handler().parse_response(response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_file_read is True
+        assert decisions[0].file_read_path == "core/orchestrator.py"
+
+    def test_file_read_nested_path_tag(self):
+        """The nested child-tag form (the reported bug) now parses + executes."""
+        response = (
+            "Let me grab that document for you. One sec while I pull it up.\n"
+            "<file_read>\n<path>documents/summaries/daemon-implementation-plan-2026-06-07.md</path>\n</file_read>"
+        )
+        decisions = self._handler().parse_response(response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_file_read is True
+        assert decisions[0].file_read_path == (
+            "documents/summaries/daemon-implementation-plan-2026-06-07.md"
+        )
+        # Must NOT fall through to a leaked-text answer
+        assert decisions[0].wants_answer is False
+
+    def test_file_read_nested_with_line_range(self):
+        response = (
+            "<file_read><path>core/agentic/protocols.py</path>"
+            "<start_line>100</start_line><end_line>200</end_line></file_read>"
+        )
+        decisions = self._handler().parse_response(response)
+        assert len(decisions) == 1
+        assert decisions[0].file_read_path == "core/agentic/protocols.py"
+        assert decisions[0].file_read_start_line == 100
+        assert decisions[0].file_read_end_line == 200
+
+    def test_file_read_bare_content_path(self):
+        """Bare path content: <file_read>foo/bar.md</file_read>."""
+        response = "<file_read>config/config.yaml</file_read>"
+        decisions = self._handler().parse_response(response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_file_read is True
+        assert decisions[0].file_read_path == "config/config.yaml"
+
+    def test_file_grep_nested(self):
+        response = (
+            "<file_grep><pattern>def parse_response</pattern>"
+            "<glob>*.py</glob><folder>core/</folder></file_grep>"
+        )
+        decisions = self._handler().parse_response(response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_file_grep is True
+        assert decisions[0].file_grep_pattern == "def parse_response"
+        assert decisions[0].file_grep_glob == "*.py"
+        assert decisions[0].file_grep_folder == "core/"
+
+    def test_file_list_nested(self):
+        response = "<file_list><path>core/agentic/</path><recursive>true</recursive></file_list>"
+        decisions = self._handler().parse_response(response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_file_list is True
+        assert decisions[0].file_list_path == "core/agentic/"
+        assert decisions[0].file_list_recursive is True
+
+    def test_fetch_url_nested(self):
+        response = "<fetch_url><url>https://github.com/user/repo</url></fetch_url>"
+        decisions = self._handler().parse_response(response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_fetch_url is True
+        assert decisions[0].fetch_url == "https://github.com/user/repo"
+
+    def test_get_full_document_nested(self):
+        response = "<get_full_document><title>upload:syllabus.pdf</title></get_full_document>"
+        decisions = self._handler().parse_response(response)
+        assert len(decisions) == 1
+        assert decisions[0].wants_full_document is True
+        assert decisions[0].full_document_title == "upload:syllabus.pdf"
+
+    def test_nested_does_not_double_parse_attribute_form(self):
+        """Attribute and nested patterns are disjoint — no duplicate decisions."""
+        response = '<file_read path="a.py">reason</file_read>'
+        decisions = self._handler().parse_response(response)
+        assert len([d for d in decisions if d.wants_file_read]) == 1
+
+
 class TestNativeToolsHandler:
     """Tests for NativeToolsHandler."""
 
@@ -481,6 +577,47 @@ class TestNativeToolsHandler:
         assert original in augmented
         assert "AGENTIC TOOLS MODE" in augmented
         assert "5" in augmented
+
+
+class TestNativeToolsTextLeakRecovery:
+    """When the API returns NO structured tool_calls (common with OpenRouter
+    proxies), the native handler must still recover tool markers emitted as
+    plain text content — otherwise the model narrates/leaks XML instead of
+    the tool executing. This is the deepseek-v4 path that produced the bug.
+    """
+
+    def _handler(self):
+        from core.agentic.protocols import NativeToolsHandler
+        return NativeToolsHandler(memory_available=True, file_access_available=True)
+
+    def test_file_read_nested_xml_in_text_content(self):
+        """The exact reported failure: file_read emitted as text, nested form."""
+        content = (
+            "Let me grab that document for you. One sec while I pull it up.\n"
+            "<file_read>\n<path>documents/summaries/daemon-implementation-plan-2026-06-07.md</path>\n</file_read>"
+        )
+        response = {"content": content}  # no tool_calls
+        decisions = self._handler().parse_response(response)
+        assert any(d.wants_file_read for d in decisions), (
+            "file_read marker in text content was not recovered — it would leak"
+        )
+        fr = next(d for d in decisions if d.wants_file_read)
+        assert fr.file_read_path == (
+            "documents/summaries/daemon-implementation-plan-2026-06-07.md"
+        )
+
+    def test_search_marker_in_text_content(self):
+        content = "I should look this up. <search>latest data center site selection</search>"
+        decisions = self._handler().parse_response({"content": content})
+        assert any(d.wants_search for d in decisions)
+
+    def test_plain_answer_still_returns_answer(self):
+        """No markers → still a normal direct answer (no false positives)."""
+        content = "Here's the answer: data centers cluster near cheap power."
+        decisions = self._handler().parse_response({"content": content})
+        assert len(decisions) == 1
+        assert decisions[0].wants_answer is True
+        assert decisions[0].partial_response == content
 
 
 class TestGetProtocolHandler:
