@@ -2042,9 +2042,23 @@ The "write a report about X" direct trigger (`detect_document_intent()`) uses a
 near-object of the save-verb, so incidental co-occurrence across a long message
 ("Create a new dataframe … Print the model summary") no longer false-fires the
 `_run_doc_generation` bypass — which would otherwise hijack the whole turn with
-a "Document saved" receipt and emit no conversational reply. Generation also
+a "Document saved" receipt and emit no conversational reply. An additional
+**incidental-position guard** [2026-06-09] (`_doc_trigger_is_incidental()`)
+requires, in a long message (> 60 words), that the trigger touch the head or
+tail (220-char window); a doc-phrase quoted deep in the interior of an
+analytical request ("Evaluate this proposal … [a worker] may write a final
+report") is treated as incidental and answers in chat. Generation also
 aborts (no file written) if an LLM call returns an API-error sentinel
 ("[API Error] … 402", "[CREDITS EXHAUSTED]") instead of content.
+
+**Content-aware generation** [2026-06-09]: `generate()` takes optional
+`source_material` (the user's full message). When substantial (≥ 400 chars) it
+becomes the PRIMARY source `[INPUT_1]` — ranked first, rendered in full, and
+emphasized in the draft prompts — and web/encyclopedia search is suppressed
+(personal notes still gathered for grounding). This grounds "evaluate THIS
+pasted proposal" requests in the actual material instead of a bare topic web
+search (which once returned the Anarchism Wikipedia article and a 1994
+Unix-daemon PDF for a "daemon architecture" request).
 
 ### Daemon Self-Notes
 
