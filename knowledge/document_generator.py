@@ -10,6 +10,8 @@ Module Contract
   - topic: str — what to research
   - doc_type: "report" | "summary"
   - focus: optional narrowing string
+  - source_material: optional user-provided text (pasted proposal/content) used
+    as the PRIMARY source ([INPUT_1]) when substantial — see content-aware below
   - max_sections: int (default from config)
   - model_manager: ModelManager for LLM calls
   - web_search_manager: optional WebSearchManager for Tavily
@@ -37,7 +39,17 @@ Module Contract
     doc-noun across a long multi-sentence message (e.g. a pasted homework prompt:
     "Create a new dataframe ... Print the model summary") does NOT trigger — that
     false-fire previously hijacked the turn with a "Document saved" receipt and
-    swallowed the conversational reply (see gui/handlers.py:_run_doc_generation)
+    swallowed the conversational reply (see gui/handlers.py:_run_doc_generation).
+    Additionally, in a LONG message the trigger must be the head/tail imperative
+    (_doc_trigger_is_incidental): a doc-phrase quoted deep in an analytical
+    request ("Evaluate this proposal ... [a worker] may write a final report")
+    is incidental and answers in chat instead.
+  - Content-aware generation: when source_material is substantial it becomes the
+    PRIMARY source [INPUT_1] — ranked first, rendered in full, and dominating the
+    draft prompt — and web/encyclopedia search is suppressed (personal notes are
+    still gathered for grounding). Without it, behavior is the prior topic-driven
+    web+memory research. Fixes "evaluate THIS pasted proposal" requests that
+    previously web-searched the bare topic and returned irrelevant sources.
 - Side effects:
   - File writes to documents/ directory
   - LLM API calls via model_manager
@@ -86,6 +98,20 @@ def _looks_like_llm_error(text: str | None) -> bool:
         return False
     head = text.lstrip()[:120]
     return any(sentinel in head for sentinel in _LLM_ERROR_SENTINELS)
+
+
+# Content-aware generation. When the user pastes substantial material to be
+# evaluated/synthesized (e.g. "Write a report evaluating this proposal: ..."),
+# that material — not a web search on the topic string — is the PRIMARY source.
+# Otherwise the generator web-searches the bare topic and returns irrelevant
+# results (a "Daemon architecture" request once pulled the Anarchism Wikipedia
+# article and a 1994 Unix-daemon PDF). The provided source is labelled [INPUT_1],
+# ranked first, dominates the draft prompt, and suppresses web/encyclopedia
+# search; personal notes are still gathered for grounding.
+_PROVIDED_SOURCE_TYPE = "provided"
+_PROVIDED_SOURCE_ID = "INPUT_1"
+DOCUMENT_PROVIDED_MIN_CHARS = 400    # below this, "material" is too thin to anchor on
+DOCUMENT_PROVIDED_MAX_CHARS = 8000   # cap of provided material injected into the prompt
 
 
 # ============================================================================
@@ -176,6 +202,7 @@ class DocumentGenerator:
         doc_type: Literal["report", "summary"] = "report",
         focus: Optional[str] = None,
         max_sections: Optional[int] = None,
+        source_material: Optional[str] = None,
     ) -> GeneratedDocument:
         """Generate a structured document on a topic.
 
@@ -184,6 +211,10 @@ class DocumentGenerator:
             doc_type: "report" (multi-section) or "summary" (concise).
             focus: Optional narrowing, e.g. "focus on economic impact".
             max_sections: Override default section count.
+            source_material: Optional user-provided text (the pasted proposal /
+                content to be evaluated). When substantial, it becomes the
+                PRIMARY source [INPUT_1] and web/encyclopedia search is skipped —
+                the document is grounded in this material, not a topic web search.
 
         Returns:
             GeneratedDocument with path to saved file and metadata.
@@ -213,7 +244,7 @@ class DocumentGenerator:
         logger.info(f"[DocGen] Starting {doc_type} on '{topic}' (focus={focus}, max_sections={max_sections})")
 
         # 1. Research
-        sources = await self._gather_sources(topic, focus)
+        sources = await self._gather_sources(topic, focus, source_material)
         sources = self._dedupe_and_rank(sources)
         logger.info(f"[DocGen] Gathered {len(sources)} sources after dedup")
 
@@ -343,28 +374,58 @@ class DocumentGenerator:
 
     async def _gather_sources(
         self, topic: str, focus: Optional[str] = None,
+        source_material: Optional[str] = None,
     ) -> list[DocumentSource]:
-        """Gather sources from all available providers in parallel."""
+        """Gather sources from all available providers in parallel.
+
+        When `source_material` is substantial it is the PRIMARY source — web and
+        encyclopedia (wiki) search are suppressed (they return topic-keyword
+        noise for an "evaluate THIS" request); personal notes are still gathered
+        for grounding.
+        """
         query = f"{topic} {focus}" if focus else topic
+
+        sources: list[DocumentSource] = []
+        material = (source_material or "").strip()
+        has_material = len(material) >= DOCUMENT_PROVIDED_MIN_CHARS
+        if has_material:
+            sources.append(DocumentSource(
+                id=_PROVIDED_SOURCE_ID,
+                title="User-provided material",
+                url=None,
+                source_type=_PROVIDED_SOURCE_TYPE,
+                snippet=material[:DOCUMENT_PROVIDED_MAX_CHARS],
+                relevance=10.0,  # dominate ranking + survive the source cap
+                retrieved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ))
+            logger.info(
+                f"[DocGen] Using {len(material)} chars of provided material as "
+                f"primary source [{_PROVIDED_SOURCE_ID}]; web/wiki search suppressed"
+            )
+
         tasks: dict[str, Any] = {}
 
-        # Web search (Tavily)
-        if self.web_search_manager and self.web_search_manager.is_available():
+        # Web search (Tavily) — skipped when the user supplied the material.
+        if (self.web_search_manager and self.web_search_manager.is_available()
+                and not has_material):
             tasks["web"] = self._search_web(query)
 
-        # ChromaDB collections
+        # ChromaDB collections. Encyclopedia (wiki) only when there is no
+        # provided material; personal notes always (grounding).
         if self.chroma_store:
-            tasks["wiki"] = self._search_collection("wiki_knowledge", query, "wikipedia")
+            if not has_material:
+                tasks["wiki"] = self._search_collection("wiki_knowledge", query, "wikipedia")
             tasks["notes"] = self._search_collection("obsidian_notes", query, "notes")
 
         if not tasks:
+            if sources:
+                return sources  # provided material alone is enough to draft from
             logger.warning("[DocGen] No search providers available")
             return []
 
         labels = list(tasks.keys())
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
-        sources: list[DocumentSource] = []
         for label, result in zip(labels, results):
             if isinstance(result, Exception):
                 logger.warning(f"[DocGen] {label} search failed: {result}")
@@ -466,9 +527,13 @@ class DocumentGenerator:
         cap = app_config.DOCUMENT_MAX_SOURCES
         deduped = deduped[:cap]
 
-        # Re-assign stable IDs after dedup
+        # Re-assign stable IDs after dedup. The user-provided source keeps its
+        # recognizable [INPUT_1] id (and is excluded from the type counters).
         counters: dict[str, int] = {}
         for src in deduped:
+            if src.source_type == _PROVIDED_SOURCE_TYPE:
+                src.id = _PROVIDED_SOURCE_ID
+                continue
             prefix = src.source_type.upper()[:4]
             counters[prefix] = counters.get(prefix, 0) + 1
             src.id = f"{prefix}_{counters[prefix]}"
@@ -480,19 +545,46 @@ class DocumentGenerator:
     # ------------------------------------------------------------------
 
     def _format_sources_for_prompt(self, sources: list[DocumentSource]) -> str:
-        """Format sources with IDs for LLM prompt injection."""
+        """Format sources with IDs for LLM prompt injection.
+
+        The user-provided source ([INPUT_1]) renders first and in full (the rest
+        are snippet-capped) so the draft is grounded in the actual material.
+        """
         if not sources:
             return "(No sources available — generate from general knowledge)"
 
+        # Provided material first.
+        ordered = sorted(
+            sources, key=lambda s: 0 if s.source_type == _PROVIDED_SOURCE_TYPE else 1
+        )
         lines = []
-        for src in sources:
-            parts = [f"[{src.id}] {src.title}"]
-            if src.url:
-                parts.append(f"  URL: {src.url}")
-            if src.snippet:
-                parts.append(f"  Content: {src.snippet[:300]}")
+        for src in ordered:
+            if src.source_type == _PROVIDED_SOURCE_TYPE:
+                parts = [
+                    f"[{src.id}] {src.title} — PRIMARY MATERIAL (base the document on this):",
+                    src.snippet,
+                ]
+            else:
+                parts = [f"[{src.id}] {src.title}"]
+                if src.url:
+                    parts.append(f"  URL: {src.url}")
+                if src.snippet:
+                    parts.append(f"  Content: {src.snippet[:300]}")
             lines.append("\n".join(parts))
         return "\n\n".join(lines)
+
+    @staticmethod
+    def _primary_material_instruction(sources: list[DocumentSource]) -> str:
+        """Draft-prompt guidance when the user supplied the primary material."""
+        if not any(s.source_type == _PROVIDED_SOURCE_TYPE for s in sources):
+            return ""
+        return (
+            f"\nIMPORTANT: [{_PROVIDED_SOURCE_ID}] is the user's own material and is "
+            f"the PRIMARY basis for this document — engage with its specifics "
+            f"directly (evaluate/synthesize what it actually says). Any other "
+            f"sources are secondary grounding only and must not dominate. Do NOT "
+            f"pad with generic background that ignores the provided material.\n"
+        )
 
     async def _generate_outline(
         self, topic: str, focus: Optional[str], sources: list[DocumentSource], max_sections: int,
@@ -500,10 +592,11 @@ class DocumentGenerator:
         """Generate a structured outline for a report."""
         source_text = self._format_sources_for_prompt(sources)
         focus_line = f"\nFocus area: {focus}" if focus else ""
+        primary_note = self._primary_material_instruction(sources)
 
         prompt = (
             f"Create an outline for a research report on: {topic}{focus_line}\n\n"
-            f"Available sources:\n{source_text}\n\n"
+            f"Available sources:\n{source_text}\n{primary_note}\n"
             f"Requirements:\n"
             f"- Exactly {max_sections} sections (not counting introduction or conclusion)\n"
             f"- Each section should have a clear heading and 1-2 sentence description\n"
@@ -526,11 +619,12 @@ class DocumentGenerator:
         source_text = self._format_sources_for_prompt(sources)
         source_ids = ", ".join(f"[{s.id}]" for s in sources)
         focus_line = f"\nFocus area: {focus}" if focus else ""
+        primary_note = self._primary_material_instruction(sources)
 
         prompt = (
             f"Write a research report on: {topic}{focus_line}\n\n"
             f"Follow this outline:\n{outline}\n\n"
-            f"Available sources (cite inline using their IDs):\n{source_text}\n\n"
+            f"Available sources (cite inline using their IDs):\n{source_text}\n{primary_note}\n"
             f"Requirements:\n"
             f"- Use markdown formatting with ## headings for each section\n"
             f"- Cite sources inline using IDs like {source_ids}\n"
@@ -558,10 +652,11 @@ class DocumentGenerator:
         source_text = self._format_sources_for_prompt(sources)
         source_ids = ", ".join(f"[{s.id}]" for s in sources)
         focus_line = f"\nFocus area: {focus}" if focus else ""
+        primary_note = self._primary_material_instruction(sources)
 
         prompt = (
             f"Write a concise summary document on: {topic}{focus_line}\n\n"
-            f"Available sources (cite inline using their IDs):\n{source_text}\n\n"
+            f"Available sources (cite inline using their IDs):\n{source_text}\n{primary_note}\n"
             f"Requirements:\n"
             f"- Use markdown formatting\n"
             f"- Maximum {max_sections} sections with ## headings\n"
@@ -800,6 +895,37 @@ DOCUMENT_TRIGGER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Incidental-trigger guard. In a LONG message the document request must be the
+# imperative HEAD (or a trailing "...anyway, save that as a doc" TAIL) — a
+# trigger phrase buried in the body is almost always quoted/incidental, not a
+# request to research+save a document.
+#
+# Regression: a 2000-word *analytical* request ("Evaluate this proposal and
+# produce a plan ...") fired document generation purely on the phrase "write a
+# final report" quoted DEEP inside the pasted proposal (describing what a worker
+# branch may do). The turn was hijacked into generic web research that ignored
+# the proposal entirely. The actual ask ("Evaluate ... produce a plan") has no
+# doc-noun and should answer in chat.
+_DOC_INTENT_SHORT_MSG_WORDS = 60   # at/under this word count, trust the trigger anywhere
+_DOC_INTENT_EDGE_CHARS = 220       # in longer messages, trigger must touch head/tail window
+
+
+def _doc_trigger_is_incidental(query: str) -> bool:
+    """True if the only doc-trigger phrase(s) are buried mid-body of a long message.
+
+    Short messages are trusted wholesale. For longer ones, a genuine request
+    leads ("write a report about X ...") or closes ("...save that as a summary");
+    a phrase that appears only deep in the interior is treated as incidental.
+    """
+    if len(query.split()) <= _DOC_INTENT_SHORT_MSG_WORDS:
+        return False
+    n = len(query)
+    tail_start = max(0, n - _DOC_INTENT_EDGE_CHARS)
+    for m in DOCUMENT_TRIGGER_PATTERN.finditer(query):
+        if m.start() < _DOC_INTENT_EDGE_CHARS or m.start() >= tail_start:
+            return False  # at least one trigger is at the head or tail → genuine
+    return True
+
 
 def detect_document_intent(query: str) -> dict[str, Any] | None:
     """Detect whether a query requests document generation.
@@ -808,6 +934,12 @@ def detect_document_intent(query: str) -> dict[str, Any] | None:
     Does NOT trigger on plain "research X" or "summarize X".
     """
     if not DOCUMENT_TRIGGER_PATTERN.search(query):
+        return None
+
+    # Incidental-trigger guard: a doc-phrase buried in the body of a long
+    # analytical/evaluative message is quoted/incidental, not a request to
+    # research+save a document. Let it fall through to normal generation.
+    if _doc_trigger_is_incidental(query):
         return None
 
     # Determine doc_type

@@ -199,8 +199,10 @@ knowledge/                    # External knowledge
 ├── wikidata_resolver.py      # Personal ↔ Wikidata entity resolution
 ├── proposal_generator.py     # Goal-directed code proposals
 ├── document_generator.py     # Research & save markdown docs (report/summary). Bounded
-│                             #   trigger (doc-noun must be object of save-verb) + LLM
-│                             #   API-error sentinel guard (never writes a corrupt file)
+│                             #   trigger (doc-noun must be object of save-verb; buried
+│                             #   mid-body of a long msg = incidental, answers in chat) +
+│                             #   content-aware (pasted material = PRIMARY [INPUT_1] source,
+│                             #   web/wiki suppressed) + LLM API-error sentinel guard
 ├── daemon_notes_manager.py   # Daemon self-notes for future sessions (non-ground-truth)
 ├── implementation_detector.py # 4-stage proposal status detection
 └── synthesis_models.py       # Synthesis data models + enums

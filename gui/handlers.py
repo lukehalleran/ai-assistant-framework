@@ -1075,10 +1075,14 @@ async def _run_doc_generation(ctx):
 
         yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
 
+        # Pass the user's full message as primary material so a "write a report
+        # evaluating this: <pasted content>" request is grounded in that content
+        # rather than a generic web search on the topic string.
         _doc_result = await _dg.generate(
             topic=_doc_gen_intent["topic"],
             doc_type=_doc_gen_intent["doc_type"],
             focus=_doc_gen_intent.get("focus"),
+            source_material=getattr(ctx, "user_text", None),
         )
 
         _doc_response = (

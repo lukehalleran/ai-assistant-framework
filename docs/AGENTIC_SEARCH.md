@@ -325,6 +325,29 @@ longer fires — that false-fire previously routed to the direct
 `_run_doc_generation` bypass (`gui/handlers.py`), which hijacks the whole turn
 with a "Document saved" receipt and emits no conversational reply.
 
+**Incidental-position guard** [2026-06-09]: even when the pattern matches, in a
+LONG message (> `_DOC_INTENT_SHORT_MSG_WORDS`, 60) the trigger must touch the
+head or tail window (`_DOC_INTENT_EDGE_CHARS`, 220 chars) — a genuine request
+either leads ("write a report about X …") or closes ("…save that as a summary").
+`_doc_trigger_is_incidental()` returns `None` from `detect_document_intent()`
+when the only matches are buried mid-body. Regression: a ~2000-word *analytical*
+request ("Evaluate this proposal and produce a plan …") fired generation purely
+on "write a final report" quoted deep inside the pasted proposal (describing
+what a worker branch may do); the real ask has no head/tail doc-noun and now
+answers in chat.
+
+**Content-aware generation** [2026-06-09]: `generate()` accepts `source_material`
+(the user's full message, passed by `_run_doc_generation`). When substantial
+(≥ `DOCUMENT_PROVIDED_MIN_CHARS`, 400; capped at `DOCUMENT_PROVIDED_MAX_CHARS`,
+8000) it becomes the PRIMARY source `[INPUT_1]` — ranked first (relevance 10.0,
+survives the source cap), rendered in full (other sources stay 300-char capped),
+and reinforced by `_primary_material_instruction()` in all three draft prompts.
+Web **and** encyclopedia (wiki) search are suppressed (personal notes are still
+gathered for grounding). Without provided material the prior topic-driven
+web+memory research is unchanged. Fixes "evaluate THIS pasted proposal" requests
+that previously web-searched the bare topic string ("daemon") and returned
+irrelevant sources (the Anarchism Wikipedia article, a 1994 Unix-daemon PDF).
+
 **LLM-failure safety** [2026-06-08]: `generate_once()` returns API-error
 sentinel strings ("[API Error] … 402", "[CREDITS EXHAUSTED] …") instead of
 raising. `DocumentGenerator` detects these on the topic-refine, outline, and

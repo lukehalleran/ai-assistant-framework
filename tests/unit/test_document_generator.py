@@ -213,6 +213,105 @@ class TestGatherSources:
 
 # ############################################################################
 #
+#  Content-aware generation (user-provided primary material)
+#
+# ############################################################################
+
+class TestContentAwareGeneration:
+    """When the user pastes substantial material to evaluate, it becomes the
+    PRIMARY source [INPUT_1] and web/encyclopedia search is suppressed; personal
+    notes are still gathered for grounding. Regression: an "evaluate THIS
+    proposal" request previously web-searched the bare topic and pulled
+    irrelevant sources (Anarchism Wikipedia, a 1994 Unix-daemon PDF).
+    """
+
+    PROPOSAL = (
+        "Proposal: Isolated Agent Branch Portfolio System. Spawn N isolated "
+        "worker workspaces, each attempting a bounded improvement on its own "
+        "branch. Most branches die cheaply; survivors become human-reviewable "
+        "proposals; nothing ever auto-merges. The supervisor authors an "
+        "immutable manifest; evaluation is trusted and external to the branch. "
+    ) * 4  # comfortably above DOCUMENT_PROVIDED_MIN_CHARS
+
+    @pytest.mark.asyncio
+    async def test_provided_material_becomes_primary_source(self, generator):
+        sources = await generator._gather_sources(
+            "agent branch portfolio", source_material=self.PROPOSAL,
+        )
+        provided = [s for s in sources if s.source_type == "provided"]
+        assert len(provided) == 1
+        assert provided[0].id == "INPUT_1"
+        assert "Isolated Agent Branch Portfolio" in provided[0].snippet
+
+    @pytest.mark.asyncio
+    async def test_web_and_wiki_suppressed_when_material_present(self, generator):
+        sources = await generator._gather_sources(
+            "agent branch portfolio", source_material=self.PROPOSAL,
+        )
+        types = {s.source_type for s in sources}
+        assert "web" not in types, "web search must be suppressed with provided material"
+        assert "wikipedia" not in types, "encyclopedia must be suppressed with provided material"
+        assert "notes" in types, "personal notes still gathered for grounding"
+        generator.web_search_manager.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thin_material_does_not_suppress_web(self, generator):
+        """Material below the min-chars floor is ignored — normal research runs."""
+        sources = await generator._gather_sources(
+            "agent branch portfolio", source_material="too short to anchor on",
+        )
+        types = {s.source_type for s in sources}
+        assert "provided" not in types
+        assert "web" in types
+
+    @pytest.mark.asyncio
+    async def test_no_material_preserves_prior_behavior(self, generator):
+        sources = await generator._gather_sources("agent branch portfolio")
+        types = {s.source_type for s in sources}
+        assert "web" in types and "wikipedia" in types and "notes" in types
+        assert "provided" not in types
+
+    def test_provided_source_ranks_first_and_keeps_input_id(self, generator):
+        from knowledge.document_generator import DocumentSource
+        gathered = [
+            DocumentSource(id="WEB_1", title="w", url="http://x", source_type="web",
+                           snippet="s", relevance=0.9),
+            DocumentSource(id="INPUT_1", title="User-provided material", url=None,
+                           source_type="provided", snippet="the proposal", relevance=10.0),
+        ]
+        ranked = generator._dedupe_and_rank(gathered)
+        assert ranked[0].source_type == "provided"
+        assert ranked[0].id == "INPUT_1"
+
+    def test_format_renders_provided_first_and_full(self, generator):
+        from knowledge.document_generator import DocumentSource
+        long_material = "UNIQUE_PROPOSAL_TOKEN " * 100  # > 300-char snippet cap
+        sources = [
+            DocumentSource(id="NOTE_1", title="a note", url=None, source_type="notes",
+                           snippet="note body", relevance=0.5),
+            DocumentSource(id="INPUT_1", title="User-provided material", url=None,
+                           source_type="provided", snippet=long_material, relevance=10.0),
+        ]
+        text = generator._format_sources_for_prompt(sources)
+        assert text.index("INPUT_1") < text.index("NOTE_1")  # provided first
+        assert "PRIMARY MATERIAL" in text
+        assert text.count("UNIQUE_PROPOSAL_TOKEN") > 50  # full, not 300-char capped
+
+    def test_primary_instruction_only_when_provided_present(self, generator):
+        from knowledge.document_generator import DocumentSource
+        without = [DocumentSource(id="WEB_1", title="w", url=None, source_type="web",
+                                  snippet="s", relevance=0.5)]
+        assert generator._primary_material_instruction(without) == ""
+        with_provided = without + [
+            DocumentSource(id="INPUT_1", title="m", url=None, source_type="provided",
+                           snippet="x", relevance=10.0)
+        ]
+        note = generator._primary_material_instruction(with_provided)
+        assert "INPUT_1" in note and "PRIMARY" in note
+
+
+# ############################################################################
+#
 #  Dedup and ranking
 #
 # ############################################################################
@@ -659,6 +758,30 @@ class TestTriggerDetection:
         assert detect_document_intent(query) is not None, (
             f"Should trigger (doc-noun is object of save-verb): {query}"
         )
+
+    def test_buried_trigger_in_long_analytical_message_does_not_fire(self):
+        """Regression: an analytical request fired doc-gen purely on a doc-phrase
+        quoted DEEP inside a pasted proposal ("...a worker may write a final
+        report..."). The actual ask has no doc-noun → should answer in chat.
+        """
+        filler = "Isolation has to be mechanical, not instruction-based. " * 30
+        query = (
+            "Evaluate this architecture proposal for Daemon and produce a "
+            "concrete implementation plan, risks, and recommended first milestone. "
+            + filler
+            + "The branch may write a final report, but not mutate its manifest. "
+            + filler
+            + "whether this should integrate with the existing proposal system or "
+            "remain external at first"
+        )
+        assert detect_document_intent(query) is None
+
+    def test_head_request_with_pasted_material_still_fires(self):
+        """A genuine doc request at the HEAD fires even in a long message with
+        pasted material after it (content-aware path handles the material)."""
+        filler = "Here is the full proposal text with lots of detail. " * 30
+        query = "Write a report evaluating this proposal: " + filler
+        assert detect_document_intent(query) is not None
 
 
 # ############################################################################
