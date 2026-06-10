@@ -19,6 +19,10 @@ Module Contract
   - Gathers project context (skeleton, goals, CLAUDE.md, QUICK_REFERENCE.md, recent commits)
   - Prompts LLM for structured JSON proposals (creative mandate for new features)
   - Robust parsing of LLM output (handles fences, arrays, line-delimited)
+  - Computes supervision fields per proposal via memory/proposal_risk.py
+    (touches_core_system + risk_level; safety/supervision touches → CRITICAL)
+  - Annotates depends_on from the LIVE feature registry (advisory conflict /
+    dependency awareness for the human reviewer — not a merge gate)
   - Graceful degradation when files/git unavailable
   - Full code generation: reads source files for modify actions, writes to staging dir
   - Creates _manifest.json for each generated proposal
@@ -41,6 +45,7 @@ from memory.code_proposal import (
     ProposalSource,
     ProposalType,
 )
+from memory.proposal_risk import classify_proposal
 from utils.logging_utils import get_logger
 
 logger = get_logger("proposal_generator")
@@ -330,18 +335,36 @@ class GoalDirectedGenerator:
             if complexity not in ("low", "medium", "high"):
                 complexity = "medium"
 
+            affected_files = data.get("affected_files", [])
+            reasoning = data.get("reasoning", "")
+            description = data.get("description", "")
+
+            # Compute supervision fields (never defaulted): every file the proposal
+            # would touch — affected_files + step targets — plus any code/text it
+            # introduces (for import-based detection of core/safety/supervision
+            # touches that a "clean" new path would otherwise hide).
+            touched_paths = list(affected_files) + [s.file_path for s in steps if s.file_path]
+            code_texts = [s.code_snippet for s in steps if s.code_snippet]
+            code_texts += [description, reasoning]
+            touches_core, risk_level = classify_proposal(
+                touched_paths, code_texts=code_texts, title=title,
+                description=description, proposal_type=proposal_type,
+            )
+
             proposal = CodeProposal(
                 title=title,
                 proposal_type=proposal_type,
                 source=ProposalSource.GOAL_DIRECTED,
                 priority=max(1, min(10, int(data.get("priority", 5)))),
-                reasoning=data.get("reasoning", ""),
-                description=data.get("description", ""),
+                reasoning=reasoning,
+                description=description,
                 implementation_steps=steps,
-                affected_files=data.get("affected_files", []),
+                affected_files=affected_files,
                 tags=data.get("tags", [])[:10],
                 estimated_complexity=complexity,
                 requires_tests=bool(data.get("requires_tests", True)),
+                risk_level=risk_level,
+                touches_core_system=touches_core,
             )
 
             return proposal
@@ -349,6 +372,43 @@ class GoalDirectedGenerator:
         except Exception as e:
             logger.debug(f"Failed to parse proposal: {e}")
             return None
+
+    @staticmethod
+    def _annotate_conflicts(proposals: List[CodeProposal]) -> None:
+        """Advisory awareness against the LIVE feature registry (read at generation
+        time, not a frozen snapshot): for each proposal, find shipped features whose
+        files overlap, and record them (+ their transitive deps) in ``depends_on``
+        so the human reviewer sees what a change would collide with. Best-effort —
+        a missing/empty registry degrades to no annotation. NOT a merge gate and NOT
+        a convergence signal; it only informs review."""
+        try:
+            from config.feature_registry import check_conflicts, get_dependencies
+        except Exception:  # noqa: BLE001
+            return
+        for p in proposals:
+            try:
+                files = list(p.affected_files) + [
+                    s.file_path for s in p.implementation_steps if s.file_path
+                ]
+                conflicts = check_conflicts(files)
+                if not conflicts:
+                    continue
+                deps: List[str] = []
+                for feat in conflicts:
+                    if feat.proposal_id not in deps:
+                        deps.append(feat.proposal_id)
+                    for d in get_dependencies(feat.proposal_id):
+                        if d not in deps:
+                            deps.append(d)
+                merged = list(p.depends_on)
+                for d in deps:
+                    if d not in merged:
+                        merged.append(d)
+                p.depends_on = merged
+                logger.info("[ProposalGenerator] '%s' overlaps shipped features: %s",
+                            p.title, deps)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"conflict annotation failed for '{p.title}': {e}")
 
     async def generate_proposals(
         self,
@@ -410,6 +470,7 @@ class GoalDirectedGenerator:
                 if len(proposals) >= limit:
                     break
 
+        self._annotate_conflicts(proposals)
         logger.info(f"[ProposalGenerator] Generated {len(proposals)} proposals from {len(raw_proposals)} raw")
         return proposals
 
@@ -486,6 +547,7 @@ class GoalDirectedGenerator:
                 if len(proposals) >= limit:
                     break
 
+        self._annotate_conflicts(proposals)
         logger.info(
             f"[ProposalGenerator] Generated {len(proposals)} proposals "
             f"from {len(raw_proposals)} raw (pipeline-enriched)"
