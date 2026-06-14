@@ -83,9 +83,12 @@ def build_template(*, objective: str, allowed: List[str], proofs: List[str],
     )
 
 
-def build_specs(lenses: List[str], *, target: str, model: str) -> List[WorkerSpec]:
-    """One coding-worker per lens; each gets its goals file + target + model. The
-    objective is injected by the supervisor from the manifest (worker_env_for)."""
+def build_specs(lenses: List[str], *, target: str, model: str,
+                temperature: float = 0.4) -> List[WorkerSpec]:
+    """One coding-worker per lens; each gets its goals file + target + model +
+    sampling temperature. The objective is injected by the supervisor from the
+    manifest (worker_env_for). Temperature defaults > 0 so the per-lens agents
+    actually diverge (the proof still gates correctness)."""
     specs: List[WorkerSpec] = []
     for lens in lenses:
         specs.append(WorkerSpec(
@@ -96,6 +99,7 @@ def build_specs(lenses: List[str], *, target: str, model: str) -> List[WorkerSpe
                 "WORKER_GOALS": f"{GOALS_DIR}/{lens}.md",
                 "WORKER_TARGET": target,
                 "WORKER_MODEL": model,
+                "WORKER_TEMPERATURE": str(temperature),
             },
             network=NetworkMode.LLM_UDS,
         ))
@@ -137,6 +141,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="comma-separated goals lenses (one agent each)")
     p.add_argument("--source", default=".", help="repo to run against")
     p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--temperature", type=float, default=0.4,
+                   help="sampling temperature; >0 so per-lens agents diverge")
     p.add_argument("--upstream", default=DEFAULT_UPSTREAM)
     p.add_argument("--token-budget", type=int, default=200_000)
     p.add_argument("--wallclock", type=int, default=300)
@@ -166,7 +172,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_diff_lines=args.max_diff_lines, wallclock=args.wallclock,
         token_budget=args.token_budget,
     )
-    specs = build_specs(lenses, target=args.target, model=args.model)
+    specs = build_specs(lenses, target=args.target, model=args.model,
+                        temperature=args.temperature)
     proxies = build_proxies(specs, upstream=args.upstream, key=key,
                             runs_root=runs_root, token_budget=args.token_budget)
 

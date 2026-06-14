@@ -12,16 +12,24 @@ from agent_branch.provisioning import NetworkMode
 
 
 def test_build_specs_one_coding_worker_per_lens():
-    specs = run.build_specs(["reliability", "coverage"], target="utils/x.py", model="m")
+    specs = run.build_specs(["reliability", "coverage"], target="utils/x.py",
+                            model="m", temperature=0.5)
     assert [s.branch_id for s in specs] == ["reliability", "coverage"]
     for s in specs:
         assert s.worker_script.endswith("coding_worker.py")
         assert s.network == NetworkMode.LLM_UDS
         assert s.worker_env["WORKER_TARGET"] == "utils/x.py"
         assert s.worker_env["WORKER_MODEL"] == "m"
+        assert s.worker_env["WORKER_TEMPERATURE"] == "0.5"  # variety knob wired
     # each lens points at its own goals file
     assert specs[0].worker_env["WORKER_GOALS"] == "agent_branch/goals/reliability.md"
     assert specs[1].worker_env["WORKER_GOALS"] == "agent_branch/goals/coverage.md"
+
+
+def test_build_specs_default_temperature_is_nonzero():
+    # Default must be > 0 so the portfolio diverges out of the box.
+    specs = run.build_specs(["reliability"], target="x.py", model="m")
+    assert float(specs[0].worker_env["WORKER_TEMPERATURE"]) > 0
 
 
 def test_build_template_maps_args():

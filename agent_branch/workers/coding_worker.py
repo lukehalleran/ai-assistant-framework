@@ -44,6 +44,10 @@ GOALS = os.environ.get("WORKER_GOALS", "")
 SHARED_GOALS = os.environ.get("WORKER_SHARED_GOALS", "agent_branch/goals/_shared.md")
 CONTEXT = os.environ.get("WORKER_CONTEXT", "")
 MODEL = os.environ.get("WORKER_MODEL", "anthropic/claude-haiku-4.5")
+# Sampling temperature. Default 0 (deterministic) when run standalone; the portfolio
+# runner raises it so per-lens agents actually DIVERGE instead of collapsing to the
+# same minimal diff (the proof still gates correctness regardless of temperature).
+TEMPERATURE = float(os.environ.get("WORKER_TEMPERATURE", "0") or "0")
 
 # bounded repo map — never traverse heavy/irrelevant trees, cap the listing
 _SKIP_DIRS = {".git", "__pycache__", "data", "node_modules", "venv", ".venv",
@@ -154,14 +158,15 @@ class _UDSConnection(http.client.HTTPConnection):
         self.sock = sock
 
 
-def ask_llm(system: str, user: str, *, model: str = MODEL, sock: str = LLM_SOCK) -> str:
+def ask_llm(system: str, user: str, *, model: str = MODEL, sock: str = LLM_SOCK,
+            temperature: float = TEMPERATURE) -> str:
     conn = _UDSConnection(sock)
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "max_tokens": 4000,
-        "temperature": 0,
+        "temperature": temperature,
     })
     conn.request("POST", "/v1/chat/completions", body=payload,
                  headers={"Content-Type": "application/json", "Host": "llm"})
