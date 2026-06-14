@@ -2,6 +2,14 @@
 gui/tabs/proposals.py — Proposals tab UI for browsing, managing, and generating code proposals.
 
 Extracted from gui/launch.py to reduce file size.
+
+Supervision surfacing: each proposal card shows its computed risk badge
+(LOW/MEDIUM/HIGH/CRITICAL), a CORE-SYSTEM badge, and any registry overlaps
+(depends_on); the manage dropdown prefixes ⛔/⚠ by risk. Approve and Mark-Built
+are gated behind an acknowledge checkbox for HIGH/CRITICAL or core-system
+proposals (policy: ``memory.proposal_risk.requires_human_ack``); Reject is never
+gated. This turns the classifier's supervision metadata into an action the human
+must take at review time rather than a passive label.
 """
 import logging
 import gradio as gr
@@ -58,6 +66,13 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 label="Rejection reason (optional)",
                 placeholder="Why is this being rejected?",
                 lines=1,
+            )
+
+        with gr.Row():
+            ack_risk_checkbox = gr.Checkbox(
+                value=False,
+                label="⚠ I have reviewed this HIGH/CRITICAL or core-system change "
+                      "(required before Approve / Mark Built)",
             )
 
         manage_status = gr.Markdown(value="")
@@ -121,7 +136,17 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                     title = meta.get("title", "Untitled")
                     priority = int(meta.get("priority", 5))
                     ptype = meta.get("proposal_type", "")
-                    label = f"[P{priority}] {title} ({ptype})"
+                    # Surface supervision risk in the selector so the reviewer sees
+                    # it before acting (matches the acknowledge gate on Approve).
+                    risk = (meta.get("risk_level") or "medium").lower()
+                    core = bool(meta.get("touches_core_system", False))
+                    if risk == "critical":
+                        marker = "⛔ "
+                    elif risk == "high" or core:
+                        marker = "⚠ "
+                    else:
+                        marker = ""
+                    label = f"{marker}[P{priority}] {title} ({ptype})"
                     dropdown_choices.append(label)
                     title_to_id[label] = meta.get("proposal_id", "")
 
@@ -376,6 +401,54 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
             except Exception as e:
                 return f"Error updating status: {e}"
 
+        def _advance_proposal(selected_label, title_map, new_status, acknowledged):
+            """Forward-progress a proposal (approve / mark built) behind a
+            human-acknowledgement gate. A HIGH/CRITICAL or core-system proposal
+            cannot be advanced until the reviewer ticks the acknowledge box — the
+            supervision metadata becomes an action the human must take, not just a
+            label. Rejection is never gated (rejecting is always safe)."""
+            if not selected_label or not title_map:
+                return "Select a proposal first."
+
+            proposal_id = title_map.get(selected_label)
+            if not proposal_id:
+                return f"Proposal not found for: {selected_label}"
+
+            try:
+                from memory.proposal_store import ProposalStore
+                from memory.code_proposal import ProposalStatus
+                from memory.proposal_risk import requires_human_ack
+
+                chroma = getattr(orchestrator, 'memory_system', None)
+                chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
+                if not chroma_store:
+                    return "Chroma store not available."
+
+                store = ProposalStore(chroma_store=chroma_store)
+                proposal = store.get_proposal(proposal_id)
+                if not proposal:
+                    return f"Proposal {proposal_id} not found."
+
+                needs_ack = requires_human_ack(
+                    proposal.risk_level, proposal.touches_core_system
+                )
+                if needs_ack and not acknowledged:
+                    tag = proposal.risk_level.value.upper()
+                    core = " + core-system" if proposal.touches_core_system else ""
+                    return (
+                        f"⛔ **Blocked:** this is a **{tag}**{core} proposal. "
+                        f"Tick the acknowledge box above to confirm you've reviewed "
+                        f"it before marking it **{new_status}**."
+                    )
+
+                ok = store.update_status(proposal_id, ProposalStatus(new_status))
+                if ok:
+                    note = " (acknowledged)" if needs_ack else ""
+                    return f"Proposal marked as **{new_status}**{note}."
+                return "Failed to update proposal status."
+            except Exception as e:
+                return f"Error advancing proposal: {e}"
+
         # --- Wire event handlers ---
         refresh_proposals_btn.click(
             _load_proposals,
@@ -394,8 +467,8 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
         )
 
         mark_built_btn.click(
-            lambda sel, m: _update_proposal_status(sel, m, "completed"),
-            inputs=[manage_selector, proposals_map],
+            lambda sel, m, ack: _advance_proposal(sel, m, "completed", ack),
+            inputs=[manage_selector, proposals_map, ack_risk_checkbox],
             outputs=[manage_status],
         ).then(
             _load_proposals,
@@ -414,8 +487,8 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
         )
 
         mark_approved_btn.click(
-            lambda sel, m: _update_proposal_status(sel, m, "approved"),
-            inputs=[manage_selector, proposals_map],
+            lambda sel, m, ack: _advance_proposal(sel, m, "approved", ack),
+            inputs=[manage_selector, proposals_map, ack_risk_checkbox],
             outputs=[manage_status],
         ).then(
             _load_proposals,
@@ -513,6 +586,16 @@ def _render_proposal_card(meta, index, _json):
     except (ValueError, TypeError):
         pass
 
+    # Supervision: what shipped features this proposal overlaps / depends on
+    # (advisory awareness from the live feature registry — not a merge gate).
+    try:
+        deps = _json.loads(meta.get("depends_on_json", "[]"))
+        if deps:
+            body.append('<p><b>⚠ Overlaps / depends on:</b> '
+                        + ", ".join(f'<code>{d}</code>' for d in deps) + '</p>')
+    except (ValueError, TypeError):
+        pass
+
     body.append('</div>')
     body_html = "\n".join(body)
 
@@ -553,6 +636,29 @@ def _render_proposal_card(meta, index, _json):
             f'{impl_status} {impl_conf:.0%}</span>'
         )
 
+    # Supervision risk badge — the computed risk_level, made visible at review so a
+    # HIGH/CRITICAL or core-system change can't be approved on a glance (the
+    # acknowledge gate on Approve/Mark Built enforces it).
+    risk = (meta.get("risk_level") or "medium").lower()
+    _risk_colors = {"low": "#10b981", "medium": "#6b7280", "high": "#f97316", "critical": "#dc2626"}
+    _risk_labels = {"critical": "⛔ CRITICAL", "high": "⚠ HIGH", "medium": "MEDIUM", "low": "LOW"}
+    risk_color = _risk_colors.get(risk, "#6b7280")
+    risk_badge_html = (
+        f'<span style="display:inline-block;padding:1px 8px;'
+        f'border-radius:9999px;font-size:0.75em;font-weight:700;'
+        f'color:#fff;background:{risk_color};margin-left:4px;'
+        f'vertical-align:middle;">{_risk_labels.get(risk, risk.upper())}</span>'
+    )
+    core_badge_html = ""
+    if bool(meta.get("touches_core_system", False)):
+        core_badge_html = (
+            f'<span style="display:inline-block;padding:1px 8px;'
+            f'border-radius:9999px;font-size:0.75em;font-weight:600;'
+            f'color:#fff;background:#7c3aed;margin-left:4px;'
+            f'vertical-align:middle;" title="Modifies core orchestration, memory, '
+            f'safety, or supervision code">CORE-SYSTEM</span>'
+        )
+
     return (
         f'<details{open_attr} style="margin-bottom:6px;border:1px solid #374151;'
         f'border-radius:6px;background:#1f2937;">'
@@ -562,6 +668,8 @@ def _render_proposal_card(meta, index, _json):
         f'<span style="font-weight:400;color:#9ca3af;font-size:0.85em;">'
         f'({ptype} | P{priority})</span>'
         f'{badge_html}'
+        f'{risk_badge_html}'
+        f'{core_badge_html}'
         f'{impl_badge_html}'
         f'</summary>\n{body_html}\n</details>'
     )

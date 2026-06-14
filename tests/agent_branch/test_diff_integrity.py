@@ -14,6 +14,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from agent_branch.eval_static import parse_diff
 from agent_branch.provisioning import compute_trusted_diff
 
 
@@ -127,3 +128,78 @@ def test_collect_diff_does_not_follow_worker_symlinks(tmp_path):
         base_sha=base_sha, work_dir=tmp_path / "diff_root",
     )
     assert "TOP-SECRET-HOST-CONTENT" not in diff
+
+
+def test_nested_git_dir_cannot_mask_changes_as_submodule(tmp_path):
+    """A worker drops a NEW directory holding its real files PLUS a nested ``.git``.
+    Under a naive overlay (copy nested ``.git`` too) the trusted ``git add -A``
+    records only a submodule gitlink (mode 160000, "+Subproject commit <sha>") for
+    that directory — every line inside is invisible to the static gate's
+    size/scope/content checks (a confirmed diff-masking evasion). The overlay must
+    strip ``.git`` at all depths so the real files are diffed line-by-line."""
+    baseline, base_sha = _make_baseline(tmp_path)
+    worker = tmp_path / "worker_clone"
+    subprocess.run(["git", "clone", "-q", str(baseline), str(worker)], check=True)
+    newmod = worker / "sandbox" / "newmod"
+    newmod.mkdir(parents=True)
+    (newmod / "payload.py").write_text("PAYLOAD = 'x'\n" * 40, encoding="utf-8")
+    # nest a real git repo inside the new dir (this is what triggers the gitlink)
+    subprocess.run(["git", "init", "-q", str(newmod)], check=True)
+    _git(newmod, "config", "user.email", "e@e")
+    _git(newmod, "config", "user.name", "e")
+    _git(newmod, "add", "-A")
+    _git(newmod, "commit", "-q", "-m", "hidden")
+
+    diff = compute_trusted_diff(
+        worker_repo=worker, trusted_baseline_repo=baseline,
+        base_sha=base_sha, work_dir=tmp_path / "diff_root",
+    )
+    # the real file content is visible — NOT collapsed to a gitlink
+    assert "sandbox/newmod/payload.py" in diff
+    assert "PAYLOAD = 'x'" in diff
+    assert "Subproject commit" not in diff and "160000" not in diff
+    # ...and the static gate actually counts those lines now
+    touched, added, removed, _empty, _ws = parse_diff(diff)
+    assert "sandbox/newmod/payload.py" in touched
+    assert added >= 40
+
+
+def test_worker_file_deletion_is_captured(tmp_path):
+    """A worker deleting a tracked file must show as a deletion — the overlay's
+    clear-then-copy must not silently drop the removal (which would let a worker
+    delete a guard/test on its branch without the supervisor seeing it)."""
+    baseline, base_sha = _make_baseline(tmp_path)
+    worker = tmp_path / "worker_clone"
+    subprocess.run(["git", "clone", "-q", str(baseline), str(worker)], check=True)
+    (worker / "sandbox" / "calc.py").unlink()
+
+    diff = compute_trusted_diff(
+        worker_repo=worker, trusted_baseline_repo=baseline,
+        base_sha=base_sha, work_dir=tmp_path / "diff_root",
+    )
+    assert "sandbox/calc.py" in diff
+    assert "deleted file" in diff or "/dev/null" in diff
+
+
+def test_diff_external_git_config_not_executed(tmp_path):
+    """Defense-in-depth, distinct from the clean-filter vector: a worker ``.git``
+    with ``[diff] external = <payload>`` must never execute when the supervisor
+    computes the diff — it diffs a TRUSTED checkout, never the worker's ``.git``."""
+    baseline, base_sha = _make_baseline(tmp_path)
+    worker = tmp_path / "worker_clone"
+    canary = tmp_path / "diffext_canary"
+    subprocess.run(["git", "clone", "-q", str(baseline), str(worker)], check=True)
+    (worker / "sandbox" / "calc.py").write_text(
+        "def add(a, b):\n    return a + b  # edit\n", encoding="utf-8")
+    payload = worker / "ext.sh"
+    payload.write_text(f"#!/bin/sh\ntouch {canary}\n", encoding="utf-8")
+    payload.chmod(0o755)
+    with (worker / ".git" / "config").open("a", encoding="utf-8") as fh:
+        fh.write(f"\n[diff]\n\texternal = {payload}\n")
+
+    diff = compute_trusted_diff(
+        worker_repo=worker, trusted_baseline_repo=baseline,
+        base_sha=base_sha, work_dir=tmp_path / "diff_root",
+    )
+    assert not canary.exists(), "worker .git diff.external executed on host"
+    assert "edit" in diff

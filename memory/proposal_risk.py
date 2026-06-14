@@ -13,7 +13,11 @@ Module Contract
 - Inputs: affected file paths; optional code/text blobs (step snippets,
   description) for import-based detection; optional title/type for keyword/type
   risk fallback.
-- Outputs: ``(touches_core_system: bool, risk_level: RiskLevel)``.
+- Outputs: ``(touches_core_system: bool, risk_level: RiskLevel)`` from
+  ``classify_proposal``; ``requires_human_ack(risk_level, touches_core_system) ->
+  bool`` is the companion supervision POLICY (HIGH/CRITICAL or core touch → an
+  explicit human acknowledgement is required before approve/merge), kept here so
+  the gate can't drift from the classifier that produced the fields.
 - Key behaviors:
   - Path matching is by directory PREFIX (not the old exact-string membership),
     so ``core/prompt/anything.py`` is caught by the ``core/prompt/`` entry.
@@ -185,3 +189,15 @@ def classify_proposal(
         logger.info("proposal classified CRITICAL (touches safety/supervision layer): %s",
                     [f for f in files if _matches(f, _CRITICAL_PATHS)] or "via-import")
     return touches_core_system, risk
+
+
+def requires_human_ack(risk_level: RiskLevel, touches_core_system: bool) -> bool:
+    """Whether FORWARD-progressing a proposal (approve / mark-built / merge) should
+    require an explicit human acknowledgement.
+
+    True for HIGH or CRITICAL risk, or any core-system touch — the supervision
+    metadata becomes an action the reviewer must take, not just a label. The GUI
+    gates Approve / Mark Built on this; rejection is never gated (rejecting is
+    always safe). Single source of truth so the gate can't drift from the
+    classifier that produced the fields."""
+    return bool(touches_core_system) or risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL)

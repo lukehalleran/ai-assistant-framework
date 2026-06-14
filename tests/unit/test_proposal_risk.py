@@ -14,7 +14,7 @@ import textwrap
 import pytest
 
 from memory.code_proposal import ProposalType, RiskLevel
-from memory.proposal_risk import classify_proposal
+from memory.proposal_risk import classify_proposal, requires_human_ack
 
 
 # -- 1. supervision / safety layer is unconditionally CRITICAL ---------------
@@ -134,3 +134,30 @@ def test_generator_annotates_depends_on_from_conflicts(monkeypatch):
     GoalDirectedGenerator._annotate_conflicts([proposal])
     assert "existing_feature" in proposal.depends_on
     assert "upstream_dep" in proposal.depends_on
+
+
+# -- 4. the acknowledge-before-approve policy --------------------------------
+
+@pytest.mark.parametrize("risk", [RiskLevel.HIGH, RiskLevel.CRITICAL])
+def test_high_and_critical_require_ack(risk):
+    assert requires_human_ack(risk, touches_core_system=False) is True
+
+
+@pytest.mark.parametrize("risk", [RiskLevel.LOW, RiskLevel.MEDIUM])
+def test_low_and_medium_do_not_require_ack(risk):
+    assert requires_human_ack(risk, touches_core_system=False) is False
+
+
+def test_core_system_touch_requires_ack_even_at_low_risk():
+    # A core-system touch must be acknowledged regardless of the risk label.
+    assert requires_human_ack(RiskLevel.LOW, touches_core_system=True) is True
+
+
+def test_ack_policy_matches_classifier_output():
+    # End-to-end: a supervision-layer proposal classifies CRITICAL AND demands ack.
+    touches_core, risk = classify_proposal(["memory/proposal_store.py"])
+    assert risk == RiskLevel.CRITICAL and touches_core is True
+    assert requires_human_ack(risk, touches_core) is True
+    # ...while a plain new widget needs neither.
+    tc2, r2 = classify_proposal(["knowledge/new_widget.py"])
+    assert requires_human_ack(r2, tc2) is False

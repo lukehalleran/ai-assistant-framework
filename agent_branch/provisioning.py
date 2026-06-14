@@ -21,8 +21,10 @@ Module Contract
     commands from repo-local config (clean filters, ``core.fsmonitor``, external
     diff) and honours replace-refs, so git is NEVER run against the worker's
     ``.git``. Instead ``compute_trusted_diff`` overlays the worker's WORKTREE
-    (sans ``.git``, symlinks not followed) onto a fresh TRUSTED checkout of
-    ``base_sha`` and diffs that with hardened flags + a sanitised git env.
+    (sans every ``.git`` at any depth — so a nested ``.git`` can't make the
+    trusted ``git add`` record a content-hiding submodule gitlink — symlinks not
+    followed) onto a fresh TRUSTED checkout of ``base_sha`` and diffs that with
+    hardened flags + a sanitised git env.
   - everything under ``/work/artifacts`` is untrusted DATA: copied out, read as
     text, never executed and never used as a path/instruction.
 - Side effects: spawns podman containers, clones/copies under a run dir, removes
@@ -138,9 +140,18 @@ def _git_safe_env() -> Dict[str, str]:
 
 def _overlay_worktree(*, src: Path, dst: Path) -> None:
     """Replace ``dst``'s working tree (PRESERVING ``dst/.git``) with ``src``'s
-    working tree, EXCLUDING ``src/.git``. Symlinks are recreated verbatim, never
-    followed — so a worker symlink pointing at a host file can't pull that file's
-    contents into the diff."""
+    working tree, EXCLUDING every ``.git`` at ANY depth. Symlinks are recreated
+    verbatim, never followed — so a worker symlink pointing at a host file can't
+    pull that file's contents into the diff.
+
+    Nested ``.git`` entries are stripped at all depths (not just the top level):
+    otherwise a worker could drop a NEW untracked directory holding its real
+    (malicious) files PLUS a nested ``.git``, and the trusted ``git add -A`` would
+    record only a submodule gitlink (mode 160000, "+Subproject commit <sha>") for
+    that directory — hiding every line inside it from the static gate's
+    size / scope / content checks (a confirmed diff-masking evasion). ``.git`` as a
+    file (gitfile) or symlink is excluded by name too."""
+    _ignore_git = shutil.ignore_patterns(".git")
     for child in list(dst.iterdir()):
         if child.name == ".git":
             continue
@@ -155,7 +166,7 @@ def _overlay_worktree(*, src: Path, dst: Path) -> None:
         if child.is_symlink():
             os.symlink(os.readlink(child), target)
         elif child.is_dir():
-            shutil.copytree(child, target, symlinks=True)
+            shutil.copytree(child, target, symlinks=True, ignore=_ignore_git)
         else:
             shutil.copy2(child, target)
 
