@@ -22,6 +22,7 @@ Module Contract
 
 from __future__ import annotations
 
+import difflib
 from typing import TYPE_CHECKING, List, Optional, Sequence
 
 from pydantic import BaseModel, Field
@@ -52,7 +53,8 @@ class PairOverlap(BaseModel):
     a: str
     b: str
     shared_files: List[str] = Field(default_factory=list)
-    jaccard: float = 0.0
+    jaccard: float = 0.0               # file-set overlap (1.0 = same files touched)
+    content_similarity: float = 0.0    # diff-content similarity (1.0 = identical change)
 
 
 class RankedPortfolio(BaseModel):
@@ -83,18 +85,31 @@ def _score_one(report: "BranchReport") -> ScoredBranch:
     )
 
 
+def _added_text(diff: str) -> str:
+    """The added lines of a unified diff (markers stripped) — the actual new content.
+    Used to measure how much two survivors' CHANGES differ, not just whether they
+    touched the same files (file-overlap is always 1.0 on a single-file objective,
+    so it can't tell convergence from genuine divergence — content can)."""
+    return "\n".join(l[1:] for l in (diff or "").splitlines()
+                     if l.startswith("+") and not l.startswith("+++"))
+
+
 def _pairwise_overlaps(reports: "Sequence[BranchReport]", survivor_ids: set) -> List[PairOverlap]:
-    files = {r.branch_id: set(r.static_gate.touched_paths)
-             for r in reports if r.branch_id in survivor_ids}
-    ids = sorted(files)
+    survs = {r.branch_id: r for r in reports if r.branch_id in survivor_ids}
+    files = {bid: set(r.static_gate.touched_paths) for bid, r in survs.items()}
+    added = {bid: _added_text(getattr(r, "diff_excerpt", "")) for bid, r in survs.items()}
+    ids = sorted(survs)
     out: List[PairOverlap] = []
     for i in range(len(ids)):
         for j in range(i + 1, len(ids)):
             a, b = ids[i], ids[j]
             inter, union = files[a] & files[b], files[a] | files[b]
+            sim = (difflib.SequenceMatcher(None, added[a], added[b]).ratio()
+                   if (added[a] or added[b]) else 0.0)
             out.append(PairOverlap(
                 a=a, b=b, shared_files=sorted(inter),
                 jaccard=round(len(inter) / len(union), 3) if union else 0.0,
+                content_similarity=round(sim, 3),
             ))
     return out
 

@@ -124,10 +124,19 @@ class TrialReport(BaseModel):
             )
 
         if self.overlaps:
-            out += ["", "## Divergence (pairwise file overlap among survivors)"]
+            out += ["", "## Divergence (pairwise among survivors)"]
             for o in self.overlaps:
                 shared = ", ".join(o.get("shared_files") or []) or "none"
-                out.append(f"- {o['a']} vs {o['b']}: jaccard {o['jaccard']} (shared: {shared})")
+                out.append(
+                    f"- {o['a']} vs {o['b']}: content-similarity "
+                    f"{o.get('content_similarity', 0.0)} "
+                    f"(file-overlap jaccard {o['jaccard']}, shared: {shared})"
+                )
+            sims = [o.get("content_similarity", 0.0) for o in self.overlaps]
+            if sims and min(sims) >= 0.95:
+                out.append("- ⚠ survivors are near-identical in content — the lenses "
+                           "barely diverged (try a less-constrained objective or a "
+                           "higher temperature).")
 
         out += ["", "## Recommendation", "", self.recommendation,
                 "", "_This harness evaluates and ranks only — it never auto-merges._"]
