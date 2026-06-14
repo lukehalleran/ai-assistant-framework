@@ -12,9 +12,13 @@ Module Contract
   (same objective / constraints / caps; distinct branch_id) — so the contract is
   identical while the run dirs/containers stay isolated.
 - Inputs: a shared manifest template (dict, no branch_id), a list of WorkerSpec,
-  the source repo + run root; optional per-worker proxies (real-LLM demo only).
+  the source repo + run root; optional per-worker proxies (real-LLM demo only);
+  optional proposal_store to ingest survivors into.
 - Output: a TrialReport (markdown + JSON).
 - Side effects: provisions/tears down N podman containers; writes under run dirs.
+  When a proposal_store is given, ranked survivors are also ingested into it as
+  PENDING agent-branch CodeProposals (the M3 hand-off; see proposal_bridge) —
+  best-effort, never sinks a finished trial.
 """
 
 from __future__ import annotations
@@ -64,6 +68,7 @@ def run_portfolio(
     max_concurrency: int = 3,
     keep_run_dir: bool = False,
     proxies: Optional[Dict[str, object]] = None,  # branch_id -> LLMProxy (demo only)
+    proposal_store: Optional[object] = None,  # ProposalStore-like — ingest survivors
     created_at: str = "",
 ) -> TrialReport:
     """Run all workers (bounded concurrency), rank, and return the Trial Report."""
@@ -89,6 +94,18 @@ def run_portfolio(
     portfolio = score_branches(reports)
     logger.info("portfolio done: %d survivors, %d rejected of %d",
                 len(portfolio.ranked), len(portfolio.rejected), len(reports))
+
+    # M3 hand-off: ranked survivors become PENDING agent-branch proposals in the
+    # live store so they surface in the GUI Proposals tab under human review.
+    # Best-effort — an ingest failure must never sink a completed trial.
+    if proposal_store is not None:
+        try:
+            from agent_branch.proposal_bridge import ingest_survivors
+            ids = ingest_survivors(objective, reports, portfolio, proposal_store)
+            logger.info("portfolio: ingested %d survivor(s) into the proposal store", len(ids))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("portfolio: proposal ingest failed: %s", e)
+
     return TrialReport.build(objective, reports, portfolio, created_at=created_at)
 
 
@@ -150,7 +167,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Agent-branch portfolio demo (M2)")
     parser.add_argument("--demo", action="store_true",
                         help="run the scripted 3-strategy + saboteur portfolio (offline)")
-    parser.parse_args(argv)
+    parser.add_argument("--ingest", action="store_true",
+                        help="ingest ranked survivors into the LIVE proposal store so "
+                             "they appear in the GUI Proposals tab for human review")
+    args = parser.parse_args(argv)
+
+    proposal_store = None
+    if args.ingest:
+        from config.app_config import CHROMA_PATH
+        from memory.proposal_store import ProposalStore
+        from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+        chroma = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
+        chroma.create_collection("proposals")
+        proposal_store = ProposalStore(chroma_store=chroma)
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -161,6 +190,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             template, _scripted_specs(),
             source_repo=repo, runs_root=root / "runs",
             sandbox_test_cmd=["python", "check_m2.py"],
+            proposal_store=proposal_store,
         )
     print(trial.render_markdown())
     rejected = {b.branch_id for b in trial.branches if b.status != "survived"}

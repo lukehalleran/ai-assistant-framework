@@ -26,12 +26,14 @@ There are **two tracks**, deliberately separated:
 | Track | Status | What it does | Autonomy |
 |-------|--------|--------------|----------|
 | **A. Live proposer** | Production | Generates text plans (+ optional staged code), classifies risk, stores in ChromaDB, surfaces in the GUI and in chat | Human approves; no code is executed or merged |
-| **B. agent_branch** | Research (M1/M2/M2.5 built; M3 deferred) | Runs *isolated* workers that actually write code in a podman sandbox, computes their diffs trust-side, kills bad ones, ranks survivors | No GUI, no store wiring, no merge — proves the *isolation + evaluation* substrate before it is ever trusted to act |
+| **B. agent_branch** | Research (M1/M2/M2.5 built; M3 bridge landed) | Runs *isolated* workers that actually write code in a podman sandbox, computes their diffs trust-side, kills bad ones, ranks survivors, and (opt-in) ingests survivors into Track A's store as PENDING proposals | No merge — proves the *isolation + evaluation* substrate; survivors now surface in the GUI for human review but are never auto-applied |
 
-The two are **not connected yet** (that wiring is M3). Track A is what a user
-interacts with today; Track B is the safety substrate being built so that, one
-day, a generated proposal could be *executed* by an isolated agent and have its
-real diff gated — without that execution ever being able to harm the host.
+The two are connected in **one** direction (M3 bridge): Track B can ingest its
+ranked survivors into Track A's store as PENDING proposals, so a
+supervisor-verified diff surfaces in the GUI for human review. The *reverse* — a
+Track A proposal being *executed* by an isolated agent and its real diff gated —
+is still future work. Track A is what a user interacts with today; Track B is the
+safety substrate, and nothing it produces is ever auto-applied.
 
 ---
 
@@ -285,10 +287,12 @@ is aware of its own pending self-improvement ideas.
 ## 3. Track B — the `agent_branch` isolation harness
 
 `agent_branch/` (self-documented in `agent_branch/README.md`). This is the
-substrate for *executing* self-modification safely. It is **separate** from
-Track A: no GUI, no ProposalStore wiring, no real data, no merge. Its whole
-purpose is to prove that an untrusted worker can write code and have its diff
-evaluated **without the evaluation ever becoming an escape hatch**.
+substrate for *executing* self-modification safely. It is largely **separate**
+from Track A — no real data, **no merge** — its whole purpose being to prove that
+an untrusted worker can write code and have its diff evaluated **without the
+evaluation ever becoming an escape hatch**. The one deliberate connection is the
+opt-in `proposal_bridge` (§3.6): ranked survivors can be ingested into Track A's
+store as PENDING proposals for human review — but nothing is ever auto-applied.
 
 ### 3.1 Trust model
 
@@ -382,6 +386,18 @@ symlinks recreated but never followed), and diffs that with hardened flags
 - **`report.py`:** the human-scannable Trial Report (markdown + JSON): ranking
   table, per-branch status/proof/evidence/flags/cost, divergence, and a
   recommendation that explicitly states the harness does not merge.
+- **`proposal_bridge.py` (the Track B → Track A hand-off):** converts each ranked
+  **survivor** into a `CodeProposal` (`source=AGENT_BRANCH`, `status=PENDING`,
+  priority from rank so rank-1 sorts to the top, risk via `classify_proposal` over
+  the touched paths + the added diff lines, the supervisor diff + proof in the
+  description) and stores it via `ProposalStore` — so a supervisor-verified diff
+  appears in the GUI Proposals tab and is reviewed under the same
+  acknowledge-before-approve gate as a self-generated proposal. Only ranked
+  survivors are ingested (killed/rejected branches never become proposals). Opt-in:
+  `run_portfolio(..., proposal_store=...)` or `python -m agent_branch.portfolio
+  --demo --ingest`. Still **never merges** — the proposal is a PENDING review
+  artifact. The Proposals tab tags these with a `🤖 AGENT-BRANCH ✓` provenance
+  badge.
 
 ### 3.7 Workers (`agent_branch/workers/`, stdlib-only, bare image)
 
@@ -403,10 +419,12 @@ symlinks recreated but never followed), and diffs that with hardened flags
 - **M2.5 — catch sincere failure:** a deepened proof test catches honest
   wrongness, not just sabotage (the reaper is only as strong as the proof's
   discriminating power). ✅
-- **M3 — deferred:** LLM intent judge (`eval_layer2` is a stub), converting
-  survivors into `ProposalSource.AGENT_BRANCH` proposals (wiring Track B → Track
-  A), reuse of the 20-tool agentic controller, a real deps image, GUI, and an
-  actual (still human-gated) merge path.
+- **M3 — partially landed:** the **Track B → Track A bridge is done** —
+  `proposal_bridge.py` turns ranked survivors into `ProposalSource.AGENT_BRANCH`
+  proposals that flow into the GUI Proposals tab for human review (see §3.6).
+  Still **deferred:** LLM intent judge (`eval_layer2` is a stub), reuse of the
+  20-tool agentic controller, a real deps image, and an actual (still human-gated)
+  merge path that applies an approved proposal's diff to main.
 
 ### 3.9 How to run
 
@@ -441,11 +459,13 @@ python -m agent_branch.portfolio  --demo            # M2 reaper demo
 - `tests/unit/test_code_proposal.py` (48) — model, supervision fields, registry.
 - `tests/unit/test_proposal_risk.py` — classifier (prefix/import/CRITICAL) +
   `requires_human_ack` policy.
-- `tests/unit/test_proposals_tab.py` (6) — GUI card rendering (risk/CORE badges,
-  depends_on, safe defaults).
+- `tests/unit/test_proposals_tab.py` (8) — GUI card rendering (risk/CORE badges,
+  depends_on, AGENT-BRANCH provenance badge, safe defaults).
 - `tests/unit/test_reclassify_proposals.py` (5) — re-classify extraction adapter.
-- `tests/agent_branch/` (91) — isolation red-team (slow/podman), diff integrity,
-  red-team hardening, eval gate, manifest, proxy, portfolio.
+- `tests/agent_branch/test_proposal_bridge.py` (10) — survivor→proposal mapping,
+  risk classification, ranked-survivors-only ingest, dedup.
+- `tests/agent_branch/` — isolation red-team (slow/podman), diff integrity,
+  red-team hardening, eval gate, manifest, proxy, portfolio, proposal bridge.
 
 ---
 
@@ -453,8 +473,10 @@ python -m agent_branch.portfolio  --demo            # M2 reaper demo
 
 - **Not autonomous.** Generation is user/session-triggered; nothing merges,
   commits, or pushes. Track A produces text plans + optional staged code only.
-- **Track A and Track B are not connected.** No generated proposal is executed by
-  agent_branch yet (M3).
+- **Connection is one-way and review-only.** Track B can ingest its ranked
+  survivors into Track A's store (the `proposal_bridge`), so they surface in the
+  GUI for human review — but nothing is auto-applied, and the reverse (a Track A
+  proposal *executed* by agent_branch) is not wired.
 - **`depends_on` is advisory**, not an enforced merge gate (no merge path exists
   to gate).
 - **`eval_layer2` (LLM intent judge) is a stub** — it never kills today.

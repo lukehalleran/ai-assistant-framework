@@ -659,6 +659,20 @@ def _render_proposal_card(meta, index, _json):
             f'safety, or supervision code">CORE-SYSTEM</span>'
         )
 
+    # Provenance badge — an agent-branch proposal carries a SUPERVISOR-VERIFIED
+    # diff (survived the static gate + sandboxed proof), unlike a self-generated
+    # text plan; surface that so the reviewer weighs it accordingly.
+    source_badge_html = ""
+    if meta.get("source") == "agent_branch":
+        source_badge_html = (
+            f'<span style="display:inline-block;padding:1px 8px;'
+            f'border-radius:9999px;font-size:0.75em;font-weight:600;'
+            f'color:#fff;background:#0891b2;margin-left:4px;'
+            f'vertical-align:middle;" title="Produced by an isolated agent branch; '
+            f'diff verified by the static gate + sandboxed proof">'
+            f'🤖 AGENT-BRANCH ✓</span>'
+        )
+
     return (
         f'<details{open_attr} style="margin-bottom:6px;border:1px solid #374151;'
         f'border-radius:6px;background:#1f2937;">'
@@ -670,6 +684,7 @@ def _render_proposal_card(meta, index, _json):
         f'{badge_html}'
         f'{risk_badge_html}'
         f'{core_badge_html}'
+        f'{source_badge_html}'
         f'{impl_badge_html}'
         f'</summary>\n{body_html}\n</details>'
     )

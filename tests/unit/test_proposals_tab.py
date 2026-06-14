@@ -66,3 +66,14 @@ def test_missing_supervision_fields_default_to_medium_no_crash():
     html = _render_proposal_card(bare, 0, json)
     assert "MEDIUM" in html        # safe default
     assert "CORE-SYSTEM" not in html
+
+
+def test_agent_branch_proposal_shows_provenance_badge():
+    # An agent-branch survivor carries a verified diff — surface that provenance.
+    html = _render_proposal_card(_meta(source="agent_branch"), 0, json)
+    assert "AGENT-BRANCH" in html
+
+
+def test_self_generated_proposal_has_no_agent_branch_badge():
+    html = _render_proposal_card(_meta(source="goal_directed"), 0, json)
+    assert "AGENT-BRANCH" not in html
