@@ -448,20 +448,38 @@ single file).
   proposals that flow into the GUI Proposals tab for human review (see §3.6); (2)
   the **general objective-driven worker is done** — `coding_worker.py` takes an
   arbitrary `manifest.objective` + a per-agent lens + code context and makes a
-  bounded change (see §3.7.1). Still **deferred:** an **autonomous run loop** (a
-  runner/scheduler + objective source that drives real coding-worker portfolios
-  against the real repo), the LLM intent judge (`eval_layer2` is a stub), a real
-  deps image, and an actual (still human-gated) merge path that applies an approved
-  proposal's diff to main.
+  bounded change (see §3.7.1); (3) the **real runner is done** — `agent_branch/run.py`
+  drives a real coding-worker portfolio (objective + scope + proof + lenses) against
+  the repo, gates/ranks, and ingests survivors (§3.9). Still **deferred:** an
+  **autonomous loop** (a scheduler + objective source that decides what to work on
+  and runs the runner unattended), the LLM intent judge (`eval_layer2` is a stub), a
+  **deps-image** so proofs can exercise the full Daemon (not just stdlib), and an
+  actual (still human-gated) merge path that applies an approved proposal's diff to
+  main.
 
 ### 3.9 How to run
 
 ```bash
-pytest tests/agent_branch/ -q                 # full suite (91 tests; slow ones need podman)
+pytest tests/agent_branch/ -q                 # full suite (slow ones need podman)
 pytest tests/agent_branch/ -m "not slow" -q   # logic only, no containers
 python -m agent_branch.supervisor --demo attacker   # M1 isolation demo
-python -m agent_branch.portfolio  --demo            # M2 reaper demo
+python -m agent_branch.portfolio  --demo            # M2 reaper demo (scripted, offline)
+
+# Real run — coding workers vs a real objective (needs OPENROUTER_API_KEY/OPENAI_API_KEY):
+OPENROUTER_API_KEY=... python -m agent_branch.run \
+    --objective "Add utils/strcase.py: snake_to_camel(s) and camel_to_snake(s)" \
+    --target utils/strcase.py --allowed "utils/strcase.py" \
+    --proof tests/proof_strcase.py \
+    --lenses reliability,coverage,capability --ingest
 ```
+
+The real runner (`agent_branch/run.py`) takes an **objective + allowed scope + a
+committed stdlib PROOF test + lenses**, runs one isolated coding-worker per lens
+(each a per-branch UDS proxy that injects the key), gates + ranks them, and with
+`--ingest` lands survivors in the GUI Proposals tab. The proof gates correctness
+(no proof → nothing survives); because the proof + change run in the bare worker
+image, this currently verifies **self-contained, stdlib-provable** objectives
+(broader changes await the M3 deps-image).
 
 ---
 
