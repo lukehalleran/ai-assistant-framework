@@ -15,7 +15,10 @@ Public Interface:
     - BaseProtocolHandler.parse_response() -> List[SearchDecision]
     - NativeToolsHandler.parse_response() -> List[SearchDecision] (parses ALL tool_calls;
       falls back to text parsing — incl. XML markers — when the API returns no tool_calls,
-      as OpenRouter-proxied models often emit the call as plain content)
+      as OpenRouter-proxied models often emit the call as plain content. The text fallback
+      also unwraps a hallucinated <DAEMON: tool_name>...</DAEMON> envelope via
+      _unwrap_daemon_envelope() before marker parsing, so proxied models that narrate the
+      call under the "Daemon" persona execute the tool instead of leaking raw markup)
     - XMLMarkerHandler.parse_response() -> List[SearchDecision] (parses ALL XML markers;
       accepts both attribute form <file_read path="x"> and nested child-tag form
       <file_read><path>x</path></file_read> for file_read/file_grep/file_list/fetch_url/
@@ -792,11 +795,19 @@ class NativeToolsHandler(BaseProtocolHandler):
         # attribute and nested child-tag forms — so these execute instead of
         # leaking the raw XML into the answer.
         if not decisions:
-            xml_decisions = XMLMarkerHandler().parse_response(content)
+            # Also unwrap a hallucinated <DAEMON: tool_name>...</DAEMON> envelope
+            # back into canonical markers before parsing (proxied native-tools
+            # models narrate calls this way — see _unwrap_daemon_envelope).
+            normalized = _unwrap_daemon_envelope(content)
+            xml_decisions = XMLMarkerHandler().parse_response(normalized)
             actionable = [d for d in xml_decisions if not d.wants_answer]
             if actionable:
+                source = (
+                    "<DAEMON:...> envelope" if normalized != content
+                    else "XML tool marker(s)"
+                )
                 logger.info(
-                    f"[AgenticProtocol] Recovered {len(actionable)} XML tool marker(s) "
+                    f"[AgenticProtocol] Recovered {len(actionable)} {source} "
                     f"from native-model text content"
                 )
                 decisions.extend(actionable)
@@ -946,6 +957,50 @@ def _extract_nested_tag(text: str, tag: str) -> Optional[str]:
     if m:
         return m.group(1).strip()
     return None
+
+
+# Recovery shim for a hallucinated tool-call envelope. Proxied native-tools
+# models (notably DeepSeek via OpenRouter) sometimes return the tool call as
+# plain text — with no structured tool_calls — narrated under the assistant's
+# "Daemon" persona, e.g.
+#     <DAEMON: web_search>
+#     Query: "Claude Fable 5" pricing
+#     </DAEMON>
+# No marker pattern matches that <DAEMON: tool_name>...</DAEMON> wrapper, so the
+# raw markup leaked into the answer and the search never ran (observed
+# 2026-06-13, conv #15). Unwrap it back to the canonical <tool_name>body</tool_name>
+# marker form the XMLMarkerHandler already understands.
+_DAEMON_ENVELOPE_PATTERN = re.compile(
+    r'<\s*DAEMON\s*:\s*(\w+)\s*>(.*?)</\s*DAEMON\s*>',
+    re.DOTALL | re.IGNORECASE,
+)
+# A single leading label the model prepends inside the envelope body
+# ("Query: ...", "Code: ...", "URL: ...", etc.). Stripped so the unwrapped
+# marker carries just the value, not the label.
+_ENVELOPE_LABEL_PATTERN = re.compile(
+    r'^\s*(?:query|q|search|code|url|pattern|path|id|term|terms)\s*:\s*',
+    re.IGNORECASE,
+)
+
+
+def _unwrap_daemon_envelope(content: str) -> str:
+    """Rewrite <DAEMON: tool_name>body</DAEMON> envelopes into <tool_name>body</tool_name>.
+
+    Returns content unchanged when no such envelope is present. The rewritten
+    markers are then parsed by the normal XMLMarkerHandler path, so the tool
+    actually executes instead of leaking as text.
+    """
+    if not content or "DAEMON" not in content.upper():
+        return content
+
+    def _rewrite(m: "re.Match") -> str:
+        tool = m.group(1)
+        body = (m.group(2) or "").strip()
+        # Drop a single leading label line ("Query:", "Code:", ...).
+        body = _ENVELOPE_LABEL_PATTERN.sub("", body, count=1).strip()
+        return f"<{tool}>{body}</{tool}>"
+
+    return _DAEMON_ENVELOPE_PATTERN.sub(_rewrite, content)
 
 
 class XMLMarkerHandler(BaseProtocolHandler):

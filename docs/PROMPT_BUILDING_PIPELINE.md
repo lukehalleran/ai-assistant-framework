@@ -212,7 +212,7 @@ high-attention items (user profile, time, query) placed last:
 10. `[DREAMS]` — synthesis insights, if enabled (up to 3; all generators currently disabled in config.yaml pending grading validation)
 11. `[USER'S PERSONAL NOTES]` — Obsidian vault (1-5)
 12. `[USER UPLOADED ITEMS]` — uploaded documents (1-5)
-13. `[VISUAL MEMORIES]` — CLIP-matched image metadata (if available; entity-gated via `extract_graph_entities()` with junk filtering and intent-proximity disambiguation; short messages (<=5 words) without intent override suppress retrieval; model-gated: images dropped for non-vision models)
+13. `[VISUAL MEMORIES]` — CLIP-matched image metadata (if available; **two-gated**: (1) a visual-intent gate `_query_wants_visual()` requires an explicit visual word (`show`/`see`/`pic`/`photo`/`image`/`look`) OR a recall intent (`factual_recall`/`temporal_recall`) before any photo surfaces, and (2) word-boundary entity matching (`re.search(r"\bname\b", ...)`, not raw substring) so a name can't match inside a path/identifier — e.g. `luke` no longer matches `/home/lukeh/...`; entity-gated via `extract_graph_entities()` with junk filtering and intent-proximity disambiguation; model-gated: images dropped for non-vision models). `builder.py` passes the classified `intent_type` into `get_visual_memories()`.
 14. `[DAEMON DOCUMENTATION]` — reference docs (1-5)
 15. `[PROJECT COMMIT HISTORY]` — git commits (varies)
 16. `[ADAPTIVE WORKFLOWS]` — procedural skills (1-5)

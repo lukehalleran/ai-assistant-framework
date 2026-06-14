@@ -23,8 +23,18 @@ Module Contract
 - Key behaviors:
   - Parallel source gathering with graceful degradation per provider
   - Source deduplication by URL/title, capped at DOCUMENT_MAX_SOURCES
-  - Stable citation IDs: [WEB_1], [WIKI_1], [NOTES_1]
+  - Stable citation IDs: [INPUT_1] (provided), [WEB_1], [WIKI_1], [NOTE_1].
+    One canonical matcher (_CITATION_RE, 2-6 letter prefix) is used for citation
+    validation, the Sources section, AND declared-source trimming — a tighter
+    bound previously dropped the 5-letter [INPUT_1].
   - Citation validation: strips invalid IDs, logs warnings
+  - Declared sources (frontmatter + index + GeneratedDocument.sources) are the
+    CITED subset only — not every gathered source — so the metadata matches the
+    rendered ## Sources section; the provided [INPUT_1] primary is always kept
+    (_select_cited_sources)
+  - Topic safety: _refine_topic clamps its result AND its failure fallback via
+    _clip_topic (short word/char budget) so a failed refinement or a long paste
+    never becomes the topic/filename/index entry
   - Versioned filenames: slug-date.md, slug-date-2.md on collision
   - Path safety: output always inside documents/, slug sanitized
   - Atomic index: file written first, then index updated
@@ -112,6 +122,12 @@ _PROVIDED_SOURCE_TYPE = "provided"
 _PROVIDED_SOURCE_ID = "INPUT_1"
 DOCUMENT_PROVIDED_MIN_CHARS = 400    # below this, "material" is too thin to anchor on
 DOCUMENT_PROVIDED_MAX_CHARS = 8000   # cap of provided material injected into the prompt
+
+# Canonical citation-token matcher. NOTE: prefixes range from 3 (WEB) to 5
+# (INPUT) letters — a tighter {3,4} bound silently drops [INPUT_1], the primary
+# source. Used for citation validation, the Sources section, AND trimming the
+# declared source list to what was actually cited.
+_CITATION_RE = re.compile(r"\[([A-Z]{2,6}_\d+)\]")
 
 
 # ============================================================================
@@ -240,6 +256,10 @@ class DocumentGenerator:
 
         # 0. Refine topic via LLM if it looks noisy (conversational filler)
         topic = await self._refine_topic(topic, focus)
+        # Defensively clamp an over-long focus so it can't become a paragraph in
+        # the frontmatter/index (a pasted blob sometimes lands here).
+        if focus and len(focus) > 160:
+            focus = self._clip_topic(focus, max_words=16, max_chars=140)
 
         logger.info(f"[DocGen] Starting {doc_type} on '{topic}' (focus={focus}, max_sections={max_sections})")
 
@@ -276,12 +296,16 @@ class DocumentGenerator:
         # 3. Validate citations
         markdown, sections_count = self._validate_and_clean(markdown, sources, max_sections)
 
+        # 3b. Declare only the sources the body actually cited (not everything
+        # gathered) — keeps frontmatter, index, and the ## Sources section in sync.
+        cited_sources = self._select_cited_sources(sources, markdown)
+
         # 4. Build title from first heading or topic
         title = self._extract_title(markdown, topic)
 
         # 5. Build frontmatter
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        frontmatter = self._build_frontmatter(title, doc_type, topic, focus, sources, now)
+        frontmatter = self._build_frontmatter(title, doc_type, topic, focus, cited_sources, now)
 
         # 6. Assemble final document
         full_doc = frontmatter + "\n" + markdown
@@ -301,8 +325,8 @@ class DocumentGenerator:
             "focus": focus,
             "created": now,
             "status": "draft",
-            "sources_count": len(sources),
-            "source_types": sorted(set(s.source_type for s in sources)),
+            "sources_count": len(cited_sources),
+            "source_types": sorted(set(s.source_type for s in cited_sources)),
             "model": model_name,
             "version": 1,
         }
@@ -314,7 +338,7 @@ class DocumentGenerator:
             doc_type=doc_type,
             topic=topic,
             focus=focus,
-            sources=sources,
+            sources=cited_sources,
             created_at=now,
             sections_count=sections_count,
             word_count=word_count,
@@ -331,11 +355,34 @@ class DocumentGenerator:
     # Topic refinement
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _clip_topic(text: str, *, max_words: int = 10, max_chars: int = 80) -> str:
+        """Clamp a topic to a short, filename-safe phrase.
+
+        The safety net for refinement: if the LLM call fails or returns too much,
+        a whole pasted paragraph must never become the topic (and the filename /
+        index entry). Cuts at the first early sentence boundary, then by word and
+        char budget.
+        """
+        cleaned = " ".join((text or "").split())
+        for sep in (". ", "? ", "! ", "; ", ": "):
+            idx = cleaned.find(sep)
+            if 0 <= idx <= max_chars:
+                cleaned = cleaned[:idx]
+                break
+        words = cleaned.split()
+        if len(words) > max_words:
+            cleaned = " ".join(words[:max_words])
+        if len(cleaned) > max_chars:
+            cleaned = cleaned[:max_chars].rsplit(" ", 1)[0]
+        return cleaned.strip(" ,.;:-—\"'") or "untitled"
+
     async def _refine_topic(self, topic: str, focus: str | None) -> str:
         """Use a lightweight LLM call to clean up a noisy topic string.
 
         Strips conversational filler, trailing noise, and extracts the
-        core research subject. Falls back to the original topic on error.
+        core research subject. Always returns a clamped, filename-safe phrase —
+        even when the LLM call fails (the fallback is clipped, not the raw paste).
         """
         # Skip if topic already looks clean (short, no obvious filler)
         if len(topic.split()) <= 4 and not any(w in topic.lower() for w in (
@@ -350,8 +397,8 @@ class DocumentGenerator:
                     f"Extract the core research topic from this noisy user request. "
                     f"Return ONLY the topic as a short noun phrase (2-8 words). "
                     f"Strip conversational filler, meta-commentary, and format requests.\n\n"
-                    f"User request: \"{topic}\"\n"
-                    + (f"Focus: \"{focus}\"\n" if focus else "")
+                    f"User request: \"{topic[:1000]}\"\n"
+                    + (f"Focus: \"{focus[:300]}\"\n" if focus else "")
                     + "\nTopic:"
                 ),
                 system_prompt="You extract research topics. Output only the topic, nothing else.",
@@ -360,13 +407,14 @@ class DocumentGenerator:
             )
             if (result and result.strip() and len(result.strip()) >= 3
                     and not _looks_like_llm_error(result)):
-                refined = result.strip().strip('"').strip("'").strip()
+                refined = self._clip_topic(result.strip().strip('"').strip("'"))
                 logger.info(f"[DocGen] Topic refined: {topic!r} → {refined!r}")
                 return refined
         except Exception as e:
             logger.debug(f"[DocGen] Topic refinement failed, using original: {e}")
 
-        return topic
+        # Fallback: clip the original so a long paste never becomes the topic.
+        return self._clip_topic(topic)
 
     # ------------------------------------------------------------------
     # Research phase
@@ -686,7 +734,7 @@ class DocumentGenerator:
         valid_ids = {s.id for s in sources}
 
         # Find all citation IDs in the body
-        cited_ids = set(re.findall(r"\[([A-Z]{3,4}_\d+)\]", markdown))
+        cited_ids = set(_CITATION_RE.findall(markdown))
 
         # Strip invalid citations
         invalid = cited_ids - valid_ids
@@ -712,7 +760,7 @@ class DocumentGenerator:
     ) -> str:
         """Build a Sources section from the source list."""
         # Only include sources that were actually cited
-        cited_ids = set(re.findall(r"\[([A-Z]{3,4}_\d+)\]", markdown))
+        cited_ids = set(_CITATION_RE.findall(markdown))
         cited_sources = [s for s in sources if s.id in cited_ids]
 
         # If nothing was cited, include all sources
@@ -727,6 +775,26 @@ class DocumentGenerator:
                 lines.append(f"- **[{src.id}]** {src.title} ({src.source_type})")
 
         return "\n".join(lines)
+
+    def _select_cited_sources(
+        self, sources: list[DocumentSource], markdown: str,
+    ) -> list[DocumentSource]:
+        """Trim the declared source list to what the body actually cites.
+
+        Sources are gathered/ranked broadly (notes are always pulled in for
+        grounding), but many never get cited. Declaring them in the frontmatter
+        and index over-states what the document drew on — and contradicts the
+        rendered ``## Sources`` section, which lists only cited ones. This keeps
+        the cited subset, always retaining the user-provided primary. If the body
+        cites nothing AND there is no primary, it falls back to the full list so
+        the declared sources are never empty.
+        """
+        cited_ids = set(_CITATION_RE.findall(markdown))
+        kept = [
+            s for s in sources
+            if s.id in cited_ids or s.source_type == _PROVIDED_SOURCE_TYPE
+        ]
+        return kept or sources
 
     # ------------------------------------------------------------------
     # Frontmatter

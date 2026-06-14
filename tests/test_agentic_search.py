@@ -619,6 +619,39 @@ class TestNativeToolsTextLeakRecovery:
         assert decisions[0].wants_answer is True
         assert decisions[0].partial_response == content
 
+    def test_daemon_envelope_single_recovered(self):
+        """<DAEMON: web_search>Query: ...</DAEMON> envelope recovers to a search."""
+        content = (
+            "Let me look that up.\n"
+            '<DAEMON: web_search>\nQuery: "Fable 5" API pricing\n</DAEMON>'
+        )
+        decisions = self._handler().parse_response({"content": content})
+        searches = [d for d in decisions if d.wants_search]
+        assert len(searches) == 1, "DAEMON envelope was not recovered — it would leak"
+        assert searches[0].search_query == '"Fable 5" API pricing'
+
+    def test_daemon_envelope_conv15_two_searches(self):
+        """Exact conv #15 markup: two back-to-back DAEMON web_search envelopes."""
+        content = (
+            "Let me pull the actual pricing for both models so we can look at real numbers.\n\n"
+            '<DAEMON: web_search>\n'
+            'Query: "Claude Fable 5" price per million tokens input output 2026\n'
+            '</DAEMON><DAEMON: web_search>\n'
+            'Query: "Fable 5" API pricing "$" per million tokens Anthropic\n'
+            '</DAEMON>'
+        )
+        decisions = self._handler().parse_response({"content": content})
+        searches = [d for d in decisions if d.wants_search]
+        assert len(searches) == 2
+        assert any("Claude Fable 5" in s.search_query for s in searches)
+        assert any("API pricing" in s.search_query for s in searches)
+
+    def test_unwrap_daemon_envelope_noop_without_envelope(self):
+        """Plain content with no envelope is returned byte-for-byte unchanged."""
+        from core.agentic.protocols import _unwrap_daemon_envelope
+        text = "Just a normal answer mentioning a web_search in prose."
+        assert _unwrap_daemon_envelope(text) == text
+
 
 class TestGetProtocolHandler:
     """Tests for get_protocol_handler factory."""
@@ -1118,6 +1151,129 @@ class TestIterationPromptWithInventory:
 
         assert "Context already gathered" in prompt
         assert "already searched 'facts' 3 times" in prompt
+
+
+# =============================================================================
+# Recent-conversation digest in the decision phase (Bug 2, option 1)
+# =============================================================================
+
+class TestRecentConversationDigest:
+    """The per-round decision must see this session's recent turns as content,
+    not just counts — otherwise the loop searches to re-derive (and contradicts)
+    facts already established in-session (conv #11, 2026-06-13)."""
+
+    @pytest.fixture
+    def controller(self):
+        from core.agentic.controller import AgenticSearchController
+        manager = MagicMock()
+        manager.api_models = {}
+        return AgenticSearchController(
+            model_manager=manager,
+            web_search_manager=MagicMock(),
+        )
+
+    def test_digest_built_from_recent_conversations(self, controller):
+        ctx = {
+            "recent_conversations": [
+                {"query": "Is Fable 5 available?", "response": "It's 404 across all providers."},
+                {"query": "Yeah we tried that earlier", "response": "Right, clean block."},
+            ]
+        }
+        digest = controller._compute_recent_conversation_digest(ctx)
+        assert "THIS SESSION" in digest
+        assert "Fable 5 available" in digest
+        assert "404 across all providers" in digest
+        # Carries the do-not-re-derive instruction.
+        assert "re-derive" in digest
+
+    def test_digest_empty_without_recents(self, controller):
+        assert controller._compute_recent_conversation_digest({}) == ""
+        assert controller._compute_recent_conversation_digest(None) == ""
+        assert controller._compute_recent_conversation_digest(
+            {"recent_conversations": []}
+        ) == ""
+
+    def test_digest_truncates_and_caps_turns(self, controller):
+        ctx = {
+            "recent_conversations": [
+                {"query": f"q{i} " + "x" * 500, "response": "y" * 500}
+                for i in range(10)
+            ]
+        }
+        digest = controller._compute_recent_conversation_digest(ctx)
+        # Only the last _DIGEST_MAX_TURNS turns are kept.
+        assert digest.count("- User:") == controller._DIGEST_MAX_TURNS
+        # Each message is hard-truncated.
+        assert "x" * 500 not in digest
+        assert "q9" in digest and "q0" not in digest
+
+    def test_digest_appears_in_iteration_prompt(self, controller):
+        from core.agentic.types import AgenticSearchSession
+
+        session = AgenticSearchSession(query="is opus the best model")
+        session.recent_conversation_digest = controller._compute_recent_conversation_digest({
+            "recent_conversations": [
+                {"query": "Fable 5 got banned", "response": "Yeah, 404 everywhere."},
+            ]
+        })
+        prompt = controller._build_iteration_prompt(
+            query="is opus the best model",
+            search_context="",
+            round_number=2,
+            session=session,
+        )
+        assert "THIS SESSION" in prompt
+        assert "404 everywhere" in prompt
+
+    def test_iteration_prompt_without_digest_unaffected(self, controller):
+        from core.agentic.types import AgenticSearchSession
+
+        session = AgenticSearchSession(query="test")
+        prompt = controller._build_iteration_prompt(
+            query="test", search_context="", round_number=2, session=session,
+        )
+        assert "THIS SESSION" not in prompt
+
+
+# =============================================================================
+# Final-prompt session-history framing (Bug 2, option 2)
+# =============================================================================
+
+class TestFinalPromptSessionHistoryFraming:
+    """The final-answer prompt must let established session facts override a
+    contradicting web result, while still forbidding replies to old turns."""
+
+    @pytest.fixture
+    def controller(self):
+        from core.agentic.controller import AgenticSearchController
+        manager = MagicMock()
+        manager.api_models = {}
+        return AgenticSearchController(
+            model_manager=manager,
+            web_search_manager=MagicMock(),
+        )
+
+    def test_recent_conversation_framing(self, controller):
+        from core.agentic.types import AgenticSearchSession
+
+        session = AgenticSearchSession(query="how much will building cost")
+        prompt = controller._build_final_prompt(
+            query="how much will building cost",
+            session=session,
+            initial_context={
+                "recent_conversations": [
+                    {"query": "Fable 5 is banned", "response": "Yes, 404 everywhere."},
+                ]
+            },
+        )
+        assert "THIS SESSION'S HISTORY" in prompt
+        # Still guards against replying to old turns as the current message.
+        assert "do not reply to these turns" in prompt
+        # New framing: conflict-surfacing / don't silently override.
+        assert "surface the conflict" in prompt
+        assert "silently override" in prompt
+        # The old absolutist label is gone.
+        assert "HISTORICAL CONTEXT ONLY" not in prompt
 
 
 # =============================================================================

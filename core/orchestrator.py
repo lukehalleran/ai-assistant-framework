@@ -1636,6 +1636,28 @@ class DaemonOrchestrator:
                             # Accumulate response chunks
                             full_response += event_or_chunk
 
+                    # Defense-in-depth: the agentic loop should have executed
+                    # every tool call, so any tool-marker XML still in the final
+                    # text is a leak — e.g. a proxied model that narrated the
+                    # call as text in a format the recovery parser missed (see
+                    # _unwrap_daemon_envelope). Strip it so raw markup never
+                    # persists to memory or displays. If stripping empties an
+                    # otherwise non-empty answer, fall back to a brief notice
+                    # rather than storing/showing a blank message.
+                    stripped = ResponseParser.strip_agentic_tool_tags(full_response)
+                    if not stripped.strip() and full_response.strip():
+                        if self.logger:
+                            self.logger.warning(
+                                "[Orchestrator] Agentic answer was entirely leaked "
+                                "tool markup; using fallback notice"
+                            )
+                        debug_info["agentic_tool_markup_leak"] = True
+                        stripped = (
+                            "I tried to look that up, but my search tool didn't "
+                            "fire correctly that time. Could you ask again?"
+                        )
+                    full_response = stripped
+
                     # Store interaction
                     if self.memory_system:
                         try:

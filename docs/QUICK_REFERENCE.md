@@ -472,6 +472,16 @@ class ResponseParser:
     @staticmethod
     def strip_prompt_artifacts(text: str) -> str:
         """Remove echoed prompt headers: [TIME CONTEXT], [FACTS], [RECENT CONVERSATION], etc."""
+
+    @staticmethod
+    def sanitize_for_storage(text: str) -> str:  # [NEW 2026-06-10]
+        """Storage-grade strip of thinking-block leaks applied before persistence
+        (every path funnels through memory_storage.store_interaction). Removes empty
+        <thinking></thinking> pairs, a leading tagged thinking block, unclosed leading
+        thinking (whole text is reasoning → returns ""), stray tag fragments, reflection
+        blocks. Skips the untagged-thinking heuristics (false-positive risk at the
+        storage boundary). Prevents persisted leaks from re-teaching the model to emit
+        literal thinking tags."""
 ```
 
 ---
@@ -487,6 +497,12 @@ class ResponseGenerator:
         <thinking>/<\/thinking> wrapper tags for downstream handling."""  # [ENHANCED 2026-03-26]
         async for chunk in self.model_manager.generate_stream(prompt, model):
             yield chunk
+
+    async def _recover_reasoning_only(prompt, system_prompt, max_tokens):  # [NEW 2026-06]
+        """Recovery retry when streaming returned reasoning but empty visible content
+        (some reasoning models swallow the whole answer into the reasoning channel).
+        Retries once non-streaming via generate_once(disable_reasoning=True), forcing
+        the answer into normal content. Yields recovered text or nothing."""
 
     async def generate_best_of(prompt: str, n: int = 3) -> str:
         """Generate N responses with temp variation, score and pick best"""
@@ -1521,8 +1537,9 @@ SUMMARIZE_AT_SHUTDOWN_ONLY = True
 # Models
 MODEL_DEFAULT = os.getenv("LLM_ALIAS", "gpt-4o-mini")
 MODEL_SUMMARY = os.getenv("LLM_SUMMARY_ALIAS", "gpt-4o-mini")
-# Available: gpt-4o-mini, gpt-4o, gpt-5, sonnet-4.5, claude-opus-4.6, deepseek-v3.1,
-#            deepseek-r1, glm-4.6, glm-4.7, glm-5, glm-5-turbo [glm-5* NEW 2026-03-23]
+# Available: gpt-4o-mini, gpt-4o, gpt-5, sonnet-4.5, claude-opus-4.6, claude-fable-5
+#            (alias fable-5) [NEW 2026-06], deepseek-v3.1, deepseek-r1, glm-4.6, glm-4.7,
+#            glm-5, glm-5-turbo [glm-5* NEW 2026-03-23]
 ```
 
 ---
@@ -2902,7 +2919,11 @@ return await spec.resolve_executor()(proposal)
 
 # models/model_manager.py
 async def generate_once(prompt, model_name=None, system_prompt=..., max_tokens=256,
-                        temperature=None, top_p=None)   # native reasoning suppressed w/ tools
+                        temperature=None, top_p=None, disable_reasoning=False)
+# generate_async(..., disable_reasoning=True) / generate_once(..., disable_reasoning=True):
+#   suppress native reasoning separation to force the answer into visible content
+#   (used internally by reasoning-only recovery; not a normal-call knob). [NEW 2026-06]
+#   native reasoning is also suppressed automatically w/ tools.
 # is_tool_capable() handles aliases + resolved names; adds "deepseek-v4" pattern.
 
 # memory/memory_consolidator.py — single extractive path (mid-session + shutdown)

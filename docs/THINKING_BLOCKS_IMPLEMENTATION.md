@@ -1,14 +1,15 @@
 # Two-Step Generation with Thinking Blocks - Implementation Summary
 
-*Last verified: 2026-05-09*
+*Last verified: 2026-06-10*
 
 ## Overview
 Two-step generation where the LLM provides internal reasoning before delivering the final answer. The thinking block is logged for debugging but only the final answer is shown to users and stored in memory.
 
-Three core layers of thinking separation exist, plus four operational layers (defense in depth, 7 total — see table below):
+Three core layers of thinking separation exist, plus five operational layers (defense in depth, 8 total — see table below):
 1. **Native API reasoning** — for Claude/DeepSeek-R1, thinking is separated at the OpenRouter API level via `extra_body={"reasoning": {"effort": "medium"}}`. Thinking arrives in `delta.reasoning_content`, not in the text response.
 2. **Tag-based parsing** — `<thinking>`/`<think>`/`<output>` tags parsed by `ResponseParser.parse_thinking_block()`
 3. **Heuristic fallback** — `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning patterns, instruction echoes)
+4. **Storage boundary guard** — `ResponseParser.sanitize_for_storage()` runs inside `memory_storage.store_interaction()`; no storage path can persist thinking artifacts into memory (see "Storage Boundary Guard" section)
 
 ## Changes Made
 
@@ -216,6 +217,32 @@ The answer to 2 + 2 is 4.
 | Agentic | `_detect_untagged_thinking()` on final output | Thinking leak in agentic path final generation |
 | Streaming | `strip_thinking_tag_leaks()` + stuck recovery | XML marker fragments and stuck thinking state after streaming ends |
 | Cleanup | `strip_thinking_tag_leaks()` | Partial/malformed tags (e.g., `/think>`, `<|think|>`) |
+| **Storage boundary** | `ResponseParser.sanitize_for_storage()` in `memory_storage.store_interaction()` | ANY leak that survives display-layer defenses — never persisted. All-thinking responses skip storage entirely (returns None) [NEW 2026-06-10] |
+
+## Storage Boundary Guard (2026-06-10)
+
+**Why it exists:** The agentic storage path persisted the *raw* accumulated stream
+(`final_output`), which contains the synthetic `<thinking></thinking>` markers
+`response_generator.py` emits around API-separated reasoning. Display stripped them;
+storage did not. Result: 752/5920 conversation docs, 429/2000 corpus entries,
+16 reflections, and 1 summary contained literal thinking tags. Replayed into
+`[RECENT CONVERSATION]` context, this taught the model to emit literal
+`<thinking></thinking>` itself — a self-reinforcing pollution loop.
+
+**The fix (three parts):**
+1. `ResponseParser.sanitize_for_storage(text)` — canonical pre-persistence strip:
+   empty `<thinking></thinking>` pairs anywhere, leading tagged blocks, unclosed
+   leading blocks (→ `""`), stray fragments, reflection blocks. Deliberately does
+   NOT apply untagged-thinking heuristics (false positives must not eat real
+   conversation content at the storage boundary).
+2. `memory_storage.store_interaction()` calls it before ANY persistence (corpus,
+   conversation context, ChromaDB) — covers every storage path including future ones.
+   The agentic handler path additionally routes through `_sanitize_response_text()`.
+3. `scripts/repair_thinking_leaks.py` — one-time repair of historical pollution
+   (dry-run by default, `--apply` to write, refuses to run while Daemon is up,
+   content-update only — never deletes, re-embeds via the collection's embedder).
+
+Tests: `tests/unit/test_thinking_leak_storage.py` (19 tests).
 
 ## Backward Compatibility
 

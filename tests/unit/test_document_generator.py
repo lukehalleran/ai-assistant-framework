@@ -813,3 +813,63 @@ class TestPathSafety:
         assert path.exists()
         assert "<" not in path.name
         assert ">" not in path.name
+
+
+# ############################################################################
+#
+#  Declared-source trimming + topic clamping (regression fixes)
+#
+# ############################################################################
+
+def _src(sid, stype="notes"):
+    return DocumentSource(id=sid, title=sid, url=None, source_type=stype, snippet="")
+
+
+class TestSelectCitedSources:
+    """Frontmatter/index should declare only the sources the body actually cited
+    (not every gathered note), and must never drop the user-provided primary."""
+
+    def test_citation_regex_matches_input_1(self):
+        # INPUT (5 letters) must match — the old [A-Z]{3,4} bound silently dropped it.
+        from knowledge.document_generator import _CITATION_RE
+        assert set(_CITATION_RE.findall("[INPUT_1] [NOTE_5] [WEB_2] [WIKI_3]")) == {
+            "INPUT_1", "NOTE_5", "WEB_2", "WIKI_3"}
+
+    def test_keeps_only_cited_plus_primary(self, generator):
+        srcs = [_src("INPUT_1", "provided"), _src("NOTE_1"), _src("NOTE_4"), _src("NOTE_5")]
+        body = "Body cites [INPUT_1] and [NOTE_5]; NOTE_1/NOTE_4 never appear."
+        assert [s.id for s in generator._select_cited_sources(srcs, body)] == ["INPUT_1", "NOTE_5"]
+
+    def test_primary_retained_even_when_uncited(self, generator):
+        srcs = [_src("INPUT_1", "provided"), _src("NOTE_5")]
+        kept = [s.id for s in generator._select_cited_sources(srcs, "only [NOTE_5] here")]
+        assert kept == ["INPUT_1", "NOTE_5"]
+
+    def test_uncited_with_primary_keeps_primary_only(self, generator):
+        srcs = [_src("INPUT_1", "provided"), _src("NOTE_1"), _src("NOTE_2")]
+        assert [s.id for s in generator._select_cited_sources(srcs, "no cites")] == ["INPUT_1"]
+
+    def test_fallback_keeps_all_when_no_primary_and_nothing_cited(self, generator):
+        srcs = [_src("WEB_1", "web"), _src("WEB_2", "web")]
+        assert [s.id for s in generator._select_cited_sources(srcs, "no cites")] == ["WEB_1", "WEB_2"]
+
+
+class TestClipTopic:
+    """A failed refinement (or a long paste) must never become the topic/filename."""
+
+    def test_long_paragraph_is_clamped(self, generator):
+        para = ("anwser just sharing the assingment and how i literally dont think it is "
+                "doabnle in the time i have on this homework with a 1000 row dataset")
+        clipped = generator._clip_topic(para)
+        assert len(clipped) <= 80 and len(clipped.split()) <= 10
+
+    def test_cuts_at_early_sentence_boundary(self, generator):
+        assert generator._clip_topic("Agent branch isolation. Then a lot more text follows here") \
+            == "Agent branch isolation"
+
+    def test_clean_short_topic_unchanged(self, generator):
+        assert generator._clip_topic("Isolated Agent Branch Portfolio System") \
+            == "Isolated Agent Branch Portfolio System"
+
+    def test_never_empty(self, generator):
+        assert generator._clip_topic("   ...  ") == "untitled"

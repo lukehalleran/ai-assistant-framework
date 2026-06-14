@@ -92,10 +92,17 @@ _EPHEMERAL_PREFIXES = (
 
 # Exact-match relations that are always ephemeral (one-time events)
 _EPHEMERAL_EXACT = frozenset({
-    "meeting", "activities", "meeting_with",
+    "meeting", "appointment", "activities", "meeting_with",
     "energy_level", "activity_preference",
     "meal", "meal_choice", "drank_alcohol",
 })
+# Note: bare "appointment" is a one-time event (sibling of "meeting" and of the
+# already-ephemeral "*_appointment" suffix / "appointment_time"). It must age out
+# like its siblings — a stored "appointment | psychiatry" otherwise surfaced as a
+# standing appointment forever (the "phantom 3pm appointment"). Duration/score
+# attributes (appointment_length) stay durable; future-dated deadlines/dates
+# (exam_date, homework_due) are NOT swept here — a last-seen TTL would wrongly
+# drop a real upcoming deadline; those need date-aware expiry (separate concern).
 
 # --------------------------------------------------------------------------
 # Health-transient patterns (illness / recovery episode state).

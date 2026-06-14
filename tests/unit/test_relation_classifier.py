@@ -61,6 +61,7 @@ STANDARD_EPHEMERAL = [
     "work_status",        # _status suffix
     "project_status",
     "energy_level",       # _EPHEMERAL_EXACT
+    "appointment",        # _EPHEMERAL_EXACT — one-time event (sibling of "meeting")
     "meal",
 ]
 

@@ -20,8 +20,16 @@ Module Contract:
   - has_incomplete_thinking_block(response) → bool: Streaming suppression (open tag, no close tag yet)
   - extract_incomplete_thinking(response) → str: Extract in-progress thinking for streaming indicator
   - strip_thinking_tag_leaks(text) → str: Remove partial/malformed thinking tags
+  - sanitize_for_storage(text) → str: Final pre-persistence defense — removes empty
+    <thinking></thinking> pairs (synthetic streaming markers), leading tagged thinking
+    blocks, unclosed leading thinking (returns ""), stray tag fragments, and reflection
+    blocks. Called by memory_storage.store_interaction() so NO storage path can persist
+    reasoning artifacts into memory (where they get replayed into prompts and imitated).
   - strip_reflection_blocks(response) → str: Remove <reflect> and [SYSTEM QUALITY REFLECTION] blocks
   - strip_xml_wrappers(text) → str: Unwrap <result>/<answer>/<output>/<response> wrappers
+  - strip_agentic_tool_tags(text) → str: Strip leaked agentic tool-call markup —
+    <tool>...</tool> blocks AND the hallucinated <DAEMON: tool_name>...</DAEMON> envelope
+    (last-resort guard; the agentic recovery parser normally unwraps and executes these)
   - strip_prompt_artifacts(text) → str: Remove echoed prompt section headers
 - Side effects: None (pure functions)
 """
@@ -50,6 +58,14 @@ class ResponseParser:
 
     # Opening think tags for streaming detection
     _THINK_OPEN_TAGS = [("<thinking>", "</thinking>"), ("<think>", "</think>")]
+
+    # Empty thinking pair — the synthetic <thinking></thinking> markers emitted by
+    # response_generator.py around API-separated reasoning (the reasoning text itself
+    # is never yielded, so the tags end up adjacent, possibly with whitespace between).
+    _EMPTY_THINK_PAIR_RE = re.compile(
+        r'<\|?think(?:ing)?\|?>\s*<\|?/think(?:ing)?\|?>',
+        re.IGNORECASE,
+    )
 
     @staticmethod
     def has_incomplete_thinking_block(response: str) -> bool:
@@ -345,6 +361,54 @@ class ResponseParser:
         return "", cleaned
 
     @staticmethod
+    def sanitize_for_storage(text: str) -> str:
+        """Final pre-persistence defense against thinking-block leaks.
+
+        Every storage path funnels through this (via memory_storage.store_interaction)
+        so a leak that survives the display-layer defenses can never be persisted —
+        persisted leaks get replayed into prompts as conversation history, which
+        teaches the model to emit literal <thinking></thinking> itself (the
+        self-reinforcing pollution observed in corpus_v4 / the conversations
+        collection).
+
+        Removes, in order:
+        1. Empty <thinking></thinking> pairs anywhere (synthetic streaming markers)
+        2. A leading tagged thinking block (keeps the answer after it)
+        3. Unclosed leading thinking (whole text is reasoning → returns "")
+        4. Stray/partial tag fragments
+        5. Reflection blocks
+
+        Deliberately does NOT apply the untagged-thinking heuristics — those can
+        false-positive, and losing real conversation content at the storage
+        boundary is worse than a rare heuristic miss (display still filters).
+        """
+        if not text or not isinstance(text, str):
+            return text or ""
+
+        # 1. Empty synthetic pairs
+        cleaned = ResponseParser._EMPTY_THINK_PAIR_RE.sub('', text)
+
+        # 2. Leading tagged thinking block
+        stripped = cleaned.lstrip()
+        low = stripped.lower()
+        for open_tag, close_tag in ResponseParser._THINK_OPEN_TAGS:
+            if low.startswith(open_tag):
+                if close_tag in low:
+                    cleaned = stripped[low.index(close_tag) + len(close_tag):]
+                else:
+                    # 3. Opened but never closed — entire text is reasoning
+                    return ""
+                break
+
+        # 4. Stray tag fragments (e.g. '/think>', '<|think|>')
+        cleaned = ResponseParser.strip_thinking_tag_leaks(cleaned)
+
+        # 5. Reflection blocks
+        cleaned = ResponseParser.strip_reflection_blocks(cleaned)
+
+        return cleaned.strip()
+
+    @staticmethod
     def strip_reflection_blocks(response: str) -> str:
         """
         Strip reflection blocks from response before storing/showing as conversation.
@@ -411,19 +475,31 @@ class ResponseParser:
         rf'<(?:{_AGENTIC_OUTER_TAGS}|action|query|collection|limit)\s*/?>',
         re.IGNORECASE
     )
+    # Hallucinated <DAEMON: tool_name>...</DAEMON> envelope emitted by proxied
+    # native-tools models (e.g. DeepSeek via OpenRouter) when they narrate a
+    # tool call as text instead of emitting structured tool_calls. The agentic
+    # recovery parser unwraps these so the tool runs; this is the last-resort
+    # strip so any envelope that still slips through never reaches the user.
+    _DAEMON_ENVELOPE_BLOCK = re.compile(
+        r'<\s*DAEMON\s*:\s*\w+\s*>[\s\S]*?</\s*DAEMON\s*>',
+        re.IGNORECASE
+    )
 
     @staticmethod
     def strip_agentic_tool_tags(text: str) -> str:
-        """Strip agentic tool XML blocks from non-agentic responses.
+        """Strip agentic tool XML blocks from responses.
 
-        When the LLM hallucinates tool calls during standard (non-agentic)
-        generation, these tags appear as raw text. This strips entire
-        <tool>...</tool> blocks and collapses leftover blank lines.
+        When the LLM hallucinates tool calls (during standard generation, or in
+        the agentic loop when a proxied model emits an unparseable tool-call
+        format), these tags appear as raw text. This strips entire
+        <tool>...</tool> blocks — including the <DAEMON: ...> envelope — and
+        collapses leftover blank lines.
         """
         if not text or '<' not in text:
             return text
         try:
-            cleaned = ResponseParser._AGENTIC_TOOL_BLOCK.sub('', text)
+            cleaned = ResponseParser._DAEMON_ENVELOPE_BLOCK.sub('', text)
+            cleaned = ResponseParser._AGENTIC_TOOL_BLOCK.sub('', cleaned)
             cleaned = ResponseParser._AGENTIC_SELF_CLOSING.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
             return cleaned.strip()

@@ -20,6 +20,10 @@ Module Contract
   - generate_once(): handles list-of-content-blocks responses (Anthropic extended thinking) by extracting text blocks [ENHANCED 2026-03-26]
   - generate_async() and generate_once(): pass extra_body={"reasoning": {"effort": "medium"}} for
     reasoning models so thinking arrives via delta.reasoning_content (API-level separation) [ENHANCED 2026-04-05]
+  - generate_async(disable_reasoning=True) / generate_once(disable_reasoning=True): suppress that
+    reasoning separation even for reasoning-capable models. Used as a recovery retry when a model
+    (e.g. deepseek-v4) swallows its whole answer into the reasoning channel and returns empty
+    visible content — disabling reasoning forces the answer into normal content [NEW 2026-06-14]
 - Dependencies:
   - transformers, sentence-transformers, httpx, environment OPENAI_API_KEY
 - Side effects:
@@ -185,6 +189,10 @@ class ModelManager:
         self.api_models["claude-opus-4.6"] = "anthropic/claude-opus-4.6"
         self.api_models["claude-opus-4.7"] = "anthropic/claude-opus-4.7"
         self.api_models["claude-opus-4.8"] = "anthropic/claude-opus-4.8"
+        # Mythos-class (released 2026-06-09); ~2x the price of Opus 4.8
+        # ($10/M in, $50/M out). Falls back to Opus 4.8 on high-risk queries.
+        self.api_models["claude-fable-5"] = "anthropic/claude-fable-5"
+        self.api_models["fable-5"] = "anthropic/claude-fable-5"
         self.api_models["sonnet-4.5"] = "anthropic/claude-sonnet-4.5"
         self.api_models["sonnet-4.6"] = "anthropic/claude-sonnet-4.6"
         self.api_models["haiku-4.5"] = "anthropic/claude-haiku-4.5"
@@ -725,10 +733,17 @@ class ModelManager:
                             system_prompt: str = "You are a concise and helpful assistant.",
                             max_tokens: int = 256,
                             temperature: float = None,
-                            top_p: float = None) -> str:
+                            top_p: float = None,
+                            disable_reasoning: bool = False) -> str:
         """
         Generates a single, complete response asynchronously (non-streaming).
         Ideal for internal tasks like query rewriting or classification.
+
+        disable_reasoning: when True, suppress native reasoning separation even for
+        reasoning-capable models. Used as a recovery retry when a reasoning model
+        (e.g. deepseek-v4) swallows the whole answer into the reasoning channel and
+        returns empty visible content — disabling reasoning forces it to emit the
+        answer as normal content.
         """
         target_model = model_name or self.active_model_name
         if not target_model:
@@ -781,7 +796,8 @@ class ModelManager:
                 )
 
                 # Request native reasoning separation for supported models
-                if self.supports_reasoning(target_model):
+                # (unless the caller explicitly disabled it for a recovery retry)
+                if self.supports_reasoning(target_model) and not disable_reasoning:
                     create_kwargs["extra_body"] = {
                         "reasoning": {"effort": "medium"},
                     }
@@ -1027,6 +1043,10 @@ class ModelManager:
                     Each dict should have 'data' (base64), 'media_type', 'filename'
             **kwargs: Additional args (system_prompt, max_tokens, temperature, etc.)
         """
+        # Recovery flag: suppress native reasoning separation even for reasoning
+        # models. Popped so it never leaks into local-model / create() kwargs.
+        disable_reasoning = bool(kwargs.pop('disable_reasoning', False))
+
         target_model = self.active_model_name  # No longer allows override
         logger.debug(f"[generate_async] Active model: {target_model}")
         logger.debug(f"[generate_async] Registered OpenAI models: {self.api_models}")
@@ -1119,11 +1139,13 @@ class ModelManager:
                 # instead of being mixed into the text response.
                 # Skip when images are present — OpenRouter may not find an endpoint
                 # that supports both extended thinking and image input simultaneously.
-                if self.supports_reasoning(target_model) and not images:
+                if self.supports_reasoning(target_model) and not images and not disable_reasoning:
                     create_kwargs["extra_body"] = {
                         "reasoning": {"effort": "medium"},
                     }
                     logger.info(f"[generate_async] Enabled native reasoning for {target_model}")
+                elif disable_reasoning and self.supports_reasoning(target_model):
+                    logger.info(f"[generate_async] Native reasoning disabled by caller for {target_model} (recovery retry)")
                 elif images and self.supports_reasoning(target_model):
                     logger.info(f"[generate_async] Skipping native reasoning for {target_model} (images present, would conflict on OpenRouter)")
 

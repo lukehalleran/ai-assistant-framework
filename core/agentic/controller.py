@@ -11,8 +11,20 @@ Contract:
     - Budget-enforced accumulated_context: _append_accumulated() trims oldest rounds
       when accumulated context exceeds context_budget_tokens (default 8000)
     - Budget-aware final prompt: _build_final_prompt() trims low-value sections
-      (dreams, reflections, docs, summaries) if total exceeds ceiling
+      (dreams, reflections, docs, summaries) if total exceeds ceiling. Recent
+      conversation is framed as this session's ground truth (a contradicting web
+      result must be surfaced as a conflict, not silently trusted), while still
+      forbidding replies to old turns as if they were the current message.
+    - Session-grounded decisions: _compute_recent_conversation_digest() builds a
+      short content digest of this session's recent turns (not just the inventory's
+      counts), injected into every _build_iteration_prompt() so the loop won't search
+      to re-derive — or contradict — a fact already settled in-session
     - Falls back gracefully on search/API failures (partial failure: gather returns_exceptions=True)
+    - Reasoning-only recovery [NEW 2026-06-14]: _generate_final_response() tracks whether any
+      visible content was emitted; if the model streamed only reasoning (deepseek-v4 etc. can
+      swallow the whole answer into the reasoning channel, yielding just the synthetic "<thinking>"
+      marker), it closes the dangling marker and retries once via _recover_reasoning_only_response()
+      → generate_once(disable_reasoning=True). Prevents the GUI "caught by the thinking filter" dead-end.
     - Provenance: computes final_prompt_hash (SHA-256[:16]) on assembled prompt
 
 Modular Architecture (2026-05-09):
@@ -550,6 +562,13 @@ class AgenticSearchController:
                     f"[AgenticSearch] Context inventory computed: "
                     f"{session.context_inventory.count(chr(10))} sections"
                 )
+
+            # Compute a short digest of this session's recent turns (content, not just
+            # the counts in the inventory) so the per-round decision can see what was
+            # already established and avoid searching to re-derive it (or contradicting it).
+            session.recent_conversation_digest = self._compute_recent_conversation_digest(
+                initial_context
+            )
 
             # Detect explicit write-action intent. If present, force the model to call
             # propose_action on the first decision round (native-tools protocol only) so
@@ -1191,6 +1210,8 @@ class AgenticSearchController:
 
             # Handle different return types
             _was_reasoning = False
+            _reasoning_seen = False
+            _content_emitted = False
             if hasattr(stream, '__aiter__'):
                 # It's an async iterator (OpenAI stream)
                 async for chunk in stream:
@@ -1200,6 +1221,7 @@ class AgenticSearchController:
                         delta_reasoning = getattr(delta, 'reasoning_content', '') or getattr(delta, 'reasoning', '') or ''
                         delta_content = getattr(delta, 'content', '') or ''
                         if delta_reasoning and not delta_content:
+                            _reasoning_seen = True
                             if not _was_reasoning:
                                 _was_reasoning = True
                                 yield "<thinking>"
@@ -1208,9 +1230,33 @@ class AgenticSearchController:
                             _was_reasoning = False
                             yield "</thinking>"
                         if delta_content:
+                            _content_emitted = True
                             yield delta_content
                     elif isinstance(chunk, str):
-                        yield chunk
+                        if chunk:
+                            _content_emitted = True
+                            yield chunk
+
+                # Reasoning-only recovery: the model streamed reasoning but never
+                # any visible content (deepseek-v4 etc. occasionally swallow the
+                # entire answer into the reasoning channel, leaving content empty).
+                # Without this, the loop returns just "<thinking>" and the GUI shows
+                # the "caught by the thinking filter" dead-end. Close the dangling
+                # marker and retry once with native reasoning disabled so the model
+                # emits its answer as normal content.
+                if _reasoning_seen and not _content_emitted:
+                    if _was_reasoning:
+                        yield "</thinking>"
+                    logger.warning(
+                        "[AgenticSearch] Final response was reasoning-only (no content); "
+                        "retrying without native reasoning"
+                    )
+                    async for _rc in self._recover_reasoning_only_response(
+                        final_prompt, model_name, system_prompt
+                    ):
+                        if _rc:
+                            _content_emitted = True
+                            yield _rc
             elif isinstance(stream, str):
                 # It's a complete string (local model or stub)
                 yield stream
@@ -1223,6 +1269,35 @@ class AgenticSearchController:
         except Exception as e:
             logger.error(f"[AgenticSearch] Final generation failed: {e}")
             yield f"I apologize, but I encountered an error generating the response: {str(e)}"
+
+    async def _recover_reasoning_only_response(
+        self, final_prompt: str, model_name: str, system_prompt: str
+    ) -> AsyncGenerator[str, None]:
+        """Recover an answer when the model returned reasoning but zero content.
+
+        Retries the final synthesis once (non-streaming) with native reasoning
+        disabled, forcing reasoning models (deepseek-v4 etc.) to emit their answer
+        as normal content. Yields the recovered text, or nothing if recovery also
+        fails — the caller already closed the dangling <thinking> marker, so a
+        no-op leaves a clean (empty) stream for the GUI fallback to handle.
+        """
+        try:
+            recovered = await self.model_manager.generate_once(
+                prompt=final_prompt,
+                model_name=model_name,
+                system_prompt=system_prompt,
+                max_tokens=4096,
+                disable_reasoning=True,
+            )
+        except Exception as e:
+            logger.error(f"[AgenticSearch] Reasoning-only recovery failed: {e}")
+            return
+        recovered = (recovered or "").strip()
+        if recovered:
+            logger.info(f"[AgenticSearch] Recovered {len(recovered)} chars via no-reasoning retry")
+            yield recovered
+        else:
+            logger.warning("[AgenticSearch] Reasoning-only recovery produced no content")
 
     def _compute_context_inventory(self, initial_context: Optional[Dict[str, Any]]) -> str:
         """
@@ -1319,6 +1394,50 @@ class AgenticSearchController:
         footer = "Do NOT re-search for information already covered above. Use search_memory to fill gaps in specific collections not yet covered."
         return f"{header}\n" + "\n".join(lines) + f"\n{footer}"
 
+    # Decision-phase digest budget: a few of the most recent turns, hard-truncated.
+    # The inventory only reports counts; this gives the loop the actual content so it
+    # can avoid searching to re-derive an in-session fact (or contradicting one).
+    _DIGEST_MAX_TURNS = 4
+    _DIGEST_MSG_CHARS = 220
+
+    def _compute_recent_conversation_digest(
+        self, initial_context: Optional[Dict[str, Any]]
+    ) -> str:
+        """Build a short, hard-truncated digest of this session's recent turns.
+
+        Returns "" when there are no recent conversations. Kept deliberately
+        small (last few turns, each message clipped) because it is added to
+        every decision-round prompt.
+        """
+        if not initial_context:
+            return ""
+        recent = initial_context.get('recent_conversations', []) or []
+        if not recent:
+            return ""
+
+        # Keep the most recent turns (the tail). recent_conversations is oldest-first.
+        tail = recent[-self._DIGEST_MAX_TURNS:]
+        lines = []
+        for conv in tail:
+            user_msg = (conv.get('query', conv.get('user', '')) or '').strip()
+            assistant_msg = (conv.get('response', conv.get('assistant', '')) or '').strip()
+            if not user_msg:
+                continue
+            lines.append(f"- User: {user_msg[:self._DIGEST_MSG_CHARS]}")
+            if assistant_msg:
+                lines.append(f"  Daemon: {assistant_msg[:self._DIGEST_MSG_CHARS]}")
+        if not lines:
+            return ""
+
+        header = (
+            "[THIS SESSION — EARLIER TURNS] What was already said this session "
+            "(most recent last). If these already establish a fact relevant to the "
+            "question, USE it — do NOT search to re-derive what's settled, and do NOT "
+            "request a search whose answer contradicts what was established here without "
+            "good reason."
+        )
+        return header + "\n" + "\n".join(lines)
+
     @staticmethod
     def _detect_tool_hints(query: str) -> str:
         """Detect tool name mentions in a query and return usage hints.
@@ -1369,6 +1488,11 @@ You are in round {round_number} of up to {self.max_rounds} search rounds."""]
         if session and session.context_inventory:
             parts.append(session.context_inventory)
 
+        # Include this session's recent-turn digest (content, not just counts) so the
+        # decision is grounded in what was already established this session.
+        if session and session.recent_conversation_digest:
+            parts.append(session.recent_conversation_digest)
+
         # Include relaxation hint if present (guides LLM to broader queries or synthesis)
         if session and session.relaxation_hint:
             parts.append(session.relaxation_hint)
@@ -1414,7 +1538,15 @@ What would you like to do?""")
             if recent:
                 recent_text = self._format_recent_conversations(recent)
                 if recent_text:
-                    parts.append(f"[RECENT CONVERSATION — HISTORICAL CONTEXT ONLY, DO NOT RESPOND TO THESE]\n{recent_text}")
+                    parts.append(
+                        "[RECENT CONVERSATION — THIS SESSION'S HISTORY]\n"
+                        "Context only — do not reply to these turns as if they were the "
+                        "current message. But they are established ground truth for this "
+                        "session: if a search result contradicts what was already settled "
+                        "here, surface the conflict and trust the session unless the new "
+                        "evidence is clearly stronger — do NOT silently override it.\n"
+                        f"{recent_text}"
+                    )
 
             # Relevant memories (semantic search results)
             memories = initial_context.get('memories', [])

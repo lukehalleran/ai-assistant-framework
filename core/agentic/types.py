@@ -255,6 +255,9 @@ class AgenticSearchSession:
     memory_search_counts: Dict[str, int] = field(default_factory=dict)
     expand_count: int = 0
     context_inventory: str = ""
+    # Short digest of THIS session's recent turns (content, not just counts) so the
+    # per-round decision can avoid re-deriving facts already settled in-session.
+    recent_conversation_digest: str = ""
 
     # Provenance
     final_prompt_hash: str = ""

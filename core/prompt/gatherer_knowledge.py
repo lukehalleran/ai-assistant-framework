@@ -13,7 +13,7 @@ Methods:
   - get_graph_context(query, max_sentences) -> List[str]
   - get_unresolved_threads(max_results) -> List[Dict]
   - get_proactive_insights(query, max_insights) -> List[str]
-  - get_visual_memories(query, max_images) -> Dict[str, Any]
+  - get_visual_memories(query, max_images, intent_type) -> Dict[str, Any]
   - get_codebase_changes(since_datetime) -> Dict
   - get_narrative_context() -> str
   - _get_wiki_content(query, limit) -> List[Dict]
@@ -22,10 +22,16 @@ Methods:
   - _get_semantic_chunks(query, k, max_results) -> List[Dict]
   - _get_dreams(limit) -> List[Dict]
 
-Visual memory retrieval (get_visual_memories) uses a multi-step entity-gated pipeline:
+Visual memory retrieval (get_visual_memories) uses a multi-step gated pipeline:
+  0. Visual-intent gate (_query_wants_visual): require an explicit visual-intent
+     word OR a recall intent (factual_recall/temporal_recall). A bare name
+     mention in an unrelated message does NOT surface a photo. This closes the
+     case where the entity "luke" matched inside the path "/home/lukeh/..." and
+     injected a personal photo into a technical message.
   A. Filter junk caption artifacts from stored entity IDs (_VISUAL_JUNK_IDS)
   B. Resolve query entities via extract_graph_entities() (alias-aware)
-  C. Substring fallback for visual-only entities not in the knowledge graph
+  C. Word-boundary fallback for visual-only entities not in the knowledge graph
+     (\bword\b — not a raw substring, so "luke" no longer matches "lukeh")
   D. Multi-entity disambiguation via visual-intent proximity (_VISUAL_INTENT_WORDS)
      or sentence-tail heuristic when no intent keywords present
   E. Pass target_entities to VisualRetriever for hard-filtering results
@@ -36,6 +42,7 @@ self.model_manager (set by ContextGatherer.__init__).
 """
 
 import os
+import re
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any
@@ -80,6 +87,26 @@ _VISUAL_INTENT_WORDS = frozenset({
     "show", "see", "photo", "photos", "picture", "pictures",
     "image", "images", "look", "pic", "pics",
 })
+
+# Intents that legitimately want imagery even without an explicit "show me"
+# (e.g. "what does my cat look like", "what did the kitchen look like before").
+_VISUAL_OK_INTENTS = frozenset({"factual_recall", "temporal_recall"})
+
+
+def _query_wants_visual(query: str, intent_type: Optional[str]) -> bool:
+    """Gate for *automatic* visual-memory injection.
+
+    A bare entity mention is not enough — a photo only surfaces when the user
+    actually signals they want to see something (a visual-intent word) or the
+    turn is a recall intent that naturally wants imagery. This stops a name that
+    merely appears in passing (especially inside a path/identifier, e.g.
+    ``/home/lukeh/...`` matching the entity ``luke``) from pulling a photo into
+    an unrelated technical message.
+    """
+    words = {re.sub(r"[^\w]", "", w.lower()) for w in query.split()}
+    if words & _VISUAL_INTENT_WORDS:
+        return True
+    return (intent_type or "") in _VISUAL_OK_INTENTS
 
 
 def _cfg_int(key: str, default_val: int) -> int:
@@ -647,16 +674,24 @@ class KnowledgeRetrievalMixin:
             logger.warning(f"[ContextGatherer] Failed to get proactive insights: {e}")
             return []
 
-    async def get_visual_memories(self, query: str, max_images: int = 3) -> Dict[str, Any]:
+    async def get_visual_memories(
+        self, query: str, max_images: int = 3, intent_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Retrieve CLIP-matched visual memories for the query.
 
-        Entity-gated: only retrieves when the query mentions an entity that has
-        stored images (e.g. "Whiskers" → cat photos). Prevents irrelevant images
-        from being injected into unrelated conversations.
+        Two gates, both required:
+          1. Visual-intent gate (_query_wants_visual): the user must signal they
+             want to see something — a visual-intent word OR a recall intent that
+             naturally wants imagery. A bare name mention in an unrelated message
+             does not surface a photo.
+          2. Entity gate: the query must mention (as a whole word) an entity that
+             has stored images (e.g. "Whiskers" → cat photos).
 
         Args:
             query: Current user query
             max_images: Maximum images to include for multimodal API
+            intent_type: Classified intent (lowercase value); recall intents
+                pass the visual-intent gate without an explicit "show me".
 
         Returns:
             Dict with text_results (captions for prompt section) and
@@ -666,6 +701,18 @@ class KnowledgeRetrievalMixin:
         try:
             from config.app_config import VISUAL_MEMORY_ENABLED
             if not VISUAL_MEMORY_ENABLED:
+                return empty
+
+            # Visual-intent gate: a photo only surfaces when the user signals
+            # they want to see something, or the turn is a recall intent. This
+            # stops a name that appears only in passing (e.g. the entity "luke"
+            # inside the path "/home/lukeh/...") from injecting a photo into an
+            # unrelated technical message.
+            if not _query_wants_visual(query, intent_type):
+                logger.debug(
+                    "[ContextGatherer] Visual memory skipped: no visual intent "
+                    f"(intent={intent_type!r})"
+                )
                 return empty
 
             if not hasattr(self, '_visual_retriever') or self._visual_retriever is None:
@@ -710,13 +757,16 @@ class KnowledgeRetrievalMixin:
             else:
                 matched_entities = set()
 
-            # --- Step C: Substring fallback (for visual-only entities not in graph) ---
+            # --- Step C: Word-boundary fallback (for visual-only entities not in graph) ---
+            # Whole-word match only. A raw substring test here once matched the
+            # entity "luke" inside the path component "lukeh" (/home/lukeh/...),
+            # pulling a personal photo into a technical message — \bword\b
+            # boundaries prevent that while still catching real mentions.
             if not matched_entities:
                 query_lower = query.lower()
-                query_words = set(query_lower.split())
                 matched_entities = {
                     eid for eid in clean_visual
-                    if eid in query_words or eid in query_lower
+                    if re.search(rf"\b{re.escape(eid)}\b", query_lower)
                 }
 
             if not matched_entities:
@@ -728,7 +778,6 @@ class KnowledgeRetrievalMixin:
 
             # --- Step D: Multi-entity disambiguation via visual-intent proximity ---
             if len(matched_entities) > 1:
-                import re
                 query_lower = query.lower()
                 words = query_lower.split()
 

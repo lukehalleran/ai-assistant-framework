@@ -707,12 +707,30 @@ All retrieval counts are overridable per-intent. CASUAL_SOCIAL reduces
 most limits (including `max_visual_memories=0` to skip image retrieval
 for greetings); EMOTIONAL_SUPPORT and META_CONVERSATIONAL also disable
 visual memories. Short messages (<=5 words) without intent override
-suppress visual memory retrieval. Visual retrieval uses entity resolution
-via `extract_graph_entities()` with junk entity filtering (`_VISUAL_JUNK_IDS`)
-and intent-proximity disambiguation (`_VISUAL_INTENT_WORDS`) for multi-entity
-queries. Results are hard-filtered by `target_entities` in `VisualRetriever`.
-Image passing is further gated by `supports_vision()` — non-vision models
-(DeepSeek, GLM) never receive image data.
+suppress visual memory retrieval.
+
+Visual memory retrieval is **two-gated** (`get_visual_memories()` in
+`gatherer_knowledge.py`; `builder.py` now passes `intent_type` through):
+
+1. **Visual-intent gate** (`_query_wants_visual()`) — a photo only
+   surfaces when the user actually signals they want to see something:
+   an explicit visual-intent word ("show me", "see", "pic", etc. in
+   `_VISUAL_INTENT_WORDS`) OR a recall intent (FACTUAL_RECALL /
+   TEMPORAL_RECALL, which naturally want imagery). A bare entity mention
+   in an unrelated message no longer pulls in a photo.
+2. **Entity gate** — the query must mention, **as a whole word**, an
+   entity that has stored images. Entity resolution uses
+   `extract_graph_entities()` (alias-aware) with junk filtering
+   (`_VISUAL_JUNK_IDS`); the visual-only fallback now uses a word-boundary
+   match (`\bname\b`, no substring). This fixed the 2026-06-09 bug where
+   the entity "luke" matched *inside* the path `/home/lukeh/...` and
+   injected a personal photo into a technical message.
+
+Multi-entity queries are disambiguated via intent-proximity
+(`_VISUAL_INTENT_WORDS`). Results are hard-filtered by `target_entities`
+in `VisualRetriever`. Image passing is further gated by
+`supports_vision()` — non-vision models (DeepSeek, GLM) never receive
+image data.
 
 ### Small-Talk Short Circuit
 
@@ -1050,6 +1068,23 @@ in `model_manager.py`. Thinking arrives via `delta.reasoning_content` in
 streaming chunks, not in the text body. The prompt-based `<thinking>` tag
 instruction is skipped for these models to prevent instruction echoing.
 
+### Storage-Boundary Sanitization (Final Defense Layer)
+
+The display-layer gates above can be bypassed by a new response path, so the
+last line of defense is at persistence: `memory_storage.store_interaction()`
+runs the response through `ResponseParser.sanitize_for_storage()` before ANY
+storage (corpus, ChromaDB, conversation context). It removes empty synthetic
+`<thinking></thinking>` pairs, a leading tagged thinking block, stray tag
+fragments, and reflection blocks; an unclosed leading thinking block means the
+whole text is reasoning, which returns `""`. A response that sanitizes to empty
+is **skipped entirely** (`store_interaction` returns `None`). This matters
+because a persisted leak gets replayed into later prompts as conversation
+history, teaching the model to imitate literal `<thinking>` markers — the
+self-reinforcing pollution that motivated the guard. The function deliberately
+omits the untagged-thinking heuristics (false positives at the storage boundary
+would silently drop real conversation; the display layer still filters those).
+See `docs/THINKING_BLOCKS_IMPLEMENTATION.md` for the full multi-layer defense.
+
 ---
 
 ## 12. Agentic Tool System
@@ -1182,6 +1217,20 @@ into the iteration prompt to prevent redundant searches. The LLM sees
 what collections have been searched, how many results were found, and
 what topics are already covered.
 
+### Session-Grounded Decisions
+
+The inventory reports *counts*, not content. To stop the loop from
+searching to re-derive (or contradicting) a fact already settled this
+session, the controller also injects a short content digest of recent
+turns. `_compute_recent_conversation_digest()` builds a hard-truncated
+`[THIS SESSION — EARLIER TURNS]` block (last `_DIGEST_MAX_TURNS=4` turns,
+each message clipped to `_DIGEST_MSG_CHARS=220` chars) and adds it to
+every `_build_iteration_prompt()` decision round. The final synthesis
+prompt frames recent conversation as **this session's ground truth**: a
+search result that contradicts what was settled in-session must be
+surfaced as a conflict, not silently trusted — while still forbidding
+the model from replying to old turns as if they were the current message.
+
 ### Collection Diversity Tracking
 
 `memory_search_counts` tracks how many times each ChromaDB collection
@@ -1242,6 +1291,33 @@ GitHub tool definitions conditionally included based on `github_available`.
 Empty arguments for git_stats/github/search_memory default to the
 original query.
 
+**DAEMON-envelope unwrap (proxied native-tools models)**: when an
+OpenRouter-proxied native-tools model (e.g. DeepSeek) narrates a tool
+call as plain text under the "Daemon" persona instead of emitting
+structured `tool_calls`, it wraps the call in a
+`<DAEMON: tool_name>body</DAEMON>` envelope that no marker pattern
+matches. `NativeToolsHandler`'s text fallback runs
+`_unwrap_daemon_envelope()` (via `_DAEMON_ENVELOPE_PATTERN`) to rewrite
+these into `<tool_name>body</tool_name>` before marker parsing, so the
+tool actually executes instead of the raw markup leaking to the user.
+As a last-resort guard, `ResponseParser.strip_agentic_tool_tags()` also
+strips any envelope that still slips through to the response.
+
+### Reasoning-Only Recovery
+
+A reasoning model can occasionally swallow its entire answer into the
+reasoning channel (`delta.reasoning_content`) and emit no visible
+content — DeepSeek-v4 does this intermittently. Without recovery the
+final synthesis returns just the synthetic `<thinking>` marker and the
+GUI's thinking filter shows a dead-end. `_generate_final_response()`
+tracks whether any visible content was emitted; if reasoning was seen but
+no content, it closes the dangling marker and retries once via
+`_recover_reasoning_only_response()` →
+`generate_once(disable_reasoning=True)`, which suppresses native reasoning
+separation so the model emits its answer as normal content.
+`disable_reasoning` is an internal recovery knob on
+`model_manager.generate_once()`/`generate_async()`, not a public API.
+
 ### Budget Enforcement
 
 Two levels of budget control:
@@ -1265,6 +1341,10 @@ This happens synchronously (except for background storage).
 ### store_interaction Flow
 
 ```
+0. Thinking-leak guard: run the response through
+   ResponseParser.sanitize_for_storage() before ANY persistence (corpus,
+   conversation context, ChromaDB). An all-thinking response is skipped
+   entirely (store_interaction returns None) — see below.
 1. Skip gate: reject file-error responses (prevent false memories)
 2. Thread detection: assign thread_id + depth for conversation continuity
 3. Corpus storage: JSON persistence (immediate write)
@@ -2059,6 +2139,22 @@ emphasized in the draft prompts — and web/encyclopedia search is suppressed
 pasted proposal" requests in the actual material instead of a bare topic web
 search (which once returned the Anarchism Wikipedia article and a 1994
 Unix-daemon PDF for a "daemon architecture" request).
+
+**Declared-source trimming**: sources are gathered broadly (notes are always
+pulled in for grounding) but many never get cited. `_select_cited_sources()`
+trims the declared source list — used in the YAML frontmatter, `index.json`,
+and `GeneratedDocument.sources` — to the **cited subset only**, so the metadata
+matches the rendered `## Sources` section (the user-provided `[INPUT_1]` primary
+is always retained; falls back to the full list if nothing is cited and there is
+no primary). A single canonical matcher `_CITATION_RE` (2–6 letter prefix)
+drives citation validation, the Sources section, and this trimming — a tighter
+`{3,4}` bound previously dropped the 5-letter `[INPUT_1]`.
+
+**Topic safety**: `_clip_topic()` clamps the topic to a short, filename-safe
+phrase (word/char budget, first sentence boundary). `_refine_topic()` applies it
+to both the LLM result **and** the failure fallback, so a failed LLM refinement
+or a long paste can never become the topic — and therefore the filename or index
+entry.
 
 ### Daemon Self-Notes
 

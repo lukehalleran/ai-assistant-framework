@@ -392,6 +392,39 @@ class TestGraphMemoryTraversal:
         sentences = graph.get_context_sentences("user", depth=1, max_sentences=20)
         assert any("spain" in s.lower() for s in sentences)
 
+    def test_context_sentences_ages_out_stale_appointment(self, graph):
+        """A stale one-time 'appointment' edge ages out of graph context.
+
+        Regression: bare ``appointment`` was classified durable, so a once-stored
+        "user -> appointment -> psychiatry" edge surfaced as a present-tense
+        standing appointment indefinitely (the phantom "3pm appointment"). It is
+        now standard-ephemeral and ages out on the 24h horizon like its siblings
+        (appointment_time, therapy_appointment); durable edges are unaffected.
+        """
+        from datetime import datetime, timedelta
+        old = datetime.now() - timedelta(hours=72)  # past the 24h ephemeral TTL
+        graph.add_relation(GraphEdge(
+            source_id="user", relation="appointment",
+            target_id="psychiatry", last_seen=old, first_seen=old,
+        ))
+        graph.add_relation(GraphEdge(source_id="user", relation="brother_name", target_id="sam"))
+
+        sentences = graph.get_context_sentences("user", depth=1, max_sentences=20)
+        joined = " ".join(sentences).lower()
+        assert "psychiatry" not in joined  # stale appointment dropped
+        assert any("sam" in s.lower() for s in sentences)  # durable edge survives
+
+    def test_context_sentences_keeps_fresh_appointment(self, graph):
+        """A freshly-mentioned appointment edge is still surfaced (only stale ages out)."""
+        from datetime import datetime, timedelta
+        recent = datetime.now() - timedelta(hours=2)
+        graph.add_relation(GraphEdge(
+            source_id="user", relation="appointment",
+            target_id="psychiatry", last_seen=recent, first_seen=recent,
+        ))
+        sentences = graph.get_context_sentences("user", depth=1, max_sentences=20)
+        assert any("psychiatry" in s.lower() for s in sentences)
+
     def test_neighbors_nonexistent(self, graph):
         assert graph.neighbors("nonexistent") == {}
 

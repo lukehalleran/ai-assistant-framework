@@ -15,6 +15,9 @@ Module Contract
     an AgenticDecision. If triggered, routes through AgenticSearchController.
     Uses merged_input (user text + file content) as query so uploaded file content is visible to the agentic loop.
     - Streaming hides thinking via has_incomplete_thinking_block() (tags) + likely_untagged_thinking() (heuristic)
+    - Storage uses _sanitize_response_text(final_output) — the raw accumulated stream
+      contains synthetic <thinking></thinking> markers from response_generator and must
+      never be persisted raw [FIXED 2026-06-10; backstop also in memory_storage]
     - Post-content ProgressEvents suppressed to prevent response pop-back
     - Citations extracted from memory_id_map via _extract_citations()
   - UNCERTAINTY FALLBACK [NEW 2026-04-27]: After standard streaming, UncertaintyDetector checks response for "I don't know" signals (keyword regex + semantic embedding). If uncertain + agentic enabled → silent retry via agentic search. Retry only accepted if word overlap with original < 70%. No progress messages or chunk streaming during retry.
@@ -470,7 +473,9 @@ def _sanitize_response_text(text):
         text = answer
     elif thinking and not answer:
         return ""
-    text = ResponseParser.strip_thinking_tag_leaks(text)
+    # Canonical storage-grade strip: empty <thinking></thinking> stream markers,
+    # leading/unclosed tagged blocks, stray tag fragments, reflection blocks
+    text = ResponseParser.sanitize_for_storage(text)
     text = _strip_leaked_xml_blocks(text)
     try:
         from core.prompt import _truncate_at_spurious_turns
@@ -1705,10 +1710,12 @@ async def _run_agentic_search(ctx):
             except Exception as _ag_err:
                 logger.warning(f"[Handle Submit] Agentic contact resolution failed: {_ag_err}")
 
-        # If display_output is empty (entire response was thinking/reasoning), show fallback
+        # If display_output is still empty after the controller's reasoning-only
+        # recovery retry, the model returned no usable answer twice. Show an honest
+        # fallback (last resort — recovery normally repopulates this).
         if not display_output.strip():
-            display_output = "I processed your request but my response was caught by the thinking filter. Let me try again — could you rephrase or retry?"
-            logger.warning("[Handle Submit] Agentic response was entirely thinking content, showing fallback")
+            display_output = "Hmm, the model came back empty on that one (its answer didn't make it out of the reasoning step). Mind sending that again?"
+            logger.warning("[Handle Submit] Agentic response empty after recovery, showing fallback")
 
         # ── Action guard: capture note offers (e.g. "Want me to save this?") for
         # the next turn, and honestly correct external claims that weren't backed.
@@ -1739,21 +1746,22 @@ async def _run_agentic_search(ctx):
         # Store interaction in background (fire-and-forget, same as enhanced path).
         # Avoids a ~5s blocking await after the final yield that kept the
         # Gradio generator open and could prevent the response from rendering.
+        # Full sanitization (thinking blocks + synthetic <thinking></thinking>
+        # stream markers + XML leaks + spurious turns) — final_output is the RAW
+        # accumulated stream, which historically persisted thinking artifacts
+        # into the conversations collection (752 polluted docs as of 2026-06-10).
         try:
-            from core.prompt import _truncate_at_spurious_turns
-            final_output_sanitized = _truncate_at_spurious_turns(final_output)
+            final_output_sanitized = _sanitize_response_text(final_output)
         except Exception as e:
             logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
             final_output_sanitized = final_output
 
-        # Prevent context pollution: strip leaked XML/tool text
-        final_output_sanitized = _strip_leaked_xml_blocks(final_output_sanitized)
         if len(final_output_sanitized.strip()) < 20 and display_output.strip():
             final_output_sanitized = display_output
 
         _dispatch_storage(
             orchestrator, merged_input, final_output_sanitized, user_text,
-            final_output, personality, file_names, conversation_logger,
+            final_output_sanitized, personality, file_names, conversation_logger,
             _agentic_session_id, _agentic_prov, 'agentic-search',
         )
         logger.info("[Handle Submit] Agentic storage dispatched to background")

@@ -13,6 +13,11 @@ Module Contract
   - Reasoning/thinking detection [NEW 2026-03-26]: Extracts reasoning_content from streaming chunks
     (OpenAI-style delta). Emits synthetic <thinking>/<\/thinking> wrapper tags around reasoning blocks
     so handlers.py can detect and suppress them during streaming display.
+  - Reasoning-only recovery [NEW 2026-06-14]: if a stream produces reasoning but ZERO content
+    (reasoning models occasionally swallow the whole answer into the reasoning channel), close the
+    dangling <thinking> marker and retry once via _recover_reasoning_only() →
+    generate_once(disable_reasoning=True), so the answer is re-emitted as normal content instead of
+    the stream resolving to an empty/dead response.
 - Dependencies:
   - models.model_manager.ModelManager (generate_async/generate_once)
 - Side effects:
@@ -110,6 +115,7 @@ class ResponseGenerator:
             if hasattr(response_generator, "__aiter__"):
                 buffer = ""
                 _was_reasoning = False  # Track if we were in a reasoning phase
+                _reasoning_seen = False  # Track if any reasoning chunk ever arrived
                 STOP_MARKERS = {"<|user|>", "<|assistant|>", "<|system|>", "<|end|>", "<|eot_id|>", "<｜end▁of▁sentence｜>"}
                 STREAM_TIMEOUT = 120.0  # 2 minute timeout for streaming (GLM/slower models)
 
@@ -177,6 +183,7 @@ class ResponseGenerator:
                             # If chunk has reasoning but no content, skip it (thinking phase)
                             # Emit synthetic <thinking> tag so handlers.py can detect it
                             if delta_reasoning and not delta_content:
+                                _reasoning_seen = True
                                 if not _was_reasoning:
                                     _was_reasoning = True
                                     yield "<thinking>"
@@ -217,7 +224,21 @@ class ResponseGenerator:
                                 # If buffer is empty/whitespace-only, the API returned no content
                                 if first_token_time is None or not buffer.strip():
                                     self.logger.warning(f"[STREAMING] API returned empty response (finish_reason={finish_reason}, empty_chunks={empty_chunk_count})")
-                                    yield "[Error: Model returned empty response. Try a different model or retry the request.]"
+                                    # Reasoning-only swallow: the answer went into the
+                                    # reasoning channel and content came back empty.
+                                    # Close any dangling <thinking> and retry without
+                                    # native reasoning before giving up.
+                                    _recovered_any = False
+                                    if _reasoning_seen:
+                                        if _was_reasoning:
+                                            yield "</thinking>"
+                                            _was_reasoning = False
+                                        async for _rc in self._recover_reasoning_only(prompt, effective_sp, max_tokens):
+                                            if _rc:
+                                                _recovered_any = True
+                                                yield _rc
+                                    if not _recovered_any:
+                                        yield "[Error: Model returned empty response. Try a different model or retry the request.]"
                                 return
 
                             # If we hit a stop marker, flush clean content and end streaming
@@ -259,6 +280,18 @@ class ResponseGenerator:
                         if tail.strip():
                             yield tail.strip()
 
+                    # Reasoning-only swallow (stream ended cleanly with no content):
+                    # retry once with native reasoning disabled to recover the answer.
+                    if first_token_time is None and _reasoning_seen and not buffer.strip():
+                        self.logger.warning("[STREAMING] Stream ended reasoning-only (no content); retrying without native reasoning")
+                        if _was_reasoning:
+                            yield "</thinking>"
+                            _was_reasoning = False
+                        async for _rc in self._recover_reasoning_only(prompt, effective_sp, max_tokens):
+                            if _rc:
+                                first_token_time = time.time()
+                                yield _rc
+
                     end_time = time.time()
                     duration = self.time_manager.measure_response(
                         datetime.fromtimestamp(start_time),
@@ -288,6 +321,32 @@ class ResponseGenerator:
         except Exception as e:
             self.logger.error(f"[GENERATE] Error: {type(e).__name__}: {str(e)}")
             yield f"[Streaming Error] {e}"
+
+    async def _recover_reasoning_only(self, prompt: str, system_prompt: str, max_tokens):
+        """Recover a swallowed answer when streaming returned reasoning but no content.
+
+        Some reasoning models (deepseek-v4 etc.) intermittently emit the entire
+        answer into the API reasoning channel and return empty visible content.
+        This retries once (non-streaming) with native reasoning disabled, forcing
+        the answer into normal content. Yields the recovered text, or nothing.
+        """
+        try:
+            recovered = await self.model_manager.generate_once(
+                prompt=prompt,
+                model_name=self.model_manager.get_active_model_name(),
+                system_prompt=system_prompt,
+                max_tokens=max_tokens or 1024,
+                disable_reasoning=True,
+            )
+        except Exception as e:
+            self.logger.error(f"[STREAMING] Reasoning-only recovery failed: {e}")
+            return
+        recovered = (recovered or "").strip()
+        if recovered:
+            self.logger.info(f"[STREAMING] Recovered {len(recovered)} chars via no-reasoning retry")
+            yield recovered
+        else:
+            self.logger.warning("[STREAMING] Reasoning-only recovery produced no content")
 
     async def generate_full(self, prompt: str, model_name: str, system_prompt: str = None, temperature: float = None) -> str:
         """Generate a full, non-streamed response using generate_once."""

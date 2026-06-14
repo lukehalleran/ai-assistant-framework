@@ -128,7 +128,8 @@ Each round:
 
 1. **THINKING** — Build iteration prompt with `[TIME CONTEXT]` (current date/time) +
    accumulated context + inventory of already-gathered RAG context + relaxation/diversity hints +
-   tool hints (injected via `_detect_tool_hints()` when query mentions tool names like "github", "git stats", etc.)
+   tool hints (injected via `_detect_tool_hints()` when query mentions tool names like "github", "git stats", etc.) +
+   **this session's recent-turn digest** (`_compute_recent_conversation_digest()`)
 2. **DECIDE** — Call `_get_model_decision()` (native tools or XML markers).
    For XML protocol, uses `_generate_decision_no_reasoning()` to bypass
    native reasoning (e.g. DeepSeek chain-of-thought) that would burn the
@@ -144,6 +145,17 @@ Each round:
    in-process tool execution; child Python interpreters also inherit it
    when `scripts/bin/` is on PYTHONPATH (via `usercustomize.py`).
 
+**Session-Grounded Decisions** [2026-06-13]: `_compute_recent_conversation_digest()`
+(`controller.py`) builds a short digest of THIS session's recent turns — the actual
+content of the last `_DIGEST_MAX_TURNS` (4) turns, each message clipped to
+`_DIGEST_MSG_CHARS` (220 chars) — and stores it on the new
+`AgenticSearchSession.recent_conversation_digest` field (`types.py`). It is injected
+under `[THIS SESSION — EARLIER TURNS]` into every iteration prompt (after the context
+inventory). This grounds each loop decision in what was already settled in-session, so
+the model does not re-derive facts already established or request a search whose answer
+would contradict them without good reason. Returns `""` (no injection) when there are no
+recent conversations.
+
 **Nudge Retry**: If round 1 produces no tool calls but the response text
 mentions tools ("github", "let me check", "commits", etc.), the controller
 retries once with an explicit nudge instructing the model to emit XML
@@ -156,6 +168,24 @@ After the loop exits:
 - Budget-enforce: trim low-priority sections if over `context_budget * 5`
 - Compute `final_prompt_hash` (SHA-256[:16]) for provenance
 - Stream response chunks to caller
+
+**In-session facts are GROUND TRUTH** [2026-06-13]: `_build_final_prompt()` renders
+this session's recent turns under `[RECENT CONVERSATION — THIS SESSION'S HISTORY]` and
+frames them as established ground truth — if a search result contradicts what was
+already settled in-session, the model must SURFACE the conflict (and trust the session
+unless the new evidence is clearly stronger), not silently override it. This replaces
+the old "HISTORICAL CONTEXT ONLY" framing.
+
+**Reasoning-only recovery** [2026-06-13]: a reasoning model (e.g. deepseek-v4) can
+occasionally swallow the entire answer into its reasoning channel, leaving the visible
+content empty — the loop would otherwise return just `<thinking>` and the GUI hits the
+"caught by the thinking filter" dead-end. When the final stream emits reasoning but no
+content, the controller closes the dangling `</thinking>` marker and retries once via
+`_recover_reasoning_only_response()` → `ModelManager.generate_once(disable_reasoning=True)`,
+forcing the answer out as normal content. The streaming path has the parallel guard
+`ResponseGenerator._recover_reasoning_only()` for non-agentic generation. If recovery
+also yields nothing, the closed marker leaves a clean (empty) stream for the GUI
+fallback.
 
 ---
 
@@ -461,6 +491,15 @@ the text to `XMLMarkerHandler` and recovers any actionable tool markers
 (`<file_read>`, `<search>`, `<memory>`, `<fetch_url>`, …). Without this the raw
 XML leaks into the answer and the tool never executes.
 
+**DAEMON-envelope unwrap** [2026-06-13, conv #15]: OpenRouter-proxied native-tools
+models sometimes narrate the call (under the assistant's "Daemon" persona) as a
+`<DAEMON: tool_name>...</DAEMON>` envelope instead of a real tool call — no marker
+pattern matches that wrapper, so the markup leaked into the answer and the tool never
+ran. Before XML parsing, `_unwrap_daemon_envelope()` (`protocols.py`) rewrites each
+envelope back to the canonical `<tool_name>body</tool_name>` marker form (stripping a
+single leading label line like "Query:" / "Code:" / "URL:" from the body), so the
+normal `XMLMarkerHandler` path then executes the tool.
+
 ### XML Markers
 
 For models without native tool support. Markers embedded in text:
@@ -664,6 +703,12 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 **Note:** `handlers.py` skips any `ProgressEvent` that arrives after response
 chunks have started accumulating, preventing late events (e.g. `done`) from
 overwriting the streamed response in the chatbot.
+
+**Storage sanitization** [2026-06-13]: the agentic `final_output` is run through
+`ResponseParser.sanitize_for_storage()` (via `_sanitize_response_text()` in
+`gui/handlers.py`) before persistence, so synthetic `<thinking></thinking>` streaming
+markers — including the empty marker left by the reasoning-only recovery above — never
+pollute memory.
 
 ---
 

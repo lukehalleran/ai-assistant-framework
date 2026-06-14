@@ -179,6 +179,10 @@ UnifiedPromptBuilder.build_prompt()
 ```
 MemoryStorage.store_interaction(query, response)
   │
+  ├─ 0. Thinking-leak storage guard: ResponseParser.sanitize_for_storage()
+  │     runs before ANY persistence; all-thinking responses skipped (return None)
+  │     — final defense layer so reasoning artifacts can't persist and be replayed
+  │     (see docs/THINKING_BLOCKS_IMPLEMENTATION.md)
   ├─ 1. Skip gate: reject file-error responses
   ├─ 2. Thread detection: assign thread_id + depth
   ├─ 3. Corpus storage: JSON persistence (immediate)
@@ -587,9 +591,16 @@ fitness, preferences, hobbies, study, finance, relationships, goals):
 
 - **`EPHEMERAL_RELATIONS`** — truly transient state (`current_feeling`, `current_activity`,
   `plans_today`, `appointment_time`, etc.). Detection uses 4 layers: config list,
-  exact-match set (`meal`, `drank_alcohol`, `meeting_with`, etc.), prefix patterns
+  exact-match set (`meal`, `drank_alcohol`, `meeting_with`, `appointment`, etc.), prefix patterns
   (`scheduled_`, `signed_up_`, `meeting_with_`, `current_`, `recent_`, etc.), and
   suffix patterns (`_appointment`, `_meeting`, `_intake`, `_consumption`, etc.).
+  *Note (2026-06):* bare **`appointment`** is now in the exact-match set (24h TTL,
+  sibling to `meeting` / `meeting_with` and the `*_appointment` suffix), so a
+  one-time event ages out instead of surfacing forever — this fixed the
+  "phantom standing appointment" bug where a stale `user → appointment →
+  psychiatry` edge resurfaced indefinitely. (Durable attributes like
+  `appointment_length` stay; future-dated deadlines/dates such as `exam_date`
+  are *not* swept here — those need date-aware expiry, not a last-seen TTL.)
   Subject to aggressive TTL-based expiry (`PROFILE_EPHEMERAL_TTL_HOURS`, default 24h).
   Historical entries pruned when category exceeds `PROFILE_CATEGORY_SOFT_CAP`
   (default 200), keeping at most `PROFILE_EPHEMERAL_MAX_HISTORY` (default 20)

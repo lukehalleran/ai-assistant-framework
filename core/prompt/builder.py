@@ -26,6 +26,9 @@ Module Contract
   - Skill activation (Step 5): Creates SkillActivationPolicy in __init__, over-fetches procedural
     skills by SKILL_ACTIVATION_FETCH_MULTIPLIER (3x), applies policy after parallel gather completes
     (intent suppression, score threshold, STM bonus, cooldown filter, cap to max_skills).
+  - Visual memory gating: passes `intent_type` into `get_visual_memories()` so image retrieval is
+    gated by a visual/recall intent signal (a "show me"-type request), not a bare entity-name match
+    (see gatherer_knowledge._query_wants_visual).
 - Outputs:
   - Context dictionary with all assembled data, metadata, and performance metrics
   - Formatted prompt string via _assemble_prompt delegation
@@ -911,10 +914,11 @@ class UnifiedPromptBuilder:
                                 self.context_gatherer.get_upcoming_schedule(user_input, eff_max_upcoming_schedule))
                 )
 
-            # Visual memories (CLIP-based image search)
+            # Visual memories (CLIP-based image search) — gated by visual intent
+            # (a "show me"/recall signal), not just a bare entity name match.
             if eff_max_visual_memories > 0:
                 tasks["visual_memories"] = asyncio.create_task(
-                    _timed_task("visual_memories", self.context_gatherer.get_visual_memories(user_input, eff_max_visual_memories))
+                    _timed_task("visual_memories", self.context_gatherer.get_visual_memories(user_input, eff_max_visual_memories, intent_type=intent_type))
                 )
 
             # Google Calendar events (real-time, cached 5 min)

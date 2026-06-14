@@ -23,6 +23,11 @@ Module Contract
     fact_scope, entity_type, user_connection, source_excerpt through to ChromaDB metadata [NEW 2026-03]
   - Thread metadata forwarding: store_interaction() propagates thread_id and thread_depth
     from thread_info to ChromaDB conversation metadata [NEW 2026-03]
+  - Thinking-leak storage guard: store_interaction() runs the response through
+    ResponseParser.sanitize_for_storage() before ANY persistence (corpus, conversation
+    context, ChromaDB). All-thinking responses are skipped entirely (returns None).
+    This is the final defense layer — leaked reasoning must never be persisted, or it
+    gets replayed into prompts and the model learns to imitate it [NEW 2026-06-10]
   - Reflection embedding cleanup: _clean_reflection_for_embedding() strips boilerplate
     headers/prefixes (16+ patterns) before embedding to prevent vector collapse across
     reflections. Original text preserved in metadata for display [NEW 2026-05]
@@ -704,6 +709,20 @@ class MemoryStorage:
             str: Database ID (UUID) of the stored memory, or None if storage failed
         """
         try:
+            # THINKING-LEAK GUARD (final defense layer): never persist reasoning
+            # artifacts. Display-layer defenses can be bypassed by new response
+            # paths; this boundary cannot. Persisted leaks get replayed into
+            # prompts as history and the model starts imitating them.
+            from core.response_parser import ResponseParser
+            _raw_response = response or ""
+            response = ResponseParser.sanitize_for_storage(_raw_response)
+            if _raw_response.strip() and not response.strip():
+                logger.warning(
+                    "[MemoryStorage] Response was entirely thinking content "
+                    f"({len(_raw_response)} chars) — skipping storage to avoid memory pollution"
+                )
+                return None
+
             # SKIP STORAGE: Don't persist file error responses
             # These are ephemeral technical issues that create false memories
             if self._is_file_error_response(response):

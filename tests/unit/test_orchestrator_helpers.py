@@ -465,3 +465,50 @@ def test_in_memory_corpus_ordering():
     assert recent[0]["query"] == "q2"
     assert recent[1]["query"] == "q3"
     assert recent[2]["query"] == "q4"
+
+
+# =============================================================================
+# strip_agentic_tool_tags — leaked tool-markup defense
+# =============================================================================
+
+# Exact markup that leaked into a stored/displayed agentic answer (DeepSeek via
+# OpenRouter narrated the tool call as text — conversation_20260613, conv #15).
+_CONV15_LEAK = (
+    'Let me pull the actual pricing for both models so we can look at real numbers.\n\n'
+    '<DAEMON: web_search>\n'
+    'Query: "Claude Fable 5" price per million tokens input output 2026\n'
+    '</DAEMON><DAEMON: web_search>\n'
+    'Query: "Fable 5" API pricing "$" per million tokens Anthropic\n'
+    '</DAEMON>'
+)
+
+
+def test_strip_agentic_tool_tags_removes_daemon_envelope():
+    """The <DAEMON: tool>...</DAEMON> envelope is stripped from the answer."""
+    cleaned = ResponseParser.strip_agentic_tool_tags(_CONV15_LEAK)
+    assert "<DAEMON:" not in cleaned
+    assert "</DAEMON>" not in cleaned
+    assert "web_search" not in cleaned
+    # Prose preceding the leaked markup is preserved.
+    assert "pull the actual pricing" in cleaned
+
+
+def test_strip_agentic_tool_tags_removes_canonical_markers():
+    """Canonical <web_search>...</web_search> blocks are also stripped."""
+    text = "Here goes <web_search>fable 5 pricing</web_search> done"
+    cleaned = ResponseParser.strip_agentic_tool_tags(text)
+    assert "<web_search>" not in cleaned
+    assert "fable 5 pricing" not in cleaned
+    assert "Here goes" in cleaned and "done" in cleaned
+
+
+def test_strip_agentic_tool_tags_leaves_clean_text_untouched():
+    """A normal answer with no tool markup passes through unchanged."""
+    text = "Opus 4.8 runs about $15/$75 per million tokens."
+    assert ResponseParser.strip_agentic_tool_tags(text) == text
+
+
+def test_strip_agentic_tool_tags_handles_no_angle_brackets():
+    """Fast-path early return when there is nothing tag-like."""
+    text = "Just a plain sentence."
+    assert ResponseParser.strip_agentic_tool_tags(text) == text
