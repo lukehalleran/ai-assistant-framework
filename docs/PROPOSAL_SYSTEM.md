@@ -409,6 +409,30 @@ symlinks recreated but never followed), and diffs that with hardened flags
 | `saboteur.py` | M2 reaper: deliberate config-tamper cheat, must be killed at the static gate |
 | `failure_worker.py` | M2.5 sincere failure: overfit (`return 3`) / honest-wrong (`abs(a-b)`) that clear the gate but fail the deep proof |
 | `llm_strategy_worker.py` | manual real-LLM demo of strategy directives |
+| `coding_worker.py` | general LLM worker: arbitrary objective + per-agent lens + code context → one bounded change (the M3 step toward real, varied proposals) |
+
+### 3.7.1 Objective, goals & lenses
+
+A worker is driven by two **inputs it cannot change**:
+
+- **Objective** (per run, *what to build*): the supervisor wires `manifest.objective`
+  into the worker as `WORKER_OBJECTIVE` (`supervisor.worker_env_for`) — a worker can
+  never be pointed at a goal the supervisor didn't authorize. Explicit env wins for
+  tests/overrides.
+- **Goals / lens** (per agent, *the standing mandate*): files under
+  `agent_branch/goals/` — `_shared.md` (principles + scope/safety/output rules every
+  agent obeys) plus a per-agent lens (`reliability.md`, `coverage.md`,
+  `capability.md`, …). `coding_worker` loads `_shared` + its assigned lens
+  (`WORKER_GOALS`) into the prompt. Different lenses → divergent diffs → more varied
+  survivors.
+
+Both are protected by construction: the manifest is hash-verified and read-only
+mounted; the goals files live under `agent_branch/` (forbidden + SUPERVISION layer),
+so a worker diff that tries to rewrite the mandate it's held to is **killed at the
+static gate, high-risk**, before evaluation. `coding_worker` also gathers code
+context (the target file + extra context files + a bounded repo map) so the model
+can make an informed change, and emits the complete target file (v1: one-shot,
+single file).
 
 ### 3.8 Milestones
 
@@ -419,12 +443,16 @@ symlinks recreated but never followed), and diffs that with hardened flags
 - **M2.5 — catch sincere failure:** a deepened proof test catches honest
   wrongness, not just sabotage (the reaper is only as strong as the proof's
   discriminating power). ✅
-- **M3 — partially landed:** the **Track B → Track A bridge is done** —
+- **M3 — partially landed:** (1) the **Track B → Track A bridge is done** —
   `proposal_bridge.py` turns ranked survivors into `ProposalSource.AGENT_BRANCH`
-  proposals that flow into the GUI Proposals tab for human review (see §3.6).
-  Still **deferred:** LLM intent judge (`eval_layer2` is a stub), reuse of the
-  20-tool agentic controller, a real deps image, and an actual (still human-gated)
-  merge path that applies an approved proposal's diff to main.
+  proposals that flow into the GUI Proposals tab for human review (see §3.6); (2)
+  the **general objective-driven worker is done** — `coding_worker.py` takes an
+  arbitrary `manifest.objective` + a per-agent lens + code context and makes a
+  bounded change (see §3.7.1). Still **deferred:** an **autonomous run loop** (a
+  runner/scheduler + objective source that drives real coding-worker portfolios
+  against the real repo), the LLM intent judge (`eval_layer2` is a stub), a real
+  deps image, and an actual (still human-gated) merge path that applies an approved
+  proposal's diff to main.
 
 ### 3.9 How to run
 

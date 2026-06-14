@@ -62,6 +62,16 @@ def _is_test_file(path: str) -> bool:
     return base.endswith(".py") and (base.startswith("test_") or base.endswith("_test.py"))
 
 
+def worker_env_for(manifest: BranchManifest, worker_env: Optional[Dict[str, str]]) -> Dict[str, str]:
+    """The environment handed to the worker container. The worker's objective is
+    ALWAYS the manifest's objective (a worker can never be pointed at a goal the
+    supervisor didn't authorize), surfaced as WORKER_OBJECTIVE. Explicit
+    ``worker_env`` still wins (tests / per-worker overrides set before this)."""
+    env = dict(worker_env or {})
+    env.setdefault("WORKER_OBJECTIVE", manifest.objective)
+    return env
+
+
 class BranchReport(BaseModel):
     branch_id: str
     objective: str
@@ -114,7 +124,7 @@ class Supervisor:
         keep_run_dir: bool = False,
     ) -> BranchReport:
         manifest.assert_intact()
-        config = SandboxConfig(network=network, env=worker_env or {})
+        config = SandboxConfig(network=network, env=worker_env_for(manifest, worker_env))
         if network == NetworkMode.LLM_UDS and proxy is not None:
             config.proxy_uds_host = proxy.uds_path
 

@@ -73,6 +73,19 @@ def test_legit_rename_still_parses_both_sides():
     assert "sandbox/a.py" in touched and "sandbox/b.py" in touched
 
 
+# -- self-redirect: a worker can't rewrite its own mandate --------------------
+
+def test_editing_agent_goals_file_is_killed_high_risk():
+    # Goals files live under agent_branch/ (forbidden + high-risk), so any diff
+    # touching one is killed at the static gate, high-risk, before evaluation —
+    # a worker can never rewrite the mandate it's being held to.
+    for path in ["agent_branch/goals/reliability.md", "agent_branch/goals/_shared.md"]:
+        d = (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+             "@@ -1 +1 @@\n-old\n+evil\n")
+        r = run_static_gate(d, _m())
+        assert r.killed and r.high_risk and GateFlag.SAFETY_TOUCHED in r.flags, path
+
+
 # -- pytest-config tamper: every file pytest reads config from is watched -----
 
 def test_pytest_config_files_are_high_risk_config_tamper():
