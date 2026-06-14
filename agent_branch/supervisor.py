@@ -121,6 +121,7 @@ class Supervisor:
         worker_env: Optional[Dict[str, str]] = None,
         mount_synthetic_chroma: bool = True,
         sandbox_test_cmd: Optional[List[str]] = None,
+        eval_image: Optional[str] = None,
         keep_run_dir: bool = False,
     ) -> BranchReport:
         manifest.assert_intact()
@@ -176,6 +177,9 @@ class Supervisor:
                     branch_test_files=branch_test_files or None,
                     # per-branch name so concurrent portfolio evals don't collide
                     container_name=f"agentbranch-eval-{manifest.branch_id}",
+                    # deps-carrying eval image (proof imports real modules); the
+                    # worker image stays deps-free. None -> default bare image.
+                    **({"image": eval_image} if eval_image else {}),
                 )
                 intent = eval_layer2.judge_intent(diff, manifest)
                 if sandbox_eval.killed:

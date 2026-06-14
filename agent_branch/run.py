@@ -127,6 +127,51 @@ def _csv(s: str) -> List[str]:
     return [x.strip() for x in (s or "").split(",") if x.strip()]
 
 
+def live_proposal_store():
+    """A ProposalStore on the live ChromaDB (where the GUI reads). Lazy imports so
+    importing this module stays light."""
+    from config.app_config import CHROMA_PATH
+    from memory.proposal_store import ProposalStore
+    from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+    chroma = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
+    chroma.create_collection("proposals")
+    return ProposalStore(chroma_store=chroma)
+
+
+def run_objective(*, objective: str, target: str, allowed: List[str], proofs: List[str],
+                  lenses: List[str], key: str, source, runs_root,
+                  model: str = DEFAULT_MODEL, temperature: float = 0.4,
+                  upstream: str = DEFAULT_UPSTREAM, token_budget: int = 200_000,
+                  wallclock: int = 300, max_diff_lines: int = 400,
+                  eval_image: Optional[str] = None, store=None):
+    """Build + run ONE objective's lens portfolio; returns (TrialReport, tokens).
+    Per-branch proxies live under runs_root — give a UNIQUE runs_root per objective
+    when batching so sockets/run-dirs don't collide. The caller owns eval_image
+    (ensure_eval_image) and the proposal store."""
+    runs_root = Path(runs_root)
+    runs_root.mkdir(parents=True, exist_ok=True)
+    template = build_template(objective=objective, allowed=allowed, proofs=proofs,
+                              max_diff_lines=max_diff_lines, wallclock=wallclock,
+                              token_budget=token_budget)
+    specs = build_specs(lenses, target=target, model=model, temperature=temperature)
+    proxies = build_proxies(specs, upstream=upstream, key=key, runs_root=runs_root,
+                            token_budget=token_budget)
+    for px in proxies.values():
+        px.start()
+    time.sleep(0.1)
+    try:
+        trial = run_portfolio(
+            template, specs, source_repo=source, runs_root=runs_root,
+            sandbox_test_cmd=None, eval_image=eval_image,
+            proxies=proxies, proposal_store=store,
+            max_concurrency=len(specs), keep_run_dir=True,
+        )
+    finally:
+        for px in proxies.values():
+            px.stop()
+    return trial, sum(px.tokens_spent for px in proxies.values())
+
+
 # --- CLI --------------------------------------------------------------------
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -148,6 +193,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--wallclock", type=int, default=300)
     p.add_argument("--max-diff-lines", type=int, default=400)
     p.add_argument("--runs-root", default=None)
+    p.add_argument("--deps", action="store_true",
+                   help="run the PROOF in the curated 'light' eval image (Daemon's "
+                        "non-ML deps) so it can import config/data-model/graph modules; "
+                        "built on demand (needs network the first time)")
     p.add_argument("--ingest", action="store_true",
                    help="ingest survivors into the live proposal store (GUI tab)")
     args = p.parse_args(argv)
@@ -167,42 +216,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     runs_root = Path(args.runs_root) if args.runs_root else source.parent / "agent_branch_runs"
     runs_root.mkdir(parents=True, exist_ok=True)
 
-    template = build_template(
-        objective=args.objective, allowed=_csv(args.allowed), proofs=_csv(args.proof),
-        max_diff_lines=args.max_diff_lines, wallclock=args.wallclock,
-        token_budget=args.token_budget,
+    eval_image = None
+    if args.deps:
+        from agent_branch.provisioning import ensure_eval_image
+        eval_image = ensure_eval_image()  # builds the light image if absent
+
+    store = live_proposal_store() if args.ingest else None
+
+    trial, spent = run_objective(
+        objective=args.objective, target=args.target, allowed=_csv(args.allowed),
+        proofs=_csv(args.proof), lenses=lenses, key=key, source=source,
+        runs_root=runs_root, model=args.model, temperature=args.temperature,
+        upstream=args.upstream, token_budget=args.token_budget,
+        wallclock=args.wallclock, max_diff_lines=args.max_diff_lines,
+        eval_image=eval_image, store=store,
     )
-    specs = build_specs(lenses, target=args.target, model=args.model,
-                        temperature=args.temperature)
-    proxies = build_proxies(specs, upstream=args.upstream, key=key,
-                            runs_root=runs_root, token_budget=args.token_budget)
-
-    store = None
-    if args.ingest:
-        from config.app_config import CHROMA_PATH
-        from memory.proposal_store import ProposalStore
-        from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
-        chroma = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
-        chroma.create_collection("proposals")
-        store = ProposalStore(chroma_store=chroma)
-
-    for px in proxies.values():
-        px.start()
-    time.sleep(0.1)
-    try:
-        trial = run_portfolio(
-            template, specs,
-            source_repo=source, runs_root=runs_root,
-            sandbox_test_cmd=None,  # default_test_cmd: run each proof as `python <file>`
-            proxies=proxies, proposal_store=store,
-            max_concurrency=len(specs), keep_run_dir=True,
-        )
-    finally:
-        for px in proxies.values():
-            px.stop()
 
     print(trial.render_markdown())
-    spent = sum(px.tokens_spent for px in proxies.values())
     print(f"\nLLM tokens metered (all branches): {spent}")
     if store:
         print("Survivors ingested into the live proposal store — open the GUI "

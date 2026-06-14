@@ -450,12 +450,16 @@ single file).
   arbitrary `manifest.objective` + a per-agent lens + code context and makes a
   bounded change (see §3.7.1); (3) the **real runner is done** — `agent_branch/run.py`
   drives a real coding-worker portfolio (objective + scope + proof + lenses) against
-  the repo, gates/ranks, and ingests survivors (§3.9). Still **deferred:** an
-  **autonomous loop** (a scheduler + objective source that decides what to work on
-  and runs the runner unattended), the LLM intent judge (`eval_layer2` is a stub), a
-  **deps-image** so proofs can exercise the full Daemon (not just stdlib), and an
-  actual (still human-gated) merge path that applies an approved proposal's diff to
-  main.
+  the repo, gates/ranks, and ingests survivors (§3.9); (4) the **curated light
+  eval-image** (`provisioning.ensure_eval_image`) lets a proof import Daemon's
+  non-ML modules (config/data-model/graph/pure-logic) — `run.py --deps`; (5) a
+  **cost-bounded shutdown queue** (§3.10): objectives queued cheaply during sessions
+  are drained by a DETACHED `run_queue` spawned at shutdown — survivors appear in
+  the GUI next session, with zero idle burn (the chosen alternative to a continuous
+  loop). Still **deferred:** a continuous autonomous scheduler, the LLM intent judge
+  (`eval_layer2` is a stub), a FULL deps-image (the light one skips torch/spaCy/
+  CLIP/FAISS/chromadb), and an actual (still human-gated) merge path that applies an
+  approved proposal's diff to main.
 
 ### 3.9 How to run
 
@@ -474,12 +478,48 @@ OPENROUTER_API_KEY=... python -m agent_branch.run \
 ```
 
 The real runner (`agent_branch/run.py`) takes an **objective + allowed scope + a
-committed stdlib PROOF test + lenses**, runs one isolated coding-worker per lens
-(each a per-branch UDS proxy that injects the key), gates + ranks them, and with
-`--ingest` lands survivors in the GUI Proposals tab. The proof gates correctness
-(no proof → nothing survives); because the proof + change run in the bare worker
-image, this currently verifies **self-contained, stdlib-provable** objectives
-(broader changes await the M3 deps-image).
+committed PROOF test + lenses**, runs one isolated coding-worker per lens (each a
+per-branch UDS proxy that injects the key), gates + ranks them, and with `--ingest`
+lands survivors in the GUI Proposals tab. The proof gates correctness (no proof →
+nothing survives). By default the proof runs in the bare image (stdlib-provable
+objectives); add **`--deps`** to run it in the curated light eval image so it can
+import Daemon's config/data-model/graph/pure-logic modules.
+
+### 3.10 Cost-bounded shutdown queue
+
+Rather than a continuous loop (idle token burn), agent_branch runs are **queued
+cheaply during sessions** and **drained detached at shutdown**:
+
+```bash
+# queue an explicit objective + a proof you wrote (no LLM, instant):
+python -m agent_branch.queue add --objective "Add utils/redact.py ..." \
+    --target utils/redact.py --allowed "utils/redact.py" --proof agent_branch/proofs/proof_redact.py
+# ...or "make this committed test pass" — the test IS the proof:
+python -m agent_branch.queue add-test --test agent_branch/proofs/proof_foo.py \
+    --target utils/foo.py --allowed "utils/foo.py" --deps
+python -m agent_branch.queue list
+
+# enable the shutdown drain (default OFF), bounded per shutdown:
+export AGENT_BRANCH_SHUTDOWN_ENABLED=1
+export AGENT_BRANCH_SHUTDOWN_MAX=2        # cap objectives per shutdown
+# ...end a session normally; or drain by hand:
+python -m agent_branch.run_queue --max 2
+```
+
+At shutdown, `shutdown_processor._maybe_spawn_agent_branch_queue()` (env-gated,
+default off) checks the queue + podman + an LLM key, then **spawns a detached
+`run_queue` and returns immediately** — agent_branch runs are minutes-long and must
+never block exit. The detached process drains up to N pending objectives, ingests
+survivors into the live store, marks each entry done/failed (queue saved after
+every entry, crash-safe), and survivors appear in the GUI next session. Cost is
+bounded by the queue + the per-shutdown cap; nothing runs unless something was
+queued.
+
+Validated end-to-end (live `--deps` drain): a queued objective whose proof
+**imported `memory.code_proposal` in the light eval image** drained to 3/3 lens
+survivors, all ingested into the live store — and the bridge's import-based
+classifier correctly flagged them CRITICAL (they import the supervision layer), so
+they require the acknowledge-gate to approve.
 
 ---
 
@@ -509,16 +549,23 @@ image, this currently verifies **self-contained, stdlib-provable** objectives
   depends_on, AGENT-BRANCH provenance badge, safe defaults).
 - `tests/unit/test_reclassify_proposals.py` (5) — re-classify extraction adapter.
 - `tests/agent_branch/test_proposal_bridge.py` (10) — survivor→proposal mapping,
-  risk classification, ranked-survivors-only ingest, dedup.
+  risk classification, ranked-survivors-only ingest, content-dedup.
+- `tests/agent_branch/test_coding_worker.py` — goals/context/prompt assembly +
+  objective wiring; `test_run.py` — runner specs/proxies/temperature/key gating;
+  `test_scoring_divergence.py` — content-similarity metric;
+  `test_eval_image.py` — light-image curation + wiring;
+  `test_objective_queue.py` — queue store + drainer gates + shutdown spawn off-by-default.
 - `tests/agent_branch/` — isolation red-team (slow/podman), diff integrity,
-  red-team hardening, eval gate, manifest, proxy, portfolio, proposal bridge.
+  red-team hardening, eval gate, manifest, proxy, portfolio.
 
 ---
 
 ## 6. What this system is *not* (current limitations)
 
-- **Not autonomous.** Generation is user/session-triggered; nothing merges,
-  commits, or pushes. Track A produces text plans + optional staged code only.
+- **Not a continuous autonomous loop.** Nothing merges, commits, or pushes.
+  agent_branch runs only when invoked (`run.py`) or via the opt-in, **default-off**,
+  cost-bounded shutdown queue (§3.10) — and even then it only *proposes*
+  (human-gated). There is no always-on engine deciding what to work on.
 - **Connection is one-way and review-only.** Track B can ingest its ranked
   survivors into Track A's store (the `proposal_bridge`), so they surface in the
   GUI for human review — but nothing is auto-applied, and the reverse (a Track A

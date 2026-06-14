@@ -1,0 +1,17 @@
+# Curated "light" eval-image dependencies (agent_branch M3).
+#
+# Just enough of Daemon's NON-ML stack for a PROOF test to import config,
+# data models, the knowledge graph, and pure-logic modules — WITHOUT the
+# multi-GB ML/retrieval stack (torch, transformers, sentence-transformers,
+# chromadb, faiss, spaCy, scikit-learn, CLIP, pandas, pyarrow, gradio).
+#
+# Versions pinned to match the project's requirements.txt. This image is used
+# ONLY for the disposable, --network=none PROOF container; the worker image
+# stays deps-free.
+pydantic==2.11.4
+PyYAML==6.0.2
+python-dotenv==1.1.0
+python-dateutil==2.9.0.post0
+numpy==2.3.1
+networkx==3.6.1
+orjson>=3.9.0

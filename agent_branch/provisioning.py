@@ -54,6 +54,11 @@ logger = get_logger("agent_branch.provisioning")
 # /work so the supervisor can ``podman cp`` the clone in. Kept minimal on purpose.
 DEFAULT_BASE_IMAGE = "docker.io/library/python:3.11-slim"
 WORKER_IMAGE = "localhost/agentbranch-worker:m1"
+# Curated "light" eval image — Daemon's non-ML deps, so a PROOF can import
+# config / data models / graph / pure-logic modules (built on demand from
+# eval_image/Containerfile.light). The worker image stays deps-free.
+EVAL_IMAGE_LIGHT = "localhost/agentbranch-eval-light:m3"
+_EVAL_IMAGE_DIR = Path(__file__).parent / "eval_image"
 DEFAULT_IMAGE = WORKER_IMAGE
 PODMAN = "podman"
 
@@ -243,6 +248,29 @@ def ensure_worker_image(base: str = DEFAULT_BASE_IMAGE, image: str = WORKER_IMAG
         logger.info("built worker image %s from %s", image, base)
     finally:
         shutil.rmtree(ctx, ignore_errors=True)
+    return image
+
+
+def ensure_eval_image(image: str = EVAL_IMAGE_LIGHT, *,
+                      containerfile: str = "Containerfile.light",
+                      timeout: float = 1800) -> str:
+    """Build the curated 'light' eval image (Daemon's non-ML deps) if absent, so a
+    PROOF test can import config / data-model / graph / pure-logic modules. Used
+    ONLY for the disposable proof container — the worker image stays deps-free.
+
+    Unlike ensure_worker_image, the BUILD needs network (pip install); the eval RUN
+    that later uses this image still runs --network=none. Idempotent."""
+    if _run([PODMAN, "image", "exists", image]).returncode == 0:
+        return image
+    cf = _EVAL_IMAGE_DIR / containerfile
+    if not cf.exists():
+        raise FileNotFoundError(f"eval Containerfile not found: {cf}")
+    logger.info("building eval image %s from %s (pip install — needs network)...", image, cf)
+    proc = _run([PODMAN, "build", "-t", image, "-f", str(cf), str(_EVAL_IMAGE_DIR)],
+                timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(f"eval image build failed:\n{(proc.stderr or '')[-2000:]}")
+    logger.info("built eval image %s", image)
     return image
 
 

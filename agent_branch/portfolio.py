@@ -65,6 +65,7 @@ def run_portfolio(
     runs_root: str | Path,
     trusted_repo: Optional[str | Path] = None,
     sandbox_test_cmd: Optional[List[str]] = None,
+    eval_image: Optional[str] = None,
     max_concurrency: int = 3,
     keep_run_dir: bool = False,
     proxies: Optional[Dict[str, object]] = None,  # branch_id -> LLMProxy (demo only)
@@ -85,7 +86,8 @@ def run_portfolio(
             manifest, Path(spec.worker_script), strategy=spec.strategy,
             worker_env=spec.worker_env, network=spec.network,
             proxy=proxies.get(spec.branch_id),
-            sandbox_test_cmd=sandbox_test_cmd, keep_run_dir=keep_run_dir,
+            sandbox_test_cmd=sandbox_test_cmd, eval_image=eval_image,
+            keep_run_dir=keep_run_dir,
         )
 
     with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as ex:
