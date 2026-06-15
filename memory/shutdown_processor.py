@@ -270,10 +270,65 @@ class ShutdownProcessor:
             # Dedup runs last after all writes complete.
             await self._run_cross_collection_dedup()
 
+            # Fire-and-forget: spawn detached agent_branch work (queued objectives
+            # and/or goal-driven). NEVER blocks shutdown (agent_branch is minutes-long).
+            self._maybe_spawn_agent_branch()
+
             logger.info("[Shutdown] Memory processing complete")
 
         except Exception as e:
             logger.error(f"Shutdown processing error: {e}")
+
+    def _maybe_spawn_agent_branch(self) -> None:
+        """If AGENT_BRANCH_SHUTDOWN_ENABLED, fire-and-forget DETACHED agent_branch
+        work and return immediately — agent_branch runs are minutes-long (clones +
+        containers + LLM) and must NEVER block shutdown. Two opt-in modes, both
+        default OFF:
+          - the objective QUEUE (explicit objectives) — runs only if non-empty.
+          - GOAL-DRIVEN (AGENT_BRANCH_SHUTDOWN_GOALS): each lens derives its OWN
+            objective from its goals + GOALS.md, implements + regression-gates it.
+        Both ingest survivors into the proposal store for review next session.
+        Requires podman + an LLM key; otherwise logs and skips. Cost is bounded
+        (queue cap / N lenses) and nothing runs unless explicitly enabled."""
+        import os
+        if not os.getenv("AGENT_BRANCH_SHUTDOWN_ENABLED"):
+            return
+        try:
+            import shutil
+            if shutil.which("podman") is None:
+                logger.info("[Shutdown] agent_branch: podman unavailable, skipping")
+                return
+            if not (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")):
+                logger.info("[Shutdown] agent_branch: no LLM key, skipping")
+                return
+            import subprocess
+            import sys
+            from pathlib import Path
+            Path("logs").mkdir(exist_ok=True)
+
+            def _spawn(argv, logname, desc):
+                log = open(f"logs/{logname}", "a", encoding="utf-8")  # noqa: SIM115
+                subprocess.Popen(  # noqa: S603 — fixed argv, detached, never awaited
+                    [sys.executable, "-m", *argv],
+                    stdout=log, stderr=log, start_new_session=True)
+                logger.info("[Shutdown] spawned detached %s; survivors appear in the "
+                            "Proposals tab next session", desc)
+
+            # explicit objective queue (runs only if something was queued)
+            from agent_branch.queue import ObjectiveQueue
+            if ObjectiveQueue.load().pending():
+                m = os.getenv("AGENT_BRANCH_SHUTDOWN_MAX", "2")
+                _spawn(["agent_branch.run_queue", "--max", str(m)],
+                       "agent_branch_queue.log", f"agent_branch queue run (max={m})")
+
+            # goal-driven: each lens derives + runs its own objective from its goals
+            if os.getenv("AGENT_BRANCH_SHUTDOWN_GOALS"):
+                lenses = os.getenv("AGENT_BRANCH_SHUTDOWN_LENSES",
+                                   "reliability,coverage,capability")
+                _spawn(["agent_branch.goal_runner", "--lenses", lenses],
+                       "agent_branch_goals.log", f"goal-driven run (lenses={lenses})")
+        except Exception as e:  # noqa: BLE001 — must never block shutdown
+            logger.warning("[Shutdown] agent_branch spawn failed: %s", e)
 
     async def _generate_block_summaries(
         self, non_summ, selected_blocks, N,

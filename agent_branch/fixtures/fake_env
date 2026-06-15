@@ -1,0 +1,6 @@
+# FAKE fixture — contains NO real secret.
+# Mounted read-only so a worker probing for credentials finds only this,
+# never a real key. The values are deliberately obvious placeholders.
+OPENROUTER_API_KEY=FAKE-placeholder-not-a-real-key-000000000000
+TAVILY_API_KEY=FAKE-placeholder-not-a-real-key-000000000000
+GOOGLE_CLIENT_SECRET=FAKE-placeholder-not-a-real-key-000000000000

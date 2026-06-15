@@ -1,0 +1,10 @@
+# Curated "light" eval image for agent_branch proofs (M3).
+# Daemon's non-ML deps only — so a PROOF can import config / data models / graph /
+# pure-logic modules. Built on demand by provisioning.ensure_eval_image().
+# The build needs network (pip); the eval RUN that uses this image stays
+# --network=none (the proof executes against a trusted checkout, isolated).
+FROM docker.io/library/python:3.11-slim
+RUN mkdir -p /work
+COPY requirements-light.txt /tmp/requirements-light.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-light.txt
+WORKDIR /work

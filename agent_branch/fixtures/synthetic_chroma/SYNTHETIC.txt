@@ -1,0 +1,6 @@
+This directory is a SYNTHETIC stand-in for a Chroma store.
+
+It exists so a worker that needs "memory" sees only fabricated, non-sensitive
+data. The real production collections (e.g. data/chroma_db_v4, the protected
+`conversations`/`wiki_knowledge`/`obsidian_notes` collections) are NEVER mounted
+into a worker container — red-team test #2 asserts their absence.
