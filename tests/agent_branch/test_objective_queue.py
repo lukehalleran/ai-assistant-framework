@@ -86,5 +86,40 @@ def test_shutdown_spawn_disabled_by_default(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: called.append(a))
     from memory.shutdown_processor import ShutdownProcessor
     sp = object.__new__(ShutdownProcessor)   # no heavy __init__ needed
-    sp._maybe_spawn_agent_branch_queue()
+    sp._maybe_spawn_agent_branch()
     assert called == []   # default off -> never spawns
+
+
+def test_shutdown_goal_driven_needs_its_own_flag(monkeypatch):
+    # enabled + podman + key + empty queue, but no GOALS flag -> nothing spawns
+    monkeypatch.setenv("AGENT_BRANCH_SHUTDOWN_ENABLED", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("AGENT_BRANCH_SHUTDOWN_GOALS", raising=False)
+    import shutil, subprocess
+    import agent_branch.queue as q
+    monkeypatch.setattr(shutil, "which", lambda _x: "/usr/bin/podman")
+    monkeypatch.setattr(q.ObjectiveQueue, "load",
+                        classmethod(lambda cls, *a, **k: q.ObjectiveQueue()))  # empty
+    spawned = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **k: spawned.append(argv))
+    from memory.shutdown_processor import ShutdownProcessor
+    object.__new__(ShutdownProcessor)._maybe_spawn_agent_branch()
+    assert spawned == []   # empty queue + no GOALS flag -> nothing runs
+
+
+def test_shutdown_goal_driven_spawns_goal_runner_when_enabled(monkeypatch):
+    monkeypatch.setenv("AGENT_BRANCH_SHUTDOWN_ENABLED", "1")
+    monkeypatch.setenv("AGENT_BRANCH_SHUTDOWN_GOALS", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    import shutil, subprocess
+    import agent_branch.queue as q
+    monkeypatch.setattr(shutil, "which", lambda _x: "/usr/bin/podman")
+    monkeypatch.setattr(q.ObjectiveQueue, "load",
+                        classmethod(lambda cls, *a, **k: q.ObjectiveQueue()))  # empty queue
+    spawned = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **k: spawned.append(argv))
+    from memory.shutdown_processor import ShutdownProcessor
+    object.__new__(ShutdownProcessor)._maybe_spawn_agent_branch()
+    flat = " ".join(" ".join(a) for a in spawned)
+    assert "agent_branch.goal_runner" in flat        # goal-driven fired
+    assert "agent_branch.run_queue" not in flat       # queue empty -> not fired

@@ -455,11 +455,13 @@ single file).
   non-ML modules (config/data-model/graph/pure-logic) — `run.py --deps`; (5) a
   **cost-bounded shutdown queue** (§3.10): objectives queued cheaply during sessions
   are drained by a DETACHED `run_queue` spawned at shutdown — survivors appear in
-  the GUI next session, with zero idle burn (the chosen alternative to a continuous
-  loop). Still **deferred:** a continuous autonomous scheduler, the LLM intent judge
-  (`eval_layer2` is a stub), a FULL deps-image (the light one skips torch/spaCy/
-  CLIP/FAISS/chromadb), and an actual (still human-gated) merge path that applies an
-  approved proposal's diff to main.
+  the GUI next session, with zero idle burn; (6) **goal-driven proposal mode**
+  (§3.11): each lens DERIVES its own objective from its goals + GOALS.md (like the
+  self-proposer, but producing regression-checked code), so the agents pick their
+  own varied work — also runnable at shutdown. Still **deferred:** a continuous
+  always-on scheduler, the LLM intent judge (`eval_layer2` is a stub), a FULL
+  deps-image (the light one skips torch/spaCy/CLIP/FAISS/chromadb), and an actual
+  (still human-gated) merge path that applies an approved proposal's diff to main.
 
 ### 3.9 How to run
 
@@ -521,6 +523,37 @@ survivors, all ingested into the live store — and the bridge's import-based
 classifier correctly flagged them CRITICAL (they import the supervision layer), so
 they require the acknowledge-gate to approve.
 
+### 3.11 Goal-driven proposal mode
+
+The runner/queue need a hand-written objective. **Goal-driven mode**
+(`agent_branch/goal_runner.py`) lets the agents pick their own work — each lens
+behaves like the self-proposer (`GoalDirectedGenerator` reads `GOALS.md` and
+brainstorms aligned ideas) but produces real, regression-checked code:
+
+1. **Derive** — each lens runs the self-proposer with its goals file as the
+   standing mandate → one bounded, **code-targeted** objective (`derive_objective`).
+   Only safe code areas are allowed (`utils/`/`knowledge/`/`memory/`/`core/`/
+   `processing/`/`models/`), never tests/config/safety/supervision/docs.
+2. **Implement** — one isolated coding-worker per derived objective.
+3. **Gate** — the safety static gate always applies; the correctness bar is
+   **regression**: an auto-generated proof that the target module imports cleanly in
+   the deps-image (catches syntax/broken-import garbage) — no hand-written test,
+   because *you* are the final reviewer.
+4. **Ingest** — survivors become proposals in the GUI.
+
+```bash
+python -m agent_branch.goal_runner --lenses reliability,coverage,capability
+# or at shutdown (opt-in, default off; runs each session-end):
+export AGENT_BRANCH_SHUTDOWN_ENABLED=1 AGENT_BRANCH_SHUTDOWN_GOALS=1
+```
+
+Validated live: the three lenses derived **different, on-lens** objectives —
+reliability → an external-API **circuit breaker**, coverage → a **synthesis
+re-enablement gate** (matching a real `GOALS.md` item), capability → an arXiv
+corpus loader (killed for over-building past `max_diff_lines`). Two survived and
+landed in the store. This is the "run a few sessions → varied, agent-chosen
+proposals appear" behavior, with cost bounded by N lenses per shutdown.
+
 ---
 
 ## 4. Consolidated threat model
@@ -536,6 +569,7 @@ they require the acknowledge-gate to approve.
 | Worker runs zero proof tests for a free pass | No proof tests → unprovable → killed | `eval_sandboxed.py` |
 | Worker exhausts/escapes the LLM budget or key | Tamper-proof proxy metering, path/host allowlist, key held supervisor-side | `llm_proxy.py` |
 | Manifest tamper | Frozen + SHA-256 verified every pass | `manifest.py` |
+| Goal-driven agent picks unsafe work | Derived objectives restricted to safe code areas; the static gate still kills any forbidden touch | `goal_runner.acceptable_target` + `eval_static.py` |
 | Auto-merge / push | There is no merge or push path anywhere | by construction |
 
 ---
@@ -554,7 +588,8 @@ they require the acknowledge-gate to approve.
   objective wiring; `test_run.py` — runner specs/proxies/temperature/key gating;
   `test_scoring_divergence.py` — content-similarity metric;
   `test_eval_image.py` — light-image curation + wiring;
-  `test_objective_queue.py` — queue store + drainer gates + shutdown spawn off-by-default.
+  `test_objective_queue.py` — queue store + drainer gates + shutdown spawn modes
+  off-by-default; `test_goal_runner.py` — target safety + auto-proof + derivation.
 - `tests/agent_branch/` — isolation red-team (slow/podman), diff integrity,
   red-team hardening, eval gate, manifest, proxy, portfolio.
 
@@ -563,9 +598,11 @@ they require the acknowledge-gate to approve.
 ## 6. What this system is *not* (current limitations)
 
 - **Not a continuous autonomous loop.** Nothing merges, commits, or pushes.
-  agent_branch runs only when invoked (`run.py`) or via the opt-in, **default-off**,
-  cost-bounded shutdown queue (§3.10) — and even then it only *proposes*
-  (human-gated). There is no always-on engine deciding what to work on.
+  agent_branch runs only when invoked (`run.py` / `goal_runner.py`) or via the
+  opt-in, **default-off** shutdown trigger (queue and/or goal-driven, §3.10–3.11) —
+  and even then it only *proposes* (human-gated). Goal-driven mode does decide what
+  to work on, but only per-invocation/per-shutdown and cost-bounded by N lenses —
+  there is no always-on scheduler.
 - **Connection is one-way and review-only.** Track B can ingest its ranked
   survivors into Track A's store (the `proposal_bridge`), so they surface in the
   GUI for human review — but nothing is auto-applied, and the reverse (a Track A
