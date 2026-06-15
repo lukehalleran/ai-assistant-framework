@@ -25,6 +25,11 @@ Module Contract
     proposals/questions.
   - A clause must mention an action *kind* keyword to be considered at all, which
     keeps generic prose ("note that you have a deadline") from matching.
+  - Completion detection also excludes THIRD-/SECOND-PERSON narration: a clause
+    where the action verb is governed by a non-assistant subject ("He emailed his
+    counselor", "you saved your note") is describing someone else's action, not the
+    assistant claiming it acted, so it is not a self-claim. A first-person marker
+    ("I saved …", "we created …") overrides the exclusion.
 - Side effects: NONE. This module is pure detection + classification. Actually
   executing or repairing an action is the caller's responsibility.
 - Dependencies: stdlib re + pydantic. No LLM, no I/O.
@@ -149,9 +154,56 @@ _COMPLETION_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(?:is|has been|have been|'?s)\s+(?:now\s+)?(?:saved|created|added|stored|sent|emailed|scheduled|recorded|logged|written)\b", re.IGNORECASE),
 ]
 
+# A completion verb governed by an explicit non-assistant subject ("he emailed",
+# "she sent", "they created", "you saved") is narration about someone else's
+# action — not the assistant claiming IT acted. The optional contraction covers
+# "he's"/"you've"/"they'll"; up to two intervening words absorb adverbs ("they
+# just created"). Note: \byou\b does NOT match the possessive "your" (no boundary
+# before the trailing "r"), so "added that to your calendar" is unaffected.
+_OTHER_SUBJECT_CLAIM = re.compile(
+    r"\b(?:he|she|they|you)(?:'(?:s|d|ve|ll|re))?\s+(?:\w+\s+){0,2}?"
+    r"(?:e-?mailed|e-?mails|e-?mailing|"
+    r"sent|sends|sending|"
+    r"saved|saves|saving|"
+    r"stored|stores|storing|"
+    r"created|creates|creating|"
+    r"made|makes|making|"
+    r"wrote|writes|writing|written|"
+    r"added|adds|adding|"
+    r"recorded|records|recording|"
+    r"logged|logs|logging|"
+    r"scheduled|schedules|scheduling|"
+    r"jotted|jots|jotting|"
+    r"noted|notes|noting|"
+    r"dropped|drops|dropping|"
+    r"texted|texts|texting|"
+    r"messaged|messages|messaging|"
+    r"put|puts|putting)\b",
+    re.IGNORECASE,
+)
+
+# First-person self-claim marker. If present anywhere in the clause, the assistant
+# IS asserting its own action even when a third party is also mentioned, so the
+# third-person exclusion above must not suppress it.
+_FIRST_PERSON_CLAIM = re.compile(r"\b(?:i|we)(?:'(?:ve|ll|d|m|re))?\b", re.IGNORECASE)
+
 # Sentence splitter — split on . ! ? and newlines ONLY. Deliberately NOT on
 # em-dashes, so "Done — saving the note" stays a single clause with verb + kind.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _is_third_party_narration(clause: str) -> bool:
+    """True when a completion verb is driven by a non-assistant subject.
+
+    The guard exists to catch the *assistant* confabulating that *it* performed an
+    action. "He emailed his counselor" / "you saved your note" narrate a third or
+    second party's action and must not be read as an assistant self-claim. A
+    first-person marker anywhere in the clause overrides this (the assistant is
+    then asserting its own action, e.g. "I saved it after you emailed me").
+    """
+    if _FIRST_PERSON_CLAIM.search(clause):
+        return False
+    return bool(_OTHER_SUBJECT_CLAIM.search(clause))
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -227,6 +279,8 @@ def detect_completion_claims(text: str) -> list[DetectedAction]:
             continue
         if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
             continue  # it's an offer, not a claim
+        if _is_third_party_narration(sent):
+            continue  # narrates someone else's action, not an assistant self-claim
         if any(p.search(sent) for p in _COMPLETION_PATTERNS):
             out.append(
                 DetectedAction(

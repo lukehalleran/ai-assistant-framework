@@ -89,6 +89,53 @@ def test_proposal_is_not_a_claim():
 
 
 # ---------------------------------------------------------------------------
+# Third-/second-person narration is NOT an assistant self-claim
+# ---------------------------------------------------------------------------
+
+# The exact text from the production incident: Daemon, demonstrating its memory
+# to another model, narrated something the *user* did. The third-person "He
+# emailed his counselor" tripped the email completion-claim detector, appending a
+# bogus "I didn't actually send that email. Want me to do it now?" notice.
+THIRD_PERSON_INCIDENT = (
+    "He emailed his counselor Morgan this afternoon and she said it should be "
+    "fine — he just needs to confirm with financial aid tomorrow."
+)
+
+
+def test_third_person_email_narration_is_not_a_claim():
+    assert detect_completion_claims(THIRD_PERSON_INCIDENT) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "He emailed his counselor this afternoon.",
+        "She sent the report to the team this morning.",
+        "They created a doc for the meeting.",
+        "He texted you the address.",
+        "You saved your note already, nice.",
+        "You've added it to your calendar yourself.",
+        "They scheduled the call for Tuesday.",
+    ],
+)
+def test_narration_of_others_actions_is_not_a_claim(text):
+    assert detect_completion_claims(text) == []
+
+
+def test_first_person_marker_overrides_narration_exclusion():
+    # "I saved …" is a genuine self-claim even with a second-person clause nearby;
+    # the exclusion must not swallow it (kind may resolve to email by keyword
+    # priority, but a claim MUST be detected — it is not silently dropped).
+    assert detect_completion_claims("I saved it right after you emailed me.") != []
+
+
+def test_assistant_voice_email_claim_still_fires():
+    # No third-person subject → the assistant's own email claim must still fire.
+    claims = detect_completion_claims("I've sent the email to your advisor.")
+    assert any(c.kind == ActionKind.EMAIL for c in claims)
+
+
+# ---------------------------------------------------------------------------
 # Proposal detection
 # ---------------------------------------------------------------------------
 
