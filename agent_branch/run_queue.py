@@ -31,6 +31,7 @@ from agent_branch.run import (
     api_key,
     live_proposal_store,
     run_objective,
+    wait_for_daemon_idle,
 )
 from utils.logging_utils import get_logger
 
@@ -51,6 +52,10 @@ def drain(*, queue_path: str | Path = DEFAULT_QUEUE_PATH, max_items: int = 2,
     pending = q.pending()[:max(0, max_items)]
     if not pending:
         logger.info("run_queue: nothing pending")
+        return 0
+    # Don't overlap the app's memory footprint (OOM hazard on a tight box).
+    if not wait_for_daemon_idle():
+        logger.warning("run_queue: main.py still running after wait — refusing")
         return 0
 
     source = Path(source).resolve()

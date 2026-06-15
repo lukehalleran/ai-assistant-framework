@@ -74,3 +74,15 @@ def test_main_without_key_fails_fast(monkeypatch):
     rc = run.main(["--objective", "o", "--target", "utils/x.py",
                    "--allowed", "utils/x.py", "--proof", "tests/proof_x.py"])
     assert rc == 2                                   # no podman / proxy touched
+
+
+# -- running-Daemon guard (don't overlap main.py's memory on a tight box) ------
+
+def test_wait_for_daemon_idle_refuses_if_still_running(monkeypatch):
+    monkeypatch.setattr(run, "daemon_is_running", lambda: True)
+    assert run.wait_for_daemon_idle(timeout=0, poll=0) is False
+
+
+def test_wait_for_daemon_idle_ok_when_idle(monkeypatch):
+    monkeypatch.setattr(run, "daemon_is_running", lambda: False)
+    assert run.wait_for_daemon_idle(timeout=0, poll=0) is True

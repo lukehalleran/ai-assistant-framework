@@ -75,3 +75,12 @@ async def test_derive_objective_none_when_no_safe_code_target(monkeypatch):
     ]))
     obj = await gr.derive_objective("lens", repo=".", model_manager=object())
     assert obj is None
+
+
+@pytest.mark.asyncio
+async def test_goal_run_refuses_while_daemon_running(monkeypatch):
+    # The running-Daemon guard must short-circuit before any heavy work (OOM safety).
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(gr, "wait_for_daemon_idle", lambda *a, **k: False)
+    out = await gr.run_goal_driven(["reliability"], source=".")
+    assert out == []

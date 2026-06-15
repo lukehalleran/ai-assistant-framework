@@ -32,12 +32,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from agent_branch.run import DEFAULT_MODEL, api_key, live_proposal_store, run_objective
+from agent_branch.run import (
+    DEFAULT_MODEL,
+    api_key,
+    live_proposal_store,
+    run_objective,
+    wait_for_daemon_idle,
+)
 from utils.logging_utils import get_logger
 
 logger = get_logger("agent_branch.goal_runner")
@@ -48,6 +55,31 @@ _ALLOWED_TARGET_PREFIXES = ("utils/", "knowledge/", "memory/", "core/",
                             "processing/", "models/")
 # ...and never these (safety / supervision / tests / config / docs).
 _FORBIDDEN_TARGET_PREFIXES = ("tests/", "config/", "agent_branch/", "scripts/", "docs/")
+
+# Derivation uses a MINIMAL async chat client (below), not the heavy ModelManager
+# (torch + embeddings) — so goal_runner stays light enough to run on a tight box.
+DERIVE_MODEL = os.getenv("AGENT_BRANCH_DERIVE_MODEL", "anthropic/claude-haiku-4.5")
+DERIVE_BASE = os.getenv("AGENT_BRANCH_DERIVE_BASE", "https://openrouter.ai/api/v1")
+
+
+class _LightLLM:
+    """Minimal async chat client (no torch/embeddings) — just the generate_once()
+    GoalDirectedGenerator calls. Avoids loading the heavy ModelManager for the
+    derivation step (an OOM hazard alongside main.py)."""
+
+    def __init__(self, *, key: str, base_url: str = DERIVE_BASE):
+        from openai import AsyncOpenAI
+        self._client = AsyncOpenAI(api_key=key, base_url=base_url)
+
+    async def generate_once(self, prompt: str, *, model_name: Optional[str] = None,
+                            system_prompt: str = "", max_tokens: int = 4000,
+                            temperature: float = 0.7, **_) -> str:
+        msgs = [{"role": "system", "content": system_prompt}] if system_prompt else []
+        msgs.append({"role": "user", "content": prompt})
+        resp = await self._client.chat.completions.create(
+            model=model_name or DERIVE_MODEL, messages=msgs,
+            max_tokens=max_tokens, temperature=temperature)
+        return resp.choices[0].message.content or ""
 
 
 # --- pure helpers -----------------------------------------------------------
@@ -90,7 +122,8 @@ async def derive_objective(lens_goals: str, *, repo: str, model_manager,
     self-proposer with the lens as its standing mandate. Returns
     {objective, target, allowed} or None if nothing code-targeted came back."""
     from knowledge.proposal_generator import GoalDirectedGenerator
-    gen = GoalDirectedGenerator(model_manager=model_manager, repo_path=repo, max_proposals=5)
+    gen = GoalDirectedGenerator(model_manager=model_manager, repo_path=repo,
+                                model_alias=DERIVE_MODEL, max_proposals=5)
     ctx = f"## YOUR LENS (standing mandate — let it shape what you propose)\n{lens_goals}"
     if extra:
         ctx += f"\n\n{extra}"
@@ -115,9 +148,14 @@ async def run_goal_driven(lenses: List[str], *, source: str = ".",
     if not key:
         logger.warning("goal_runner: no LLM key — skipping")
         return []
+    # Never overlap the app's memory footprint: wait for main.py to exit, else
+    # refuse (the OOM hazard on a tight box).
+    if not wait_for_daemon_idle():
+        logger.warning("goal_runner: main.py still running after wait — refusing "
+                       "(avoids memory overlap / OOM)")
+        return []
     if model_manager is None:
-        from models.model_manager import ModelManager
-        model_manager = ModelManager()
+        model_manager = _LightLLM(key=key)  # light: no torch/embeddings
 
     from agent_branch.provisioning import ensure_eval_image
     eval_image = ensure_eval_image()  # regression imports the target -> deps image

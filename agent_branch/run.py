@@ -127,6 +127,44 @@ def _csv(s: str) -> List[str]:
     return [x.strip() for x in (s or "").split(",") if x.strip()]
 
 
+def daemon_is_running() -> bool:
+    """True if a ``python main.py`` (the Daemon app) is alive, excluding this
+    process. Stdlib /proc scan (Linux). Used to keep heavy agent_branch runs from
+    overlapping with the app's memory footprint on a tight box."""
+    import os
+    me = os.getpid()
+    try:
+        pids = os.listdir("/proc")
+    except OSError:
+        return False
+    for pid in pids:
+        if not pid.isdigit() or int(pid) == me:
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmd = fh.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except (OSError, IOError):
+            continue
+        if "python" in cmd.lower() and "main.py" in cmd:
+            return True
+    return False
+
+
+def wait_for_daemon_idle(timeout: float = 180, poll: float = 3) -> bool:
+    """Block until no ``python main.py`` is running, so a heavy agent_branch run
+    never overlaps the app on a memory-tight box. Returns True once idle, or False
+    if the app is still up after ``timeout`` (caller should then refuse). Safe in a
+    detached process: at shutdown the app exits within seconds, so this returns
+    quickly; if the user keeps the app open, it refuses instead of OOMing."""
+    import time
+    deadline = time.monotonic() + timeout
+    while daemon_is_running():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll)
+    return True
+
+
 def live_proposal_store():
     """A ProposalStore on the live ChromaDB (where the GUI reads). Lazy imports so
     importing this module stays light."""

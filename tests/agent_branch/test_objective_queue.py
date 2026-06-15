@@ -73,6 +73,15 @@ def test_drain_empty_queue_returns_zero(monkeypatch, tmp_path):
     assert run_queue.drain(queue_path=tmp_path / "empty.json", max_items=1) == 0
 
 
+def test_drain_refuses_while_daemon_running(monkeypatch, tmp_path):
+    # Don't overlap main.py's memory (OOM hazard) — refuse before any heavy work.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(run_queue, "wait_for_daemon_idle", lambda *a, **k: False)
+    qp = tmp_path / "q.json"
+    enqueue("x", target="t", allowed=["t"], proof=["p"], path=qp)
+    assert run_queue.drain(queue_path=qp, max_items=1) == 0
+
+
 def test_run_exposes_reusable_helpers():
     assert callable(run.run_objective) and callable(run.live_proposal_store)
 
@@ -107,7 +116,8 @@ def test_shutdown_goal_driven_needs_its_own_flag(monkeypatch):
     assert spawned == []   # empty queue + no GOALS flag -> nothing runs
 
 
-def test_shutdown_goal_driven_spawns_goal_runner_when_enabled(monkeypatch):
+def test_shutdown_goal_driven_spawns_goal_runner_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)   # the spawn opens logs/ — keep it out of the repo
     monkeypatch.setenv("AGENT_BRANCH_SHUTDOWN_ENABLED", "1")
     monkeypatch.setenv("AGENT_BRANCH_SHUTDOWN_GOALS", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
