@@ -102,6 +102,72 @@ class TestAssignWebIds:
         assert len(ids) == len(set(ids))  # all unique
         assert ids == ["WEB_1", "WEB_2", "WEB_3", "WEB_4"]
 
+    def test_continuation_with_start_index(self):
+        """start_index continues numbering instead of restarting at WEB_1."""
+        r2 = [WebPage(url="https://b.com/1", title="B1", content="C", score=0.8)]
+        numbered, _ = assign_web_ids(
+            r2, existing_url_to_id={"https://a.com/1": "WEB_1"}, start_index=1
+        )
+        assert [n.source_id for n in numbered] == ["WEB_2"]
+
+    def test_continuation_skips_already_numbered_url(self):
+        """A URL already cited in a prior round is skipped (keeps its old id)."""
+        pages = [
+            WebPage(url="https://a.com/1", title="A-again", content="C", score=0.95),  # known
+            WebPage(url="https://c.com/1", title="C1", content="C", score=0.7),         # new
+        ]
+        numbered, source_map = assign_web_ids(
+            pages, existing_url_to_id={"https://a.com/1": "WEB_1"}, start_index=1
+        )
+        assert [n.source_id for n in numbered] == ["WEB_2"]
+        assert numbered[0].title == "C1"
+        assert "WEB_1" not in source_map  # not re-emitted
+
+    def test_default_args_unchanged(self):
+        """No continuation args → legacy WEB_1.. behavior."""
+        numbered, _ = assign_web_ids(
+            [WebPage(url="https://a.com/1", title="A", content="C", score=0.9)]
+        )
+        assert numbered[0].source_id == "WEB_1"
+
+
+class TestMergeWebIdsAcrossRounds:
+    """Regression for the agentic per-round WEB_1 collision: each search round
+    formats only its own pages but shares one accumulated_context, so numbering
+    must continue across rounds (ToolExecutor._merge_web_ids)."""
+
+    def _executor(self):
+        from core.agentic.tools import ToolExecutor
+        te = ToolExecutor.__new__(ToolExecutor)  # bypass heavy __init__
+        te._current_web_source_map = {}
+        return te
+
+    def test_ids_continue_across_rounds(self):
+        te = self._executor()
+        round1 = [
+            WebPage(url="https://aljazeera.com/hormuz", title="Al Jazeera", content="x", score=0.9),
+            WebPage(url="https://nbc.com/hormuz", title="NBC", content="x", score=0.8),
+        ]
+        n1 = te._merge_web_ids(round1)
+        assert [n.source_id for n in n1] == ["WEB_1", "WEB_2"]
+
+        round2 = [WebPage(url="https://skynews.com/uk-pm", title="Sky News", content="x", score=0.7)]
+        n2 = te._merge_web_ids(round2)
+        # The bug: Sky News collided on [WEB_1]. It must now be WEB_3.
+        assert [n.source_id for n in n2] == ["WEB_3"]
+        assert set(te._current_web_source_map) == {"WEB_1", "WEB_2", "WEB_3"}
+        assert te._current_web_source_map["WEB_1"]["title"] == "Al Jazeera"
+        assert te._current_web_source_map["WEB_3"]["title"] == "Sky News"
+
+    def test_duplicate_url_reuses_id(self):
+        te = self._executor()
+        n1 = te._merge_web_ids([WebPage(url="https://a.com/x", title="A", content="c", score=0.9)])
+        assert [n.source_id for n in n1] == ["WEB_1"]
+        # Same URL next round → no new number assigned, map size unchanged.
+        n2 = te._merge_web_ids([WebPage(url="https://a.com/x", title="A", content="c2", score=0.5)])
+        assert n2 == []
+        assert set(te._current_web_source_map) == {"WEB_1"}
+
 
 # ---------------------------------------------------------------------------
 # _is_broad_news_query — positive and negative indicators

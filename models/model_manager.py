@@ -24,6 +24,14 @@ Module Contract
     reasoning separation even for reasoning-capable models. Used as a recovery retry when a model
     (e.g. deepseek-v4) swallows its whole answer into the reasoning channel and returns empty
     visible content — disabling reasoning forces the answer into normal content [NEW 2026-06-14]
+  - Prompt caching (OpenRouter) [NEW 2026-06-26]: _format_messages_with_cache() splits the system
+    prompt at PROMPT_CACHE_BREAKPOINT — the stable prefix (personality+principles+identity, inserted
+    by the orchestrator) carries cache_control:ephemeral; the per-turn volatile tail follows as a
+    second, uncached system block. _strip_cache_breakpoint() removes the marker on every non-cache
+    path so it never reaches the model. supports_prompt_caching() gates this to Anthropic / recent
+    GPT models (the active deepseek-v4 auto-caches server-side, no cache_control). All API paths
+    request OpenRouter usage accounting (extra_body usage.include) + stream_options.include_usage,
+    and call _log_cache_usage() to emit greppable [PromptCache] HIT|WRITE|MISS lines.
 - Dependencies:
   - transformers, sentence-transformers, httpx, environment OPENAI_API_KEY
 - Side effects:
@@ -40,7 +48,7 @@ from utils.logging_utils import log_and_time, get_logger
 # Use the root logger or create a child logger that will inherit handlers
 logger = get_logger("main")
 import os
-from config.app_config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TOP_P, DEFAULT_TOP_K, SYSTEM_PROMPT
+from config.app_config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TOP_P, DEFAULT_TOP_K, SYSTEM_PROMPT, PROMPT_CACHE_BREAKPOINT
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sentence_transformers import SentenceTransformer
 import time
@@ -503,34 +511,118 @@ class ModelManager:
 
         return False
 
+    @staticmethod
+    def _strip_cache_breakpoint(text):
+        """Remove the prompt-cache breakpoint marker from a system prompt.
+
+        Used on every path that does NOT split the prompt into cached/uncached
+        blocks (non-cacheable models, image requests, tool calls, fallbacks), so
+        the marker never reaches the model. No-op when the marker is absent.
+        """
+        if text and PROMPT_CACHE_BREAKPOINT in text:
+            return text.replace(PROMPT_CACHE_BREAKPOINT, "")
+        return text
+
     def _format_messages_with_cache(self, system_prompt, user_prompt):
         """
         Format messages with cache_control breakpoints for supported models.
-        Caches the system prompt (unchanging) but not the user prompt (changes each request).
+
+        The system prompt is split at PROMPT_CACHE_BREAKPOINT: the stable prefix
+        before the marker carries cache_control (cached across turns), and the
+        per-turn volatile tail after the marker is a second system block with NO
+        cache_control (it changes every turn and would otherwise invalidate the
+        whole cached prefix). The user prompt is never cached. When the marker is
+        absent (callers without per-turn appends), the entire system prompt is
+        cached as a single block — backward compatible.
 
         Args:
-            system_prompt: The system prompt to cache
+            system_prompt: The system prompt (optionally containing the marker)
             user_prompt: The user prompt (not cached)
 
         Returns:
             List of message dictionaries with cache_control breakpoints
         """
+        stable, sep, volatile = (system_prompt or "").partition(PROMPT_CACHE_BREAKPOINT)
+        system_content = [
+            {
+                "type": "text",
+                "text": stable,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+        # Per-turn content after the breakpoint — appended uncached so it can
+        # change every turn without busting the cached prefix above.
+        if sep and volatile.strip():
+            system_content.append({
+                "type": "text",
+                "text": volatile
+            })
         return [
             {
                 "role": "system",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"}
-                    }
-                ]
+                "content": system_content
             },
             {
                 "role": "user",
                 "content": user_prompt
             }
         ]
+
+    def _log_cache_usage(self, usage, *, model_name=None, where=""):
+        """Log prompt-cache + token usage from an API response's ``usage`` object.
+
+        Best-effort and fully exception-safe — never raises into the generation
+        path. We talk to Anthropic models through OpenRouter's OpenAI-compatible
+        API, so cache stats can surface under several shapes; this reads all of
+        them: the OpenAI-normalised ``prompt_tokens_details.cached_tokens``, the
+        Anthropic-native passthrough fields (``cache_read_input_tokens`` /
+        ``cache_creation_input_tokens``), and OpenRouter's ``cache_discount``.
+
+        Emits a single greppable ``[PromptCache]`` INFO line per call:
+          - ``HIT``   — tokens were served from cache (cheap read)
+          - ``WRITE`` — tokens were written to cache this turn (~1.25x premium)
+          - ``MISS``  — no cache activity (neither read nor write)
+        """
+        if usage is None:
+            return
+        try:
+            if hasattr(usage, "model_dump"):
+                d = usage.model_dump()
+            elif isinstance(usage, dict):
+                d = usage
+            else:
+                d = {
+                    k: getattr(usage, k)
+                    for k in dir(usage)
+                    if not k.startswith("_") and not callable(getattr(usage, k, None))
+                }
+        except Exception:
+            return
+
+        try:
+            prompt = d.get("prompt_tokens")
+            completion = d.get("completion_tokens")
+            ptd = d.get("prompt_tokens_details") or {}
+            if not isinstance(ptd, dict):
+                ptd = getattr(ptd, "__dict__", {}) or {}
+            cached_read = ptd.get("cached_tokens")
+            # Anthropic-native passthrough (present on some OpenRouter responses)
+            cache_read = d.get("cache_read_input_tokens")
+            cache_creation = d.get("cache_creation_input_tokens")
+            cache_discount = d.get("cache_discount")
+
+            served = next((v for v in (cache_read, cached_read) if v), 0) or 0
+            written = cache_creation or 0
+            status = "HIT" if served else ("WRITE" if written else "MISS")
+
+            logger.info(
+                "[PromptCache] %s model=%s where=%s prompt=%s completion=%s "
+                "cache_read=%s cache_write=%s cache_discount=%s",
+                status, model_name or "?", where or "?", prompt, completion,
+                served, written, cache_discount,
+            )
+        except Exception as e:  # pragma: no cover - diagnostic only
+            logger.debug("[PromptCache] usage parse failed: %s", e)
 
     @log_and_time("Generate with openAI")
     def generate_with_openai(self, prompt, model_name, system_prompt=None, max_tokens=None, temperature=None, top_p=None):
@@ -567,7 +659,7 @@ class ModelManager:
                 )
             else:
                 messages = [
-                    {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
+                    {"role": "system", "content": self._strip_cache_breakpoint(system_prompt or SYSTEM_PROMPT)},
                     {"role": "user", "content": prompt}
                 ]
 
@@ -579,6 +671,15 @@ class ModelManager:
                 temperature=temperature,
                 top_p=top_p,
                 stop=stop_sequences,
+                # Ask OpenRouter to include usage accounting (cost + cache stats)
+                # in the response, so prompt-cache hits are observable.
+                extra_body={"usage": {"include": True}},
+            )
+
+            self._log_cache_usage(
+                getattr(response, "usage", None),
+                model_name=model_name,
+                where="generate_with_openai",
             )
 
             content = response.choices[0].message.content
@@ -781,7 +882,7 @@ class ModelManager:
                     messages = self._format_messages_with_cache(system_prompt, prompt)
                 else:
                     messages = [
-                        {"role": "system", "content": system_prompt},
+                        {"role": "system", "content": self._strip_cache_breakpoint(system_prompt)},
                         {"role": "user", "content": prompt}
                     ]
 
@@ -795,14 +896,23 @@ class ModelManager:
                     stream=False,
                 )
 
+                # Ask OpenRouter for usage accounting so prompt-cache stats
+                # (cached_tokens, cache_discount) appear in the usage object —
+                # without this, caching is invisible even when it happens.
+                create_kwargs["extra_body"] = {"usage": {"include": True}}
+
                 # Request native reasoning separation for supported models
                 # (unless the caller explicitly disabled it for a recovery retry)
                 if self.supports_reasoning(target_model) and not disable_reasoning:
-                    create_kwargs["extra_body"] = {
-                        "reasoning": {"effort": "medium"},
-                    }
+                    create_kwargs["extra_body"]["reasoning"] = {"effort": "medium"}
 
                 response = await self.async_client.chat.completions.create(**create_kwargs)
+
+                self._log_cache_usage(
+                    getattr(response, "usage", None),
+                    model_name=self.api_models[target_model],
+                    where="generate_once",
+                )
 
                 msg = response.choices[0].message
                 content = msg.content
@@ -960,7 +1070,7 @@ class ModelManager:
 
             try:
                 messages = [
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": self._strip_cache_breakpoint(system_prompt)},
                     {"role": "user", "content": prompt}
                 ]
 
@@ -983,10 +1093,11 @@ class ModelManager:
                 # the turn on chain-of-thought ("let me create it…") and never emit a
                 # structured tool_call. Tool selection should be a direct, non-reasoning
                 # decision (mirrors _generate_decision_no_reasoning on the XML path).
+                # Ask OpenRouter for usage accounting (cost + cache stats).
+                request_params["extra_body"] = {"usage": {"include": True}}
+
                 if not tools and self.supports_reasoning(target_model):
-                    request_params["extra_body"] = {
-                        "reasoning": {"effort": "medium"},
-                    }
+                    request_params["extra_body"]["reasoning"] = {"effort": "medium"}
 
                 response = await self.async_client.chat.completions.create(**request_params)
 
@@ -1100,14 +1211,14 @@ class ModelManager:
                         if images:
                             # For now, skip caching when images are present
                             messages = [
-                                {"role": "system", "content": system_prompt_text},
+                                {"role": "system", "content": self._strip_cache_breakpoint(system_prompt_text)},
                                 {"role": "user", "content": user_content}
                             ]
                         else:
                             messages = self._format_messages_with_cache(system_prompt_text, prompt)
                     else:
                         messages = [
-                            {"role": "system", "content": system_prompt_text},
+                            {"role": "system", "content": self._strip_cache_breakpoint(system_prompt_text)},
                             {"role": "user", "content": user_content}
                         ]
 
@@ -1132,6 +1243,9 @@ class ModelManager:
                     top_p=kwargs.get('top_p', DEFAULT_TOP_P),
                     stop=stop_sequences,
                     stream=True,
+                    # Ask the provider to emit a trailing usage chunk so the
+                    # consumer can log prompt-cache stats for the streaming path.
+                    stream_options={"include_usage": True},
                 )
 
                 # Request native reasoning separation for models that support it
@@ -1139,10 +1253,12 @@ class ModelManager:
                 # instead of being mixed into the text response.
                 # Skip when images are present — OpenRouter may not find an endpoint
                 # that supports both extended thinking and image input simultaneously.
+                # Ask OpenRouter for usage accounting so prompt-cache stats are
+                # observable on the streaming (main) path.
+                create_kwargs["extra_body"] = {"usage": {"include": True}}
+
                 if self.supports_reasoning(target_model) and not images and not disable_reasoning:
-                    create_kwargs["extra_body"] = {
-                        "reasoning": {"effort": "medium"},
-                    }
+                    create_kwargs["extra_body"]["reasoning"] = {"effort": "medium"}
                     logger.info(f"[generate_async] Enabled native reasoning for {target_model}")
                 elif disable_reasoning and self.supports_reasoning(target_model):
                     logger.info(f"[generate_async] Native reasoning disabled by caller for {target_model} (recovery retry)")

@@ -135,6 +135,76 @@ def test_assistant_voice_email_claim_still_fires():
     assert any(c.kind == ActionKind.EMAIL for c in claims)
 
 
+# Production incident #2: the USER sent their own email and reported it; Daemon
+# affirmed in passive/second-person ("The email's sent — you caught … you did the
+# thing"). The passive "email's sent" tripped completion pattern #6 and the
+# second-person actor wasn't excluded, firing a bogus "I didn't actually send that
+# email" notice.
+SECOND_PERSON_INCIDENT = (
+    "The email's sent — you caught the address issue and fixed it. "
+    "No bounce back yet is a good sign. Either way, you did the thing you set out to do at 4:30."
+)
+
+
+def test_second_person_passive_email_narration_is_not_a_claim():
+    assert detect_completion_claims(SECOND_PERSON_INCIDENT) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The email's sent — you caught the address issue.",
+        "So the note's saved now, you finally got it done.",
+        "Either way, you did the thing you set out to do.",
+    ],
+)
+def test_second_person_subject_narration_is_not_a_claim(text):
+    assert detect_completion_claims(text) == []
+
+
+def test_object_you_and_possessive_your_remain_self_claims():
+    # "you" as an OBJECT and possessive "your" are NOT second-person narration —
+    # the assistant is still the actor, so these must still fire.
+    assert detect_completion_claims("Sent you the draft via email.") != []
+    assert detect_completion_claims("Saved your note to the file.") != []
+
+
+# Production incident #1: Daemon DRAFTS an email (in the user's first person,
+# fenced by ---). "When I emailed her" inside the draft is the user's past action,
+# not Daemon claiming it sent mail — but it tripped the first-person email pattern.
+DRAFTED_EMAIL = """Here's a draft:
+
+---
+
+**Subject:** Need Disability Services Advisor
+
+Dear ODS Team,
+
+When I emailed her, I received an auto-reply. I've also contacted my TA.
+I can provide medical records or a letter from my clinician.
+
+Thank you,
+Luke
+
+---
+
+I kept it general. Want me to fire it off via email, or you got it from here?"""
+
+
+def test_drafted_email_body_is_not_a_completion_claim():
+    # The fenced draft is the user's voice; its first-person verbs must not be
+    # read as Daemon self-claims.
+    assert detect_completion_claims(DRAFTED_EMAIL) == []
+
+
+def test_first_person_claim_outside_a_draft_fence_still_fires():
+    # A real self-claim that happens to sit after an unrelated --- divider must
+    # NOT be swallowed (unpaired trailing rule → nothing stripped).
+    text = "Here's the summary.\n\n---\n\nI've sent the email to your advisor."
+    claims = detect_completion_claims(text)
+    assert any(c.kind == ActionKind.EMAIL for c in claims)
+
+
 # ---------------------------------------------------------------------------
 # Proposal detection
 # ---------------------------------------------------------------------------

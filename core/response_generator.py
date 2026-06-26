@@ -116,6 +116,8 @@ class ResponseGenerator:
                 buffer = ""
                 _was_reasoning = False  # Track if we were in a reasoning phase
                 _reasoning_seen = False  # Track if any reasoning chunk ever arrived
+                _stream_usage = None  # usage chunk (prompt-cache stats) if include_usage is set
+                _stream_done = False  # set once finish_reason seen; drain trailing usage chunk
                 STOP_MARKERS = {"<|user|>", "<|assistant|>", "<|system|>", "<|end|>", "<|eot_id|>", "<｜end▁of▁sentence｜>"}
                 STREAM_TIMEOUT = 120.0  # 2 minute timeout for streaming (GLM/slower models)
 
@@ -154,6 +156,14 @@ class ResponseGenerator:
                             return
 
                         try:
+                            # Capture prompt-cache/usage stats. With stream_options.include_usage
+                            # the provider emits a trailing chunk carrying usage and empty choices.
+                            _u = getattr(chunk, "usage", None)
+                            if _u:
+                                _stream_usage = _u
+                            if _stream_done:
+                                continue  # content already flushed; only draining usage chunk(s)
+
                             # Check for finish_reason in OpenAI-style chunks (stream end signal)
                             finish_reason = None
                             if hasattr(chunk, "choices") and len(getattr(chunk, "choices", [])) > 0:
@@ -220,7 +230,11 @@ class ResponseGenerator:
                                     clean = _strip_special_tokens(buffer)
                                     if clean.strip():
                                         yield clean.strip()
-                                        return
+                                        # Don't return yet — drain the trailing usage chunk so we
+                                        # can log cache stats; the stream then ends on its own.
+                                        _stream_done = True
+                                        buffer = ""
+                                        continue
                                 # If buffer is empty/whitespace-only, the API returned no content
                                 if first_token_time is None or not buffer.strip():
                                     self.logger.warning(f"[STREAMING] API returned empty response (finish_reason={finish_reason}, empty_chunks={empty_chunk_count})")
@@ -298,6 +312,17 @@ class ResponseGenerator:
                         datetime.fromtimestamp(end_time)
                     )
                     self.logger.info(f"[TIMING] Full response duration: {duration}")
+
+                    # Log prompt-cache stats for the streaming (main) path
+                    if _stream_usage is not None:
+                        try:
+                            self.model_manager._log_cache_usage(
+                                _stream_usage,
+                                model_name=getattr(self.model_manager, "active_model_name", "?"),
+                                where="streaming",
+                            )
+                        except Exception:
+                            pass
 
                 except Exception as e:
                     self.logger.error(f"[STREAMING] Stream error: {e}")

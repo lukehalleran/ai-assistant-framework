@@ -184,9 +184,17 @@ class ShutdownProcessor:
         """Parallelized pipeline [CHANGED 2026-05-19]:
         1) block summaries (source IDs via get_ids_by_timestamp_range),
         Phase A (parallel): session facts, LLM facts, behavioral patterns, procedural skills,
-        Phase B (parallel): proposals, impl tracking, threads, synthesis dreaming, wiki enrichment,
+        Phase B (parallel): proposals, impl tracking, threads, wiki enrichment,
         Phase C (sequential): graph save, category cache, cross-dedup (dry_run only).
-        After summary storage: extract claims → register in ClaimIndex → add staleness metadata"""
+        After summary storage: extract claims → register in ClaimIndex → add staleness metadata
+        NOTE: synthesis dreaming is NO LONGER in Phase B [CHANGED 2026-06-19] — it runs as a
+        standalone step via run_synthesis_dreaming(), driven by main.py under its own
+        SYNTHESIS_DREAM_TIMEOUT_S (240s) budget, outside the shared SHUTDOWN_TASK_TIMEOUT_S (60s)."""
+
+    async def run_synthesis_dreaming():
+        """Standalone shutdown step [NEW 2026-06-19]: three-tier candidate generation + filter.
+        Pulled out of process_shutdown_memory so its slow per-candidate LLM coherence judge
+        isn't cancelled by the 60s reflection/fact budget. Self-gating (config/auto-halt)."""
 
     async def _run_cross_collection_dedup():
         """User mode (CROSS_DEDUP_AUTO_EXECUTE=True): executes deletions automatically.
@@ -2837,6 +2845,43 @@ pytest -m "not benchmark"
 #   Real:  MRR=0.8766, R@1=0.8413, R@3=0.8730, R@topK=1.0000
 #   Combined: MRR=0.8970, R@1=0.8222, R@3=0.9000, R@topK=1.0000
 ```
+
+---
+
+## Prompt Caching (OpenRouter) **[NEW 2026-06-26]**
+
+```python
+# models/model_manager.py — system prompt split into cached prefix + uncached tail
+#
+# orchestrator._build_system_prompt() inserts PROMPT_CACHE_BREAKPOINT after the
+# stable base (personality + principles + identity). _format_messages_with_cache()
+# partitions on it:
+#   system: [ {text: <stable base>, cache_control: ephemeral},   # cached across turns
+#             {text: <per-turn tail: topic/threads/tone/plan>} ] # uncached
+# Per-turn churn no longer invalidates the cached prefix.
+#
+# _strip_cache_breakpoint(text)  → removes the marker on EVERY non-cache path
+#   (non-cacheable models, image requests, tools, fallback, agentic direct-create).
+#   Any NEW code that builds a system message directly MUST call it.
+#
+# Observability: all API paths send OpenRouter usage accounting and log usage:
+#   extra_body={"usage": {"include": True}}          # OpenRouter reports cache stats
+#   stream_options={"include_usage": True}           # streaming usage chunk
+#   _log_cache_usage(usage, model_name=, where=)     # → [PromptCache] line
+
+# Verify caching is actually working:
+#   grep '\[PromptCache\]' daemon_debug*.log
+#   → [PromptCache] HIT|WRITE|MISS model=… where=… cache_read=… cache_write=… cache_discount=…
+```
+
+- **HIT** = served from cache (cheap). **WRITE** = wrote to cache this turn (~1.25x).
+  **MISS** = no cache activity.
+- `supports_prompt_caching()` gates `cache_control` to **Anthropic / recent GPT** models.
+  The active model is **`deepseek-v4`** (config `models.active`), which auto-caches
+  server-side and gets no `cache_control` — explicit caching only fires if you switch
+  the active model to an Anthropic one.
+- Anthropic minimum cacheable prefix is **1024–4096 tokens** (model-dependent); a
+  smaller stable base silently won't cache (`cache_read=0` on repeats).
 
 ---
 

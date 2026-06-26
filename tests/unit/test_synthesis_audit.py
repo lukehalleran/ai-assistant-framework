@@ -467,3 +467,98 @@ class TestFilterStoresCompositeRejects:
         doc_id = sm.store_rejected_for_audit(r)
         assert doc_id
         assert store._docs[doc_id]["metadata"]["status"] == "rejected"
+
+
+# ---------------------------------------------------------------------------
+# Audit-queue capture broadened beyond composite_scoring (Fix: empty queue)
+# ---------------------------------------------------------------------------
+
+class TestAuditCaptureStages:
+    """process_batch must queue coherence_judge rejects too, not only composite.
+
+    Regression: candidates die at coherence_judge before reaching composite, so
+    composite-only capture left the GUI 'Rejected (ungraded)' queue permanently
+    empty whenever the coherence judge rejected everything.
+    """
+
+    @pytest.mark.asyncio
+    async def test_coherence_and_composite_rejects_queued_not_mechanical(self):
+        from knowledge.synthesis_filter import SynthesisFilter, AUDIT_CAPTURE_STAGES
+        from memory.synthesis_memory import SynthesisMemory
+
+        store = FakeChromaStore()
+        sm = SynthesisMemory(store)
+        filt = SynthesisFilter(
+            chroma_store=store, model_manager=MagicMock(), synthesis_memory=sm,
+        )
+
+        baked = {
+            "t": _make_result(status=CandidateStatus.REJECTED,
+                              rejection_stage="text_sanity", concept_a="t"),
+            "c": _make_result(status=CandidateStatus.REJECTED,
+                              rejection_stage="coherence_judge", concept_a="c"),
+            "cs": _make_result(status=CandidateStatus.REJECTED,
+                               rejection_stage="composite_scoring", concept_a="cs"),
+        }
+        candidates = [_make_candidate(concept_a=k) for k in ("t", "c", "cs")]
+
+        async def fake_process_candidate(cand):
+            return baked[cand.concept_a]
+
+        filt.process_candidate = fake_process_candidate
+        summary = await filt.process_batch(candidates)
+
+        # coherence_judge + composite_scoring captured; mechanical text_sanity not
+        assert "coherence_judge" in AUDIT_CAPTURE_STAGES
+        assert "text_sanity" not in AUDIT_CAPTURE_STAGES
+        assert summary["composite_rejects_stored"] == 2
+        stored_concepts = {d["metadata"].get("concept_a") for d in store._docs.values()}
+        assert stored_concepts == {"c", "cs"}
+
+
+# ---------------------------------------------------------------------------
+# Coherence judge: empty (reasoning-swallowed) response must not score WEAK
+# ---------------------------------------------------------------------------
+
+class TestCoherenceEmptyResponse:
+    """An empty judge channel is not a verdict -- retry once without reasoning,
+    then default MODERATE/pass (mirrors the LLM-exception path), never WEAK/reject.
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_response_retries_then_defaults_moderate(self):
+        from knowledge.synthesis_filter import SynthesisFilter
+
+        calls = []
+
+        class MockMM:
+            async def generate_once(self, **kwargs):
+                calls.append(kwargs)
+                return ""  # reasoning-only swallow on every call
+
+        filt = SynthesisFilter(chroma_store=FakeChromaStore(), model_manager=MockMM())
+        result = _make_result(status=CandidateStatus.ACCEPTED, coherence=CoherenceLevel.WEAK)
+        sr = await filt._stage_5_coherence_judge(result)
+
+        assert sr.passed is True
+        assert result.coherence_level == CoherenceLevel.MODERATE
+        # exactly one retry, and it disabled reasoning
+        assert len(calls) == 2
+        assert calls[0].get("disable_reasoning", False) is False
+        assert calls[1].get("disable_reasoning") is True
+
+    @pytest.mark.asyncio
+    async def test_nonempty_unparseable_still_weak_reject(self):
+        from knowledge.synthesis_filter import SynthesisFilter
+
+        class MockMM:
+            async def generate_once(self, **kwargs):
+                return "Interesting thought, but I won't follow the rating format."
+
+        filt = SynthesisFilter(chroma_store=FakeChromaStore(), model_manager=MockMM())
+        result = _make_result()
+        sr = await filt._stage_5_coherence_judge(result)
+
+        # genuine non-empty garbage is a real WEAK signal -> reject (unchanged)
+        assert sr.passed is False
+        assert result.coherence_level == CoherenceLevel.WEAK

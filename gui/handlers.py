@@ -1289,6 +1289,47 @@ async def _self_repair_note(ctx, detected):
         return None
 
 
+# Map the action system's ActionType (user-intent classifier) to the guard's
+# coarser ActionKind, so we can tell when the USER actually asked Daemon to
+# perform an external action this turn.
+def _user_requested_external_kinds(user_text):
+    """External ActionKinds the user explicitly asked Daemon to perform this turn.
+
+    Empty when the user merely narrated/reported their own action ("I sent it",
+    "no bounce back yet") — the case where an external completion phrase in the
+    reply is affirmation, not Daemon confabulating.
+    """
+    try:
+        from core.actions.registry import detect_action_intent
+        from core.actions.types import ActionType
+        from core.action_claim_guard import ActionKind
+        at = detect_action_intent(user_text or "")
+        if at is None:
+            return set()
+        mapping = {
+            ActionType.SEND_EMAIL: ActionKind.EMAIL,
+            ActionType.CALENDAR_CREATE_EVENT: ActionKind.CALENDAR,
+            ActionType.SEND_TELEGRAM: ActionKind.MESSAGE,
+            ActionType.SEND_DISCORD: ActionKind.MESSAGE,
+            ActionType.GITHUB_CREATE_ISSUE: ActionKind.GITHUB,
+            ActionType.GITHUB_COMMENT_PR: ActionKind.GITHUB,
+        }
+        k = mapping.get(at)
+        return {k} if k is not None else set()
+    except Exception:
+        return set()
+
+
+def _pending_proposal_kinds(orchestrator):
+    """ActionKinds with a prior-turn offer still pending ("Want me to email X?")."""
+    try:
+        store = _get_pending_proposal_store(orchestrator)
+        p = store.peek() if store is not None else None
+        return {p.kind} if p is not None else set()
+    except Exception:
+        return set()
+
+
 async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_kinds, self_repair):
     """Reconcile completion claims in a response against what actually ran.
 
@@ -1305,7 +1346,8 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
         if not ACTION_CLAIM_GUARD_ENABLED or not response_text:
             return suffix
         from core.action_claim_guard import (
-            ActionKind, build_correction_notice, detect_completion_claims, verify_claims,
+            ActionKind, build_correction_notice, detect_completion_claims,
+            is_first_person_claim, verify_claims,
         )
         claims = detect_completion_claims(response_text)
         if not claims:
@@ -1321,7 +1363,18 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
                     if saved is not None:
                         suffix += f"\n\n> 🗒️ (I went ahead and actually saved that note: `{saved.path}`)"
 
-        external = [a for a in rec.external_unbacked if a.kind not in set(proposed_kinds)]
+        # Structural gate (anti false-positive): only correct an unsent EXTERNAL
+        # action when Daemon was genuinely in a position to act — the user asked
+        # for it this turn, an offer of that kind is pending, or the claim is a
+        # first-person self-assertion ("I sent it"). A passive/ambiguous external
+        # phrase with no such context ("the email's sent — you fixed the address")
+        # is the user narrating their OWN action, not Daemon confabulating.
+        actionable = _user_requested_external_kinds(ctx.user_text) | _pending_proposal_kinds(ctx.orchestrator)
+        external = [
+            a for a in rec.external_unbacked
+            if a.kind not in set(proposed_kinds)
+            and (a.kind in actionable or is_first_person_claim(a.matched_text))
+        ]
         suffix += build_correction_notice(external)
     except Exception as e:
         logger.warning(f"[ActionGuard] Claim guard failed (non-fatal): {e}")

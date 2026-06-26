@@ -552,6 +552,13 @@ CROSS_DEDUP_ON_SHUTDOWN = bool(int(os.getenv("CROSS_DEDUP_ON_SHUTDOWN", "1" if C
 # a hung LLM call (e.g. a slow reasoning model) so it can't block the process.
 SHUTDOWN_TASK_TIMEOUT_S: int = int(os.getenv("SHUTDOWN_TASK_TIMEOUT_S", "60"))
 
+# Synthesis dreaming runs OUTSIDE the SHUTDOWN_TASK_TIMEOUT_S budget with its own
+# (longer) cap. The filter's per-candidate LLM coherence judging can't fit inside
+# the reflection/fact budget, so before this split it was cancelled mid-flight on
+# every exit and never persisted a candidate. Bounded so a hung judge still can't
+# block process exit indefinitely.
+SYNTHESIS_DREAM_TIMEOUT_S: int = int(os.getenv("SYNTHESIS_DREAM_TIMEOUT_S", "240"))
+
 # --------------------------------------------------------------------
 # Truth Scorer Configuration
 # --------------------------------------------------------------------
@@ -1647,6 +1654,14 @@ ACTION_CLAIM_SELF_REPAIR_ENABLED = bool(int(os.getenv(
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SYSTEM_PROMPT = load_system_prompt(config)
+
+# Prompt-cache breakpoint marker. The orchestrator inserts this into the system
+# prompt to separate the stable, cacheable base (personality + principles +
+# identity — identical across turns) from the per-turn volatile tail (topic,
+# threads, tone, plan, etc.). ModelManager._format_messages_with_cache() caches
+# only the prefix before this marker; everything after rides uncached. Any path
+# that doesn't split the prompt strips the marker so it never reaches the model.
+PROMPT_CACHE_BREAKPOINT = "<<<PROMPT_CACHE_BREAKPOINT>>>"
 
 # Environment overrides
 VERSION = os.getenv("DAEMON_VERSION", VERSION)

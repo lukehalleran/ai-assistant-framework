@@ -1477,6 +1477,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
 
         # Fallback: <invoke name="..."> (Anthropic-style function calls emitted as text)
         if not decisions:
+            _native_fallback = None  # lazily built for non-contact/action invokes
             for invoke_match in self.INVOKE_PATTERN.finditer(text):
                 func_name = invoke_match.group(1)
                 body = invoke_match.group(2)
@@ -1511,7 +1512,21 @@ class XMLMarkerHandler(BaseProtocolHandler):
                             action_reason=args.get("reason", "User requested"),
                         ))
                 else:
-                    logger.debug(f"[AgenticProtocol] XML invoke unknown tool: {func_name}")
+                    # Any other tool (web_search, fetch_url, search_memory, wolfram,
+                    # python, stackexchange, arxiv, pubmed, hackernews, git_stats,
+                    # github, ...): route through the native single-tool parser so an
+                    # Anthropic-style <function_calls><invoke name="web_search">...
+                    # call EXECUTES instead of leaking the raw XML as the answer.
+                    if _native_fallback is None:
+                        _native_fallback = NativeToolsHandler()
+                    parsed = _native_fallback._parse_single_tool_call({
+                        "function": {"name": func_name, "arguments": json.dumps(args)}
+                    })
+                    if parsed is not None:
+                        logger.info(f"[AgenticProtocol] XML invoke '{func_name}' routed via native parser")
+                        decisions.append(parsed)
+                    else:
+                        logger.debug(f"[AgenticProtocol] XML invoke unrecognized tool: {func_name}")
 
         # No markers found - model wants to answer
         if not decisions:

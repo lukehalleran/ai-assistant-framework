@@ -583,6 +583,25 @@ def _run_shutdown_tasks(orchestrator):
             except Exception as e:
                 logger.warning(f"[Shutdown] Daily note generation failed (non-critical): {e}")
 
+            # Synthesis dreaming — runs AFTER, and OUTSIDE, the reflection/fact
+            # budget above, with its own (longer) timeout. The filter's per-
+            # candidate LLM coherence judging can't fit inside SHUTDOWN_TASK_TIMEOUT_S
+            # alongside reflection + fact extraction, so before this split it was
+            # cancelled mid-flight on every exit and never persisted a candidate.
+            try:
+                from config.app_config import SYNTHESIS_DREAM_TIMEOUT_S
+                await asyncio.wait_for(
+                    orchestrator.memory_system.run_synthesis_dreaming(),
+                    timeout=SYNTHESIS_DREAM_TIMEOUT_S,
+                )
+                logger.info("[Shutdown] Synthesis dreaming completed")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"[Shutdown] Synthesis dreaming exceeded {SYNTHESIS_DREAM_TIMEOUT_S}s — skipped"
+                )
+            except Exception as e:
+                logger.warning(f"[Shutdown] Synthesis dreaming failed (non-fatal): {e}")
+
         # Run in new event loop
         asyncio.run(_do_shutdown())
 
@@ -1442,6 +1461,20 @@ if __name__ == "__main__":
                     except Exception as e:
                         logger.error(f"Shutdown summary/fact processing failed: {e}")
 
+                async def _do_shutdown_dreaming():
+                    # Outside the reflection/fact budget: dreaming's per-candidate
+                    # LLM filter needs its own (longer) cap, else it's cancelled
+                    # mid-flight and never persists a candidate. Self-gating.
+                    try:
+                        from config.app_config import SYNTHESIS_DREAM_TIMEOUT_S
+                        import asyncio as _a2
+                        await _a2.wait_for(
+                            orchestrator.memory_system.run_synthesis_dreaming(),
+                            timeout=SYNTHESIS_DREAM_TIMEOUT_S,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Shutdown] Synthesis dreaming failed (non-fatal): {e}")
+
                 scheduled_shutdown_tasks = False
                 try:
                     import asyncio as _a
@@ -1454,6 +1487,7 @@ if __name__ == "__main__":
                         # schedule and give it a beat
                         loop.create_task(_do_shutdown_reflection())
                         loop.create_task(_do_shutdown_summaries_and_facts())
+                        loop.create_task(_do_shutdown_dreaming())
                         scheduled_shutdown_tasks = True
                     else:
                         # Overlap the two independent shutdown jobs (each guards
@@ -1474,6 +1508,9 @@ if __name__ == "__main__":
                                     f"[Shutdown] tasks exceeded {SHUTDOWN_TASK_TIMEOUT_S}s — proceeding"
                                 )
                         _a.run(_both_shutdown_tasks())
+                        # Dreaming gets its own loop + budget so it isn't
+                        # starved by the reflection/fact timeout above.
+                        _a.run(_do_shutdown_dreaming())
                 except RuntimeError:
                     pass  # Event loop issues at shutdown
         finally:

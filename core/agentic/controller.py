@@ -1093,7 +1093,10 @@ class AgenticSearchController:
             return ""
 
         messages = [
-            {"role": "system", "content": system_prompt},
+            # Strip the prompt-cache breakpoint marker — this path builds the
+            # system message directly (no cache split), so the marker must not
+            # reach the model. No-op when absent.
+            {"role": "system", "content": self.model_manager._strip_cache_breakpoint(system_prompt)},
             {"role": "user", "content": prompt},
         ]
 
@@ -1674,9 +1677,17 @@ What would you like to do?""")
                 "Briefly confirm what you proposed and let the user know they can approve or reject it. "
                 "Do NOT narrate about your tools or capabilities — just confirm the proposed action."
             )
+        date_grounding_line = (
+            "- For today's date and day of the week, [TIME CONTEXT] above is authoritative; "
+            "if a web source states a conflicting day/date, defer to [TIME CONTEXT] (do not "
+            "copy a weekday from a snippet)."
+            if has_web else
+            "- Use [TIME CONTEXT] above as the authoritative source for today's date and day of the week."
+        )
         parts.append(f"""Please provide a comprehensive answer based on ALL context above:
 - Use your memories, facts, and personal notes to personalize the response
 {citation_line}
+{date_grounding_line}
 - Note any uncertainties or conflicting information
 - Focus on answering the user's specific question
 - If asked about tool status, ONLY report what [TOOL STATUS] says — do NOT rely on prior conversation{action_instruction}""")

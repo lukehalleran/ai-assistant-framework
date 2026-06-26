@@ -376,6 +376,68 @@ class TestXMLMarkerHandler:
         assert "5" in augmented  # max_rounds
 
 
+class TestAnthropicInvokeRecovery:
+    """Anthropic-style <function_calls><invoke name="..."><parameter ...> emitted as
+    plain text must EXECUTE the tool, not leak the raw XML as the final answer.
+
+    Regression: web_search (and other research tools) inside an <invoke> used to
+    hit the XMLMarkerHandler else-branch and get dropped, so the markup leaked and
+    the search never fired."""
+
+    def _handler(self):
+        from core.agentic.protocols import XMLMarkerHandler
+        return XMLMarkerHandler()
+
+    def test_function_calls_web_search_executes(self):
+        leak = (
+            "Let me fire off a proper web search.\n"
+            '<function_calls>\n'
+            '<invoke name="web_search">\n'
+            '<parameter name="query">Iran Strait of Hormuz closure June 2026</parameter>\n'
+            '<parameter name="reason">User wants the topic we were discussing</parameter>\n'
+            '</invoke>\n'
+            '</function_calls>'
+        )
+        decisions = self._handler().parse_response(leak)
+        assert len(decisions) == 1
+        assert decisions[0].wants_search is True
+        assert decisions[0].search_query == "Iran Strait of Hormuz closure June 2026"
+        assert decisions[0].wants_answer is not True  # did NOT leak as the answer
+
+    def test_invoke_web_search_single_quotes(self):
+        leak = (
+            "<invoke name='web_search'>"
+            "<parameter name='query'>latest AI news 2026</parameter>"
+            "</invoke>"
+        )
+        decisions = self._handler().parse_response(leak)
+        assert decisions[0].wants_search is True
+        assert decisions[0].search_query == "latest AI news 2026"
+
+    def test_invoke_lookup_contact_still_routes(self):
+        """Existing contact routing must be unaffected by the else-branch change."""
+        resp = (
+            '<invoke name="lookup_contact">'
+            '<parameter name="name">Meagan</parameter>'
+            '</invoke>'
+        )
+        decisions = self._handler().parse_response(resp)
+        assert decisions[0].wants_lookup_contact is True
+        assert decisions[0].lookup_contact_name == "Meagan"
+
+    def test_unknown_invoke_tool_falls_back_to_answer(self):
+        """An unrecognized tool name must degrade gracefully, not crash or
+        fabricate a tool decision."""
+        resp = (
+            '<invoke name="totally_made_up_tool">'
+            '<parameter name="x">y</parameter>'
+            '</invoke>'
+        )
+        decisions = self._handler().parse_response(resp)
+        assert len(decisions) == 1
+        assert decisions[0].wants_answer is True
+
+
 class TestXMLFileToolParsing:
     """File/doc tool parsing — attribute form AND the nested child-tag form.
 

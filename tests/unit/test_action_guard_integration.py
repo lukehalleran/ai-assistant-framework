@@ -190,3 +190,33 @@ async def test_external_claim_suppressed_when_proposed(notes_in_tmp):
         executed_kinds=set(), proposed_kinds={ActionKind.EMAIL}, self_repair=True,
     )
     assert suffix == ""
+
+
+@pytest.mark.asyncio
+async def test_passive_external_claim_suppressed_without_action_context(notes_in_tmp):
+    # Structural gate: a passive external claim the detector flags, but the user
+    # never asked Daemon to send and it's not a first-person self-claim → the user
+    # is narrating their OWN action, so NO correction. (The production incident.)
+    orch = _FakeOrch()
+    h._get_pending_proposal_store(orch).bump_turn()
+    ctx = SimpleNamespace(orchestrator=orch, user_text="did it go through?", handled=False)
+    suffix = await h._apply_action_guard(
+        ctx, "Looks like the email has been sent.",
+        executed_kinds=set(), proposed_kinds=set(), self_repair=True,
+    )
+    assert suffix == ""
+
+
+@pytest.mark.asyncio
+async def test_passive_external_claim_fires_when_user_requested(notes_in_tmp):
+    # Same passive claim, but the user explicitly asked Daemon to send → Daemon
+    # was expected to act, so an unbacked claim IS corrected.
+    orch = _FakeOrch()
+    h._get_pending_proposal_store(orch).bump_turn()
+    ctx = SimpleNamespace(orchestrator=orch, user_text="send that email to my advisor now", handled=False)
+    suffix = await h._apply_action_guard(
+        ctx, "Looks like the email has been sent.",
+        executed_kinds=set(), proposed_kinds=set(), self_repair=True,
+    )
+    assert "didn't actually" in suffix.lower()
+    assert "email" in suffix.lower()

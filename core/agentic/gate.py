@@ -31,6 +31,11 @@ Module Contract
   suppress it. The enhanced (tool-less) streaming path carries a matching
   [ACTION HONESTY] note so a gate miss degrades to an honest "I can't this turn"
   + offer, never a confabulated reason.
+- Follow-up resolution: Tier 4 builds a compact recent-conversation digest from
+  corpus_manager (_build_recent_context) and passes it as conversation_context to
+  analyze_for_web_search_llm, so elliptical follow-ups ("check the news", "any
+  updates on that") resolve to topic-specific search terms instead of generic
+  ones. No corpus_manager / no history → None → legacy (context-free) behavior.
 """
 
 import logging
@@ -217,6 +222,35 @@ EXPLICIT_SEARCH_KEYWORDS = [
 ]
 
 VETO_INTENTS = {'meta_conversational', 'casual_social'}
+
+
+def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
+    """Build a compact recent-conversation digest for the web-search trigger.
+
+    Elliptical follow-ups ("check the news", "any updates on that") carry no
+    topic of their own — the term-generating LLM in the trigger needs the prior
+    turns to resolve what "the news" refers to. Without this it defaults to
+    generic/world-news terms. Returns chronological (oldest→newest) text, or
+    None when there is no corpus_manager / no history.
+    """
+    if corpus_manager is None:
+        return None
+    try:
+        recent = corpus_manager.get_recent_memories(max_turns)
+    except Exception as e:
+        logger.debug(f"[Agentic Gate] recent-context build failed (non-fatal): {e}")
+        return None
+    if not recent:
+        return None
+    lines: List[str] = []
+    for mem in reversed(recent):  # get_recent_memories is newest-first
+        q = (mem.get('query', '') or '').strip()
+        r = (mem.get('response', '') or '').strip()
+        if q:
+            lines.append(f"User: {q[:200]}")
+        if r:
+            lines.append(f"Assistant: {r[:300]}")
+    return "\n".join(lines) if lines else None
 
 
 # ---------------------------------------------------------------------------
@@ -459,9 +493,14 @@ async def evaluate_agentic_gate(
         if model_manager is not None:
             try:
                 from utils.web_search_trigger import analyze_for_web_search_llm
+                # Carry the prior turns so elliptical follow-ups ("check the
+                # news") resolve to topic-specific search terms instead of
+                # generic ones.
+                _recent_ctx = _build_recent_context(corpus_manager)
                 trigger_decision = await analyze_for_web_search_llm(
                     query=user_text,
                     model_manager=model_manager,
+                    conversation_context=_recent_ctx,
                 )
                 should_trigger = getattr(trigger_decision, 'should_search', False)
                 search_terms = getattr(trigger_decision, 'search_terms', []) or []

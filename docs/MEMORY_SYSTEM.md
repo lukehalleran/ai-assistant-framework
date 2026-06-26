@@ -231,13 +231,6 @@ ShutdownProcessor.process_shutdown_memory()
   │  ├─ Implementation tracking (lightweight file check)
   │  ├─ Open thread processing
   │  │     Detect resolutions → extract new → enforce cap
-  │  ├─ Synthesis dreaming (three-tier parallel generation)
-  │  │     Auto-halt check: skips if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
-  │  │     Tier 0: RetrievalSynthesisGenerator (structural query → FAISS → adversarial eval)
-  │  │     Tier 1: GraphWalkGenerator (biased Markov walks, hub-dampened, cross-domain)
-  │  │     Tier 2: SynthesisGenerator (cross-store sampling, FAISS wiki search)
-  │  │     All → SynthesisFilter → SynthesisMemory
-  │  │     On acceptance: provisional bridge edge created (weight=0.0, status="provisional")
   │  └─ Wiki-to-graph enrichment (session wiki articles → graph nodes)
   │
   ├─ Phase C (sequential — must follow Phase B) ──────────────────
@@ -250,6 +243,19 @@ ShutdownProcessor.process_shutdown_memory()
   │        Double-run guard: class-level _dedup_ran flag prevents running twice per process
   │
   └─ Consolidation trigger (if threshold met and not shutdown-only)
+
+Synthesis dreaming — SEPARATE standalone step [CHANGED 2026-06-19] ──
+  Driven by main.py AFTER process_shutdown_memory returns, under its own
+  SYNTHESIS_DREAM_TIMEOUT_S (240s) budget — NOT inside Phase B. Its slow
+  per-candidate LLM coherence judge was being cancelled by the shared
+  SHUTDOWN_TASK_TIMEOUT_S (60s) reflection/fact budget, so no candidate
+  ever persisted. Entry: MemoryCoordinator.run_synthesis_dreaming().
+    ├─ Auto-halt check: skips if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
+    ├─ Tier 0: RetrievalSynthesisGenerator (structural query → FAISS → adversarial eval)
+    ├─ Tier 1: GraphWalkGenerator (biased Markov walks, hub-dampened, cross-domain)
+    ├─ Tier 2: SynthesisGenerator (cross-store sampling, FAISS wiki search)
+    ├─ All → SynthesisFilter → SynthesisMemory
+    └─ On acceptance: provisional bridge edge created (weight=0.0, status="provisional")
 ```
 
 ---

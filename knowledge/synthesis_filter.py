@@ -32,9 +32,17 @@ Module Contract
       Simplification is acceptable; only provably wrong claims fail.
   - Stage 6: Composite Scoring + Gates (multi-signal novelty composite)
   - Post-pipeline: Storage + provisional bridge creation (~10ms, ChromaDB write)
-- Audit integration: process_batch() stores composite-rejected candidates
-  (pass all gates but fail Stage 6 composite threshold) via
+- Audit integration: process_batch() stores judgment-stage rejects
+  (AUDIT_CAPTURE_STAGES = coherence_judge + composite_scoring) via
   synthesis_memory.store_rejected_for_audit() for false-negative human review.
+  Capturing coherence_judge too is deliberate: candidates die there before ever
+  reaching composite, so composite-only capture starves the audit queue whenever
+  the coherence judge rejects (nearly) everything. Mechanical hard filters
+  (text_sanity/domain_crossing/semantic_distance/novelty_*) are not audited.
+- Coherence judge robustness: an empty/swallowed LLM response (reasoning-only
+  model returning no visible content) is retried once with disable_reasoning=True,
+  then defaults to MODERATE/pass (not WEAK/reject) -- an empty channel is not a
+  verdict. Genuine non-empty-but-unparseable text still scores WEAK.
 - Multi-signal novelty composite (Stage 6):
   - claim novelty (w=0.25): 1 - claim_sim
   - co-occurrence novelty (w=0.30): 1 - cooccurrence_sim
@@ -113,6 +121,14 @@ _GENERIC_TOKENS = frozenset({
     "fundamental", "inherently", "essentially", "paradigm", "parallels",
     "interconnected", "holistic", "synergy", "synergistic",
 })
+
+# Reject stages whose verdicts are LLM judgment calls worth human audit (false-
+# negative review). The mechanical hard filters (text_sanity / domain_crossing /
+# semantic_distance / novelty_*) are deterministic and not worth grading; only the
+# judgment stages can be wrong in a way a human should second-guess. Candidates that
+# die at coherence_judge never reach composite_scoring, so capturing only the latter
+# starves the audit queue when coherence rejects (nearly) everything.
+AUDIT_CAPTURE_STAGES = frozenset({"coherence_judge", "composite_scoring"})
 
 
 def _extract_faiss_similarity(results: list) -> float:
@@ -256,16 +272,19 @@ class SynthesisFilter:
             for name, times in stage_times.items()
         }
 
-        # Store composite-rejected candidates for audit queue review
-        composite_rejects = [
+        # Store judgment-stage rejects for the audit queue (false-negative review).
+        # Not just composite_scoring: a candidate killed at coherence_judge never
+        # reaches composite, so capturing only composite leaves the queue empty
+        # whenever the coherence judge rejects everything (the observed failure mode).
+        audit_rejects = [
             r for r in rejected
-            if r.rejection_stage == "composite_scoring"
+            if r.rejection_stage in AUDIT_CAPTURE_STAGES
         ]
-        for cr in composite_rejects:
+        for ar in audit_rejects:
             try:
-                self.memory.store_rejected_for_audit(cr)
+                self.memory.store_rejected_for_audit(ar)
             except Exception as e:
-                logger.debug(f"Failed to store composite reject for audit: {e}")
+                logger.debug(f"Failed to store reject for audit: {e}")
 
         summary = {
             "total": len(candidates),
@@ -273,7 +292,7 @@ class SynthesisFilter:
             "rejected": len(rejected),
             "rejection_breakdown": rejection_breakdown,
             "accepted_results": accepted,
-            "composite_rejects_stored": len(composite_rejects),
+            "composite_rejects_stored": len(audit_rejects),
             "avg_stage_times_ms": avg_times,
         }
 
@@ -587,29 +606,64 @@ class SynthesisFilter:
             f"Rating: <INVALID|WEAK|MODERATE|STRONG>"
         )
 
+        judge_system_prompt = (
+            "You are a structural methods reviewer. Most cross-domain claims are "
+            "surface metaphor dressed in academic vocabulary. Your job is to reject "
+            "these. Only rate MODERATE when the structural mapping survives both the "
+            "de-jargon test and variable swap test. When in doubt, rate WEAK."
+        )
+
+        def _moderate_default(reason: str) -> StageResult:
+            # A judge that errored or returned no verdict is NOT a WEAK rating --
+            # an empty channel is not a judgment. Default generous (same as the
+            # exception path) so a swallowed response can't silently reject a
+            # candidate. Genuine non-empty-but-unparseable text still scores WEAK
+            # via _parse_coherence_level.
+            result.coherence_level = CoherenceLevel.MODERATE
+            result.coherence_justification = reason
+            return StageResult(
+                stage_name="coherence_judge", passed=True,
+                score=CoherenceLevel.MODERATE.value, reason=reason,
+            )
+
         try:
             response = await self.model_manager.generate_once(
                 prompt=prompt_1,
                 model_name=SYNTHESIS_COHERENCE_MODEL,
-                system_prompt=(
-                    "You are a structural methods reviewer. Most cross-domain claims are "
-                    "surface metaphor dressed in academic vocabulary. Your job is to reject "
-                    "these. Only rate MODERATE when the structural mapping survives both the "
-                    "de-jargon test and variable swap test. When in doubt, rate WEAK."
-                ),
+                system_prompt=judge_system_prompt,
                 max_tokens=400,
                 temperature=0.1,
             )
+            response_text = (response or "").strip()
+            # A reasoning model can swallow the whole answer into the reasoning
+            # channel and stream empty visible content (cf.
+            # ResponseGenerator._recover_reasoning_only). Retry once with reasoning
+            # disabled before falling back, so the answer is forced into content.
+            if not response_text:
+                logger.warning(
+                    "Coherence judge returned empty content (reasoning-only "
+                    "swallow?) -- retrying with reasoning disabled."
+                )
+                response = await self.model_manager.generate_once(
+                    prompt=prompt_1,
+                    model_name=SYNTHESIS_COHERENCE_MODEL,
+                    system_prompt=judge_system_prompt,
+                    max_tokens=400,
+                    temperature=0.1,
+                    disable_reasoning=True,
+                )
+                response_text = (response or "").strip()
         except Exception as e:
             logger.warning(f"Coherence judge LLM call failed: {e}. Passing with MODERATE default.")
-            result.coherence_level = CoherenceLevel.MODERATE
-            result.coherence_justification = "LLM unavailable -- default MODERATE"
-            return StageResult(
-                stage_name="coherence_judge", passed=True, score=CoherenceLevel.MODERATE.value,
-                reason="LLM call failed -- passing with default",
-            )
+            return _moderate_default("LLM unavailable -- default MODERATE")
 
-        response_text = response.strip()
+        if not response_text:
+            logger.warning(
+                "Coherence judge still empty after reasoning-disabled retry. "
+                "Passing with MODERATE default."
+            )
+            return _moderate_default("Empty coherence response -- default MODERATE")
+
         coherence_level = self._parse_coherence_level(response_text)
 
         result.coherence_level = coherence_level

@@ -14,6 +14,7 @@ Module Contract
   - detect_completion_claims(text) -> list[DetectedAction]  (assertive framing)
   - verify_claims(claims, executed_kinds, proposed_kinds=...) -> ClaimReconciliation
   - build_correction_notice(external_unbacked) -> str   (user-facing correction)
+  - is_first_person_claim(text) -> bool   (assistant's own action vs passive/narration)
 - Outputs: Pydantic models — ActionKind (enum), DetectedAction, ClaimReconciliation.
 - Key behaviors:
   - Action taxonomy splits SELF_REPAIRABLE kinds (note, document — safe, internal,
@@ -25,11 +26,22 @@ Module Contract
     proposals/questions.
   - A clause must mention an action *kind* keyword to be considered at all, which
     keeps generic prose ("note that you have a deadline") from matching.
-  - Completion detection also excludes THIRD-/SECOND-PERSON narration: a clause
-    where the action verb is governed by a non-assistant subject ("He emailed his
-    counselor", "you saved your note") is describing someone else's action, not the
-    assistant claiming it acted, so it is not a self-claim. A first-person marker
-    ("I saved …", "we created …") overrides the exclusion.
+  - Completion detection also excludes narration of someone else's action: a clause
+    where the verb is governed by a non-assistant subject ("He emailed his
+    counselor", "you saved your note") OR a second-person SUBJECT doing anything
+    ("the email's sent — you caught the address issue", "you did the thing") is the
+    user/third party acting, not the assistant. A first-person marker ("I saved …",
+    "we created …") overrides the exclusion; object-"you" ("sent you the draft") and
+    possessive-"your" ("saved your note") stay real self-claims.
+  - Before scanning, drafted/quoted regions are stripped (`--- … ---` fences,
+    blockquotes, code fences): an email the assistant DRAFTS is written in the
+    user's first person ("When I emailed her"), and must not read as an assistant
+    self-claim.
+  - The actionability GATE — only correct an unbacked EXTERNAL claim when the
+    assistant was expected to act (user requested it / a proposal is pending / the
+    claim is first-person via `is_first_person_claim`) — lives in the CALLER
+    (`gui/handlers.py:_apply_action_guard`), since it needs user-query + pending-
+    proposal state this pure module doesn't see.
 - Side effects: NONE. This module is pure detection + classification. Actually
   executing or repairing an action is the caller's responsibility.
 - Dependencies: stdlib re + pydantic. No LLM, no I/O.
@@ -187,23 +199,86 @@ _OTHER_SUBJECT_CLAIM = re.compile(
 # third-person exclusion above must not suppress it.
 _FIRST_PERSON_CLAIM = re.compile(r"\b(?:i|we)(?:'(?:ve|ll|d|m|re))?\b", re.IGNORECASE)
 
+# Second-person SUBJECT performing an action ("you caught the address issue",
+# "you did the thing", "you sent it") narrates the USER's action — not the
+# assistant claiming it acted. We require "you" in a SUBJECT position: at clause
+# start, or after a connector / dash / comma, followed by a token that is NOT an
+# object pronoun or article. This deliberately does NOT match object "you"
+# ("sent you the draft" — the assistant is the actor there), nor possessive
+# "your" ("saved your note" stays a real self-claim).
+_SECOND_PERSON_SUBJECT = re.compile(
+    r"(?:^|[—–:;,\-]\s*|\b(?:and|but|so|or|then|because|since|once)\s+)"
+    r"you\b\s+(?!the\b|a\b|an\b|it\b|me\b|us\b|them\b|him\b|her\b|your\b|guys\b)\w+",
+    re.IGNORECASE,
+)
+
 # Sentence splitter — split on . ! ? and newlines ONLY. Deliberately NOT on
 # em-dashes, so "Done — saving the note" stays a single clause with verb + kind.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+
+# Markdown horizontal rule / draft fence (--- , *** , ___ on their own line).
+_HR = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+
+
+def _strip_quoted_and_drafts(text: str) -> str:
+    """Drop drafted/quoted regions so the guard scans only the assistant's OWN voice.
+
+    The assistant routinely composes drafts (emails, letters, messages) written in
+    the USER's first person — "When I emailed her…" inside a drafted email is the
+    user's past action, not the assistant claiming it sent mail. Such content lives
+    in fenced blocks (``` … ```), blockquotes (> …), or between markdown horizontal
+    rules (--- … ---). Remove those before completion-claim detection so quoted
+    first-person verbs don't trip a spurious "I didn't actually send that" notice.
+    """
+    if not text:
+        return text
+    # 1) Strip code fences and blockquotes line-by-line.
+    cleaned: list[str] = []
+    in_fence = False
+    for ln in text.splitlines():
+        if ln.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if ln.lstrip().startswith(">"):
+            continue  # blockquote (incl. a prior turn's correction notice)
+        cleaned.append(ln)
+    # 2) Strip content between PAIRED horizontal rules (a fenced draft block). An
+    #    unpaired trailing rule (a lone section divider) is left untouched, so a
+    #    real claim after a divider is never silently dropped.
+    hr_idx = [i for i, ln in enumerate(cleaned) if _HR.match(ln)]
+    drop: set[int] = set()
+    for a, b in zip(hr_idx[0::2], hr_idx[1::2]):
+        drop.update(range(a, b + 1))
+    return "\n".join(ln for i, ln in enumerate(cleaned) if i not in drop)
 
 
 def _is_third_party_narration(clause: str) -> bool:
     """True when a completion verb is driven by a non-assistant subject.
 
     The guard exists to catch the *assistant* confabulating that *it* performed an
-    action. "He emailed his counselor" / "you saved your note" narrate a third or
-    second party's action and must not be read as an assistant self-claim. A
-    first-person marker anywhere in the clause overrides this (the assistant is
-    then asserting its own action, e.g. "I saved it after you emailed me").
+    action. "He emailed his counselor" / "you saved your note" / "the email's sent —
+    you fixed the address" narrate a third or second party's action and must not be
+    read as an assistant self-claim. A first-person marker anywhere in the clause
+    overrides this (the assistant is then asserting its own action, e.g. "I saved it
+    after you emailed me").
     """
     if _FIRST_PERSON_CLAIM.search(clause):
         return False
-    return bool(_OTHER_SUBJECT_CLAIM.search(clause))
+    return bool(_OTHER_SUBJECT_CLAIM.search(clause) or _SECOND_PERSON_SUBJECT.search(clause))
+
+
+def is_first_person_claim(text: str) -> bool:
+    """True when the clause asserts the ASSISTANT's own action (first-person I/we).
+
+    A first-person external claim ("I've sent the email", "Done — I emailed them")
+    is high-confidence confabulation: the assistant is explicitly saying IT acted.
+    Passive/subjectless external phrases ("the email's sent") are not — those need
+    a corroborating action context (a user request or pending offer) before the
+    guard treats them as a self-claim worth correcting.
+    """
+    return bool(_FIRST_PERSON_CLAIM.search(text or ""))
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -245,7 +320,7 @@ def detect_proposals(text: str) -> list[DetectedAction]:
     they await the user's confirmation.
     """
     out: list[DetectedAction] = []
-    for sent in _split_sentences(text):
+    for sent in _split_sentences(_strip_quoted_and_drafts(text)):
         kind = _detect_kind(sent)
         if kind is None:
             continue
@@ -273,7 +348,7 @@ def detect_completion_claims(text: str) -> list[DetectedAction]:
     that the action actually ran this turn.
     """
     out: list[DetectedAction] = []
-    for sent in _split_sentences(text):
+    for sent in _split_sentences(_strip_quoted_and_drafts(text)):
         kind = _detect_kind(sent)
         if kind is None:
             continue

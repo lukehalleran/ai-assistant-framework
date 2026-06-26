@@ -73,7 +73,7 @@ Context: {context_a}
 Concept B ({domain_b}): {concept_b}
 Context: {context_b}
 
-If there is a specific, non-obvious connection between them, describe it in one or two sentences. The connection should be:
+If there is a specific, non-obvious connection between them, describe it in one or two plain-prose sentences (no headings, bullet lists, or numbered steps). The connection should be:
 - Concrete (not "both are important" or "both involve systems")
 - Mechanistic (describes HOW they relate, not just THAT they relate)
 - Falsifiable (someone could argue against it)
@@ -606,7 +606,9 @@ class SynthesisGenerator:
                     "between concepts. Be specific and concrete. If no real connection "
                     "exists, say NO_CONNECTION."
                 ),
-                max_tokens=150,
+                # 220 (was 150) — safety margin so a 2-sentence bridge completes
+                # instead of truncating mid-thought (truncation reads as incoherent).
+                max_tokens=220,
                 temperature=0.7,
             )
         except Exception as e:

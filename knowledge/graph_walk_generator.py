@@ -34,9 +34,10 @@ Knowledge path: {path_str}
 Each arrow represents a real relationship in a knowledge graph.
 
 Describe the specific structural connection this path reveals between Concept A \
-and Concept B. Focus on the shared mechanism, feedback loop, or structural \
-isomorphism — not surface-level analogy. If the path doesn't reveal a meaningful \
-connection, respond with NO_CONNECTION.
+and Concept B in 2-4 plain-prose sentences. Focus on the shared mechanism, \
+feedback loop, or structural isomorphism — not surface-level analogy. Write one \
+short paragraph only: no headings, bullet lists, or numbered steps. If the path \
+doesn't reveal a meaningful connection, respond with NO_CONNECTION.
 
 Connection:"""
 
@@ -386,7 +387,10 @@ class GraphWalkGenerator:
                         "by interpreting knowledge graph paths. Be specific and "
                         "concrete. If no real connection exists, say NO_CONNECTION."
                     ),
-                    max_tokens=200,
+                    # 320 (was 200) — the brief paragraph the prompt now asks for
+                    # fits comfortably; the old cap truncated verbose answers
+                    # mid-sentence, which then read as incoherent to the judge.
+                    max_tokens=320,
                     temperature=0.5,
                 )
             except Exception as e:

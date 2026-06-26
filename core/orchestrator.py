@@ -956,6 +956,17 @@ class DaemonOrchestrator:
             except (AttributeError, TypeError) as e:
                 logger.debug(f"[Orchestrator] Identity placeholder substitution failed: {e}")
 
+        # --- Prompt-cache breakpoint ---
+        # Everything ABOVE this marker is the stable, cacheable base (personality
+        # + principles + identity — identical across turns for a given user/tone).
+        # Everything appended BELOW is per-turn volatile content (topic, threads,
+        # tone, escalation, session headers, thinking, plan). model_manager splits
+        # the system prompt here so only the stable prefix carries cache_control;
+        # the volatile tail rides uncached and can change every turn without
+        # invalidating the cached prefix. Inserted once, before the first append.
+        from config.app_config import PROMPT_CACHE_BREAKPOINT
+        system_prompt = system_prompt.rstrip() + PROMPT_CACHE_BREAKPOINT
+
         # --- Citation instructions ---
         if self.enable_citations:
             citation_instruction = (

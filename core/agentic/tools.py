@@ -11,6 +11,9 @@ Contract:
       name -> email via resolve_contact() before creating email ActionProposals
     - _dispatch_lookup_contact / _execute_lookup_contact: standalone read-only
       contact lookup tool (no confirmation needed)
+    - _merge_web_ids: assigns [WEB_N] citation IDs that CONTINUE across search
+      rounds (via _current_web_source_map + assign_web_ids start_index), so a
+      later round's source never collides with an earlier round's WEB_1
     - Extracted from AgenticSearchController to reduce god-object size
 
 Dependencies:
@@ -1399,6 +1402,31 @@ class ToolExecutor:
                 sub_queries=search_terms,
             )
 
+    def _merge_web_ids(self, pages) -> list:
+        """Assign WEB_N ids that CONTINUE across agentic rounds (no per-round reset).
+
+        Each search round formats only its own pages, but all rounds share one
+        accumulated_context. Numbering each round from WEB_1 made a later round's
+        first source collide with an earlier round's WEB_1 (two sources cited as
+        [WEB_1]). This threads the session-wide map + running count into
+        assign_web_ids so IDs stay globally unique and stable, and returns only
+        the newly-numbered sources for this batch (URLs already cited keep their
+        prior id and are skipped).
+        """
+        from knowledge.web_search_manager import assign_web_ids, _canonical_url
+        existing_url_to_id = {
+            _canonical_url(meta.get("url", "")): sid
+            for sid, meta in self._current_web_source_map.items()
+            if meta.get("url")
+        }
+        numbered, source_map = assign_web_ids(
+            pages,
+            existing_url_to_id=existing_url_to_id,
+            start_index=len(self._current_web_source_map),
+        )
+        self._current_web_source_map.update(source_map)
+        return numbered
+
     async def _compress_results(
         self,
         result: Any,
@@ -1408,9 +1436,12 @@ class ToolExecutor:
         if not result or not hasattr(result, 'pages') or not result.pages:
             return "No results found."
 
-        from knowledge.web_search_manager import assign_web_ids, format_web_sources_with_ids
-        numbered_sources, web_source_map = assign_web_ids(result.pages)
-        self._current_web_source_map.update(web_source_map)
+        from knowledge.web_search_manager import format_web_sources_with_ids
+        numbered_sources = self._merge_web_ids(result.pages)
+        if not numbered_sources:
+            # Every page this round was already cited in an earlier round —
+            # nothing new to number, and re-showing under the same IDs is noise.
+            return "No new sources (results already retrieved in a previous round)."
         formatted = format_web_sources_with_ids(numbered_sources, max_chars=6000)
 
         estimated_tokens = len(formatted) // 4
@@ -1649,15 +1680,23 @@ Provide a focused summary with the most important information."""
             if not content:
                 return f"[Page at {url} returned no extractable content]"
 
-            # Register in web source map for citation tracking
+            # Register in web source map for citation tracking, continuing the
+            # session-wide WEB_N numbering (not restarting at WEB_1 per fetch).
             try:
-                from knowledge.web_search_manager import assign_web_ids
-                numbered, source_map = assign_web_ids(pages)
-                self._current_web_source_map.update(source_map)
-                # Use the assigned WEB_N id in the output
+                numbered = self._merge_web_ids(pages)
                 if numbered:
-                    web_id = numbered[0].web_id
+                    web_id = numbered[0].source_id
                     return f"[{web_id}] Title: {title}\nURL: {url}\n\n{content}"
+                # Already fetched/cited earlier — reuse its existing id.
+                from knowledge.web_search_manager import _canonical_url
+                _canon = _canonical_url(url)
+                existing_id = next(
+                    (sid for sid, meta in self._current_web_source_map.items()
+                     if _canonical_url(meta.get("url", "")) == _canon),
+                    None,
+                )
+                if existing_id:
+                    return f"[{existing_id}] Title: {title}\nURL: {url}\n\n{content}"
             except Exception:
                 pass  # Citation registration is non-critical
 

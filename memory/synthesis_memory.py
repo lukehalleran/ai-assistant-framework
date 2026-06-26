@@ -278,10 +278,13 @@ class SynthesisMemory:
             return ""
 
     def store_rejected_for_audit(self, result: SynthesisResult) -> str:
-        """Store a composite-rejected candidate for audit queue review.
+        """Store a judgment-stage-rejected candidate for audit queue review.
 
-        These candidates passed coherence but failed composite scoring.
-        Human review determines if composite was too aggressive (false negative).
+        Called for rejects at the LLM judgment stages (coherence_judge or
+        composite_scoring -- see SynthesisFilter.AUDIT_CAPTURE_STAGES). Human
+        review determines whether the judge/composite gate was too aggressive
+        (false negative). Stored with status=rejected and human_grade="" so it
+        surfaces in the GUI "Rejected (ungraded)" audit view.
         """
         doc_text = result.candidate.connection_claim
         metadata = result.to_metadata()

@@ -22,7 +22,7 @@ def build_synthesis_tab(orchestrator, _show_dev_tabs):
         # --- Queue filter ---
         with gr.Row():
             synth_queue_filter = gr.Radio(
-                choices=["Accepted (ungraded)", "Composite rejects (ungraded)", "Graded history"],
+                choices=["Accepted (ungraded)", "Rejected (ungraded)", "Graded history"],
                 value="Accepted (ungraded)",
                 label="View",
             )
@@ -192,7 +192,7 @@ def build_synthesis_tab(orchestrator, _show_dev_tabs):
 
             if view_filter == "Accepted (ungraded)":
                 items = sm.get_ungraded(status_filter="accepted")
-            elif view_filter == "Composite rejects (ungraded)":
+            elif view_filter == "Rejected (ungraded)":
                 items = sm.get_ungraded(status_filter="rejected")
             elif view_filter == "Graded history":
                 items = sm.get_graded()

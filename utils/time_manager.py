@@ -37,6 +37,14 @@ def format_relative_timestamp(ts: datetime, now: datetime = None) -> str:
         "2026-04-02 22:45 (yesterday)"
         "2026-04-01 14:30 (2 days ago)"
         "2026-03-28 09:00 (6 days ago)"
+        "2026-02-11 15:00 (4 months ago)"
+        "2025-02-11 15:00 (1 year ago)"
+
+    Every label carries an explicit relative age — including old memories.
+    Returning a bare ISO date for anything >= 30 days (the prior behavior)
+    forced the LLM to compute the age itself, which it gets wrong: a months-old
+    state would surface as if it happened "earlier today." Keep the relative
+    anchor at every range so stale context is never mistaken for current.
     """
     if now is None:
         now = datetime.now()
@@ -54,8 +62,12 @@ def format_relative_timestamp(ts: datetime, now: datetime = None) -> str:
     elif delta_days < 30:
         weeks = delta_days // 7
         return f"{time_str} ({weeks}w ago)"
+    elif delta_days < 365:
+        months = delta_days // 30
+        return f"{time_str} ({months} month{'s' if months != 1 else ''} ago)"
     else:
-        return time_str
+        years = delta_days // 365
+        return f"{time_str} ({years} year{'s' if years != 1 else ''} ago)"
 
 
 class TimeManager:

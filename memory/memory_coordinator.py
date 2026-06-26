@@ -444,6 +444,15 @@ class MemoryCoordinator:
         """
         await self._shutdown.process_shutdown_memory(session_conversations)
 
+    async def run_synthesis_dreaming(self):
+        """Run end-of-session synthesis dreaming as a standalone step.
+
+        Separate from process_shutdown_memory so callers can bound it with its
+        own (longer) timeout instead of the reflection/fact budget. Delegates to
+        ShutdownProcessor; self-gating when synthesis is disabled or auto-halted.
+        """
+        await self._shutdown.run_synthesis_dreaming()
+
     # ---------------------------
     # Helper methods
     # ---------------------------

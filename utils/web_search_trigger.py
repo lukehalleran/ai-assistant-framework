@@ -8,6 +8,9 @@ Module Contract:
   - Query text
   - Optional: model_manager (for LLM classification)
   - Optional: crisis_level, remaining_credits, web_search_enabled
+  - Optional: conversation_context — compact digest of prior turns so elliptical
+    follow-ups ("check the news") resolve to topic-specific search_terms instead
+    of generic ones; part of the LLM-trigger cache key [NEW 2026-06-21]
 - Outputs:
   - WebSearchDecision with:
     - should_search: bool
@@ -804,7 +807,12 @@ def quick_prefilter_should_skip(query: str) -> bool:
     return False
 
 
-def _build_llm_trigger_prompt(query: str, current_date: str, remaining_credits: float = 100) -> str:
+def _build_llm_trigger_prompt(
+    query: str,
+    current_date: str,
+    remaining_credits: float = 100,
+    conversation_context: str = None,
+) -> str:
     """
     Build the classification prompt for the unified LLM trigger.
 
@@ -812,16 +820,27 @@ def _build_llm_trigger_prompt(query: str, current_date: str, remaining_credits: 
         query: User query text
         current_date: Current date string (e.g., "2026-01-06")
         remaining_credits: Available search credits (affects num_searches suggestion)
+        conversation_context: Optional compact digest of the immediately prior
+            turns. When present, lets the LLM resolve elliptical / deictic
+            follow-ups ("check the news", "any updates on that") against the
+            active topic instead of emitting generic terms.
 
     Returns:
         Formatted prompt string for LLM
     """
+    context_block = ""
+    if conversation_context and conversation_context.strip():
+        context_block = (
+            "\nRECENT CONVERSATION (the turns immediately before this query — "
+            "use ONLY to resolve follow-up/elliptical references in the query):\n"
+            f"{conversation_context.strip()[:1200]}\n"
+        )
     return f"""Analyze if this query needs real-time web search OR stored memory search, and generate optimized search terms.
 
 Query: "{query[:500]}"
 Current date: {current_date}
 Available search budget: {remaining_credits:.0f} credits
-
+{context_block}
 WEB SEARCH CRITERIA:
 - SEARCH if: current events, recent news, live data (stocks, weather, sports), time-sensitive health info, or references dates/years needing verification
 - DON'T SEARCH if: historical facts, scientific concepts, how-to guides, personal/emotional topics, or can be answered with general knowledge
@@ -867,6 +886,7 @@ OUTPUT (JSON only, no markdown):
 
 GUIDELINES:
 - search_terms: Rewrite for better results (add year if relevant, be specific, remove conversational filler)
+- FOLLOW-UPS: If the query is elliptical or refers back to the conversation ("check the news", "any updates on that", "what's the latest", "look into it", "anything new on it"), resolve the referent using RECENT CONVERSATION above and make search_terms SPECIFIC to that established topic. Never emit generic or world-news terms when the user is clearly asking for an update on something already being discussed. If no RECENT CONVERSATION is provided, treat the query as self-contained.
 - num_searches: Use 2-4 only for comparison queries or multi-faceted topics
 - search_depth: "quick" for simple facts, "standard" for news/analysis, "deep" for research
 - If not searching, return empty search_terms and num_searches: 0
@@ -879,7 +899,8 @@ async def _classify_with_llm_unified(
     query: str,
     model_manager,
     remaining_credits: float = 100,
-    timeout: float = None
+    timeout: float = None,
+    conversation_context: str = None,
 ) -> Optional[LLMSearchTriggerResponse]:
     """
     Unified LLM call for search trigger classification.
@@ -892,6 +913,8 @@ async def _classify_with_llm_unified(
         model_manager: ModelManager instance for LLM calls
         remaining_credits: Available credits (affects num_searches)
         timeout: Override default timeout
+        conversation_context: Optional digest of prior turns, used to resolve
+            elliptical follow-up queries into topic-specific search terms.
 
     Returns:
         LLMSearchTriggerResponse if successful, None if failed/timeout
@@ -900,7 +923,9 @@ async def _classify_with_llm_unified(
         return None
 
     current_date = datetime.now().strftime("%Y-%m-%d")
-    prompt = _build_llm_trigger_prompt(query, current_date, remaining_credits)
+    prompt = _build_llm_trigger_prompt(
+        query, current_date, remaining_credits, conversation_context
+    )
     effective_timeout = timeout or SEARCH_TRIGGER_TIMEOUT
 
     logger.debug(
@@ -946,7 +971,8 @@ async def analyze_for_web_search_llm(
     crisis_level: Optional[str] = None,
     web_search_enabled: bool = True,
     remaining_credits: float = 100,
-    timeout: float = None
+    timeout: float = None,
+    conversation_context: str = None,
 ) -> WebSearchDecision:
     """
     LLM-first web search trigger analysis with heuristic fallback.
@@ -969,15 +995,21 @@ async def analyze_for_web_search_llm(
         web_search_enabled: Whether web search is enabled in config
         remaining_credits: Available credits for search (affects num_searches)
         timeout: Override default LLM timeout
+        conversation_context: Optional compact digest of the immediately prior
+            turns. Threaded into the trigger prompt so elliptical follow-ups
+            ("check the news", "any updates") resolve to topic-specific terms
+            instead of generic ones. Part of the cache key.
 
     Returns:
         WebSearchDecision with should_search, search_terms, depth, num_searches
     """
     global _llm_trigger_cache
 
-    # Check cache first (prevents duplicate LLM calls within same request)
-    # Only hash on query - crisis_level may differ between callers but decision is same
-    cache_key = hash(query)
+    # Check cache first (prevents duplicate LLM calls within same request).
+    # Hash on (query, conversation_context): the SAME elliptical query ("check the
+    # news") must resolve to different search terms under different prior topics, so
+    # context is part of the cache identity. crisis_level is intentionally excluded.
+    cache_key = hash((query, conversation_context))
     now = time.time()
     if cache_key in _llm_trigger_cache:
         cached_time, cached_result = _llm_trigger_cache[cache_key]
@@ -1054,7 +1086,8 @@ async def analyze_for_web_search_llm(
         query,
         model_manager,
         remaining_credits,
-        timeout
+        timeout,
+        conversation_context=conversation_context,
     )
 
     # If LLM failed, fall back to heuristics

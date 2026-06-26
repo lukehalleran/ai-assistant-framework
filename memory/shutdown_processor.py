@@ -13,8 +13,15 @@ Module Contract
     Main entry: runs all consolidation phases and returns results summary.
     Phases are parallelized via asyncio.gather where independent:
       Phase A (parallel): facts + LLM facts + behavioral patterns + skills
-      Phase B (parallel): proposals + impl tracking + threads + synthesis + wiki enrichment
+      Phase B (parallel): proposals + impl tracking + threads + wiki enrichment
       Phase C (sequential): graph save, category cache, cross-dedup
+  - run_synthesis_dreaming() -> None
+    Standalone step (NOT part of process_shutdown_memory): cross-domain candidate
+    generation + filter pipeline. Driven separately by main.py under its own
+    SYNTHESIS_DREAM_TIMEOUT_S budget so its slow per-candidate LLM filter isn't
+    cancelled by the shared SHUTDOWN_TASK_TIMEOUT_S reflection/fact budget. Auto-
+    halts if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD (checked via
+    synthesis_memory.get_audit_stats() before generation).
   - run_shutdown_reflection(session_conversations, topic, session_context) -> Optional[str]
     Generates topic-specific session reflections with entity-rich content
     (SESSION TOPIC, KEY ENTITIES, WHAT HAPPENED, PATTERNS & INSIGHTS).
@@ -37,9 +44,6 @@ Module Contract
   - _generate_proposals(session_conversations) — goal-directed code change proposals
   - _check_implementation_tracking() — lightweight proposal implementation detection
   - _process_open_threads(session_conversations) — resolution detection → extraction → cap enforcement
-  - _run_synthesis_dreaming() — cross-domain candidate generation + filter pipeline [async];
-    auto-halts if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD (checked via
-    synthesis_memory.get_audit_stats() before generation)
   - _save_knowledge_graph() — flush graph + aliases to disk
   - _run_cross_collection_dedup() — dry-run preview only (never auto-deletes)
 - Note: Entity facts (non-user subjects) go to ChromaDB only, NOT to UserProfile.
@@ -244,13 +248,16 @@ class ShutdownProcessor:
                     logger.error(f"[Shutdown] Extraction phase error: {r}")
 
             # ── Parallel Phase B: Generation + maintenance ────────────
-            # Proposals, threads, synthesis, and wiki enrichment are
-            # independent of each other and of Phase A results.
+            # Proposals, threads, and wiki enrichment are independent of each
+            # other and of Phase A results. Synthesis dreaming is deliberately
+            # NOT here: its per-candidate LLM filter is too slow for the shared
+            # SHUTDOWN_TASK_TIMEOUT_S budget (it was cancelled mid-flight on
+            # every exit). It now runs as a separate, longer-bounded step driven
+            # by main.py via run_synthesis_dreaming(), outside this budget.
             phase_b = await asyncio.gather(
                 self._generate_proposals(session_conversations),
                 self._check_implementation_tracking(),
                 self._process_open_threads(session_conversations),
-                self._run_synthesis_dreaming(),
                 self._run_wiki_enrichment(),
                 return_exceptions=True,
             )
@@ -1441,6 +1448,16 @@ JSON:"""
     # ------------------------------------------------------------------
     # Synthesis dreaming (cross-domain candidate generation)
     # ------------------------------------------------------------------
+
+    async def run_synthesis_dreaming(self):
+        """Public entry: run synthesis dreaming as a standalone shutdown step.
+
+        Pulled out of process_shutdown_memory's Phase B so it runs under its own
+        SYNTHESIS_DREAM_TIMEOUT_S budget (driven by main.py) instead of competing
+        with reflection + fact extraction inside SHUTDOWN_TASK_TIMEOUT_S. Self-
+        gating (config-disabled / auto-halt / no-candidates all return quietly).
+        """
+        await self._run_synthesis_dreaming()
 
     async def _run_synthesis_dreaming(self):
         """Step 6.8: Generate and filter cross-domain synthesis candidates.

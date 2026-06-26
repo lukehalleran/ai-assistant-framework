@@ -560,5 +560,131 @@ class TestAnalyzeForWebSearchLLM:
         assert mock_manager.generate_once.called
 
 
+class TestConversationContextResolution:
+    """Elliptical follow-ups ("check the news") must resolve against the prior
+    topic instead of producing generic terms. Covers the conversation_context
+    threading added to the trigger + the gate's recent-context digest."""
+
+    def test_prompt_includes_context_block_and_followup_guideline(self):
+        """When context is provided, the prompt carries it + the follow-up rule."""
+        from utils.web_search_trigger import _build_llm_trigger_prompt
+
+        ctx = "User: They are requiring IDs and biometrics to use Claude\nAssistant: That's a real privacy escalation."
+        prompt = _build_llm_trigger_prompt("check the news", "2026-06-21", conversation_context=ctx)
+
+        # Distinctive data-block header (the guideline text also says "RECENT
+        # CONVERSATION", so match the header phrase, not the bare token).
+        assert "turns immediately before this query" in prompt
+        assert "biometrics to use Claude" in prompt
+        assert "FOLLOW-UPS" in prompt  # the deictic-resolution guideline
+
+    def test_prompt_omits_context_block_when_none(self):
+        """No context → no RECENT CONVERSATION block (unchanged legacy behavior)."""
+        from utils.web_search_trigger import _build_llm_trigger_prompt
+
+        prompt = _build_llm_trigger_prompt("check the news", "2026-06-21")
+        assert "turns immediately before this query" not in prompt
+        # Guideline text is always present; only the data block is conditional.
+        assert "FOLLOW-UPS" in prompt
+
+    @pytest.mark.asyncio
+    async def test_classify_threads_context_into_prompt(self):
+        """_classify_with_llm_unified forwards conversation_context to the prompt."""
+        from unittest.mock import AsyncMock
+        from utils.web_search_trigger import _classify_with_llm_unified
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value=(
+            '{"should_search": true, "confidence": 0.9, "reason": "follow-up", '
+            '"search_terms": ["Claude biometric ID requirement 2026"], '
+            '"search_depth": "standard", "num_searches": 1}'
+        ))
+
+        ctx = "User: They are requiring IDs and biometrics to use Claude"
+        result = await _classify_with_llm_unified(
+            query="check the news just the other day",
+            model_manager=mock_manager,
+            conversation_context=ctx,
+        )
+
+        assert result is not None
+        # The prior topic reached the LLM prompt (first positional arg).
+        sent_prompt = mock_manager.generate_once.call_args.args[0]
+        assert "biometrics to use Claude" in sent_prompt
+        assert "turns immediately before this query" in sent_prompt
+
+    @pytest.mark.asyncio
+    async def test_cache_key_separates_by_context(self):
+        """Same query under different prior topics must NOT collide in the cache,
+        but the identical (query, context) pair must be served from cache."""
+        from unittest.mock import AsyncMock, patch
+        import utils.web_search_trigger as wst
+
+        wst._llm_trigger_cache.clear()
+
+        # Non-decisive heuristic so the LLM path is actually exercised
+        # (avoids the conf<=0 and conf>=0.7 short-circuits).
+        neutral = WebSearchDecision(
+            should_search=True, depth=WebSearchDepth.STANDARD, confidence=0.5,
+            reason="neutral", matched_keywords=["news"], matched_patterns=[],
+        )
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(side_effect=[
+            '{"should_search": true, "confidence": 0.9, "reason": "a", "search_terms": ["topic A terms"], "search_depth": "standard", "num_searches": 1}',
+            '{"should_search": true, "confidence": 0.9, "reason": "b", "search_terms": ["topic B terms"], "search_depth": "standard", "num_searches": 1}',
+        ])
+
+        query = "what's the latest on that"
+        with patch.object(wst, "should_search_heuristic", return_value=neutral), \
+             patch.object(wst, "LLM_FIRST_ENABLED", True):
+            res_a = await wst.analyze_for_web_search_llm(
+                query=query, model_manager=mock_manager,
+                conversation_context="topic A context",
+            )
+            res_b = await wst.analyze_for_web_search_llm(
+                query=query, model_manager=mock_manager,
+                conversation_context="topic B context",
+            )
+            # Same query, same context as A → cache hit, no new LLM call.
+            res_a2 = await wst.analyze_for_web_search_llm(
+                query=query, model_manager=mock_manager,
+                conversation_context="topic A context",
+            )
+
+        # Different context → different terms (no collision on the bare query).
+        assert res_a.search_terms == ["topic A terms"]
+        assert res_b.search_terms == ["topic B terms"]
+        # Only two LLM calls: the third (A repeated) was served from cache.
+        assert mock_manager.generate_once.call_count == 2
+        assert res_a2.search_terms == res_a.search_terms
+
+    def test_gate_build_recent_context_digest(self):
+        """Gate helper renders prior turns oldest→newest; tolerates empty/None."""
+        from core.agentic.gate import _build_recent_context
+
+        class FakeCorpus:
+            def get_recent_memories(self, count=2):
+                # newest-first, as the real CorpusManager returns
+                return [
+                    {"query": "check the news", "response": "..."},
+                    {"query": "they want biometrics for Claude", "response": "privacy concern"},
+                ]
+
+        ctx = _build_recent_context(FakeCorpus())
+        assert ctx is not None
+        # reversed to chronological: the older biometrics turn precedes the newest
+        assert ctx.index("biometrics for Claude") < ctx.index("check the news")
+        assert "User: they want biometrics for Claude" in ctx
+
+        assert _build_recent_context(None) is None
+
+        class EmptyCorpus:
+            def get_recent_memories(self, count=2):
+                return []
+
+        assert _build_recent_context(EmptyCorpus()) is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

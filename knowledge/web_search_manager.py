@@ -9,7 +9,10 @@ Module Contract:
   - Crisis level to suppress search during therapeutic moments
 - Outputs:
   - WebSearchResult containing relevant web content with sources
-  - NumberedWebSource + web_source_map for stable [WEB_N] citation IDs (assigned centrally after merge/dedupe)
+  - NumberedWebSource + web_source_map for stable [WEB_N] citation IDs (assigned centrally after merge/dedupe).
+    assign_web_ids() accepts existing_url_to_id + start_index so multi-round agentic search
+    CONTINUES numbering across rounds instead of restarting at WEB_1 (avoids two distinct
+    sources colliding on [WEB_1]); the per-round merge state lives in ToolExecutor._merge_web_ids.
 - Side effects:
   - Network requests to Tavily API
   - ChromaDB cache writes (72-hour TTL)
@@ -264,22 +267,44 @@ class NumberedWebSource:
     score: float = 0.0
 
 
-def assign_web_ids(pages: List[WebPage]) -> Tuple[List[NumberedWebSource], Dict[str, Dict[str, str]]]:
+def _canonical_url(url: str) -> str:
+    """Canonical form for dedupe: strip trailing slash, fragment, query."""
+    return (url or "").rstrip("/").split("#")[0].split("?")[0]
+
+
+def assign_web_ids(
+    pages: List[WebPage],
+    existing_url_to_id: Optional[Dict[str, str]] = None,
+    start_index: int = 0,
+) -> Tuple[List[NumberedWebSource], Dict[str, Dict[str, str]]]:
     """
     Assign stable WEB_N IDs after merge/dedupe.
 
     Deduplicates by canonical URL, ranks by score, assigns sequential IDs.
-    Returns (numbered_sources, web_source_map).
+    Returns (numbered_sources, web_source_map) for the NEWLY-numbered sources.
+
+    For multi-round agentic search, pass ``existing_url_to_id`` (canonical URL →
+    already-assigned "WEB_k") and ``start_index`` (count of IDs already assigned)
+    so numbering CONTINUES across rounds instead of restarting at WEB_1 —
+    otherwise a later round's first source collides with an earlier round's
+    WEB_1 (two different sources cited as [WEB_1]). Pages whose canonical URL is
+    already known are skipped (they keep their prior ID). Default args reproduce
+    the legacy single-shot behavior.
 
     web_source_map: {"WEB_1": {"title": ..., "url": ..., "domain": ...}, ...}
     """
     if not pages:
         return [], {}
 
-    # Dedupe by canonical URL (strip trailing slash, fragments)
+    existing_url_to_id = existing_url_to_id or {}
+
+    # Dedupe by canonical URL (strip trailing slash, fragments); skip URLs that
+    # were already numbered in a previous round.
     seen_urls: Dict[str, WebPage] = {}
     for page in pages:
-        canonical = page.url.rstrip("/").split("#")[0].split("?")[0]
+        canonical = _canonical_url(page.url)
+        if canonical in existing_url_to_id:
+            continue
         if canonical not in seen_urls or page.score > seen_urls[canonical].score:
             seen_urls[canonical] = page
 
@@ -289,7 +314,7 @@ def assign_web_ids(pages: List[WebPage]) -> Tuple[List[NumberedWebSource], Dict[
     numbered = []
     source_map = {}
     for idx, page in enumerate(ranked):
-        source_id = f"WEB_{idx + 1}"
+        source_id = f"WEB_{start_index + idx + 1}"
         domain = ""
         try:
             from urllib.parse import urlparse

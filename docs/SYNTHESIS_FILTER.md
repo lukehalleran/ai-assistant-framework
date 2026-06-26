@@ -204,6 +204,15 @@ instead of the old 0.55 fallback.
 generators with independent quotas. Each generator fills its allocation,
 then all candidates pass through the same `SynthesisFilter` pipeline.
 
+**Timeout decoupling [2026-06-19]:** dreaming is exposed via the public
+`run_synthesis_dreaming()` and driven by `main.py` as its OWN standalone
+shutdown step — it is no longer in `process_shutdown_memory`'s Phase B. It
+runs under `SYNTHESIS_DREAM_TIMEOUT_S` (default 240s), separate from the
+`SHUTDOWN_TASK_TIMEOUT_S` (60s) budget shared by reflection + fact
+extraction. Before this split, the per-candidate LLM coherence judge could
+not finish inside the 60s budget and was cancelled mid-flight on every
+exit, so no new candidate ever persisted (the audit queue looked frozen).
+
 ---
 
 ## Data Flow
@@ -457,6 +466,19 @@ mechanisms.
   previously slipped through as MODERATE.
 
 **LLM parameters:** `max_tokens=400` (raised from 250), `temperature=0.1`
+
+**Empty-response robustness [2026-06-26]:** a reasoning-only model can swallow the
+whole verdict into its reasoning channel and stream empty visible content. The
+judge retries once with `disable_reasoning=True`, then defaults MODERATE/pass — an
+empty channel is not a WEAK verdict. Genuine non-empty-but-unparseable text still
+scores WEAK.
+
+> **Generation must not truncate [2026-06-26].** Separately from the judge, the
+> candidate *generators* (`graph_walk_generator`, `synthesis_generator`) ask for a
+> short plain-prose paragraph (no headings/lists) and use larger token caps (graph
+> walk `max_tokens=320`, bridge `220`). The old caps (200/150) cut answers off
+> mid-sentence; truncated text reads as incoherent here and was rejected — ~80% of
+> audit rejects were truncation artifacts, not real incoherence.
 
 #### Pass 2: Factual Skeptic
 
