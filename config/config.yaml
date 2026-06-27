@@ -69,7 +69,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: deepseek-v4
+  active: glm-5.2
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -326,8 +326,8 @@ synthesis:
   use_percentile_thresholds: false
   novelty_known_threshold: 0.88
   novelty_adjacent_threshold: 0.7
-  cooccurrence_known_threshold: 0.85  # legacy bigram-FAISS gate (unused; see SYNTHESIS_VALIDATION revert note)
-  concept_cosine_known_threshold: 0.45  # stage-3 known gate: direct cos(A,B) (replaces inverted bigram signal)
+  cooccurrence_known_threshold: 0.85
+  concept_cosine_known_threshold: 0.45
   memory_similarity_threshold: 0.85
   coherence_model: claude-opus-4.8
   coherence_min_level: MODERATE
