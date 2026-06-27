@@ -62,8 +62,11 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from config.app_config import (
     SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD,
+    SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD,
     SYNTHESIS_COHERENCE_MIN_LEVEL,
     SYNTHESIS_COHERENCE_MODEL,
     SYNTHESIS_COMPOSITE_MIN_SCORE,
@@ -286,6 +289,28 @@ class SynthesisFilter:
             except Exception as e:
                 logger.debug(f"Failed to store reject for audit: {e}")
 
+        # Known-connection rediscoveries: candidates rejected at novelty_external
+        # because the connection already exists in literature (claim rehash OR
+        # concepts A/B already co-occur in wiki). These are NOT failures -- they are
+        # proof-of-concept evidence that the generator surfaces REAL structure.
+        # Persisted with a distinct status (rejected_known) so they don't pollute
+        # the human-grading queue or the FP rate. rejection_reason distinguishes the
+        # two gates (pure rehash vs genuine co-occurrence -- the stronger signal).
+        known_rejects = [r for r in rejected if r.rejection_stage == "novelty_external"]
+        for kr in known_rejects:
+            try:
+                self.memory.store_known_connection(kr)
+            except Exception as e:
+                logger.debug(f"Failed to store known connection: {e}")
+        if known_rejects:
+            logger.info(
+                "[SYNTH KNOWN] rediscovered %d/%d candidates (%.0f%%) already in "
+                "literature (novelty_external) -- proof the generator finds real "
+                "connections",
+                len(known_rejects), len(candidates),
+                100.0 * len(known_rejects) / max(len(candidates), 1),
+            )
+
         summary = {
             "total": len(candidates),
             "accepted": len(accepted),
@@ -293,6 +318,7 @@ class SynthesisFilter:
             "rejection_breakdown": rejection_breakdown,
             "accepted_results": accepted,
             "composite_rejects_stored": len(audit_rejects),
+            "known_connections_stored": len(known_rejects),
             "avg_stage_times_ms": avg_times,
         }
 
@@ -431,8 +457,10 @@ class SynthesisFilter:
 
         Two sub-checks:
         1. Claim similarity — does the full articulated claim match existing wiki text?
-        2. Co-occurrence — do concepts A and B already appear together in wiki?
-           High co-occurrence + high claim novelty = known connection, novel phrasing.
+        2. Co-occurrence — are concepts A and B themselves semantically close (direct
+           cos(A,B))? High concept cosine + high claim novelty = known connection,
+           novel phrasing. (Replaced an inverted bigram-FAISS signal, 2026-06-27 — see
+           docs/SYNTHESIS_VALIDATION.md revert note.)
         """
         from knowledge.semantic_search import semantic_search_with_neighbors
 
@@ -474,25 +502,30 @@ class SynthesisFilter:
                 metadata={"claim_similarity": claim_sim, "cooccurrence_similarity": 0.0},
             )
 
-        # --- Sub-check 2: Co-occurrence via FAISS ---
-        bare_query = f"{concept_a} {concept_b}"
+        # --- Sub-check 2: Co-occurrence via direct cos(A, B) ---
+        # Replaced the bigram "A B" FAISS query, whose signal was INVERTED (known pairs scored
+        # LOWER than unrelated — it measured proper-noun string distinctiveness, not concept
+        # co-occurrence). Direct concept cosine separates known (~0.59) from unrelated (~0.05).
+        # See docs/SYNTHESIS_VALIDATION.md (2026-06-27) + revert note.
         try:
-            cooccurrence_results = semantic_search_with_neighbors(bare_query, k=3)
+            from models.model_manager import ModelManager
+            embedder = ModelManager._get_cached_embedder()
+            vecs = embedder.encode([concept_a, concept_b], normalize_embeddings=True)
+            cooccurrence_sim = float(np.dot(vecs[0], vecs[1]))
         except Exception as e:
-            logger.debug(f"FAISS co-occurrence check failed: {e}. Skipping.")
-            cooccurrence_results = []
+            logger.debug(f"Concept cosine co-occurrence check failed: {e}. Skipping.")
+            cooccurrence_sim = 0.0
 
-        cooccurrence_sim = _extract_faiss_similarity(cooccurrence_results)
         result.cooccurrence_similarity = cooccurrence_sim
 
-        # Hard gate: concepts already co-occur heavily in literature
-        if cooccurrence_sim > SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD:
+        # Hard gate: concepts are semantically close enough to be an already-known pairing
+        if cooccurrence_sim > SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD:
             return StageResult(
                 stage_name="novelty_external",
                 passed=False,
                 reason=(
                     f"Concepts already co-occur in literature "
-                    f"(cooccurrence={cooccurrence_sim:.3f} > {SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD})"
+                    f"(concept_cosine={cooccurrence_sim:.3f} > {SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD})"
                 ),
                 score=result.novelty_score_external,
                 metadata={"claim_similarity": claim_sim, "cooccurrence_similarity": cooccurrence_sim},
@@ -599,11 +632,12 @@ class SynthesisFilter:
             f"survive peer review in a comparative methods paper.\n"
             f"- STRONG: MODERATE plus the mapping generates non-obvious testable predictions.\n"
             f"- INVALID: Concepts are misunderstood or the claim is incoherent.\n\n"
-            f"Respond exactly in this format:\n"
+            f"Respond in EXACTLY this format. Your FIRST line MUST be the rating, so the "
+            f"verdict is never lost to length:\n"
+            f"RATING: <INVALID|WEAK|MODERATE|STRONG>\n"
             f"De-jargon: <the claim stripped of field-specific nouns>\n"
             f"Variable swap: <one concrete prediction, or 'NONE'>\n"
-            f"Against: <strongest criticism>\n"
-            f"Rating: <INVALID|WEAK|MODERATE|STRONG>"
+            f"Against: <strongest criticism>"
         )
 
         judge_system_prompt = (
@@ -631,37 +665,24 @@ class SynthesisFilter:
                 prompt=prompt_1,
                 model_name=SYNTHESIS_COHERENCE_MODEL,
                 system_prompt=judge_system_prompt,
-                max_tokens=400,
+                max_tokens=500,
                 temperature=0.1,
+                # opus-4.8 is a reasoning model: with reasoning ON it spends the whole
+                # token budget in the (hidden) reasoning channel and returns EMPTY visible
+                # content (the "swallow"), or never reaches the verdict. The structured
+                # de-jargon/variable-swap analysis below IS the reasoning — keep it visible.
+                disable_reasoning=True,
             )
             response_text = (response or "").strip()
-            # A reasoning model can swallow the whole answer into the reasoning
-            # channel and stream empty visible content (cf.
-            # ResponseGenerator._recover_reasoning_only). Retry once with reasoning
-            # disabled before falling back, so the answer is forced into content.
-            if not response_text:
-                logger.warning(
-                    "Coherence judge returned empty content (reasoning-only "
-                    "swallow?) -- retrying with reasoning disabled."
-                )
-                response = await self.model_manager.generate_once(
-                    prompt=prompt_1,
-                    model_name=SYNTHESIS_COHERENCE_MODEL,
-                    system_prompt=judge_system_prompt,
-                    max_tokens=400,
-                    temperature=0.1,
-                    disable_reasoning=True,
-                )
-                response_text = (response or "").strip()
         except Exception as e:
             logger.warning(f"Coherence judge LLM call failed: {e}. Passing with MODERATE default.")
             return _moderate_default("LLM unavailable -- default MODERATE")
 
+        # An empty visible channel is not a verdict. With reasoning already disabled
+        # above this is rare (a transient API empty), but if it happens, default
+        # generous (MODERATE/pass) rather than WEAK/reject — same as the exception path.
         if not response_text:
-            logger.warning(
-                "Coherence judge still empty after reasoning-disabled retry. "
-                "Passing with MODERATE default."
-            )
+            logger.warning("Coherence judge returned empty content. Passing with MODERATE default.")
             return _moderate_default("Empty coherence response -- default MODERATE")
 
         coherence_level = self._parse_coherence_level(response_text)
@@ -731,10 +752,10 @@ class SynthesisFilter:
             f"IMPORTANT: Simplification is expected and acceptable. Only flag claims where a domain "
             f"expert would say 'that specific mechanism is wrong or doesn't exist,' NOT 'that's a "
             f"simplification of how it actually works.'\n\n"
-            f"Respond:\n"
-            f"PASS - The domain facts are real (even if simplified)\n"
-            f"FAIL - A specific claim is factually wrong or based on debunked science (state which one)\n\n"
-            f"One sentence of reasoning, then PASS or FAIL on its own line."
+            f"Your FIRST line MUST be exactly PASS or FAIL (so the verdict is never lost to "
+            f"length): PASS = the domain facts are real even if simplified; FAIL = a specific "
+            f"claim is factually wrong or based on debunked science. Then one sentence of "
+            f"reasoning (name the wrong claim if FAIL)."
         )
 
         try:
@@ -742,20 +763,21 @@ class SynthesisFilter:
                 prompt=prompt,
                 model_name=SYNTHESIS_COHERENCE_MODEL,
                 system_prompt="You are a domain-accuracy fact-checker. Focus only on whether the specific scientific or technical claims are correct, not on whether the cross-domain analogy is interesting.",
-                max_tokens=150,
+                max_tokens=200,
                 temperature=0.1,
+                # Same swallow risk as Pass 1 — keep the verdict in visible content.
+                disable_reasoning=True,
             )
         except Exception as e:
             logger.debug(f"Factual skeptic pass failed: {e}. Keeping MODERATE.")
             return False
 
-        response_text = response.strip()
+        response_text = (response or "").strip()
         response_upper = response_text.upper()
 
-        # Look for FAIL verdict — downgrade to WEAK
-        # Check last line first (most reliable), then anywhere
-        last_line = response_text.strip().split("\n")[-1].strip().upper()
-        is_fail = last_line == "FAIL" or (
+        # FAIL verdict (verdict is now the FIRST line) — downgrade to WEAK.
+        first_line = (response_text.split("\n")[0].strip().upper() if response_text else "")
+        is_fail = first_line.startswith("FAIL") or (
             "FAIL" in response_upper and "PASS" not in response_upper
         )
 
@@ -772,8 +794,10 @@ class SynthesisFilter:
     def _parse_coherence_level(response_text: str) -> CoherenceLevel:
         """Parse coherence level from LLM response text.
 
-        Searches from the end of the response first (Opus gives long analysis
-        before the Rating: line). Falls back to WEAK on parse failure.
+        The judge now emits `RATING: <LEVEL>` as the FIRST line (verbose reasoning
+        models like opus-4.8 otherwise ramble past a trailing Rating line or swallow
+        it entirely — see _stage_5_coherence_judge). The regex still matches the
+        rating anywhere for robustness. Falls back to WEAK on parse failure.
         """
         import re
 

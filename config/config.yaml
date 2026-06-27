@@ -326,7 +326,8 @@ synthesis:
   use_percentile_thresholds: false
   novelty_known_threshold: 0.88
   novelty_adjacent_threshold: 0.7
-  cooccurrence_known_threshold: 0.85
+  cooccurrence_known_threshold: 0.85  # legacy bigram-FAISS gate (unused; see SYNTHESIS_VALIDATION revert note)
+  concept_cosine_known_threshold: 0.45  # stage-3 known gate: direct cos(A,B) (replaces inverted bigram signal)
   memory_similarity_threshold: 0.85
   coherence_model: claude-opus-4.8
   coherence_min_level: MODERATE

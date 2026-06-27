@@ -186,6 +186,15 @@ unrelated pairs: 0.65-0.80. Genuine co-occurrence (e.g., "Cabo" ↔
 - Coherence judge is now the primary gatekeeper (as designed)
 - All 3 target gates (novelty, coherence, composite) are active
 
+> ⚠️ **SUPERSEDED 2026-06-27 — this recalibration was papering over an inverted signal.**
+> The clue is right here: *"unrelated pairs: 0.65–0.80, genuine co-occurrence: 0.90+"* — but a
+> later probe found the OPPOSITE on real concept pairs (KNOWN mean 0.564 < UNRELATED mean 0.746).
+> The bigram `"a b"` FAISS query measured proper-noun *string distinctiveness*, not concept
+> co-occurrence, so raising the threshold to 0.85 just stopped it firing on real concepts instead
+> of fixing the inversion. Replaced with direct `cos(a, b) > 0.45` (`SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD`).
+> Full diagnosis + the validated document-co-occurrence oracle that *can* catch non-obvious
+> cross-domain known pairs: `docs/SYNTHESIS_VALIDATION.md` (2026-06-27).
+
 ---
 
 ## Reviewer Feedback (2026-03-31)

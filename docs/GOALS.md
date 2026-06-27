@@ -34,6 +34,21 @@ Consolidation is largely complete (3,800+ tests, 0 failures, clean module extrac
 - Decide whether to loosen composite threshold (currently tight) once live data flows
 - Tier 1 (GraphWalkGenerator) blocked on bridge count (6 < 40) — see Goal 3
 - Tier 2 (SynthesisGenerator) lowest priority — lower insight quality than Tier 0
+- **Validation without domain expertise** — the real way to prove the filter is *literature as
+  ground truth*, not human grading: test the coherence judge's discrimination (known-real vs
+  surface-metaphor), measure the generator's rediscovery rate, and use the arXiv reindex-delta
+  as cross-corpus confirmation. Human grading is a *supplement* (calibrate the judge on personal
+  data), not the gate. Full methodology: `docs/SYNTHESIS_VALIDATION.md`; harness:
+  `scripts/synthesis_validation.py`. This is what unblocks the 2-month grading bottleneck.
+  - **Progress (2026-06-27):** Test A run found the coherence judge was *dead* since the opus-4.8
+    switch (RATING last-line → reasoning-swallowed → defaulted WEAK) — fixed (RATING first +
+    reasoning off → +50% discrimination gap). Found the stage-3 known-oracle was *inverted*
+    (bigram-FAISS measured string distinctiveness; known scored lower than unrelated) → replaced
+    with direct `cos(A,B)`. Built + validated the **document co-occurrence oracle**
+    (`knowledge/doc_cooccurrence.py`) — the Test-B "known" signal independent of embedding
+    distance, 97% recall / ~4% FP (n=99), catches non-obvious cross-domain pairs cosine misses.
+    The discovery miner surfaces real low-cosine connections (`simulated annealing ↔ metallurgy`,
+    cos 0.09) but needs a common-word-robust mention signal before unsupervised mining.
 
 ### 2. Proposals Pipeline — Wiki-Enriched Idea Generation
 - **Status**: Extracted to standalone branch. Core modules (`knowledge/proposal_generator.py`, `memory/proposal_store.py`, `memory/code_proposal.py`) still on master pending cleanup.

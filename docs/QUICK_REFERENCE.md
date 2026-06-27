@@ -2406,7 +2406,7 @@ class SynthesisResult:
     coherence_level: Optional[CoherenceLevel]
     novelty_score_external: float    # 1 - nearest_wiki_similarity
     novelty_score_internal: float    # 1 - nearest_synthesis_similarity
-    cooccurrence_similarity: float   # how often A and B already co-occur in wiki
+    cooccurrence_similarity: float   # direct cos(A, B) concept similarity (stage-3 known signal)
     template_similarity: float       # how close claim is to generic bridge templates
     composite_score: float
     status: CandidateStatus
@@ -2452,7 +2452,8 @@ class SynthesisFilter:
 # 2: semantic_distance  — endpoint distance in [0.20, 0.90] (~5ms)
 # 3: novelty_external   — 3 sub-checks (~15ms, FAISS wiki vector search, 40M vectors):
 #      a) claim similarity: full claim vs wiki via FAISS (hard gate at 0.80)
-#      b) co-occurrence: bare "concept_a concept_b" vs wiki via FAISS (hard gate at 0.75)
+#      b) co-occurrence: direct cos(concept_a, concept_b) — known if > 0.45 (replaced
+#         the inverted bigram-FAISS "concept_a concept_b" query, 2026-06-27)
 #      c) template specificity: regex generic bridge pattern detection
 # 4: novelty_internal   — synthesis memory; new paths pass as convergence (~10ms)
 # 5: coherence_judge    — two-pass LLM: Pass 1 structural coherence (4-tier rating),
@@ -2474,7 +2475,8 @@ SYNTHESIS_DISTANCE_MIN = 0.20
 SYNTHESIS_DISTANCE_MAX = 0.90
 SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88   # Claim sim gate — only near-verbatim rehashes
 SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.70  # Label threshold
-SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # Co-occurrence gate — 40M-scale recalibrated
+SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # LEGACY bigram gate — retained but UNUSED (inverted; see SYNTHESIS_VALIDATION)
+SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD = 0.45  # ACTIVE stage-3 known gate: direct cos(A,B) > 0.45
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
 SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"  # code default; config.yaml overrides to "claude-opus-4.8"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"

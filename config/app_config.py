@@ -1435,6 +1435,12 @@ SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD: float = float(SYNTHESIS_CFG.get("novelty_a
 # co-occurrence (concepts documented together) triggers rejection.
 SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD: float = float(SYNTHESIS_CFG.get("cooccurrence_known_threshold", 0.85))
 
+# Stage 3b (replacement): direct cos(A,B) known gate. The bigram "A B" FAISS signal above
+# was INVERTED — known pairs scored LOWER than unrelated (the 0.85 raise just hid it by never
+# firing on real concepts). Direct concept cosine separates cleanly: known mean 0.59 vs
+# unrelated 0.05; a 0.45 gate flags 6/7 known, 0 false-positive. See SYNTHESIS_VALIDATION.md.
+SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD: float = float(SYNTHESIS_CFG.get("concept_cosine_known_threshold", 0.45))
+
 # Stage 4: Internal Novelty (synthesis memory)
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD: float = float(SYNTHESIS_CFG.get("memory_similarity_threshold", 0.85))
 

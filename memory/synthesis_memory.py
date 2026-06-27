@@ -9,7 +9,11 @@ Module Contract
 - Key methods:
   - find_similar(connection_claim, threshold, limit) -> List[Tuple[SynthesisResult, float]]
   - store_result(result) -> str  [returns doc_id; deduplicates via convergence update]
-  - store_rejected_for_audit(result) -> str  [stores composite-rejected for FN review]
+  - store_rejected_for_audit(result) -> str  [stores judgment-stage reject for FN review]
+  - store_known_connection(result) -> str  [novelty_external reject = connection already
+    in literature; stored with DISTINCT status=rejected_known so it stays OUT of the
+    human-grading queue + FP stats. A proof-of-concept signal, not a failure.]
+  - get_known_connections(limit) -> List[Tuple[str, SynthesisResult]]  [rediscoveries]
   - get_recurring(min_paths, min_sources) -> List[SynthesisResult]
   - grade_result(doc_id, grade, notes, changes_thinking, mechanism_real, heard_before) -> bool
     [two-layer grading: 3 binary screening questions + 1-5 gut-feel slider]
@@ -300,6 +304,46 @@ class SynthesisMemory:
         except Exception as e:
             logger.error(f"Failed to store rejected result for audit: {e}")
             raise
+
+    def store_known_connection(self, result: SynthesisResult) -> str:
+        """Persist a candidate rejected at novelty_external (already in literature).
+
+        These are rejected because the connection already exists in the wiki corpus
+        — either a direct claim rehash or because concepts A and B already co-occur.
+        That is NOT a failure: it means the generator independently surfaced a REAL
+        connection, which is proof-of-concept evidence. Stored with a DISTINCT
+        status (rejected_known) so it never enters the human-grading audit queue or
+        the FP-rate stats (both key off CandidateStatus.REJECTED). The candidate's
+        scores + the matched wiki text (nearest_known_external) + rejection_reason
+        (which gate fired) come along via to_metadata() for later analysis.
+        """
+        doc_text = result.candidate.connection_claim
+        metadata = result.to_metadata()
+        metadata["status"] = CandidateStatus.REJECTED_KNOWN.value  # override REJECTED
+        try:
+            doc_id = self.store.add_to_collection(
+                name=self.COLLECTION_NAME,
+                text=doc_text,
+                metadata=metadata,
+            )
+            logger.debug(f"Stored known-connection rediscovery: {doc_id}")
+            return doc_id
+        except Exception as e:
+            logger.error(f"Failed to store known connection: {e}")
+            raise
+
+    def get_known_connections(self, limit: int = 100) -> List[Tuple[str, SynthesisResult]]:
+        """Fetch candidates rejected as already-in-literature (status=rejected_known).
+
+        These are the generator's "rediscoveries" of real connections — query for
+        the rate (count) and presence (claim + matched wiki text + scores). Returns
+        list of (doc_id, SynthesisResult).
+        """
+        return [
+            (doc_id, result)
+            for doc_id, result in self.get_all_results(limit=limit * 2)
+            if result.status == CandidateStatus.REJECTED_KNOWN
+        ][:limit]
 
     def grade_result(
         self,

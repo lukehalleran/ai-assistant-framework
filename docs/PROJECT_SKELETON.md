@@ -1099,7 +1099,7 @@ PROFILE_EPHEMERAL_RELATIONS = [          # Relations whose history gets pruned
 ---
 
 ### 2.5 memory/storage/multi_collection_chroma_store.py (Vector Store)
-**Purpose**: Semantic search across 13 ChromaDB collections
+**Purpose**: Semantic search across 14 ChromaDB collections
 
 **Collections**: conversations, summaries, wiki_knowledge, facts, reflections, obsidian_notes, reference_docs, procedural, procedural_skills, proposals, threads, synthesis_results, visual_memories
 
@@ -3797,7 +3797,7 @@ class SynthesisResult:
 | 0 | Text Sanity | ~0ms | Hard | Min tokens, verb presence, repetition ratio |
 | 1 | Domain Crossing | ~1ms | Hard | Min 2 distinct source domains |
 | 2 | Semantic Distance | ~5ms | Hard | Endpoint distance in [0.20, 0.90] range |
-| 3 | External Novelty | ~15ms | Hard | 3 sub-checks via FAISS wiki vector search (40M vectors): (a) claim similarity — full claim vs wiki via `semantic_search_with_neighbors()`, hard gate at 0.80; (b) co-occurrence — bare "concept_a concept_b" conjunction vs wiki via FAISS, hard gate at 0.75 (catches known connection with novel phrasing); (c) template specificity — regex generic bridge pattern detection (catches novel connection with vacuous claim) |
+| 3 | External Novelty | ~15ms | Hard | 3 sub-checks: (a) claim similarity — full claim vs wiki via `semantic_search_with_neighbors()`, hard gate at 0.88; (b) co-occurrence — direct `cos(concept_a, concept_b)`, hard gate > 0.45 (catches known connection with novel phrasing; replaced an inverted bigram-FAISS signal 2026-06-27); (c) template specificity — regex generic bridge pattern detection (catches novel connection with vacuous claim) |
 | 4 | Internal Novelty | ~10ms | Soft | Synthesis memory check; new paths pass (convergence signal) |
 | 5 | Coherence Judge | ~500ms-2s | Hard | Two-pass LLM: Pass 1 structural coherence rates INVALID/WEAK/MODERATE/STRONG (min MODERATE); Pass 2 factual skeptic fires only on MODERATE results, checks for debunked science/fabricated mechanisms (binary PASS/FAIL, downgrades to WEAK on FAIL) |
 | 6 | Composite Scoring | ~0ms | Hard | 4-signal novelty composite ≥ 0.40 minimum |
@@ -3859,8 +3859,18 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 - `knowledge/synthesis_retriever.py` — RetrievalSynthesisGenerator: structural query → FAISS → adversarial eval (Tier 0)
 - `knowledge/graph_walk_generator.py` — GraphWalkGenerator: hub-dampened Markov walks (Tier 1)
 - `knowledge/synthesis_generator.py` — SynthesisGenerator: cross-store candidate generation (Tier 2)
+- `knowledge/doc_cooccurrence.py` — **[NEW 2026-06-27]** Document co-occurrence oracle: are A & B
+  discussed together in wiki (shared article title OR cross-mention in body)? The Test-B "known"
+  signal that is independent of embedding distance — catches non-obvious cross-domain known pairs
+  cosine misses (validated 97% recall / ~4% FP, n=99)
 - `config/app_config.py` — `SYNTHESIS_*`, `SYNTHESIS_GENERATOR_*`, `SYNTHESIS_RETRIEVAL_*`, `GRAPH_WALK_*` constants
+  (incl. `SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD=0.45`, the stage-3 known gate)
 - `config/config.yaml` — `synthesis:`, `synthesis_generator:`, `synthesis_retrieval:`, `graph_walk:` sections
+- Validation scripts: `scripts/synthesis_validation.py` (Test A judge discrimination),
+  `scripts/synthesis_controlled_distance.py`, `scripts/synthesis_doc_cooccurrence.py`,
+  `scripts/synthesis_oracle_validation.py` (oracle hardening, n=99),
+  `scripts/synthesis_discovery_miner.py` (mine the low-cosine + co-occurring quadrant) — all
+  free (FAISS only). Methodology + results: `docs/SYNTHESIS_VALIDATION.md`
 
 ---
 
@@ -5402,7 +5412,7 @@ python main.py inspect-summaries
 | thread_manager.py | Threads: conversation continuity tracking [NEW - REFACTORED] |
 | memory_interface.py | Protocols: type contracts for memory components [NEW - REFACTORED] |
 | corpus_manager.py | JSON CRUD: load/save/query short-term memories |
-| multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 12 collections |
+| multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 14 collections |
 | gate_system.py | Filter: FAISS → cosine → cross-encoder → top K |
 | prompt/builder.py | Assemble: system + separated context sections + STM within 15K tokens |
 | response_generator.py | Stream: async LLM + Best-of-N + Duel modes (buffer fix + DeepSeek EOS) [FIXED] |

@@ -328,6 +328,9 @@ class SynthesisSection(BaseModel):
     novelty_known_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
     novelty_adjacent_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     cooccurrence_known_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    # Stage-3 known gate: direct cos(A,B). Replaced the inverted bigram-FAISS signal
+    # (see docs/SYNTHESIS_VALIDATION.md revert note). ~0.45 → 6/7 known, 0 false-positive.
+    concept_cosine_known_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
     memory_similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     coherence_model: str = "sonnet-4.5"
     coherence_min_level: str = "MODERATE"

@@ -217,6 +217,36 @@ class TestSynthesisMemoryStoreRejected:
         meta = store._docs[doc_id]["metadata"]
         assert meta["status"] == "rejected"
 
+    def test_store_known_connection_uses_distinct_status(self):
+        # A novelty_external reject (already in literature) is stored with a
+        # DISTINCT status so it can't enter the human-grading queue / FP stats.
+        sm, store = self._make_memory()
+        r = _make_result(
+            status=CandidateStatus.REJECTED,
+            rejection_stage="novelty_external",
+            rejection_reason="Concepts already co-occur in literature (cooccurrence=0.91 > 0.85)",
+        )
+        doc_id = sm.store_known_connection(r)
+        assert store._docs[doc_id]["metadata"]["status"] == "rejected_known"
+
+    def test_known_connection_excluded_from_grading_queue(self):
+        sm, _ = self._make_memory()
+        sm.store_rejected_for_audit(_make_result(
+            status=CandidateStatus.REJECTED, rejection_stage="composite_scoring",
+            rejection_reason="score too low", claim="composite reject claim",
+        ))
+        sm.store_known_connection(_make_result(
+            status=CandidateStatus.REJECTED, rejection_stage="novelty_external",
+            rejection_reason="already co-occur", claim="known rediscovery claim",
+        ))
+        graded_queue = [r.candidate.connection_claim for _, r in sm.get_ungraded(status_filter="rejected")]
+        known = [r.candidate.connection_claim for _, r in sm.get_known_connections()]
+        # The rediscovery surfaces ONLY under known-connections, never the FP queue.
+        assert "known rediscovery claim" in known
+        assert "known rediscovery claim" not in graded_queue
+        assert "composite reject claim" in graded_queue
+        assert "composite reject claim" not in known
+
 
 class TestSynthesisMemoryQueries:
     def _make_memory_with_data(self):
@@ -515,18 +545,59 @@ class TestAuditCaptureStages:
         stored_concepts = {d["metadata"].get("concept_a") for d in store._docs.values()}
         assert stored_concepts == {"c", "cs"}
 
+    @pytest.mark.asyncio
+    async def test_novelty_external_rejects_stored_as_known_connection(self):
+        """process_batch must route novelty_external rejects (connection already in
+        literature) to store_known_connection with the DISTINCT rejected_known status —
+        the rediscovery-capture wiring, previously untested. Also asserts rejection_reason
+        survives the to_metadata round-trip (the persistence fix)."""
+        from knowledge.synthesis_filter import SynthesisFilter
+        from memory.synthesis_memory import SynthesisMemory
+
+        store = FakeChromaStore()
+        sm = SynthesisMemory(store)
+        filt = SynthesisFilter(
+            chroma_store=store, model_manager=MagicMock(), synthesis_memory=sm,
+        )
+
+        baked = {
+            "known": _make_result(status=CandidateStatus.REJECTED,
+                                  rejection_stage="novelty_external",
+                                  rejection_reason="concepts already co-occur",
+                                  concept_a="known"),
+            "mech": _make_result(status=CandidateStatus.REJECTED,
+                                 rejection_stage="text_sanity", concept_a="mech"),
+        }
+        candidates = [_make_candidate(concept_a=k) for k in ("known", "mech")]
+
+        async def fake_process_candidate(cand):
+            return baked[cand.concept_a]
+
+        filt.process_candidate = fake_process_candidate
+        await filt.process_batch(candidates)
+
+        # Exactly the novelty_external reject is captured as a rediscovery, with the
+        # distinct rejected_known status (keeps it out of the REJECTED FP/grading queue)
+        # and rejection_reason intact after to_metadata().
+        known_docs = [d for d in store._docs.values()
+                      if d["metadata"].get("status") == CandidateStatus.REJECTED_KNOWN.value]
+        assert len(known_docs) == 1
+        assert known_docs[0]["metadata"]["concept_a"] == "known"
+        assert known_docs[0]["metadata"]["rejection_reason"] == "concepts already co-occur"
+
 
 # ---------------------------------------------------------------------------
 # Coherence judge: empty (reasoning-swallowed) response must not score WEAK
 # ---------------------------------------------------------------------------
 
 class TestCoherenceEmptyResponse:
-    """An empty judge channel is not a verdict -- retry once without reasoning,
-    then default MODERATE/pass (mirrors the LLM-exception path), never WEAK/reject.
+    """An empty judge channel is not a verdict -- default MODERATE/pass (mirrors the
+    LLM-exception path), never WEAK/reject. The judge call disables reasoning up front
+    (opus-4.8 otherwise swallows the answer into the reasoning channel), so no retry.
     """
 
     @pytest.mark.asyncio
-    async def test_empty_response_retries_then_defaults_moderate(self):
+    async def test_empty_response_defaults_moderate(self):
         from knowledge.synthesis_filter import SynthesisFilter
 
         calls = []
@@ -534,7 +605,7 @@ class TestCoherenceEmptyResponse:
         class MockMM:
             async def generate_once(self, **kwargs):
                 calls.append(kwargs)
-                return ""  # reasoning-only swallow on every call
+                return ""  # empty visible content
 
         filt = SynthesisFilter(chroma_store=FakeChromaStore(), model_manager=MockMM())
         result = _make_result(status=CandidateStatus.ACCEPTED, coherence=CoherenceLevel.WEAK)
@@ -542,10 +613,9 @@ class TestCoherenceEmptyResponse:
 
         assert sr.passed is True
         assert result.coherence_level == CoherenceLevel.MODERATE
-        # exactly one retry, and it disabled reasoning
-        assert len(calls) == 2
-        assert calls[0].get("disable_reasoning", False) is False
-        assert calls[1].get("disable_reasoning") is True
+        # one call, reasoning disabled up front (prevents the swallow proactively)
+        assert len(calls) == 1
+        assert calls[0].get("disable_reasoning") is True
 
     @pytest.mark.asyncio
     async def test_nonempty_unparseable_still_weak_reject(self):

@@ -15,7 +15,7 @@
 
 Daemon is a **conversational AI agent framework** I built solo over ~12 months. It is not a chatbot wrapper — it is a full agent architecture with:
 
-- **Persistent hierarchical memory** across 13 ChromaDB collections (episodic, semantic, procedural, summary, meta)
+- **Persistent hierarchical memory** across 14 ChromaDB collections (episodic, semantic, procedural, summary, meta)
 - **Multi-stage RAG pipeline** with intent-parameterized scoring, multi-stage gating (~200ms), and 18 parallel retrieval tasks
 - **Knowledge graph** (NetworkX) with entity alias resolution, BFS query expansion, and graph-boosted scoring
 - **ReAct-style agentic tool loop** (web search, code sandbox, memory search, image recall, git stats)
@@ -64,7 +64,7 @@ When a query needs more than stored memory, Daemon enters a multi-round ReAct lo
 | **Web Search** | Tavily API with query decomposition, caching, and rate limiting |
 | **Wolfram Alpha** | Symbolic computation, unit conversions, scientific data |
 | **Code Sandbox** | Secure Python execution in ephemeral Firecracker microVMs (E2B) |
-| **Memory Search** | Targeted search across 13 ChromaDB collections from within the loop |
+| **Memory Search** | Targeted search across 14 ChromaDB collections from within the loop |
 | **Memory Expansion** | Drill into a search hit — retrieve chronological neighbors or decompress summaries back to original conversations |
 | **Full Document** | Retrieve and reassemble all chunks of an uploaded document by title (fuzzy matching) |
 | **Image Recall** | Entity-resolved visual memory search with CLIP cross-modal matching |
@@ -101,7 +101,7 @@ A 4-state finite state machine (VALIDATE -> GROUNDING -> QUIET -> GENTLE) tracks
 
 ## Engineering Highlights
 
-- Designed an **async retrieval pipeline** with 18 parallel tasks across 13 ChromaDB collections, with per-intent retrieval limits and gating thresholds
+- Designed an **async retrieval pipeline** with 18 parallel tasks across 14 ChromaDB collections, with per-intent retrieval limits and gating thresholds
 - Built **intent-parameterized ranking** — a single composite scoring function that adapts weights, retrieval counts, and gate thresholds per-intent instead of hardcoding separate retrieval paths
 - Added **fact verification and staleness penalties** to reduce outdated memory surfacing, with cascading invalidation across downstream summaries and reflections
 - Created **retrieval quality benchmarks** with real embeddings (all-MiniLM-L6-v2), 30 seed memories, and 19 test cases measuring recall@K and MRR — run before any scoring or weight changes
@@ -124,7 +124,7 @@ User Query
     +- Knowledge Graph ----- Entity resolution (alias tables, trigram matching) +
     |                        BFS expansion (depth 2) + lateral connectivity ranking
     |
-    +- Parallel Retrieval -- 18 async tasks across 13 ChromaDB collections
+    +- Parallel Retrieval -- 18 async tasks across 14 ChromaDB collections
     |                        (conversations, facts, summaries, reflections, wiki,
     |                         obsidian notes, git commits, procedural skills, threads,
     |                         proposals, reference docs, visual memories, ...)
@@ -254,7 +254,7 @@ Personal examples in this README are anonymized. The memory system's `dry_run=Tr
 
 ## Memory System
 
-Five memory tiers modeled on cognitive architecture, stored across 13 ChromaDB collections:
+Five memory tiers modeled on cognitive architecture, stored across 14 ChromaDB collections:
 
 | Tier | What It Stores | Retrieval Bias |
 |------|---------------|----------------|
@@ -379,7 +379,7 @@ memory/                      # 5-tier memory system
 +-- user_profile.py          # Categorized fact storage with namespace canonicalization
 +-- user_profile_schema.py   # 6-layer relation categorization + ephemeral TTL
 +-- storage/
-    +-- multi_collection_chroma_store.py  # ChromaDB wrapper (13 collections)
+    +-- multi_collection_chroma_store.py  # ChromaDB wrapper (14 collections)
 
 knowledge/
 +-- web_search_manager.py    # Tavily API + query decomposition + caching

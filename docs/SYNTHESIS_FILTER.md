@@ -85,7 +85,7 @@ coherence_level: CoherenceLevel         # INVALID/WEAK/MODERATE/STRONG
 coherence_justification: str            # full LLM response text
 novelty_score_external: float           # 1 - claim_sim (from Stage 3)
 novelty_score_internal: float           # 1 - synthesis_memory_sim (from Stage 4)
-cooccurrence_similarity: float          # bare "A B" FAISS wiki similarity (from Stage 3)
+cooccurrence_similarity: float          # direct cos(A,B) concept similarity (from Stage 3)
 template_similarity: float              # generic bridge pattern score (from Stage 3)
 nearest_known_external: str             # closest wiki match text
 nearest_known_internal: str             # closest synthesis memory match text
@@ -237,9 +237,9 @@ SynthesisFilter.process_candidate(candidate)
   ├── Stage 0: Text Sanity          (~0ms, regex)
   ├── Stage 1: Domain Crossing      (~1ms, metadata)
   ├── Stage 2: Semantic Distance    (~5ms, embedding)
-  ├── Stage 3: Novelty External     (~15ms, 2 FAISS wiki searches + regex)
-  │     ├── Sub-check 1: Claim similarity
-  │     ├── Sub-check 2: Co-occurrence
+  ├── Stage 3: Novelty External     (~15ms, 1 FAISS wiki search + concept-cosine + regex)
+  │     ├── Sub-check 1: Claim similarity        (FAISS wiki)
+  │     ├── Sub-check 2: Co-occurrence           (direct cos(A,B))
   │     └── Sub-check 3: Template specificity
   ├── Stage 4: Novelty Internal     (~10ms, synthesis memory)
   ├── Stage 5: Coherence Judge      (~1-4s, 1-2 LLM calls)
@@ -314,6 +314,20 @@ Distance: 0.95 > 0.90 (nonsensical)
 
 Three sub-checks, each targeting a different failure mode.
 
+> **Rejects here are SAVED as proof-of-concept evidence [2026-06-26].** A
+> candidate killed at `novelty_external` means the connection already exists in
+> literature — either a claim rehash (Sub-check 1) or because concepts A and B
+> already co-occur (Sub-check 2). That is *not* a failure: it means the generator
+> independently surfaced a **real** connection. `process_batch()` persists these
+> via `synthesis_memory.store_known_connection()` with a DISTINCT status
+> (`rejected_known`), so they stay out of the human-grading queue and the FP rate
+> (both key off `CandidateStatus.REJECTED`). They carry `cooccurrence_similarity`,
+> `novelty_external`, `nearest_known_external` (the matched wiki text), and
+> `rejection_reason` (which gate fired) for analysis. Per-batch rate is logged as
+> `[SYNTH KNOWN] rediscovered N/M (X%) already in literature`, and they surface in
+> the GUI Synthesis tab under "Known connections (rediscovered)". The co-occurrence
+> gate is the stronger signal (a genuine A↔B bridge that exists in real work).
+
 #### Sub-check 1: Claim Similarity
 
 Searches the FAISS wiki index (40M vectors) for the **full articulated
@@ -337,19 +351,31 @@ Wiki match: "Exercise and Serotonin" article (similarity=0.90)
 Reason: Claim already known
 ```
 
-#### Sub-check 2: Co-occurrence
+#### Sub-check 2: Co-occurrence (direct concept cosine)
 
-Searches the FAISS wiki index for the **bare concept conjunction**
-`"concept_a concept_b"` via `semantic_search_with_neighbors()`. Catches the
+Computes the **direct cosine between concept A and concept B** in the shared
+MiniLM embedding space (`ModelManager._get_cached_embedder()`). Catches the
 "known connection, novel phrasing" failure mode — when the claim embeds far
-from wiki (novel sentence) but the concepts already appear together in
-literature.
+from wiki (novel sentence) but the concepts are themselves semantically close
+(an already-known pairing).
 
-**Hard gate:** `cooccurrence_sim > 0.85` (`SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD`, 40M-scale recalibrated)
+**Hard gate:** `cos(A,B) > 0.45` (`SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD`).
+
+> **2026-06-27 — replaced an inverted signal.** This used to search FAISS for the
+> bare conjunction `"concept_a concept_b"` and gate on `cooccurrence_sim > 0.85`.
+> That signal was **inverted**: it measured proper-noun string distinctiveness, so
+> *known* concept pairs scored *lower* (mean 0.56) than *unrelated* ones (mean 0.75) —
+> the 0.85 raise just hid it by never firing. Direct `cos(A,B)` separates cleanly
+> (known 0.59 vs unrelated 0.05; a 0.45 gate → 6/7 known, 0 false-positive). The
+> legacy `SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD=0.85` constant is retained but unused;
+> full diagnosis + exact-revert snippet in `docs/SYNTHESIS_VALIDATION.md`. Known limit:
+> cosine measures topical proximity, so genuinely cross-domain known pairs (e.g.
+> `percolation ↔ phase transition`, cos 0.34) slip under — a real co-occurrence/citation
+> corpus is the follow-up.
 
 **Example:** "Bacterial quorum sensing parallels voting theory" — the claim
-itself is novel text, but searching `"quorum sensing voting theory"` hits
-survey articles discussing exactly this analogy.
+itself is novel text, but `cos("quorum sensing", "voting theory")` is high enough
+to flag the pairing as already-explored.
 
 #### Sub-check 3: Template Specificity
 
@@ -707,7 +733,7 @@ To add a new calibration candidate:
 | Noise getting through Stage 5 | Coherence judge too generous | Add noise examples to calibration fixture, check if prompt needs tightening |
 | Pseudoscience passing | Factual skeptic not catching it | Add FAIL examples to skeptic prompt |
 | Vacuous claims accepted | Template patterns missing a pattern | Add regex to `_GENERIC_TEMPLATES` |
-| Known connections passing | Co-occurrence threshold too high | Lower `SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD` |
+| Known connections passing | Concept-cosine gate too high | Lower `SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD` (~0.45) |
 | Composite scores too high | Novelty weights too generous | Increase `SYNTHESIS_NOVELTY_W_COOCCURRENCE` weight |
 
 ### Recall Too Low (rejecting good insights)

@@ -40,6 +40,12 @@ class CandidateStatus(Enum):
     REJECTED = "rejected"
     ACCEPTED = "accepted"
     CONVERGING = "converging"  # seen from multiple independent paths
+    REJECTED_KNOWN = "rejected_known"  # rejected at novelty_external: the connection
+    #                                    already exists in literature (claim rehash or
+    #                                    A/B co-occurrence). NOT a failure — a proof-of-
+    #                                    concept signal that the generator finds real
+    #                                    structure. Deliberately distinct from REJECTED
+    #                                    so it stays out of the FP-grading queue/stats.
 
 
 @dataclass
@@ -133,6 +139,8 @@ class SynthesisResult:
             "nearest_known_internal": self.nearest_known_internal,
             "composite_score": self.composite_score,
             "status": self.status.value,
+            "rejection_stage": self.rejection_stage or "",
+            "rejection_reason": self.rejection_reason,
             "unique_paths": ",".join(sorted(self.unique_paths)),
             "unique_sources": ",".join(sorted(self.unique_sources)),
             "convergence_strength": self.convergence_strength,
@@ -172,6 +180,8 @@ class SynthesisResult:
         result.nearest_known_internal = metadata.get("nearest_known_internal", "")
         result.composite_score = float(metadata.get("composite_score", 0.0))
         result.status = CandidateStatus(metadata.get("status", "pending"))
+        result.rejection_stage = metadata.get("rejection_stage", "") or None
+        result.rejection_reason = metadata.get("rejection_reason", "")
         result.unique_paths = (
             set(metadata.get("unique_paths", "").split(","))
             if metadata.get("unique_paths") else set()

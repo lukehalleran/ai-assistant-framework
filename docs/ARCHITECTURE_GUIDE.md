@@ -1825,9 +1825,11 @@ This stage catches three distinct failure modes:
 
 - **Claim similarity**: Full articulated claim searched against wiki
   via FAISS semantic search. Catches direct rehashes. Hard gate: sim > 0.88 → reject (IVFPQ-calibrated, was 0.60).
-- **Co-occurrence**: Bare concept conjunction ("concept_a concept_b")
-  searched against wiki via FAISS. Catches "known connection, novel phrasing."
-  Hard gate: sim > 0.85 → reject (IVFPQ-calibrated, was 0.60).
+- **Co-occurrence**: Direct `cos(concept_a, concept_b)` in the shared MiniLM
+  space. Catches "known connection, novel phrasing." Hard gate: cos > 0.45 →
+  reject. (Replaced the bigram-FAISS `"concept_a concept_b"` query 2026-06-27 —
+  that signal was *inverted*: known pairs scored lower than unrelated. See
+  `SYNTHESIS_VALIDATION.md`.)
 - **Template specificity**: Regex detection of vacuous bridge language
   ("both involve", "share structural similarities", "operates on
   similar principles"). No hard gate — feeds into composite score.

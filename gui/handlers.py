@@ -1289,6 +1289,51 @@ async def _self_repair_note(ctx, detected):
         return None
 
 
+def _apply_web_citations(text, web_map):
+    """Make [WEB_N] citations clickable + append a Sources footer (display only).
+
+    gr.Chatbot renders markdown, so each inline [WEB_N] is rewritten to
+    `[[WEB_N](url)]` — literal brackets around a clickable "WEB_N" pointing at the
+    source URL — and a `**Sources:**` list is appended. Markers without a URL in
+    web_map are left as plain text. No-op when there's no map or no citation.
+    Applied to the DISPLAY string only; the stored response keeps the canonical
+    [WEB_N] markers.
+
+    NOTE: do NOT use the `[\\[WEB_N\\]](url)` escaped-bracket form — this chatbot
+    registers `\\[ ... \\]` as a LaTeX display-math delimiter (see gr.Chatbot
+    latex_delimiters in gui/launch.py), so backslash-escaped brackets render as
+    math, not a link. The `[[WEB_N](url)]` form has no backslashes and is safe.
+    """
+    if not text or not web_map:
+        return text
+    import re as _re
+    # Idempotency guard: the linkified form [[WEB_N](url)] still contains the literal
+    # substring [WEB_N], so a second pass would re-wrap it ([[[WEB_N](url)](url)]) and
+    # re-append Sources. If any marker is already linkified, this text is done — return it.
+    if _re.search(r'\[\[WEB_\d+\]\(', text):
+        return text
+    cited = sorted(set(_re.findall(r'\[WEB_(\d+)\]', text)), key=int)
+    if not cited:
+        return text
+
+    def _repl(m):
+        key = f"WEB_{m.group(1)}"
+        url = ((web_map.get(key) or {}).get("url") or "").strip()
+        return f"[[{key}]({url})]" if url else m.group(0)
+
+    out = _re.sub(r'\[WEB_(\d+)\]', _repl, text)
+
+    footer = []
+    for _n in cited:
+        key = f"WEB_{_n}"
+        src = web_map.get(key)
+        if src and (src.get("url") or "").strip():
+            footer.append(f"[{key}] [{src.get('title') or src['url']}]({src['url']})")
+    if footer:
+        out += "\n\n---\n**Sources:**\n" + "\n".join(footer)
+    return out
+
+
 # Map the action system's ActionType (user-intent classifier) to the guard's
 # coarser ActionKind, so we can tell when the USER actually asked Daemon to
 # perform an external action this turn.
@@ -1627,20 +1672,10 @@ async def _run_agentic_search(ctx):
             display_output = '\n'.join(_cleaned_lines).strip()
             display_output = _re.sub(r'\n{3,}', '\n\n', display_output)
 
-        # Append web sources footer if [WEB_N] citations present
+        # Make [WEB_N] citations clickable + append a Sources footer (display only).
         _web_map = getattr(agentic_controller, '_current_web_source_map', None) or {}
         if _web_map:
-            import re as _re_cite
-            _cited_ids = set(_re_cite.findall(r'\[WEB_(\d+)\]', display_output))
-            if _cited_ids:
-                _footer_lines = []
-                for _n in sorted(_cited_ids, key=int):
-                    _key = f"WEB_{_n}"
-                    _src = _web_map.get(_key)
-                    if _src:
-                        _footer_lines.append(f"[{_key}] [{_src.get('title', '')}]({_src.get('url', '')})")
-                if _footer_lines:
-                    display_output += "\n\n---\n**Sources:**\n" + "\n".join(_footer_lines)
+            display_output = _apply_web_citations(display_output, _web_map)
             # Also set on orchestrator for provenance
             orchestrator._web_source_map = _web_map
 
@@ -2254,6 +2289,12 @@ async def _run_enhanced(ctx):
                 final_output = (final_output or "").rstrip() + _guard_suffix
         except Exception as e:
             logger.warning(f"[Handle Submit] Enhanced action guard failed (non-fatal): {e}")
+
+        # Make [WEB_N] citations from the standard web-search path clickable
+        # (display only; stored response keeps the canonical markers).
+        _resp_for_debug = _apply_web_citations(
+            _resp_for_debug, getattr(orchestrator, '_web_source_map', None) or {}
+        )
 
         debug_record = _build_debug_record(
             mode=_enh_mode, user_text=user_text, prompt=full_prompt,

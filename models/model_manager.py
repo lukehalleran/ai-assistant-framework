@@ -217,6 +217,7 @@ class ModelManager:
         self.api_models["glm-4.7"] = "z-ai/glm-4.7"
         self.api_models["glm-5"] = "z-ai/glm-5"
         self.api_models["glm-5-turbo"] = "z-ai/glm-5-turbo"
+        self.api_models["glm-5.2"] = "z-ai/glm-5.2"
         # DeepSeek models
         self.api_models["deepseek-v3.1"] = "deepseek/deepseek-chat-v3.1"
         self.api_models["deepseek-v4"] = "deepseek/deepseek-v4-pro"

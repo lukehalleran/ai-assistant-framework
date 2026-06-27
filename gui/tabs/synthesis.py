@@ -22,7 +22,12 @@ def build_synthesis_tab(orchestrator, _show_dev_tabs):
         # --- Queue filter ---
         with gr.Row():
             synth_queue_filter = gr.Radio(
-                choices=["Accepted (ungraded)", "Rejected (ungraded)", "Graded history"],
+                choices=[
+                    "Accepted (ungraded)",
+                    "Rejected (ungraded)",
+                    "Known connections (rediscovered)",
+                    "Graded history",
+                ],
                 value="Accepted (ungraded)",
                 label="View",
             )
@@ -194,6 +199,10 @@ def build_synthesis_tab(orchestrator, _show_dev_tabs):
                 items = sm.get_ungraded(status_filter="accepted")
             elif view_filter == "Rejected (ungraded)":
                 items = sm.get_ungraded(status_filter="rejected")
+            elif view_filter == "Known connections (rediscovered)":
+                # Candidates rejected at novelty_external (already in literature) —
+                # evidence the generator finds real connections, not noise.
+                items = sm.get_known_connections()
             elif view_filter == "Graded history":
                 items = sm.get_graded()
             else:
