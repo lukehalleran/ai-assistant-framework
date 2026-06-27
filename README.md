@@ -7,24 +7,41 @@
 [![~5,000 Tests](https://img.shields.io/badge/tests-~5%2C000-brightgreen.svg)](#testing)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
-> ~184K lines of Python (≈140K code) across 528 files | 14 ChromaDB collections | ~5,000 tests | solo-built part-time over a year
+> ~183K lines of Python (≈139K code) across 528 files | 14 ChromaDB collections | ~5,000 tests | 20+ agentic tools | solo-built part-time over ~14 months
 
 Daemon is built around persistent memory, evaluated retrieval, knowledge-graph context, agentic tools, and experimental literature-backed synthesis. It stores your memory locally, retrieves context through a multi-stage RAG pipeline, tracks fact truth and staleness over time, and supports human-gated self-improvement through structured code proposals and isolated agent-branch experiments.
 
 It is a stateful agent architecture, not a chatbot wrapper: every query passes through context analysis, intent classification, parallel retrieval, gating, scoring, prompt assembly, generation, and post-response state updates.
+
+*Solo architected and maintained by Luke Halleran. AI coding assistants were used as development tools, but architecture, review, testing, integration decisions, and commits are human-directed — which is why GitHub lists `@claude` as a contributor.*
 
 ---
 
 ## TL;DR
 
 - **Persistent hierarchical memory** across **14 ChromaDB collections** (episodic, semantic, procedural, summary, meta, synthesis)
-- **Evaluated multi-stage RAG** — intent-parameterized scoring, **20+ parallel retrieval tasks**, multi-stage gating (~200ms), cross-encoder rerank; **retrieval benchmarks gate every scoring change** (MRR 0.88 on 200+ real cases)
+- **Evaluated multi-stage RAG** — intent-parameterized scoring, **20+ parallel retrieval tasks**, multi-stage gating (~200ms), cross-encoder rerank; **retrieval benchmarks gate every scoring change** (combined MRR 0.89 across 272 cases — versioned in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md))
 - **Knowledge-graph reasoning** (NetworkX) with entity alias resolution, BFS query expansion, and graph-boosted scoring
 - **ReAct agentic tool loop** — **20 tools** (web, sandbox, memory, files, git/github, academic search, image recall, document generation, action proposals, contact lookup) with a context inventory that prevents redundant searches
 - **Literature-backed synthesis** — narrows a large conceptual space into evidence-backed *candidate* connections and validates them against independent corpora (candidates, not discoveries)
 - **Human-gated self-improvement** — structured code proposals + isolated agent-branch experiments; the machine may propose and evaluate, **only a human may merge**
 - **Prompt-section ablation eval system** — snapshot, replay, variant generation, blind pairwise judging, objective checks
 - **Docker deployment** + **desktop installer** (PyInstaller + Inno Setup)
+
+---
+
+## Reviewer Quick Path
+
+If you only have 10 minutes:
+
+1. [`docs/ARCHITECTURE_GUIDE.md`](docs/ARCHITECTURE_GUIDE.md) — system-level walkthrough.
+2. [`core/prompt/`](core/prompt/) — parallel retrieval + prompt assembly (the system is a pipeline, not one prompt).
+3. [`memory/memory_scorer.py`](memory/memory_scorer.py), [`memory/fact_verification.py`](memory/fact_verification.py), [`memory/claim_tracker.py`](memory/claim_tracker.py) — ranking, truth handling, staleness.
+4. [`docs/SYNTHESIS_VALIDATION.md`](docs/SYNTHESIS_VALIDATION.md) + [`knowledge/doc_cooccurrence.py`](knowledge/doc_cooccurrence.py) — the literature-backed synthesis validation.
+5. `python -m pytest tests/benchmarks/ -m benchmark -v` — see retrieval evaluation run on real embeddings.
+
+If you only want the single most distinctive subsystem, start with synthesis validation:
+[`docs/SYNTHESIS_VALIDATION.md`](docs/SYNTHESIS_VALIDATION.md) → [`knowledge/doc_cooccurrence.py`](knowledge/doc_cooccurrence.py) → `scripts/synthesis_*`.
 
 ---
 
@@ -73,13 +90,25 @@ Images are ingested through OpenCLIP ViT-B/32 → vision-LLM caption → entity 
 
 ---
 
+## Evaluation & Benchmarks
+
+Retrieval quality is **measured, not asserted** — no scoring or weight change ships without a before/after benchmark run.
+
+- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2), two suites — synthetic seeds + adversarial cases sampled from production ChromaDB (each target paired with its nearest-neighbor distractors). Latest snapshot (2026-05-17): combined **MRR 0.89** (R@1 0.83, R@3 0.92, R@topK 0.97) across **272 retrieval cases**, 305/305 cases passing. Per-suite: Synth n=72 MRR 0.91 · Real v2 (adversarial) n=200 MRR 0.88.
+- **Prompt-section ablation eval** (`eval/`): snapshot capture → deterministic replay → leave-one-out / add-one-in variants → blind pairwise A/B judging → 5 automated objective checks. Entirely side-effect-free (a persistence guard asserts no ChromaDB/JSON mutation during eval).
+- **Synthesis validation** (`scripts/synthesis_*`, `docs/SYNTHESIS_VALIDATION.md`): judge-discrimination tests, the document-co-occurrence oracle hardening (n=99), controlled-distance and discovery-mining experiments — all using literature as ground truth.
+
+> Benchmark numbers are versioned in [docs/BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md). All metrics are reproducible locally — no benchmark claim ships without a runnable test.
+
+---
+
 ## Current Research Track: Literature-Backed Synthesis
 
 Daemon's synthesis system does not claim to discover truth. It **narrows a large conceptual search space into evidence-backed *candidate* connections**, then validates them against independent corpora. The target signal is:
 
 > **low semantic similarity + corpus co-occurrence = a non-obvious but literature-backed candidate connection.**
 
-Two concepts that sit far apart in embedding space but are *discussed together* in the literature are, by construction, non-obvious yet grounded. Cosine similarity alone can't find these — it equates "known" with "topically close." A separate **document-co-occurrence oracle** can.
+Two concepts that sit far apart in embedding space but are *discussed together* in the literature are strong candidates for non-obvious but grounded connections. Cosine similarity alone can't surface these — it equates "known" with "topically close." A separate **document-co-occurrence oracle** can. (Low-cosine co-occurrence is a *signal*, not a guarantee: it can still be a common-word artifact — a failure mode this project's own validation found and now screens for.)
 
 Recent validation work (see [docs/SYNTHESIS_VALIDATION.md](docs/SYNTHESIS_VALIDATION.md)) treats *literature as the ground truth you don't have to be an expert in*:
 
@@ -96,7 +125,13 @@ The long-term direction is **cross-corpus knownness** — labeling each candidat
 - unknown but coherent
 - low-cosine but multi-corpus-supported
 
-This gives a measurable way to surface candidate hypotheses without pretending the machine knows truth. **Final validation still requires a human or domain expert. Synthesis outputs are candidates, not discoveries.**
+This gives a measurable way to surface candidate hypotheses without pretending the machine knows truth. What it explicitly **does not** do:
+
+- It does not prove a novel candidate is *true* — only that it is non-obvious and corpus-supported.
+- It does not replace human or domain-expert review.
+- It raises the prior that a surviving candidate is worth a human's time.
+
+**Final validation still requires a human or domain expert. Synthesis outputs are candidates, not discoveries.**
 
 ---
 
@@ -152,16 +187,6 @@ User Query
 ```
 
 > Full formal model: [FORMAL_MODEL.md](docs/FORMAL_MODEL.md) · Code-level walkthrough: [PROJECT_SKELETON.md](docs/PROJECT_SKELETON.md)
-
----
-
-## Evaluation & Benchmarks
-
-Retrieval quality is **measured, not asserted** — no scoring or weight change ships without a before/after benchmark run.
-
-- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2), two suites — synthetic seeds + cases drawn from real production ChromaDB. Current combined **MRR 0.88** (R@1 0.81, R@3 0.92, R@topK 0.98) across 200+ cases with adversarial nearest-neighbor distractors.
-- **Prompt-section ablation eval** (`eval/`): snapshot capture → deterministic replay → leave-one-out / add-one-in variants → blind pairwise A/B judging → 5 automated objective checks. Entirely side-effect-free (a persistence guard asserts no ChromaDB/JSON mutation during eval).
-- **Synthesis validation** (`scripts/synthesis_*`, `docs/SYNTHESIS_VALIDATION.md`): judge-discrimination tests, the document-co-occurrence oracle hardening (n=99), controlled-distance and discovery-mining experiments — all using literature as ground truth.
 
 ---
 
@@ -231,15 +256,26 @@ python -m pytest --cov=. --cov-report=html   # With coverage
 
 > The default `pytest` run excludes integration tests and benchmarks via `pytest.ini`. Markers: `slow`, `semantic`, `benchmark`.
 
-**~5,000 tests across 236 test files** (count of test functions under `tests/`). Coverage spans every subsystem — prompt-section eval (246), synthesis audit (40), knowledge graph, intent classification, web-search trigger, fact verification, escalation FSM, cross-deduplication, claim tracking, visual memory, and retrieval benchmarks (real embeddings, recall@K + MRR), among others.
+**~5,000 tests across 230 test files** (count of test functions under `tests/`). Coverage spans every subsystem — prompt-section eval (246), synthesis audit (40), knowledge graph, intent classification, web-search trigger, fact verification, escalation FSM, cross-deduplication, claim tracking, visual memory, and retrieval benchmarks (real embeddings, recall@K + MRR), among others.
 
 ---
 
 ## Privacy & Safety
 
-Daemon is designed for **local-first personal use**. User memory is stored locally by default (ChromaDB + JSON in `data/`). API keys load from environment variables or `.env` — `.env.example` holds placeholders only. No user data is transmitted except to the configured LLM providers for generation.
+Daemon is **local-first because persistent personal memory is sensitive.** Conversation memory, ChromaDB indexes, user profile, notes, and generated artifacts stay on disk by default (ChromaDB + JSON in `data/`). API keys load from environment variables or `.env` — `.env.example` holds placeholders only. No user data leaves the machine except in the API calls made to the configured LLM providers for generation (and to any tool — e.g. web search — you explicitly enable).
 
 Owner-specific personal vocabulary lives in a **gitignored** `config/config.local.yaml`, deep-merged over a fully generic committed config — a fresh clone ships with no personal data. All deletion operations default to `dry_run=True`; **no user data is auto-deleted** without explicit GUI action, never on shutdown.
+
+---
+
+## What This Is Not
+
+- **Not AGI**, and not an autonomous self-modifying system — the machine proposes and evaluates; a human merges.
+- **Not a truth-discovery machine** — synthesis surfaces *candidate* connections, not facts. Final validation is human.
+- **Not a cloud-hosted memory product** — memory lives on your disk, not a service.
+- **Not a benchmark claim without local tests** — every metric in this README is reproducible from `tests/`.
+
+Daemon proposes, retrieves, validates, and queues; humans remain responsible for truth judgments and code merges.
 
 ---
 
@@ -343,7 +379,7 @@ eval/                        # Prompt ablation & eval system
 
 agent_branch/                # Sandboxed, human-gated self-modification harness
 scripts/                     # Validation harnesses (synthesis_*, oracle, miner)
-tests/                       # 236 test files, ~5,000 tests
+tests/                       # 230 test files, ~5,000 tests
 ```
 
 ---
@@ -413,6 +449,19 @@ This turns today's shutdown-only processing into a first-class **background cogn
 3. **Literature is the ground truth you don't have to be an expert in.** Validate candidates against corpora; reserve human/expert time for the last mile.
 4. **Human-gated by default.** The machine proposes and evaluates; a human merges. Nothing destructive happens silently.
 5. **Subtractive work > additive work.** Removing systems that don't pull their weight beats adding new ones.
+
+---
+
+## Status
+
+Daemon is an **active solo research/engineering project**, not a polished SaaS product. The core paths — memory, retrieval, GUI, agentic tools, benchmarks, Docker, and desktop packaging — are implemented and tested. Synthesis validation, cross-corpus knownness, and sleep-mode background cognition are **active research tracks**.
+
+A few subsystems are research/developer features rather than always-on defaults, and degrade gracefully when their data is absent:
+
+- **Synthesis pipeline** — generators feed a human audit queue; dreaming runs at session-end only, behind an auto-halt.
+- **Code proposals + `agent_branch/`** — sandboxed, human-gated; nothing auto-commits, pushes, or merges.
+- **External corpora** — the Wikipedia FAISS index (~41M vectors) and arXiv/PubMed knownness are **optional**; the assistant runs fully without them.
+- **Debug / provenance tooling** — surfaced in the GUI for inspection, not required for normal chat.
 
 ---
 
