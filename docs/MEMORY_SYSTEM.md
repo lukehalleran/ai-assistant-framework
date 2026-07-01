@@ -524,6 +524,35 @@ Possessive alias patterns (`_POSSESSIVE_RE`) auto-detect phrases like
 "my cat", "my boss", "my brother" and register them as entity aliases
 during `learn_alias()` calls.
 
+### Graph Query Expansion + Junk Maintenance (2026-06)
+
+`_expand_query_with_graph()` (in `core/prompt/gatherer_memory.py`) calls
+`graph_utils.rank_expansion_candidates()` to append neighbour names to the
+search query (see `PROMPT_BUILDING_PIPELINE.md`). Two read-side guards keep
+expansion focused:
+
+- **Hub-aware BFS.** A hub node — one in `skip_ids` (e.g. "user") or with
+  degree >= `GRAPH_EXPANSION_HUB_DEGREE` (default 30) — may be *reached* but is
+  never expanded *through*; only seed entities fan out freely. Fixes a bug where
+  an incidental token linking to the "user" star hub (~797 of 889 edges) dumped
+  the whole personal neighbourhood (pets, project terms) into unrelated queries.
+  `extract_graph_entities()` also drops common-noun/participle stopwords
+  (video/videos/done/homework/stuff) that had been wrongly resolving as entities.
+- **Read-time TTL.** Stale transient edges (mood/activity/illness past their
+  per-relation horizon, via `GraphMemory._edge_is_stale_transient` →
+  `relation_classifier`) are dropped from both traversal and scoring — the same
+  read-side staleness the profile, `facts` collection and graph-context
+  (`get_context_sentences`) already apply. Nothing is deleted; a fresh mention
+  refreshes `last_seen` and the edge returns.
+
+`GraphMemory.remove_entity()` removes a node plus its incident edges from the
+authoritative `_edge_index` and the alias index, so `save()` (which serialises
+edges from that index) never re-persists dangling edges. The maintenance tool
+`scripts/graph_junk_cleanup.py` is dry-run-first: a default run only writes a
+tiered candidate file for review; `--apply` removes only the ids left
+uncommented, after a timestamped JSON backup (respects the never-auto-delete
+rule).
+
 ### Schedule Facts (2026-05)
 
 Facts with `fact_type="schedule"` metadata extracted from schedule statements ("I work Friday 3-10pm"). Five categories: `work_schedule`, `class_schedule`, `exam_date`, `shift_pattern`, `day_off`. Metadata includes `schedule_scope` (recurring/one_off/ambiguous), `schedule_days`, `schedule_start`/`end` (HH:MM), `parser_confidence`, `resolution_basis`, `needs_confirmation`. Supersession via `FactVerifier._check_schedule_supersession()` when same kind + same day detected.
@@ -906,6 +935,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | `GRAPH_SCORING_BOOST_ENABLED` | True | Enable graph-proximity bonus in scoring |
 | `GRAPH_SCORING_BOOST_CAP` | 0.15 | Max graph bonus per memory |
 | `GRAPH_QUERY_EXPANSION_MAX_TERMS` | 8 | Max neighbor names appended to query |
+| `GRAPH_EXPANSION_HUB_DEGREE` | 30 | Degree at/above which a node is treated as a hub — reachable but never expanded through |
 
 ### Profile Namespace
 | Constant | Default | Purpose |

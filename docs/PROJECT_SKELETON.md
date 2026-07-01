@@ -67,9 +67,9 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/skill_activation.py` - SkillActivationPolicy (post-retrieval filter: intent suppression, min score, STM bonus, cooldown, cap) + SkillCooldownStore (JSON-backed TTL) **[NEW 2026-05]**
 - `memory/cross_deduplicator.py` - Cross-collection dedup (duplicates + fact contradictions, dry-run only on shutdown)
 - `memory/dedup_models.py` - Pydantic models: DedupPlan, DuplicatePair, ContradictionCluster
-- `memory/graph_memory.py` - Knowledge graph (NetworkX DiGraph, JSON persistence)
+- `memory/graph_memory.py` - Knowledge graph (NetworkX DiGraph, JSON persistence); `remove_entity()` removes a node + incident edges, keeping the alias/edge indexes consistent **[ENHANCED 2026-06]**
 - `memory/graph_models.py` - Pydantic models: GraphNode, GraphEdge
-- `memory/graph_utils.py` - Shared graph helpers: entity extraction, neighbor lookups
+- `memory/graph_utils.py` - Shared graph helpers: entity extraction, neighbor lookups; hub-aware BFS in `rank_expansion_candidates` (hubs reached but not expanded through; `GRAPH_EXPANSION_HUB_DEGREE`=30) + read-time TTL filtering of stale transient edges during expansion **[ENHANCED 2026-06]**
 - `memory/entity_resolver.py` - Entity alias resolution + relation normalization
 - `memory/thread_manager.py` - Thread tracking
 - `memory/thread_models.py` - Pydantic models: ThreadType, ThreadStatus, OpenThread **[NEW 2026-03-20]**
@@ -3229,6 +3229,7 @@ rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_
 **Scripts**:
 - `scripts/migrate_facts_to_graph.py` — Reads existing ChromaDB facts, populates graph (supports `--dry-run`)
 - `scripts/cleanup_graph_junk.py` — Removes 4+ word phrase nodes, migrates info to subject metadata (supports `--execute`)
+- `scripts/graph_junk_cleanup.py` — Dry-run-first curated knowledge-graph junk-node cleanup: writes a tiered candidate file; `--apply` removes only uncommented ids after a JSON backup (respects never-auto-delete) **[NEW 2026-06]**
 
 **Configuration** (`config/app_config.py`, YAML section `knowledge_graph`):
 ```python
@@ -4872,6 +4873,7 @@ daemon/
 ├── core/
 │   ├── orchestrator.py        # Main controller (tone, STM, coordinates subsystems)
 │   ├── response_parser.py     # Response parsing utilities (thinking blocks, XML stripping) [NEW 2026-01-23]
+│   ├── reasoning_stream_filter.py # Filter interleaved reasoning/answer fragments in a streaming response (reasoning model fusing a discarded draft onto the answer with no separator) [NEW 2026-06]
 │   ├── context_pipeline.py    # Query analysis pipeline (tone, topic, intent, STM) [NEW 2026-01-23]
 │   ├── stm_analyzer.py        # Short-term memory analyzer [NEW]
 │   ├── intent_classifier.py   # Regex-first query intent classifier (9 types) [NEW 2026-02-15]
@@ -4994,7 +4996,7 @@ daemon/
 │
 ├── knowledge/
 │   ├── WikiManager.py         # Wikipedia FAISS search
-│   ├── semantic_search.py     # FAISS IVFPQ Wikipedia search (zero-copy parquet metadata); is_faiss_available() guard [ENHANCED 2026-05]
+│   ├── semantic_search.py     # FAISS IVFPQ Wikipedia search (zero-copy parquet metadata); is_faiss_available() guard; metric-aware _to_similarity() (L2 squared-distance → cosine; fixes inverted wiki ranking) [ENHANCED 2026-06]
 │   ├── topic_manager.py       # Topic-specific utilities
 │   ├── web_search_manager.py  # Tavily API + caching [NEW 2025-12-22]
 │   ├── wolfram_manager.py     # Wolfram Alpha LLM API [NEW 2026-01-22]

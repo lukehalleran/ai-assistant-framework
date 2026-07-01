@@ -12,7 +12,11 @@ Module Contract
   - Ensures a non‑empty system prompt is sent (falls back to config SYSTEM_PROMPT if blank/None).
   - Reasoning/thinking detection [NEW 2026-03-26]: Extracts reasoning_content from streaming chunks
     (OpenAI-style delta). Emits synthetic <thinking>/<\/thinking> wrapper tags around reasoning blocks
-    so handlers.py can detect and suppress them during streaming display.
+    so handlers.py can detect and suppress them during streaming display. Implemented via
+    core.reasoning_stream_filter.InterleavedReasoningFilter [2026-06-28], which ALSO holds back a
+    leading draft run so interleaved reason→draft→reason→answer streams can't fuse the draft onto the
+    answer. The filter stays inert until the first reasoning chunk, so non-reasoning models are
+    unaffected (no buffering, no behaviour change).
   - Reasoning-only recovery [NEW 2026-06-14]: if a stream produces reasoning but ZERO content
     (reasoning models occasionally swallow the whole answer into the reasoning channel), close the
     dangling <thinking> marker and retry once via _recover_reasoning_only() →
@@ -30,6 +34,7 @@ from typing import AsyncGenerator, List, Tuple, Optional, Sequence, Dict, Any
 from datetime import datetime
 from utils.time_manager import TimeManager
 from utils.query_checker import keyword_tokens
+from core.reasoning_stream_filter import InterleavedReasoningFilter, MARKER
 # No config constants imported here; defaults are managed by ModelManager
 logger = get_logger("response_generator")
 
@@ -114,6 +119,11 @@ class ResponseGenerator:
             # Streaming path
             if hasattr(response_generator, "__aiter__"):
                 buffer = ""
+                # Suppresses reasoning-only chunks AND defends against interleaved
+                # drafts (reason → draft → reason → real answer) fusing onto the
+                # answer. See core/reasoning_stream_filter.py. _was_reasoning /
+                # _reasoning_seen mirror the filter's state for the recovery paths.
+                _rfilter = InterleavedReasoningFilter()
                 _was_reasoning = False  # Track if we were in a reasoning phase
                 _reasoning_seen = False  # Track if any reasoning chunk ever arrived
                 _stream_usage = None  # usage chunk (prompt-cache stats) if include_usage is set
@@ -190,19 +200,22 @@ class ResponseGenerator:
                                 delta_reasoning = chunk.get("reasoning_content") or chunk.get("reasoning") or ""
                                 finish_reason = chunk.get("finish_reason")
 
-                            # If chunk has reasoning but no content, skip it (thinking phase)
-                            # Emit synthetic <thinking> tag so handlers.py can detect it
-                            if delta_reasoning and not delta_content:
-                                _reasoning_seen = True
-                                if not _was_reasoning:
-                                    _was_reasoning = True
-                                    yield "<thinking>"
-                                continue
-
-                            # Transition: first content chunk after reasoning → close thinking
-                            if _was_reasoning and delta_content:
-                                _was_reasoning = False
-                                yield "</thinking>"
+                            # Route reasoning/content through the interleave filter.
+                            # It suppresses reasoning-only chunks (emitting synthetic
+                            # <thinking>/</thinking> markers so handlers.py can detect
+                            # the thinking phase) and holds back a leading draft run
+                            # so it can't fuse onto the real answer. The committed
+                            # content it returns plays the role of delta_content for
+                            # all the downstream buffer/word-split/finish logic.
+                            _raw_content = delta_content
+                            delta_content = ""
+                            for _kind, _text in _rfilter.feed(delta_reasoning, _raw_content):
+                                if _kind == MARKER:
+                                    yield _text
+                                else:
+                                    delta_content += _text
+                            _reasoning_seen = _rfilter.reasoning_seen
+                            _was_reasoning = _rfilter.in_reasoning
 
                             if delta_content:
                                 self.logger.debug(f"[STREAMING] Chunk: '{delta_content[:50]}...' (len={len(delta_content)})")
@@ -214,17 +227,31 @@ class ResponseGenerator:
                                         "[STREAMING] First token arrived after %.2f seconds",
                                         now - start_time
                                     )
-                            else:
+                            elif not _raw_content and not delta_reasoning:
+                                # Truly empty chunk (no content, no reasoning). A chunk
+                                # whose content the filter is merely holding back, or a
+                                # reasoning chunk, is NOT "empty" — don't count it toward
+                                # the stall heuristic.
                                 empty_chunk_count += 1
                                 if empty_chunk_count % 10 == 0:
                                     self.logger.debug(f"[STREAMING] {empty_chunk_count} consecutive empty chunks")
 
-                            # Add content to buffer (this should happen for ALL non-empty delta_content)
+                            # Add committed content to buffer (the filter may still be
+                            # holding back a leading draft run, which is intentional).
                             buffer += delta_content
 
                             # Check if stream signaled completion
                             if finish_reason in ("stop", "end_turn", "length", "content_filter"):
                                 self.logger.debug(f"[STREAMING] Stream ended with finish_reason={finish_reason}")
+                                # Flush any content the interleave filter still holds.
+                                for _kind, _text in _rfilter.finish():
+                                    if _kind == MARKER:
+                                        yield _text
+                                    else:
+                                        buffer += _text
+                                        if first_token_time is None:
+                                            first_token_time = time.time()
+                                _was_reasoning = _rfilter.in_reasoning
                                 # Flush remaining buffer
                                 if buffer.strip():
                                     clean = _strip_special_tokens(buffer)
@@ -288,7 +315,17 @@ class ResponseGenerator:
                             self.logger.error(f"[STREAMING] Error processing chunk: {e}")
                             continue
 
-                    # Yield any remaining buffer
+                    # Flush any content the interleave filter still holds, then
+                    # yield any remaining buffer.
+                    for _kind, _text in _rfilter.finish():
+                        if _kind == MARKER:
+                            yield _text
+                        else:
+                            buffer += _text
+                            if first_token_time is None:
+                                first_token_time = time.time()
+                    _was_reasoning = _rfilter.in_reasoning
+
                     if buffer.strip():
                         tail = _strip_special_tokens(buffer)
                         if tail.strip():

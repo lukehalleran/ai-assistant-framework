@@ -628,12 +628,24 @@ related entities (Sam, Mom, Biscuit) to the search query.
 The expansion algorithm in `gatherer_memory.py:_expand_query_with_graph()`:
 
 1. Extract entity IDs from query via alias resolution
-2. BFS to depth 2 from matched entities (traverses through hubs like "user")
+2. Hub-aware BFS to depth 2 from matched entities [NEW 2026-06] — a hub node (in
+   `skip_ids`, or degree ≥ `GRAPH_EXPANSION_HUB_DEGREE`, default 30) may be
+   *reached* but is never expanded *through*, so an incidental token linking to
+   the "user" star hub (~797/889 edges) can't dump the whole personal
+   neighbourhood (pets, project terms) into unrelated queries; only seed
+   entities fan out.
 3. Rank candidates by lateral connectivity:
    `score = min(non_hub_edges * 0.3, 1.0)` + single-word bonus (+0.1) / 3+ word penalty (-0.1)
 4. Filter junk: ≤2 chars, 4+ words, digit-starting, temporal, measurements,
    verb phrases
 5. Append top K display names to original query (default K=8)
+
+Read-time TTL [NEW 2026-06]: stale transient edges (past their per-relation
+horizon, via `GraphMemory._edge_is_stale_transient` → `relation_classifier`) are
+dropped from traversal + scoring — no deletion; a fresh mention refreshes
+`last_seen`. Manual junk cleanup: `scripts/graph_junk_cleanup.py`
+(dry-run-first; `--apply` removes only reviewed/uncommented ids after a JSON
+backup, via `GraphMemory.remove_entity()`).
 
 Example: `"what about my brother"` → `"what about my brother Sam Mom Biscuit"`
 
@@ -1317,6 +1329,14 @@ no content, it closes the dangling marker and retries once via
 separation so the model emits its answer as normal content.
 `disable_reasoning` is an internal recovery knob on
 `model_manager.generate_once()`/`generate_async()`, not a public API.
+
+A distinct leak mode is *interleaved* reasoning and answer within the visible
+stream — a reasoning model fusing a discarded draft onto the answer with no
+separator (observed as two clauses run together with no space).
+`core/reasoning_stream_filter.py` [NEW 2026-06] sits between the raw delta
+stream and the consumer and strips these interleaved reasoning fragments so they
+never reach the user or storage. (The whole-answer-swallowed case above is
+recovered by a retry; this interleaved case is filtered inline.)
 
 ### Budget Enforcement
 
@@ -2064,6 +2084,12 @@ Secure Python execution in ephemeral Firecracker microVMs:
 - Requires ~102GB storage for raw wiki data (optional — system works without it)
 - All wiki vector searches (agentic search, prompt retrieval, synthesis
   pipeline) route through FAISS; ChromaDB `wiki_knowledge` used only as fallback
+- **Metric-aware similarity** [NEW 2026-06]: the wiki index is built L2, so FAISS
+  returns squared distances (smaller = closer). `semantic_search._to_similarity()`
+  captures `index.metric_type` at load and maps L2 distance → cosine (`1 - d/2`),
+  passing inner-product through, so the descending sort + 0–1 cosine thresholds
+  downstream are metric-correct. Previously the wiki RAG + novelty layer were
+  inverted — they surfaced the farthest neighbours and rejected the closest.
 - **Session tracking**: `WikiArticleTracker` records articles accessed during
   queries. At shutdown, `WikiGraphEnricher` creates graph nodes (source="wiki_retrieved")
   for tracked articles and links them to existing entities. Edges use

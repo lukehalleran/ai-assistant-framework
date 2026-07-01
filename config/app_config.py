@@ -1104,6 +1104,9 @@ GRAPH_SCORING_BOOST_CAP: float = float(KNOWLEDGE_GRAPH_CFG.get("scoring_boost_ca
 # Graph-driven query expansion: append graph neighbor names to semantic search query
 GRAPH_QUERY_EXPANSION_ENABLED: bool = bool(KNOWLEDGE_GRAPH_CFG.get("query_expansion_enabled", True))
 GRAPH_QUERY_EXPANSION_MAX_TERMS: int = int(KNOWLEDGE_GRAPH_CFG.get("query_expansion_max_terms", 8))
+# Degree at/above which a node is a traversal *hub*: reached but not expanded
+# through, so the user star-hub can't dump its whole neighbourhood into a query.
+GRAPH_EXPANSION_HUB_DEGREE: int = int(KNOWLEDGE_GRAPH_CFG.get("expansion_hub_degree", 30))
 
 # Environment variable overrides for Knowledge Graph
 KNOWLEDGE_GRAPH_ENABLED = bool(int(os.getenv("KNOWLEDGE_GRAPH_ENABLED", "1" if KNOWLEDGE_GRAPH_ENABLED else "0")))

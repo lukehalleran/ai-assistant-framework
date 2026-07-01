@@ -113,6 +113,7 @@ class SemanticSearchIndex:
     def __init__(self) -> None:
         self.embedder = None       # SentenceTransformer
         self.index = None          # faiss.Index
+        self._metric = None        # faiss metric_type of the loaded index (L2 vs IP)
         self.meta = None           # legacy compat — kept as None
         self._pq_file = None       # pyarrow.parquet.ParquetFile for on-demand reads
         self._rg_offsets: list[int] = []  # cumulative row offsets per row group
@@ -146,6 +147,15 @@ class SemanticSearchIndex:
 
             # FAISS index (~2.2 GB for IVFPQ)
             self.index = faiss.read_index(INDEX_PATH)
+            # Capture the index metric so search() can normalize scores correctly.
+            # The wiki index is built L2 (build_faiss_index.py), so raw scores are
+            # SQUARED DISTANCES (smaller = closer), not similarities — see _to_similarity().
+            self._metric = int(self.index.metric_type)
+            _metric_name = ("IP" if self._metric == faiss.METRIC_INNER_PRODUCT
+                            else "L2" if self._metric == faiss.METRIC_L2
+                            else f"#{self._metric}")
+            logger.info("[Semantic] Index metric_type=%s — scores normalized to cosine-like similarity",
+                        _metric_name)
 
             # Parquet handle + row-group offset table (no data loaded into RAM)
             self._pq_file = pq.ParquetFile(META_PATH)
@@ -224,6 +234,28 @@ class SemanticSearchIndex:
         ).astype(np.float32)
         return vec  # already L2-normalized
 
+    def _to_similarity(self, raw_score: float) -> float:
+        """Normalize a raw FAISS score into a cosine-like similarity in [-1, 1].
+
+        Polarity depends on the index metric:
+        - INNER_PRODUCT: already cosine for normalized vectors → pass through.
+        - L2 (the wiki index, per build_faiss_index.py): FAISS returns a SQUARED
+          distance where SMALLER means closer. For unit-normalized vectors
+          ‖q-x‖² = 2 - 2·cos, so cos = 1 - d/2. If the stored doc vectors are not
+          unit-normalized this is approximate, but it stays MONOTONIC (smaller
+          distance → higher similarity), which is what the rest of the pipeline
+          needs: it sorts descending and gates on a 0–1 "cosine" threshold.
+
+        Without this, an L2 index makes the caller layer inverted — it surfaces
+        the FARTHEST neighbors first and rejects the closest matches.
+        """
+        if faiss is None or self._metric is None:
+            return raw_score
+        if self._metric == faiss.METRIC_INNER_PRODUCT:
+            return raw_score
+        # METRIC_L2 (or any distance-like metric): squared distance → cosine.
+        return max(-1.0, min(1.0, 1.0 - (raw_score / 2.0)))
+
     @staticmethod
     def _row_to_result(row_data: dict[str, Any], score: float) -> Dict[str, Any]:
         """Convert a metadata dict (from parquet read) into the expected result dict."""
@@ -275,10 +307,12 @@ class SemanticSearchIndex:
         # 1) Encode query once (normalized float32)
         q = self._encode_query(query)
 
-        # 2) Search FAISS index (HNSW/IP, IVF/IP etc.)
+        # 2) Search FAISS index. Raw score polarity depends on the index metric:
+        #    IP → larger is closer (already cosine for normalized vectors);
+        #    L2 → smaller squared-distance is closer. _to_similarity() below maps
+        #    both into a cosine-like [-1, 1] similarity so the descending sort and
+        #    0–1 thresholds downstream are metric-correct.
         try:
-            # FAISS returns (distances, indices); with normalized vectors + IP,
-            # 'distances' are cosine similarities already in [-1, 1]
             D, I = self.index.search(q, int(max(1, k)))
         except Exception as e:
             logger.error("[Semantic] FAISS search error: %s", e, exc_info=True)
@@ -290,7 +324,7 @@ class SemanticSearchIndex:
             if idx < 0:
                 continue
             if int(idx) < self._total_rows:
-                hits.append((int(idx), float(score)))
+                hits.append((int(idx), self._to_similarity(float(score))))
 
         if not hits:
             return []
@@ -370,7 +404,12 @@ Module Contract
 - Inputs:
   - semantic_search_with_neighbors(query, k|top_k)
 - Outputs:
-  - List[dict] records with text/content/title/source/timestamp/similarity
+  - List[dict] records with text/content/title/source/timestamp/similarity.
+    `similarity` is a cosine-like score in [-1, 1], normalized across index
+    metrics by _to_similarity(): L2 squared-distance → 1 - d/2, IP passed
+    through. Results are ordered most-similar-first. (The wiki index is L2;
+    before this normalization the layer was inverted — see
+    memory project_wiki_faiss_l2_metric_mismatch.)
 - Side effects:
   - Loads FAISS index and metadata parquet; may cache index in memory.
 """

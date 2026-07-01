@@ -205,6 +205,74 @@ async def test_agentic_final_response_reasoning_only_recovers(controller, monkey
 
 
 @pytest.mark.asyncio
+async def test_agentic_final_response_drops_interleaved_leading_draft(controller, monkeypatch):
+    """Regression: glm-5.2 interleaved reason→draft→reason→answer and the draft
+    ("synthesis system.") fused onto the answer ("Let me check…"). The filter
+    must drop the leading draft so the leak can't reach the user. (conv 0f6d70c7)
+    """
+    from core.agentic.types import AgenticSearchSession
+
+    async def interleaved_stream():
+        yield _Chunk(reasoning_content="Let me parse what the user means here.")
+        yield _Chunk(content="synthesis system.")                      # leaked draft
+        yield _Chunk(reasoning_content="Actually I should just look it up.")
+        yield _Chunk(content="Let me check what you've been up to — pulling recent commits.")
+
+    monkeypatch.setattr(controller, "_build_final_prompt", lambda **kw: "FINAL PROMPT")
+    controller.model_manager.generate_async = _async_returning(interleaved_stream())
+
+    called = {"once": False}
+
+    async def fake_once(*a, **k):
+        called["once"] = True
+        return "UNUSED"
+
+    controller.model_manager.generate_once = fake_once
+
+    session = AgenticSearchSession(query="Check out what I did with the synthesis system")
+    full = "".join([c async for c in controller._generate_final_response(
+        query="q", system_prompt="sys", model_name="glm-5.2", session=session)])
+
+    # The fused leak string must be gone; the draft must not appear at all.
+    assert "synthesis system.Let me check" not in full
+    assert "synthesis system." not in full
+    # The real answer survived.
+    assert "Let me check what you've been up to" in full
+    # Content was emitted → no reasoning-only recovery retry.
+    assert called["once"] is False
+
+
+@pytest.mark.asyncio
+async def test_streaming_drops_interleaved_leading_draft(response_generator, monkeypatch):
+    """Same interleave defense on the non-agentic streaming path."""
+    async def interleaved_stream():
+        yield _Chunk(reasoning_content="Parsing the request.")
+        yield _Chunk(content="synthesis system.")                      # leaked draft
+        yield _Chunk(reasoning_content="Let me reconsider.")
+        yield _Chunk(content="Here is the actual answer about your synthesis work this week.")
+
+    called = {"once": False}
+
+    async def fake_once(*a, **k):
+        called["once"] = True
+        return "UNUSED"
+
+    monkeypatch.setattr(response_generator.model_manager, "generate_async",
+                        _async_returning(interleaved_stream()))
+    monkeypatch.setattr(response_generator.model_manager, "generate_once", fake_once)
+
+    # The non-agentic path streams word-by-word (the consumer re-adds spaces),
+    # so join with spaces to reconstruct the visible text.
+    full = " ".join([c async for c in
+                     response_generator.generate_streaming_response("q", "glm-5.2")])
+
+    # "system" is unique to the dropped draft; the answer never uses it.
+    assert "system" not in full
+    assert "Here is the actual answer" in full
+    assert called["once"] is False
+
+
+@pytest.mark.asyncio
 async def test_agentic_final_response_normal_content_no_recovery(controller, monkeypatch):
     from core.agentic.types import AgenticSearchSession
 

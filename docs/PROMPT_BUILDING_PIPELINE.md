@@ -294,6 +294,26 @@ Example: `"Tesla"` → `"Tesla Rivian Ford EV market"`
 
 Config: `GRAPH_QUERY_EXPANSION_ENABLED`, `GRAPH_QUERY_EXPANSION_MAX_TERMS`
 
+### Hub-aware BFS (2026-06)
+
+`rank_expansion_candidates()` walks the graph with a hub guard: a hub node —
+one in `skip_ids` (e.g. "user") or with degree >= `GRAPH_EXPANSION_HUB_DEGREE`
+(default 30) — may be *reached* but is never expanded *through*. Only the seed
+entities fan out freely. This fixes a bug where an incidental query token that
+linked to the "user" star hub (~797 of 889 graph edges) dumped the whole
+personal neighbourhood (pets, project terms) into an unrelated query.
+`extract_graph_entities()` also drops common-noun/participle stopwords
+(video/videos/done/homework/stuff) that had been wrongly resolving as entities.
+
+### Read-time TTL (2026-06)
+
+Expansion honours the same read-side staleness the profile, `facts` collection
+and graph-context (`get_context_sentences`) already apply: stale transient edges
+(mood/activity/illness past their per-relation horizon, via
+`GraphMemory._edge_is_stale_transient` → `relation_classifier`) are dropped from
+both traversal and scoring. Nothing is deleted — a fresh mention refreshes
+`last_seen` and the edge returns.
+
 ---
 
 ## Web Search Integration

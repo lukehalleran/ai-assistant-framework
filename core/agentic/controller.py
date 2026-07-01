@@ -25,6 +25,16 @@ Contract:
       swallow the whole answer into the reasoning channel, yielding just the synthetic "<thinking>"
       marker), it closes the dangling marker and retries once via _recover_reasoning_only_response()
       → generate_once(disable_reasoning=True). Prevents the GUI "caught by the thinking filter" dead-end.
+    - Interleaved-reasoning leak defense [NEW 2026-06-28]: _generate_final_response() streams via
+      core.reasoning_stream_filter.InterleavedReasoningFilter. Reasoning models (glm-5.2 observed)
+      can interleave reason → draft → reason → real answer; the old "yield every content delta" loop
+      fused the discarded draft onto the answer ("synthesis system.Let me check…"). The filter holds
+      the leading content run until confirmed non-draft and drops a short run cut off by resumed
+      reasoning (restored at finish() if nothing replaces it). See conv 0f6d70c7.
+    - Premature-done guard [NEW 2026-06-28]: the loop's done-check no longer honors <done/> on
+      round 1 when nothing was gathered (no rounds, empty accumulated_context) and no answer text
+      was provided. It nudges once to force real tool use first — glm-5.2 was signaling done on
+      round 1 without searching, so memory-seeking queries got a promissory non-answer.
     - Provenance: computes final_prompt_hash (SHA-256[:16]) on assembled prompt
 
 Modular Architecture (2026-05-09):
@@ -78,6 +88,7 @@ from core.agentic.protocols import (
 )
 from core.agentic.formatters import AgenticFormatter
 from core.agentic.tools import ToolExecutor
+from core.reasoning_stream_filter import InterleavedReasoningFilter
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
 
 if TYPE_CHECKING:
@@ -476,8 +487,12 @@ class AgenticSearchController:
                 )
 
             elif skip_initial_search:
-                # Skip Round 1 web search for computation-only queries
-                logger.info("[AgenticSearch] Skipping initial search (computation-only mode)")
+                # Skip the Round 1 *web* search. The gate sets this whenever the
+                # query needs memory/knowledge/tools/computation rather than the
+                # web, so the agentic loop chooses its own tools instead of a
+                # blind opening web query. (Not "computation-only" — that label
+                # was misleading; memory-seeking queries land here too.)
+                logger.info("[AgenticSearch] Skipping initial web search (loop will pick tools)")
                 session.accumulated_context = ""
                 yield ProgressEvent(
                     event_type="thinking",
@@ -680,9 +695,40 @@ class AgenticSearchController:
                             self._append_accumulated(session, _ad_result.formatted_context)
                         logger.info(f"[AgenticSearch] Dispatched action before done: {_ad.action_type}")
 
-                # Check for done signal — honor it immediately
+                # Check for done signal — honor it, but guard against a
+                # PREMATURE done. Some models (glm-5.2 observed 2026-06-28) emit
+                # <done/> on round 1 without running a single tool, so for a query
+                # the gate routed to agentic search precisely because it needs
+                # lookup, the loop ends having gathered nothing and the final
+                # synthesis produces a useless promissory non-answer ("Let me
+                # check what you've been up to…"). When done arrives before any
+                # tool has run, with no context gathered and no answer text,
+                # nudge once to force real tool use before accepting done.
                 if any(d.is_done for d in decisions):
                     done_d = next((d for d in decisions if d.is_done), None)
+                    _nothing_gathered = (
+                        len(session.rounds) == 0
+                        and not (session.accumulated_context or "").strip()
+                    )
+                    _has_answer = any((d.partial_response or "").strip() for d in decisions)
+                    if (_nothing_gathered and not _has_answer
+                            and not getattr(session, '_done_nudge_sent', False)):
+                        session._done_nudge_sent = True
+                        logger.info(
+                            "[AgenticSearch] Premature done on round 1 with nothing "
+                            "gathered — nudging to use tools before accepting done"
+                        )
+                        session.accumulated_context += (
+                            "\n\n[SYSTEM]: You signaled completion but have not gathered "
+                            "any information yet. Do NOT signal done before using tools — "
+                            "the user's request requires looking things up. Call the "
+                            "appropriate XML tool markers now, for example:\n"
+                            "<memory collection=\"conversations\">synthesis system</memory>\n"
+                            "<git_stats>recent commits</git_stats>\n"
+                            "<github>recent activity</github>\n"
+                            "Use the tools, then answer from what you find."
+                        )
+                        continue  # retry this round; the model should call tools now
                     session.model_signaled_done = True
                     session.done_reason = done_d.done_reason if done_d else None
                     logger.info(f"[AgenticSearch] Model signaled done: {session.done_reason}")
@@ -1211,34 +1257,30 @@ class AgenticSearchController:
                 images=_images,
             )
 
-            # Handle different return types
-            _was_reasoning = False
-            _reasoning_seen = False
-            _content_emitted = False
+            # Handle different return types. The InterleavedReasoningFilter
+            # suppresses reasoning-only chunks (emitting <thinking>/</thinking>
+            # markers) AND defends against interleaved drafts: glm-5.2 etc. can
+            # stream reason → draft → reason → real answer, which the old
+            # "yield every content delta" loop fused into a leak like
+            # "synthesis system.Let me check…". See core/reasoning_stream_filter.py.
+            _rfilter = InterleavedReasoningFilter()
             if hasattr(stream, '__aiter__'):
                 # It's an async iterator (OpenAI stream)
                 async for chunk in stream:
                     if hasattr(chunk, 'choices') and chunk.choices:
                         delta = chunk.choices[0].delta
-                        # Skip reasoning-only chunks (API-level thinking separation)
                         delta_reasoning = getattr(delta, 'reasoning_content', '') or getattr(delta, 'reasoning', '') or ''
                         delta_content = getattr(delta, 'content', '') or ''
-                        if delta_reasoning and not delta_content:
-                            _reasoning_seen = True
-                            if not _was_reasoning:
-                                _was_reasoning = True
-                                yield "<thinking>"
-                            continue
-                        if _was_reasoning and delta_content:
-                            _was_reasoning = False
-                            yield "</thinking>"
-                        if delta_content:
-                            _content_emitted = True
-                            yield delta_content
+                        for _kind, _text in _rfilter.feed(delta_reasoning, delta_content):
+                            yield _text
                     elif isinstance(chunk, str):
                         if chunk:
-                            _content_emitted = True
-                            yield chunk
+                            for _kind, _text in _rfilter.feed('', chunk):
+                                yield _text
+
+                # Flush any content the filter is still holding back.
+                for _kind, _text in _rfilter.finish():
+                    yield _text
 
                 # Reasoning-only recovery: the model streamed reasoning but never
                 # any visible content (deepseek-v4 etc. occasionally swallow the
@@ -1247,8 +1289,8 @@ class AgenticSearchController:
                 # the "caught by the thinking filter" dead-end. Close the dangling
                 # marker and retry once with native reasoning disabled so the model
                 # emits its answer as normal content.
-                if _reasoning_seen and not _content_emitted:
-                    if _was_reasoning:
+                if _rfilter.reasoning_seen and not _rfilter.content_emitted:
+                    if _rfilter.in_reasoning:
                         yield "</thinking>"
                     logger.warning(
                         "[AgenticSearch] Final response was reasoning-only (no content); "
@@ -1258,7 +1300,6 @@ class AgenticSearchController:
                         final_prompt, model_name, system_prompt
                     ):
                         if _rc:
-                            _content_emitted = True
                             yield _rc
             elif isinstance(stream, str):
                 # It's a complete string (local model or stub)

@@ -216,6 +216,32 @@ class GraphMemory:
                     edges.append(GraphEdge.from_dict({**data, "source_id": src, "target_id": eid}))
         return edges
 
+    def remove_entity(self, entity_id: str) -> bool:
+        """Remove an entity node and all its incident edges, keeping the alias
+        index and the authoritative ``_edge_index`` consistent.
+
+        Returns True if the node existed and was removed, False otherwise.
+
+        NOTE: destructive and does no confirmation/backup — callers (e.g. the
+        ``scripts/graph_junk_cleanup.py`` maintenance tool) are responsible for
+        dry-run gating and backups.  ``save()`` must be called to persist.
+        """
+        eid = entity_id.lower().strip()
+        if not self.graph.has_node(eid):
+            return False
+        # Drop incident edges from the authoritative edge index (save() writes
+        # edges from this index, so stale entries would resurrect dangling edges).
+        stale = [k for k, e in self._edge_index.items()
+                 if e.source_id == eid or e.target_id == eid]
+        for k in stale:
+            del self._edge_index[k]
+        # Drop alias entries pointing at this entity
+        self._alias_index = {a: t for a, t in self._alias_index.items() if t != eid}
+        # Remove the node (networkx drops its incident graph edges too)
+        self.graph.remove_node(eid)
+        self._mark_dirty()
+        return True
+
     # ------------------------------------------------------------------
     # Alias Resolution
     # ------------------------------------------------------------------

@@ -325,9 +325,12 @@ class MemoryRetrievalMixin:
     def _expand_query_with_graph(self, query: str, max_terms: int = 8) -> str:
         """Expand a query with display names of graph-connected entities.
 
-        Extracts entities from the query via alias resolution, walks 2-hop
-        edges (to traverse through hub nodes like "user" in star topologies),
-        and appends target entity display names to the query.
+        Extracts entities from the query via alias resolution, walks up to
+        2-hop edges and appends target entity display names to the query.
+        The walk is hub-aware: it will not fan out *through* the "user" star
+        hub (or any node with degree >= GRAPH_EXPANSION_HUB_DEGREE), so an
+        incidental token linking to "user" can't dump the whole personal
+        neighbourhood into the query — only seed entities expand freely.
         This bridges vocabulary gaps (e.g. "my brother" -> "Drew").
 
         Args:
@@ -342,6 +345,7 @@ class MemoryRetrievalMixin:
                 KNOWLEDGE_GRAPH_ENABLED,
                 GRAPH_QUERY_EXPANSION_ENABLED,
                 GRAPH_QUERY_EXPANSION_MAX_TERMS,
+                GRAPH_EXPANSION_HUB_DEGREE,
             )
             if not KNOWLEDGE_GRAPH_ENABLED or not GRAPH_QUERY_EXPANSION_ENABLED:
                 return query
@@ -359,10 +363,12 @@ class MemoryRetrievalMixin:
             if not query_entities:
                 return query
 
-            # Rank by connectivity (non-hub edges), filter junk, cap at max
+            # Rank by connectivity (non-hub edges), filter junk, cap at max.
+            # hub_degree stops the walk fanning *through* the user star hub.
             expansion_terms = rank_expansion_candidates(
                 query_entities, graph, depth=2,
                 skip_ids={"user"}, max_terms=effective_max,
+                hub_degree=GRAPH_EXPANSION_HUB_DEGREE,
             )
             if not expansion_terms:
                 return query

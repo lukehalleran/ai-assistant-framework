@@ -664,6 +664,147 @@ class TestRankExpansionCandidates:
 
 
 # ===========================================================================
+# Tests: hub-barrier (the user-star fan-out fix)
+# ===========================================================================
+
+class TestHubBarrier:
+    """An incidental token linking to the 'user' star hub must NOT pull the
+    hub's whole neighbourhood (pets, project terms) into the expansion.
+    Regression for the workout-query → 'Biscuit Daisy Python ...' bug.
+    """
+
+    @pytest.fixture
+    def hub_graph(self):
+        """'videos' is a leaf linked to the user hub. user fans out to pets +
+        project terms that are irrelevant to a query mentioning 'videos'.
+        'editing'/'library' are the only *relevant* (non-hub-routed) neighbours.
+        """
+        nodes = {
+            "user": "User",
+            "videos": "videos",
+            "editing": "editing",
+            "library": "library",
+            "biscuit": "Biscuit",
+            "Daisy": "Daisy",
+            "python": "Python",
+        }
+        edges = {
+            "videos": [("editing", "relates"), ("user", "mentioned_by"),
+                       ("library", "uses")],
+            "user": [("biscuit", "has_pet"), ("Daisy", "has_pet"),
+                     ("python", "uses_lang")],
+            # lateral edge so biscuit would rank top IF the walk reached it
+            "biscuit": [("Daisy", "sibling")],
+        }
+        return MockGraphMemory(nodes, edges)
+
+    def test_skip_id_hub_blocks_fanout(self, hub_graph):
+        """user in skip_ids → reached but not expanded through; its neighbours
+        (Biscuit/Daisy/Python) never enter the candidate set."""
+        result = rank_expansion_candidates(
+            {"videos"}, hub_graph, depth=2, skip_ids={"user"}, max_terms=8,
+        )
+        assert "Biscuit" not in result
+        assert "Daisy" not in result
+        assert "Python" not in result
+        # ...but the leaf's own (non-hub-routed) neighbours still expand
+        assert "editing" in result
+        assert "library" in result
+
+    def test_degree_hub_blocks_fanout_without_skip(self, hub_graph):
+        """Even with an empty skip_ids, a node whose degree >= hub_degree acts
+        as a barrier, so the fan-out is still blocked."""
+        result = rank_expansion_candidates(
+            {"videos"}, hub_graph, depth=2, skip_ids=set(),
+            max_terms=8, hub_degree=4,  # user degree (out 3 + in 1) == 4
+        )
+        assert "Biscuit" not in result
+        assert "Daisy" not in result
+        assert "Python" not in result
+
+    def test_seed_hub_still_expands(self, hub_graph):
+        """A *seed* that is itself the hub still expands fully (intentional
+        relation lookup like 'tell me about my pets'), even at a low threshold."""
+        result = rank_expansion_candidates(
+            {"user"}, hub_graph, depth=1, skip_ids={"user"},
+            max_terms=8, hub_degree=2,
+        )
+        # user is the seed → exempt from the barrier → fans out as before
+        assert "Biscuit" in result
+        assert "Daisy" in result
+        assert "Python" in result
+
+    def test_default_threshold_allows_small_graphs(self, hub_graph):
+        """With the default (high) threshold and no skip_ids, a small graph's
+        modest hub is below threshold, so prior 2-hop reach is preserved."""
+        result = rank_expansion_candidates(
+            {"videos"}, hub_graph, depth=2, skip_ids=set(), max_terms=8,
+        )
+        # default _DEFAULT_HUB_DEGREE (30) >> user's degree (4): no barrier,
+        # so the legacy fan-out reach is intact when nobody flags the hub.
+        assert "Biscuit" in result
+
+
+class TestExpansionTTL:
+    """Read-time TTL: a stale transient edge must not route expansion or score,
+    but durable and fresh-transient edges still do. Uses a real GraphMemory so
+    _edge_is_stale_transient (via relation_classifier) is exercised end-to-end.
+    """
+
+    def _graph(self, tmp_path):
+        from memory.graph_memory import GraphMemory
+        from memory.graph_models import GraphNode, GraphEdge
+        g = GraphMemory(persist_path=str(tmp_path / "ttl_graph.json"))
+        for eid, dn in [("biscuit", "Biscuit"), ("golden_retriever", "Golden Retriever"),
+                        ("playful", "Playful"), ("napping", "Napping")]:
+            g.add_entity(GraphNode(entity_id=eid, display_name=dn, entity_type="other"))
+        now = datetime.now()
+        old = now - timedelta(days=10)
+        # durable (never expires) + fresh transient (kept) + stale transient (dropped)
+        g.add_relation(GraphEdge(source_id="biscuit", relation="breed",
+                                 target_id="golden_retriever", last_seen=now))
+        g.add_relation(GraphEdge(source_id="biscuit", relation="current_activity",
+                                 target_id="napping", last_seen=now))
+        g.add_relation(GraphEdge(source_id="biscuit", relation="current_feeling",
+                                 target_id="playful", last_seen=old))
+        return g
+
+    def test_stale_transient_edge_excluded(self, tmp_path):
+        g = self._graph(tmp_path)
+        result = rank_expansion_candidates(
+            {"biscuit"}, g, depth=1, skip_ids={"user"}, max_terms=8,
+        )
+        assert "Golden Retriever" in result   # durable → kept
+        assert "Napping" in result            # fresh transient → kept
+        assert "Playful" not in result        # stale transient (10d > 24h) → dropped
+
+    def test_fresh_transient_edge_kept_after_refresh(self, tmp_path):
+        from memory.graph_models import GraphEdge
+        g = self._graph(tmp_path)
+        # A new mention refreshes last_seen → the once-stale feeling comes back.
+        g.add_relation(GraphEdge(source_id="biscuit", relation="current_feeling",
+                                 target_id="playful", last_seen=datetime.now()))
+        result = rank_expansion_candidates(
+            {"biscuit"}, g, depth=1, skip_ids={"user"}, max_terms=8,
+        )
+        assert "Playful" in result
+
+
+class TestExtractGraphEntitiesCommonWords:
+    """Common nouns/participles that were wrongly ingested as entities must not
+    resolve during extraction (they were the trigger for the hub fan-out)."""
+
+    def test_common_words_not_extracted(self):
+        resolver = MockResolver({
+            "videos": "videos", "video": "video",
+            "done": "done", "homework": "homework", "stuff": "stuff",
+        })
+        for word in ("videos", "video", "done", "homework", "stuff"):
+            result = extract_graph_entities(f"i got my {word} in", resolver)
+            assert result == set(), f"{word!r} should be filtered, got {result}"
+
+
+# ===========================================================================
 # Tests: _is_graph_worthy_object (ingestion filter)
 # ===========================================================================
 

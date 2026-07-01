@@ -187,6 +187,32 @@ forcing the answer out as normal content. The streaming path has the parallel gu
 also yields nothing, the closed marker leaves a clean (empty) stream for the GUI
 fallback.
 
+**Interleaved-reasoning leak defense** [2026-06-28]: a *different* failure from the
+above — some reasoning models (glm-5.2 observed) interleave reasoning and content in
+the SAME stream: `reason → "synthesis system." → reason → "Let me check…"`. The old
+"yield every content delta" loop fused the discarded pre-answer draft onto the real
+answer with no separator (`"synthesis system.Let me check…"`), and because the fragment
+is untagged and glued with no separator it survived every thinking-block stripper and
+persisted into the stored message. Both the agentic final response
+(`_generate_final_response`) and the non-agentic stream
+(`ResponseGenerator.generate_streaming_response`) now route deltas through
+`core/reasoning_stream_filter.py:InterleavedReasoningFilter`, which holds the leading
+content run until it is confirmed non-draft (grows past `draft_max_chars`) and drops a
+short run cut off by *resumed* reasoning — restoring it at `finish()` if nothing ever
+replaces it, so a genuinely short final answer is never lost. The filter is inert until
+the first reasoning chunk, so non-reasoning models stream exactly as before. (conv
+0f6d70c7 / daemon_debug 2026-06-28.)
+
+**Premature-done guard** [2026-06-28]: the done-check no longer honors `<done/>` on
+round 1 when nothing has been gathered (zero rounds, empty `accumulated_context`) and no
+answer text was provided. glm-5.2 was emitting `<done/>` immediately without running a
+single tool, so a memory-seeking query like "check what I did yesterday with the
+synthesis system" ended the loop with no results and the final synthesis produced a
+promissory non-answer ("Let me check what you've been up to…"). The guard injects a
+one-shot nudge into `accumulated_context` forcing real tool use, then accepts done on the
+next signal (tracked by `session._done_nudge_sent` to avoid loops). A done *after*
+context exists is still honored immediately.
+
 ---
 
 ## Available Tools

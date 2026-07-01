@@ -5,14 +5,32 @@ Shared helpers for graph-boosted scoring and graph-driven query expansion.
 Provides entity extraction from text (via alias resolution) and neighbor
 display-name lookups, shared by memory_scorer (graph boost) and
 context_gatherer (query expansion).
+
+Query expansion (rank_expansion_candidates) uses a hub-aware BFS: a node in
+skip_ids or with degree >= hub_degree may be reached but is never expanded
+*through*, so a high-degree star hub (e.g. "user") can't fan its whole
+neighbourhood into a query.  Seed entities are exempt and always expand.
+Expansion also honours read-time TTL: stale transient edges (past their
+per-relation horizon, via GraphMemory._edge_is_stale_transient →
+relation_classifier) are dropped from traversal and scoring, so aged-out
+mood/activity/illness states stop surfacing without any deletion.
 """
 
 import re
+from collections import deque
+from datetime import datetime
 from typing import List, Optional, Set
 
 from utils.logging_utils import get_logger
 
 logger = get_logger("graph_utils")
+
+# Default degree at/above which a node is treated as a traversal *hub*: it may
+# be reached during expansion, but the walk does not fan out *through* it.
+# This stops a high-degree node (e.g. the "user" star hub) from dumping its
+# entire neighbourhood into the query whenever any token incidentally links to
+# it.  Overridable per-call via the ``hub_degree`` argument.
+_DEFAULT_HUB_DEGREE = 30
 
 # Stopwords to skip during entity extraction (same set used by context_gatherer)
 _STOPWORDS = frozenset({
@@ -99,19 +117,37 @@ def rank_expansion_candidates(
     depth: int = 2,
     skip_ids: Optional[Set[str]] = None,
     max_terms: int = 8,
+    hub_degree: Optional[int] = None,
 ) -> List[str]:
     """Rank expansion candidates by connectivity (non-hub edge count).
 
-    Walks *depth* hops from *entity_ids*, collects candidate neighbor nodes,
-    scores them by how many lateral (non-hub) edges they have, and returns
-    the top *max_terms* display names.
+    Walks *depth* hops from *entity_ids* with a **hub-aware** BFS: a hub node
+    (anything in *skip_ids*, or any node whose degree is >= *hub_degree*) may
+    be *reached*, but the walk never fans out *through* it.  Seed entities are
+    exempt — a seed always expands, even if it is itself a hub.  This keeps the
+    intended relation-bridging (``"my brother"`` → seed ``user`` → ``Drew``)
+    while preventing the failure where an incidental token resolves to a leaf
+    that links to the ``user`` star hub and the 2-hop walk then dumps every one
+    of the user's neighbours (pets, project terms, ...) into the query.
+
+    Stale transient edges (mood/activity/illness past their per-relation TTL,
+    per ``GraphMemory._edge_is_stale_transient`` → ``relation_classifier``) are
+    dropped from both traversal and scoring, so an aged-out state neither routes
+    expansion nor inflates a candidate's rank — the same read-time staleness the
+    profile, facts collection and graph-context already apply.
+
+    Candidates are scored by how many lateral (non-hub) edges they have and the
+    top *max_terms* display names are returned.
 
     Args:
-        entity_ids: Set of canonical entity IDs to start from
-        graph_memory: GraphMemory instance (needs .neighbors(), .get_entity(), .get_relations())
+        entity_ids: Set of canonical entity IDs to start from (seeds)
+        graph_memory: GraphMemory instance (needs .get_entity(), .get_relations())
         depth: BFS traversal depth (default 2 for star topologies)
-        skip_ids: Entity IDs to exclude (e.g. {"user"})
+        skip_ids: Entity IDs that are hubs / excluded from results (e.g. {"user"})
         max_terms: Maximum names to return
+        hub_degree: Degree threshold for auto-detecting hubs (default
+            ``_DEFAULT_HUB_DEGREE``).  Non-seed nodes at/above this degree act
+            as traversal barriers even if not named in *skip_ids*.
 
     Returns:
         Ordered list of display names, best candidates first
@@ -120,13 +156,65 @@ def rank_expansion_candidates(
         return []
 
     skip = skip_ids or set()
-    # Collect unique candidate IDs (exclude inputs and skipped)
+    seeds = {e.lower() for e in entity_ids}
+    threshold = _DEFAULT_HUB_DEGREE if hub_degree is None else hub_degree
+
+    # Read-time TTL: reuse GraphMemory's staleness check (single source of truth
+    # in relation_classifier) so a transient edge (mood/activity/illness past its
+    # per-relation horizon) neither routes expansion nor scores — same read-side
+    # staleness the profile, facts collection and graph-context already apply.
+    # getattr-guarded so mocks / stores without the method simply keep all edges.
+    _now = datetime.now()
+    _stale_fn = getattr(graph_memory, "_edge_is_stale_transient", None)
+
+    def _live(edge) -> bool:
+        if _stale_fn is None:
+            return True
+        try:
+            return not _stale_fn(edge, _now)
+        except Exception:
+            return True
+
+    def _neighbor_ids(nid: str) -> Set[str]:
+        out: Set[str] = set()
+        try:
+            for edge in graph_memory.get_relations(nid, direction="both"):
+                if not _live(edge):
+                    continue
+                other = edge.target_id if edge.source_id == nid else edge.source_id
+                if other:
+                    out.add(other)
+        except Exception:
+            pass
+        return out
+
+    def _is_hub(nid: str) -> bool:
+        # Seeds always expand (intentional relation expansion), even if a hub.
+        if nid in seeds:
+            return False
+        if nid in skip:
+            return True
+        try:
+            return len(graph_memory.get_relations(nid, direction="both")) >= threshold
+        except Exception:
+            return False
+
+    # Hub-aware BFS: collect candidates reachable from seeds without expanding
+    # *through* a hub.  A hub may be reached (then dropped via skip/scoring) but
+    # its neighbours are never enqueued — that is what stops the star-hub fan-out.
     candidate_ids: Set[str] = set()
-    for eid in entity_ids:
-        neighborhood = graph_memory.neighbors(eid, depth=depth)
-        for neighbor_id in neighborhood:
-            if neighbor_id not in skip and neighbor_id not in entity_ids:
-                candidate_ids.add(neighbor_id)
+    visited: Set[str] = set(seeds)
+    queue: deque = deque((s, 0) for s in seeds)
+    while queue:
+        cur, d = queue.popleft()
+        if cur not in seeds and cur not in skip:
+            candidate_ids.add(cur)
+        if d >= depth or _is_hub(cur):
+            continue
+        for nb in _neighbor_ids(cur):
+            if nb not in visited:
+                visited.add(nb)
+                queue.append((nb, d + 1))
 
     # Score each candidate
     scored: list[tuple[float, str]] = []  # (score, display_name)
@@ -140,11 +228,14 @@ def rank_expansion_candidates(
         if _is_expansion_junk(name):
             continue
 
-        # Count non-hub edges (edges where the other end is NOT in skip_ids)
+        # Count non-hub edges (edges where the other end is NOT in skip_ids).
+        # Skip stale transient edges so an aged-out state doesn't inflate rank.
         non_hub_edges = 0
         try:
             relations = graph_memory.get_relations(cid, direction="both")
             for edge in relations:
+                if not _live(edge):
+                    continue
                 other = edge.target_id if edge.source_id == cid else edge.source_id
                 if other not in skip:
                     non_hub_edges += 1
@@ -209,6 +300,9 @@ def extract_graph_entities(text: str, resolver, graph_memory=None) -> Set[str]:
         "need", "want", "like", "love", "hate", "mean", "kind",
         "sort", "type", "form", "plan", "code", "data", "system",
         "model", "graph", "node", "edge", "query", "search",
+        # Common nouns/participles that are not entities but had been ingested
+        # as graph nodes and pulled the user hub into unrelated queries.
+        "video", "videos", "done", "homework", "stuff",
     })
 
     # Strip punctuation from each word for cleaner matching

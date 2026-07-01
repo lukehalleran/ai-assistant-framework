@@ -5,7 +5,7 @@
 ## Overview
 Two-step generation where the LLM provides internal reasoning before delivering the final answer. The thinking block is logged for debugging but only the final answer is shown to users and stored in memory.
 
-Three core layers of thinking separation exist, plus five operational layers (defense in depth, 8 total — see table below):
+Three core layers of thinking separation exist, plus six operational layers (defense in depth, 9 total — see table below):
 1. **Native API reasoning** — for Claude/DeepSeek-R1, thinking is separated at the OpenRouter API level via `extra_body={"reasoning": {"effort": "medium"}}`. Thinking arrives in `delta.reasoning_content`, not in the text response.
 2. **Tag-based parsing** — `<thinking>`/`<think>`/`<output>` tags parsed by `ResponseParser.parse_thinking_block()`
 3. **Heuristic fallback** — `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning patterns, instruction echoes)
@@ -143,7 +143,20 @@ During streaming, `handlers.py`:
 
 **Image limitation:** When images are present in the request, native reasoning is skipped in `generate_async()` because OpenRouter may not support both extended thinking and image input simultaneously. The system falls back to tag-based and heuristic parsing layers.
 
-### 6. Test Suite (`test_thinking_blocks.py`)
+### 6. Interleaved Reasoning-Stream Filter (`core/reasoning_stream_filter.py`) (NEW 2026-06)
+
+A **streaming-layer** defense for reasoning models (via OpenRouter) that interleave reasoning and content *within a single streamed response*. The naive consumer — "yield every content delta, suppress reasoning-only chunks" — fused a discarded pre-answer reasoning draft directly onto the real answer with **no separator**, producing a user-visible leak like `synthesis system.Let me check…` (a 17-char discarded fragment `synthesis system.` glued to the answer `Let me check…`). Because the fragment is untagged and separator-less, none of the tag / heuristic / storage strippers caught it — it survived `sanitize_for_storage()` and reached both display and storage.
+
+`InterleavedReasoningFilter` sits between the raw delta stream and the consumer (`feed()` per delta, `finish()` once at end):
+- Suppresses reasoning-only chunks, emitting synthetic `<thinking>` / `</thinking>` markers around them (preserving the existing thinking-block contract the GUI relies on).
+- Holds the **leading content run** until it is confirmed genuine: a run that grows past `draft_max_chars` (default 50) is committed and then streams live, so long real answers still stream token-by-token; a short run cut off because reasoning *resumes* is dropped as a provisional draft — but restored at `finish()` if nothing ever replaces it, so a genuinely short final answer is never lost.
+- Stays completely **inert until the first reasoning chunk**, so non-reasoning models stream exactly as before (no added latency, no behaviour change).
+
+Shared by `core/response_generator.py` (`generate_streaming_response`) and `core/agentic/controller.py` (`_generate_final_response`) so the two streaming paths cannot drift.
+
+**Reasoning-only recovery (`ResponseGenerator._recover_reasoning_only()`, NEW 2026-06):** the complementary failure — a reasoning model swallows the *entire* answer into the hidden reasoning channel and streams **empty** visible content. When the filter reports `reasoning_seen` but not `content_emitted`, the generator closes the dangling `<thinking>` marker and retries **once** non-streaming via `generate_once(disable_reasoning=True)`, forcing the answer into normal content instead of resolving to an empty/dead response.
+
+### 7. Test Suite (`test_thinking_blocks.py`)
 
 Covers (tag-based parsing):
 - Normal thinking block extraction (both `<thinking>` and `<think>` variants)
@@ -216,6 +229,7 @@ The answer to 2 + 2 is 4.
 | Sentence | `_count_sentence_pattern_hits()` | Single-paragraph chain-of-thought without blank-line breaks |
 | Agentic | `_detect_untagged_thinking()` on final output | Thinking leak in agentic path final generation |
 | Streaming | `strip_thinking_tag_leaks()` + stuck recovery | XML marker fragments and stuck thinking state after streaming ends |
+| Interleaved | `InterleavedReasoningFilter.feed()` (`core/reasoning_stream_filter.py`) | Reasoning model fuses a discarded pre-answer draft onto the real answer with NO separator, e.g. `…system.Let me check…` — untagged, so tag/heuristic/storage strippers miss it [NEW 2026-06] |
 | Cleanup | `strip_thinking_tag_leaks()` | Partial/malformed tags (e.g., `/think>`, `<|think|>`) |
 | **Storage boundary** | `ResponseParser.sanitize_for_storage()` in `memory_storage.store_interaction()` | ANY leak that survives display-layer defenses — never persisted. All-thinking responses skip storage entirely (returns None) [NEW 2026-06-10] |
 

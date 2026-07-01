@@ -512,6 +512,13 @@ class ResponseGenerator:
         Retries once non-streaming via generate_once(disable_reasoning=True), forcing
         the answer into normal content. Yields recovered text or nothing."""
 
+    # core/reasoning_stream_filter.py [NEW 2026-06]: filters INTERLEAVED reasoning/answer
+    #   fragments within a streaming response — a reasoning model fusing a discarded draft
+    #   onto the answer with no separator (an observed leak ran two clauses together with no
+    #   space). Sits between the raw delta stream and the consumer so the fragment never reaches
+    #   the user or storage. Complements _recover_reasoning_only above (whole-answer-swallowed
+    #   -> retry; interleaved -> filtered inline).
+
     async def generate_best_of(prompt: str, n: int = 3) -> str:
         """Generate N responses with temp variation, score and pick best"""
 
@@ -1027,8 +1034,14 @@ def get_related_entity_ids(entity_ids, graph_memory, depth=1) -> Set[str]:
     """BFS neighbor entity IDs."""
 def _is_expansion_junk(name) -> bool:  # [NEW 2026-03-15]
     """Rejects empty/≤2 chars, 4+ words, digit-starting, temporal, measurement, verb phrases."""
-def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_terms=8) -> List[str]:  # [NEW 2026-03-15]
-    """Ranks by non-hub edge count (lateral connectivity), filters junk, returns ordered names."""
+def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_terms=8, hub_degree=None) -> List[str]:  # [NEW 2026-03-15; hub-aware BFS + read-time TTL 2026-06]
+    """Ranks by non-hub edge count (lateral connectivity), filters junk, returns ordered names.
+    Hub-aware BFS: a hub node (in skip_ids, or degree >= GRAPH_EXPANSION_HUB_DEGREE, default 30)
+    may be REACHED but is never expanded THROUGH — an incidental token linking to the "user" star
+    hub (~797/889 edges) can't dump the whole personal neighbourhood (pets/project terms) into
+    unrelated queries; only seed entities fan out. Honours read-time TTL: stale transient edges
+    (past their per-relation horizon, via GraphMemory._edge_is_stale_transient -> relation_classifier)
+    are dropped from traversal + scoring (no deletion; a fresh mention refreshes last_seen)."""
 
 # Ingestion (memory_storage.py:_ingest_fact_to_graph):
 # Called after each add_fact(). _is_graph_worthy_object() rejects:
@@ -1047,6 +1060,8 @@ def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, 
 # Scripts:
 # scripts/migrate_facts_to_graph.py --dry-run  # Populate graph from existing facts
 # scripts/cleanup_graph_junk.py --execute       # Remove junk nodes, migrate to metadata
+# scripts/graph_junk_cleanup.py                 # Manual junk cleanup; dry-run-first, --apply removes
+#   only reviewed/uncommented ids after a JSON backup (GraphMemory.remove_entity()). [NEW 2026-06]
 ```
 
 ---

@@ -179,6 +179,44 @@ class TestGraphMemoryCRUD:
     def test_get_entity_not_found(self, graph):
         assert graph.get_entity("nonexistent") is None
 
+    def test_remove_entity_basic(self, graph):
+        graph.add_entity(GraphNode(entity_id="spain", display_name="Spain"))
+        assert graph.remove_entity("Spain") is True  # case-insensitive
+        assert graph.get_entity("spain") is None
+        assert graph.node_count() == 0
+
+    def test_remove_entity_missing_returns_false(self, graph):
+        assert graph.remove_entity("nope") is False
+
+    def test_remove_entity_clears_alias(self, graph):
+        graph.add_entity(GraphNode(entity_id="daemon", display_name="Daemon",
+                                   aliases=["the project"]))
+        assert graph.resolve_entity("the project") == "daemon"
+        graph.remove_entity("daemon")
+        assert graph.resolve_entity("the project") is None
+        assert graph.resolve_entity("daemon") is None
+
+    def test_remove_entity_drops_edges_no_dangling(self, graph, tmp_graph_path):
+        # user --likes--> python ; user --has_pet--> biscuit
+        graph.add_relation(GraphEdge(source_id="user", relation="likes", target_id="python"))
+        graph.add_relation(GraphEdge(source_id="user", relation="has_pet", target_id="biscuit"))
+        assert graph.edge_count() == 2
+
+        graph.remove_entity("python")
+        assert graph.edge_count() == 1
+        assert graph.get_relations("user", direction="out")[0].target_id == "biscuit"
+
+        # persist + reload: the edge index must not resurrect the dropped edge
+        graph.save()
+        reloaded = GraphMemory(persist_path=tmp_graph_path)
+        assert "python" not in {n for n in reloaded.graph.nodes()}
+        assert reloaded.edge_count() == 1
+        dangling = [
+            e for e in reloaded.graph.edges()
+            if e[0] not in reloaded.graph.nodes() or e[1] not in reloaded.graph.nodes()
+        ]
+        assert dangling == []
+
     def test_add_relation(self, graph):
         edge = GraphEdge(source_id="user", relation="lives_in", target_id="spain")
         graph.add_relation(edge)
