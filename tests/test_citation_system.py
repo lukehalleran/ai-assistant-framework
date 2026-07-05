@@ -216,5 +216,66 @@ def test_citations_in_debug_info():
     pass
 
 
+class TestStripMemoryCitationMarkers:
+    """strip_memory_citation_markers cleans the DISPLAY text while keeping [WEB_N]
+    markers (linkified later) and newlines (multi-paragraph markdown). This is the
+    fix for the enhanced path flattening + de-linking responses when the citations
+    toggle is ON (extract_citations strips ALL markers and collapses whitespace)."""
+
+    def test_strips_memory_markers(self):
+        from core.citation_extractor import strip_memory_citation_markers
+        out = strip_memory_citation_markers(
+            "You mentioned this [MEM_RECENT_3] and confirmed it [PROFILE_CONTEXT]."
+        )
+        assert "MEM_RECENT_3" not in out
+        assert "PROFILE_CONTEXT" not in out
+        # No dangling space before the period left by the removed marker.
+        assert out == "You mentioned this and confirmed it."
+
+    def test_preserves_web_markers(self):
+        from core.citation_extractor import strip_memory_citation_markers
+        out = strip_memory_citation_markers(
+            "Per Forbes [WEB_1] the freeze lifted [MEM_RECENT_2]."
+        )
+        assert "[WEB_1]" in out          # kept for linkification
+        assert "MEM_RECENT_2" not in out  # memory marker dropped
+        assert out == "Per Forbes [WEB_1] the freeze lifted."
+
+    def test_preserves_newlines(self):
+        from core.citation_extractor import strip_memory_citation_markers
+        text = "First paragraph [MEM_RECENT_1].\n\nSecond paragraph [SUM_RECENT_2]."
+        out = strip_memory_citation_markers(text)
+        # Blank line between paragraphs survives (unlike extract_citations, which
+        # collapses all whitespace to single spaces).
+        assert "\n\n" in out
+        assert out == "First paragraph.\n\nSecond paragraph."
+
+    def test_handles_ranges_and_empty(self):
+        from core.citation_extractor import strip_memory_citation_markers
+        assert strip_memory_citation_markers("a [MEM_SEMANTIC_4-7] b") == "a b"
+        assert strip_memory_citation_markers("") == ""
+        assert strip_memory_citation_markers(None) is None
+
+    def test_no_memory_markers_is_noop(self):
+        from core.citation_extractor import strip_memory_citation_markers
+        text = "Just a normal answer with no citations at all."
+        assert strip_memory_citation_markers(text) == text
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+    def test_does_not_mangle_unrelated_punctuation_spacing(self):
+        """Whitespace cleanup must apply only at marker-removal sites — the old
+        global ' +punct' pass turned 'sounds good :)' into 'sounds good:)'."""
+        from core.citation_extractor import strip_memory_citation_markers
+        text = "sounds good :) and also — see items 1 , 2 and 3 [MEM_RECENT_1]."
+        out = strip_memory_citation_markers(text)
+        assert "sounds good :)" in out
+        assert "1 , 2" in out
+        assert out.endswith("and 3.")
+
+    def test_marker_at_line_edges(self):
+        from core.citation_extractor import strip_memory_citation_markers
+        assert strip_memory_citation_markers("[MEM_RECENT_1] Start of line") == "Start of line"
+        assert strip_memory_citation_markers("End of line [MEM_RECENT_1]\nnext") == "End of line\nnext"

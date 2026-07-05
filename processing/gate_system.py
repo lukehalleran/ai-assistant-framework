@@ -40,7 +40,9 @@ import httpx  # <— added for title search + summary fallback
 
 # --- app-local ---
 from config.app_config import (
+    GATE_DEICTIC_MIN_RETRIEVAL,
     GATE_REL_THRESHOLD,
+    GATE_REL_THRESHOLD_RETRIEVAL,
     WIKI_FETCH_FULL_DEFAULT,
     WIKI_MAX_CHARS_DEFAULT,
     WIKI_TIMEOUT_DEFAULT,
@@ -59,6 +61,14 @@ Module Contract
 - Key classes:
   - MultiStageGateSystem: cosine similarity + optional cross‑encoder reranking; filter_memories, filter_semantic_chunks, filter_wiki_content.
   - GatedPromptBuilder: adapter that invokes gate system then delegates to a prompt builder.
+- Embedding spaces: memory/summary gating scores in the RETRIEVAL space (the
+  ChromaDB store's bge-small embedder, injected via `retrieval_embedder` in
+  main.py) against `gate_rel_threshold_retrieval` — the same space candidates
+  were retrieved in. Wiki + semantic-chunk paths use the gate's own MiniLM
+  embedder (fresh query↔content comparison; wiki FAISS index is MiniLM-built)
+  against the legacy MiniLM-space thresholds. The two spaces' thresholds are
+  NOT interchangeable (bge similarities sit ~0.35 higher and 2.5× tighter);
+  quantile mapping lives in scripts/probe_gate_embedding_mismatch.py.
 - Inputs:
   - Query text + lists of memories/semantic chunks/wiki content (dicts with text/metadata).
 - Outputs:
@@ -618,16 +628,17 @@ MAX_BATCH = int(os.getenv("GATE_EMBED_BATCH", "256"))
 class _EmbeddingCache:
     """
     Avoid re-encoding identical strings across queries (and within a batch).
-    Keys are raw text; values are np.float32 normalized vectors.
+    Keys are (model_key, raw text) — two embedders may gate the same text, and
+    their vectors must never be confused. Values are np.float32 normalized vectors.
     """
     def __init__(self):
-        self._store: Dict[str, np.ndarray] = {}
+        self._store: Dict[tuple, np.ndarray] = {}
 
-    def get(self, key: str) -> np.ndarray | None:
-        return self._store.get(key)
+    def get(self, model_key: str, key: str) -> np.ndarray | None:
+        return self._store.get((model_key, key))
 
-    def set(self, key: str, val: np.ndarray) -> None:
-        self._store[key] = val
+    def set(self, model_key: str, key: str, val: np.ndarray) -> None:
+        self._store[(model_key, key)] = val
 
 
 _EMBED_CACHE = _EmbeddingCache()
@@ -658,6 +669,8 @@ class CosineSimilarityGateSystem:
         model_manager=None,
         embedder: SentenceTransformer | None = None,
         threshold: float = DEFAULT_THRESHOLD,
+        retrieval_embedder: SentenceTransformer | None = None,
+        retrieval_threshold: float = GATE_REL_THRESHOLD_RETRIEVAL,
     ):
         # Stored for potential future hooks; not required by this class.
         self.model_manager = model_manager
@@ -665,6 +678,18 @@ class CosineSimilarityGateSystem:
         # Gate threshold (also used by content gate as cosine_threshold).
         self.threshold = float(threshold)
         self.cosine_threshold = self.threshold
+
+        # Optional retrieval-space embedder: the SAME SentenceTransformer the
+        # ChromaDB store retrieves with (bge-small). When present, memory /
+        # summary gating scores in the space the candidates were retrieved in,
+        # against `retrieval_threshold` (bge's similarity distribution sits far
+        # higher and tighter than MiniLM's — thresholds are NOT interchangeable
+        # between the two spaces).
+        self.retrieval_embedder = retrieval_embedder
+        self.retrieval_threshold = float(retrieval_threshold)
+        # Baseline for detecting per-intent overrides: builder.py temporarily
+        # mutates cosine_threshold with MiniLM-space intent values.
+        self._base_cosine_threshold = self.cosine_threshold
 
         # Single embedder used everywhere. Default to MiniLM if none provided.
         # Fall back to a tiny stub embedder if the SentenceTransformer model is unavailable
@@ -718,6 +743,27 @@ class CosineSimilarityGateSystem:
         # Lightweight in-class cache for gate_content_async
         self.cache: dict[str, GateResult] = {}
 
+    # Ratio of the blended-score distribution widths (bge std / MiniLM std),
+    # measured on live data by scripts/probe_gate_embedding_mismatch.py
+    # (0.042/0.110 ≈ 0.38). Used to translate MiniLM-space threshold deltas
+    # into equivalently-strict retrieval-space deltas.
+    _RETRIEVAL_SPACE_STD_RATIO = 0.38
+
+    def effective_retrieval_threshold(self) -> float:
+        """
+        Retrieval-space gate threshold, honoring per-intent overrides.
+
+        Intent profiles (core/intent_classifier.py `_PROFILES["gate"]`) express
+        strict/loose gating in the legacy MiniLM space; builder.py applies them
+        by mutating `cosine_threshold` around the gather. Translate that delta
+        into the much tighter bge distribution so intent semantics survive.
+        """
+        delta = self.cosine_threshold - self._base_cosine_threshold
+        if delta == 0.0:
+            return self.retrieval_threshold
+        mapped = self.retrieval_threshold + delta * self._RETRIEVAL_SPACE_STD_RATIO
+        return min(1.0, max(0.0, mapped))
+
     # ----- small helpers -----
 
     def get_gating_model_name(self) -> str:
@@ -738,20 +784,33 @@ class CosineSimilarityGateSystem:
         ql = (query or "").lower()
         return any(kw in ql for kw in meta_keywords)
 
-    async def _encode_texts(self, texts: List[str]) -> np.ndarray:
+    def _space_embedder(self, space: str) -> SentenceTransformer:
+        """Resolve the embedder for a scoring space ('gate' or 'retrieval')."""
+        if space == "retrieval" and self.retrieval_embedder is not None:
+            return self.retrieval_embedder
+        return self.embedder
+
+    def _space_cache_key(self, space: str) -> str:
+        """Stable per-model cache namespace (embedders are shared singletons)."""
+        return f"emb:{id(self._space_embedder(space))}"
+
+    async def _encode_texts(self, texts: List[str], space: str = "gate") -> np.ndarray:
         """
         Encode a list of texts as L2-normalized vectors (np.float32), in batches.
 
+        - `space="gate"` uses the gate's own embedder (MiniLM); `space="retrieval"`
+          uses the ChromaDB store's embedder (bge) when one was provided.
         - If the embedder exposes `aencode`, use it directly.
         - Otherwise, run the sync `encode(...)` in a threadpool via run_in_executor.
         - Always request numpy + normalized embeddings for dot=cosine equivalence.
         """
+        embedder = self._space_embedder(space)
         vecs: List[np.ndarray] = []
         for i in range(0, len(texts), MAX_BATCH):
             chunk = texts[i : i + MAX_BATCH]
-            maybe = getattr(self.embedder, "aencode", None)
+            maybe = getattr(embedder, "aencode", None)
             if callable(maybe):
-                chunk_vecs = await self.embedder.aencode(
+                chunk_vecs = await embedder.aencode(
                     chunk, convert_to_numpy=True, normalize_embeddings=True
                 )
             else:
@@ -759,7 +818,7 @@ class CosineSimilarityGateSystem:
                 # Use kwargs (positional booleans hit wrong params in ST).
                 chunk_vecs = await loop.run_in_executor(
                     None,
-                    lambda: self.embedder.encode(
+                    lambda: embedder.encode(
                         chunk,
                         convert_to_numpy=True,
                         normalize_embeddings=True,
@@ -783,32 +842,44 @@ class CosineSimilarityGateSystem:
         - Embeddings are cached per text to avoid re-encoding.
         """
         t0 = time.time()
-        logger.debug("[Batch Cosine Gate] START (n=%d, thr=%.3f)", len(memories), self.threshold)
+        # Score in the retrieval (bge) space when that embedder is available —
+        # candidates came out of ChromaDB in that space, and MiniLM-space
+        # thresholds don't transfer (see config.yaml gating comments).
+        space = "retrieval" if self.retrieval_embedder is not None else "gate"
+        # Same threshold resolution as the main filter_memories path: honor
+        # per-intent overrides (effective_retrieval_threshold translates the
+        # MiniLM-space delta; cosine_threshold carries the raw mutation).
+        threshold = (
+            self.effective_retrieval_threshold() if space == "retrieval"
+            else self.cosine_threshold
+        )
+        logger.debug("[Batch Cosine Gate] START (n=%d, thr=%.3f, space=%s)", len(memories), threshold, space)
 
         if not memories:
             logger.info("[Memory Filter] Gating complete: 0/0 (%.0fms)", (time.time() - t0) * 1000)
             return []
 
         # 1) Encode query once (offload to executor if needed)
-        q_vec = await self._encode_texts([query or ""])  # (1, D)
+        q_vec = await self._encode_texts([query or ""], space=space)  # (1, D)
         q = q_vec[0]
 
         # 2) Prepare memory vectors (cache + batch encode)
+        cache_ns = self._space_cache_key(space)
         m_texts: List[str] = []
         reusable_rows: List[np.ndarray | None] = []
         for m in memories:
             txt = (m.get("text") or m.get("content") or "").strip()
             m_texts.append(txt)
-            reusable_rows.append(_EMBED_CACHE.get(txt))
+            reusable_rows.append(_EMBED_CACHE.get(cache_ns, txt))
 
         to_encode_idx = [i for i, v in enumerate(reusable_rows) if v is None]
         if to_encode_idx:
             to_encode = [m_texts[i] for i in to_encode_idx]
-            new_vecs = await self._encode_texts(to_encode)
+            new_vecs = await self._encode_texts(to_encode, space=space)
             for j, i in enumerate(to_encode_idx):
                 row = new_vecs[j]
                 reusable_rows[i] = row
-                _EMBED_CACHE.set(m_texts[i], row)
+                _EMBED_CACHE.set(cache_ns, m_texts[i], row)
 
         m_vecs = np.vstack(reusable_rows).astype(np.float32)  # (N, D)
 
@@ -823,7 +894,7 @@ class CosineSimilarityGateSystem:
                 m["__score__"] = float(s)
                 passed.append(m)
                 continue
-            if float(s) >= self.threshold:
+            if float(s) >= threshold:
                 m["__score__"] = float(s)
                 passed.append(m)
 
@@ -894,10 +965,24 @@ class MultiStageGateSystem:
     - Wraps the cosine gate for wiki + semantic chunk flows.
     """
 
-    def __init__(self, model_manager, cosine_threshold: float = GATE_REL_THRESHOLD):
+    def __init__(
+        self,
+        model_manager,
+        cosine_threshold: float = GATE_REL_THRESHOLD,
+        retrieval_embedder=None,
+        retrieval_threshold: float = GATE_REL_THRESHOLD_RETRIEVAL,
+    ):
         # Use the same embedder everywhere to maximize cache hits.
+        # `retrieval_embedder` (when provided by main.py) is the ChromaDB
+        # store's own SentenceTransformer (bge-small) — memory gating then
+        # scores in the same space retrieval happened in. Wiki + semantic-chunk
+        # paths stay on the gate embedder (MiniLM): they embed query and
+        # content fresh, and the wiki FAISS index is MiniLM-built.
         self.gate_system = CosineSimilarityGateSystem(
-            model_manager=model_manager, threshold=cosine_threshold
+            model_manager=model_manager,
+            threshold=cosine_threshold,
+            retrieval_embedder=retrieval_embedder,
+            retrieval_threshold=retrieval_threshold,
         )
         self.model_manager = model_manager
         self.embed_model = self.gate_system.embed_model
@@ -953,11 +1038,14 @@ class MultiStageGateSystem:
                 # Last resort: metadata content
                 return str(mem.get("metadata", {}).get("content", ""))[:500]
 
-            # Encode once (offload to executor/aencode for responsiveness)
-            qv = await self.gate_system._encode_texts([query or ""])  # (1,D)
+            # Encode once (offload to executor/aencode for responsiveness).
+            # Score in retrieval (bge) space when available — same space the
+            # ChromaDB candidates were retrieved in.
+            space = "retrieval" if self.gate_system.retrieval_embedder is not None else "gate"
+            qv = await self.gate_system._encode_texts([query or ""], space=space)  # (1,D)
             query_emb = qv[0]
             contents = [_extract_gate_content(mem) for mem in to_gate]
-            memory_embs = await self.gate_system._encode_texts(contents)
+            memory_embs = await self.gate_system._encode_texts(contents, space=space)
 
             similarities = cosine_similarity([query_emb], memory_embs)[0]
 
@@ -990,14 +1078,21 @@ class MultiStageGateSystem:
                         f"(base={base_score:.3f} -> boosted={score:.3f})"
                     )
 
-                threshold = self.gate_system.cosine_threshold
-                if is_deictic:
-                    # Keep a floor for deictic follow-ups but allow env override; default to 0.25
-                    try:
-                        deictic_min = float(os.getenv("GATE_DEICTIC_MIN", "0.20"))  # Reduced from 0.25
-                    except (ValueError, TypeError):
-                        deictic_min = 0.20
-                    threshold = max(threshold, deictic_min)
+                if space == "retrieval":
+                    # honors per-intent overrides via delta translation
+                    threshold = self.gate_system.effective_retrieval_threshold()
+                    if is_deictic:
+                        # bge-space equivalent of the 0.20 MiniLM floor (quantile-matched)
+                        threshold = max(threshold, GATE_DEICTIC_MIN_RETRIEVAL)
+                else:
+                    threshold = self.gate_system.cosine_threshold
+                    if is_deictic:
+                        # Keep a floor for deictic follow-ups but allow env override; default to 0.25
+                        try:
+                            deictic_min = float(os.getenv("GATE_DEICTIC_MIN", "0.20"))  # Reduced from 0.25
+                        except (ValueError, TypeError):
+                            deictic_min = 0.20
+                        threshold = max(threshold, deictic_min)
 
                 if score >= threshold:
                     mem["relevance_score"] = float(score)
@@ -1152,8 +1247,12 @@ class MultiStageGateSystem:
         Args:
             query: User query or rewritten retrieval query (from orchestrator.py:326)
             items: List of summary/reflection dicts with 'content' key
-            threshold: Cosine similarity cutoff (0.0-1.0). If None, uses 0.30 for summaries,
-                      0.25 for reflections (reflections are more abstract, cast wider net)
+            threshold: Cosine similarity cutoff (0.0-1.0) IN THE ACTIVE SCORING
+                      SPACE — when the retrieval (bge) embedder is loaded, sims sit
+                      ~0.35 higher than MiniLM, so a MiniLM-era value like 0.30
+                      passes nearly everything. Prefer None: defaults resolve
+                      per-space (bge 0.65/0.64, MiniLM 0.30/0.25) and honor
+                      per-intent gate overrides like filter_memories does.
             source_type: 'summary' or 'reflection' (for logging and default threshold)
 
         Returns:
@@ -1165,26 +1264,40 @@ class MultiStageGateSystem:
             >>> filtered = await gate.cosine_filter_summaries(
             ...     query="Python async patterns",
             ...     items=summaries,
-            ...     threshold=0.30
-            ... )
-            >>> # filtered contains only summaries with cosine_sim >= 0.30
+            ... )   # threshold=None → space-aware default + intent overrides
+            >>> # filtered contains only summaries above the resolved threshold
         """
         if not items:
             logger.debug(f"[Cosine Filter] No {source_type}s to filter")
             return []
 
-        # Default thresholds based on content type
+        # Score in retrieval (bge) space when available — summaries/reflections
+        # come out of ChromaDB in that space too.
+        space = "retrieval" if self.gate_system.retrieval_embedder is not None else "gate"
+
+        # Default thresholds based on content type (per scoring space —
+        # bge values are quantile-matched to the MiniLM ones, see
+        # scripts/probe_gate_embedding_mismatch.py), shifted by the same
+        # per-intent override delta the main filter_memories path honors.
         if threshold is None:
-            threshold = 0.25 if source_type == "reflection" else 0.30
+            if space == "retrieval":
+                base = 0.64 if source_type == "reflection" else 0.65
+                base += (self.gate_system.effective_retrieval_threshold()
+                         - self.gate_system.retrieval_threshold)
+            else:
+                base = 0.25 if source_type == "reflection" else 0.30
+                base += (self.gate_system.cosine_threshold
+                         - self.gate_system._base_cosine_threshold)
+            threshold = min(1.0, max(0.0, base))
 
         try:
             logger.info(
                 f"[Cosine Filter] Filtering {len(items)} {source_type}s "
-                f"(threshold={threshold:.2f})"
+                f"(threshold={threshold:.2f}, space={space})"
             )
 
             # Encode query (reuses cache from gate_system)
-            qv = await self.gate_system._encode_texts([query or ""])
+            qv = await self.gate_system._encode_texts([query or ""], space=space)
             query_emb = qv[0]
 
             # Extract content and encode (truncate to 500 chars like memories)
@@ -1192,7 +1305,7 @@ class MultiStageGateSystem:
                 (item.get("content") or item.get("text") or "")[:500]
                 for item in items
             ]
-            item_embs = await self.gate_system._encode_texts(contents)
+            item_embs = await self.gate_system._encode_texts(contents, space=space)
 
             # Compute cosine similarities (vectors already L2-normalized)
             similarities = cosine_similarity([query_emb], item_embs)[0]

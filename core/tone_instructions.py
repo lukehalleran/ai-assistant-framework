@@ -2,13 +2,20 @@
 # core/tone_instructions.py
 
 Module Contract
-- Purpose: Generate tone-specific and session-header instructions for system prompts.
+- Purpose: Generate tone-specific, intent-style, and session-header instructions
+  for system prompts.
 - Inputs:
   - get_tone_instructions(tone_level, user_profile=None) -> str
   - get_response_instructions(ctx, user_profile=None) -> str
+  - get_intent_style_instructions(intent_value, confidence, crisis_level_str) -> str
   - get_session_headers_instructions() -> str
 - Outputs: Instruction strings appended to system prompt.
 - Side effects: None (pure functions).
+
+Intent style: a short per-intent response-style block injected into the system
+prompt tail (after the cache breakpoint — per-turn content never invalidates
+the cached prefix). Tone owns style during crisis: any non-CONVERSATIONAL
+level returns "". EMOTIONAL_SUPPORT and GENERAL have no block by design.
 """
 
 from utils.logging_utils import get_logger
@@ -172,6 +179,107 @@ The user is processing/analyzing, open to engagement.
         return base + perspective_addon
 
     return base  # NEUTRAL - use base tone instructions only
+
+
+# Minimum classifier confidence before intent is allowed to shape style.
+# Below this the intent signal is too weak to justify steering the response.
+_INTENT_STYLE_MIN_CONFIDENCE = 0.60
+
+# Short response-style blocks per intent value. Deliberately absent:
+#   emotional_support — crisis/tone instructions own style there;
+#   general — no signal, no styling.
+_INTENT_STYLE_BLOCKS = {
+    "factual_recall": (
+        "\n\n## INTENT STYLE: FACTUAL RECALL\n"
+        "The user is asking you to recall a specific fact.\n"
+        "- Lead with the answer itself, then (briefly) where you know it from\n"
+        "- If the fact isn't in your context, say so plainly — never guess or "
+        "pad with related-but-different facts\n"
+        "- Keep it short: the fact, its source, done"
+    ),
+    "temporal_recall": (
+        "\n\n## INTENT STYLE: TEMPORAL RECALL\n"
+        "The user is asking about when things happened or how they unfolded.\n"
+        "- Anchor claims to actual dates/timestamps from context, not vague "
+        "\"recently\"\n"
+        "- Present events in chronological order; distinguish then vs now\n"
+        "- If the timeline has gaps in your context, name the gap instead of "
+        "smoothing over it"
+    ),
+    "technical_help": (
+        "\n\n## INTENT STYLE: TECHNICAL HELP\n"
+        "The user wants help with a technical problem.\n"
+        "- Be precise and structured; use code blocks for code\n"
+        "- State assumptions explicitly; ask for the error/traceback if you "
+        "need it\n"
+        "- Skip filler and reassurance — lead with the diagnosis or fix"
+    ),
+    "project_work": (
+        "\n\n## INTENT STYLE: PROJECT WORK\n"
+        "The user is working on their project with you.\n"
+        "- Be concrete: reference actual files, commits, and decisions from "
+        "context\n"
+        "- Propose a clear next step rather than listing every option\n"
+        "- Flag conflicts with earlier decisions you can see in context"
+    ),
+    "creative_exploration": (
+        "\n\n## INTENT STYLE: CREATIVE EXPLORATION\n"
+        "The user is brainstorming or exploring ideas.\n"
+        "- Longer leash: explore options and trade-offs, build on their ideas\n"
+        "- Offer a distinct angle they haven't mentioned, not just variations "
+        "of theirs\n"
+        "- It's fine to be speculative — label speculation as such"
+    ),
+    "meta_conversational": (
+        "\n\n## INTENT STYLE: META CONVERSATIONAL\n"
+        "The user is asking about you — your memory, knowledge, or workings.\n"
+        "- Be transparent: describe only what's actually in your context or "
+        "known capabilities\n"
+        "- Never invent memories, stats, or capabilities to seem more capable\n"
+        "- If you don't have access to something, say exactly that"
+    ),
+    "casual_social": (
+        "\n\n## INTENT STYLE: CASUAL SOCIAL\n"
+        "This is light social chat.\n"
+        "- Keep it brief and warm; match their energy\n"
+        "- Don't info-dump memories or turn small talk into an agenda"
+    ),
+}
+
+
+def get_intent_style_instructions(
+    intent_value, confidence, crisis_level_str=None,
+) -> str:
+    """
+    Return a short per-intent response-style block, or "" when it shouldn't
+    apply.
+
+    Suppressed when:
+    - crisis_level_str is anything but CONVERSATIONAL (tone owns style then)
+    - confidence < _INTENT_STYLE_MIN_CONFIDENCE (signal too weak)
+    - the intent has no style block (emotional_support, general, unknown)
+
+    Args:
+        intent_value: Intent value string (e.g. "technical_help") or an
+                      IntentType enum (its .value is used).
+        confidence: Classifier confidence 0.0-1.0.
+        crisis_level_str: Tone level string ("HIGH"/"MEDIUM"/"CONCERN"/
+                          "CONVERSATIONAL"); None is treated as conversational.
+
+    Returns:
+        Instruction block to append to the system prompt tail, or "".
+    """
+    if crisis_level_str and str(crisis_level_str).upper() != "CONVERSATIONAL":
+        return ""
+    try:
+        if confidence is None or float(confidence) < _INTENT_STYLE_MIN_CONFIDENCE:
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    key = getattr(intent_value, "value", intent_value)
+    if not key:
+        return ""
+    return _INTENT_STYLE_BLOCKS.get(str(key).lower(), "")
 
 
 def get_session_headers_instructions() -> str:

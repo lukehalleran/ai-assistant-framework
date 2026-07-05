@@ -6,13 +6,19 @@ Module Contract:
            retrieval counts, scoring weights, and gating thresholds.
   Inputs:  classify(query, tone_level=None) -> IntentResult
   Outputs: IntentResult with intent type, confidence, weight/retrieval/gate overrides.
+           IntentResult.intent_type is a property ALIAS for .intent — downstream
+           consumers (builder.py intent-type extraction, agentic gate veto,
+           response planner) read .intent_type; keep the alias intact or the
+           whole intent→suppression layer silently dies (2026-07-03 regression).
   Side effects: None. Pure computation, no LLM calls.
 
 Integration:
   - Runs as Stage 4.5 in ContextPipeline (after heavy-topic check, before query rewrite)
   - STM refinement: if classifier confidence < STM_REFINEMENT_THRESHOLD and STM
     produced an intent string, refine_with_stm() maps the free-text intent to a
-    categorical IntentType, upgrading confidence.
+    categorical IntentType, upgrading confidence to INTENT_STM_REFINED_CONFIDENCE
+    (0.60 default — reaches the 0.60 routing floors, stays below the 0.75
+    agentic-veto floor).
   - ContextResult carries the IntentResult in its .intent field.
   - PromptBuilder reads intent.retrieval_overrides to adjust max_* counts.
   - MemoryScorer reads intent.weight_overrides via rank_memories(weight_overrides=...).
@@ -38,10 +44,12 @@ try:
     from config.app_config import (
         INTENT_ENABLED,
         INTENT_STM_REFINEMENT_THRESHOLD,
+        INTENT_STM_REFINED_CONFIDENCE,
     )
 except ImportError:
     INTENT_ENABLED = True
     INTENT_STM_REFINEMENT_THRESHOLD = 0.50
+    INTENT_STM_REFINED_CONFIDENCE = 0.60
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -81,6 +89,14 @@ class IntentResult:
     def is_high_confidence(self) -> bool:
         return self.confidence >= 0.70
 
+    @property
+    def intent_type(self) -> IntentType:
+        """Alias for .intent — downstream consumers (builder.py intent-type
+        extraction, agentic gate veto) read `.intent_type`. Before this alias
+        existed they silently got None, which killed wiki/web suppression and
+        the agentic intent veto in production (2026-07-03)."""
+        return self.intent
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Per-Intent Profiles  (weights, retrieval counts, gate thresholds)
@@ -112,8 +128,11 @@ _PROFILES: Dict[IntentType, dict] = {
             "importance": 0.05, "continuity": 0.20, "structure": 0.05,
         },
         "retrieval": {
+            # No max_upcoming_schedule here: TEMPORAL_RECALL patterns are all
+            # past-oriented, and builder.py's schedule-keyword gate already
+            # activates schedule retrieval for genuine future-schedule queries.
             "max_recent": 20, "max_summaries": 15, "max_mems": 10,
-            "max_dreams": 0, "max_upcoming_schedule": 10,
+            "max_dreams": 0,
         },
         "gate": 0.30,
     },
@@ -240,7 +259,7 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
         r"\bi('?m| am| feel| feeling)\s+"
         r"(so\s+|really\s+|very\s+|feeling\s+)?(sad|depressed|anxious|stressed|overwhelmed|lonely|scared"
         r"|angry|frustrated|hurt|tired|exhausted|hopeless|empty|lost"
-        r"|broken|miserable|numb|terrified|panick|suicid)",
+        r"|broken|miserable|numb|terrified|panic|suicid)",
         IntentType.EMOTIONAL_SUPPORT, 0.90,
     )
     _add(
@@ -283,12 +302,18 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
     )
 
     # --- TEMPORAL_RECALL --------------------------------------------------
+    # 'history' and 'how long has' are anchored to personal contexts: bare
+    # forms match encyclopedic queries ("history of the Roman Empire",
+    # "how long has the war lasted"), which then classify temporal_recall@0.85
+    # and lose wiki-semantic retrieval (WIKI_SEMANTIC_SUPPRESS_INTENTS) —
+    # exactly the queries the wiki index exists for.
     _add(
         r"\b(last (week|month|time|session|night|year)|yesterday"
         r"|a few (days|weeks|months) ago|earlier today|the other day"
         r"|remember when|what (did|were) we (talk|discuss|chat)"
-        r"|what have (i|we) been|history|over time|progression"
-        r"|how (long|much) (have|has)|used to)\b",
+        r"|what have (i|we) been|(my|our|chat|conversation|message) history"
+        r"|over time|progression"
+        r"|how (long|much) (have|has) (i|we|my|our|it been)|used to)\b",
         IntentType.TEMPORAL_RECALL, 0.85,
     )
 
@@ -324,8 +349,10 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
         r"|PR|pull request|merge|commit|branch|deploy)\b",
         IntentType.PROJECT_WORK, 0.80,
     )
-    # File references
-    _add(r"\b\w+\.(py|js|ts|jsx|tsx|go|rs|java|c|cpp|h|yaml|yml|json|toml)\b",
+    # File references. Stem must contain at least one letter so version
+    # strings like "1.5.yaml"/"2.0.json" don't classify as project work,
+    # while digit-leading real filenames ("2fa.py", "3d_utils.py") still do.
+    _add(r"\b(?=\w*[A-Za-z])\w+\.(py|js|ts|jsx|tsx|go|rs|java|c|cpp|h|yaml|yml|json|toml)\b",
          IntentType.PROJECT_WORK, 0.60)
 
     # --- CREATIVE_EXPLORATION ---------------------------------------------
@@ -403,7 +430,28 @@ _STM_KEYWORDS: Dict[str, IntentType] = {
     "project": IntentType.PROJECT_WORK,
     "code": IntentType.PROJECT_WORK,
     "deploy": IntentType.PROJECT_WORK,
+
+    # CASUAL_SOCIAL (previously had zero keywords — refinement could never
+    # confirm a casual turn)
+    "small talk": IntentType.CASUAL_SOCIAL,
+    "chat": IntentType.CASUAL_SOCIAL,
+    "chatting": IntentType.CASUAL_SOCIAL,
+    "banter": IntentType.CASUAL_SOCIAL,
+    "greet": IntentType.CASUAL_SOCIAL,
+    "catch up": IntentType.CASUAL_SOCIAL,
+    "social": IntentType.CASUAL_SOCIAL,
 }
+
+# Word-boundary + light inflection patterns, compiled once. Plain substring
+# matching mis-fired constantly: "chat" inside "ChatGPT", "fact" inside
+# "artifact", "vent" inside "event", "fix" inside "prefix" — each upgrading
+# an info-seeking turn to the wrong intent at 0.60, which then suppresses
+# web/wiki retrieval. The optional suffix keeps intended inflections
+# ("facts", "greeting", "recalls") without reopening the substring hole.
+_STM_KEYWORD_PATTERNS: List[Tuple[re.Pattern, IntentType]] = [
+    (re.compile(rf"\b{re.escape(kw)}(?:ings|ing|es|ed|s)?\b"), it)
+    for kw, it in _STM_KEYWORDS.items()
+]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -528,10 +576,12 @@ class IntentClassifier:
         stm_lower = stm_intent.lower()
 
         # Find the best matching IntentType from STM keywords
-        for keyword, intent_type in _STM_KEYWORDS.items():
-            if keyword in stm_lower:
-                # STM refinement bumps confidence to threshold
-                refined_conf = max(result.confidence, INTENT_STM_REFINEMENT_THRESHOLD)
+        for pattern, intent_type in _STM_KEYWORD_PATTERNS:
+            if pattern.search(stm_lower):
+                # STM refinement assigns moderate confidence: 0.60 default —
+                # enough to reach the 0.60 routing floors (heavy-topic skip),
+                # deliberately below the 0.75 agentic-veto floor.
+                refined_conf = max(result.confidence, INTENT_STM_REFINED_CONFIDENCE)
                 refined = self._build_result(intent_type, refined_conf)
                 refined.source = "stm_refined"
                 logger.debug(

@@ -1624,3 +1624,91 @@ class TestParallelDispatch:
 
         assert session.low_quality_search_count == 0
         assert session.relaxation_hint is None
+
+
+# =============================================================================
+# Literal reasoning-tag recovery in the final response
+# =============================================================================
+
+class TestLiteralReasoningTagRecovery:
+    """The final synthesis can dump its whole chain of thought as a literal
+    <reasoning>…</reasoning> block in the CONTENT channel — the reasoning-channel
+    check (reasoning_seen/content_emitted) can't see it, so content that
+    sanitizes down to nothing must trigger the no-reasoning recovery retry.
+    Regression for the 2026-07-03 leak (stored response was one raw block)."""
+
+    @pytest.fixture
+    def controller(self):
+        from core.agentic.controller import AgenticSearchController
+        manager = MagicMock()
+        manager.api_models = {}
+        return AgenticSearchController(
+            model_manager=manager,
+            web_search_manager=MagicMock(),
+        )
+
+    def _session(self):
+        from core.agentic.types import AgenticSearchSession, SearchProtocol
+        return AgenticSearchSession(
+            query="q", max_rounds=3, protocol=SearchProtocol.XML_MARKERS
+        )
+
+    @pytest.mark.asyncio
+    async def test_reasoning_tag_only_content_triggers_recovery(self, controller):
+        async def _stream():
+            yield "<reasoning>\nLuke is asking about a chemical. "
+            yield "Let me think about what to say.\n</reasoning>"
+
+        controller.model_manager.generate_async = AsyncMock(return_value=_stream())
+        controller.model_manager.generate_once = AsyncMock(
+            return_value="Recovered real answer."
+        )
+        controller._build_final_prompt = MagicMock(return_value="FINAL PROMPT")
+
+        chunks = []
+        async for c in controller._generate_final_response(
+            query="q", system_prompt="sys", model_name="m", session=self._session()
+        ):
+            chunks.append(c)
+
+        assert "Recovered real answer." in "".join(chunks)
+        controller.model_manager.generate_once.assert_awaited_once()
+        _, kwargs = controller.model_manager.generate_once.await_args
+        assert kwargs.get("disable_reasoning") is True
+
+    @pytest.mark.asyncio
+    async def test_normal_content_does_not_trigger_recovery(self, controller):
+        async def _stream():
+            yield "Here's a normal answer."
+
+        controller.model_manager.generate_async = AsyncMock(return_value=_stream())
+        controller.model_manager.generate_once = AsyncMock()
+        controller._build_final_prompt = MagicMock(return_value="FINAL PROMPT")
+
+        out = ""
+        async for c in controller._generate_final_response(
+            query="q", system_prompt="sys", model_name="m", session=self._session()
+        ):
+            out += c
+
+        assert out == "Here's a normal answer."
+        controller.model_manager.generate_once.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reasoning_tag_followed_by_answer_does_not_trigger_recovery(self, controller):
+        async def _stream():
+            yield "<reasoning>brief thought</reasoning>\n\n"
+            yield "The actual answer follows the tagged block."
+
+        controller.model_manager.generate_async = AsyncMock(return_value=_stream())
+        controller.model_manager.generate_once = AsyncMock()
+        controller._build_final_prompt = MagicMock(return_value="FINAL PROMPT")
+
+        out = ""
+        async for c in controller._generate_final_response(
+            query="q", system_prompt="sys", model_name="m", session=self._session()
+        ):
+            out += c
+
+        assert "The actual answer follows the tagged block." in out
+        controller.model_manager.generate_once.assert_not_awaited()

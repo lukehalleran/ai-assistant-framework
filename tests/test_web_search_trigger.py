@@ -61,7 +61,12 @@ class TestWebSearchDecision:
 class TestStrongRecencyKeywords:
     @pytest.mark.parametrize("query,expected_search", [
         ("What's the latest news on AI?", True),
-        ("What are the newest features in Python?", True),
+        # "newest" (strong recency, +0.4) + "version" (fast-changing, +0.3).
+        # Was previously "newest features in Python?", which only crossed the
+        # threshold because "new" matched as a substring inside "newest"
+        # (double-counting bug); word-boundary matching removed that, so this
+        # now needs a genuine second signal like its sibling cases.
+        ("What's the newest version of Python?", True),
         ("What is happening right now in the market?", True),
         ("Tell me about breaking news", True),
         ("What is current bitcoin price?", True),
@@ -174,6 +179,55 @@ class TestYearPatterns:
         """Test current/recent year mention increases confidence."""
         decision = should_search_heuristic(query)
         assert decision.confidence >= 0.3, f"Query: {query}, conf: {decision.confidence}"
+
+
+# ===== Substring / Word-Boundary Regression =====
+
+class TestWordBoundaryMatching:
+    """Keyword sets must match whole words, not substrings.
+
+    Regression for a casual life-update ("...now walking to get some ice cream
+    or something") that scored 0.70 and triggered a web search because "eth"
+    (Ethereum ticker) matched inside "som-eth-ing" (+0.3 fast-changing) on top
+    of "today" (+0.4 strong recency).
+    """
+
+    def test_ticker_does_not_match_inside_word(self):
+        # "eth" must not match "something"; "btc"/"eth" are only whole-word hits.
+        decision = should_search_heuristic(
+            "Went to my dad's to swim, had a beer, now walking to get ice cream or something"
+        )
+        assert decision.should_search is False, f"conf={decision.confidence}"
+        assert "eth" not in decision.matched_keywords
+
+    def test_today_alone_below_threshold(self):
+        # A bare temporal word is not enough to trigger a search on its own.
+        decision = should_search_heuristic("Yeah I did not shit today.")
+        assert decision.should_search is False
+        assert decision.confidence < 0.5
+
+    def test_new_does_not_match_inside_newest(self):
+        # "new" (moderate) must not double-count inside "newest" (strong).
+        decision = should_search_heuristic("What are the newest features in Python?")
+        assert "new" not in decision.matched_keywords
+
+    def test_newest_features_triggers_via_topic_corroboration(self):
+        # "newest" (strong, +0.4) + "features" (fast-changing topic, +0.3) —
+        # crosses the threshold on genuine signals, not the old "new"-inside-
+        # "newest" substring accident.
+        decision = should_search_heuristic("What are the newest features in Python?")
+        assert decision.should_search is True
+
+    def test_features_alone_does_not_trigger(self):
+        # Topic word without any recency signal stays below threshold.
+        decision = should_search_heuristic("Explain the features of dataclasses")
+        assert decision.should_search is False
+
+    def test_whole_word_keywords_still_match(self):
+        # Word-boundary matching must not break legitimate whole-word hits.
+        decision = should_search_heuristic("What's the current bitcoin price today?")
+        assert decision.should_search is True
+        assert "bitcoin" in decision.matched_keywords
 
 
 # ===== Empty and Edge Cases =====
@@ -684,6 +738,175 @@ class TestConversationContextResolution:
                 return []
 
         assert _build_recent_context(EmptyCorpus()) is None
+
+
+class TestReferentialFollowupBypass:
+    """A conf=0.0/no-keyword query is normally short-circuited before the LLM. A
+    referential follow-up ("they're only letting us use it for 7 days") must
+    instead reach the LLM WHEN conversation context is available to resolve it —
+    the heuristic can't see the prior topic ("it" = the model just discussed), the
+    LLM (with context) can. Regression for enhanced-mode never searching a
+    pronoun-driven follow-up on a just-searched topic."""
+
+    def test_query_depends_on_context_detects_referential(self):
+        from utils.web_search_trigger import query_depends_on_context
+        assert query_depends_on_context("They're only letting us use it for 7 days") is True
+        assert query_depends_on_context("is that still happening") is True
+        assert query_depends_on_context("did they push it back") is True
+        assert query_depends_on_context("those got cancelled") is True
+        # Token adjacent to punctuation or at end-of-query (the shapes the old
+        # padded-substring tuple missed).
+        assert query_depends_on_context("what about that?") is True
+        assert query_depends_on_context("did you see them?") is True
+        assert query_depends_on_context("tell me more about it: the pricing part") is True
+        assert query_depends_on_context("did you check it") is True
+        # Standalone queries carrying their own subject noun are not referential.
+        assert query_depends_on_context("what is the capital of France") is False
+        assert query_depends_on_context("bitcoin price today") is False
+        assert query_depends_on_context("") is False
+        assert query_depends_on_context(None) is False
+
+    def _zero_heuristic(self):
+        return WebSearchDecision(
+            should_search=False, depth=WebSearchDepth.QUICK, confidence=0.0,
+            reason="No strong indicators", matched_keywords=[], matched_patterns=[],
+        )
+
+    @pytest.mark.asyncio
+    async def test_referential_followup_with_context_reaches_llm(self):
+        from unittest.mock import AsyncMock, patch
+        import utils.web_search_trigger as wst
+        wst._llm_trigger_cache.clear()
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value=(
+            '{"should_search": true, "confidence": 0.85, "reason": "time-limited access claim", '
+            '"search_terms": ["Fable 5 limited 7 day access"], "search_depth": "standard", "num_searches": 1}'
+        ))
+
+        with patch.object(wst, "should_search_heuristic", return_value=self._zero_heuristic()), \
+             patch.object(wst, "LLM_FIRST_ENABLED", True):
+            decision = await wst.analyze_for_web_search_llm(
+                query="They're only letting us use it for 7 days",
+                model_manager=mock_manager,
+                conversation_context=(
+                    "User: fable is supposed to be available today\n"
+                    "Assistant: the freeze may have lifted"
+                ),
+            )
+
+        # LLM was consulted (not short-circuited) and its verdict carried through.
+        assert mock_manager.generate_once.called
+        assert decision.should_search is True
+        assert decision.source == "llm"
+
+    @pytest.mark.asyncio
+    async def test_conf_zero_without_context_still_short_circuits(self):
+        from unittest.mock import AsyncMock, patch
+        import utils.web_search_trigger as wst
+        wst._llm_trigger_cache.clear()
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value='{"should_search": true, "confidence": 0.9}')
+
+        with patch.object(wst, "should_search_heuristic", return_value=self._zero_heuristic()), \
+             patch.object(wst, "LLM_FIRST_ENABLED", True):
+            decision = await wst.analyze_for_web_search_llm(
+                query="They're only letting us use it for 7 days",
+                model_manager=mock_manager,
+                conversation_context=None,  # nothing to resolve "it"/"us" against → skip
+            )
+
+        assert not mock_manager.generate_once.called  # short-circuited, no LLM call
+        assert decision.should_search is False
+
+    @pytest.mark.asyncio
+    async def test_conf_zero_nonreferential_with_context_still_short_circuits(self):
+        """Context present but the query is standalone (no pronoun referent) → still
+        skip the LLM. We only bypass for referential follow-ups, to bound cost."""
+        from unittest.mock import AsyncMock, patch
+        import utils.web_search_trigger as wst
+        wst._llm_trigger_cache.clear()
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value='{"should_search": true, "confidence": 0.9}')
+
+        with patch.object(wst, "should_search_heuristic", return_value=self._zero_heuristic()), \
+             patch.object(wst, "LLM_FIRST_ENABLED", True):
+            decision = await wst.analyze_for_web_search_llm(
+                query="my grandmother baked fresh bread",
+                model_manager=mock_manager,
+                conversation_context="User: tell me about your day",
+            )
+
+        assert not mock_manager.generate_once.called
+        assert decision.should_search is False
+
+
+class TestUserLocationInjection:
+    """Location-dependent queries must carry the user's location in
+    search_terms instead of leaking literal "my area"/"near me" to the search
+    engine (which returns arbitrary big-market results — the DC-weather bug)."""
+
+    def test_prompt_includes_location_line_and_guideline(self):
+        from utils.web_search_trigger import _build_llm_trigger_prompt
+
+        prompt = _build_llm_trigger_prompt(
+            "how hot is it in my area", "2026-07-02",
+            user_location="Saint Charles, IL",
+        )
+        assert "User location: Saint Charles, IL" in prompt
+        assert "LOCAL QUERIES" in prompt
+        assert 'NEVER emit "my area"' in prompt
+
+    def test_prompt_omits_location_when_unknown(self):
+        from utils.web_search_trigger import _build_llm_trigger_prompt
+
+        prompt = _build_llm_trigger_prompt("how hot is it in my area", "2026-07-02")
+        assert "User location:" not in prompt
+        assert "LOCAL QUERIES" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_classify_threads_location_into_prompt(self):
+        """_classify_with_llm_unified resolves and forwards the location."""
+        from unittest.mock import AsyncMock
+        import utils.web_search_trigger as wst
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value=(
+            '{"should_search": true, "confidence": 0.9, "reason": "weather", '
+            '"search_terms": ["Saint Charles IL weather"], "search_depth": "quick", '
+            '"num_searches": 1}'
+        ))
+
+        with patch("utils.location_resolver.get_user_location",
+                   return_value="Saint Charles, IL"):
+            await wst._classify_with_llm_unified(
+                "how hot is it in my area", mock_manager
+            )
+
+        prompt = mock_manager.generate_once.call_args[0][0]
+        assert "User location: Saint Charles, IL" in prompt
+
+    @pytest.mark.asyncio
+    async def test_classify_survives_location_failure(self):
+        """A broken resolver must not break trigger classification."""
+        from unittest.mock import AsyncMock
+        import utils.web_search_trigger as wst
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value=(
+            '{"should_search": false, "confidence": 0.2, "reason": "chat", '
+            '"search_terms": [], "search_depth": "quick", "num_searches": 0}'
+        ))
+
+        with patch("utils.location_resolver.get_user_location",
+                   side_effect=RuntimeError("network down")):
+            parsed = await wst._classify_with_llm_unified("hey there", mock_manager)
+
+        assert parsed is not None
+        prompt = mock_manager.generate_once.call_args[0][0]
+        assert "User location:" not in prompt
 
 
 if __name__ == "__main__":

@@ -157,6 +157,24 @@ class TestTemporalRecall:
         r = classifier.classify("How has my mood changed over time?")
         assert r.intent == IntentType.TEMPORAL_RECALL
 
+    def test_personal_history_is_temporal(self, classifier):
+        r = classifier.classify("Show me our conversation history about the project")
+        assert r.intent == IntentType.TEMPORAL_RECALL
+
+    def test_encyclopedic_history_is_not_temporal(self, classifier):
+        """Bare 'history' must not classify temporal_recall — that suppresses
+        wiki-semantic retrieval for exactly the queries the wiki index serves."""
+        r = classifier.classify("Tell me about the history of the Roman Empire")
+        assert r.intent != IntentType.TEMPORAL_RECALL
+
+    def test_encyclopedic_how_long_has_is_not_temporal(self, classifier):
+        r = classifier.classify("How long has the Great Barrier Reef existed?")
+        assert r.intent != IntentType.TEMPORAL_RECALL
+
+    def test_personal_how_long_have_is_temporal(self, classifier):
+        r = classifier.classify("How long have I been working on Daemon?")
+        assert r.intent == IntentType.TEMPORAL_RECALL
+
     def test_recency_weight_high(self, classifier):
         r = classifier.classify("What were we discussing last month?")
         assert r.weight_overrides.get("recency", 0.0) >= 0.35
@@ -341,6 +359,24 @@ class TestSTMRefinement:
         refined = classifier.refine_with_stm(r, "Provide emotional support and comfort")
         assert refined.intent == IntentType.EMOTIONAL_SUPPORT
 
+    def test_stm_keywords_are_word_bounded_not_substrings(self, classifier):
+        """'chat' inside 'ChatGPT', 'fact' inside 'artifact', 'vent' inside
+        'event' must NOT refine — substring hits upgraded info queries to the
+        wrong intent, which then suppressed web/wiki retrieval."""
+        for stm_text in (
+            "user asking about ChatGPT pricing",
+            "identify the artifact origin",
+            "planning an event schedule",
+        ):
+            r = IntentResult(intent=IntentType.GENERAL, confidence=0.30)
+            refined = classifier.refine_with_stm(r, stm_text)
+            assert refined.intent == IntentType.GENERAL, stm_text
+
+    def test_stm_keywords_still_match_inflections(self, classifier):
+        r = IntentResult(intent=IntentType.GENERAL, confidence=0.30)
+        refined = classifier.refine_with_stm(r, "exchanging greetings with the user")
+        assert refined.intent == IntentType.CASUAL_SOCIAL
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Edge Cases
@@ -433,3 +469,65 @@ class TestIntentTypeEnum:
 
     def test_all_nine_types(self):
         assert len(IntentType) == 9
+
+
+# ===========================================================================
+# 2026-07-03 fixes: panic pattern, file-ext stem, TEMPORAL profile,
+# STM refined confidence, casual STM keywords
+# ===========================================================================
+
+class TestSmallFixes2026_07:
+
+    @pytest.fixture
+    def classifier(self):
+        return IntentClassifier()
+
+    def test_panicking_is_emotional(self, classifier):
+        r = classifier.classify("I'm panicking about tomorrow")
+        assert r.intent == IntentType.EMOTIONAL_SUPPORT
+
+    def test_panic_bare_form_is_emotional(self, classifier):
+        # Old pattern was "panick" — bare "panic" never matched
+        r = classifier.classify("I feel panic every morning")
+        assert r.intent == IntentType.EMOTIONAL_SUPPORT
+
+    def test_version_string_not_project_work(self, classifier):
+        # "1.5.yaml"-style digit stems must not classify as project work
+        r = classifier.classify("we shipped 1.5.yaml yesterday")
+        assert r.intent != IntentType.PROJECT_WORK
+
+    def test_real_filename_still_project_work(self, classifier):
+        r = classifier.classify("take a look at handlers.py sometime")
+        assert r.intent == IntentType.PROJECT_WORK
+
+    def test_digit_leading_filename_is_project_work(self, classifier):
+        # Digit-leading real filenames were collateral of the version-string fix
+        r = classifier.classify("take a look at 2fa.py sometime")
+        assert r.intent == IntentType.PROJECT_WORK
+        r = classifier.classify("3d_utils.py needs a docstring")
+        assert r.intent == IntentType.PROJECT_WORK
+
+    def test_multi_component_version_not_project_work(self, classifier):
+        r = classifier.classify("we shipped 10.5.2.json yesterday")
+        assert r.intent != IntentType.PROJECT_WORK
+
+    def test_temporal_profile_has_no_upcoming_schedule(self, classifier):
+        r = classifier.classify("what did we discuss last week?")
+        assert r.intent == IntentType.TEMPORAL_RECALL
+        assert "max_upcoming_schedule" not in r.retrieval_overrides
+
+    def test_stm_refined_confidence_reaches_060(self, classifier):
+        r = classifier.classify("hmm ok then")  # short/casual, low confidence
+        if r.confidence >= 0.50:
+            pytest.skip("query classified confidently; refinement not applicable")
+        refined = classifier.refine_with_stm(r, "Get practical solution to technical problem")
+        assert refined.intent == IntentType.TECHNICAL_HELP
+        assert refined.confidence == pytest.approx(0.60)
+
+    def test_stm_casual_keywords_refine(self, classifier):
+        r = classifier.classify("so anyway")
+        if r.confidence >= 0.50:
+            pytest.skip("query classified confidently; refinement not applicable")
+        refined = classifier.refine_with_stm(r, "Casual chat / catch up with the user")
+        assert refined.intent == IntentType.CASUAL_SOCIAL
+        assert refined.source == "stm_refined"

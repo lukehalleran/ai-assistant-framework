@@ -759,11 +759,17 @@ class IntentResult:
     weight_overrides: Dict[str, float]   # Override SCORE_WEIGHTS per intent
     retrieval_overrides: Dict[str, int]  # Override PROMPT_MAX_* per intent
     gate_threshold_override: Optional[float]  # Override gate threshold
+
+    @property
+    def intent_type(self) -> IntentType:  # [NEW 2026-07-03] ALIAS for .intent
+        # builder.py / agentic gate veto / response planner read .intent_type.
+        # Before the alias they silently got None — wiki/web suppression and
+        # the agentic intent veto were dead in production. Keep intact.
 ```
 
 **Key Methods**:
 - `classify(query, tone_level=None) -> IntentResult` → Regex patterns checked in order, highest confidence wins. Tone bias: HIGH/MEDIUM tone biases toward EMOTIONAL_SUPPORT for ambiguous queries. For TEMPORAL_RECALL, extracts temporal anchor via `extract_temporal_window()` and adds `_temporal_anchor_hours` to weight_overrides. **[UPDATED 2026-02-17]**
-- `refine_with_stm(result, stm_intent) -> IntentResult` → Upgrades low-confidence results (< 0.50) using STM's free-text intent via keyword matching. No extra LLM call.
+- `refine_with_stm(result, stm_intent) -> IntentResult` → Upgrades low-confidence results (< 0.50) using STM's free-text intent via keyword matching. No extra LLM call. Refined confidence = `INTENT_STM_REFINED_CONFIDENCE` (0.60 default — reaches the 0.60 routing floors, deliberately below the 0.75 agentic-veto floor); CASUAL_SOCIAL now has STM keywords (previously zero). **[UPDATED 2026-07-03]**
 
 **Temporal Anchor Extraction** **[NEW 2026-02-17]**:
 When TEMPORAL_RECALL is classified, `classify()` calls `extract_temporal_window()` from `utils/query_checker.py` to convert temporal phrases ("last week" → 7 days, "yesterday" → 1 day, "last month" → 30 days) into hours. The value is added as `_temporal_anchor_hours` in `weight_overrides`, flowing automatically through the existing builder → scorer pipeline. `MemoryScorer.rank_memories()` pops this key and uses it to reshape the recency decay curve (see Section 2.3.0).
@@ -792,10 +798,16 @@ Phase 8 retrieval keys (eval-driven, gated by `PROMPT_SECTION_GATING_ENABLED`):
 ```python
 INTENT_ENABLED = True                        # Feature toggle
 INTENT_STM_REFINEMENT_THRESHOLD = 0.50       # Below this confidence, STM can refine
+INTENT_STM_REFINED_CONFIDENCE = 0.60         # Confidence assigned to STM-refined intents [NEW 2026-07-03]
 PROMPT_SECTION_GATING_ENABLED = True         # Phase 8 eval-driven section gating
+INTENT_STYLE_INSTRUCTIONS_ENABLED = True     # Per-intent style block in system-prompt tail [NEW 2026-07-03]
 ```
 
-**Tests**: `tests/unit/test_intent_classifier.py` — 74 tests
+**Intent → response style [NEW 2026-07-03]**: `core/tone_instructions.py:get_intent_style_instructions(intent, confidence, crisis_level_str)` returns a short per-intent style block (factual_recall/temporal_recall/technical_help/project_work/creative_exploration/meta_conversational/casual_social; no block for emotional_support or general). Orchestrator injects it into the system-prompt tail after `PROMPT_CACHE_BREAKPOINT` when confidence ≥ 0.60 and tone is CONVERSATIONAL — crisis levels suppress it (tone owns style then).
+
+**Turn telemetry [NEW 2026-07-03]**: `utils/turn_telemetry.py:record_turn()` appends one JSONL line per completed turn to `logs/turn_records.jsonl` (intent + confidence + source, tone, gate decision + veto reason, response mode, plan shape, uncertainty/review outcomes, response length). Assembled in `gui/handlers.py:_write_turn_telemetry()` from `orchestrator._last_turn_signals` + `SubmitContext.telemetry` at the duel/agentic/enhanced storage-dispatch sites. Never raises; YAML section `turn_telemetry`. Purpose: offline intent confusion-matrix + routing accuracy analysis.
+
+**Tests**: `tests/unit/test_intent_classifier.py` — 81 tests; `tests/unit/test_turn_telemetry.py` — 14; `tests/unit/test_intent_style_instructions.py` — 12; real-IntentResult veto regression in `tests/unit/test_agentic_gate.py`
 
 ---
 
@@ -2438,9 +2450,11 @@ REFERENCE_DOCS_SEED_PATHS = ["docs"]      # Directories/files to auto-seed
 - `GitMemoryLoader` (`git_memory_loader.py`): Loads extracted commits into ChromaDB
 
 **GitMemoryExtractor Methods**:
-- `extract_commits(limit, since, include_diffs, diff_max_lines)` → `List[Dict]`: Extract commit history
+- `extract_commits(limit, since, include_diffs, diff_max_lines)` → `List[Dict]`: Extract commit history. Every commit carries a derived `change_type`; with `include_diffs=True` it also carries structured, filterable diff fields (`files_changed`, `files_changed_count`, `lines_added`, `lines_removed`).
 - `get_recent_since_hash(last_hash)` → `List[Dict]`: Incremental updates since last sync
-- `_get_diff_summary(commit_hash, max_lines)` → `str`: Abbreviated `--stat` diff
+- `get_hot_files(since_days=90, limit=20, exclude_globs=None)` → `List[Dict]`: **Churn tracker** — ranks files by recent commit frequency (the active dev frontier) via one read-only `git log --name-only`. No LLM. Returns `{path, commits, last_touched, age_relative}` ranked by churn then recency. Consumers (e.g. code-proposal generator) can bias toward evolving files.
+- `_get_commit_diff_stats(commit_hash, max_files)` → `Dict`: Parse `git show --numstat` into structured stats (files_changed post-rename, counts, +/- lines, human summary). Handles binary files (`-`) and all rename forms. Replaced the old `--stat` text-only `_get_diff_summary`.
+- `_derive_change_type(tags)` → `str`: Map the conventional-commit tag to a single change_type (`feature`/`bugfix`/`refactor`/… or `other`) — free, no git call.
 - `_extract_tags(subject)` → `List[str]`: Conventional commit tag extraction (feat→feature, fix→bugfix, etc.)
 
 **GitMemoryLoader Methods**:
@@ -2452,7 +2466,7 @@ REFERENCE_DOCS_SEED_PATHS = ["docs"]      # Directories/files to auto-seed
 ```python
 {
     "id": "git-abc12345",
-    "content": "Commit: feat: add new feature\n\nDetailed body...\n\nChanges:\n...",
+    "content": "Commit: feat: add new feature\n\nDetailed body...\n\nChanges:\ncore/foo.py (+42 -3)\n...",
     "metadata": {
         "commit_hash": "abc12345",
         "author": "Luke",
@@ -2460,7 +2474,13 @@ REFERENCE_DOCS_SEED_PATHS = ["docs"]      # Directories/files to auto-seed
         "timestamp": "2026-01-24T10:30:00+00:00",
         "source": "git",
         "memory_type": "procedural",
-        "tags": "git-commit,feature"
+        "tags": "git-commit,feature",
+        "change_type": "feature",           # always present (from tag)
+        # --- structured diff fields, only when include_diffs=True ---
+        "files_changed": "core/foo.py,tests/test_foo.py",  # comma-joined, post-rename, capped
+        "files_changed_count": 2,
+        "lines_added": 42,
+        "lines_removed": 3
     }
 }
 ```
@@ -2477,6 +2497,7 @@ GIT_MEMORY_DEFAULT_LIMIT = 200
 - `python main.py git-update` - Incremental sync since last backfill
 - `python main.py git-status` - Show PROCEDURAL collection stats
 - `python main.py git-clear` - Wipe collection and reset sync state
+- `python main.py git-hot [SINCE_DAYS] [LIMIT]` - Show hot files (most-churned in a recent window; defaults 90 days, top 20; excludes `data/`, `venv/`)
 
 **Integration**:
 - ContextGatherer retrieves via `get_git_commits()` method (hybrid: 1/3 recent + 2/3 semantic)
@@ -3801,12 +3822,12 @@ class SynthesisResult:
 | 3 | External Novelty | ~15ms | Hard | 3 sub-checks: (a) claim similarity — full claim vs wiki via `semantic_search_with_neighbors()`, hard gate at 0.88; (b) co-occurrence — direct `cos(concept_a, concept_b)`, hard gate > 0.45 (catches known connection with novel phrasing; replaced an inverted bigram-FAISS signal 2026-06-27); (c) template specificity — regex generic bridge pattern detection (catches novel connection with vacuous claim) |
 | 4 | Internal Novelty | ~10ms | Soft | Synthesis memory check; new paths pass (convergence signal) |
 | 5 | Coherence Judge | ~500ms-2s | Hard | Two-pass LLM: Pass 1 structural coherence rates INVALID/WEAK/MODERATE/STRONG (min MODERATE); Pass 2 factual skeptic fires only on MODERATE results, checks for debunked science/fabricated mechanisms (binary PASS/FAIL, downgrades to WEAK on FAIL) |
-| 6 | Composite Scoring | ~0ms | Hard | 4-signal novelty composite ≥ 0.40 minimum |
+| 6 | Composite Scoring | ~0ms | Hard | 4-signal novelty composite ≥ 0.70 minimum |
 | 7 | Storage | ~10ms | — | Accepted results stored; convergence updated |
 
-**Composite Score Formula**:
+**Composite Score Formula** (2026-06-30 recalibration — accept is novelty-ranked; distance was noise, structural const was dead weight):
 ```
-composite = 0.30 * coherence + 0.40 * novelty + 0.15 * distance + 0.15 * structural
+composite = 0.35 * coherence + 0.60 * novelty + 0.05 * distance + 0.0 * structural
 
 novelty (4-signal composite):
   = 0.25 * claim_novelty       (1 - claim_sim)
@@ -3834,19 +3855,20 @@ SYNTHESIS_DISTANCE_MIN = 0.20            # Stage 2: below = trivially close
 SYNTHESIS_DISTANCE_MAX = 0.90            # Stage 2: above = nonsensical
 SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88 # Stage 3a: near-verbatim rehashes only
 SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.70  # Stage 3a: novel vs adjacent label
-SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85 # Stage 3b: 40M-scale recalibrated
+SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD = 0.45 # Stage 3b: ACTIVE known gate — direct cos(A,B) > 0.45
+SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85 # LEGACY bigram gate — retained but UNUSED (inverted; see SYNTHESIS_VALIDATION)
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85 # Stage 4: above = same insight
 SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.8"    # Stage 5: LLM for coherence judge
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"   # Stage 5: minimum to pass
-SYNTHESIS_WEIGHT_COHERENCE = 0.30        # Stage 6: composite weights
-SYNTHESIS_WEIGHT_NOVELTY = 0.40
-SYNTHESIS_WEIGHT_DISTANCE = 0.15
-SYNTHESIS_WEIGHT_STRUCTURAL = 0.15
+SYNTHESIS_WEIGHT_COHERENCE = 0.35        # Stage 6: composite weights (2026-06-30, was 0.30)
+SYNTHESIS_WEIGHT_NOVELTY = 0.60          # was 0.40 — accept is novelty-ranked
+SYNTHESIS_WEIGHT_DISTANCE = 0.05         # was 0.15 — distance was noise
+SYNTHESIS_WEIGHT_STRUCTURAL = 0.0        # was 0.15 — structural const was dead weight
 SYNTHESIS_NOVELTY_W_CLAIM = 0.25         # Stage 6: 4-signal novelty weights
 SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30
 SYNTHESIS_NOVELTY_W_SPECIFICITY = 0.25
 SYNTHESIS_NOVELTY_W_INTERNAL = 0.20
-SYNTHESIS_COMPOSITE_MIN_SCORE = 0.65     # Stage 6: raised from 0.40
+SYNTHESIS_COMPOSITE_MIN_SCORE = 0.70     # Stage 6: 2026-06-30 recalibration (was 0.65/0.40)
 SYNTHESIS_CONVERGENCE_STRONG_PATHS = 3   # Convergence thresholds
 SYNTHESIS_CONVERGENCE_STRONG_SOURCES = 2
 SYNTHESIS_DEFAULT_BATCH_SIZE = 100
@@ -4985,6 +5007,7 @@ daemon/
 │   ├── health_check.py        # Docker/K8s health endpoint
 │   ├── conversation_logger.py # Conversation persistence
 │   ├── web_search_trigger.py  # Web/memory/knowledge search detection (LLM-first + heuristics) [ENHANCED 2026-03-31]
+│   ├── location_resolver.py   # User location: override → IP geo (background) → profile lives_in; localizes web queries [NEW 2026-07-02]
 │   ├── temporal_resolver.py   # Temporal resolution utilities [NEW 2026-04]
 │   ├── text_chunking.py       # Shared chunking: chunk_by_headers + chunk_by_size fallback [NEW 2026-03-30]
 │   ├── daily_notes_generator.py # Auto-generated daily summaries with monthly folder hierarchy [ENHANCED 2026-03-10]
@@ -5440,7 +5463,7 @@ python main.py inspect-summaries
 | weekly_notes_generator.py | Organize: monthly/weekly folders + summaries + tags [ENHANCED 2026-03-10] |
 | monthly_notes_generator.py | Generate: monthly summaries from daily notes [NEW 2026-03-10] |
 | tag_generator.py | Tags: LLM-based tag extraction for Obsidian notes (100+ vocabulary, 6 categories) [NEW 2026-01-22] |
-| git_memory.py | Extract: Git commit history with metadata + conventional commit tagging [NEW 2026-01-27] |
+| git_memory.py | Extract: Git commit history with metadata + conventional commit tagging; structured per-commit diff stats (change_type, files_changed, +/- lines via `--numstat`) + hot-files churn tracker (`get_hot_files`) [NEW 2026-01-27; diff stats + churn 2026-07-02] |
 | git_memory_loader.py | Load: Backfill/incremental sync of git commits to PROCEDURAL ChromaDB [NEW 2026-01-27] |
 | procedural_skill.py | Data: ProceduralSkill dataclass + SkillCategory enum for adaptive workflows [NEW 2026-01-27] |
 | skill_activation.py | Filter: post-retrieval skill activation policy (intent suppression, score threshold, STM bonus, cooldown, cap) [NEW 2026-05] |

@@ -255,8 +255,14 @@ storage did not. Result: 752/5920 conversation docs, 429/2000 corpus entries,
 3. `scripts/repair_thinking_leaks.py` — one-time repair of historical pollution
    (dry-run by default, `--apply` to write, refuses to run while Daemon is up,
    content-update only — never deletes, re-embeds via the collection's embedder).
+   Hardened 2026-07-04: `--apply` writes a pre-image JSONL backup
+   (`logs/repair_thinking_leaks_preimage.<ts>.jsonl`) before any update, and the
+   scrubber is quoted-tag-safe — only leading / `Assistant:`-anchored
+   `<tag>…</tag>` blocks are deleted whole; a mid-text pair loses just the tag
+   literals, so conversations QUOTING the tags (e.g. discussing the leak bug)
+   keep their content.
 
-Tests: `tests/unit/test_thinking_leak_storage.py` (19 tests).
+Tests: `tests/unit/test_thinking_leak_storage.py` (30 tests).
 
 ## Backward Compatibility
 

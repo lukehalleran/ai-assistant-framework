@@ -25,6 +25,10 @@ Contract:
       swallow the whole answer into the reasoning channel, yielding just the synthetic "<thinking>"
       marker), it closes the dangling marker and retries once via _recover_reasoning_only_response()
       → generate_once(disable_reasoning=True). Prevents the GUI "caught by the thinking filter" dead-end.
+      Extended 2026-07-03: also recovers when the model dumps a literal tagged reasoning block
+      (<reasoning>…</reasoning> etc.) in the CONTENT channel with no answer after it — the channel
+      check can't see that case, so the assembled visible text is checked post-stream via
+      ResponseParser.sanitize_for_storage() (empties → retry without native reasoning).
     - Interleaved-reasoning leak defense [NEW 2026-06-28]: _generate_final_response() streams via
       core.reasoning_stream_filter.InterleavedReasoningFilter. Reasoning models (glm-5.2 observed)
       can interleave reason → draft → reason → real answer; the old "yield every content delta" loop
@@ -486,13 +490,29 @@ class AgenticSearchController:
                     metadata={"duration_ms": fetch_duration}
                 )
 
-            elif skip_initial_search:
-                # Skip the Round 1 *web* search. The gate sets this whenever the
-                # query needs memory/knowledge/tools/computation rather than the
-                # web, so the agentic loop chooses its own tools instead of a
-                # blind opening web query. (Not "computation-only" — that label
-                # was misleading; memory-seeking queries land here too.)
-                logger.info("[AgenticSearch] Skipping initial web search (loop will pick tools)")
+            elif skip_initial_search or not initial_search_terms:
+                # Skip the Round 1 *web* search. Two cases land here:
+                #   1. skip_initial_search — the gate routed us to
+                #      memory/knowledge/tools/computation rather than the web, so
+                #      the loop chooses its own tools instead of a blind opening
+                #      web query. (Not "computation-only" — memory-seeking
+                #      queries land here too.)
+                #   2. no seed terms — the trigger said "search" but distilled no
+                #      terms. Blind-searching the raw user message verbatim is
+                #      almost always low quality (filler, pronouns, no distilled
+                #      intent) and once mislabelled a casual message as news, so
+                #      we let the loop distill its own query instead.
+                if not initial_search_terms and not skip_initial_search:
+                    # Web-routed but no distilled seed terms: remember it so the
+                    # loop can insist on at least one real search before accepting
+                    # a tool-less first answer (answering purely from priors).
+                    session._web_mode_no_seed = True
+                    logger.info(
+                        "[AgenticSearch] No seed terms — skipping blind verbatim "
+                        "web search; loop will distill its own query"
+                    )
+                else:
+                    logger.info("[AgenticSearch] Skipping initial web search (loop will pick tools)")
                 session.accumulated_context = ""
                 yield ProgressEvent(
                     event_type="thinking",
@@ -502,10 +522,6 @@ class AgenticSearchController:
                 )
             else:
                 session.state = AgentState.SEARCHING
-
-                # Fallback to query if no search terms provided
-                if not initial_search_terms:
-                    initial_search_terms = [query]
 
                 yield ProgressEvent(
                     event_type="searching",
@@ -694,6 +710,35 @@ class AgenticSearchController:
                         if _ad_result.formatted_context:
                             self._append_accumulated(session, _ad_result.formatted_context)
                         logger.info(f"[AgenticSearch] Dispatched action before done: {_ad.action_type}")
+
+                # Web-mode-without-seed guard: the trigger routed this query to
+                # the web but distilled no seed terms, so Round 1 was skipped.
+                # If the model's very first decision is a tool-less answer (done
+                # or implicit), it is answering from priors with zero web results
+                # — nudge once to distill and run a real search first.
+                _wants_tools = any(
+                    not d.is_done and not d.wants_answer
+                    and not (d.wants_action and d.action_type)
+                    for d in decisions
+                )
+                if (getattr(session, '_web_mode_no_seed', False)
+                        and not _wants_tools
+                        and len(session.rounds) == 0
+                        and not getattr(session, '_web_nudge_sent', False)):
+                    session._web_nudge_sent = True
+                    logger.info(
+                        "[AgenticSearch] Web-routed query about to be answered "
+                        "with no web search — nudging to search first"
+                    )
+                    session.accumulated_context += (
+                        "\n\n[SYSTEM]: This request was routed here because it "
+                        "needs fresh information from the web, but you have not "
+                        "searched yet. Distill a focused query and call the web "
+                        "search tool now, e.g.:\n"
+                        "<search>your distilled query</search>\n"
+                        "Then answer from the results."
+                    )
+                    continue  # retry this round; the model should search now
 
                 # Check for done signal — honor it, but guard against a
                 # PREMATURE done. Some models (glm-5.2 observed 2026-06-28) emit
@@ -1264,6 +1309,7 @@ class AgenticSearchController:
             # "yield every content delta" loop fused into a leak like
             # "synthesis system.Let me check…". See core/reasoning_stream_filter.py.
             _rfilter = InterleavedReasoningFilter()
+            _visible_parts: List[str] = []
             if hasattr(stream, '__aiter__'):
                 # It's an async iterator (OpenAI stream)
                 async for chunk in stream:
@@ -1272,14 +1318,17 @@ class AgenticSearchController:
                         delta_reasoning = getattr(delta, 'reasoning_content', '') or getattr(delta, 'reasoning', '') or ''
                         delta_content = getattr(delta, 'content', '') or ''
                         for _kind, _text in _rfilter.feed(delta_reasoning, delta_content):
+                            _visible_parts.append(_text)
                             yield _text
                     elif isinstance(chunk, str):
                         if chunk:
                             for _kind, _text in _rfilter.feed('', chunk):
+                                _visible_parts.append(_text)
                                 yield _text
 
                 # Flush any content the filter is still holding back.
                 for _kind, _text in _rfilter.finish():
+                    _visible_parts.append(_text)
                     yield _text
 
                 # Reasoning-only recovery: the model streamed reasoning but never
@@ -1301,6 +1350,27 @@ class AgenticSearchController:
                     ):
                         if _rc:
                             yield _rc
+                else:
+                    # Literal-tag reasoning-only leak: some models dump their whole
+                    # chain of thought as <reasoning>…</reasoning> in the CONTENT
+                    # channel (so content_emitted is True and the channel-based check
+                    # above can't see it) and then stop without an answer. If the
+                    # assembled visible text sanitizes down to nothing, recover the
+                    # same way. (Observed 2026-07-03: stored response was one raw
+                    # <reasoning> block.)
+                    from core.response_parser import ResponseParser
+                    _assembled = "".join(_visible_parts)
+                    if _assembled.strip() and not ResponseParser.sanitize_for_storage(_assembled):
+                        logger.warning(
+                            "[AgenticSearch] Final response was a literal tagged "
+                            "reasoning block with no answer; retrying without "
+                            "native reasoning"
+                        )
+                        async for _rc in self._recover_reasoning_only_response(
+                            final_prompt, model_name, system_prompt
+                        ):
+                            if _rc:
+                                yield _rc
             elif isinstance(stream, str):
                 # It's a complete string (local model or stub)
                 yield stream
@@ -1589,6 +1659,10 @@ What would you like to do?""")
                         "session: if a search result contradicts what was already settled "
                         "here, surface the conflict and trust the session unless the new "
                         "evidence is clearly stronger — do NOT silently override it.\n"
+                        "Entries ending in [...truncated] are PREVIEWS, not complete "
+                        "messages — never quote one as if it were the full text; use "
+                        "search_memory (conversations) to retrieve the full stored "
+                        "message first.\n"
                         f"{recent_text}"
                     )
 

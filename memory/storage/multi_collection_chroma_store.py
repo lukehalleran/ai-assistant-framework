@@ -9,6 +9,8 @@ Module Contract
   add/query/update helpers with robust metadata flattening.
 - Class: MultiCollectionChromaStore(persist_directory)
 - Key methods:
+  - get_st_model() -> Optional[SentenceTransformer]  [the store's own embedder (bge-small);
+    injected into the gate system so memory gating scores in the retrieval space]
   - add_to_collection(name, text, metadata) -> str  [generic add, returns doc_id]
   - add_conversation_memory(query, response, metadata) -> str
   - add_summary(summary, period, metadata) -> str
@@ -122,6 +124,15 @@ class MultiCollectionChromaStore:
         # Lazy init: collections are opened on first access via _get_collection()
         # Log the persist directory for debugging
         logger.info(f"[Chroma] Using persistent dir: {self.persist_directory}")
+
+    def get_st_model(self):
+        """
+        The underlying SentenceTransformer this store embeds/retrieves with
+        (shared instance — chroma's embedding function class-caches models).
+        The gate system uses this so relevance filtering scores candidates in
+        the same embedding space they were retrieved in.
+        """
+        return getattr(self.embedding_fn, "_model", None)
 
     def _get_collection(self, name: str):
         """Get a collection by name, lazily initializing on first access."""

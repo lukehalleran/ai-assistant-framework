@@ -75,6 +75,48 @@ class TestSanitizeForStorage:
         assert ResponseParser.sanitize_for_storage(text) == text
 
 
+class TestReasoningTagVariant:
+    """<reasoning>…</reasoning> leaked into the CONTENT channel (observed 2026-07-03:
+    an agentic-search response was persisted as one raw reasoning block)."""
+
+    LEAK = (
+        "<reasoning>\nLuke is starting a conversation about a research chemical.\n"
+        "Let me search memory for context about what substance this might be.\n</reasoning>"
+    )
+
+    def test_whole_response_reasoning_block_returns_empty(self):
+        assert ResponseParser.sanitize_for_storage(self.LEAK) == ""
+
+    def test_reasoning_block_followed_by_answer_keeps_answer(self):
+        assert ResponseParser.sanitize_for_storage(
+            self.LEAK + "\n\nGood call trusting your gut on that."
+        ) == "Good call trusting your gut on that."
+
+    def test_unclosed_reasoning_block_returns_empty(self):
+        assert ResponseParser.sanitize_for_storage(
+            "<reasoning>The user is asking about X and I should"
+        ) == ""
+
+    def test_parse_thinking_block_extracts_reasoning_tags(self):
+        thinking, answer = ResponseParser.parse_thinking_block(
+            self.LEAK + "\n\nHere's the answer."
+        )
+        assert "search memory for context" in thinking
+        assert answer == "Here's the answer."
+
+    def test_incomplete_reasoning_block_detected_during_streaming(self):
+        assert ResponseParser.has_incomplete_thinking_block("<reasoning>partial chain of")
+
+    def test_orphan_reasoning_fragment_stripped(self):
+        assert ResponseParser.sanitize_for_storage(
+            "/reasoning>Here's the answer."
+        ) == "Here's the answer."
+
+    def test_prose_using_the_word_reasoning_untouched(self):
+        text = "The reasoning behind this choice is simple. My reason is cost."
+        assert ResponseParser.sanitize_for_storage(text) == text
+
+
 # ---------------------------------------------------------------------------
 # store_interaction boundary guard
 # ---------------------------------------------------------------------------
@@ -169,3 +211,29 @@ class TestRepairScrub:
         doc = "Before.\n\n<thinking>x</thinking>\n\n\nAfter."
         out = self.scrub(doc)
         assert "\n\n\n" not in out
+
+    def test_mid_text_quoted_tags_keep_content(self):
+        """A stored conversation QUOTING the tags (e.g. debugging this very
+        bug) must not lose the text between them — only the tag literals."""
+        doc = ("User: why did that happen?\nAssistant: The model emitted a "
+               "literal <reasoning> tag, wrote its chain of thought there, "
+               "and closed it with </reasoning> before answering.")
+        out = self.scrub(doc)
+        assert "chain of thought" in out
+        assert "<reasoning>" not in out
+        assert "</reasoning>" not in out
+
+    def test_leading_reasoning_block_deleted(self):
+        doc = "<reasoning>\nleaked chain of thought\n</reasoning>\nFinal answer."
+        out = self.scrub(doc)
+        assert "leaked chain of thought" not in out
+        assert "Final answer." in out
+
+    def test_consecutive_leading_blocks_deleted(self):
+        doc = "<thinking>a</thinking><reasoning>b</reasoning>Answer."
+        assert self.scrub(doc) == "Answer."
+
+    def test_bare_fragment_only_stripped_at_start(self):
+        assert self.scrub("thinking> stream debris here") == "stream debris here"
+        prose = "I was reasoning> is not a tag mid-sentence."
+        assert self.scrub(prose) == prose

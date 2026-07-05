@@ -69,10 +69,12 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: glm-5.2
+  active: deepseek-v4
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
+  gate_rel_threshold_retrieval: 0.6
+  gate_deictic_min_retrieval: 0.61
   cosine_threshold: 0.15
   cosine_similarity_threshold: 0.15
   deictic_threshold: 0.25
@@ -137,6 +139,12 @@ web_search:
   trigger_max_tokens: 150
   llm_heuristic_weight: 0.7
   confidence_threshold: 0.5
+location:
+  enabled: true
+  ip_lookup_enabled: true
+  ip_cache_ttl_hours: 6.0
+  ip_lookup_timeout_s: 3.0
+  override: ''
 agentic_search:
   enabled: true
   max_rounds: 5
@@ -218,7 +226,12 @@ narrative_context:
 intent_classifier:
   enabled: true
   stm_refinement_threshold: 0.5
+  stm_refined_confidence: 0.6
   section_gating_enabled: true
+  style_instructions_enabled: true
+turn_telemetry:
+  enabled: true
+  path: logs/turn_records.jsonl
 entity_facts:
   enabled: true
   per_turn_cap: 4
@@ -332,20 +345,26 @@ synthesis:
   coherence_model: claude-opus-4.8
   coherence_min_level: MODERATE
   weights:
-    coherence: 0.3
-    novelty: 0.4
-    distance: 0.15
-    structural: 0.15
-  composite_min_score: 0.65
+    coherence: 0.35
+    novelty: 0.6
+    distance: 0.05
+    structural: 0.0
+  composite_min_score: 0.7
   convergence_strong_paths: 3
   convergence_strong_sources: 2
-synthesis_generator:
+synthesis_pooled:
   enabled: true
+  candidates_per_session: 8
+  llm_concurrency: 5
+  min_cos: 0.2
+  max_cos: 0.45
+synthesis_generator:
+  enabled: false
   candidates_per_session: 5
   llm_concurrency: 5
   min_graph_nodes: 20
 synthesis_retrieval:
-  enabled: true
+  enabled: false
   structural_query_max_tokens: 100
   retrieval_k: 5
   min_similarity: 0.25
@@ -363,7 +382,7 @@ wikidata_import:
   sparql_batch_size: 500
   embedding_match_threshold: 0.6
 graph_walk:
-  enabled: true
+  enabled: false
   max_walk_length: 8
   walks_per_seed: 20
   restart_probability: 0.15

@@ -149,7 +149,8 @@ SUMMARIES_HYBRID_FILTER = _parse_bool(os.getenv("SUMMARIES_HYBRID_FILTER", "1"))
 
 # Semantic search configuration
 SEM_K = int(os.getenv("SEM_K", "50"))
-SEM_TIMEOUT_S = int(os.getenv("SEM_TIMEOUT_S", "8"))
+# Kept in sync with gatherer_knowledge.SEM_TIMEOUT_S (the live one). See note there.
+SEM_TIMEOUT_S = float(os.getenv("SEM_TIMEOUT_S", "1.5"))
 SEM_STITCH_MAX_CHARS = int(os.getenv("SEM_STITCH_MAX_CHARS", "4000"))
 try:
     from config.app_config import SEMANTIC_CHUNKS_GATE_THRESHOLD

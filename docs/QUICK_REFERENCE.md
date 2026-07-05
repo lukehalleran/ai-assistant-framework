@@ -312,6 +312,13 @@ class IntentResult:
     retrieval_overrides: Dict[str, int]  # Override PROMPT_MAX_* per intent
     gate_threshold_override: Optional[float]  # Override gate threshold
 
+    @property
+    def intent_type(self):  # ALIAS for .intent [NEW 2026-07-03]
+        """builder.py, agentic gate veto, and response planner read
+        .intent_type. Before this alias they silently got None — wiki/web
+        suppression and the agentic intent veto were DEAD in production.
+        Keep the alias; regression-pinned in test_agentic_gate.py."""
+
 class IntentClassifier:
     def classify(query: str, tone_level: str = None) -> IntentResult:
         """Regex patterns checked in order, highest confidence wins.
@@ -321,7 +328,10 @@ class IntentClassifier:
 
     def refine_with_stm(result: IntentResult, stm_intent: str = None) -> IntentResult:
         """Upgrade low-confidence results (< 0.50) using STM free-text intent.
-        Keyword-matches STM text into IntentType. No extra LLM call."""
+        Keyword-matches STM text into IntentType. No extra LLM call.
+        Refined confidence = INTENT_STM_REFINED_CONFIDENCE (0.60) — reaches
+        the 0.60 routing floors, stays below the 0.75 agentic-veto floor.
+        [UPDATED 2026-07-03; also added CASUAL_SOCIAL STM keywords]"""
 
 # Per-intent profiles (_PROFILES dict) define:
 #   weights: {relevance, recency, truth, ...} overrides for SCORE_WEIGHTS
@@ -340,7 +350,25 @@ class IntentClassifier:
 # Config (app_config.py):
 INTENT_ENABLED = True
 INTENT_STM_REFINEMENT_THRESHOLD = 0.50
+INTENT_STM_REFINED_CONFIDENCE = 0.60   # [NEW 2026-07-03]
 PROMPT_SECTION_GATING_ENABLED = True  # Phase 8 eval-driven gating
+INTENT_STYLE_INSTRUCTIONS_ENABLED = True  # [NEW 2026-07-03] per-intent style block
+
+# Intent → response style [NEW 2026-07-03]:
+# core/tone_instructions.py:get_intent_style_instructions(intent, conf, crisis)
+# injects a short per-intent style block into the system-prompt tail (after
+# PROMPT_CACHE_BREAKPOINT). Requires conf >= 0.60 + CONVERSATIONAL tone;
+# no block for emotional_support (tone owns it) or general.
+
+# Turn telemetry [NEW 2026-07-03]:
+# utils/turn_telemetry.py:record_turn() — one JSONL line per completed turn
+# → logs/turn_records.jsonl: {ts, query, intent, intent_confidence,
+#   intent_source, tone_level, is_small_talk, plan_points, plan_tone,
+#   gate_triggered, gate_modes, gate_reason (incl. "intent-veto: X@0.NN"),
+#   mode, uncertainty_*/review_* outcomes, response_len, model, session_id}
+# Wiring: orchestrator._last_turn_signals + SubmitContext.telemetry →
+# gui/handlers._write_turn_telemetry() at the storage-dispatch sites.
+# Config: turn_telemetry section (enabled, path); env TURN_TELEMETRY_ENABLED.
 ```
 
 ---
@@ -1121,23 +1149,41 @@ class ThreadStore:
     def resolve_thread(thread_id, resolution="") -> bool:
         """Mark thread as resolved (delete-and-re-add pattern)."""
 
+    def touch_thread(thread) -> bool:
+        """Refresh last_referenced + persist. Called when a new extraction
+        duplicates an already-open thread (dupe dropped, tracked thread kept live)."""
+
     def enforce_cap(max_open=50) -> int:
         """Prune lowest-priority threads when over cap. Returns count pruned."""
 
+# Module-level duplicate helpers [NEW 2026-07-03 — duplicate-thread incident fix]:
+#   _norm_keywords(text) — keyword set; keeps digit tokens ("Week 10" ≠ "Week 11");
+#       the ONLY keyword normalizer (quick-resolve matching uses it too, 2026-07-05)
+#   topics_equivalent(a, b) — strict near-subset topic match: identical sets, or
+#       ≥2 shared keywords with ≥0.9 min-side AND ≥0.5 max-side coverage (a
+#       1-keyword topic like "Taxes" is no longer a wildcard, 2026-07-05);
+#       used to CASCADE a resolution to duplicate siblings
+#   threads_duplicate(a, b) — looser: topics_equivalent OR topic+summary
+#       Jaccard ≥0.6; used to DROP just-extracted dupes of open/resolved threads
 
-# memory/thread_extractor.py — LLM-based extraction [ENHANCED 2026-05-20]
+
+# memory/thread_extractor.py — LLM-based extraction [ENHANCED 2026-07-03]
 class ThreadExtractor:
     def __init__(model_manager):
         """Two-phase LLM approach: extraction + resolution detection."""
 
-    async def extract_new_threads(session_conversations) -> List[OpenThread]:
+    async def extract_new_threads(session_conversations, open_threads=None) -> List[OpenThread]:
         """Extract open loops from session. Few-shot prompt, temp=0.0, cap 5 per session.
         Thread types: commitment, deadline, unfinished, question.
-        Today's date injected into prompt for relative date resolution."""
+        Today's date injected into prompt for relative date resolution.
+        open_threads rendered as ALREADY TRACKED (first 20) so the LLM doesn't
+        re-extract a task that already has a thread (or was just resolved)."""
 
     async def detect_resolutions(session_conversations, open_threads) -> List[Tuple[str, str]]:
         """Detect which existing threads were resolved. Returns (thread_id, resolution) tuples.
         Only marks resolved with clear evidence, NOT just because thread wasn't mentioned.
+        Prompt instructs the LLM to resolve EVERY duplicate thread a completion
+        applies to, not just the closest match.
         Today's date injected for judging whether deadlines have passed."""
 
 
@@ -1406,13 +1452,17 @@ COLLECTION_BOOSTS = {
     "meta": 0.02
 }
 
-# Score weights (sum to 1.0) — can be overridden per-intent via IntentClassifier
+# Score weights — LIVE values from config.yaml gating.score_weights (sum to 1.0).
+# Overridable per-intent via IntentClassifier. The 0.35/0.25/0.20 vector in
+# app_config.py is only a fallback when the YAML key is absent (it isn't → dead).
 SCORE_WEIGHTS = {
-    "relevance": 0.35,
-    "recency": 0.25,
-    "truth": 0.20,
+    "relevance": 0.30,
+    "recency": 0.22,
+    "truth": 0.18,
     "importance": 0.05,
-    "continuity": 0.10
+    "continuity": 0.10,
+    "topic_match": 0.10,   # USED (multiplied)
+    "structure": 0.05,     # in dict but UNUSED — structure is additive (0.15 * density_alignment)
 }
 
 # Intent Classifier [NEW 2026-02-15]
@@ -1656,14 +1706,15 @@ if staleness_ratio >= 0.8: staleness_penalty *= 2.0  # steep curve
 if collection == 'reflections': staleness_penalty *= 0.6
 staleness_penalty = min(staleness_penalty, 0.4)     # capped
 
-# Final memory score
+# Final memory score (live config.yaml weights)
 score = (
-    0.35 * relevance +
-    0.25 * recency +
-    0.20 * truth +
+    0.30 * relevance +
+    0.22 * recency +
+    0.18 * truth +
     0.05 * importance +
     0.10 * continuity +
-    structure_score +
+    0.10 * topic_match +
+    structure_score +          # additive (0.15 * density_alignment), NOT a dict weight
     anchor_bonus +
     graph_bonus +
     penalties
@@ -1766,6 +1817,8 @@ python main.py git-backfill [LIMIT]          # Initial load (default: 200 commit
 python main.py git-update                    # Incremental sync since last backfill
 python main.py git-status                    # Show PROCEDURAL collection stats
 python main.py git-clear                     # Wipe collection and reset sync state
+python main.py git-hot [SINCE_DAYS] [LIMIT]  # Hot files: most-churned in a window (default 90d, top 20) [NEW 2026-07-02]
+# Backfilled commits now carry structured diff metadata: change_type + files_changed / lines_added / lines_removed
 
 # Visual Memory [NEW 2026-05]
 python scripts/backfill_visual_memory.py     # Re-index existing images into visual_memories + FAISS
@@ -2222,6 +2275,16 @@ WEB_SEARCH_CACHE_TTL_HOURS = 72
 # Fixes [2026-03-23]: Tavily 400-char query truncation (web_search_manager.py),
 #   long paste prefilter >500 chars skips LLM (web_search_trigger.py:quick_prefilter_should_skip)
 
+# User Location (query localization) [NEW 2026-07-02]
+LOCATION_ENABLED = True                 # master switch (YAML section `location`)
+LOCATION_IP_LOOKUP_ENABLED = True       # IP geolocation (ipinfo.io → ip-api.com), background-refreshed
+LOCATION_IP_CACHE_TTL_HOURS = 6.0
+LOCATION_OVERRIDE = ""                  # set in config.local.yaml or DAEMON_USER_LOCATION env
+# Chain: override → IP geo (cached, non-blocking) → profile lives_in fact (place-shaped only).
+# Consumed by: trigger prompt + decompose prompt (LLM guideline) and
+# WebSearchManager._localize_query() backstop ("my area"/"near me" substitution,
+# placeless weather queries get location appended). utils/location_resolver.py.
+
 # Wolfram Alpha [NEW]
 WOLFRAM_ENABLED = True
 WOLFRAM_APP_ID = os.getenv("WOLFRAM_APP_ID", "")
@@ -2473,10 +2536,10 @@ class SynthesisFilter:
 # 4: novelty_internal   — synthesis memory; new paths pass as convergence (~10ms)
 # 5: coherence_judge    — two-pass LLM: Pass 1 structural coherence (4-tier rating),
 #                          Pass 2 factual skeptic (MODERATE only, binary PASS/FAIL) (~500ms-2s)
-# 6: composite_scoring  — weighted 4-signal novelty composite ≥ 0.65 threshold
+# 6: composite_scoring  — weighted 4-signal novelty composite ≥ 0.70 threshold
 # Storage happens post-pipeline in process_candidate(), not as a formal stage
 
-# Composite: 0.30*coherence + 0.40*novelty + 0.15*distance + 0.15*structural
+# Composite: 0.35*coherence + 0.60*novelty + 0.05*distance + 0.0*structural  (2026-06-30 recalibration)
 # Novelty (4-signal):
 #   0.25*claim_novelty(1-claim_sim) + 0.30*cooccurrence_novelty(1-cooccurrence_sim)
 #   + 0.25*specificity(1-template_sim) + 0.20*internal_novelty(synthesis_memory)
@@ -2495,15 +2558,15 @@ SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD = 0.45  # ACTIVE stage-3 known gate: di
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
 SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"  # code default; config.yaml overrides to "claude-opus-4.8"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
-SYNTHESIS_WEIGHT_COHERENCE = 0.30
-SYNTHESIS_WEIGHT_NOVELTY = 0.40
-SYNTHESIS_WEIGHT_DISTANCE = 0.15
-SYNTHESIS_WEIGHT_STRUCTURAL = 0.15
+SYNTHESIS_WEIGHT_COHERENCE = 0.35      # 2026-06-30 recalibration (was 0.30)
+SYNTHESIS_WEIGHT_NOVELTY = 0.60        # novelty-ranked accept (was 0.40)
+SYNTHESIS_WEIGHT_DISTANCE = 0.05       # distance was noise (was 0.15)
+SYNTHESIS_WEIGHT_STRUCTURAL = 0.0      # structural const was dead weight (was 0.15)
 SYNTHESIS_NOVELTY_W_CLAIM = 0.25             # 4-signal novelty weights
 SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30
 SYNTHESIS_NOVELTY_W_SPECIFICITY = 0.25
 SYNTHESIS_NOVELTY_W_INTERNAL = 0.20
-SYNTHESIS_COMPOSITE_MIN_SCORE = 0.65   # raised from 0.40
+SYNTHESIS_COMPOSITE_MIN_SCORE = 0.70   # 2026-06-30 recalibration (was 0.65/0.40)
 SYNTHESIS_CONVERGENCE_STRONG_PATHS = 3
 SYNTHESIS_CONVERGENCE_STRONG_SOURCES = 2
 SYNTHESIS_DEFAULT_BATCH_SIZE = 100
@@ -2523,9 +2586,9 @@ SYNTHESIS_AUDIT_MIN_GRADED = 10            # Minimum graded results before auto-
 #   cooccurrence_known_threshold: 0.85   # 40M-scale recalibrated
 #   coherence_model: claude-opus-4.8
 #   coherence_min_level: MODERATE
-#   weights: {coherence: 0.30, novelty: 0.40, distance: 0.15, structural: 0.15}
+#   weights: {coherence: 0.35, novelty: 0.60, distance: 0.05, structural: 0.0}
 #   novelty_weights: {claim: 0.25, cooccurrence: 0.30, specificity: 0.25, internal: 0.20}
-#   composite_min_score: 0.65   # raised from 0.40
+#   composite_min_score: 0.70   # 2026-06-30 recalibration
 
 # synthesis_audit:
 #   enabled: true

@@ -9,11 +9,19 @@ Module Contract
   discovery target, e.g. `simulated annealing ↔ metallurgy`, cos 0.09) and is circular
   with cosine-based candidate selection.
 - Public API:
-    doc_cooccurrence(a, b, depth=40, min_shared=1) -> DocCooccurResult
-    is_known(a, b, depth=40, min_shared=1) -> bool
+    doc_cooccurrence(a, b, depth=40, min_shared=1, bidirectional=False) -> DocCooccurResult
+    is_known(a, b, depth=40, min_shared=1, bidirectional=False) -> bool
 - Signal (over each concept's top-`depth` retrieved wiki chunks): KNOWN iff they share an
   article TITLE, OR one concept's distinctive term appears in the TEXT of the other's
-  articles (the crossover analogy lives in the body, not the title).
+  articles (the crossover analogy lives in the body, not the title). With
+  bidirectional=True the text-mention signal requires BOTH directions (A's term in B's
+  articles AND B's term in A's) — strips one-directional stem collisions (neighbour-
+  vocabulary bleed) for perfect precision (0 FP @ n=99). It is a PRECISION-ONLY KNOB,
+  NOT a default: re-validation (2026-06-28) showed it craters hard cross-domain recall
+  96%→36% (real cross-domain knowledge is asymmetrically documented — specific articles
+  cite the general concept, not vice versa). Keep default False (validated 97%/4%); use
+  bidirectional=True only where false positives dominate and recall can be sacrificed.
+  See docs/SYNTHESIS_VALIDATION.md (bidirectional re-validation, 2026-06-28).
 - Inputs: two concept strings. Output: DocCooccurResult(shared, shared_titles, mention, known).
 - Side effects: FAISS wiki retrievals (semantic_search_with_neighbors). No LLM, no writes.
 - Validation: docs/SYNTHESIS_VALIDATION.md (2026-06-27) — v2 text-scan, 93% on n=15 labeled,
@@ -62,13 +70,19 @@ def _stems(phrase: str) -> set:
             if len(t) >= 4 and t not in _GENERIC_TOK}
 
 
-def doc_cooccurrence(a: str, b: str, depth: int = 40, min_shared: int = 1) -> DocCooccurResult:
+def doc_cooccurrence(a: str, b: str, depth: int = 40, min_shared: int = 1,
+                     bidirectional: bool = False) -> DocCooccurResult:
     """Are concepts A and B discussed together in the wiki corpus? (cosine-independent)
 
     Two signals over each concept's top-`depth` retrieved chunks:
       - shared TITLES (co-listed in the same articles), and
       - cross-MENTION: B's distinctive term appears in the TEXT of A's articles, or
         vice versa (the crossover analogy is usually in the body, not the title).
+
+    bidirectional: when True, the cross-MENTION signal requires BOTH directions (A's term
+      in B's articles AND B's term in A's), which strips one-directional stem collisions
+      (neighbour-vocabulary bleed). Default False keeps the validated either-direction
+      behaviour. Title overlap is unaffected by this flag.
     """
     ra = semantic_search_with_neighbors(a, k=depth)
     rb = semantic_search_with_neighbors(b, k=depth)
@@ -80,12 +94,16 @@ def doc_cooccurrence(a: str, b: str, depth: int = 40, min_shared: int = 1) -> Do
     a_text = " ".join((r.get("content") or r.get("text") or "") for r in ra).lower()
     b_text = " ".join((r.get("content") or r.get("text") or "") for r in rb).lower()
     a_stems, b_stems = _stems(a), _stems(b)
-    mention = any(s in a_text for s in b_stems) or any(s in b_text for s in a_stems)
+    b_in_a = any(s in a_text for s in b_stems)   # B's distinctive term in A's articles
+    a_in_b = any(s in b_text for s in a_stems)   # A's distinctive term in B's articles
+    mention = (b_in_a and a_in_b) if bidirectional else (b_in_a or a_in_b)
 
     known = len(shared) >= min_shared or mention
     return DocCooccurResult(len(shared), sorted(shared)[:4], mention, known)
 
 
-def is_known(a: str, b: str, depth: int = 40, min_shared: int = 1) -> bool:
+def is_known(a: str, b: str, depth: int = 40, min_shared: int = 1,
+             bidirectional: bool = False) -> bool:
     """Convenience boolean: is the (A, B) connection already in literature?"""
-    return doc_cooccurrence(a, b, depth=depth, min_shared=min_shared).known
+    return doc_cooccurrence(a, b, depth=depth, min_shared=min_shared,
+                            bidirectional=bidirectional).known

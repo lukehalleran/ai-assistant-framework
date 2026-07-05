@@ -40,10 +40,17 @@ Module Contract
   - _run_enhanced owns the post-answer passes (uncertainty fallback, review gate) and the
     finally cleanup (fast-mode restore + storage). Its finally is enhanced-path-only by design
     (see "latent fast-mode-restore" note below) — do NOT hoist it to the dispatcher.
+- Turn telemetry [NEW 2026-07-03]: one JSONL line per completed turn (utils/turn_telemetry.py,
+  logs/turn_records.jsonl). SubmitContext.telemetry accumulates gate decision (dispatcher) +
+  uncertainty/review outcomes (_run_enhanced); _write_turn_telemetry() merges those with
+  orchestrator._last_turn_signals (intent/tone/plan, captured in build_full_prompt) and writes
+  at the duel/agentic/enhanced storage-dispatch sites plus the doc-generation and
+  self-note bypass paths (2026-07-05 — those turns previously vanished from the record). Never raises.
 - Extracted helpers:
   - _safe_count_tokens(), _safe_extract_citations(), _build_debug_record(), _build_provenance(),
     _attach_agentic_provenance(), _sanitize_response_text(), _strip_echoed_headers(),
-    _dispatch_storage(), _silent_agentic_retry(), _get_session_id(), _find_email_draft()
+    _dispatch_storage(), _silent_agentic_retry(), _get_session_id(), _find_email_draft(),
+    _write_turn_telemetry()
   - _strip_inline_tool_xml(text, full=): consolidates the leaked tool-call XML stripping
     (5-pattern full set; 3-pattern subset for the enhanced lookup_contact site).
   - _make_text_action_proposal(decision, store): shared propose+audit for text tool-calls.
@@ -554,6 +561,30 @@ def _dispatch_storage(
     return task
 
 
+def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len):
+    """Assemble + append the per-turn telemetry JSONL record (never raises).
+
+    Merges orchestrator._last_turn_signals (intent/tone/plan, captured in
+    build_full_prompt) with ctx.telemetry (gate + post-answer check fields)
+    and the per-call outcome fields. See utils/turn_telemetry.py.
+    """
+    try:
+        from utils.turn_telemetry import record_turn
+        rec = dict(getattr(ctx.orchestrator, "_last_turn_signals", {}) or {})
+        rec.update(ctx.telemetry or {})
+        rec.update({
+            "query": (ctx.user_text or "")[:300],
+            "mode": mode,
+            "session_id": session_id,
+            "model": model_name,
+            "response_len": int(response_len or 0),
+            "prepare_elapsed_s": round(ctx.t_prepare_elapsed or 0.0, 3),
+        })
+        record_turn(rec)
+    except Exception as e:
+        logger.debug(f"[Telemetry] turn record skipped: {e}")
+
+
 async def _silent_agentic_retry(
     orchestrator, merged_input, system_prompt, model_name,
     raw_context, original_response, hint, log_prefix,
@@ -777,6 +808,11 @@ class SubmitContext:
     # --- control signals set by mode handlers ---
     handled: bool = False
     storage_dispatched: bool = False
+    # --- per-turn telemetry accumulator (see utils/turn_telemetry.py) ---
+    # Gate fields set in the dispatcher; uncertainty/review fields set in
+    # _run_enhanced; merged with orchestrator._last_turn_signals and written
+    # by _write_turn_telemetry() at each storage-dispatch site.
+    telemetry: dict = field(default_factory=dict)
 
 
 async def _prepare_submit_context(ctx):
@@ -1031,6 +1067,10 @@ async def _run_duel(ctx, gens, sels, features_duel):
             final_output, ctx.personality, ctx.file_names, ctx.conversation_logger,
             _duel_session_id, _duel_prov, 'best-of-duel',
         )
+        _write_turn_telemetry(
+            ctx, 'best-of-duel', _duel_session_id, f"{m1} vs {m2}",
+            len(final_output or ""),
+        )
 
         ctx.handled = True
         ctx.storage_dispatched = True
@@ -1112,6 +1152,11 @@ async def _run_doc_generation(ctx):
                 pass
 
         yield {"role": "assistant", "content": _doc_response}
+        _write_turn_telemetry(
+            ctx, 'doc-generation', _get_session_id(orchestrator),
+            getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
+            len(_doc_response or ""),
+        )
         ctx.handled = True
         return
 
@@ -1224,6 +1269,11 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
             pass
 
     yield {"role": "assistant", "content": _resp}
+    _write_turn_telemetry(
+        ctx, 'self-note', _get_session_id(orchestrator),
+        getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
+        len(_resp or ""),
+    )
     ctx.handled = True
 
 
@@ -1294,8 +1344,10 @@ def _apply_web_citations(text, web_map):
 
     gr.Chatbot renders markdown, so each inline [WEB_N] is rewritten to
     `[[WEB_N](url)]` — literal brackets around a clickable "WEB_N" pointing at the
-    source URL — and a `**Sources:**` list is appended. Markers without a URL in
-    web_map are left as plain text. No-op when there's no map or no citation.
+    source URL — and a `**Sources:**` list is appended. Markers with no URL in
+    web_map are STRIPPED from the display (with their preceding space): on a
+    turn with no web search the model can still imitate [WEB_N] from replayed
+    history, and leaving it renders as literal bracket junk to the user.
     Applied to the DISPLAY string only; the stored response keeps the canonical
     [WEB_N] markers.
 
@@ -1304,8 +1356,9 @@ def _apply_web_citations(text, web_map):
     latex_delimiters in gui/launch.py), so backslash-escaped brackets render as
     math, not a link. The `[[WEB_N](url)]` form has no backslashes and is safe.
     """
-    if not text or not web_map:
+    if not text:
         return text
+    web_map = web_map or {}
     import re as _re
     # Idempotency guard: the linkified form [[WEB_N](url)] still contains the literal
     # substring [WEB_N], so a second pass would re-wrap it ([[[WEB_N](url)](url)]) and
@@ -1317,11 +1370,11 @@ def _apply_web_citations(text, web_map):
         return text
 
     def _repl(m):
-        key = f"WEB_{m.group(1)}"
+        key = f"WEB_{m.group(2)}"
         url = ((web_map.get(key) or {}).get("url") or "").strip()
-        return f"[[{key}]({url})]" if url else m.group(0)
+        return f"{m.group(1)}[[{key}]({url})]" if url else ""
 
-    out = _re.sub(r'\[WEB_(\d+)\]', _repl, text)
+    out = _re.sub(r'( ?)\[WEB_(\d+)\]', _repl, text)
 
     footer = []
     for _n in cited:
@@ -1673,7 +1726,16 @@ async def _run_agentic_search(ctx):
             display_output = _re.sub(r'\n{3,}', '\n\n', display_output)
 
         # Make [WEB_N] citations clickable + append a Sources footer (display only).
-        _web_map = getattr(agentic_controller, '_current_web_source_map', None) or {}
+        # The accumulated web-source map lives on the controller's ToolExecutor
+        # (assign_web_ids/_merge_web_ids write it there across rounds), NOT on the
+        # controller itself — read it from _tool_executor or the linkify no-ops and
+        # [WEB_N] render as plain text. (Controller attr kept as a legacy/mock fallback.)
+        _web_map = (
+            getattr(getattr(agentic_controller, '_tool_executor', None),
+                    '_current_web_source_map', None)
+            or getattr(agentic_controller, '_current_web_source_map', None)
+            or {}
+        )
         if _web_map:
             display_output = _apply_web_citations(display_output, _web_map)
             # Also set on orchestrator for provenance
@@ -1853,6 +1915,11 @@ async def _run_agentic_search(ctx):
             _agentic_session_id, _agentic_prov, 'agentic-search',
         )
         logger.info("[Handle Submit] Agentic storage dispatched to background")
+        _write_turn_telemetry(
+            ctx, 'agentic-search', _agentic_session_id,
+            model_name if 'model_name' in dir() else None,
+            len(final_output_sanitized or ""),
+        )
 
         ctx.handled = True
         ctx.storage_dispatched = True
@@ -2097,6 +2164,11 @@ async def _run_enhanced(ctx):
                             f"pattern={_uf_result.matched_pattern}). "
                             f"Retrying via agentic search."
                         )
+                        ctx.telemetry.update({
+                            "uncertainty_fired": True,
+                            "uncertainty_trigger": str(_uf_result.trigger_type),
+                            "uncertainty_confidence": round(float(_uf_result.confidence), 3),
+                        })
                         _uf_hint = (
                             f'[MEMORY SEARCH RETRY] The user asked: "{user_text}" '
                             f"and the initial response could not find relevant "
@@ -2116,6 +2188,7 @@ async def _run_enhanced(ctx):
                             display_output = final_output
                             thinking_part_stream = _uf_think or thinking_part_stream
                             _uncertainty_retry_done = True
+                        ctx.telemetry["uncertainty_retry_accepted"] = bool(_uf_clean is not None)
 
             except ImportError as e:
                 logger.debug(f"[UNCERTAINTY FALLBACK] Module not available: {e}")
@@ -2140,6 +2213,12 @@ async def _run_enhanced(ctx):
                         _review = await _planner.review_answer(
                             plan=_plan, response=final_output, query=user_text,
                         )
+                        if _review is not None:
+                            ctx.telemetry.update({
+                                "review_fired": True,
+                                "review_passed": bool(_review.passes),
+                                "review_confidence": round(float(_review.confidence), 3),
+                            })
                         if (
                             _review
                             and not _review.passes
@@ -2167,6 +2246,7 @@ async def _run_enhanced(ctx):
                                 display_output = final_output
                                 thinking_part_stream = _rg_think or thinking_part_stream
                                 _review_retry_done = True
+                            ctx.telemetry["review_retry_accepted"] = bool(_rg_clean is not None)
                         elif _review:
                             logger.debug(
                                 f"[REVIEW GATE] Response passed review "
@@ -2186,9 +2266,15 @@ async def _run_enhanced(ctx):
         )
 
         _resp_for_debug = _sanitize_response_text(display_output or final_output)
-        _resp_for_debug, citations = _safe_extract_citations(
-            _resp_for_debug, orchestrator,
-        )
+        # Extract citation METADATA from the marker-bearing text, but discard the
+        # aggressively-cleaned text it returns (extract_citations strips ALL markers
+        # — including [WEB_N] — AND collapses newlines). We clean the display
+        # separately so [WEB_N] survive for end-of-turn linkification and multi-
+        # paragraph markdown isn't flattened. (Mirrors the agentic path, which
+        # linkifies display_output and extracts citations from a separate string.)
+        _, citations = _safe_extract_citations(_resp_for_debug, orchestrator)
+        from core.citation_extractor import strip_memory_citation_markers
+        _resp_for_debug = strip_memory_citation_markers(_resp_for_debug)
 
         _enh_session_id = _get_session_id(orchestrator)
         _enh_mode = "uncertainty-fallback" if _uncertainty_retry_done else "enhanced"
@@ -2389,6 +2475,11 @@ async def _run_enhanced(ctx):
                     _store_session_id, _store_prov, _store_mode,
                 )
                 logger.info("[HANDLE_SUBMIT] Storage dispatched to background")
+                _write_turn_telemetry(
+                    ctx, _store_mode, _store_session_id,
+                    model_name if 'model_name' in dir() else None,
+                    len(final_output or ""),
+                )
 
                 # No mid-session consolidation: summaries are generated at shutdown
             except Exception as e:
@@ -2552,6 +2643,13 @@ async def handle_submit(
         ctx.doc_gen_intent = _doc_gen_intent
         ctx.self_note_intent = _self_note_intent
         ctx.skip_initial_search = getattr(_gate_decision, 'skip_initial_search', False)
+
+        # Telemetry: record the gate's routing decision for this turn
+        ctx.telemetry.update({
+            "gate_triggered": bool(should_use_agentic),
+            "gate_modes": list(_gate_decision.modes or []),
+            "gate_reason": getattr(_gate_decision, "reason", ""),
+        })
 
         # --- Direct document generation (bypasses agentic loop) ---
         if _doc_gen_intent and should_use_agentic:

@@ -8,7 +8,9 @@ Module Contract
   existing open threads have been resolved.
 - Inputs:
   - session_conversations: list of conversation dicts (query/response pairs)
-  - open_threads: existing open threads for resolution detection
+  - open_threads: existing open threads — used for resolution detection AND
+    shown to the extraction prompt as "already tracked" so the LLM doesn't
+    re-extract a task that already has a thread
   - model_manager: LLM abstraction for generate_once()
 - Outputs:
   - List of new OpenThread objects extracted from conversations
@@ -18,6 +20,8 @@ Module Contract
   - Few-shot prompt examples for each ThreadType
   - Robust JSON parsing with find("[") / rfind("]") pattern
   - Resolution detection skipped if no existing open threads
+  - Resolution prompt instructs the LLM to resolve ALL duplicate threads a
+    completion applies to, not just the closest match
   - Uses temperature=0.0 for deterministic extraction
 - Dependencies:
   - memory.thread_models (data models)
@@ -63,11 +67,15 @@ Examples:
 
 Rules:
 - Only extract genuinely open threads — not things that were resolved in the conversation
+- Do NOT extract a thread for any task listed under ALREADY TRACKED below — those are already stored. This includes the same underlying task described in different words. Re-extracting creates duplicates that keep resurfacing after the user finishes the task.
 - Urgency 0.0-1.0: deadlines coming soon = high, casual mentions = low
 - Output ONLY a valid JSON array, no other text
 - If no open threads exist, output []
 - Maximum 5 threads per session
 - TEMPORAL: Today's date is {today}. When the user mentions relative dates ("tomorrow", "next Tuesday", "this weekend"), resolve them to absolute dates in deadline_date AND in the summary. Example: "I have an exam tomorrow" on 2026-05-19 → deadline_date: "2026-05-20", summary: "User has an exam on Tue 2026-05-20"
+
+ALREADY TRACKED (open threads that already exist — do NOT re-extract these tasks):
+{tracked_threads}
 
 CONVERSATION:
 {conversation_text}
@@ -97,6 +105,7 @@ For each resolved thread, output this JSON format. Output a JSON array:
 Rules:
 - Only mark threads as resolved if there is clear evidence in the conversation
 - Do NOT mark a thread resolved just because it wasn't mentioned
+- The thread list may contain DUPLICATES — several entries describing the same underlying task in different words (e.g. "Homework due Friday" and "Last 2 homework questions"). When the conversation resolves a task, output EVERY thread that task resolves, not just the single closest match.
 - Output ONLY a valid JSON array, no other text
 - If no threads were resolved, output []
 - Today's date is {today}. Use this to judge whether deadlines have passed.
@@ -168,13 +177,19 @@ class ThreadExtractor:
         self.model_manager = model_manager
 
     async def extract_new_threads(
-        self, session_conversations: List[dict]
+        self,
+        session_conversations: List[dict],
+        open_threads: Optional[List[OpenThread]] = None,
     ) -> List[OpenThread]:
         """
         Extract new open threads from session conversations.
 
         Args:
             session_conversations: List of conversation dicts with query/response
+            open_threads: Already-tracked open threads, shown to the LLM as
+                "do not re-extract" — without this the extractor re-creates a
+                thread for a task that is already tracked (or was just resolved)
+                every session the task is mentioned
 
         Returns:
             List of new OpenThread objects
@@ -189,10 +204,17 @@ class ThreadExtractor:
         if not conversation_text.strip():
             return []
 
+        tracked_lines = [
+            f"- {t.topic}: {(t.summary or '')[:150]}"
+            for t in (open_threads or [])[:20]
+        ]
+        tracked_threads = "\n".join(tracked_lines) if tracked_lines else "(none)"
+
         today_str = datetime.now().strftime("%A, %Y-%m-%d")
         prompt = EXTRACTION_PROMPT.format(
             conversation_text=conversation_text,
             today=today_str,
+            tracked_threads=tracked_threads,
         )
 
         try:

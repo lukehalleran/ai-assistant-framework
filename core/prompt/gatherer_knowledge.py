@@ -127,7 +127,11 @@ DREAMS_ENABLED = _parse_bool(os.getenv("DREAMS_ENABLED", "1"))
 
 # Semantic search configuration
 SEM_K = int(os.getenv("SEM_K", "50"))
-SEM_TIMEOUT_S = int(os.getenv("SEM_TIMEOUT_S", "8"))
+# Hard cap on the wiki FAISS semantic-chunks lookup. The 41M-row index lives on
+# external storage; at the old 8s ceiling this task timed out on ~30% of turns
+# (see daemon_debug logs: "semantic=8.00s") and floored the whole prompt build.
+# 1.5s keeps a warm-index lookup while capping the cold/slow-drive worst case.
+SEM_TIMEOUT_S = float(os.getenv("SEM_TIMEOUT_S", "1.5"))
 SEM_STITCH_MAX_CHARS = int(os.getenv("SEM_STITCH_MAX_CHARS", "4000"))
 try:
     from config.app_config import SEMANTIC_CHUNKS_GATE_THRESHOLD

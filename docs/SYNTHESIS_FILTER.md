@@ -562,9 +562,9 @@ One sentence of reasoning, then PASS or FAIL on its own line.
 
 Combines all prior signals into a single score.
 
-**Top-level composite:**
+**Top-level composite** (2026-06-30 recalibration — accept is novelty-ranked; distance was noise, the structural constant was dead weight):
 ```
-composite = 0.30 * coherence + 0.40 * novelty + 0.15 * distance + 0.15 * structural
+composite = 0.35 * coherence + 0.60 * novelty + 0.05 * distance + 0.0 * structural
 ```
 
 **Novelty is itself a 4-signal composite:**
@@ -583,7 +583,7 @@ novelty = 0.25 * (1 - claim_sim)           # claim novelty
 - Internal (0.20) — lower weight because convergence from multiple paths
   is actually a positive signal
 
-**Gate:** `composite >= 0.65` (`SYNTHESIS_COMPOSITE_MIN_SCORE`)
+**Gate:** `composite >= 0.70` (`SYNTHESIS_COMPOSITE_MIN_SCORE`)
 
 ### Post-Pipeline: Storage + Provisional Bridge Creation
 
@@ -640,8 +640,9 @@ endpoint_distance: 0.55
 
 **Stage 3 — Novelty External:** PASS (FAISS wiki index, 40M vectors)
 - Sub-check 1 (claim sim): 0.15 — claim text is novel (< 0.88 threshold)
-- Sub-check 2 (co-occurrence): 0.10 — "bone remodeling database index" is
-  not a documented pairing in FAISS wiki vectors (< 0.85 threshold)
+- Sub-check 2 (co-occurrence): direct `cos(concept_a, concept_b)` = 0.10 —
+  the two concepts are not a documented pairing (< 0.45 active known gate,
+  `SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD`)
 - Sub-check 3 (template sim): 0.00 — no generic templates match; claim uses
   specific terms (Wolff's law, osteoclasts, B-tree, hot nodes)
 - novelty_score_external: 0.85, cooccurrence_similarity: 0.10, template_similarity: 0.00
@@ -662,15 +663,15 @@ endpoint_distance: 0.55
 novelty = 0.25 * 0.85 + 0.30 * 0.90 + 0.25 * 1.00 + 0.20 * 1.00
        = 0.2125 + 0.27 + 0.25 + 0.20 = 0.9325
 
-composite = 0.30 * 0.66 + 0.40 * 0.9325 + 0.15 * 1.0 + 0.15 * 0.50
-         = 0.198 + 0.373 + 0.15 + 0.075 = 0.796
+composite = 0.35 * 0.66 + 0.60 * 0.9325 + 0.05 * 1.0 + 0.0 * 0.50
+         = 0.231 + 0.5595 + 0.05 + 0.0 = 0.8405
 ```
-- composite: 0.796 (>= 0.65 threshold) → PASS
+- composite: 0.8405 (>= 0.70 threshold) → PASS
 
 **Post-Pipeline — Storage:** Stored in `synthesis_results` collection. New
 insight, no convergence update needed.
 
-**Result:** ACCEPTED with composite 0.796.
+**Result:** ACCEPTED with composite 0.84.
 
 ---
 
@@ -878,49 +879,65 @@ defaults.
 | `SYNTHESIS_DISTANCE_MAX` | `0.90` | 2 | Maximum endpoint distance |
 | `SYNTHESIS_NOVELTY_KNOWN_THRESHOLD` | `0.88` | 3 | Claim sim hard gate — near-verbatim rehashes only |
 | `SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD` | `0.70` | 3 | Label threshold (novel vs adjacent) |
-| `SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD` | `0.85` | 3 | Co-occurrence hard gate — 40M-scale recalibrated |
+| `SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD` | `0.45` | 3 | **ACTIVE** known gate — reject if direct `cos(A,B)` > 0.45 |
+| `SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD` | `0.85` | 3 | LEGACY bigram gate — retained but **UNUSED** (was inverted; see SYNTHESIS_VALIDATION) |
 | `SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD` | `0.85` | 4 | Internal duplicate threshold |
 | `SYNTHESIS_COHERENCE_MODEL` | `sonnet-4.5` (YAML override: `claude-opus-4.8`) | 5 | LLM for coherence + skeptic |
 | `SYNTHESIS_COHERENCE_MIN_LEVEL` | `MODERATE` | 5 | Minimum coherence gate |
-| `SYNTHESIS_WEIGHT_COHERENCE` | `0.30` | 6 | Composite weight |
-| `SYNTHESIS_WEIGHT_NOVELTY` | `0.40` | 6 | Composite weight |
-| `SYNTHESIS_WEIGHT_DISTANCE` | `0.15` | 6 | Composite weight |
-| `SYNTHESIS_WEIGHT_STRUCTURAL` | `0.15` | 6 | Composite weight |
+| `SYNTHESIS_WEIGHT_COHERENCE` | `0.35` | 6 | Composite weight (2026-06-30, was 0.30) |
+| `SYNTHESIS_WEIGHT_NOVELTY` | `0.60` | 6 | Composite weight (was 0.40) |
+| `SYNTHESIS_WEIGHT_DISTANCE` | `0.05` | 6 | Composite weight (was 0.15 — distance was noise) |
+| `SYNTHESIS_WEIGHT_STRUCTURAL` | `0.0` | 6 | Composite weight (was 0.15 — dead constant) |
 | `SYNTHESIS_NOVELTY_W_CLAIM` | `0.25` | 6 | Novelty sub-weight |
 | `SYNTHESIS_NOVELTY_W_COOCCURRENCE` | `0.30` | 6 | Novelty sub-weight |
 | `SYNTHESIS_NOVELTY_W_SPECIFICITY` | `0.25` | 6 | Novelty sub-weight |
 | `SYNTHESIS_NOVELTY_W_INTERNAL` | `0.20` | 6 | Novelty sub-weight |
-| `SYNTHESIS_COMPOSITE_MIN_SCORE` | `0.65` | 6 | Minimum composite gate (raised from 0.40) |
+| `SYNTHESIS_COMPOSITE_MIN_SCORE` | `0.70` | 6 | Minimum composite gate (2026-06-30 recalibration; was 0.65/0.40) |
 | `SYNTHESIS_CONVERGENCE_STRONG_PATHS` | `3` | post | Paths for CONVERGING status |
 | `SYNTHESIS_CONVERGENCE_STRONG_SOURCES` | `2` | post | Sources for CONVERGING status |
 | `SYNTHESIS_LOG_ALL_REJECTIONS` | `True` | — | Log every rejection |
 | `SYNTHESIS_DEFAULT_BATCH_SIZE` | `100` | — | Batch runner size |
 
-### Generator (Cross-Store)
+> **Live generator state (config.yaml, 2026-06-30):** the **Pooled Concept**
+> generator (`synthesis_pooled`, `SYNTHESIS_POOLED_ENABLED`) is the *sole*
+> enabled generator dreaming uses. The three tiers below carry `enabled: True`
+> as an app_config code default but are set `enabled: false` in `config.yaml`
+> (retired — each paired thin/low-prominence concepts and yielded ≈0 accepts).
+> The "Default" column is the code default, not the live value.
+
+### Pooled Concept Generator (PRIMARY)
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `SYNTHESIS_GENERATOR_ENABLED` | `True` | Master toggle |
+| `SYNTHESIS_POOLED_ENABLED` | `True` (live: enabled) | Master toggle — sole active generator |
+| `SYNTHESIS_POOLED_CANDIDATES_PER_SESSION` | `8` | Target candidates per shutdown |
+| `SYNTHESIS_POOLED_LLM_CONCURRENCY` | `5` | Max parallel articulation calls |
+
+### Generator (Cross-Store) — RETIRED (`config.yaml: enabled: false`)
+
+| Constant | Default | Purpose |
+|----------|---------|---------|
+| `SYNTHESIS_GENERATOR_ENABLED` | `True` (live: **false**) | Master toggle |
 | `SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION` | `5` | Target candidates per shutdown |
 | `SYNTHESIS_GENERATOR_LLM_CONCURRENCY` | `5` | Max parallel bridge articulation calls |
 | `SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` | `20` | Graph sparsity guard |
 
-### Retrieval Generator
+### Retrieval Generator — RETIRED (`config.yaml: enabled: false`)
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `SYNTHESIS_RETRIEVAL_ENABLED` | `True` | Master toggle for retrieval-based synthesis |
+| `SYNTHESIS_RETRIEVAL_ENABLED` | `True` (live: **false**) | Master toggle for retrieval-based synthesis |
 | `SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS` | `100` | Max tokens for structural query extraction LLM call |
 | `SYNTHESIS_RETRIEVAL_K` | `5` | Number of FAISS results per structural query |
 | `SYNTHESIS_RETRIEVAL_MIN_SIMILARITY` | `0.25` | Minimum cosine similarity for FAISS results |
 | `SYNTHESIS_BRIDGE_ON_ACCEPT` | `True` | Create provisional graph edge on filter acceptance |
 | `SYNTHESIS_BRIDGE_RELATION` | `"structural_parallel"` | Relation type for provisional bridge edges |
 
-### Graph Walk Generator
+### Graph Walk Generator — RETIRED (`config.yaml: enabled: false`)
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `GRAPH_WALK_ENABLED` | `True` | Master toggle for graph walk synthesis |
+| `GRAPH_WALK_ENABLED` | `True` (live: **false**) | Master toggle for graph walk synthesis |
 | `GRAPH_WALK_MIN_BRIDGE_EDGES` | `40` | Minimum bridge edges to activate walk generator |
 | `GRAPH_WALK_PERSONAL_RETURN_BIAS` | `2.0` | Node2Vec-style bias toward personal nodes |
 | `GRAPH_WALK_HUB_DEGREE_THRESHOLD` | `15` | Degree above which hub dampening applies (log-scale penalty) |

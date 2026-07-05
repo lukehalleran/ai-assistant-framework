@@ -187,7 +187,11 @@ Sections are joined with `"\n\n"`. Each section starts with its header and `n=` 
   built entirely in the orchestrator.
 - **All sections are conditional** — empty context fields produce no section.
 - **`[CURRENT USER QUERY]`** includes `[LAST EXCHANGE FOR CONTEXT]` (most recent Q/A)
-  for coherence in the high-attention area.
+  for coherence in the high-attention area — only when that exchange belongs to the
+  CURRENT session (same `_detect_session_boundary` rule as `[RECENT CONVERSATION]`:
+  skipped on day change, ≥2h gap, or missing timestamp). A previous-session exchange
+  glued to the query read as "the user just re-asked this" and caused stale-continuity
+  confabulation on fresh-session greetings (fixed 2026-07-05).
 - **Token budget trimming** happens BEFORE assembly, in `token_manager._manage_token_budget()`.
   The assembly step just formats whatever survived the budget.
 - **Images** (from personal notes and uploads) are collected during assembly and stored

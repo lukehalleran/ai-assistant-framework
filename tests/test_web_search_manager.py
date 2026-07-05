@@ -32,6 +32,7 @@ from knowledge.web_search_manager import (
     QueryDecomposition,
     MultiSearchResult,
     quick_web_search,
+    _is_news_query,
 )
 
 
@@ -394,6 +395,34 @@ class TestEdgeCases:
         assert limiter.get_remaining_credits() == 0.0
 
 
+# ===== News Query Detection =====
+
+class TestIsNewsQuery:
+    """`_is_news_query` gates topic='news', days=1 on Tavily."""
+
+    @pytest.mark.parametrize("query", [
+        "What happened today",
+        "any breaking news today",
+        "latest news",
+        "what's happening in the world",
+        "current events in tech",
+    ])
+    def test_genuine_news_detected(self, query):
+        assert _is_news_query(query) is True
+
+    @pytest.mark.parametrize("query", [
+        # Regression: a bare temporal word in casual narration is NOT news.
+        # This long message ("...today...") was mislabelled news via the old
+        # `('today' in q) and len(q) > 20` rule.
+        "Yeah I did not shit today. Went to my dad's to swim had a beer in the "
+        "pool now walking to get some ice cream or something",
+        "I finally cleaned the garage today",
+        "feeling a lot better today than yesterday",
+    ])
+    def test_casual_temporal_not_news(self, query):
+        assert _is_news_query(query) is False
+
+
 # ===== QueryDecomposition Tests =====
 
 class TestQueryDecomposition:
@@ -566,6 +595,112 @@ class TestWebSearchManagerDecomposition:
             assert result.decomposition_used is False
             assert len(result.sub_queries) == 1
             assert result.sub_queries[0] == "simple query"
+
+
+# ===== Query Localization Tests =====
+
+class TestQueryLocalization:
+    """The deterministic backstop behind the LLM prompts: literal deictic
+    location phrases ("my area", "near me") must be substituted with the
+    user's location, and placeless weather queries get the location appended.
+    Regression for the "my area weather returned DC news to an IL user" bug."""
+
+    LOC = "Saint Charles, IL"
+
+    def _manager(self, temp_state_file, location=LOC):
+        rate_limiter = WebSearchRateLimiter(daily_limit=100, state_file=temp_state_file)
+        manager = WebSearchManager(api_key="test", rate_limiter=rate_limiter)
+        manager._get_user_location = lambda: location
+        return manager
+
+    def test_substitutes_in_my_area(self, temp_state_file):
+        m = self._manager(temp_state_file)
+        assert m._localize_query("temperature in my area July 2 2026") == \
+            "temperature in Saint Charles, IL July 2 2026"
+
+    def test_substitutes_near_me(self, temp_state_file):
+        m = self._manager(temp_state_file)
+        assert m._localize_query("best restaurants near me") == \
+            "best restaurants in Saint Charles, IL"
+
+    def test_substitutes_bare_my_area(self, temp_state_file):
+        m = self._manager(temp_state_file)
+        assert m._localize_query("my area heat advisory") == \
+            "Saint Charles, IL heat advisory"
+
+    def test_appends_location_to_placeless_weather_query(self, temp_state_file):
+        m = self._manager(temp_state_file)
+        assert m._localize_query("current weather July 2026") == \
+            "current weather July 2026 Saint Charles, IL"
+        assert m._localize_query("heat advisory July 2026") == \
+            "heat advisory July 2026 Saint Charles, IL"
+
+    def test_leaves_explicit_place_alone(self, temp_state_file):
+        m = self._manager(temp_state_file)
+        assert m._localize_query("weather in Chicago today") == \
+            "weather in Chicago today"
+
+    def test_leaves_own_city_alone(self, temp_state_file):
+        m = self._manager(temp_state_file)
+        q = "Saint Charles weather forecast"
+        assert m._localize_query(q) == q
+
+    def test_non_location_query_untouched(self, temp_state_file):
+        m = self._manager(temp_state_file)
+        q = "Tesla stock price July 2026"
+        assert m._localize_query(q) == q
+
+    def test_no_location_known_is_noop(self, temp_state_file):
+        m = self._manager(temp_state_file, location=None)
+        q = "temperature in my area July 2 2026"
+        assert m._localize_query(q) == q
+
+    def test_leaves_lowercase_place_alone(self, temp_state_file):
+        """Chat-typical lowercase place names count as naming a place."""
+        m = self._manager(temp_state_file)
+        q = "weather in tokyo"
+        assert m._localize_query(q) == q
+
+    def test_bare_temperature_is_not_a_weather_query(self, temp_state_file):
+        """'temperature' alone also means ovens/fermentation/hardware."""
+        m = self._manager(temp_state_file)
+        q = "what temperature to bake salmon"
+        assert m._localize_query(q) == q
+        q2 = "ideal humidity for sourdough starter"
+        assert m._localize_query(q2) == q2
+
+    def test_temperature_with_current_conditions_cue_localizes(self, temp_state_file):
+        m = self._manager(temp_state_file)
+        assert m._localize_query("what's the temperature outside") == \
+            "what's the temperature outside Saint Charles, IL"
+
+    def test_function_word_after_in_is_not_a_place(self, temp_state_file):
+        m = self._manager(temp_state_file)
+        assert m._localize_query("weather in the morning") == \
+            "weather in the morning Saint Charles, IL"
+
+    @pytest.mark.asyncio
+    async def test_search_localize_false_bypasses(self, mock_tavily_client, temp_state_file):
+        """localize=False (literature oracle) sends the query verbatim."""
+        with patch('tavily.TavilyClient', return_value=mock_tavily_client):
+            m = self._manager(temp_state_file)
+            m._tavily_client = mock_tavily_client
+            m._initialized = True
+
+            result = await m.search("current weather July 2026", use_cache=False,
+                                    localize=False)
+            assert result.query == "current weather July 2026"
+
+    @pytest.mark.asyncio
+    async def test_search_applies_localization(self, mock_tavily_client, temp_state_file):
+        """search() localizes before hitting the engine and the cache."""
+        with patch('tavily.TavilyClient', return_value=mock_tavily_client):
+            m = self._manager(temp_state_file)
+            m._tavily_client = mock_tavily_client
+            m._initialized = True
+
+            result = await m.search("current weather July 2026", use_cache=False)
+            assert result.query == "current weather July 2026 Saint Charles, IL"
 
 
 if __name__ == "__main__":

@@ -489,3 +489,79 @@ class TestGetModelAlias:
         # method must never raise.
         result = ThreadExtractor._get_model_alias()
         assert isinstance(result, str)
+
+
+# ===========================================================================
+# Extraction "ALREADY TRACKED" dedup context (production prompt)
+# ===========================================================================
+
+class TestExtractionTrackedThreads:
+    """extract_new_threads() shows existing open threads to the LLM so it
+    doesn't re-extract an already-tracked (or just-resolved) task.
+
+    These tests deliberately use the REAL production EXTRACTION_PROMPT to
+    verify the ALREADY TRACKED section survives prompt edits.
+    """
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_tracked_topics(self):
+        mm = _mock_model_manager("[]")
+        extractor = ThreadExtractor(model_manager=mm)
+        convos = _make_conversations([("Did the homework", "Nice work!")])
+        open_threads = _make_open_threads(2)
+
+        await extractor.extract_new_threads(convos, open_threads=open_threads)
+
+        prompt = mm.generate_once.call_args[0][0]
+        assert "ALREADY TRACKED" in prompt
+        assert "Thread topic 0" in prompt
+        assert "Thread topic 1" in prompt
+        assert "Summary for thread 0" in prompt
+
+    @pytest.mark.asyncio
+    async def test_prompt_shows_none_when_no_open_threads(self):
+        mm = _mock_model_manager("[]")
+        extractor = ThreadExtractor(model_manager=mm)
+        convos = _make_conversations([("Hello", "Hi")])
+
+        await extractor.extract_new_threads(convos)
+
+        prompt = mm.generate_once.call_args[0][0]
+        assert "ALREADY TRACKED" in prompt
+        assert "(none)" in prompt
+
+    @pytest.mark.asyncio
+    async def test_tracked_list_capped_at_20(self):
+        mm = _mock_model_manager("[]")
+        extractor = ThreadExtractor(model_manager=mm)
+        convos = _make_conversations([("Hello", "Hi")])
+        open_threads = [
+            OpenThread(
+                thread_id=f"thread-{i}",
+                topic=f"Thread topic {i}",
+                summary=f"Summary for thread {i}",
+                thread_type=ThreadType.COMMITMENT,
+                urgency=0.5,
+            )
+            for i in range(25)
+        ]
+
+        await extractor.extract_new_threads(convos, open_threads=open_threads)
+
+        prompt = mm.generate_once.call_args[0][0]
+        assert "Thread topic 19" in prompt
+        assert "Thread topic 20:" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_resolution_prompt_mentions_duplicates(self):
+        """The resolution prompt instructs the LLM to resolve ALL duplicate
+        threads a completion applies to, not just the closest match."""
+        mm = _mock_model_manager("[]")
+        extractor = ThreadExtractor(model_manager=mm)
+        convos = _make_conversations([("Homework is done", "Congrats!")])
+
+        await extractor.detect_resolutions(convos, _make_open_threads(2))
+
+        prompt = mm.generate_once.call_args[0][0]
+        assert "DUPLICATES" in prompt
+        assert "EVERY thread" in prompt

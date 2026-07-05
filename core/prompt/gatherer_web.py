@@ -4,7 +4,10 @@
 Mixin providing web search retrieval methods for ContextGatherer.
 
 Methods:
-  - _get_web_search_results(query, crisis_level, intent_type) -> WebSearchResult or None
+  - _get_web_search_results(query, crisis_level, intent_type, conversation_context)
+      -> WebSearchResult or None
+      (conversation_context: prior-turn digest so elliptical follow-ups resolve
+       against the current topic — mirrors the agentic gate)
   - should_trigger_web_search(query, crisis_level) -> bool
 
 Depends on self.web_search_manager, self.web_search_trigger, self.web_search_trigger_llm,
@@ -43,6 +46,7 @@ class WebSearchMixin:
         query: str,
         crisis_level: Optional[str] = None,
         intent_type: Optional[str] = None,
+        conversation_context: Optional[str] = None,
     ) -> Optional[Any]:
         """
         Get web search results if the query triggers a search.
@@ -54,6 +58,11 @@ class WebSearchMixin:
             query: User query to analyze and potentially search
             crisis_level: Current tone/crisis level (HIGH/MEDIUM suppresses search)
             intent_type: Intent classifier result (e.g. "casual_social") — skips search for non-search intents
+            conversation_context: Compact digest of prior turns so an elliptical
+                follow-up ("they're only giving us 7 days") can be resolved to the
+                topic just discussed. Without it a pronoun-only claim scores 0 on
+                the standalone heuristic and never reaches the trigger LLM. The
+                agentic gate already passes this; enhanced mode now does too.
 
         Returns:
             WebSearchResult if search was triggered and successful, None otherwise
@@ -98,7 +107,8 @@ class WebSearchMixin:
                     model_manager=self.model_manager,
                     crisis_level=crisis_level,
                     web_search_enabled=WEB_SEARCH_ENABLED,
-                    remaining_credits=remaining_credits
+                    remaining_credits=remaining_credits,
+                    conversation_context=conversation_context,
                 )
             else:
                 # Fallback to sync heuristic trigger

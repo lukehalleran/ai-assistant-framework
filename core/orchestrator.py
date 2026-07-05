@@ -12,7 +12,11 @@ Module Contract
 - Key methods:
   - handle_commands(): simple topic switching commands
   - prepare_prompt(): topic update, file processing, optional query rewrite, resolve system prompt, build prompt via prompt_builder
-  - build_full_prompt(): assembles final prompt; delegates system-prompt assembly to _build_system_prompt()
+  - build_full_prompt(): assembles final prompt; delegates system-prompt assembly to _build_system_prompt().
+    Runs the response planner and prompt build in parallel under a 35s combined wait; if the build
+    is still running when the wait expires it gets a 30s grace await (the planner is cancelled) —
+    calling .result() on the unfinished task raised InvalidStateError and silently replaced the
+    ENTIRE gathered context with {} (2026-07-03: agentic turn ran with no session history).
   - process_user_query(): thin coordinator — builds a _QueryFlow and routes through per-phase
     helper methods (behavior-preserving decomposition; final answer + debug_info returned).
   - _check_narrative_freshness(): Startup check for stale narrative context (>24h) [NEW 2026-01-17]
@@ -1010,6 +1014,23 @@ class DaemonOrchestrator:
                 response_instructions = self._get_response_instructions(emotional_ctx)
                 system_prompt = system_prompt.rstrip() + response_instructions
 
+            # --- Intent style instructions (per-turn tail, after the cache
+            # breakpoint — never invalidates the cached prefix). Crisis tone
+            # suppresses it inside the function; tone owns style then.
+            try:
+                from config.app_config import INTENT_STYLE_INSTRUCTIONS_ENABLED
+                if INTENT_STYLE_INSTRUCTIONS_ENABLED and context.intent is not None:
+                    from core.tone_instructions import get_intent_style_instructions
+                    _intent_style = get_intent_style_instructions(
+                        getattr(context.intent, "intent", None),
+                        getattr(context.intent, "confidence", None),
+                        getattr(context, "crisis_level_str", None),
+                    )
+                    if _intent_style:
+                        system_prompt = system_prompt.rstrip() + _intent_style
+            except Exception as e:
+                logger.debug(f"[Orchestrator] Intent style injection failed (non-fatal): {e}")
+
             # Escalation adaptation: append strategy-specific overrides
             if self.escalation_tracker:
                 escalation_instructions = self.escalation_tracker.get_strategy_instructions()
@@ -1136,12 +1157,29 @@ class DaemonOrchestrator:
                 return_when=_aio.ALL_COMPLETED,
             )
             try:
-                prompt_ctx = _prompt_task.result()
+                if _prompt_task.done():
+                    prompt_ctx = _prompt_task.result()
+                else:
+                    # The combined wait timed out with the build still running.
+                    # The prompt context is the essential product (the planner is
+                    # optional) — calling .result() here raises InvalidStateError
+                    # and silently discards everything gathered, which downstream
+                    # means an empty-context prompt AND an agentic loop with no
+                    # session history. Give the build a grace period instead.
+                    logger.warning(
+                        "[BUILD_FULL_PROMPT] Prompt build still running after 35s "
+                        "combined wait — extending up to 30s grace"
+                    )
+                    prompt_ctx = await _aio.wait_for(_prompt_task, timeout=30.0)
             except Exception as e:
                 logger.warning(f"[BUILD_FULL_PROMPT] Prompt build failed: {e}")
                 prompt_ctx = {}
             try:
-                _plan_result = _plan_task.result()
+                if _plan_task.done():
+                    _plan_result = _plan_task.result()
+                else:
+                    _plan_task.cancel()
+                    _plan_result = None
             except Exception as e:
                 logger.debug(f"[BUILD_FULL_PROMPT] Response planner failed (non-fatal): {e}")
                 _plan_result = None
@@ -1155,6 +1193,23 @@ class DaemonOrchestrator:
 
         # Store plan on instance for review gate in handlers.py
         self._current_response_plan = _plan_result
+
+        # Per-turn routing signals for turn telemetry (read by gui/handlers.py
+        # at storage-dispatch time; see utils/turn_telemetry.py).
+        try:
+            _intent_obj = context.intent
+            self._last_turn_signals = {
+                "intent": getattr(getattr(_intent_obj, "intent", None), "value", None),
+                "intent_confidence": getattr(_intent_obj, "confidence", None),
+                "intent_source": getattr(_intent_obj, "source", None),
+                "tone_level": getattr(getattr(context, "tone_level", None), "value", None),
+                "is_small_talk": bool(getattr(context, "is_small_talk", False)),
+                "plan_points": len(_plan_result.key_points) if _plan_result else None,
+                "plan_tone": getattr(_plan_result, "tone", None) if _plan_result else None,
+            }
+        except Exception as e:
+            logger.debug(f"[BUILD_FULL_PROMPT] Turn-signal capture failed (non-fatal): {e}")
+            self._last_turn_signals = {}
 
         # Store memory_id_map for citation extraction
         self._current_memory_id_map = prompt_ctx.get('memory_id_map', {})
@@ -1668,6 +1723,21 @@ class DaemonOrchestrator:
                             "fire correctly that time. Could you ask again?"
                         )
                     full_response = stripped
+
+                    # The controller's reasoning-only recovery yields the leaked
+                    # literal <reasoning> block BEFORE detecting it and then
+                    # yields the recovered answer after it — the GUI re-parses
+                    # the accumulated text every chunk, but this path returns
+                    # the blind accumulation (CLI display). Apply the same
+                    # storage-boundary sanitizer so a leading tagged block is
+                    # dropped and only the answer is returned; keep the original
+                    # if sanitizing would empty a non-empty response (blank
+                    # answers are worse — storage still sanitizes separately).
+                    sanitized = ResponseParser.sanitize_for_storage(full_response)
+                    if sanitized.strip():
+                        if sanitized != full_response:
+                            debug_info["agentic_reasoning_leak_stripped"] = True
+                        full_response = sanitized
 
                     # Store interaction
                     if self.memory_system:

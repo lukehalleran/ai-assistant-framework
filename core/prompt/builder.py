@@ -293,6 +293,14 @@ PROMPT_MAX_REFLECTIONS = _cfg_int("prompt_max_reflections", 10)
 PROMPT_MAX_DREAMS = _cfg_int("prompt_max_dreams", 3)
 PROMPT_MAX_SEMANTIC = _cfg_int("prompt_max_semantic", 8)
 PROMPT_MAX_WIKI = _cfg_int("prompt_max_wiki", 3)
+# Intents where encyclopedic wiki world-knowledge cannot help. The semantic-chunks
+# task hits the external 41M-row wiki FAISS index (up to SEM_TIMEOUT_S), so for
+# personal/social/emotional/meta/temporal/project turns we skip it entirely rather
+# than pay the latency for zero benefit. (Web search is gated on intent the same way.)
+WIKI_SEMANTIC_SUPPRESS_INTENTS = frozenset({
+    "emotional_support", "casual_social", "meta_conversational",
+    "temporal_recall", "project_work",
+})
 USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)
 PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
 PROMPT_MIN_RECENT_FLOOR = _cfg_int("prompt_min_recent_floor", 5)
@@ -693,6 +701,16 @@ class UnifiedPromptBuilder:
                 eff_max_reflections_s = _ro["max_reflections"] - half
             eff_max_dreams = _ro.get("max_dreams", PROMPT_MAX_DREAMS)
             eff_max_semantic = _ro.get("max_semantic", PROMPT_MAX_SEMANTIC)
+            # Wiki-semantic intent gate: skip the external wiki FAISS lookup on turns
+            # where encyclopedic world-knowledge is useless (emotional/casual/meta/
+            # temporal/project). This removes the biggest prompt-build latency sink
+            # (up to SEM_TIMEOUT_S) from the majority of a personal assistant's traffic.
+            if intent_type and intent_type.lower() in WIKI_SEMANTIC_SUPPRESS_INTENTS:
+                if eff_max_semantic > 0:
+                    logger.debug(
+                        f"[BUILD_PROMPT] Suppressing wiki-semantic chunks for intent={intent_type}"
+                    )
+                eff_max_semantic = 0
             eff_max_wiki = _ro.get("max_wiki", PROMPT_MAX_WIKI)
             eff_max_skills = _ro.get("max_skills", PROMPT_MAX_SKILLS)
             eff_max_proposals = _ro.get("max_proposals", PROMPT_MAX_PROPOSALS)
@@ -722,6 +740,7 @@ class UnifiedPromptBuilder:
                     "today", "tomorrow", "tonight", "this week", "weekend",
                     "next", "monday", "tuesday", "wednesday", "thursday",
                     "friday", "saturday", "sunday",
+                    "coming up", "upcoming", "soon",
                 )
                 if (any(t in _ql for t in _sched_triggers)
                         and any(s in _ql for s in _temporal_signals)):
@@ -943,9 +962,23 @@ class UnifiedPromptBuilder:
             except Exception:
                 pass
 
-            # Web search (triggered based on query analysis, suppressed during crisis)
+            # Web search (triggered based on query analysis, suppressed during crisis).
+            # Build a compact recent-turns digest so the trigger can resolve elliptical
+            # follow-ups ("they're only giving us 7 days") against the topic just
+            # discussed — the agentic gate already passes this; without it a pronoun-only
+            # claim scores 0 on the standalone heuristic and the LLM is never consulted.
+            _web_conv_ctx = None
+            try:
+                from core.agentic.gate import _build_recent_context
+                _web_conv_ctx = _build_recent_context(
+                    getattr(self.memory_coordinator, 'corpus_manager', None)
+                )
+            except Exception as _wc_err:
+                logger.debug(f"[BUILD_PROMPT] recent-context for web trigger failed (non-fatal): {_wc_err}")
             tasks["web_search"] = asyncio.create_task(
-                _timed_task("web_search", self.context_gatherer._get_web_search_results(user_input, crisis_level, intent_type=intent_type))
+                _timed_task("web_search", self.context_gatherer._get_web_search_results(
+                    user_input, crisis_level, intent_type=intent_type,
+                    conversation_context=_web_conv_ctx))
             )
 
             # Gather all results with timeout — use asyncio.wait so completed

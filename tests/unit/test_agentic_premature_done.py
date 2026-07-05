@@ -122,3 +122,84 @@ async def test_done_honored_immediately_when_context_already_gathered(controller
     # Round 1 gathered context, round 2 signaled done → honored, no nudge.
     assert getattr(session, "_done_nudge_sent", False) is False
     assert session.model_signaled_done is True
+
+
+@pytest.mark.asyncio
+async def test_web_mode_no_seed_answer_nudged_to_search(controller, monkeypatch):
+    """Web-routed query with no distilled seed terms: a tool-less first answer
+    (answering purely from priors, zero web results) gets one nudge to actually
+    search. Regression for the removed initial_search_terms=[query] fallback."""
+    calls = {"n": 0}
+    captured = {}
+
+    async def fake_decision(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Answers from priors instead of searching — has answer text, so the
+            # premature-done guard alone would have honored it.
+            return [SearchDecision(is_done=True, partial_response="Python 3.13 is the latest.")]
+        if calls["n"] == 2:
+            return [SearchDecision(wants_search=True, search_query="latest python release")]
+        return [SearchDecision(is_done=True)]
+
+    async def fake_dispatch(*a, **k):
+        return _Res("WEB: Python 3.14 released 2026-06-01.")
+
+    async def fake_final(query, system_prompt, model_name, session, initial_context=None):
+        captured["session"] = session
+        yield "Python 3.14, released June 2026."
+
+    monkeypatch.setattr(controller, "_get_model_decision", fake_decision)
+    monkeypatch.setattr(controller, "_dispatch_single", fake_dispatch)
+    monkeypatch.setattr(controller, "_generate_final_response", fake_final)
+
+    out = []
+    async for ev in controller.run_agentic_search(
+        query="what's the latest python release?",
+        system_prompt="sys",
+        model_name="glm-5.2",
+        initial_search_terms=[],      # trigger fired but distilled nothing
+        skip_initial_search=False,    # pure web mode
+    ):
+        out.append(ev)
+
+    session = captured["session"]
+    assert session._web_mode_no_seed is True
+    assert session._web_nudge_sent is True
+    assert "needs fresh information from the web" in session.accumulated_context
+    # The model then ran a real search before done was accepted.
+    assert calls["n"] >= 3
+    assert len(session.rounds) >= 1
+
+
+@pytest.mark.asyncio
+async def test_web_mode_no_seed_tool_use_not_nudged(controller, monkeypatch):
+    """If the loop's first decision already calls a tool, no web nudge fires."""
+    calls = {"n": 0}
+    captured = {}
+
+    async def fake_decision(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [SearchDecision(wants_search=True, search_query="latest python release")]
+        return [SearchDecision(is_done=True)]
+
+    async def fake_dispatch(*a, **k):
+        return _Res("WEB: Python 3.14 released 2026-06-01.")
+
+    async def fake_final(query, system_prompt, model_name, session, initial_context=None):
+        captured["session"] = session
+        yield "Answer."
+
+    monkeypatch.setattr(controller, "_get_model_decision", fake_decision)
+    monkeypatch.setattr(controller, "_dispatch_single", fake_dispatch)
+    monkeypatch.setattr(controller, "_generate_final_response", fake_final)
+
+    async for _ in controller.run_agentic_search(
+        query="q", system_prompt="sys", model_name="glm-5.2",
+        initial_search_terms=[], skip_initial_search=False,
+    ):
+        pass
+
+    session = captured["session"]
+    assert getattr(session, "_web_nudge_sent", False) is False

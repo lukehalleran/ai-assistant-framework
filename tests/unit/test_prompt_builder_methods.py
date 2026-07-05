@@ -338,3 +338,64 @@ def test_memory_formatting_with_various_types(formatter):
     assert "Q1" in results[0]
     assert "Fact 1" in results[1]
     assert "Q2" in results[2]
+
+
+# =============================================================================
+# [LAST EXCHANGE FOR CONTEXT] session-boundary gating (_assemble_prompt)
+# =============================================================================
+
+def _recent_entry(ts: datetime) -> dict:
+    return {
+        "query": "Should I add prompt caching?",
+        "response": "Yes, you did — shipped in February.",
+        "timestamp": ts.isoformat(),
+    }
+
+
+def test_last_exchange_attached_within_session(formatter):
+    """A minutes-old exchange from the same session stays glued to the query."""
+    from datetime import timedelta
+    ts = datetime.now() - timedelta(minutes=5)
+    prompt = formatter._assemble_prompt(
+        context={"recent_conversations": [_recent_entry(ts)]},
+        user_input="Hey",
+    )
+    assert "[LAST EXCHANGE FOR CONTEXT]" in prompt
+    assert "Should I add prompt caching?" in prompt
+
+
+def test_last_exchange_skipped_across_session_boundary(formatter):
+    """A previous-session exchange must NOT sit adjacent to the current query
+    (stale-continuity confabulation: model answers last night's question)."""
+    from datetime import timedelta
+    ts = datetime.now() - timedelta(hours=14)
+    prompt = formatter._assemble_prompt(
+        context={"recent_conversations": [_recent_entry(ts)]},
+        user_input="Hey",
+    )
+    assert "[LAST EXCHANGE FOR CONTEXT]" not in prompt
+    assert "[CURRENT QUERY]\nHey" in prompt
+
+
+def test_last_exchange_skipped_when_timestamp_missing(formatter):
+    """No timestamp = can't prove same-session; don't attach."""
+    entry = {"query": "old question", "response": "old answer"}
+    prompt = formatter._assemble_prompt(
+        context={"recent_conversations": [entry]},
+        user_input="Hey",
+    )
+    assert "[LAST EXCHANGE FOR CONTEXT]" not in prompt
+
+
+def test_last_exchange_skipped_on_calendar_day_change(formatter):
+    """Different calendar day counts as a session boundary even if < 2h."""
+    from datetime import timedelta
+    now = datetime.now()
+    ts = now - timedelta(hours=1)
+    if ts.date() == now.date():
+        pytest.skip("test only meaningful when 1h ago crosses midnight")
+    prompt = formatter._assemble_prompt(
+        context={"recent_conversations": [_recent_entry(ts)]},
+        user_input="Hey",
+    )
+    assert "[LAST EXCHANGE FOR CONTEXT]" not in prompt

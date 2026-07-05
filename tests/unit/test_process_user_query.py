@@ -429,6 +429,45 @@ class TestBuildFullPrompt:
         assert len(result) == 2
 
     @pytest.mark.asyncio
+    async def test_slow_prompt_build_gets_grace_not_discarded(self, monkeypatch):
+        """Regression (2026-07-03): the combined planner+builder wait timed out with
+        the build still running; .result() on the unfinished task raised
+        InvalidStateError ("Result is not set.") and ALL gathered context was
+        replaced with {} — the agentic loop then ran with no session history.
+        A still-running build must get a grace await; the optional planner is
+        cancelled instead."""
+        import asyncio
+
+        planner = MagicMock()
+        planner.should_plan = MagicMock(return_value=True)
+
+        async def _never_finishes(**kwargs):
+            await asyncio.sleep(30)
+
+        planner.create_plan = MagicMock(side_effect=_never_finishes)
+        orch = _make_bfp_orch(response_planner=planner)
+
+        async def _slow_build(context):
+            await asyncio.sleep(0.05)
+            return {"recent_conversations": [{"query": "prior turn"}]}
+
+        orch.prompt_builder.build_prompt_from_context = _slow_build
+
+        # Force the combined wait to "time out" immediately with both tasks pending.
+        real_wait = asyncio.wait
+
+        async def _instant_timeout_wait(tasks, timeout=None, return_when=None):
+            return await real_wait(tasks, timeout=0, return_when=return_when)
+
+        monkeypatch.setattr(asyncio, "wait", _instant_timeout_wait)
+
+        _, _, prompt_ctx = await orch.build_full_prompt(
+            _make_context(), return_raw_context=True
+        )
+        assert prompt_ctx.get("recent_conversations") == [{"query": "prior turn"}]
+        assert orch._current_response_plan is None
+
+    @pytest.mark.asyncio
     async def test_sets_current_instance_attrs(self):
         orch = _make_bfp_orch()
         await orch.build_full_prompt(_make_context(), return_raw_context=True)

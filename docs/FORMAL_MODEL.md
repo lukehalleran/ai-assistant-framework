@@ -151,14 +151,16 @@ sigma_iota(d, x) = SUM_i w_i(iota) * f_i(d, x)  +  SUM_j b_j(d, x, G)  +  SUM_k 
 
 **Weighted factors** (w_i overridable per-intent via `weight_overrides`):
 
-| Factor f_i | Default weight | Definition |
+| Factor f_i | Live weight | Definition |
 |-----------|---------------|------------|
-| relevance(d, x) + collection_boost | 0.35 | Embedding similarity + per-collection bonus (config.yaml active values: facts +0.15, summaries +0.10, conversations +0.00, semantic +0.05, wiki +0.05) |
-| recency(d) | 0.25 | Time decay (see temporal curves below) |
-| truth(d) | 0.20 | Evidence-based reliability via TruthScorer.compute_effective_truth() (see truth decay below) |
+| relevance(d, x) + collection_boost | 0.30 | Embedding similarity + per-collection bonus (config.yaml active values: facts +0.15, summaries +0.10, conversations +0.00, semantic +0.05, wiki +0.05) |
+| recency(d) | 0.22 | Time decay (see temporal curves below) |
+| truth(d) | 0.18 | Evidence-based reliability via TruthScorer.compute_effective_truth() (see truth decay below) |
 | importance(d) | 0.05 | Content-based importance in [0,1] |
 | continuity(d, Theta) | 0.10 | Stemmed token overlap + recency bonus + tag-keyword bonus (see continuity formula below) |
-| topic_match(d, x) | 0.00 | Disabled by default. 1.0 (exact) / 0.5 (neutral) / 0.2 (different) |
+| topic_match(d, x) | 0.10 | ACTIVE (config.yaml). 1.0 (exact) / 0.5 (neutral) / 0.2 (different) |
+
+*Live weights are `config.yaml` `gating.score_weights` — what `SCORE_WEIGHTS` resolves to at runtime. The `0.35 / 0.25 / 0.20` vector hardcoded in `app_config.py` is only a fallback if the YAML key is absent (it is not).*
 
 **Structure score** (direct additive bonus, not multiplied by the weight dict; note: `SCORE_WEIGHTS` in `app_config.py` contains a legacy `"structure": 0.05` entry but `rank_memories()` does not use it — the structure term is added directly):
 
@@ -295,7 +297,7 @@ prompt = [
     [TIME CONTEXT]                           // always (current datetime)
     [TEMPORAL GROUNDING]                     // if available (narrative life context)
     [SHORT-TERM CONTEXT SUMMARY]             // if available (STM: topic, intent, tone, threads)
-    [CURRENT USER QUERY]                     // always (last exchange + current query)
+    [CURRENT USER QUERY]                     // always (last exchange only if same-session + current query)
 ]
 ```
 

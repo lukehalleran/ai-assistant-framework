@@ -91,10 +91,7 @@ logger = get_logger("document_generator")
 # "[CREDITS EXHAUSTED] ...") that generate_once() returns INSTEAD of raising.
 # They are not content — they must never be written to disk as a document body,
 # nor used as a topic or outline. See _looks_like_llm_error().
-_LLM_ERROR_SENTINELS = (
-    "[API Error]", "[API unavailable]", "[CREDITS EXHAUSTED]", "[RATE LIMITED]",
-    "[AUTH ERROR]", "[MODEL NOT SUPPORTED]", "[MODEL NOT FOUND]", "[SERVER ERROR]",
-)
+from models.model_manager import API_ERROR_PREFIXES as _LLM_ERROR_SENTINELS
 
 
 def _looks_like_llm_error(text: str | None) -> bool:

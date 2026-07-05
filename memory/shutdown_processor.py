@@ -1355,8 +1355,13 @@ JSON:"""
     async def _process_open_threads(self, session_conversations):
         """Extract open threads from session and detect resolutions of existing ones.
 
-        Phase 1: Get existing open threads → run detect_resolutions() → mark resolved
-        Phase 2: Run extract_new_threads() → store new threads
+        Phase 1: Get existing open threads → run detect_resolutions() → mark
+                 resolved, then cascade each resolution to near-identical
+                 duplicate threads (topics_equivalent)
+        Phase 2: Run extract_new_threads() (told what's already tracked) →
+                 store new threads, dropping duplicates of just-resolved or
+                 still-open threads (threads_duplicate; open twins get their
+                 last_referenced refreshed instead)
         Phase 3: Enforce cap (THREAD_MAX_OPEN)
         """
         try:
@@ -1415,24 +1420,79 @@ JSON:"""
 
         resolutions, new_threads = await asyncio.gather(
             _detect_resolutions(),
-            extractor.extract_new_threads(sess_items),
+            extractor.extract_new_threads(sess_items, open_threads=existing_open),
             return_exceptions=True,
         )
 
+        from memory.thread_store import threads_duplicate, topics_equivalent
+
         # Phase 1 result: apply resolutions
+        resolved_threads = []
+        resolved_ids = set()
         if isinstance(resolutions, Exception):
             logger.warning(f"[Shutdown] Thread resolution detection failed: {resolutions}")
         elif resolutions:
+            open_by_id = {t.thread_id: t for t in existing_open}
             for thread_id, resolution in resolutions:
                 self.thread_store.resolve_thread(thread_id, resolution)
+                resolved_ids.add(thread_id)
+                if thread_id in open_by_id:
+                    resolved_threads.append(open_by_id[thread_id])
             logger.info(f"[Shutdown] Resolved {len(resolutions)} thread(s)")
 
-        # Phase 2 result: store new threads
+            # Cascade: a task accumulates duplicate thread rows across sessions;
+            # resolving one must also close its near-identical siblings, or they
+            # keep surfacing the task as still-pending after the user finished it.
+            for candidate in existing_open:
+                if candidate.thread_id in resolved_ids:
+                    continue
+                twin = next(
+                    (r for r in resolved_threads if topics_equivalent(candidate, r)),
+                    None,
+                )
+                if twin is not None:
+                    self.thread_store.resolve_thread(
+                        candidate.thread_id,
+                        f"Duplicate of resolved thread '{twin.topic}'",
+                    )
+                    resolved_ids.add(candidate.thread_id)
+                    resolved_threads.append(candidate)
+                    logger.info(
+                        f"[Shutdown] Cascade-resolved duplicate thread "
+                        f"'{candidate.topic}' (twin of '{twin.topic}')"
+                    )
+
+        # Phase 2 result: store new threads. The extractor sees the whole
+        # session including pre-completion talk, so it can re-create a task the
+        # user finished later that same session — drop anything that duplicates
+        # a thread resolved this pass or one still open (refreshing the latter).
         if isinstance(new_threads, Exception):
             logger.warning(f"[Shutdown] Thread extraction failed: {new_threads}")
         elif new_threads:
+            still_open = [t for t in existing_open if t.thread_id not in resolved_ids]
             stored = 0
             for thread in new_threads:
+                twin = next(
+                    (r for r in resolved_threads if threads_duplicate(thread, r)),
+                    None,
+                )
+                if twin is not None:
+                    logger.info(
+                        f"[Shutdown] Dropped new thread '{thread.topic}' — "
+                        f"duplicate of thread resolved this pass ('{twin.topic}')"
+                    )
+                    continue
+                twin = next(
+                    (o for o in still_open if threads_duplicate(thread, o)),
+                    None,
+                )
+                if twin is not None:
+                    self.thread_store.touch_thread(twin)
+                    logger.info(
+                        f"[Shutdown] Dropped new thread '{thread.topic}' — "
+                        f"already tracked as '{twin.topic}' (refreshed)"
+                    )
+                    continue
                 doc_id = self.thread_store.store_thread(thread)
                 if doc_id:
                     stored += 1
@@ -1473,13 +1533,19 @@ JSON:"""
             from config.app_config import (
                 SYNTHESIS_GENERATOR_ENABLED,
                 SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
+                SYNTHESIS_POOLED_ENABLED,
+                SYNTHESIS_POOLED_CANDIDATES_PER_SESSION,
+                SYNTHESIS_POOLED_LLM_CONCURRENCY,
                 SYNTHESIS_RETRIEVAL_ENABLED,
                 GRAPH_WALK_ENABLED,
                 GRAPH_WALK_MAX_CANDIDATES,
                 GRAPH_WALK_MIN_BRIDGE_EDGES,
                 SYNTHESIS_AUDIT_ENABLED,
             )
-            if not SYNTHESIS_GENERATOR_ENABLED:
+            # Dreaming runs if EITHER the pooled discovery generator OR the legacy
+            # personal->wiki generators are enabled. (SYNTHESIS_GENERATOR_ENABLED alone
+            # no longer gates dreaming — it now only gates the retired Tier-2 fallback.)
+            if not (SYNTHESIS_GENERATOR_ENABLED or SYNTHESIS_POOLED_ENABLED):
                 return
 
             # Auto-halt check: skip synthesis if FP rate too high
@@ -1511,60 +1577,79 @@ JSON:"""
 
             candidates = []
 
-            # Tier 0: Retrieval-based generator (primary)
-            if SYNTHESIS_RETRIEVAL_ENABLED:
-                from knowledge.synthesis_retriever import RetrievalSynthesisGenerator
-                retrieval_gen = RetrievalSynthesisGenerator(
-                    chroma_store=self.chroma_store,
+            if SYNTHESIS_POOLED_ENABLED:
+                # PRIMARY discovery generator: prominent curated concepts paired in the
+                # non-obvious cosine band (validated 2026-06-30: ~17% accept / ~46%
+                # MODERATE+STRONG vs ~0 for the retired personal->wiki tiers). When on,
+                # this is the ONLY generator — the lever is concept prominence.
+                from knowledge.synthesis_pooled_generator import PooledConceptSynthesisGenerator
+                pooled_gen = PooledConceptSynthesisGenerator(
                     model_manager=self.model_manager,
-                    graph_memory=graph_memory,
-                    entity_resolver=entity_resolver,
+                    concurrency=SYNTHESIS_POOLED_LLM_CONCURRENCY,
                 )
-                retrieval_candidates = await retrieval_gen.generate_candidates(
-                    count=SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
+                candidates = await pooled_gen.generate_candidates(
+                    count=SYNTHESIS_POOLED_CANDIDATES_PER_SESSION,
                 )
-                candidates.extend(retrieval_candidates)
                 logger.info(
-                    "[Shutdown] Retrieval generator: %d candidates",
-                    len(retrieval_candidates),
+                    "[Shutdown] Pooled discovery generator: %d candidates", len(candidates),
                 )
-
-            # Tier 1: Graph walk generator (if bridge edges sufficient)
-            if GRAPH_WALK_ENABLED and graph_memory and entity_resolver:
-                bridge_count = graph_memory.count_bridge_edges()
-                if bridge_count >= GRAPH_WALK_MIN_BRIDGE_EDGES:
-                    from knowledge.graph_walk_generator import GraphWalkGenerator
-                    walk_gen = GraphWalkGenerator(
+            else:
+                # RETIRED personal->wiki path (Tier 0/1/2), preserved behind the flags.
+                # Tier 0: Retrieval-based generator (primary)
+                if SYNTHESIS_RETRIEVAL_ENABLED:
+                    from knowledge.synthesis_retriever import RetrievalSynthesisGenerator
+                    retrieval_gen = RetrievalSynthesisGenerator(
+                        chroma_store=self.chroma_store,
+                        model_manager=self.model_manager,
                         graph_memory=graph_memory,
                         entity_resolver=entity_resolver,
-                        model_manager=self.model_manager,
                     )
-                    walk_candidates = await walk_gen.generate_candidates(
-                        count=GRAPH_WALK_MAX_CANDIDATES,
+                    retrieval_candidates = await retrieval_gen.generate_candidates(
+                        count=SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
                     )
-                    candidates.extend(walk_candidates)
+                    candidates.extend(retrieval_candidates)
                     logger.info(
-                        "[Shutdown] Graph walk generator: %d candidates (bridges=%d)",
-                        len(walk_candidates), bridge_count,
-                    )
-                else:
-                    logger.info(
-                        "[Shutdown] Graph walk skipped: %d bridges < %d threshold",
-                        bridge_count, GRAPH_WALK_MIN_BRIDGE_EDGES,
+                        "[Shutdown] Retrieval generator: %d candidates",
+                        len(retrieval_candidates),
                     )
 
-            # Tier 2: Cross-store random sampling (fallback)
-            from knowledge.synthesis_generator import SynthesisGenerator
-            remaining = SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION - len(candidates)
-            if remaining > 0:
-                generator = SynthesisGenerator(
-                    chroma_store=self.chroma_store,
-                    model_manager=self.model_manager,
-                    graph_memory=graph_memory,
-                    entity_resolver=entity_resolver,
-                )
-                fallback_candidates = await generator.generate_candidates(count=remaining)
-                candidates.extend(fallback_candidates)
+                # Tier 1: Graph walk generator (if bridge edges sufficient)
+                if GRAPH_WALK_ENABLED and graph_memory and entity_resolver:
+                    bridge_count = graph_memory.count_bridge_edges()
+                    if bridge_count >= GRAPH_WALK_MIN_BRIDGE_EDGES:
+                        from knowledge.graph_walk_generator import GraphWalkGenerator
+                        walk_gen = GraphWalkGenerator(
+                            graph_memory=graph_memory,
+                            entity_resolver=entity_resolver,
+                            model_manager=self.model_manager,
+                        )
+                        walk_candidates = await walk_gen.generate_candidates(
+                            count=GRAPH_WALK_MAX_CANDIDATES,
+                        )
+                        candidates.extend(walk_candidates)
+                        logger.info(
+                            "[Shutdown] Graph walk generator: %d candidates (bridges=%d)",
+                            len(walk_candidates), bridge_count,
+                        )
+                    else:
+                        logger.info(
+                            "[Shutdown] Graph walk skipped: %d bridges < %d threshold",
+                            bridge_count, GRAPH_WALK_MIN_BRIDGE_EDGES,
+                        )
+
+                # Tier 2: Cross-store random sampling (fallback)
+                if SYNTHESIS_GENERATOR_ENABLED:
+                    from knowledge.synthesis_generator import SynthesisGenerator
+                    remaining = SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION - len(candidates)
+                    if remaining > 0:
+                        generator = SynthesisGenerator(
+                            chroma_store=self.chroma_store,
+                            model_manager=self.model_manager,
+                            graph_memory=graph_memory,
+                            entity_resolver=entity_resolver,
+                        )
+                        fallback_candidates = await generator.generate_candidates(count=remaining)
+                        candidates.extend(fallback_candidates)
 
             if not candidates:
                 logger.info("[Shutdown] Synthesis dreaming: no candidates generated")

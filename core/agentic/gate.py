@@ -242,14 +242,15 @@ def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
         return None
     if not recent:
         return None
+    from core.agentic.formatters import clip_text
     lines: List[str] = []
     for mem in reversed(recent):  # get_recent_memories is newest-first
         q = (mem.get('query', '') or '').strip()
         r = (mem.get('response', '') or '').strip()
         if q:
-            lines.append(f"User: {q[:200]}")
+            lines.append(f"User: {clip_text(q, 200)}")
         if r:
-            lines.append(f"Assistant: {r[:300]}")
+            lines.append(f"Assistant: {clip_text(r, 300)}")
     return "\n".join(lines) if lines else None
 
 
@@ -556,6 +557,7 @@ async def evaluate_agentic_gate(
             logger.debug(f"[Agentic Gate] Triggered — modes: {', '.join(triggered)}")
 
     # ── Intent-based veto ─────────────────────────────────────────────
+    _veto_reason = None
     _has_explicit_search = (
         any(kw in _lower for kw in EXPLICIT_SEARCH_KEYWORDS) or _has_url or needs_files
     )
@@ -579,6 +581,7 @@ async def evaluate_agentic_gate(
                 )
                 should_trigger = False
                 search_terms = []
+                _veto_reason = f"intent-veto: {_type_val}@{_intent_conf:.2f}"
 
     # ── Build modes list ──────────────────────────────────────────────
     if needs_computation:
@@ -593,14 +596,23 @@ async def evaluate_agentic_gate(
         modes.append("tools")
 
     # ── Compute skip_initial_search ───────────────────────────────────
+    # Skip the blind Round-1 web search whenever we have no concrete search
+    # terms to seed with. Without terms the controller would fall back to
+    # searching the raw user message verbatim (filler words, pronouns, no
+    # distilled intent) — almost always low quality, and it mislabelled a
+    # casual message as a news query. With no terms, let the agentic loop
+    # distill its own query and pick tools. This subsumes the old
+    # (needs_web_search and not search_terms) clause.
     skip_initial = (
         needs_computation or needs_memory or needs_knowledge or needs_tools
-        or (needs_web_search and not search_terms)
+        or not search_terms
     )
 
     # ── Build reason string ───────────────────────────────────────────
     if should_trigger:
         reason = f"triggered: {', '.join(modes) if modes else 'llm-fallback'}"
+    elif _veto_reason:
+        reason = _veto_reason
     elif any(_skip_patterns) and not _prev_was_agentic:
         reason = "casual/short message"
     else:

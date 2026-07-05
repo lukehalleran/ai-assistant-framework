@@ -29,7 +29,7 @@ events to the UI in real time.
 | `core/agentic/gate.py` | 4-tier agentic gate: `evaluate_agentic_gate()` → `AgenticDecision` (keyword → entity → doc/note → LLM fallback) |
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics, nudge retry, no-reasoning decision phase, tool hints |
 | `core/agentic/tools.py` | ToolExecutor: 17 dispatch methods + 15 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary + `_resolve_email_recipient()` |
-| `core/agentic/formatters.py` | AgenticFormatter: 20 pure formatting methods (context, results, prompts) |
+| `core/agentic/formatters.py` | AgenticFormatter: 20 pure formatting methods (context, results, prompts). Truncation is always explicit via `clip_text()` — cut previews end in `[...truncated]` so the model can't quote a preview cut as the full message (2026-07-03 "outag" confabulation fix); `format_memory_results` gives the `conversations` collection a 2000-char limit (vs 500 elsewhere) and points to `expand_memory` by doc id when even that truncates. Same markers in `gate.py`'s recent-context digest and `web_search_trigger`'s RECENT CONVERSATION block; the controller's `[RECENT CONVERSATION]` header tells the model truncated entries are previews → use search_memory first (hints use the REGISTERED tool names — `expand_memory`/`search_memory`; the old `memory_expand`/`memory_search` phrasing produced unrecognized tool calls that were silently dropped, fixed 2026-07-04). Tests: `tests/unit/test_agentic_truncation_markers.py` |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas, LOOKUP_CONTACT_TOOL_DEFINITION |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing, nested XML support, github_available gating, contact lookup aliases |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
@@ -212,6 +212,15 @@ promissory non-answer ("Let me check what you've been up to…"). The guard inje
 one-shot nudge into `accumulated_context` forcing real tool use, then accepts done on the
 next signal (tracked by `session._done_nudge_sent` to avoid loops). A done *after*
 context exists is still honored immediately.
+
+**Web-mode-no-seed guard** [2026-07-05]: when the web trigger fires but distills no
+seed terms, Round 1 is skipped (blind verbatim search is deliberately not restored —
+it once mislabelled a casual message as news). If the model's very first decision is
+then a tool-less answer (done or implicit), it is answering from priors with zero web
+results — the loop nudges once ("distill a focused query and call `<search>`"),
+tracked by `session._web_nudge_sent`. Unlike the premature-done guard, this fires even
+when answer text is present; it never fires once any tool round has run. Tests:
+`tests/unit/test_agentic_premature_done.py`.
 
 ---
 

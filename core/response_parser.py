@@ -9,7 +9,7 @@ Module Contract:
 - Inputs: Raw response strings from LLM
 - Outputs: Cleaned response strings
 - Key methods:
-  - parse_thinking_block(response) → (thinking, answer): Tag-based extraction (<thinking>/<think>/<output>),
+  - parse_thinking_block(response) → (thinking, answer): Tag-based extraction (<thinking>/<think>/<reasoning>/<output>),
     then heuristic fallback (_detect_untagged_thinking) for models that dump reasoning without tags
   - _detect_untagged_thinking(response) → (thinking, answer): Pattern-based detection of untagged
     chain-of-thought (meta-reasoning phrases, instruction echoes). Requires ≥2 distinct pattern hits
@@ -49,21 +49,28 @@ class ResponseParser:
     """
 
     # Regex to catch leaked thinking tags: <think>, </think>, <thinking>, </thinking>,
+    # <reasoning>, </reasoning> (some models, e.g. via OpenRouter, dump their chain of
+    # thought inside literal <reasoning> tags in the CONTENT channel — observed 2026-07-03),
     # and partial/malformed variants like /think>, /thinking>, <|think|>, etc.
     _THINK_TAG_LEAK_RE = re.compile(
-        r'<\|?/?think(?:ing)?\|?>|'   # <think>, </think>, <thinking>, </thinking>, <|think|>
-        r'/?think(?:ing)?>',            # /think>, /thinking> (missing opening <)
+        r'<\|?/?(?:think(?:ing)?|reason(?:ing)?)\|?>|'   # <think>, </thinking>, <reasoning>, <|think|>
+        r'/?(?:think(?:ing)?|reason(?:ing)?)>',            # /think>, /reasoning> (missing opening <)
         re.IGNORECASE,
     )
 
     # Opening think tags for streaming detection
-    _THINK_OPEN_TAGS = [("<thinking>", "</thinking>"), ("<think>", "</think>")]
+    _THINK_OPEN_TAGS = [
+        ("<thinking>", "</thinking>"),
+        ("<think>", "</think>"),
+        ("<reasoning>", "</reasoning>"),
+        ("<reason>", "</reason>"),
+    ]
 
     # Empty thinking pair — the synthetic <thinking></thinking> markers emitted by
     # response_generator.py around API-separated reasoning (the reasoning text itself
     # is never yielded, so the tags end up adjacent, possibly with whitespace between).
     _EMPTY_THINK_PAIR_RE = re.compile(
-        r'<\|?think(?:ing)?\|?>\s*<\|?/think(?:ing)?\|?>',
+        r'<\|?(?:think(?:ing)?|reason(?:ing)?)\|?>\s*<\|?/(?:think(?:ing)?|reason(?:ing)?)\|?>',
         re.IGNORECASE,
     )
 
@@ -304,6 +311,8 @@ class ResponseParser:
         Handles:
         - <thinking>...</thinking> (Anthropic/OpenAI style)
         - <think>...</think> (DeepSeek/Qwen/GLM style)
+        - <reasoning>...</reasoning> (literal reasoning tags leaked into the
+          content channel by some OpenRouter-proxied reasoning models)
         - <output>...</output> wrapper (some OpenRouter providers wrap the
           answer in <output> when thinking is returned inline)
 
@@ -317,8 +326,8 @@ class ResponseParser:
         if not response or not isinstance(response, str):
             return "", response or ""
 
-        # Try both tag variants: <thinking> and <think>
-        for close_tag, open_tag in [("</thinking>", "<thinking>"), ("</think>", "<think>")]:
+        # Try all tag variants: <thinking>, <think>, <reasoning>, <reason>
+        for open_tag, close_tag in ResponseParser._THINK_OPEN_TAGS:
             if close_tag in response:
                 parts = response.split(close_tag, 1)
                 if len(parts) == 2:

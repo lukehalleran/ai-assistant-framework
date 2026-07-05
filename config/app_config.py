@@ -261,6 +261,11 @@ LOAD_LOCAL_MODEL = config.get("models", {}).get("load_local_model", True)
 SEMANTIC_ONLY_MODE = config.get("features", {}).get("semantic_only_mode", False)
 CONFIDENCE_THRESHOLD = config.get("gating", {}).get("confidence_threshold", 1.5)
 GATE_REL_THRESHOLD = config.get("gating", {}).get("gate_rel_threshold", 0.18)
+# Retrieval-space (bge) equivalents used when the gate shares the ChromaDB
+# store's embedder — quantile-matched to the MiniLM-space values (see
+# scripts/probe_gate_embedding_mismatch.py + config.yaml comments).
+GATE_REL_THRESHOLD_RETRIEVAL = config.get("gating", {}).get("gate_rel_threshold_retrieval", 0.60)
+GATE_DEICTIC_MIN_RETRIEVAL = config.get("gating", {}).get("gate_deictic_min_retrieval", 0.61)
 MAX_FINAL_MEMORIES = config.get("memory", {}).get("max_final_memories", 5)
 RERANK_USE_LLM = config.get("gating", {}).get("rerank_use_llm", True)
 CROSS_ENCODER_WEIGHT = config.get("gating", {}).get("cross_encoder_weight", 0.7)
@@ -361,6 +366,22 @@ WEB_SEARCH_ENABLED = bool(int(os.getenv("WEB_SEARCH_ENABLED", "1" if WEB_SEARCH_
 WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", str(WEB_SEARCH_TIMEOUT)))
 WEB_SEARCH_DAILY_CREDIT_LIMIT = int(os.getenv("WEB_SEARCH_DAILY_CREDIT_LIMIT", str(WEB_SEARCH_DAILY_CREDIT_LIMIT)))
 WEB_SEARCH_CREDITS_PATH: str = os.getenv("WEB_SEARCH_CREDITS_PATH", str(WEB_SEARCH_CFG.get("credits_path", os.path.join("data", "web_search_credits.json"))))
+
+# --------------------------------------------------------------------
+# User Location Configuration (for localizing web search queries)
+# --------------------------------------------------------------------
+# Resolution chain: override (set in config.local.yaml for privacy) →
+# IP geolocation (background-refreshed, cached) → profile lives_in fact.
+LOCATION_CFG = config.get("location", {})
+LOCATION_ENABLED: bool = bool(LOCATION_CFG.get("enabled", True))
+LOCATION_IP_LOOKUP_ENABLED: bool = bool(LOCATION_CFG.get("ip_lookup_enabled", True))
+LOCATION_IP_CACHE_TTL_HOURS: float = float(LOCATION_CFG.get("ip_cache_ttl_hours", 6.0))
+LOCATION_IP_LOOKUP_TIMEOUT_S: float = float(LOCATION_CFG.get("ip_lookup_timeout_s", 3.0))
+LOCATION_OVERRIDE: str = os.getenv("DAEMON_USER_LOCATION", str(LOCATION_CFG.get("override", "") or ""))
+
+# Environment variable overrides for location
+LOCATION_ENABLED = bool(int(os.getenv("LOCATION_ENABLED", "1" if LOCATION_ENABLED else "0")))
+LOCATION_IP_LOOKUP_ENABLED = bool(int(os.getenv("LOCATION_IP_LOOKUP_ENABLED", "1" if LOCATION_IP_LOOKUP_ENABLED else "0")))
 
 # --------------------------------------------------------------------
 # Wolfram Alpha Configuration
@@ -1027,12 +1048,29 @@ INTENT_ENABLED: bool = bool(INTENT_CFG.get("enabled", True))
 # STM refinement threshold: below this confidence, STM free-text intent
 # can upgrade the classification (no extra LLM call — STM already ran)
 INTENT_STM_REFINEMENT_THRESHOLD: float = float(INTENT_CFG.get("stm_refinement_threshold", 0.50))
+# Confidence assigned to an STM-refined intent. 0.60 lets a refined intent
+# reach the 0.60 routing floors without reaching the 0.75 agentic-veto floor.
+INTENT_STM_REFINED_CONFIDENCE: float = float(INTENT_CFG.get("stm_refined_confidence", 0.60))
 # Section gating: use eval-driven retrieval overrides in _PROFILES (Phase 8)
 PROMPT_SECTION_GATING_ENABLED: bool = bool(INTENT_CFG.get("section_gating_enabled", True))
+# Per-intent response-style block in the system prompt tail (after the
+# cache breakpoint). Crisis tone levels suppress it — tone owns style then.
+INTENT_STYLE_INSTRUCTIONS_ENABLED: bool = bool(INTENT_CFG.get("style_instructions_enabled", True))
 
 # Environment variable overrides for Intent Classifier
 INTENT_ENABLED = bool(int(os.getenv("INTENT_ENABLED", "1" if INTENT_ENABLED else "0")))
 PROMPT_SECTION_GATING_ENABLED = bool(int(os.getenv("PROMPT_SECTION_GATING_ENABLED", "1" if PROMPT_SECTION_GATING_ENABLED else "0")))
+INTENT_STYLE_INSTRUCTIONS_ENABLED = bool(int(os.getenv("INTENT_STYLE_INSTRUCTIONS_ENABLED", "1" if INTENT_STYLE_INSTRUCTIONS_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Turn Telemetry Configuration
+# --------------------------------------------------------------------
+# One JSONL line per completed chat turn (intent → gate → mode → post-answer
+# checks) for offline routing/classification accuracy analysis.
+TURN_TELEMETRY_CFG = config.get("turn_telemetry", {}) or {}
+TURN_TELEMETRY_ENABLED: bool = bool(TURN_TELEMETRY_CFG.get("enabled", True))
+TURN_TELEMETRY_PATH: str = str(TURN_TELEMETRY_CFG.get("path", "logs/turn_records.jsonl"))
+TURN_TELEMETRY_ENABLED = bool(int(os.getenv("TURN_TELEMETRY_ENABLED", "1" if TURN_TELEMETRY_ENABLED else "0")))
 
 # --------------------------------------------------------------------
 # Entity Facts Configuration
@@ -1453,11 +1491,14 @@ SYNTHESIS_COHERENCE_MIN_LEVEL: str = str(SYNTHESIS_CFG.get("coherence_min_level"
 
 # Stage 6: Composite Scoring
 _SYNTH_WEIGHTS = SYNTHESIS_CFG.get("weights", {})
-SYNTHESIS_WEIGHT_COHERENCE: float = float(_SYNTH_WEIGHTS.get("coherence", 0.30))
-SYNTHESIS_WEIGHT_NOVELTY: float = float(_SYNTH_WEIGHTS.get("novelty", 0.40))
-SYNTHESIS_WEIGHT_DISTANCE: float = float(_SYNTH_WEIGHTS.get("distance", 0.15))
-SYNTHESIS_WEIGHT_STRUCTURAL: float = float(_SYNTH_WEIGHTS.get("structural", 0.15))
-SYNTHESIS_COMPOSITE_MIN_SCORE: float = float(SYNTHESIS_CFG.get("composite_min_score", 0.65))
+# Recalibrated 2026-06-30 (scripts/calibrate_composite.py): structural is a dead constant
+# 0.5 -> 0.0; distance noise corrupted ranking -> demoted to 0.05 (gated in-band at stage 2);
+# novelty is the MODERATE discriminator. See config.yaml synthesis.weights for the rationale.
+SYNTHESIS_WEIGHT_COHERENCE: float = float(_SYNTH_WEIGHTS.get("coherence", 0.35))
+SYNTHESIS_WEIGHT_NOVELTY: float = float(_SYNTH_WEIGHTS.get("novelty", 0.60))
+SYNTHESIS_WEIGHT_DISTANCE: float = float(_SYNTH_WEIGHTS.get("distance", 0.05))
+SYNTHESIS_WEIGHT_STRUCTURAL: float = float(_SYNTH_WEIGHTS.get("structural", 0.0))
+SYNTHESIS_COMPOSITE_MIN_SCORE: float = float(SYNTHESIS_CFG.get("composite_min_score", 0.70))
 
 # Novelty sub-weights (used inside the SYNTHESIS_WEIGHT_NOVELTY envelope)
 _SYNTH_NOVELTY_W = SYNTHESIS_CFG.get("novelty_weights", {})
@@ -1489,6 +1530,28 @@ SYNTHESIS_GENERATOR_MIN_GRAPH_NODES: int = int(SYNTHESIS_GEN_CFG.get("min_graph_
 # Environment variable overrides for Synthesis Generator
 SYNTHESIS_GENERATOR_ENABLED = bool(int(os.getenv(
     "SYNTHESIS_GENERATOR_ENABLED", "1" if SYNTHESIS_GENERATOR_ENABLED else "0"
+)))
+
+# ── Pooled-Concept Discovery Generator (the PRIMARY discovery generator) ──
+# Pairs PROMINENT curated concepts (knowledge/synthesis_concept_pool.py) in the
+# non-obvious cosine band and articulates a structural connection. Validated
+# 2026-06-30 (scripts/validate_anchored_generator.py): ~17% accept / ~46%
+# MODERATE+STRONG vs ~0 for the retired personal->wiki generators — the lever is
+# concept PROMINENCE, not anchoring/graph-walks. When enabled, dreaming uses ONLY
+# this generator (the personal->wiki tiers 0/1/2 are retired/bypassed).
+SYNTHESIS_POOLED_CFG = config.get("synthesis_pooled", {})
+# Default False when the YAML section is absent: dreaming spends LLM credits at
+# every clean shutdown, so it must be opted into (committed config.yaml ships
+# the section with enabled: true — removing it is a real off-switch).
+SYNTHESIS_POOLED_ENABLED: bool = bool(SYNTHESIS_POOLED_CFG.get("enabled", False))
+SYNTHESIS_POOLED_CANDIDATES_PER_SESSION: int = int(SYNTHESIS_POOLED_CFG.get("candidates_per_session", 8))
+SYNTHESIS_POOLED_LLM_CONCURRENCY: int = int(SYNTHESIS_POOLED_CFG.get("llm_concurrency", 5))
+SYNTHESIS_POOLED_MIN_COS: float = float(SYNTHESIS_POOLED_CFG.get("min_cos", 0.20))
+SYNTHESIS_POOLED_MAX_COS: float = float(SYNTHESIS_POOLED_CFG.get("max_cos", 0.45))
+
+# Environment variable override for the pooled discovery generator
+SYNTHESIS_POOLED_ENABLED = bool(int(os.getenv(
+    "SYNTHESIS_POOLED_ENABLED", "1" if SYNTHESIS_POOLED_ENABLED else "0"
 )))
 
 # --------------------------------------------------------------------
@@ -1690,6 +1753,7 @@ if DAEMON_MODE == "user":
     CODE_PROPOSALS_PROMPT_ENABLED = False
     SYNTHESIS_GENERATOR_ENABLED = False
     SYNTHESIS_RETRIEVAL_ENABLED = False
+    SYNTHESIS_POOLED_ENABLED = False  # pooled generator also gates dreaming
     SYNTHESIS_AUDIT_ENABLED = False
     REFERENCE_DOCS_AUTO_SEED = False
     REFERENCE_DOCS_ENABLED = False

@@ -58,6 +58,13 @@ a context dict ready for formatting.
 - Set `scorer._intent_weight_overrides` for scoring adjustments
 - Set `scorer._graph_memory` / `_entity_resolver` for graph-boosted scoring
 - Cleared after gather completes
+- Intent-type extraction reads `IntentResult.intent_type` (property alias
+  for `.intent`, added 2026-07-03 — before the alias this silently
+  resolved to None and wiki/web/visual intent suppression never fired)
+- Intent also shapes the response: `get_intent_style_instructions()`
+  injects a short per-intent style block into the system-prompt tail
+  (after `PROMPT_CACHE_BREAKPOINT`; confidence ≥ 0.60, CONVERSATIONAL
+  tone only — crisis suppresses; `INTENT_STYLE_INSTRUCTIONS_ENABLED`)
 
 ### Step 3.5 — Response Planning (parallel with Step 4)
 
@@ -329,6 +336,17 @@ both traversal and scoring. Nothing is deleted — a fresh mention refreshes
 5. Citations tracked in `memory_id_map`
 
 Failures (no API key, rate limit, timeout) return `None` silently.
+
+**Query localization (2026-07-02):** location-dependent queries (weather, local
+news, "near me") carry the user's location. The trigger prompt and
+`decompose_query()` prompt both receive a `User location:` line
+(`utils/location_resolver.py`: config override → IP geolocation, cached +
+background-refreshed → profile `lives_in` fact filtered to place-shaped values).
+A deterministic backstop in `WebSearchManager.search()` (`_localize_query`)
+substitutes literal "my area"/"near me" and appends the location to placeless
+weather-type queries — applied before the cache check so cache keys are
+location-aware. Without this, "temperature in my area" went to Tavily verbatim
+and returned arbitrary big-market results (the DC-weather-in-Illinois bug).
 
 In agentic mode, the `fetch_url` tool provides direct URL content retrieval
 via `WebSearchManager._tavily_extract()`. URLs detected in user messages are

@@ -390,10 +390,14 @@ class TestScheduleConfig:
 # ── intent overrides ──────────────────────────────────────────────────
 
 class TestIntentOverrides:
-    def test_temporal_recall_has_schedule_override(self):
+    def test_temporal_recall_has_no_schedule_override(self):
+        # Changed 2026-07-03: TEMPORAL_RECALL patterns are all past-oriented
+        # (last week, yesterday, remember when...), so forcing upcoming-
+        # schedule retrieval there was noise. Genuine future-schedule queries
+        # activate via builder.py's schedule-keyword gate instead.
         from core.intent_classifier import IntentType, _PROFILES
         profile = _PROFILES[IntentType.TEMPORAL_RECALL]
-        assert profile["retrieval"].get("max_upcoming_schedule") == 10
+        assert profile["retrieval"].get("max_upcoming_schedule") is None
 
     def test_project_work_has_schedule_override(self):
         from core.intent_classifier import IntentType, _PROFILES

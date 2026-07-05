@@ -494,3 +494,38 @@ class TestSkipInitialSearch:
             )
         # Web search WITH search terms should not skip initial search
         assert not d.skip_initial_search
+
+
+# ===========================================================================
+# Real-IntentResult regression (2026-07-03)
+# ===========================================================================
+# The veto reads intent_info.intent_type. IntentResult's field is `.intent`;
+# before the intent_type alias property existed, the real object silently
+# yielded None here and the veto NEVER fired in production (mocks/dicts in
+# the tests above have intent_type, so they kept passing). These tests pin
+# the veto to the actual production object.
+
+class TestIntentVetoWithRealIntentResult:
+
+    @pytest.mark.asyncio
+    async def test_real_intent_result_vetoes(self):
+        from core.intent_classifier import IntentClassifier, IntentType
+        result = IntentClassifier().classify("what do you know about my projects?")
+        assert result.intent == IntentType.META_CONVERSATIONAL
+        assert result.confidence >= 0.75
+        d = await evaluate_agentic_gate(
+            "do you remember anything about our conversations?",
+            intent_info=result,
+        )
+        assert not d.should_trigger
+        assert d.reason.startswith("intent-veto:")
+        assert "meta_conversational" in d.reason
+
+    @pytest.mark.asyncio
+    async def test_intent_type_alias_matches_intent(self):
+        from core.intent_classifier import IntentClassifier
+        result = IntentClassifier().classify("hey")
+        assert result.intent_type == result.intent
+        # The exact extraction expression used by builder.py / gate.py:
+        _it = getattr(result, "intent_type", None)
+        assert getattr(_it, "value", None) == "casual_social"

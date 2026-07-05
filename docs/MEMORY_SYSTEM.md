@@ -183,7 +183,10 @@ MemoryStorage.store_interaction(query, response)
   │     runs before ANY persistence; all-thinking responses skipped (return None)
   │     — final defense layer so reasoning artifacts can't persist and be replayed
   │     (see docs/THINKING_BLOCKS_IMPLEMENTATION.md)
-  ├─ 1. Skip gate: reject file-error responses
+  ├─ 1. Skip gate: reject file-error responses + API-error sentinels
+  │     ("[API Error]", "[CREDITS EXHAUSTED]", "[RATE LIMITED]", ... — prefixes
+  │      from model_manager._classify_api_error; transport failures are never
+  │      persisted as Daemon replies) [NEW 2026-07-03]
   ├─ 2. Thread detection: assign thread_id + depth
   ├─ 3. Corpus storage: JSON persistence (immediate)
   ├─ 4. Topic detection: primary topic → tag enrichment
@@ -194,6 +197,8 @@ MemoryStorage.store_interaction(query, response)
   ├─ 7b. Per-turn thread resolution (check_quick_resolutions)
   │     Pure regex: completion signals × open thread keywords, ~1ms
   │     Skips DB query if no completion signal detected in message
+  │     Both sides use _norm_keywords (digit tokens kept — "done with hw6"
+  │     can't resolve the hw7 thread on generic word overlap, 2026-07-05)
   │
   ├─ 8. Fact extraction (if FACTS_EXTRACT_EACH_TURN)
   │     ├── FactExtractor: corrections > spaCy > REBEL > regex
@@ -230,7 +235,10 @@ ShutdownProcessor.process_shutdown_memory()
   │  ├─ Code proposal generation
   │  ├─ Implementation tracking (lightweight file check)
   │  ├─ Open thread processing
-  │  │     Detect resolutions → extract new → enforce cap
+  │  │     Detect resolutions (cascade to duplicate siblings via topics_equivalent)
+  │  │     → extract new (prompt lists ALREADY TRACKED threads; extracted dupes of
+  │  │       resolved/open threads dropped, open twins get last_referenced refreshed)
+  │  │     → enforce cap
   │  └─ Wiki-to-graph enrichment (session wiki articles → graph nodes)
   │
   ├─ Phase C (sequential — must follow Phase B) ──────────────────
@@ -267,13 +275,16 @@ Every retrieved memory gets a `final_score` from `MemoryScorer.rank_memories()`.
 ### Default Weights
 
 ```
-relevance:  0.35    # Pre-gate semantic similarity (config.yaml: 0.30)
-recency:    0.25    # Temporal decay (active-day aware) (config.yaml: 0.22)
-truth:      0.20    # Evidence-based correctness (config.yaml: 0.18)
+# LIVE values from config.yaml gating.score_weights (what SCORE_WEIGHTS resolves to).
+# The 0.35/0.25/0.20 vector in app_config.py is only a fallback if the YAML key is
+# absent — it is not, so that fallback is dead.
+relevance:  0.30    # Pre-gate semantic similarity
+recency:    0.22    # Temporal decay (active-day aware)
+truth:      0.18    # Evidence-based correctness
 importance: 0.05    # Retention priority
 continuity: 0.10    # Token overlap with current conversation
+topic_match:0.10    # USED — multiplied by the topic_match signal in rank_memories()
 structure:  0.05    # In SCORE_WEIGHTS dict but UNUSED — actual structure is additive: 0.15 * density_alignment
-topic:      0.00    # Disabled by default (config.yaml: 0.10)
 ```
 
 ### Step-by-Step
@@ -319,9 +330,9 @@ These constants are defined in `memory_scorer.py` (module-level, not in `app_con
 Memory: *"User's squat is 365lb, set last month at the gym"*
 
 ```
-relevance:    0.35 * 0.82 = 0.287    (high semantic match to "squat progress")
-recency:      0.25 * 0.45 = 0.113    (3 weeks old, moderate decay)
-truth:        0.20 * 0.85 = 0.170    (confirmed once, slight time decay)
+relevance:    0.30 * 0.82 = 0.246    (high semantic match to "squat progress")
+recency:      0.22 * 0.45 = 0.099    (3 weeks old, moderate decay)
+truth:        0.18 * 0.85 = 0.153    (confirmed once, slight time decay)
 importance:   0.05 * 0.60 = 0.030    (moderate importance)
 continuity:   0.10 * 0.15 = 0.015    ("squat" token overlap)
 structure:    0.15 * 0.90 = 0.135    (direct additive bonus — high numeric density alignment — "365lb")
@@ -329,7 +340,7 @@ graph_bonus:  0.05                    (1 neighbor "powerlifting" mentioned)
 staleness:    0.00                    (no stale claims)
 penalties:    0.00
 ─────────────────────────────────────
-final_score:  0.800
+final_score:  0.728
 ```
 
 ### Intent-Driven Weight Overrides
@@ -704,12 +715,17 @@ Stage 1: Separation
   Episodic (type=="episodic") → always included, bypass gating
   Others → continue to Stage 2
 
-Stage 2: Blended Scoring
-  Encode query + all memory texts (batch, cached)
+Stage 2: Blended Scoring (retrieval space)
+  Encode query + all memory texts (batch, cached per model) with the SAME
+  bge-small embedder ChromaDB retrieved with (injected as retrieval_embedder
+  in main.py — fixes the old MiniLM-space mismatch, 2026-07-02)
   For each memory:
     blended = 0.85 * cosine_sim + 0.15 * truth_score + entity_boost
     entity_boost: +0.18 (1 entity match) or +0.25 (multiple)
-  Deictic queries: threshold lowered to min 0.20
+  Threshold: gate_rel_threshold_retrieval (0.60 bge-blended ≈ old 0.18 MiniLM,
+  quantile-matched via scripts/probe_gate_embedding_mismatch.py); per-intent
+  MiniLM-space overrides are delta-translated (×0.38 std ratio)
+  Deictic queries: floor raised to gate_deictic_min_retrieval (0.61)
 
 Stage 3: Forced Minimum
   If < 8 passed, force-add highest-scoring non-passed items
@@ -849,7 +865,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 |---------|-------------|-----|
 | Old unrelated memories ranking high | Recency weight too low | Increase `recency` in `SCORE_WEIGHTS` |
 | Memories from wrong topic | Topic filtering disabled | Set `topic_match` weight > 0 |
-| Too many low-quality results | Gate threshold too low | Raise `GATE_REL_THRESHOLD` (default 0.18) |
+| Too many low-quality results | Gate threshold too low | Raise `GATE_REL_THRESHOLD_RETRIEVAL` (default 0.60, bge space — small moves shift pass rate a lot) |
 | Large docs drowning out small facts | Size penalty too weak | Lower `LARGE_DOC_SIZE_THRESHOLD` in `memory_scorer.py` (default 10KB) or raise `LARGE_DOC_BASE_PENALTY` (default -0.25) |
 
 ### Retrieval Missing Relevant Memories
@@ -858,7 +874,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 |---------|-------------|-----|
 | Facts stated recently not found | Fact extraction disabled | Enable `FACTS_EXTRACT_EACH_TURN` |
 | Semantic search missing vocabulary | Graph expansion disabled | Enable `GRAPH_QUERY_EXPANSION_ENABLED` |
-| Gating too aggressive | Threshold too high | Lower `GATE_REL_THRESHOLD` (default 0.18) or increase `MIN_GATED_MEMORIES` |
+| Gating too aggressive | Threshold too high | Lower `GATE_REL_THRESHOLD_RETRIEVAL` (default 0.60) or increase `MIN_GATED_MEMORIES` |
 | Deictic follow-ups losing context | Anchor bonus too weak | Check `DEICTIC_ANCHOR_PENALTY` and continuity weights |
 
 ### Fact Extraction Problems
@@ -902,7 +918,9 @@ The final prompt is assembled with these sections (in attention-optimized order)
 ### Gating
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `GATE_REL_THRESHOLD` | 0.18 | Multi-stage gate threshold (app_config.py) |
+| `GATE_REL_THRESHOLD` | 0.18 | Gate threshold in legacy MiniLM space (used when no retrieval embedder is injected, e.g. fallback gates) |
+| `GATE_REL_THRESHOLD_RETRIEVAL` | 0.60 | Gate threshold in retrieval (bge) space — the LIVE memory-gate threshold; quantile-matched to 0.18 MiniLM |
+| `GATE_DEICTIC_MIN_RETRIEVAL` | 0.61 | Deictic follow-up floor in retrieval space (≈ 0.20 MiniLM) |
 | `GATE_COSINE_WEIGHT` | 0.85 | Weight of cosine vs truth in blended gate score (env var in gate_system.py, NOT app_config) |
 | `MIN_GATED_MEMORIES` | 8 | Forced minimum even if below threshold (env var in gate_system.py, NOT app_config) |
 

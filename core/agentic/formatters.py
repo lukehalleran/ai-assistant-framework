@@ -6,9 +6,20 @@ Contract:
     - All methods take data in and return formatted strings
     - No side effects, no state mutation, no external dependencies
     - Extracted from AgenticSearchController to reduce god-object size
+    - Truncation is always EXPLICIT: clip_text() appends a visible
+      "[...truncated]" marker whenever content is cut, so the model never
+      mistakes a preview cut for the end of the stored document
 """
 
 from typing import Dict, List
+
+TRUNCATION_MARKER = " [...truncated]"
+
+
+def clip_text(text: str, limit: int, marker: str = TRUNCATION_MARKER) -> str:
+    """Clip text to limit chars, appending a marker only when actually cut."""
+    text = text or ""
+    return text if len(text) <= limit else text[:limit] + marker
 
 
 class AgenticFormatter:
@@ -24,9 +35,9 @@ class AgenticFormatter:
             user_msg = conv.get('query', conv.get('user', ''))
             assistant_msg = conv.get('response', conv.get('assistant', ''))
             if user_msg:
-                lines.append(f"[MEM_RECENT_{i}] {ts}: User: {user_msg[:500]}")
+                lines.append(f"[MEM_RECENT_{i}] {ts}: User: {clip_text(user_msg, 500)}")
                 if assistant_msg:
-                    lines.append(f"   Daemon: {assistant_msg[:500]}")
+                    lines.append(f"   Daemon: {clip_text(assistant_msg, 500)}")
         return "\n".join(lines)
 
     def format_memories(self, memories: List[Dict]) -> str:
@@ -39,9 +50,9 @@ class AgenticFormatter:
             content = mem.get('content', mem.get('query', ''))
             response = mem.get('response', '')
             if content:
-                lines.append(f"[MEM_SEMANTIC_{i}] {ts}: {content[:400]}")
+                lines.append(f"[MEM_SEMANTIC_{i}] {ts}: {clip_text(content, 400)}")
                 if response:
-                    lines.append(f"   Response: {response[:400]}")
+                    lines.append(f"   Response: {clip_text(response, 400)}")
         return "\n".join(lines)
 
     def format_summaries(self, summaries: List[Dict]) -> str:
@@ -53,7 +64,7 @@ class AgenticFormatter:
             content = s.get('content', s.get('summary', ''))
             ts = s.get('timestamp', '')
             if content:
-                lines.append(f"{i}) [{ts}] {content[:600]}")
+                lines.append(f"{i}) [{ts}] {clip_text(content, 600)}")
         return "\n".join(lines)
 
     def format_personal_notes(self, notes: List[Dict]) -> str:
@@ -63,7 +74,7 @@ class AgenticFormatter:
         lines = []
         for i, note in enumerate(notes, 1):
             title = note.get('metadata', {}).get('title', 'Untitled')
-            content = note.get('content', '')[:500]
+            content = clip_text(note.get('content', ''), 500)
             tags = note.get('metadata', {}).get('tags', '')
             if content:
                 tag_str = f" [tags: {tags}]" if tags else ""
@@ -79,7 +90,7 @@ class AgenticFormatter:
             content = d.get('content', d.get('dream', ''))
             ts = d.get('timestamp', '')
             if content:
-                lines.append(f"{i}) [{ts}] {content[:400]}")
+                lines.append(f"{i}) [{ts}] {clip_text(content, 400)}")
         return "\n".join(lines)
 
     def format_reflections(self, reflections: List[Dict]) -> str:
@@ -91,7 +102,7 @@ class AgenticFormatter:
             content = r.get('content', r.get('reflection', ''))
             ts = r.get('timestamp', '')
             if content:
-                lines.append(f"{i}) [{ts}] {content[:400]}")
+                lines.append(f"{i}) [{ts}] {clip_text(content, 400)}")
         return "\n".join(lines)
 
     def format_search_context(
@@ -212,8 +223,16 @@ class AgenticFormatter:
             header_parts.append(f"[{collection}]")
             header = " ".join(header_parts)
 
-            if len(content) > 500:
-                content = content[:500] + "..."
+            # Conversations get the full stored document: an explicit memory
+            # search is often "quote what was said", and a preview cut there
+            # reads as the message ending mid-sentence.
+            limit = 2000 if collection == "conversations" else 500
+            if len(content) > limit:
+                suffix = (
+                    f" [...truncated — call expand_memory with id {doc_id} for the full document]"
+                    if doc_id else TRUNCATION_MARKER
+                )
+                content = content[:limit] + suffix
 
             lines.append(f"{header}\n{content}")
 

@@ -50,6 +50,7 @@ from typing import List, Dict, Optional
 from collections import deque
 
 from utils.logging_utils import get_logger
+from models.model_manager import API_ERROR_PREFIXES
 
 logger = get_logger("memory_storage")
 
@@ -650,6 +651,30 @@ class MemoryStorage:
             return self.scorer.calculate_importance_score(content)
         return 0.5
 
+    # Error sentinels produced when an LLM call fails and the failure is
+    # surfaced as response text — imported from the single source of truth
+    # (models.model_manager.API_ERROR_PREFIXES).
+    _API_ERROR_PREFIXES = API_ERROR_PREFIXES
+
+    def _is_api_error_response(self, response: str) -> bool:
+        """
+        Check if the response is an API-error sentinel rather than a real answer.
+
+        Transport failures surfaced as response text must not persist: stored
+        ones get replayed into future prompts as things Daemon "said" (seen
+        live 2026-07-03: a 402 'Insufficient credits' error stored as a reply
+        and later retrieved as conversation context).
+
+        Args:
+            response: Assistant's response text
+
+        Returns:
+            True if the response starts with an API-error sentinel
+        """
+        if not response:
+            return False
+        return response.lstrip().startswith(self._API_ERROR_PREFIXES)
+
     def _is_file_error_response(self, response: str) -> bool:
         """
         Check if response contains file processing error messages.
@@ -727,6 +752,13 @@ class MemoryStorage:
             # These are ephemeral technical issues that create false memories
             if self._is_file_error_response(response):
                 logger.info(f"[MemoryStorage] Skipped storing file error response to prevent false memories")
+                return None
+
+            # SKIP STORAGE: Don't persist API-error sentinel responses
+            # ("[API Error] ...", "[CREDITS EXHAUSTED] ...") — transport
+            # failures, not answers; storing them creates false memories
+            if self._is_api_error_response(response):
+                logger.info("[MemoryStorage] Skipped storing API-error response to prevent false memories")
                 return None
 
             # Detect heavy topic before anything else

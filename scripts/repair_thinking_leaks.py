@@ -23,6 +23,12 @@ Safety:
     - Dry run by default; --apply required to write anything.
     - Refuses to run with --apply while Daemon (main.py) is running.
     - corpus_v4.json is backed up to corpus_v4.json.bak.<timestamp> before writing.
+    - ChromaDB pre-images of every updated doc are written to
+      logs/repair_thinking_leaks_preimage.<timestamp>.jsonl before updating.
+    - Content-bearing blocks are deleted only when response-LEADING (the
+      verified leak shape); a mid-text <tag>...</tag> pair — possibly a
+      conversation quoting the tags — loses only the tag literals, never
+      the text between them.
     - A document whose cleaned text would be empty is left untouched and reported.
 """
 
@@ -38,11 +44,26 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Tag patterns (mirror core/response_parser.py)
-EMPTY_PAIR_RE = re.compile(r'<\|?think(?:ing)?\|?>\s*<\|?/think(?:ing)?\|?>', re.IGNORECASE)
-FULL_BLOCK_RE = re.compile(r'<think(?:ing)?>[\s\S]*?</think(?:ing)?>', re.IGNORECASE)
-ORPHAN_TAG_RE = re.compile(r'<\|?/?think(?:ing)?\|?>|/?think(?:ing)?>', re.IGNORECASE)
-ANY_TAG_RE = re.compile(r'</?think(?:ing)?>', re.IGNORECASE)
+# Tag patterns (mirror core/response_parser.py). _TAG covers both the
+# think/thinking family and the reasoning/reason family (some models leak
+# literal <reasoning> blocks into the content channel — observed 2026-07-03).
+_TAG = r'(?:think(?:ing)?|reason(?:ing)?)'
+EMPTY_PAIR_RE = re.compile(rf'<\|?{_TAG}\|?>\s*<\|?/{_TAG}\|?>', re.IGNORECASE)
+# Content-bearing blocks are deleted ONLY when response-leading — at the start
+# of the text, or right after an "Assistant:" marker in doc-shaped entries
+# (every one of the 144 verified corpus leaks was response-leading reasoning).
+# A mid-text <tag>...</tag> pair may be a stored conversation QUOTING the tags
+# (e.g. a debugging session about this very bug) — deleting the span would
+# destroy legitimate content, so mid-text pairs get just their tag literals
+# stripped by ORPHAN_TAG_RE instead (kills the imitation vector, keeps the text).
+LEADING_BLOCK_RE = re.compile(
+    rf'(^\s*|Assistant:\s*)<{_TAG}>[\s\S]*?</{_TAG}>\s*', re.IGNORECASE
+)
+ORPHAN_TAG_RE = re.compile(rf'<\|?/?{_TAG}\|?>', re.IGNORECASE)
+# A bare 'thinking>'/'reasoning>' fragment (opening '<' lost) is only treated
+# as tag debris at the very start of the text — mid-text it's likely prose.
+LEADING_FRAGMENT_RE = re.compile(rf'^\s*/?{_TAG}\|?>', re.IGNORECASE)
+ANY_TAG_RE = re.compile(rf'</?{_TAG}>', re.IGNORECASE)
 
 CHROMA_COLLECTIONS = ["conversations", "summaries", "reflections"]
 
@@ -50,15 +71,21 @@ CHROMA_COLLECTIONS = ["conversations", "summaries", "reflections"]
 def scrub_thinking(text: str) -> str:
     """Remove thinking artifacts from stored text.
 
-    Order matters: empty pairs first (so they don't match as full blocks and
-    leave nothing suspicious behind), then content-bearing blocks (every one
-    found in stored data was a leak — verified all 144 corpus cases were
-    response-leading reasoning, none legit content), then orphan fragments.
+    Order matters: empty pairs first (so they don't match as leading blocks and
+    leave nothing suspicious behind), then response-leading content blocks
+    (looped — a leak can be several back-to-back blocks), then remaining tag
+    literals. Mid-text blocks deliberately lose only their tags, never their
+    content (see LEADING_BLOCK_RE comment).
     """
     if not text:
         return text
     cleaned = EMPTY_PAIR_RE.sub('', text)
-    cleaned = FULL_BLOCK_RE.sub('', cleaned)
+    while True:
+        stripped = LEADING_BLOCK_RE.sub(r'\1', cleaned, count=1)
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    cleaned = LEADING_FRAGMENT_RE.sub('', cleaned)
     cleaned = ORPHAN_TAG_RE.sub('', cleaned)
     # Collapse whitespace damage left by the removals
     cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)
@@ -73,7 +100,8 @@ def scrub_tags_only(text: str) -> str:
     tag syntax from replayed history."""
     if not text:
         return text
-    cleaned = ORPHAN_TAG_RE.sub('', text)
+    cleaned = LEADING_FRAGMENT_RE.sub('', text)
+    cleaned = ORPHAN_TAG_RE.sub('', cleaned)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
     return cleaned.strip()
 
@@ -143,6 +171,14 @@ def repair_chroma(apply: bool) -> dict:
     print(f"  ChromaDB path: {persist_dir}")
     store = MultiCollectionChromaStore(persist_directory=persist_dir)
 
+    backup_fh = None
+    if apply:
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        backup_path = PROJECT_ROOT / "logs" / f"repair_thinking_leaks_preimage.{ts}.jsonl"
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_fh = backup_path.open("w", encoding="utf-8")
+        print(f"  Pre-image backup: {backup_path}")
+
     totals = {"scanned": 0, "polluted": 0, "repaired": 0, "skipped_empty": 0}
     for cname in CHROMA_COLLECTIONS:
         col = store._get_collection(cname)
@@ -196,6 +232,16 @@ def repair_chroma(apply: bool) -> dict:
             upd_metas.append(new_meta)
 
         if upd_ids and apply:
+            # Write the pre-image of every doc we are about to change, so the
+            # repair is reversible (ChromaDB has no backup of its own here).
+            id_set = set(upd_ids)
+            for doc_id, doc, meta in zip(ids, docs, metas):
+                if doc_id in id_set:
+                    backup_fh.write(json.dumps(
+                        {"collection": cname, "id": doc_id,
+                         "document": doc, "metadata": meta},
+                        ensure_ascii=False) + "\n")
+            backup_fh.flush()
             # update() with documents re-embeds via the collection's embedding fn
             BATCH = 100
             for i in range(0, len(upd_ids), BATCH):
@@ -208,6 +254,8 @@ def repair_chroma(apply: bool) -> dict:
         elif upd_ids:
             print(f"  [{cname}] would update {len(upd_ids)} docs")
         totals["repaired"] += len(upd_ids)
+    if backup_fh is not None:
+        backup_fh.close()
     return totals
 
 

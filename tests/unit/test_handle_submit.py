@@ -116,7 +116,10 @@ def _make_orchestrator(
         agentic_items = ["Agentic answer"]
     ac.run_agentic_search = _async_gen_factory(agentic_items)
     ac._last_session = None
+    # The web-source map lives on the controller's ToolExecutor, not the
+    # controller — neutralize both so the default mock doesn't linkify.
     ac._current_web_source_map = None
+    ac._tool_executor._current_web_source_map = None
     orch.agentic_controller = ac
     orch._agentic_controller = ac
 
@@ -250,6 +253,51 @@ class TestEnhancedStreaming:
         orch.prepare_prompt.assert_awaited_once()
 
 
+class TestEnhancedWebCitationLinks:
+    """Regression: with the citations toggle ON, an enhanced response keeps its
+    [WEB_N] links AND its paragraph breaks. The old order ran extract_citations
+    first — which strips ALL markers (incl. [WEB_N]) and collapses newlines — so
+    _apply_web_citations no-op'd and multi-paragraph answers rendered as one line."""
+
+    @pytest.mark.asyncio
+    async def test_enhanced_citations_enabled_keeps_links_and_newlines(self):
+        from core.citation_extractor import extract_citations as _real_extract
+
+        orch = _make_orchestrator(
+            streaming_chunks=[
+                "Per Forbes [WEB_1], the freeze lifted.\n\n",
+                "You noted this [MEM_RECENT_1].",
+            ],
+        )
+        # Citations toggle ON + a non-empty memory map → extract_citations actually
+        # runs (and would strip/flatten). Delegate to the real extractor.
+        orch.enable_citations = True
+        orch._current_memory_id_map = {
+            "MEM_RECENT_1": {"type": "conversation", "content": "x"}
+        }
+        orch._web_source_map = {
+            "WEB_1": {"title": "Forbes", "url": "https://forbes.com/fable", "domain": "forbes.com"},
+        }
+        orch._extract_citations = lambda resp, mmap: _real_extract(
+            resp, mmap, orch._web_source_map or {}
+        )
+
+        results = await _run_submit("what happened with fable today?", orch)
+
+        debug = _debug_record(results)
+        assert debug is not None
+        assert debug["mode"] == "enhanced"
+
+        content = _final_content(results)
+        # [WEB_1] survived the citations-enabled path and became a clickable link.
+        assert "[[WEB_1](https://forbes.com/fable)]" in content
+        assert "**Sources:**" in content
+        # Memory marker stripped from the display.
+        assert "MEM_RECENT_1" not in content
+        # Paragraph break preserved (not flattened to a single line).
+        assert "\n\n" in content
+
+
 class TestRawMode:
     """Test 2: Raw mode bypass."""
 
@@ -363,6 +411,70 @@ class TestAgenticEntityRecall:
         debug = _debug_record(results)
         assert debug is not None
         assert debug["mode"] == "agentic-search"
+
+
+class TestAgenticWebCitationLinks:
+    """Regression: [WEB_N] markers in the agentic answer become clickable links.
+
+    The accumulated web-source map lives on the controller's ToolExecutor, not on
+    the controller. A prior bug read it from the controller (always None), so
+    _apply_web_citations silently no-op'd and [WEB_N] rendered as plain text.
+    """
+
+    @pytest.mark.asyncio
+    async def test_web_citations_linkified_from_tool_executor_map(self):
+        orch = _make_orchestrator(
+            agentic_enabled=True,
+            agentic_items=["Forbes reported the freeze lifted today [WEB_1]."],
+        )
+        # assign_web_ids/_merge_web_ids populate this on the ToolExecutor.
+        orch.agentic_controller._tool_executor._current_web_source_map = {
+            "WEB_1": {
+                "title": "Forbes",
+                "url": "https://forbes.com/fable",
+                "domain": "forbes.com",
+            },
+        }
+        # Memory-keyword query routes to the agentic path (no web/LLM mocking needed).
+        results = await _run_submit("do you remember my brother's name?", orch)
+
+        debug = _debug_record(results)
+        assert debug is not None
+        assert debug["mode"] == "agentic-search"
+
+        content = _final_content(results)
+        # Inline [WEB_1] rewritten to a clickable markdown link + a Sources footer.
+        assert "[[WEB_1](https://forbes.com/fable)]" in content
+        assert "**Sources:**" in content
+        assert "https://forbes.com/fable" in content
+
+
+class TestApplyWebCitationsUnmapped:
+    """Regression: a [WEB_N] marker with no entry in the web map (e.g. imitated
+    from replayed history on a turn with NO web search) must be stripped from
+    the display, not rendered as literal bracket junk."""
+
+    def test_unmapped_marker_stripped_with_empty_map(self):
+        from gui.handlers import _apply_web_citations
+        out = _apply_web_citations("As reported [WEB_3] earlier.", {})
+        assert out == "As reported earlier."
+
+    def test_unmapped_marker_stripped_none_map(self):
+        from gui.handlers import _apply_web_citations
+        out = _apply_web_citations("Fact [WEB_1].", None)
+        assert out == "Fact."
+
+    def test_mixed_map_links_mapped_and_strips_unmapped(self):
+        from gui.handlers import _apply_web_citations
+        web_map = {"WEB_1": {"title": "Forbes", "url": "https://f.example"}}
+        out = _apply_web_citations("A [WEB_1] and B [WEB_2].", web_map)
+        assert "[[WEB_1](https://f.example)]" in out
+        assert "WEB_2" not in out
+        assert "**Sources:**" in out
+
+    def test_text_without_markers_untouched(self):
+        from gui.handlers import _apply_web_citations
+        assert _apply_web_citations("plain text", {}) == "plain text"
 
 
 class TestCasualSkipsAgentic:

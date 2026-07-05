@@ -18,6 +18,13 @@ Module Contract
   - Status updates via delete-and-re-add (ChromaDB lacks native update)
   - Lazy staleness: is_stale() checked at retrieval time
   - Cap enforcement: oldest low-priority threads pruned when over limit
+  - Duplicate detection helpers: topics_equivalent() (strict, for cascading a
+    resolution to duplicate threads) and threads_duplicate() (looser, for
+    dropping just-extracted threads that duplicate an existing/resolved one);
+    _norm_keywords() is the single keyword normalizer (digit tokens kept) —
+    quick-resolution matching uses it on both message and thread sides too
+  - touch_thread(): refresh last_referenced when a duplicate extraction shows
+    the tracked task is still live
 - Dependencies:
   - memory.storage.multi_collection_chroma_store (vector storage)
   - memory.thread_models (data models)
@@ -25,6 +32,7 @@ Module Contract
 """
 
 import re
+import time
 from typing import List, Optional
 
 from utils.logging_utils import get_logger
@@ -51,11 +59,60 @@ _STOPWORDS = frozenset({
 })
 
 
-def _extract_topic_keywords(thread: OpenThread) -> set:
-    """Extract meaningful keywords from thread topic + summary."""
-    text = f"{thread.topic} {thread.summary}".lower()
-    words = re.findall(r"[a-z]{3,}", text)
+def _norm_keywords(text: str) -> set:
+    """Lowercased keyword set for duplicate matching.
+
+    Keeps 3+ letter words plus any token containing a digit ("hw6", "10") —
+    numeric tokens are what distinguish "Week 10 homework" from "Week 11
+    homework", so they must survive normalization.
+    """
+    words = re.findall(r"[a-z]*\d[a-z\d]*|[a-z]{3,}", (text or "").lower())
     return {w for w in words if w not in _STOPWORDS}
+
+
+def topics_equivalent(a: OpenThread, b: OpenThread) -> bool:
+    """True when two threads' topics name the same task.
+
+    Conservative near-subset match on topic keywords: the smaller topic's
+    keywords must be ~fully contained in the other's ("Homework and paragraph
+    due" vs "Homework and paragraph due Friday"). Used to cascade a resolution
+    from one thread to its duplicate siblings, so false positives resolve a
+    real task's thread — keep this strict.
+
+    Min-side containment alone makes a 1-keyword topic ("Taxes") a wildcard
+    that matches every topic naming that word ("File taxes by April 15") and
+    cascade-resolves live, distinct tasks — so unless the keyword sets are
+    identical, require >=2 shared keywords and the larger topic to be at
+    least half covered.
+    """
+    ka, kb = _norm_keywords(a.topic), _norm_keywords(b.topic)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    shared = ka & kb
+    if len(shared) < 2:
+        return False
+    return (len(shared) / min(len(ka), len(kb)) >= 0.9
+            and len(shared) / max(len(ka), len(kb)) >= 0.5)
+
+
+def threads_duplicate(a: OpenThread, b: OpenThread) -> bool:
+    """True when two threads likely track the same underlying task.
+
+    Looser than topics_equivalent(): also matches on strong topic+summary
+    keyword Jaccard. Used to drop a just-extracted thread that duplicates a
+    thread that is already open or was resolved this shutdown pass — a false
+    positive here only skips storing a redundant row.
+    """
+    if topics_equivalent(a, b):
+        return True
+    ka = _norm_keywords(f"{a.topic} {a.summary}")
+    kb = _norm_keywords(f"{b.topic} {b.summary}")
+    if not ka or not kb:
+        return False
+    jaccard = len(ka & kb) / len(ka | kb)
+    return jaccard >= 0.6
 
 
 def check_quick_resolutions(user_message: str, open_threads: List[OpenThread]) -> List[str]:
@@ -79,11 +136,14 @@ def check_quick_resolutions(user_message: str, open_threads: List[OpenThread]) -
     if not _COMPLETION_SIGNALS.search(msg_lower):
         return []
 
-    msg_words = set(re.findall(r"[a-z]{3,}", msg_lower))
+    # Same normalization on both sides (digit tokens kept: "hw6" is what
+    # distinguishes numbered tasks, so "done with hw6" can't match hw7's thread
+    # on generic words alone).
+    msg_words = _norm_keywords(msg_lower)
     resolved_ids = []
 
     for thread in open_threads:
-        keywords = _extract_topic_keywords(thread)
+        keywords = _norm_keywords(f"{thread.topic} {thread.summary}")
         if not keywords:
             continue
         # Require at least 2 keyword overlaps (or 1 if topic has ≤2 keywords)
@@ -311,6 +371,23 @@ class ThreadStore:
         except Exception as e:
             logger.error(f"[ThreadStore] resolve_thread failed: {e}")
             return False
+
+    def touch_thread(self, thread: OpenThread) -> bool:
+        """
+        Refresh a thread's last_referenced timestamp and persist.
+
+        Called when a new extraction duplicates an already-open thread: the
+        duplicate is dropped, but the mention proves the task is still live,
+        so keep the tracked thread from going stale.
+
+        Args:
+            thread: The open thread to refresh
+
+        Returns:
+            True if updated successfully
+        """
+        thread.last_referenced = time.time()
+        return self._update_thread(thread)
 
     def enforce_cap(self, max_open: Optional[int] = None) -> int:
         """

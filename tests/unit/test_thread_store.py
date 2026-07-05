@@ -3,7 +3,13 @@ import pytest
 import time
 from unittest.mock import MagicMock, patch, PropertyMock
 from memory.thread_models import OpenThread, ThreadType, ThreadStatus
-from memory.thread_store import ThreadStore, COLLECTION_NAME
+from memory.thread_store import (
+    ThreadStore,
+    COLLECTION_NAME,
+    _norm_keywords,
+    topics_equivalent,
+    threads_duplicate,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -688,3 +694,132 @@ class TestIntegrationScenarios:
         open_ids = {t.thread_id for t in open_threads}
         assert "lo" not in open_ids
         assert len(open_threads) == 2
+
+
+# ===========================================================================
+# Duplicate-detection helpers
+# ===========================================================================
+
+class TestDuplicateHelpers:
+    """Tests for _norm_keywords(), topics_equivalent(), threads_duplicate()."""
+
+    def test_norm_keywords_keeps_numeric_tokens(self):
+        """Digit-containing tokens survive normalization — they distinguish
+        'Week 10' from 'Week 11'."""
+        kw = _norm_keywords("Week 10 homework hw6")
+        assert "10" in kw
+        assert "hw6" in kw
+        assert "week" in kw
+        assert "homework" in kw
+
+    def test_norm_keywords_drops_stopwords_and_short_words(self):
+        kw = _norm_keywords("the homework is due for my user today")
+        assert kw == {"homework"}
+
+    def test_norm_keywords_empty_input(self):
+        assert _norm_keywords("") == set()
+        assert _norm_keywords(None) == set()
+
+    def test_topics_equivalent_subset_match(self):
+        """The incident pair: one topic's keywords fully contained in the other's."""
+        a = _make_thread(topic="Homework and paragraph due")
+        b = _make_thread(topic="Homework and paragraph due Friday")
+        assert topics_equivalent(a, b)
+        assert topics_equivalent(b, a)
+
+    def test_topics_equivalent_distinguishes_week_numbers(self):
+        """'Week 10 homework' vs 'Week 11 homework' share 2/3 keywords — below
+        the 0.9 near-subset bar because numeric tokens are preserved."""
+        a = _make_thread(topic="Week 10 homework")
+        b = _make_thread(topic="Week 11 homework")
+        assert not topics_equivalent(a, b)
+
+    def test_topics_equivalent_rejects_loose_overlap(self):
+        """Sharing one keyword ('homework') is not topic equivalence — the
+        cascade must stay strict."""
+        a = _make_thread(topic="Last 2 homework questions")
+        b = _make_thread(topic="Homework and paragraph due")
+        assert not topics_equivalent(a, b)
+
+    def test_topics_equivalent_empty_topic_is_false(self):
+        a = _make_thread(topic="a to")  # all stopwords/short → empty keyword set
+        b = _make_thread(topic="Homework due")
+        assert not topics_equivalent(a, b)
+
+    def test_topics_equivalent_one_keyword_is_not_a_wildcard(self):
+        """A 1-keyword topic must not cascade-resolve every thread naming
+        that word — 'Taxes' and 'File taxes by April 15' are distinct tasks."""
+        a = _make_thread(topic="Taxes")
+        b = _make_thread(topic="File taxes by April 15")
+        assert not topics_equivalent(a, b)
+        assert not topics_equivalent(b, a)
+
+    def test_topics_equivalent_identical_single_keyword_topics(self):
+        a = _make_thread(topic="Taxes")
+        b = _make_thread(topic="the taxes")  # same keyword set after norm
+        assert topics_equivalent(a, b)
+
+    def test_topics_equivalent_small_subset_of_long_topic_is_false(self):
+        """Two shared keywords buried in a much longer topic still aren't the
+        same task — the larger side must be at least half covered."""
+        a = _make_thread(topic="Simulation homework")
+        b = _make_thread(topic="Ask professor about simulation homework "
+                               "extension policy next semester")
+        assert not topics_equivalent(a, b)
+
+    def test_threads_duplicate_includes_topic_equivalence(self):
+        a = _make_thread(topic="Homework and paragraph due")
+        b = _make_thread(topic="Homework and paragraph due Friday")
+        assert threads_duplicate(a, b)
+
+    def test_threads_duplicate_summary_jaccard_path(self):
+        """Different topic wording but heavily-overlapping topic+summary
+        keyword sets → duplicate via the Jaccard branch."""
+        a = _make_thread(
+            topic="Finish simulation homework",
+            summary="Finish the simulation homework questions before Friday deadline",
+        )
+        b = _make_thread(
+            topic="Simulation homework questions",
+            summary="Finish simulation homework questions before the Friday deadline",
+        )
+        assert not topics_equivalent(a, b)
+        assert threads_duplicate(a, b)
+
+    def test_threads_duplicate_unrelated_is_false(self):
+        a = _make_thread(topic="Call doctor about results",
+                         summary="User needs to call their doctor")
+        b = _make_thread(topic="Homework and paragraph due",
+                         summary="Homework and sim paragraph due Friday")
+        assert not threads_duplicate(a, b)
+
+
+# ===========================================================================
+# touch_thread
+# ===========================================================================
+
+class TestTouchThread:
+    """Tests for ThreadStore.touch_thread()."""
+
+    def test_touch_updates_last_referenced_and_persists(self):
+        chroma = MockChromaStore()
+        store = ThreadStore(chroma_store=chroma)
+        old_ts = time.time() - 86400
+        thread = _make_thread(topic="Tracked task", thread_id="tt1",
+                              last_referenced=old_ts)
+        _seed_store(store, [thread])
+
+        before = time.time()
+        assert store.touch_thread(thread) is True
+
+        assert thread.last_referenced >= before
+        stored = store.list_open_threads()
+        assert len(stored) == 1
+        assert stored[0].thread_id == "tt1"
+        assert stored[0].last_referenced >= before
+
+    def test_touch_missing_thread_returns_false(self):
+        chroma = MockChromaStore()
+        store = ThreadStore(chroma_store=chroma)
+        ghost = _make_thread(topic="Never stored", thread_id="ghost")
+        assert store.touch_thread(ghost) is False

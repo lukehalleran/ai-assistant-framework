@@ -340,7 +340,12 @@ def build_orchestrator():
     # Gate system loads CrossEncoder — run in parallel with response_generator + file_processor
     def _init_gate_system():
         t = _time.monotonic()
-        gs = MultiStageGateSystem(model_manager)
+        # Share the chroma store's embedder (bge) so memory gating scores in
+        # the same space candidates were retrieved in (wiki/semantic-chunk
+        # paths stay on the gate's MiniLM embedder).
+        gs = MultiStageGateSystem(
+            model_manager, retrieval_embedder=chroma_store.get_st_model()
+        )
         logger.info(f"[startup] GateSystem (CrossEncoder): {_time.monotonic()-t:.2f}s")
         return gs
 
@@ -1313,6 +1318,46 @@ if __name__ == "__main__":
                 print(f"Cleared {removed} entries from PROCEDURAL collection")
             else:
                 print("Collection was already empty")
+            sys.exit(0)
+
+        elif mode == "git-hot":
+            # Show hot files (most-churned in a recent window)
+            # Usage: python main.py git-hot [SINCE_DAYS] [LIMIT]
+            from knowledge.git_memory import GitMemoryExtractor
+
+            since_days = 90
+            limit = 20
+            if len(sys.argv) > 2:
+                try:
+                    since_days = int(sys.argv[2])
+                except ValueError:
+                    print(f"Invalid since_days: {sys.argv[2]} (must be integer)")
+                    sys.exit(1)
+            if len(sys.argv) > 3:
+                try:
+                    limit = int(sys.argv[3])
+                except ValueError:
+                    print(f"Invalid limit: {sys.argv[3]} (must be integer)")
+                    sys.exit(1)
+
+            print(f"\n{'='*60}")
+            print("GIT HOT FILES (recent churn)")
+            print(f"{'='*60}")
+            print(f"Window: last {since_days} days   Top: {limit}\n")
+
+            hot = GitMemoryExtractor(".").get_hot_files(
+                since_days=since_days,
+                limit=limit,
+                exclude_globs=["data/", "venv/"],
+            )
+            if not hot:
+                print("No churn found (or not a git repo).")
+            else:
+                for i, f in enumerate(hot, 1):
+                    print(
+                        f"{i:>2}. {f['commits']:>3} commits  "
+                        f"{f['age_relative']:>16}  {f['path']}"
+                    )
             sys.exit(0)
 
         elif mode == "check-proposals":

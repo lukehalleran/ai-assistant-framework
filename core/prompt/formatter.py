@@ -43,6 +43,10 @@ Module Contract
 - Side effects:
   - Logging of formatting actions and content statistics
   - Emergency whole-prompt compression when over token budget (protects [CURRENT USER QUERY])
+  - [LAST EXCHANGE FOR CONTEXT] is attached inside [CURRENT USER QUERY] only when the
+    most recent exchange is SAME-SESSION (_detect_session_boundary: skipped on day
+    change, >=2h gap, or missing timestamp) — a previous-session exchange glued to the
+    query caused stale-continuity confabulation on fresh-session greetings (2026-07-05)
   - Eval snapshot capture (gated by DAEMON_EVAL_CAPTURE env var)
 """
 
@@ -1579,18 +1583,30 @@ class PromptFormatter:
             query_section = f"[CURRENT USER QUERY]\n"
 
             # Attach last Q/A pair for maximum coherence (high attention area)
+            # — but only when it belongs to the CURRENT session. Across a session
+            # boundary the previous exchange placed adjacent to the query reads as
+            # "the user is continuing this exchange" and induces stale-continuity
+            # confabulation; [RECENT CONVERSATION] already carries it behind a
+            # session marker at appropriate distance.
             # Truncate assistant response to keep topic signal clear without dilution
             recent = context.get("recent_conversations", [])
             if recent and len(recent) > 0:
                 last_exchange = recent[0]  # First item is most recent (list ordered newest-first)
-                last_q = last_exchange.get("query", "")
-                last_a = last_exchange.get("response", "")
-                if last_q and last_a:
-                    if len(last_a) > 700:
-                        last_a = last_a[:400] + "\n[...truncated...]\n" + last_a[-200:]
-                    query_section += f"[LAST EXCHANGE FOR CONTEXT]\n"
-                    query_section += f"User: {last_q}\n"
-                    query_section += f"Assistant: {last_a}\n\n"
+                last_ts = _parse_entry_timestamp(last_exchange)
+                if _detect_session_boundary(last_ts, datetime.now()):
+                    logger.debug(
+                        "[LAST EXCHANGE] Skipped: previous exchange is from a prior "
+                        f"session (ts={last_ts})"
+                    )
+                else:
+                    last_q = last_exchange.get("query", "")
+                    last_a = last_exchange.get("response", "")
+                    if last_q and last_a:
+                        if len(last_a) > 700:
+                            last_a = last_a[:400] + "\n[...truncated...]\n" + last_a[-200:]
+                        query_section += f"[LAST EXCHANGE FOR CONTEXT]\n"
+                        query_section += f"User: {last_q}\n"
+                        query_section += f"Assistant: {last_a}\n\n"
 
             query_section += f"[CURRENT QUERY]\n{user_input}"
             sections.append(query_section)

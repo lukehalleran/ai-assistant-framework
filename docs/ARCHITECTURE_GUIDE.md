@@ -206,6 +206,7 @@ eval/                    # Prompt section ablation & eval system
 utils/
 ├── tone_detector.py           # Crisis detection (250+ keywords)
 ├── web_search_trigger.py      # Keyword + semantic + LLM trigger detection
+├── location_resolver.py       # User location (override → IP geo → profile) for query localization
 ├── file_processor.py          # File upload processing
 ├── text_chunking.py           # Header-based + size-based chunking
 ├── destructive_op_guard.py    # Git command classifier (blocks destructive ops)
@@ -491,7 +492,42 @@ Tone bias: when the tone detector reports HIGH or MEDIUM crisis level,
 ambiguous queries are biased toward EMOTIONAL_SUPPORT.
 
 Low-confidence results (< 0.50) can be refined by STM analysis at
-stage 6b of the context pipeline.
+stage 6b of the context pipeline. Refined intents get confidence
+`INTENT_STM_REFINED_CONFIDENCE` (0.60) — enough to reach the 0.60
+routing floors, deliberately below the 0.75 agentic-veto floor.
+
+### Downstream Consumers Read `.intent_type` (2026-07-03)
+
+`IntentResult.intent_type` is a property alias for `.intent`. The
+consumers that key routing off the intent — `builder.py`'s intent-type
+extraction (wiki-semantic suppression, web-search gating, visual-memory
+gating), the agentic gate's intent veto, and the response planner — all
+read `.intent_type`. Before the alias existed they silently got `None`,
+which meant the entire intent→suppression layer was dead in production
+while unit tests (built on mocks and dicts that *did* have `intent_type`)
+kept passing. Regression-pinned with a real `IntentResult` in
+`test_agentic_gate.py`.
+
+### Intent → Response Style (2026-07-03)
+
+Beyond retrieval, intent now shapes the response itself:
+`get_intent_style_instructions()` (in `core/tone_instructions.py`)
+injects a short per-intent style block into the system-prompt tail
+(after `PROMPT_CACHE_BREAKPOINT`, so it never invalidates the cached
+prefix). Requires confidence ≥ 0.60 and CONVERSATIONAL tone — any
+crisis level suppresses it (tone owns style then). EMOTIONAL_SUPPORT
+and GENERAL have no block by design. Config:
+`INTENT_STYLE_INSTRUCTIONS_ENABLED`.
+
+### Turn Telemetry (2026-07-03)
+
+Every completed turn appends one JSONL record to
+`logs/turn_records.jsonl` (`utils/turn_telemetry.py`): query, intent +
+confidence + source, tone level, gate decision + veto reason, response
+mode, plan shape, uncertainty/review outcomes, response length. This is
+the data source for measuring classification accuracy (confusion matrix
+from hand-labeled records) and for mining uncertainty/review events as
+weak labels for misrouted turns. Config: `turn_telemetry` YAML section.
 
 ---
 
@@ -809,13 +845,19 @@ Stage 1: Separation
   Episodic memories (type=="episodic") → bypass gating, always included
   All others → continue to Stage 2
 
-Stage 2: Blended Scoring
-  Encode query + all memory texts (batch, cached embeddings)
+Stage 2: Blended Scoring (retrieval space)
+  Encode query + all memory texts (batch, per-model cached embeddings) with
+  the SAME bge-small embedder ChromaDB retrieved with (main.py injects the
+  store's SentenceTransformer as retrieval_embedder; before 2026-07-02 this
+  re-scored in MiniLM space against MiniLM-tuned thresholds — a silent
+  space mismatch)
   For each memory:
     blended = 0.85 * cosine_sim + 0.15 * truth_score + entity_boost
     entity_boost: +0.18 (1 entity match) or +0.25 (multiple)
+  Threshold: gate_rel_threshold_retrieval (0.60; quantile-matched to the old
+  MiniLM 0.18 — bge similarities sit ~0.35 higher and 2.5× tighter)
   Deictic queries ("explain that", "what about it"):
-    threshold lowered to min 0.20
+    floor raised to gate_deictic_min_retrieval (0.61)
 
 Stage 3: Forced Minimum
   If fewer than 8 memories passed, force-add highest-scoring rejects
@@ -969,7 +1011,7 @@ end for maximum attention weight:
 [TIME CONTEXT]                     — always (current datetime)
 [TEMPORAL GROUNDING]               — if available (narrative context)
 [SHORT-TERM CONTEXT SUMMARY]       — if available (STM analysis)
-[CURRENT USER QUERY]               — always (last exchange + query)
+[CURRENT USER QUERY]               — always (same-session last exchange + query)
 ```
 
 ### Token Budget Management
@@ -2121,6 +2163,8 @@ Git commit history extracted as procedural knowledge:
 - Commit messages, authors, timestamps, optional diffs
 - Stored in `procedural` collection
 - Surfaced during project-related queries
+- **Structured per-commit diff metadata** (2026-07-02): every commit carries a derived `change_type` (feature/bugfix/refactor/… or other, from the conventional-commit tag); with diffs enabled it also carries filterable fields parsed from `git show --numstat` — `files_changed` (comma-joined, post-rename), `files_changed_count`, `lines_added`, `lines_removed` — instead of just an embedded `--stat` text blob
+- **Hot-files churn tracker** (`get_hot_files`, 2026-07-02): ranks files by recent commit frequency (the active dev frontier) via a single read-only `git log --name-only` — no LLM. Exposed as `python main.py git-hot [SINCE_DAYS] [LIMIT]`; intended to bias code proposals / context toward actively-evolving files
 
 ### Reference Docs
 

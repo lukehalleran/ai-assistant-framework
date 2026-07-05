@@ -52,10 +52,10 @@ class ScoreWeights(BaseModel):
 
 class SynthesisWeights(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    coherence: float = Field(default=0.30, ge=0.0, le=1.0)
-    novelty: float = Field(default=0.40, ge=0.0, le=1.0)
-    distance: float = Field(default=0.15, ge=0.0, le=1.0)
-    structural: float = Field(default=0.15, ge=0.0, le=1.0)
+    coherence: float = Field(default=0.35, ge=0.0, le=1.0)
+    novelty: float = Field(default=0.60, ge=0.0, le=1.0)
+    distance: float = Field(default=0.05, ge=0.0, le=1.0)
+    structural: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def check_sum(self) -> "SynthesisWeights":
@@ -174,6 +174,8 @@ class GatingSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     confidence_threshold: float = Field(default=1.5, ge=0.0)
     gate_rel_threshold: float = Field(default=0.18, ge=0.0, le=1.0)
+    gate_rel_threshold_retrieval: float = Field(default=0.60, ge=0.0, le=1.0)
+    gate_deictic_min_retrieval: float = Field(default=0.61, ge=0.0, le=1.0)
     cosine_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
     cosine_similarity_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
     deictic_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
@@ -245,6 +247,15 @@ class WebSearchSection(BaseModel):
     cache_ttl_hours: int = Field(default=72, ge=1)
     credits_path: str = "data/web_search_credits.json"
     link_selector_model: str = "gpt-4o-mini"
+
+
+class LocationSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    ip_lookup_enabled: bool = True
+    ip_cache_ttl_hours: float = Field(default=6.0, gt=0.0)
+    ip_lookup_timeout_s: float = Field(default=3.0, gt=0.0)
+    override: str = ""
 
 
 class AgenticSearchSection(BaseModel):
@@ -335,7 +346,7 @@ class SynthesisSection(BaseModel):
     coherence_model: str = "sonnet-4.5"
     coherence_min_level: str = "MODERATE"
     weights: SynthesisWeights = Field(default_factory=SynthesisWeights)
-    composite_min_score: float = Field(default=0.65, ge=0.0, le=1.0)
+    composite_min_score: float = Field(default=0.70, ge=0.0, le=1.0)
     convergence_strong_paths: int = Field(default=3, ge=1)
     convergence_strong_sources: int = Field(default=2, ge=1)
     # Novelty sub-weights (in app_config but under synthesis section)
@@ -359,6 +370,15 @@ class SynthesisGeneratorSection(BaseModel):
     candidates_per_session: int = Field(default=5, ge=1)
     llm_concurrency: int = Field(default=5, ge=1)
     min_graph_nodes: int = Field(default=20, ge=1)
+
+
+class SynthesisPooledSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    candidates_per_session: int = Field(default=8, ge=1)
+    llm_concurrency: int = Field(default=5, ge=1)
+    min_cos: float = Field(default=0.20, ge=0.0, le=1.0)
+    max_cos: float = Field(default=0.45, ge=0.0, le=1.0)
 
 
 class SynthesisRetrievalSection(BaseModel):
@@ -573,7 +593,20 @@ class IntentClassifierSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
     stm_refinement_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    # Confidence assigned to an STM-refined intent. 0.60 lets a refined intent
+    # reach the 0.60 routing floors (heavy-topic skip) without reaching the
+    # 0.75 agentic-veto floor.
+    stm_refined_confidence: float = Field(default=0.60, ge=0.0, le=1.0)
     section_gating_enabled: bool = True
+    # Inject a short per-intent response-style block into the system prompt
+    # tail (after the cache breakpoint); crisis tone levels suppress it.
+    style_instructions_enabled: bool = True
+
+
+class TurnTelemetrySection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    path: str = "logs/turn_records.jsonl"
 
 
 class EntityFactsSection(BaseModel):
@@ -906,9 +939,11 @@ class DaemonConfig(BaseModel):
     paths: PathsSection = Field(default_factory=PathsSection)
     prompts: PromptsSection = Field(default_factory=PromptsSection)
     web_search: WebSearchSection = Field(default_factory=WebSearchSection)
+    location: LocationSection = Field(default_factory=LocationSection)
     agentic_search: AgenticSearchSection = Field(default_factory=AgenticSearchSection)
     uncertainty_fallback: UncertaintyFallbackSection = Field(default_factory=UncertaintyFallbackSection)
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
+    turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)
     file_access: FileAccessSection = Field(default_factory=FileAccessSection)
     memory_expansion: MemoryExpansionSection = Field(default_factory=MemoryExpansionSection)
     obsidian: ObsidianSection = Field(default_factory=ObsidianSection)
@@ -932,6 +967,7 @@ class DaemonConfig(BaseModel):
     provenance: ProvenanceSection = Field(default_factory=ProvenanceSection)
     synthesis: SynthesisSection = Field(default_factory=SynthesisSection)
     synthesis_generator: SynthesisGeneratorSection = Field(default_factory=SynthesisGeneratorSection)
+    synthesis_pooled: SynthesisPooledSection = Field(default_factory=SynthesisPooledSection)
     synthesis_retrieval: SynthesisRetrievalSection = Field(default_factory=SynthesisRetrievalSection)
     synthesis_audit: SynthesisAuditSection = Field(default_factory=SynthesisAuditSection)
     wikidata_import: WikidataImportSection = Field(default_factory=WikidataImportSection)

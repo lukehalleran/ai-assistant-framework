@@ -66,11 +66,28 @@ import os
 import asyncio
 import json
 
+# Every prefix tag an LLM call can surface as response text instead of raising:
+# all _classify_api_error() returns plus the "[API unavailable]" no-client
+# sentinel. SINGLE source of truth — consumers (memory_storage, document
+# generator, …) import this instead of hand-copying the list.
+API_ERROR_PREFIXES: tuple = (
+    "[API Error]",
+    "[API unavailable]",
+    "[CREDITS EXHAUSTED]",
+    "[RATE LIMITED]",
+    "[AUTH ERROR]",
+    "[MODEL NOT SUPPORTED]",
+    "[MODEL NOT FOUND]",
+    "[SERVER ERROR]",
+)
+
+
 def _classify_api_error(e: Exception) -> str:
     """Classify an OpenAI/API error into a user-friendly message with a prefix tag.
 
     Returns a string like '[CREDITS EXHAUSTED] ...' or '[API Error] ...'
-    that the GUI can pattern-match on for specific display.
+    that the GUI can pattern-match on for specific display. Every prefix
+    returned here must appear in API_ERROR_PREFIXES above.
     """
     err_str = str(e).lower()
     err_code = getattr(e, 'code', '') or ''

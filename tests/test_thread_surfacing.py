@@ -349,3 +349,153 @@ class TestContextGathererIntegration:
             result = await gatherer.get_unresolved_threads(max_results=3)
 
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: duplicate homework threads incident (2026-07-03)
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateThreadRegression:
+    """Regression tests for the homework-thread incident: the user said the
+    homework was done, the LLM resolved only the closest-matching thread, a
+    duplicate stayed open, AND extraction re-created the just-resolved thread
+    — so Daemon kept asking about finished homework.
+    """
+
+    def _make_processor(self, store, mock_mm):
+        from memory.shutdown_processor import ShutdownProcessor
+        return ShutdownProcessor(
+            corpus_manager=MagicMock(),
+            chroma_store=MagicMock(),
+            consolidator=MagicMock(),
+            fact_extractor=MagicMock(),
+            model_manager=mock_mm,
+            user_profile=MagicMock(),
+            storage=MagicMock(),
+            session_start=MagicMock(),
+            thread_store=store,
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolution_cascades_and_reextraction_dropped(self):
+        """Resolving one homework thread also resolves its duplicate sibling,
+        and the re-extracted copy of a just-resolved thread is not stored."""
+        store = ThreadStore(chroma_store=MockChromaStore())
+
+        t_friday = _make_thread(
+            topic="Homework and paragraph due Friday",
+            thread_type=ThreadType.DEADLINE,
+            thread_id="t-friday",
+            deadline_date="2026-07-03",
+        )
+        t_dup = _make_thread(
+            topic="Homework and paragraph due",
+            thread_type=ThreadType.DEADLINE,
+            thread_id="t-dup",
+            deadline_date="2026-07-03",
+        )
+        t_last2 = _make_thread(
+            topic="Last 2 homework questions",
+            thread_type=ThreadType.DEADLINE,
+            thread_id="t-last2",
+        )
+        t_sim = _make_thread(
+            topic="Sim project progress report",
+            thread_type=ThreadType.DEADLINE,
+            thread_id="t-sim",
+            deadline_date="2026-07-03",
+        )
+        for t in (t_friday, t_dup, t_last2, t_sim):
+            store.store_thread(t)
+
+        async def llm(prompt, **kwargs):
+            if "Existing open threads:" in prompt:
+                # Resolution detection: LLM catches two of the three
+                # homework threads but misses 't-friday' (the incident).
+                return json.dumps([
+                    {"thread_id": "t-last2", "resolution": "User got 10/12 on the homework"},
+                    {"thread_id": "t-dup", "resolution": "Homework submitted"},
+                ])
+            # Extraction: LLM re-creates the just-resolved thread from
+            # pre-completion talk earlier in the same session.
+            return json.dumps([
+                {
+                    "topic": "Last 2 homework questions",
+                    "summary": "User still has 2 homework questions to finish",
+                    "thread_type": "deadline",
+                    "urgency": 0.8,
+                    "resolution_hint": "User confirms homework done",
+                    "deadline_date": "2026-07-03",
+                }
+            ])
+
+        mock_mm = MagicMock()
+        mock_mm.generate_once = AsyncMock(side_effect=llm)
+        processor = self._make_processor(store, mock_mm)
+
+        conversations = [
+            {"query": "Working on the last 2 homework questions", "response": "Good luck!"},
+            {"query": "Got 10/12 on the hw", "response": "Nice!"},
+        ]
+
+        with patch("memory.shutdown_processor.THREAD_SURFACING_ENABLED", True, create=True):
+            with patch.dict("sys.modules", {"config.app_config": MagicMock(THREAD_SURFACING_ENABLED=True)}):
+                await processor._process_open_threads(conversations)
+
+        open_threads = store.list_open_threads()
+        open_topics = {t.topic for t in open_threads}
+        # 't-friday' cascade-resolved as a duplicate of 't-dup'; the
+        # re-extracted 'Last 2 homework questions' was dropped. Only the
+        # genuinely-unresolved sim report remains.
+        assert open_topics == {"Sim project progress report"}
+
+    @pytest.mark.asyncio
+    async def test_extraction_duplicating_open_thread_refreshes_it(self):
+        """A new extraction that duplicates a still-open thread is dropped,
+        and the tracked thread's last_referenced is refreshed instead."""
+        store = ThreadStore(chroma_store=MockChromaStore())
+
+        old_ts = time.time() - 5 * 86400
+        t_open = _make_thread(
+            topic="Sim project progress report",
+            thread_type=ThreadType.DEADLINE,
+            thread_id="t-sim",
+            summary="Progress report for the sim project is due",
+            mentioned_at=old_ts,
+            last_referenced=old_ts,
+        )
+        store.store_thread(t_open)
+
+        async def llm(prompt, **kwargs):
+            if "Existing open threads:" in prompt:
+                return "[]"
+            return json.dumps([
+                {
+                    "topic": "Sim project progress report",
+                    "summary": "User mentioned the sim progress report again",
+                    "thread_type": "deadline",
+                    "urgency": 0.7,
+                    "resolution_hint": "User submits the report",
+                    "deadline_date": None,
+                }
+            ])
+
+        mock_mm = MagicMock()
+        mock_mm.generate_once = AsyncMock(side_effect=llm)
+        processor = self._make_processor(store, mock_mm)
+
+        conversations = [
+            {"query": "Still need to do the sim progress report", "response": "OK"},
+            {"query": "It's on my list", "response": "Got it"},
+        ]
+
+        before = time.time()
+        with patch("memory.shutdown_processor.THREAD_SURFACING_ENABLED", True, create=True):
+            with patch.dict("sys.modules", {"config.app_config": MagicMock(THREAD_SURFACING_ENABLED=True)}):
+                await processor._process_open_threads(conversations)
+
+        open_threads = store.list_open_threads()
+        assert len(open_threads) == 1
+        assert open_threads[0].thread_id == "t-sim"
+        assert open_threads[0].last_referenced >= before

@@ -32,6 +32,18 @@ Enhanced Features (2026-01):
   - Named entity check uses mid-sentence capitals only (sentence-initial words skipped)
 - Entry point: multi_search() for decomposed queries, search() for single queries
   - sub_queries param: callers can pass pre-computed sub-queries for parallel search
+- Query Localization (2026-07-02, narrowed 2026-07-04): every query entering
+  search() passes _localize_query() — literal deictic phrases ("my area",
+  "near me") are replaced with the user's location (utils/location_resolver.py:
+  override → IP geo → profile), and placeless CURRENT-CONDITIONS weather queries
+  get the location appended (bare "temperature"/"humidity" require a cue like
+  "outside"/"right now"; named-place detection is case-insensitive so
+  "weather in tokyo" is never rewritten). search(localize=False) bypasses
+  localization entirely — instrument callers (literature oracle) need queries
+  to reach Tavily verbatim. Runs BEFORE the cache check so localized/unlocalized
+  text never share a cache entry. decompose_query() also carries the location in
+  its LLM prompt. Regression guard for the "'my area' weather query returned DC
+  news" bug.
 """
 
 import asyncio
@@ -39,6 +51,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -78,12 +91,21 @@ def _is_news_query(query: str) -> bool:
     words = set(query_lower.split())
     news_word_matches = words & NEWS_KEYWORDS
 
-    # "today" or "yesterday" with a location/topic is likely news
-    if ('today' in query_lower or 'yesterday' in query_lower) and len(query_lower) > 20:
+    # "today"/"yesterday" is a weak signal on its own — a casual life-update
+    # ("I did not shit today. Went to my dad's to swim...") must NOT be treated
+    # as a news query (that mislabel forced topic='news', days=1 on Tavily). They
+    # also don't count toward the "2 news keywords" rule below, or "feeling
+    # better today than yesterday" would qualify. Only genuine news words
+    # (news/headlines/breaking/happened/...) count; a temporal word is news only
+    # when it co-occurs with one of those. The old len>20 rule fired on any
+    # longish sentence containing "today".
+    temporal_words = {'today', 'yesterday'}
+    strong_news_matches = news_word_matches - temporal_words
+    if (words & temporal_words) and strong_news_matches:
         return True
 
-    # Multiple news keywords suggest news intent
-    if len(news_word_matches) >= 2:
+    # Multiple genuine news keywords suggest news intent
+    if len(strong_news_matches) >= 2:
         return True
 
     # Single strong indicators
@@ -702,6 +724,7 @@ class WebSearchManager:
         max_results: int = 5,
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
+        localize: bool = True,
     ) -> WebSearchResult:
         """
         Perform a web search with the specified depth.
@@ -713,6 +736,8 @@ class WebSearchManager:
             timeout: Operation timeout in seconds
             use_cache: Whether to check/update cache
             max_results: Maximum number of results to return
+            localize: Apply the _localize_query backstop (disable for
+                non-conversational callers whose queries must go verbatim)
 
         Returns:
             WebSearchResult with pages or error
@@ -725,6 +750,13 @@ class WebSearchManager:
                 search_depth=depth,
                 error=f"Search suppressed during {crisis_level} crisis level"
             )
+
+        # Localization backstop — before the cache check so the cache keys on
+        # the localized text ("weather my area" and "weather Saint Charles, IL"
+        # must not share an entry). localize=False for non-conversational
+        # callers (literature oracle) whose queries must reach Tavily verbatim.
+        if localize:
+            query = self._localize_query(query)
 
         # Check cache first
         if use_cache:
@@ -1034,6 +1066,83 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
             return []
 
     # =========================================================================
+    # Query Localization
+    # =========================================================================
+
+    # Literal deictic-location phrases that must never reach the search engine —
+    # they make the ranker pick an arbitrary big-market result (a "my area"
+    # weather query once returned DC news to an Illinois user).
+    _DEICTIC_LOCATION_SUBS = [
+        (re.compile(r"\b(?:in|for|around|near)\s+my\s+(?:area|city|town|location|neighborhood)\b", re.I),
+         "in {loc}"),
+        (re.compile(r"\bnear\s+me\b", re.I), "in {loc}"),
+        (re.compile(r"\bmy\s+(?:area|city|town|location|neighborhood)\b", re.I), "{loc}"),
+    ]
+
+    # Query shapes that are meaningless without a place. Kept narrow on purpose:
+    # over-matching would staple the user's city onto queries about global topics.
+    _LOCATION_DEPENDENT_RE = re.compile(
+        r"\b(weather|forecast|heat\s+(?:advisory|warning|index|wave)|"
+        r"air\s+quality|uv\s+index|wind\s+chill|excessive\s+heat)\b",
+        re.I,
+    )
+    # "temperature"/"humidity" also mean oven settings, fermentation, hardware —
+    # location-dependent only alongside a current-conditions cue ("outside",
+    # "right now"), never on their own ("what temperature to bake salmon").
+    _AMBIGUOUS_WEATHER_RE = re.compile(r"\b(temperature|humidity)\b", re.I)
+    _CURRENT_CONDITIONS_RE = re.compile(
+        r"\b(outside|outdoors|today|tonight|tomorrow|right\s+now|currently|"
+        r"this\s+(?:week|weekend|morning|afternoon|evening))\b",
+        re.I,
+    )
+    # "in <word>"/"at <word>" marks a query that already targets a place.
+    # Case-insensitive ("weather in tokyo" is typical chat), with function
+    # words excluded so "weather in the morning" doesn't read as a place.
+    _NAMES_A_PLACE_RE = re.compile(
+        r"\b(?:in|at)\s+(?!my\b|the\b|a\b|an\b|this\b|that\b|what\b|which\b)[\w']",
+        re.I,
+    )
+
+    def _get_user_location(self) -> Optional[str]:
+        try:
+            from utils.location_resolver import get_user_location
+            return get_user_location()
+        except Exception as e:
+            log.debug(f"[WebSearch] Location resolution failed: {e}")
+            return None
+
+    def _localize_query(self, query: str) -> str:
+        """Deterministic backstop behind the LLM prompts: substitute literal
+        "my area"/"near me" with the user's location, and append the location
+        to weather-type queries that name no place at all. Runs on every query
+        entering search(), so LLM-generated sub-queries are covered too."""
+        loc = self._get_user_location()
+        if not loc or not query:
+            return query
+
+        original = query
+        for pattern, template in self._DEICTIC_LOCATION_SUBS:
+            query = pattern.sub(template.format(loc=loc), query)
+
+        wants_location = bool(self._LOCATION_DEPENDENT_RE.search(query)) or (
+            self._AMBIGUOUS_WEATHER_RE.search(query)
+            and self._CURRENT_CONDITIONS_RE.search(query)
+        )
+        if wants_location:
+            city = loc.split(",")[0].strip().lower()
+            names_a_place = (
+                city in query.lower()
+                # "in Chicago", "weather in tokyo" — already targets somewhere
+                or self._NAMES_A_PLACE_RE.search(query)
+            )
+            if not names_a_place:
+                query = f"{query} {loc}"
+
+        if query != original:
+            log.info(f"[WebSearch] Localized query: '{original}' -> '{query}'")
+        return query
+
+    # =========================================================================
     # Query Decomposition and Multi-Search
     # =========================================================================
 
@@ -1077,10 +1186,21 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
             from models.model_manager import ModelManager
             model_manager = ModelManager()
 
+            location_block = ""
+            user_location = self._get_user_location()
+            if user_location:
+                location_block = (
+                    f"\nUser location: {user_location}\n"
+                    f"If the query is location-dependent (weather, temperature, forecasts, "
+                    f"local news, nearby places), include \"{user_location}\" explicitly in every "
+                    f"relevant sub-query. Never emit \"my area\", \"near me\", \"local\", or "
+                    f"\"nearby\" as literal search text.\n"
+                )
+
             prompt = f"""Analyze this search query and determine if it should be split into multiple focused sub-queries for better search results.
 
 Query: "{query}"
-
+{location_block}
 Criteria for splitting:
 1. Multiple distinct entities (e.g., "Tesla vs Rivian" → search each separately)
 2. Multiple facets/aspects (e.g., "iPhone 16 price and reviews" → search price, search reviews)

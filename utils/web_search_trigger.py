@@ -11,6 +11,10 @@ Module Contract:
   - Optional: conversation_context — compact digest of prior turns so elliptical
     follow-ups ("check the news") resolve to topic-specific search_terms instead
     of generic ones; part of the LLM-trigger cache key [NEW 2026-06-21]
+  - User location (resolved internally via utils/location_resolver.py) — injected
+    into the trigger prompt so location-dependent queries (weather, local news,
+    "near me") carry the user's place in search_terms instead of leaking literal
+    "my area" to the search engine [NEW 2026-07-02]
 - Outputs:
   - WebSearchDecision with:
     - should_search: bool
@@ -268,7 +272,7 @@ FAST_CHANGING_TOPICS: Set[str] = {
 
     # Tech/Product
     "release date", "launch date", "availability",
-    "version", "beta", "alpha",
+    "version", "beta", "alpha", "release", "features", "changelog",
 
     # Events
     "election", "vote", "voting", "poll", "polls",
@@ -337,11 +341,19 @@ def _contains_year(text: str, years: Set[str]) -> bool:
 
 
 def _count_keyword_matches(text: str, keywords: Set[str]) -> Tuple[int, List[str]]:
-    """Count keyword matches and return matched keywords."""
+    """Count keyword matches (word-boundary, not substring) and return them.
+
+    Word-boundary matching prevents short tickers/keywords from firing inside
+    unrelated words — e.g. "eth" (Ethereum) matching "som**eth**ing", or "live"
+    matching "de**live**ry". That substring bug once scored a casual life-update
+    ("...now walking to get some ice cream or something") as a web-search query
+    (eth+today = 0.70). Multi-word keywords ("stock price", "this week") and
+    hyphenated ones ("real-time") still match as whole units.
+    """
     text_lower = _normalize(text)
     matched = []
     for kw in keywords:
-        if kw in text_lower:
+        if re.search(rf'\b{re.escape(kw)}\b', text_lower):
             matched.append(kw)
     return len(matched), matched
 
@@ -807,11 +819,39 @@ def quick_prefilter_should_skip(query: str) -> bool:
     return False
 
 
+# Referential/deictic tokens: a query built around these leans on the PRIOR turn
+# for its meaning ("they're only giving us 7 days" → 7 days of WHAT?). Such a
+# query scores 0 on the standalone heuristic (no topic of its own) but can still
+# be search-worthy once resolved against conversation context — so we let the LLM
+# (which sees that context) decide instead of short-circuiting to no-search.
+_REFERENTIAL_TOKEN_RE = re.compile(
+    r"\b(?:it|they|them|their|that|this|those|these|us|we)\b"
+)
+
+
+def query_depends_on_context(query: str) -> bool:
+    """True when the query's searchability hinges on the prior turn (referential).
+
+    Detects short follow-ups whose subject is a pronoun/deictic pointing at
+    something established earlier ("it", "they", "that", "us") rather than a
+    standalone searchable noun. Used to decide whether a conf=0.0 query is worth
+    consulting the LLM about WHEN conversation context is available.
+
+    Word-boundary regex, not padded-substring shapes: the old hand-enumerated
+    tuple missed 'that?', 'them?', 'it:' and any token at end-of-query, so the
+    exact follow-ups this check exists for still short-circuited at conf=0.0.
+    """
+    if not query:
+        return False
+    return bool(_REFERENTIAL_TOKEN_RE.search(query.lower()))
+
+
 def _build_llm_trigger_prompt(
     query: str,
     current_date: str,
     remaining_credits: float = 100,
     conversation_context: str = None,
+    user_location: str = None,
 ) -> str:
     """
     Build the classification prompt for the unified LLM trigger.
@@ -824,22 +864,39 @@ def _build_llm_trigger_prompt(
             turns. When present, lets the LLM resolve elliptical / deictic
             follow-ups ("check the news", "any updates on that") against the
             active topic instead of emitting generic terms.
+        user_location: Optional user location string ("Saint Charles, IL").
+            When present, location-dependent queries (weather, local news,
+            "near me") get the location baked into search_terms instead of
+            leaking literal "my area" into the search engine.
 
     Returns:
         Formatted prompt string for LLM
     """
     context_block = ""
     if conversation_context and conversation_context.strip():
+        _ctx = conversation_context.strip()
+        if len(_ctx) > 1200:
+            _ctx = _ctx[:1200] + " [...truncated]"
         context_block = (
             "\nRECENT CONVERSATION (the turns immediately before this query — "
             "use ONLY to resolve follow-up/elliptical references in the query):\n"
-            f"{conversation_context.strip()[:1200]}\n"
+            f"{_ctx}\n"
+        )
+    location_line = ""
+    location_guideline = ""
+    if user_location and user_location.strip():
+        location_line = f"User location: {user_location.strip()}\n"
+        location_guideline = (
+            f"\n- LOCAL QUERIES: For weather, temperature, forecasts, air quality, local news, "
+            f"local events, or nearby places, include \"{user_location.strip()}\" explicitly in every "
+            f"relevant search term. NEVER emit \"my area\", \"near me\", \"local\", or \"nearby\" as "
+            f"literal search text — replace them with the user's location."
         )
     return f"""Analyze if this query needs real-time web search OR stored memory search, and generate optimized search terms.
 
 Query: "{query[:500]}"
 Current date: {current_date}
-Available search budget: {remaining_credits:.0f} credits
+{location_line}Available search budget: {remaining_credits:.0f} credits
 {context_block}
 WEB SEARCH CRITERIA:
 - SEARCH if: current events, recent news, live data (stocks, weather, sports), time-sensitive health info, or references dates/years needing verification
@@ -885,7 +942,7 @@ OUTPUT (JSON only, no markdown):
 }}
 
 GUIDELINES:
-- search_terms: Rewrite for better results (add year if relevant, be specific, remove conversational filler)
+- search_terms: Rewrite for better results (add year if relevant, be specific, remove conversational filler){location_guideline}
 - FOLLOW-UPS: If the query is elliptical or refers back to the conversation ("check the news", "any updates on that", "what's the latest", "look into it", "anything new on it"), resolve the referent using RECENT CONVERSATION above and make search_terms SPECIFIC to that established topic. Never emit generic or world-news terms when the user is clearly asking for an update on something already being discussed. If no RECENT CONVERSATION is provided, treat the query as self-contained.
 - num_searches: Use 2-4 only for comparison queries or multi-faceted topics
 - search_depth: "quick" for simple facts, "standard" for news/analysis, "deep" for research
@@ -923,8 +980,15 @@ async def _classify_with_llm_unified(
         return None
 
     current_date = datetime.now().strftime("%Y-%m-%d")
+    user_location = None
+    try:
+        from utils.location_resolver import get_user_location
+        user_location = get_user_location()
+    except Exception as e:
+        logger.debug(f"[WebSearchTrigger] Location resolution failed: {e}")
     prompt = _build_llm_trigger_prompt(
-        query, current_date, remaining_credits, conversation_context
+        query, current_date, remaining_credits, conversation_context,
+        user_location=user_location,
     )
     effective_timeout = timeout or SEARCH_TRIGGER_TIMEOUT
 
@@ -1073,9 +1137,20 @@ async def analyze_for_web_search_llm(
     # confidence >= 0.7 means strong heuristic yes (explicit search phrases) —
     # the LLM would just confirm.
     if heuristic_result.confidence <= 0.0 and not heuristic_result.matched_keywords:
-        logger.debug("[WebSearchTrigger] Skipping LLM: heuristic confident no-search (conf=0.0, no keywords)")
-        _llm_trigger_cache[cache_key] = (now, heuristic_result)
-        return heuristic_result
+        # A conf=0.0/no-keyword query is normally "nothing search-related." But an
+        # elliptical follow-up ("they're only giving us 7 days") is search-worthy
+        # once resolved against the prior turn — the heuristic can't see that, the
+        # LLM (with conversation_context) can. Only skip the short-circuit for a
+        # referential query when we actually have context to resolve it against.
+        _referential_followup = (
+            bool(conversation_context and conversation_context.strip())
+            and query_depends_on_context(query)
+        )
+        if not _referential_followup:
+            logger.debug("[WebSearchTrigger] Skipping LLM: heuristic confident no-search (conf=0.0, no keywords)")
+            _llm_trigger_cache[cache_key] = (now, heuristic_result)
+            return heuristic_result
+        logger.debug("[WebSearchTrigger] conf=0.0 referential follow-up with context — consulting LLM")
     if heuristic_result.confidence >= 0.7 and heuristic_result.should_search:
         logger.debug(f"[WebSearchTrigger] Skipping LLM: heuristic confident search (conf={heuristic_result.confidence:.2f})")
         _llm_trigger_cache[cache_key] = (now, heuristic_result)

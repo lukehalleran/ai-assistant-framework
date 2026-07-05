@@ -5,6 +5,10 @@ Module Contract
 - Purpose: Extract memory and web citations from LLM responses.
 - Inputs:
   - CitationExtractor.extract(response, memory_map, web_source_map) -> (clean_response, citations)
+  - strip_memory_citation_markers(text) -> text with [MEM_*]/[SUM_*]/[REFL_*]/
+    [FACT_*]/[PROFILE_*] removed but [WEB_N] + newlines preserved (display cleanup
+    that keeps web markers linkifiable; use instead of extract_citations when the
+    cleaned text is what gets shown, not just the citation metadata)
 - Outputs: Tuple of cleaned response text and list of citation dicts.
 - Side effects: None (pure computation).
 """
@@ -27,6 +31,46 @@ CITATION_PATTERN = re.compile(
     r'PROFILE_\w+'                # PROFILE_CONTEXT
     r')\]'
 )
+
+# Memory-type citation markers ONLY — every prefix in CITATION_PATTERN EXCEPT WEB.
+# Used to clean the display text while preserving [WEB_N] markers so they can be
+# rewritten into clickable links downstream (_apply_web_citations).
+MEMORY_CITATION_PATTERN = re.compile(
+    r'\[('
+    r'MEM_\w+_\d+(?:-\d+)?|'
+    r'SUM_\w+_\d+(?:-\d+)?|'
+    r'REFL_\w+_\d+(?:-\d+)?|'
+    r'FACT_\d+(?:-\d+)?|'
+    r'PROFILE_\w+'
+    r')\]'
+)
+
+
+def strip_memory_citation_markers(text: str) -> str:
+    """Remove memory citation markers for clean display, keeping [WEB_N] + newlines.
+
+    Strips [MEM_*]/[SUM_*]/[REFL_*]/[FACT_*]/[PROFILE_*] but deliberately leaves
+    [WEB_N] markers in place (they're linkified later by the GUI) and does NOT
+    collapse newlines — unlike extract_citations, which flattens all whitespace to
+    single spaces and would destroy multi-paragraph markdown. Only tidies the
+    stray spaces / space-before-punctuation left behind by a removed marker.
+    """
+    if not text:
+        return text
+    # Replace markers with a sentinel so whitespace cleanup applies ONLY at
+    # removal sites — a global pass would mangle unrelated text (":)" -> ":)"
+    # survives, but "sounds good :)" lost its space under the old ' +punct' sub).
+    sentinel = '\x00'
+    out = MEMORY_CITATION_PATTERN.sub(sentinel, text)
+    # "as you said [MEM_3]." -> "as you said."  (marker + its spaces, before punctuation)
+    out = re.sub(rf'[ \t]*{sentinel}+[ \t]*([.,;:!?])', r'\1', out)
+    # "a [MEM_3] b" -> "a b"  (marker between words collapses to one space)
+    out = re.sub(rf'[ \t]+{sentinel}+[ \t]+', ' ', out)
+    # Any remaining sentinel (line start/end, against a newline) just vanishes.
+    out = out.replace(sentinel, '')
+    # Trim trailing spaces per line without eating the newlines themselves.
+    out = re.sub(r'[ \t]+\n', '\n', out)
+    return out.strip()
 
 
 def expand_citation_range(mem_id: str) -> List[str]:
