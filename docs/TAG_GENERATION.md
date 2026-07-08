@@ -68,7 +68,7 @@ tags: ["weekly", "daemon-generated", "programming", "ai", "productive", "learnin
 ```yaml
 tag_generation:
   enabled: true          # Enable/disable tag generation
-  model: gpt-4o-mini    # LLM model for tag extraction
+  model: sonnet-4.5     # LLM model for tag extraction
   max_tags: 10          # Maximum tags per note
   min_tags: 3           # Minimum tags per note
 ```
@@ -76,7 +76,7 @@ tag_generation:
 ### app_config.py
 ```python
 TAG_GENERATION_ENABLED: bool = True
-TAG_GENERATION_MODEL: str = "gpt-4o-mini"
+TAG_GENERATION_MODEL: str = "sonnet-4.5"
 TAG_GENERATION_MAX_TAGS: int = 10
 TAG_GENERATION_MIN_TAGS: int = 3
 ```
@@ -194,7 +194,7 @@ If LLM fails:
 - **Tag generation time**: ~1-2 seconds (LLM call)
 - **Impact on note generation**: Minimal (runs async, non-blocking)
 - **Failure mode**: Graceful (continues with fallback tags)
-- **Cost**: ~$0.0001 per note (using gpt-4o-mini)
+- **Cost**: negligible per note (default model `sonnet-4.5`, with fallback models tried on failure)
 
 ## Related Files
 

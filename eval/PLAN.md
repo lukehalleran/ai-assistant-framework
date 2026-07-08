@@ -63,8 +63,8 @@ tests/test_eval/
 
 **Production code modified:**
 - `core/prompt/builder.py` — added `_maybe_capture_eval_snapshot()` gated hook
-  (lines 132-229). Disabled by default (`DAEMON_EVAL_CAPTURE=0`). Zero overhead
-  when disabled.
+  (near the top of the file, with `_eval_capture_enabled()`/`_eval_capture_strict()`).
+  Disabled by default (`DAEMON_EVAL_CAPTURE=0`). Zero overhead when disabled.
 
 **Key design decisions made:**
 - System prompt is tracked via hash in provenance (separate from context prompt)
@@ -94,8 +94,9 @@ tests/test_eval/
 
 ## Overview
 
-Daemon's prompt is assembled from 30 optional context sections, a separately-composed
-system prompt, and the user's query. The eval system answers: **which sections actually
+Daemon's prompt is assembled from 30 context sections (28 ablatable; the time context
+and the user-query section are structurally required) plus a separately-composed
+system prompt. The eval system answers: **which sections actually
 help, which hurt, and under what query conditions?**
 
 The system works in phases:
@@ -176,6 +177,9 @@ is conditional — only emitted when its context field is non-empty.
 | 25 | `[SHORT-TERM CONTEXT SUMMARY]` | `stm_summary` | generated_context |
 | 26 | `[CURRENT USER QUERY]` | `user_input` | structural |
 | 27 | `[VISUAL MEMORIES]` | `visual_memories` | retrieved |
+| 28 | `[DAEMON SELF-NOTES]` | `daemon_self_notes` | generated_context |
+| 29 | `[UPCOMING SCHEDULE]` | `upcoming_schedule` | retrieved |
+| 30 | `[GOOGLE CALENDAR]` | `google_calendar` | retrieved |
 
 Sections are joined with `"\n\n"`. Each section starts with its header and `n=` count.
 
@@ -219,7 +223,8 @@ From `token_manager.py` (higher priority = trimmed last):
 `ModelManager.generate_once()` is a pure LLM call with no side effects:
 ```python
 async def generate_once(self, prompt, model_name=None, system_prompt="...",
-                        max_tokens=256, temperature=None, top_p=None) -> str
+                        max_tokens=256, temperature=None, top_p=None,
+                        disable_reasoning=False) -> str
 ```
 This is the correct path for eval generation. It does not call the orchestrator,
 does not store interactions, does not extract facts, and does not update the graph.
@@ -293,7 +298,8 @@ Production code changes (minimal, gated):
 
 ### What Phase 1 Does
 
-1. **Section Registry** — canonical definition of all 30 prompt sections with:
+1. **Section Registry** — canonical definition of all 31 registered sections
+   (30 context sections + the system prompt) with:
    - internal key, header text, source field, category
    - whether ablatable, structurally required, assembly order
    - validation that registry matches actual builder output
@@ -418,7 +424,7 @@ tests/test_eval/
 1. **Variant Generation** — four ablation strategies:
    - **Leave-one-out (LOO)**: Remove one ablatable section at a time
    - **Add-one-in (AOI)**: Start from structural skeleton, add one section back
-   - **Bundles**: Remove pre-defined groups of related sections (7 default bundles
+   - **Bundles**: Remove pre-defined groups of related sections (8 default bundles
      including `all_retrieved` auto-populated from registry)
    - **Reorder**: Move a section to a different assembly_order position (tests
      attention-position effects). `generate_reorder_to_high_attention()` moves
@@ -1129,6 +1135,9 @@ Sections marked `eligible_for_ablation=True` can be dropped in Phase 2 variants.
 | `codebase_changes` | No | Yes | Session-start diff |
 | `narrative_state` | No | Yes | Temporal grounding narrative |
 | `stm_summary` | No | Yes | Short-term context summary |
+| `daemon_self_notes` | No | Yes | Daemon's own notes from prior sessions |
+| `upcoming_schedule` | No | Yes | Extracted schedule facts (keyword-gated) |
+| `google_calendar` | No | Yes | Real-time Google Calendar events (read-only) |
 
 **System prompt** is structurally required and never ablatable. Future work may
 separate optional personality/style layers for ablation testing, but the core

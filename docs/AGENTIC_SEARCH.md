@@ -15,8 +15,8 @@ When a user query needs external information, Daemon can enter a
 multi-round ReAct (Reasoning + Acting) loop where the LLM iteratively
 decides which tools to call — web search, URL fetch, memory search, Wolfram Alpha,
 Python sandbox, file access, memory expansion, git stats, GitHub API, StackExchange,
-arXiv, PubMed, Hacker News, full-document retrieval, image recall, document
-generation, or daemon self-notes — until it has enough
+arXiv, PubMed, Hacker News, full-document retrieval, document generation,
+daemon self-notes, contact lookup, or write-action proposals — until it has enough
 context to answer. The loop is budget-enforced and streams progress
 events to the UI in real time.
 
@@ -28,8 +28,8 @@ events to the UI in real time.
 |------|---------|
 | `core/agentic/gate.py` | 4-tier agentic gate: `evaluate_agentic_gate()` → `AgenticDecision` (keyword → entity → doc/note → LLM fallback) |
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics, nudge retry, no-reasoning decision phase, tool hints |
-| `core/agentic/tools.py` | ToolExecutor: 17 dispatch methods + 15 execute helpers (sandbox and memory_expand execute inline in their dispatch methods) + `get_tool_health()` status summary + `_resolve_email_recipient()` |
-| `core/agentic/formatters.py` | AgenticFormatter: 20 pure formatting methods (context, results, prompts). Truncation is always explicit via `clip_text()` — cut previews end in `[...truncated]` so the model can't quote a preview cut as the full message (2026-07-03 "outag" confabulation fix); `format_memory_results` gives the `conversations` collection a 2000-char limit (vs 500 elsewhere) and points to `expand_memory` by doc id when even that truncates. Same markers in `gate.py`'s recent-context digest and `web_search_trigger`'s RECENT CONVERSATION block; the controller's `[RECENT CONVERSATION]` header tells the model truncated entries are previews → use search_memory first (hints use the REGISTERED tool names — `expand_memory`/`search_memory`; the old `memory_expand`/`memory_search` phrasing produced unrecognized tool calls that were silently dropped, fixed 2026-07-04). Tests: `tests/unit/test_agentic_truncation_markers.py` |
+| `core/agentic/tools.py` | ToolExecutor: `DISPATCH_TABLE` (21 rows — the single decision→handler routing table shared with the controller) + 18 dispatch methods (`_dispatch_api_search` is shared by stackexchange/arxiv/pubmed/hackernews) + 19 execute helpers (sandbox executes inline in its dispatch method) + `get_tool_health()` status summary + `_resolve_email_recipient()` |
+| `core/agentic/formatters.py` | AgenticFormatter: 19 pure formatting methods (context, results, prompts). Truncation is always explicit via `clip_text()` — cut previews end in `[...truncated]` so the model can't quote a preview cut as the full message (2026-07-03 "outag" confabulation fix); `format_memory_results` gives the `conversations` collection a 2000-char limit (vs 500 elsewhere) and points to `expand_memory` by doc id when even that truncates. Same markers in `gate.py`'s recent-context digest and `web_search_trigger`'s RECENT CONVERSATION block; the controller's `[RECENT CONVERSATION]` header tells the model truncated entries are previews → use search_memory first (hints use the REGISTERED tool names — `expand_memory`/`search_memory`; the old `memory_expand`/`memory_search` phrasing produced unrecognized tool calls that were silently dropped, fixed 2026-07-04). Tests: `tests/unit/test_agentic_truncation_markers.py` |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas, LOOKUP_CONTACT_TOOL_DEFINITION |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing, nested XML support, github_available gating, contact lookup aliases |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
@@ -51,7 +51,7 @@ Agentic search activates when ALL conditions are met:
    - Tier 3: Document *generation* or self-note intent detection
    - Tier 4: LLM fallback — piggybacks on web search trigger call (`needs_memory_search`, `needs_knowledge_search`, `needs_document_generation`)
    - Casual skip filter, continuation override, and intent-based veto all handled inside gate
-   - `AgenticDecision.skip_initial_search` computed by gate (True for computation, memory, knowledge, tools modes)
+   - `AgenticDecision.skip_initial_search` computed by gate (True for computation, memory, knowledge, tools modes — or whenever no seed search terms were distilled, so the controller never blind-searches the raw message verbatim)
 
 The controller is lazy-initialized on first use via the orchestrator's
 `agentic_controller` property.
@@ -119,10 +119,11 @@ Loop continues while `session.can_continue AND session.current_round <= self.max
 
 `session.can_continue` is True when all of:
 - `not model_signaled_done`
+- `current_round <= max_rounds`
 - `state not in (DONE, ERROR)`
 
-The explicit `current_round <= max_rounds` guard (default 5) is checked
-separately in the `while` condition alongside `can_continue`.
+The `current_round <= max_rounds` guard (default 5) is also checked
+explicitly (redundantly) in the `while` condition alongside `can_continue`.
 
 Each round:
 
@@ -222,6 +223,16 @@ tracked by `session._web_nudge_sent`. Unlike the premature-done guard, this fire
 when answer text is present; it never fires once any tool round has run. Tests:
 `tests/unit/test_agentic_premature_done.py`.
 
+**Institution-identity guard** [2026-07-08]: the final-response citation instructions
+(`_generate_final_response`, and the parallel `[WEB SEARCH RESULTS]` block in
+`core/prompt/formatter.py`) now warn that search results may be geographically skewed
+and forbid presenting an institution or business found in results (a school, bank,
+clinic, company) as the *user's own* unless the user or memory named it. Regression
+guard for the wrong-college incident: a school-login query localized to
+"Springfield IL" retrieved Springfield Community College and its IT-desk phone number
+was asserted as the user's school's. Upstream, the localization itself is also scoped
+— see `location_resolver.strip_unjustified_location()`.
+
 ---
 
 ## Available Tools
@@ -278,7 +289,9 @@ Search Daemon's own memory and knowledge base.
 Parameters: query (required), collection (required), reason (optional)
 Valid collections: reference_docs, facts, conversations, summaries,
                    reflections, obsidian_notes, wiki_knowledge,
-                   procedural, procedural_skills, daemon_self_notes
+                   procedural, procedural_skills
+                   (ToolExecutor.VALID_MEMORY_COLLECTIONS — daemon_self_notes
+                   is NOT searchable via this tool)
 Diversity: Per-collection search counts tracked; hints injected after 2+ searches
 wiki_knowledge: ChromaDB is queried first (like all collections). Then FAISS
                 semantic search (41M Wikipedia vectors, ~2 GB IVFPQ index) is
@@ -366,6 +379,28 @@ Parameters: query (required), reason (optional)
 Dispatch: _dispatch_recall_image → _execute_recall_image → VisualRetriever
 Execution: Queries visual_memories ChromaDB collection using CLIP embeddings
            matched against the text query. Returns image metadata and descriptions.
+```
+
+**Excluded from the offered tool list.** `NativeToolsHandler.get_tools()`
+deliberately omits `recall_image` (and there is no XML marker for it) —
+visual memories are already retrieved by the builder's parallel pipeline
+and included in the initial context, so offering it caused redundant
+agentic rounds that burn API credits. The tool definition, dispatch row,
+and tool-health line remain wired for future use
+(`core/agentic/protocols.py`, "NOTE: recall_image tool deliberately
+excluded from iteration tools").
+
+### search_stackexchange / search_arxiv / search_pubmed / search_hackernews
+
+Free public search APIs (no auth needed, always offered).
+
+```
+Parameters: query (required), reason (optional); stackexchange also takes
+            site (default "stackoverflow")
+Dispatch: All four route through the shared _dispatch_api_search handler
+          (DISPATCH_TABLE passes the api name) → _execute_stackexchange /
+          _execute_arxiv / _execute_pubmed / _execute_hackernews
+Availability: Always listed AVAILABLE in tool health (free, no auth)
 ```
 
 ### generate_document
@@ -551,7 +586,6 @@ For models without native tool support. Markers embedded in text:
 <file_list path="/path/to/dir" recursive="true"/>
 <git_stats>commits this week</git_stats>
 <github>open issues labeled bug</github>
-<recall_image>query</recall_image>
 <action type="send_email" recipient="..." reason="...">message</action>
 <propose_action type="send_email" recipient="..." subject="..." reason="...">body</propose_action>
 <lookup_contact name="Harper">reason</lookup_contact>
@@ -585,8 +619,12 @@ Parsed by `XMLMarkerHandler` using regex. `<done/>` is checked first
 and returns immediately if present. Remaining markers are collected
 in order: python -> wolfram -> memory -> expand_memory ->
 get_full_document -> file_read -> file_grep -> git_stats -> github ->
-file_list -> fetch_url -> recall_image -> action -> propose_action ->
-lookup_contact -> search -> implicit answer (if no markers found).
+fetch_url -> file_list -> nested file/doc/url forms -> search (content
+and attribute forms) -> search_memory (attribute and nested forms) ->
+action -> propose_action -> lookup_contact -> `<invoke>` fallback ->
+implicit answer (if no markers found). There is no XML marker for
+recall_image — it is only reachable via native tool-call parsing (and
+is not offered in the iteration tool list; see recall_image above).
 `propose_action` is parsed from both `<action type="...">` and
 `<propose_action type="...">` XML markers. `lookup_contact` is parsed
 from `<lookup_contact name="...">` markers.
@@ -603,13 +641,21 @@ from `<lookup_contact name="...">` markers.
 `ToolExecutor.get_tool_health()` probes each tool backend and returns a
 multi-line status summary (AVAILABLE / UNAVAILABLE / DISABLED per tool).
 Checked backends: web_search, wiki_knowledge (FAISS), memory_search
-(ChromaDB), wolfram, file_access, git_stats, github, expand_memory,
-recall_image, propose_action. The propose_action AVAILABLE line
-dynamically lists `calendar_create_event` when `GOOGLE_CALENDAR_ENABLED`
-is true (e.g. "send_email, send_telegram, send_discord, calendar_create_event").
+(ChromaDB), wolfram, file_access, git_stats, expand_memory,
+recall_image, github, the four free search APIs (search_stackexchange /
+search_arxiv / search_pubmed / search_hackernews — always AVAILABLE),
+generate_document, create_daemon_note, and propose_action. The
+propose_action AVAILABLE line lists `enabled_action_types()` from
+`core/actions/registry.py` — each ActionSpec gates on its own flag, so
+e.g. `calendar_create_event` appears only when `GOOGLE_CALENDAR_ENABLED`
+is true and the github write types only when
+`INTERNET_ACTIONS_GITHUB_WRITE_ENABLED` is true. When GitHub write is
+enabled, the github (read) line also points writers at propose_action.
 
-The status block is injected at three points under the header
-`[TOOL STATUS — DO NOT LIE ABOUT THESE]`:
+The status block is injected at three points (system prompt header:
+`[TOOL STATUS — DO NOT LIE ABOUT THESE]`; iteration + final prompt header:
+`[TOOL STATUS — report these accurately, never claim a tool works if it
+says UNAVAILABLE]`):
 
 1. **System prompt** (`run_agentic_search`) — appended after protocol
    augmentation, with an instruction that the LLM must report tool status
@@ -659,17 +705,22 @@ Uses `TokenManager.get_token_count()` if available, otherwise
 
 `_is_low_quality_result(search_result, query)` checks:
 
-1. No results -> low quality
-2. Only 1 result -> low quality
-3. Top result lacks >= 30% of query terms -> low quality
+1. No result object -> low quality ("no results returned")
+2. Zero pages -> low quality ("empty results")
+3. Only 1 page -> low quality ("very few results")
+
+(No query-term overlap check — that was removed; quality is purely
+result-count based.)
 
 ### Relaxation
 
-Up to 2 relaxation attempts before forcing synthesis:
+Up to 2 relaxation attempts before forcing synthesis
+(`session.low_quality_search_count`, good results reset the counter):
 
-- **Attempt 1**: Suggest removing version numbers, year specifics,
-  exact phrases, or simplifying to core subject
-- **Attempt 2**: Final attempt with same hint style
+- **Attempts 1-2**: `LOW_QUALITY_HINT_TEMPLATE` with a heuristic
+  suggestion from `_generate_relaxation_suggestion()` — "Try a shorter,
+  more focused query" (>6 words) or "Try alternative phrasing or
+  broader terms" — plus remaining-attempts count
 - **Attempt 3+**: `MAX_RELAXATION_HINT` — answer with what you have,
   acknowledge gaps, no more searches
 
@@ -728,7 +779,8 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `fetching_url` / `url_fetched` | URL content fetch |
 | `recalling_image` / `recall_image_done` | Visual memory recall |
 | `generating_document` / `document_generated` | Document generation |
-| `creating_note` / `note_created` | Daemon self-note creation |
+| `saving_note` / `note_saved` | Daemon self-note creation |
+| `looking_up_contact` / `contact_found` | Contact lookup |
 | `proposing_action` | "Proposing action: {summary}" |
 | `action_proposed` | "Action proposed: {summary}" (metadata: action_id, action_type, summary) |
 | `synthesizing` | Starting final generation |
@@ -770,7 +822,7 @@ pollute memory.
 ```
 
 Round actions classified by prefix: `[Memory:` -> memory_search,
-`[Python:` -> sandbox, `[File Read]` -> file_read, `[Git:` -> git_stats, etc.
+`[Python:` -> sandbox, `[File Read]` -> file_read, `[Git Stats]` -> git_stats, etc.
 
 ---
 
@@ -803,7 +855,7 @@ The loop exits when ANY condition is met:
 agentic_search.enabled = true       # Master switch
 agentic_search.max_rounds = 5       # Default loop limit
 agentic_search.context_budget_tokens = 8000
-agentic_search.compression_model = "gpt-4o-mini"
+agentic_search.compression_model = "sonnet-4.5"  # live config.yaml value (code fallback default: gpt-4o-mini)
 
 # Memory tools
 AGENTIC_MEMORY_SEARCH_LIMIT         # Results per memory search
@@ -850,7 +902,7 @@ INTERNET_ACTIONS_TTL                # Pending action time-to-live
 INTERNET_ACTIONS_MAX_PENDING        # Max pending actions before rejection
 INTERNET_ACTIONS_AUDIT_LOG          # Audit log path (default logs/actions_audit.jsonl)
 
-# Google Calendar (YAML: google_calendar:)
+# Google Calendar (YAML: internet_actions.google_calendar_enabled, default False)
 GOOGLE_CALENDAR_ENABLED             # Feature gate for calendar_create_event
 
 # Google Contacts (YAML: internet_actions:)
@@ -909,9 +961,13 @@ per line).
 
 <!-- registry-driven write actions + github_write [2026-05-31] -->
 
-The agentic loop now exposes **21 tools** (was 20): `github_write` is a dedicated
-GitHub write proposal (`github_create_issue`, `github_comment_pr`) alongside the
-generic `propose_action`.
+The agentic loop dispatches **21 tools** (one `DISPATCH_TABLE` row each in
+`core/agentic/tools.py`; recall_image is wired but not offered in the iteration
+tool list, and `done_searching` is a loop signal, not a dispatch row). GitHub
+writes (`github_create_issue`, `github_comment_pr`) are **action types of the
+generic `propose_action` tool** — there is no separate `github_write` agentic
+tool; the name refers to the dedicated executor module
+`core/actions/github_write.py`.
 
 **`ACTION_SPECS` — single source of truth.** Every write action is declared once
 in `core/actions/registry.py` as an `ActionSpec` (`executor_ref`, `required`/

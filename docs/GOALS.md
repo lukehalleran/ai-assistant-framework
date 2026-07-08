@@ -25,7 +25,7 @@ Consolidation is largely complete (3,800+ tests, 0 failures, clean module extrac
 ## Active Goals (Current Sprint)
 
 ### 1. Synthesis Pipeline Re-enablement
-- **Status**: All 3 generators DISABLED in `config.yaml` since 2026-04-01 pending grading validation
+- **Status**: RE-ENABLED — synthesis dreaming turned back on 2026-06-15. The three original tier generators (Tier 0/1/2) are now RETIRED (`enabled: false` in `config.yaml`); the sole active generator is `PooledConceptSynthesisGenerator` (`knowledge/synthesis_pooled_generator.py`, `synthesis_pooled.enabled: true`, shipped 2026-06-30), running behind the audit auto-halt
 - **Why**: The synthesis pipeline is the core vision of this project. Everything else supports it. It's been frozen while the grading protocol (`docs/grading_plan.md`) validates filter quality. Time to close that loop.
 - Complete grading on existing audit queue candidates (two-layer: 3 binary screening Qs + 1-5 gut-feel slider)
 - Validate FP rate is below `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` (0.50) — this gates auto-halt
@@ -73,7 +73,7 @@ Consolidation is largely complete (3,800+ tests, 0 failures, clean module extrac
 ## Medium-Term Goals (Next 1-3 Months)
 
 ### 4. Dreaming Engine (Batch Generation Infrastructure)
-- **Status**: Shutdown dreaming infrastructure built but generators currently disabled. Idle-time dreaming pending.
+- **Status**: Shutdown dreaming ENABLED (2026-06-15, pooled generator only; runs as its own standalone shutdown step under `SYNTHESIS_DREAM_TIMEOUT_S`). Idle-time dreaming pending.
 - Shutdown dreaming wired to run generators in parallel at session end (Step 6.8 in shutdown_processor.py)
 - Idle-time background thread: activates after N minutes inactivity, pauses on user input — not yet implemented
 - Coverage tracking: which domains/topics explored, avoid redundant generation
@@ -96,7 +96,7 @@ Consolidation is largely complete (3,800+ tests, 0 failures, clean module extrac
 - Prune low-value entries over time (decay + consolidation)
 - Improve fact extraction precision (reduce false triples)
 - Monitor retrieval benchmark scores for regression after any scoring/weight changes
-- **Current benchmark baseline** (2026-05-17): Combined MRR=0.8823, R@1=0.8143, R@3=0.9196, R@topK=0.9750
+- **Current benchmark baseline** (2026-05-17, per `docs/BENCHMARK_METRICS.md`): Combined MRR=0.8911, R@1=0.8309, R@3=0.9173, R@topK=0.9743 (n=272)
 
 ---
 
@@ -106,8 +106,8 @@ These systems are complete and working. Listed here for context, not as active w
 
 - **Consolidation (2026-05)**: Codebase hardened — 3,800+ tests (0 failures), module extractions (agentic gate, handler helpers, prompt formatter, context gatherer), retrieval benchmarks stable (MRR 0.88), orchestrator decomposed
 
-- **Memory system**: 6 types (episodic, semantic, procedural, summary, meta, fact), 14 ChromaDB collections, modular components with Protocol contracts, thin coordinator
-- **Multi-stage gating**: FAISS → Cosine → Cross-Encoder reranking
+- **Memory system**: 5 tiers (episodic, semantic, procedural, summary, meta), 14 ChromaDB collections, modular components with Protocol contracts, thin coordinator
+- **Multi-stage gating**: ChromaDB HNSW candidates → Cosine → Cross-Encoder reranking
 - **Intent classification**: 9 types, regex-first, per-intent weight/retrieval/gate overrides, STM refinement, intent-conditioned section gating (eval-driven)
 - **Truth scoring**: Evidence-based (TruthScorer + CorrectionDetector), replaces access-count system
 - **Fact verification**: 4-stage gate (ephemeral → candidate → confirmation → LLM adjudication), no auto-deletion
@@ -120,7 +120,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **Knowledge integration**: Obsidian vault (multimodal, mtime-based re-embedding), reference docs, git commits, procedural skills, Wikipedia (FAISS IVFPQ 40M vectors)
 - **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring, wiki enrichment at shutdown
 - **Proactive surfacing**: Cross-domain insight generation from knowledge graph, session-cached LLM calls, novelty-filtered
-- **Synthesis pipeline**: Cross-store candidate generation, 7-stage filter (`claude-opus-4.8` coherence judge), LLM bridge articulation, convergence tracking, human audit queue with two-layer grading and auto-halt. All three generators currently disabled pending grading validation (see `docs/grading_plan.md`)
+- **Synthesis pipeline**: Cross-store candidate generation, 7-stage filter (`claude-opus-4.8` coherence judge), LLM bridge articulation, convergence tracking, human audit queue with two-layer grading and auto-halt. Dreaming re-enabled 2026-06-15; the three tier generators are retired (`enabled: false`) in favor of the pooled-concept generator (see `docs/grading_plan.md`, `docs/SYNTHESIS_VALIDATION.md`)
 - **Implementation tracking**: 4-stage proposal detection (file → grep → git → LLM), cooldown-gated
 - **Fast Mode**: Reduced retrieval for mobile/slow connections with progress keepalives
 - **PDF/DOCX support**: Full pipeline with table extraction (pdfplumber + python-docx), chunking with header detection
@@ -134,7 +134,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **Prompt eval system**: Snapshot/replay infrastructure, variant generation (LOO/AOI/bundle/reorder), pairwise judge, objective checks, 31-entry section registry, 246 tests (`eval/`)
 - **Production**: PyInstaller desktop build (v1.0.0 shipped 2026-04-08), Docker deployment, graceful shutdown
 - **Privacy**: All data local, API calls only for LLM generation, no telemetry
-- **Testing**: 3,559 tests across 173 test files, retrieval quality benchmarks with 30 seed memories and 19 test cases
+- **Testing**: ~5,900 tests across 240+ test files, retrieval quality benchmarks (~305 cases; combined MRR 0.89 — see `docs/BENCHMARK_METRICS.md`)
 
 ---
 

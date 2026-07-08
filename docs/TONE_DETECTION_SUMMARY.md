@@ -140,10 +140,10 @@ All tone detection logged to backend only (not visible to user):
 Environment variables (optional tuning):
 
 ```bash
-# Semantic thresholds
-TONE_THRESHOLD_HIGH=0.75      # Crisis level similarity threshold
-TONE_THRESHOLD_MEDIUM=0.65    # Medium crisis threshold
-TONE_THRESHOLD_CONCERN=0.55   # Concern level threshold
+# Semantic thresholds (defaults in utils/tone_detector.py)
+TONE_THRESHOLD_HIGH=0.58      # Crisis level similarity threshold
+TONE_THRESHOLD_MEDIUM=0.50    # Medium crisis threshold
+TONE_THRESHOLD_CONCERN=0.43   # Concern level threshold
 
 # Context window
 TONE_CONTEXT_WINDOW=3         # Recent turns to check for escalation
@@ -186,13 +186,15 @@ The system runs automatically in the orchestrator. No manual intervention needed
 
 ## Files Modified
 
-1. `utils/tone_detector.py` - New file (420 lines)
-2. `tests/test_tone_detection.py` - New file (477 lines)
+1. `utils/tone_detector.py` - New file (now ~1000 lines: `CrisisLevel` enum, 250+ weighted keywords with composite harm scoring, semantic exemplars, observational filter)
+2. `tests/test_tone_detection.py` - New file (~515 lines)
 3. `core/orchestrator.py` - Modified
    - Added tone detection before prompt prep
-   - Added `_get_tone_instructions()` method
+   - Added `_get_tone_instructions()` method (now a thin wrapper — the instruction text lives in `core/tone_instructions.py`: `get_tone_instructions()` / `get_response_instructions()`, plus per-intent style blocks via `get_intent_style_instructions()` which are injected only at intent confidence ≥0.60, suppressed during any non-CONVERSATIONAL crisis level, and intentionally absent for emotional_support/general intents)
    - Added tone tracking state
    - Added backend logging
+
+Related (post-implementation): `core/escalation_tracker.py` tracks session-level emotional momentum and progresses response strategy (VALIDATE_AND_SUGGEST → GROUNDING_PRESENCE → QUIET_COMPANIONSHIP → GENTLE_REENGAGEMENT on de-escalation).
 
 ## Future Enhancements
 

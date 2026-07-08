@@ -115,7 +115,7 @@ PENDING ──approve──▶ APPROVED ──build──▶ COMPLETED
 **Triggers (two, both in Track A):**
 1. **GUI "Generate Proposals Now"** — `gui/tabs/proposals.py:_generate_proposals_now()`.
 2. **Session shutdown hook** — `memory/shutdown_processor.py:_generate_proposals()`
-   (line ~981), gated on `CODE_PROPOSALS_ENABLED`, fires only when the session
+   (line ~1043), gated on `CODE_PROPOSALS_ENABLED`, fires only when the session
    had **≥3** conversation turns. Prefers `generate_proposals_with_context()`
    (rich pipeline context) and falls back to `generate_proposals()` (cold file
    reads).
@@ -582,7 +582,7 @@ proposals appear" behavior, with cost bounded by N lenses per shutdown.
 - `tests/unit/test_proposals_tab.py` (8) — GUI card rendering (risk/CORE badges,
   depends_on, AGENT-BRANCH provenance badge, safe defaults).
 - `tests/unit/test_reclassify_proposals.py` (5) — re-classify extraction adapter.
-- `tests/agent_branch/test_proposal_bridge.py` (10) — survivor→proposal mapping,
+- `tests/agent_branch/test_proposal_bridge.py` (12) — survivor→proposal mapping,
   risk classification, ranked-survivors-only ingest, content-dedup.
 - `tests/agent_branch/test_coding_worker.py` — goals/context/prompt assembly +
   objective wiring; `test_run.py` — runner specs/proxies/temperature/key gating;

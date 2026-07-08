@@ -1782,7 +1782,12 @@ What would you like to do?""")
         has_web = bool(session.accumulated_context)
         citation_line = (
             "- Cite web sources using [WEB_N] markers (e.g., 'According to Reuters [WEB_1]...'). "
-            "Every factual claim from web sources MUST include a [WEB_N] citation."
+            "Every factual claim from web sources MUST include a [WEB_N] citation.\n"
+            "- Search results may be skewed toward the user's geographic area. NEVER assume an "
+            "institution or business found in results (a school, bank, clinic, company) is the "
+            "user's own unless the user or memory named it — no phone numbers, procedures, or "
+            "identities attributed to 'their' institution from location-matched results; say the "
+            "institution is unidentified and ask."
             if has_web else "- Cite web sources when stating facts from search results"
         )
         action_instruction = ""

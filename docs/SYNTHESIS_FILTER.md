@@ -1,6 +1,6 @@
 # Synthesis Filter Pipeline
 
-*Last verified: 2026-05-09*
+*Last verified: 2026-07-08*
 
 Operational guide for the knowledge synthesis system — candidate generation,
 7-stage filtering, convergence tracking, and calibration.
@@ -13,25 +13,28 @@ For the human grading rubric see `docs/grading_plan.md`.
 
 ## What Synthesis Does
 
-Daemon's synthesis system discovers non-obvious connections between concepts
-the user knows about (personal facts) and general knowledge (Wikipedia).
-It runs as a "dreaming" step during session shutdown — after conversations
-are stored but before the process exits.
+Daemon's synthesis system discovers non-obvious structural connections
+between concepts. It runs as a "dreaming" step during session shutdown —
+after conversations are stored but before the process exits.
 
-**The core idea:** Sample entities from the user's fact store (ChromaDB)
-and Wikipedia (FAISS index, 40M vectors), pair them across domains, use an
-LLM to articulate a connection, then run the candidate through a 7-stage
-filter that kills noise, rehashes, and pseudoscience. Only genuinely novel,
-coherent, cross-domain insights survive.
+**The core idea (current, 2026-06-30):** Pair PROMINENT curated concepts
+from `knowledge/synthesis_concept_pool.py` (`CONCEPT_POOL`, 48 entries) in
+the non-obvious cosine band (0.2–0.45), use an LLM to articulate a candidate
+structural connection, then run the candidate through a 7-stage filter that
+kills noise, rehashes, and pseudoscience. Only genuinely novel, coherent,
+cross-domain insights survive. (The original personal-facts ↔ Wikipedia
+sampling generators are retired — see Candidate Generation below.)
 
 Accepted insights are stored in the `synthesis_results` ChromaDB collection
 and can be surfaced in future conversations. When the same insight is
 independently rediscovered via a different graph path, convergence tracking
 strengthens confidence in it.
 
-**When it runs:** `shutdown_processor.py` Step 6.8, after thread extraction
-and before graph save. Gated by `SYNTHESIS_GENERATOR_ENABLED` and graph
-sparsity guard (`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES`). Additionally,
+**When it runs:** As its OWN standalone shutdown step — `main.py` drives
+`run_synthesis_dreaming()` (`shutdown_processor.py`) under a dedicated
+`SYNTHESIS_DREAM_TIMEOUT_S` budget (240s), outside `process_shutdown_memory`'s
+shared reflection/fact budget. Gated by `SYNTHESIS_POOLED_ENABLED` (or, for
+the retired legacy path, `SYNTHESIS_GENERATOR_ENABLED`). Additionally,
 auto-halts if the human audit FP rate exceeds `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD`
 (requires at least `SYNTHESIS_AUDIT_MIN_GRADED` graded results).
 
@@ -42,16 +45,18 @@ auto-halts if the human audit FP rate exceeds `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
 | File | Purpose |
 |------|---------|
 | `knowledge/synthesis_models.py` | Data models: SynthesisCandidate, SynthesisResult, StageResult, CoherenceLevel, CandidateStatus |
-| `knowledge/synthesis_retriever.py` | RetrievalSynthesisGenerator: structural query extraction + FAISS search + adversarial evaluation (Tier 0) |
-| `knowledge/graph_walk_generator.py` | GraphWalkGenerator: biased Markov walks with hub dampening + cross-domain constraint (Tier 1) |
-| `knowledge/synthesis_generator.py` | SynthesisGenerator: cross-store sampling (ChromaDB facts + FAISS wiki) + LLM bridge articulation (Tier 2) |
+| `knowledge/synthesis_pooled_generator.py` | PooledConceptSynthesisGenerator: PRIMARY discovery generator — pairs prominent CONCEPT_POOL concepts in cosine band 0.2–0.45 |
+| `knowledge/synthesis_concept_pool.py` | CONCEPT_POOL — 48 curated prominent cross-domain concepts (growable) |
+| `knowledge/synthesis_retriever.py` | RetrievalSynthesisGenerator: structural query extraction + FAISS search + adversarial evaluation (Tier 0, RETIRED) |
+| `knowledge/graph_walk_generator.py` | GraphWalkGenerator: biased Markov walks with hub dampening + cross-domain constraint (Tier 1, RETIRED) |
+| `knowledge/synthesis_generator.py` | SynthesisGenerator: cross-store sampling (ChromaDB facts + FAISS wiki) + LLM bridge articulation (Tier 2, RETIRED) |
 | `knowledge/synthesis_filter.py` | 7-stage filter pipeline + FAISS wiki novelty checks + template patterns + helpers |
 | `memory/synthesis_memory.py` | ChromaDB persistence (synthesis_results collection) + convergence tracking + provisional bridge creation + audit queue (human grading, FP/FN review) |
-| `config/app_config.py` | All `SYNTHESIS_*` constants (filter + generator + retrieval) |
-| `memory/shutdown_processor.py` | Integration point — runs all three generators then filter at shutdown |
+| `config/app_config.py` | All `SYNTHESIS_*` constants (filter + pooled + generator + retrieval + audit) |
+| `memory/shutdown_processor.py` | Integration point — runs the pooled generator (or the retired tiers behind flags) then filter at shutdown |
 | `tests/test_synthesis_calibration.py` | Mock calibration suite (6 tests) |
 | `tests/unit/test_synthesis_generator.py` | Generator unit tests (18 tests) |
-| `tests/unit/test_synthesis_audit.py` | Audit queue unit tests (34 tests) |
+| `tests/unit/test_synthesis_audit.py` | Audit queue unit tests (40 tests) |
 | `tests/unit/test_graph_walk_generator.py` | Graph walk generator tests (38 tests) |
 | `tests/fixtures/calibration_candidates.json` | 72 labeled candidates in 7 tiers |
 | `scripts/calibrate_coherence_live.py` | Live LLM calibration with multi-model comparison |
@@ -67,9 +72,9 @@ auto-halts if the human audit FP rate exceeds `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
 concept_a: str              # e.g. "bone remodeling"
 concept_b: str              # e.g. "database index optimization"
 connection_claim: str       # LLM-articulated bridge statement
-walk_path: List[str]        # graph walk node sequence (or synthetic [a, b])
+walk_path: List[str]        # graph walk node sequence (pooled: ["pooled", a, b]; or synthetic [a, b])
 source_domains: Set[str]    # e.g. {"science", "technology"}
-endpoint_distance: float    # 0-1, graph shortest path or default 0.55
+endpoint_distance: float    # 0-1; pooled: 1 - cos(a,b); graph: shortest path or default 0.55
 timestamp: datetime
 path_hash: str              # SHA-256[:16] of walk_path, for dedup
 ```
@@ -123,18 +128,42 @@ STRONG   = 1.0    # predictive cross-domain connection
 
 ## Candidate Generation
 
-**Current status:** All three generators are DISABLED in `config.yaml`
-(`synthesis.enabled: false`, `synthesis_generator.enabled: false`,
-`synthesis_retrieval.enabled: false`, `graph_walk.enabled: false`) pending
-grading validation. The pipeline code is intact and will resume once the
-two-layer grading system (see `docs/grading_plan.md`) produces enough
-ground truth to validate filter thresholds.
+**Current status (2026-06-30):** The Pooled Concept generator
+(`knowledge/synthesis_pooled_generator.py`, `synthesis_pooled.enabled: true`)
+is the SOLE generator dreaming uses. The three legacy personal→wiki tiers
+below are RETIRED in `config.yaml` (`synthesis_generator.enabled: false`,
+`synthesis_retrieval.enabled: false`, `graph_walk.enabled: false`) — each
+paired thin/low-prominence concepts and yielded ≈0 accepts. Their code is
+intact behind the flags: `_run_synthesis_dreaming()` falls back to them only
+when `SYNTHESIS_POOLED_ENABLED` is off. The filter itself
+(`synthesis.enabled: true`) is live.
 
-Three generators produce candidates in parallel at shutdown, each with
-independent quotas. All emit `SynthesisCandidate` objects for the same
-7-stage filter pipeline (plus post-pipeline storage in `process_candidate()`).
+All generators emit `SynthesisCandidate` objects for the same 7-stage filter
+pipeline (plus post-pipeline storage in `process_candidate()`).
 
-### Tier 0: RetrievalSynthesisGenerator (Retrieval-Based)
+### Primary: PooledConceptSynthesisGenerator (Pooled Concepts)
+
+`knowledge/synthesis_pooled_generator.py` — pairs PROMINENT concepts from
+the curated `CONCEPT_POOL` (`knowledge/synthesis_concept_pool.py`, 48
+entries) whose pairwise cosine sits in the non-obvious band
+[`SYNTHESIS_POOLED_MIN_COS`=0.20, `SYNTHESIS_POOLED_MAX_COS`=0.45], then
+makes one LLM articulation call per pair (`max_tokens=340`, temperature 0.6;
+the model may answer `NO_CONNECTION`, and staged waves top up only the
+shortfall within an oversample budget). Embeds only the ~48 pool strings via
+the sentence embedder — never loads the wiki FAISS index. Candidates carry
+`walk_path=["pooled", a, b]` (midrange-peak distance scoring in Stage 2, not
+the "retrieval" inverted path) and `endpoint_distance = 1 − cos(a,b)`.
+
+Validated 2026-06-30 (`scripts/validate_anchored_generator.py`): ~46%
+MODERATE+STRONG / ~17% accept through the real coherence judge, vs ≈0 for
+the retired tiers. The lever is concept PROMINENCE, not anchoring.
+
+**Config:** `SYNTHESIS_POOLED_ENABLED`, `SYNTHESIS_POOLED_CANDIDATES_PER_SESSION`
+(default 8), `SYNTHESIS_POOLED_LLM_CONCURRENCY` (default 5),
+`SYNTHESIS_POOLED_MIN_COS` / `SYNTHESIS_POOLED_MAX_COS`. YAML section:
+`synthesis_pooled`.
+
+### Tier 0: RetrievalSynthesisGenerator (Retrieval-Based) — RETIRED
 
 `knowledge/synthesis_retriever.py` — highest-quality candidates via
 structural query extraction and FAISS semantic search.
@@ -152,7 +181,7 @@ structural query extraction and FAISS semantic search.
 **Config:** `SYNTHESIS_RETRIEVAL_ENABLED`, `SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS` (default 100),
 `SYNTHESIS_RETRIEVAL_K` (default 5), `SYNTHESIS_RETRIEVAL_MIN_SIMILARITY` (default 0.25).
 
-### Tier 1: GraphWalkGenerator (Wikidata Graph Walks)
+### Tier 1: GraphWalkGenerator (Wikidata Graph Walks) — RETIRED
 
 `knowledge/graph_walk_generator.py` — biased Markov random walks on the
 unified personal+wikidata graph. Node2Vec-style return bias (2.0x toward
@@ -169,7 +198,7 @@ personal nodes when in wikidata territory).
 **Config:** `GRAPH_WALK_ENABLED`, `GRAPH_WALK_MIN_BRIDGE_EDGES` (default 40),
 `GRAPH_WALK_HUB_DEGREE_THRESHOLD` (default 15), `GRAPH_WALK_MIN_DOMAINS` (default 2).
 
-### Tier 2: SynthesisGenerator (Cross-Store Sampling)
+### Tier 2: SynthesisGenerator (Cross-Store Sampling) — RETIRED
 
 `knowledge/synthesis_generator.py` — the original generator. Cross-store
 sampling from ChromaDB facts + FAISS wiki.
@@ -200,9 +229,12 @@ instead of the old 0.55 fallback.
 
 ### Shutdown Orchestration
 
-`_run_synthesis_dreaming()` in `shutdown_processor.py` runs all three
-generators with independent quotas. Each generator fills its allocation,
-then all candidates pass through the same `SynthesisFilter` pipeline.
+`_run_synthesis_dreaming()` in `shutdown_processor.py`: when
+`SYNTHESIS_POOLED_ENABLED` is on (the live config), the pooled concept
+generator is the ONLY generator run. Otherwise the retired legacy path runs
+whichever of Tiers 0/1/2 are enabled, with independent quotas (graph walk
+additionally self-gates on `GRAPH_WALK_MIN_BRIDGE_EDGES`). All candidates
+then pass through the same `SynthesisFilter` pipeline.
 
 **Timeout decoupling [2026-06-19]:** dreaming is exposed via the public
 `run_synthesis_dreaming()` and driven by `main.py` as its OWN standalone
@@ -218,19 +250,17 @@ exit, so no new candidate ever persisted (the audit queue looked frozen).
 ## Data Flow
 
 ```
-Parallel Candidate Generation (shutdown step 6.8):
-  ├── [Tier 0] RetrievalSynthesisGenerator
-  │     ├── Structural query extraction (few-shot LLM)
-  │     ├── FAISS semantic search (40M vectors)
-  │     └── Adversarial evaluation → SynthesisCandidate[]
-  ├── [Tier 1] GraphWalkGenerator (if bridges >= 40)
-  │     ├── Biased Markov walks (hub-dampened, cross-domain)
-  │     └── Walk narration (LLM) → SynthesisCandidate[]
-  └── [Tier 2] SynthesisGenerator
-        ├── Sample facts (ChromaDB) + wiki articles (FAISS, 40M vectors)
-        ├── Form cross-domain pairs
-        ├── LLM bridge articulation (parallel, semaphore)
-        └── Package as SynthesisCandidate[]
+Candidate Generation (standalone shutdown dreaming step, main.py-driven):
+  ├── [PRIMARY] PooledConceptSynthesisGenerator (SYNTHESIS_POOLED_ENABLED — live)
+  │     ├── CONCEPT_POOL pairs in cosine band [0.20, 0.45]
+  │     └── LLM articulation (parallel, semaphore) → SynthesisCandidate[]
+  └── [RETIRED fallback — runs only if pooled is disabled, behind per-tier flags]
+        ├── [Tier 0] RetrievalSynthesisGenerator
+        │     (structural query → FAISS 40M vectors → adversarial eval)
+        ├── [Tier 1] GraphWalkGenerator (if bridges >= 40)
+        │     (biased Markov walks, hub-dampened, cross-domain → LLM narration)
+        └── [Tier 2] SynthesisGenerator
+              (cross-store sampling ChromaDB facts + FAISS wiki → LLM bridge)
               │
               ▼ (all generators feed the same pipeline)
 SynthesisFilter.process_candidate(candidate)
@@ -464,11 +494,12 @@ Rating criteria:
 - STRONG: MODERATE plus the mapping generates non-obvious testable predictions.
 - INVALID: Concepts are misunderstood or the claim is incoherent.
 
-Respond exactly in this format:
+Respond in EXACTLY this format. Your FIRST line MUST be the rating, so the
+verdict is never lost to length:
+RATING: <INVALID|WEAK|MODERATE|STRONG>
 De-jargon: <the claim stripped of field-specific nouns>
 Variable swap: <one concrete prediction, or 'NONE'>
 Against: <strongest criticism>
-Rating: <INVALID|WEAK|MODERATE|STRONG>
 ```
 
 **Gate:** `coherence_level >= MODERATE` (`SYNTHESIS_COHERENCE_MIN_LEVEL`)
@@ -491,18 +522,29 @@ mechanisms.
 - Additional generic bridge templates added to catch vacuous claims that
   previously slipped through as MODERATE.
 
-**LLM parameters:** `max_tokens=400` (raised from 250), `temperature=0.1`
+**LLM parameters:** `max_tokens=500`, `temperature=0.1`, `disable_reasoning=True`
 
-**Empty-response robustness [2026-06-26]:** a reasoning-only model can swallow the
-whole verdict into its reasoning channel and stream empty visible content. The
-judge retries once with `disable_reasoning=True`, then defaults MODERATE/pass — an
-empty channel is not a WEAK verdict. Genuine non-empty-but-unparseable text still
-scores WEAK.
+**Empty-response robustness:** a reasoning model (the live judge is
+`claude-opus-4.8`) can swallow the whole verdict into its reasoning channel and
+stream empty visible content, so both judge calls pass `disable_reasoning=True`
+up front — the structured de-jargon/variable-swap analysis IS the visible
+reasoning. If the response is still empty (transient API blip) or the LLM call
+fails, the stage defaults MODERATE/pass — an empty channel is not a WEAK
+verdict. Genuine non-empty-but-unparseable text still scores WEAK
+(`_parse_coherence_level` matches a `RATING:` line anywhere, last match wins;
+falls back to a bare level name on a short line).
+
+**Measurement caveat [2026-07-08]:** the fail-open default is right for prod but
+wrong for measurement — a defaulted verdict is not a rating. The sentinel
+justification strings are exported as `DEFAULTED_COHERENCE_REASONS` with helper
+`is_defaulted_coherence(justification)` (`knowledge/synthesis_filter.py`);
+instrument/harness scripts must exclude such rows from measured accept/level
+rates instead of counting a default-MODERATE as a judged MODERATE.
 
 > **Generation must not truncate [2026-06-26].** Separately from the judge, the
-> candidate *generators* (`graph_walk_generator`, `synthesis_generator`) ask for a
-> short plain-prose paragraph (no headings/lists) and use larger token caps (graph
-> walk `max_tokens=320`, bridge `220`). The old caps (200/150) cut answers off
+> candidate *generators* ask for a short plain-prose paragraph (no headings/lists)
+> and use larger token caps (graph walk `max_tokens=320`, cross-store bridge `220`,
+> pooled discovery `340`). The old caps (200/150) cut answers off
 > mid-sentence; truncated text reads as incoherent here and was rejected — ~80% of
 > audit rejects were truncation artifacts, not real incoherence.
 
@@ -546,17 +588,17 @@ IMPORTANT: Simplification is expected and acceptable. Only flag claims where
 a domain expert would say 'that specific mechanism is wrong or doesn't
 exist,' NOT 'that's a simplification of how it actually works.'
 
-Respond:
-PASS - The domain facts are real (even if simplified)
-FAIL - A specific claim is factually wrong or based on debunked science
-       (state which one)
-
-One sentence of reasoning, then PASS or FAIL on its own line.
+Your FIRST line MUST be exactly PASS or FAIL (so the verdict is never lost
+to length): PASS = the domain facts are real even if simplified; FAIL = a
+specific claim is factually wrong or based on debunked science. Then one
+sentence of reasoning (name the wrong claim if FAIL).
 ```
 
-**On FAIL:** Coherence downgraded to WEAK, candidate rejected.
+**On FAIL:** Coherence downgraded to WEAK, candidate rejected. (FAIL is
+detected from the first line; as a fallback, a response containing "FAIL"
+but no "PASS" anywhere also counts as FAIL.)
 
-**LLM parameters:** `max_tokens=150`, `temperature=0.1`
+**LLM parameters:** `max_tokens=200`, `temperature=0.1`, `disable_reasoning=True`
 
 ### Stage 6: Composite Scoring
 
@@ -786,11 +828,15 @@ and rationale, see `docs/grading_plan.md`.
 
 ### How It Works
 
-1. **Accepted results** are stored with `human_grade=None` (ungraded).
-2. **Composite-rejected candidates** (those that pass all gates up to Stage 6
-   but score below `SYNTHESIS_COMPOSITE_MIN_SCORE`) are stored via
-   `SynthesisFilter.process_batch()` → `synthesis_memory.store_rejected_for_audit()`
-   for false-negative (FN) review.
+1. **Accepted results** are stored with an empty `human_grade` (ungraded).
+2. **Judgment-stage rejects** (`AUDIT_CAPTURE_STAGES` = `coherence_judge` +
+   `composite_scoring`) are stored via `SynthesisFilter.process_batch()` →
+   `synthesis_memory.store_rejected_for_audit()` for false-negative (FN)
+   review. Capturing coherence rejects too is deliberate: candidates killed
+   at the coherence judge never reach composite, so composite-only capture
+   starves the queue whenever the judge rejects (nearly) everything.
+   Mechanical hard-filter rejects (text sanity, domain crossing, distance,
+   novelty) are not audited.
 3. The **GUI "Synthesis" tab** presents a blind review queue: the grader sees
    the claim, concepts, and coherence level but grades without knowing the
    pipeline's original verdict (generator labels hidden).
@@ -834,7 +880,7 @@ synthesis_memory.grade_result(
     "avg_grade": float,             # Mean of all numeric grades
     "auto_halt": bool,              # True if FP rate exceeds threshold with sufficient data
     "ungraded_accepted": int,       # Accepted results awaiting review
-    "ungraded_rejected": int,       # Composite-rejected results awaiting FN review
+    "ungraded_rejected": int,       # Judgment-stage rejects (coherence/composite) awaiting FN review
     "fp_halt_threshold": float,     # Current SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
     "min_graded_for_halt": int,     # Current SYNTHESIS_AUDIT_MIN_GRADED
 }
@@ -852,7 +898,7 @@ YAML section: `synthesis_audit`
 
 ### Tests
 
-34 unit tests in `tests/unit/test_synthesis_audit.py`.
+40 unit tests in `tests/unit/test_synthesis_audit.py`.
 
 ---
 
@@ -893,8 +939,8 @@ defaults.
 | `SYNTHESIS_NOVELTY_W_SPECIFICITY` | `0.25` | 6 | Novelty sub-weight |
 | `SYNTHESIS_NOVELTY_W_INTERNAL` | `0.20` | 6 | Novelty sub-weight |
 | `SYNTHESIS_COMPOSITE_MIN_SCORE` | `0.70` | 6 | Minimum composite gate (2026-06-30 recalibration; was 0.65/0.40) |
-| `SYNTHESIS_CONVERGENCE_STRONG_PATHS` | `3` | post | Paths for CONVERGING status |
-| `SYNTHESIS_CONVERGENCE_STRONG_SOURCES` | `2` | post | Sources for CONVERGING status |
+| `SYNTHESIS_CONVERGENCE_STRONG_PATHS` | `3` | post | Paths for CONVERGING status (defined but **unused** — promotion is hardcoded `>=3` in `synthesis_memory._update_convergence()`) |
+| `SYNTHESIS_CONVERGENCE_STRONG_SOURCES` | `2` | post | Sources for CONVERGING status (defined but **unused** — hardcoded `>=2`) |
 | `SYNTHESIS_LOG_ALL_REJECTIONS` | `True` | — | Log every rejection |
 | `SYNTHESIS_DEFAULT_BATCH_SIZE` | `100` | — | Batch runner size |
 
@@ -909,7 +955,7 @@ defaults.
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `SYNTHESIS_POOLED_ENABLED` | `True` (live: enabled) | Master toggle — sole active generator |
+| `SYNTHESIS_POOLED_ENABLED` | `False` (live: **true** in config.yaml) | Master toggle — sole active generator |
 | `SYNTHESIS_POOLED_CANDIDATES_PER_SESSION` | `8` | Target candidates per shutdown |
 | `SYNTHESIS_POOLED_LLM_CONCURRENCY` | `5` | Max parallel articulation calls |
 

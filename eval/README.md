@@ -4,8 +4,9 @@
 
 Phase 1 provides the measurement foundation for prompt section ablation testing:
 
-1. **Section Registry** — canonical definition of all 26 prompt sections with ablation
-   eligibility, structural requirements, and assembly order.
+1. **Section Registry** — canonical definition of all 31 registered sections (30
+   context sections + the system prompt) with ablation eligibility, structural
+   requirements, and assembly order.
 
 2. **Snapshot Capture** — captures the full assembled prompt (post-hygiene) with both
    structured content and formatted text per section, plus provenance metadata.
@@ -144,11 +145,24 @@ eval/
   PLAN.md                  # Full 8-phase plan (orientation doc)
   README.md                # This file (Phase 1 usage)
   schema.py                # Pure data models (no Daemon imports)
-  section_registry.py      # Canonical section definitions (27 entries)
+  section_registry.py      # Canonical section definitions (31 entries)
   snapshots.py             # Capture, save/load, replay, hash verification
   no_store_generation.py   # Side-effect-free LLM generation
   persistence_guard.py     # State fingerprinting and diffing
+  variants.py              # Phase 2: LOO/AOI/bundle/reorder variant generation
+  corpus.py                # Phase 2: CorpusManager + 27-query seed corpus
+  corpus.json              # Saved corpus (generated)
+  utilization.py           # Phase 2: section presence/token stats
+  harness.py               # Phase 4: batch generation harness
+  judge.py                 # Phase 5: pairwise A/B judge (5-criterion rubric)
+  checks.py                # Phase 6: 5 automated objective checks
+  run_phase2.py            # CLI runner: variants + utilization
+  run_phase4.py            # CLI runner: generation harness
+  run_phase5.py            # CLI runner: judging
+  run_phase6.py            # CLI runner: objective checks
   snapshots/               # Saved snapshot JSON files (gitignored)
+  runs/                    # Generation/judging/check run output
+  phase2_output/           # Phase 2 runner output
 
 tests/test_eval/
   __init__.py
@@ -157,4 +171,10 @@ tests/test_eval/
   test_replay_hash.py      # 14 tests
   test_no_store_generation.py # 17 tests
   test_persistence_guard.py # 16 tests
+  test_variants.py         # 36 tests
+  test_corpus.py           # 24 tests
+  test_utilization.py      # 15 tests
+  test_harness.py          # 24 tests
+  test_judge.py            # 25 tests
+  test_checks.py           # 33 tests
 ```

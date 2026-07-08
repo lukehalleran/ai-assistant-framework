@@ -44,6 +44,13 @@ Enhanced Features (2026-01):
   text never share a cache entry. decompose_query() also carries the location in
   its LLM prompt. Regression guard for the "'my area' weather query returned DC
   news" bug.
+- Localization scope guard (2026-07-08): location is for PHYSICAL-SURROUNDINGS
+  queries only — the decompose prompt forbids attaching it to institution/
+  account/login sub-queries, and parsed sub_queries pass through
+  location_resolver.strip_unjustified_location() (deterministic backstop).
+  Regression guard for the wrong-college incident: a school-login query
+  localized to "Springfield IL" retrieved Springfield Community College and
+  the response presented its IT desk number as the user's school's.
 """
 
 import asyncio
@@ -1195,6 +1202,10 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
                     f"local news, nearby places), include \"{user_location}\" explicitly in every "
                     f"relevant sub-query. Never emit \"my area\", \"near me\", \"local\", or "
                     f"\"nearby\" as literal search text.\n"
+                    f"Location is ONLY for physical-surroundings queries: never add it to "
+                    f"sub-queries about the user's accounts, logins, school/college, employer, "
+                    f"bank, or any service they use — a nearby institution is not theirs unless "
+                    f"they named it. If unnamed, keep those sub-queries place-free.\n"
                 )
 
             prompt = f"""Analyze this search query and determine if it should be split into multiple focused sub-queries for better search results.
@@ -1271,6 +1282,16 @@ If not splitting, leave SUB_QUERIES empty."""
             if confidence < min_confidence:
                 should_split = False
                 reason = f"Confidence {confidence:.2f} below threshold {min_confidence}"
+
+            # Backstop: strip the injected location from sub-queries the
+            # original query never justified localizing (institution/account
+            # queries must stay place-free — the 2026-07-08 wrong-college
+            # incident came through this path).
+            if sub_queries and user_location:
+                from utils.location_resolver import strip_unjustified_location
+                sub_queries = strip_unjustified_location(
+                    sub_queries, query, user_location
+                )
 
             # Validate we have enough sub-queries
             if should_split and len(sub_queries) < 2:

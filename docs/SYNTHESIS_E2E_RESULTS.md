@@ -141,8 +141,9 @@ The walk generator is now active (305 > 40 bridge threshold) but produced no acc
 ## Production Configuration
 
 ```yaml
-# config/config.yaml (current)
-synthesis_generator:
+# config/config.yaml (as of this 2026-04-01 run; coherence_model and
+# composite_min_score live under the `synthesis:` section, not synthesis_generator)
+synthesis:
   coherence_model: claude-opus-4.6
   composite_min_score: 0.65
 synthesis_audit:
@@ -150,6 +151,12 @@ synthesis_audit:
   fp_halt_threshold: 0.50
   min_graded: 10
 ```
+
+> **Stale — live values have moved on:** as of the 2026-06-30 recalibration the
+> live config is `coherence_model: claude-opus-4.8`, `composite_min_score: 0.70`
+> (weights coherence 0.35 / novelty 0.60 / distance 0.05 / structural 0.0), and
+> the three generators tested here are RETIRED in favor of the pooled concept
+> generator. See `SYNTHESIS_FILTER.md` for current state.
 
 At composite 0.65, candidates with composite < 0.65 from Run 2 would be filtered. Of the 33 accepted, ~8-10 scored below 0.65. Estimated production acceptance: ~20-25 out of 110 candidates (~20%).
 

@@ -224,4 +224,4 @@ If an agent has already caused damage:
 - One-shot lockfile: `.agent_allow_destructive_once` (gitignored)
 - Max snapshots retained: 10
 - Max untracked file size for archival: 25 MB
-- Manifest excludes: `.git/`, `__pycache__/`, `.venv/`, `venv/`, `node_modules/`, `RECOVERY_*`, `.agent_snapshots/`, `*.pyc`, `*.rpm`
+- Manifest excludes: `.git/`, `.agent_snapshots/`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.venv/`, `venv/`, `node_modules/`, `RECOVERY_*`, `.Rhistory`, `*.pyc`, `*.pyo`, `*.rpm`, `*.7z`

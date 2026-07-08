@@ -1,5 +1,7 @@
 # `expand_memory` Tool — Implementation Plan (Adjusted)
 
+> **STATUS: IMPLEMENTED.** All phases below now ship: `thread_id`/`thread_depth` propagation in `memory/memory_storage.py` (Phase 0), `get_by_id()` in `memory/storage/multi_collection_chroma_store.py` + doc IDs in formatted search results (Phase 1), `memory/memory_expander.py` + `tests/unit/test_memory_expander.py` (Phase 2), tool wiring in `core/agentic/types.py` / `protocols.py` / `controller.py` (Phase 3), and the `memory_expansion:` config section + `EXPAND_*` constants (Phase 4). The "Reality Check" gaps described below were true when this plan was written and were closed by it. Kept as a historical design document.
+
 ## Problem
 When the ReAct agent calls `search_memory`, it gets isolated snippets (500-char truncated turns). For conversations, this loses critical surrounding context — the user's setup, the assistant's follow-up, and the flow of the exchange. The agent has no way to "zoom in" on a promising hit.
 

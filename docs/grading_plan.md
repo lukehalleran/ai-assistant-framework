@@ -4,7 +4,7 @@
 
 The Synthesis Audit Queue is the ground-truth mechanism for Daemon's knowledge graph. Because LLMs are inherently biased toward finding patterns (apophenia), the Coherence Judge cannot be trusted as the final arbiter for permanent graph edges.
 
-**Current status:** All three synthesis generators (retrieval, graph walk, cross-store) are disabled in `config.yaml`. No new synthesis candidates are being generated. Existing results in the audit queue are available for grading. Generators remain frozen until the grading approach is validated.
+**Current status (2026-06-15+):** Synthesis dreaming is re-enabled. The three original generator tiers (retrieval, graph walk, cross-store) are retired (`enabled: false` in `config.yaml`); the sole active generator is the pooled concept generator (`synthesis_pooled.enabled: true`, `knowledge/synthesis_pooled_generator.py`). New candidates accumulate organically in the audit queue for grading; the auto-halt (below) disables dreaming if the human-graded FP rate exceeds threshold.
 
 **Implementation:** GUI "Synthesis" tab, `memory/synthesis_memory.py` audit methods, auto-halt in `shutdown_processor.py`.
 
@@ -135,9 +135,13 @@ synthesis_audit:
   fp_halt_threshold: 0.50
   min_graded: 10
 
-# Generators (currently disabled)
+# Pipeline + active generator (enabled)
 synthesis:
-  enabled: false
+  enabled: true
+synthesis_pooled:
+  enabled: true
+
+# Retired generator tiers (disabled)
 synthesis_generator:
   enabled: false
 synthesis_retrieval:

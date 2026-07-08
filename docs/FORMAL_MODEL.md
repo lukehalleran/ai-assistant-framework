@@ -92,11 +92,12 @@ expand : X x G -> Q'
 
 Before candidate generation, the search query is expanded using the knowledge graph:
 
-1. Extract entity IDs from query via alias resolution (trigram -> bigram -> unigram matching)
-2. BFS to depth 2 from matched entities (traverses through hubs like "user")
-3. Rank candidates by lateral connectivity: `score = min(non_hub_edges * 0.3, 1.0)` + single-word bonus (+0.1) / 3+ word penalty (-0.1)
-4. Filter junk candidates (<=2 chars, 4+ words, digit-starting, temporal, measurements, verb phrases)
-5. Append top K display names to original query (default K=8)
+1. Extract entity IDs from query via alias resolution (trigram -> bigram -> unigram matching); common-noun/participle stopwords dropped
+2. Hub-aware BFS to depth 2 from matched entities — a hub node (in `skip_ids`, e.g. "user", or with degree >= `GRAPH_EXPANSION_HUB_DEGREE`=30) may be *reached* but is never expanded *through*; only seed entities fan out freely
+3. Read-time TTL: stale transient edges (mood/activity/illness past their per-relation horizon, via `GraphMemory._edge_is_stale_transient` -> `relation_classifier`) are dropped from traversal and scoring
+4. Rank candidates by lateral connectivity: `score = min(non_hub_edges * 0.3, 1.0)` + single-word bonus (+0.1) / 3+ word penalty (-0.1)
+5. Filter junk candidates (<=2 chars, 4+ words, digit-starting, temporal, measurements, verb phrases)
+6. Append top K display names to original query (default K=8)
 
 Example: "what about my brother" -> "what about my brother Sam Mom Biscuit"
 
@@ -132,8 +133,17 @@ candidates : X x C -> P(D)
 gate : X x P(D) -> P(D)
 ```
 
-Multi-stage filter: Batch cosine similarity -> Cross-encoder reranking.
+Multi-stage filter: Batch cosine similarity -> Cross-encoder reranking (ms-marco-MiniLM-L-6-v2).
 Each stage eliminates candidates below a threshold (overridable per-intent via `gate_threshold_override`).
+
+Memory/summary gating scores in the retrieval embedding space: the store's
+`BAAI/bge-small-en-v1.5` embedder is injected via
+`MultiStageGateSystem(retrieval_embedder=...)` in `main.py`, gated against
+`gate_rel_threshold_retrieval` (0.60 blended; deictic floor 0.61) —
+quantile-matched to the legacy MiniLM-space 0.18/0.20 thresholds, which are
+NOT interchangeable. Wiki + semantic-chunk gate paths still use
+`all-MiniLM-L6-v2`. Candidate generation is ChromaDB HNSW (~50 candidates);
+no FAISS in the live memory path.
 
 **Code**: `processing/gate_system.py`
 
@@ -153,7 +163,7 @@ sigma_iota(d, x) = SUM_i w_i(iota) * f_i(d, x)  +  SUM_j b_j(d, x, G)  +  SUM_k 
 
 | Factor f_i | Live weight | Definition |
 |-----------|---------------|------------|
-| relevance(d, x) + collection_boost | 0.30 | Embedding similarity + per-collection bonus (config.yaml active values: facts +0.15, summaries +0.10, conversations +0.00, semantic +0.05, wiki +0.05) |
+| relevance(d, x) + collection_boost | 0.30 | Embedding similarity + per-collection bonus (config.yaml active values: facts +0.10, summaries +0.10, conversations +0.30, semantic +0.05, wiki +0.05, daemon_self_notes -0.05) |
 | recency(d) | 0.22 | Time decay (see temporal curves below) |
 | truth(d) | 0.18 | Evidence-based reliability via TruthScorer.compute_effective_truth() (see truth decay below) |
 | importance(d) | 0.05 | Content-based importance in [0,1] |
@@ -181,11 +191,11 @@ structure = 0.15 * density_alignment
 
 | Penalty | Value | Condition |
 |---------|-------|-----------|
-| deictic_anchor_penalty | -0.10 | Deictic follow-up AND anchor_overlap < 0.05 |
+| deictic_anchor_penalty | -0.25 (live config.yaml `gating.deictic_anchor_penalty`; code default -0.10) | Deictic follow-up AND anchor_overlap < 0.05 |
 | analogy_penalty | -0.10 | numeric_op_density > 0.08 AND analogy markers AND "analogy" not in query |
 | size_penalty | -0.25 * (size_bytes / 10000), capped at -1.0 | Document > 10KB AND keyword_score < 0.30 |
 | staleness_penalty | -min(staleness_ratio * STALENESS_WEIGHT, 0.4) | staleness_ratio > 0 (summaries/reflections with outdated claims). 2x multiplier at ratio >= 0.8; reflections at 60% weight |
-| deictic_drift | final_score *= 0.85 | Post-calculation: deictic AND continuity < 0.12 AND anchor_bonus < 0.04 |
+| deictic_drift | final_score *= 0.85 | Post-calculation: deictic AND continuity < `DEICTIC_CONTINUITY_MIN` (live config.yaml 0.25; code default 0.12) AND anchor_bonus < 0.04 |
 
 **Temporal-aware recency** (when intent = TEMPORAL_RECALL with anchor window alpha hours):
 
@@ -207,6 +217,8 @@ Large anchor (alpha > 48h, e.g. "last week"/"last month"):
 The small-anchor regime keeps all memories within the window at near-equal recency (~0.85–1.0), letting relevance/truth/importance differentiate. The large-anchor regime peaks near the anchor and penalizes too-recent memories since the user asked about a specific past period.
 
 Default recency (no temporal anchor): `recency(d) = 1.0 / (1.0 + 0.05 * age_hours)`
+
+`d.timestamp` resolves as: top-level `timestamp` → `metadata['timestamp']` → now (2026-07-08 fix — the hybrid/semantic retrieval path set no top-level timestamp, so every memory it returned got age 0 and `recency = 1.0`, i.e. the recency term was dead for the main retrieval path).
 
 **Continuity formula** (stemmed token overlap + recency + tag-keyword bonus):
 
@@ -246,9 +258,9 @@ The final retrieval returns: rho(x, C) = top-K documents sorted by sigma descend
 Ephemeral predicates (current_feeling, is, has, thinks, etc.) represent transient state that should not persist as durable facts. Two filtering layers:
 
 1. **Extraction-time blocking** (`fact_extractor.py`): Triples with predicates in `PROFILE_EPHEMERAL_RELATIONS` are silently dropped during `extract_facts()`, preventing storage entirely.
-2. **Retrieval-time TTL expiry** (`memory_retriever.py`): Facts with ephemeral predicates that were stored before extraction-time blocking was added are filtered at retrieval time if older than `PROFILE_EPHEMERAL_TTL_HOURS` (default 24h). The age is computed from the document timestamp.
+2. **Retrieval-time per-relation TTL expiry** (`memory_retriever.py`): `_fact_ephemeral_ttl()` asks the shared classifier (`memory/relation_classifier.py`, the single source of truth for relation->TTL) for each fact's horizon: health-transient relations get `PROFILE_HEALTH_TRANSIENT_TTL_HOURS` (default 96h), standard ephemeral relations get `PROFILE_EPHEMERAL_TTL_HOURS` (default 24h), durable relations never expire (permanent conditions like `disability`/`chronic_condition` are pinned durable). Facts older than their TTL are dropped from results; facts with `is_current=False` or `superseded_by` metadata are dropped regardless of age.
 
-The same `PROFILE_EPHEMERAL_RELATIONS` set governs both layers, ensuring consistency. The LLM fact extractor (`llm_fact_extractor.py`) also checks `_is_ephemeral_relation()` and skips ephemeral triples.
+Extraction-time blocking uses the exact `PROFILE_EPHEMERAL_RELATIONS` list; retrieval-time expiry uses the broader relation classifier (health-transient facts *should* be stored, just aged out on read). The LLM fact extractor (`llm_fact_extractor.py`) also checks `_is_ephemeral_relation()` and skips ephemeral triples.
 
 **Code**: `memory/fact_extractor.py` (extraction blocking), `memory/memory_retriever.py` (retrieval TTL), `memory/llm_fact_extractor.py` (LLM extraction blocking)
 
@@ -262,7 +274,7 @@ beta : X x D* x iota x E -> P
 
 where P is the **prompt space** (system prompt + context + query, token-budgeted). The **system prompt** is composed from two text files: an editable personality file (`config/prompts/default_personality.txt` or user's `custom_personality.txt`) concatenated with immutable operating principles (`config/prompts/operating_principles.txt`), with placeholder substitution for `{USER_NAME}`, `{USER_PRONOUNS}`, etc. This replaces the former JSON-based `PersonalityManager`.
 
-The token budget is **model-aware**: computed as `min(context_window * 0.25, ceiling)` clamped to `[floor, ceiling]`, with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps. Post-budget **floor guarantees** ensure critical sections survive trimming: recent conversations (min 5), summaries (min 10), reflections (min 10). The agentic controller enforces its own budget on accumulated search context (`context_budget_tokens` default 8000) and trims low-value sections from the final prompt if total exceeds ceiling.
+The token budget is **model-aware**: computed as `min(context_window * 0.12, ceiling)` clamped to `[floor=8000, ceiling=16000]` (config.yaml `token_budget`), with separate caps for local vs API models. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps. Post-budget **floor guarantees** ensure critical sections survive trimming: recent conversations (min 5), summaries (min 10), reflections (min 10). The agentic controller enforces its own budget on accumulated search context (`context_budget_tokens` default 8000) and trims low-value sections from the final prompt if total exceeds ceiling.
 
 Assembly produces an ordered sequence of 30 conditional sections:
 
@@ -272,11 +284,11 @@ prompt = [
     [RELEVANT MEMORIES]                      // always (semantic hits with timestamps)
     [RECENT SUMMARIES]                       // if available (compressed recent history)
     [SEMANTIC SUMMARIES]                     // if available (relevant compressed history)
+    [RECENT REFLECTIONS]                     // if available (recent meta insights)
+    [SEMANTIC REFLECTIONS]                   // if available (relevant meta insights)
     [BACKGROUND KNOWLEDGE]                   // if available (Wikipedia)
     [WEB SEARCH RESULTS]                     // if triggered (Tavily results with sources)
     [RELEVANT INFORMATION]                   // if available (semantic chunks)
-    [RECENT REFLECTIONS]                     // if available (recent meta insights)
-    [SEMANTIC REFLECTIONS]                   // if available (relevant meta insights)
     [DREAMS]                                 // if enabled
     [USER'S PERSONAL NOTES]                  // if available (Obsidian vault, gated at 0.30)
     [USER UPLOADED ITEMS]                    // if available (files/images)
@@ -303,7 +315,7 @@ prompt = [
 
 Sections near the end receive higher attention weight in transformer models. The ordering places high-signal, low-token sections (user profile, time, STM, query) in the high-attention zone.
 
-Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 40,000 tokens (API) / 12,000 (local) with two-tier compression: heavily oversized items (≥3x over token limit) get LLM summary via `_llm_compress_oversized()` (async parallel batch, ~0.3-0.5s), while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle).
+Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 15,000 tokens (API) / 12,000 (local) with two-tier compression: heavily oversized items (≥3x over token limit) get LLM summary via `_llm_compress_oversized()` (async parallel batch, ~0.3-0.5s), while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle).
 
 **Code**: `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration)
 
@@ -544,11 +556,12 @@ delta_shutdown(s):
     save_to_disk(s'.G, "data/knowledge_graph.json")           // dirty-flag optimization
     save_to_disk(aliases, "data/entity_aliases.json")
 
-    // Step 8: Cross-collection deduplication (DRY-RUN ONLY)
+    // Step 8: Cross-collection deduplication (mode-dependent)
     dedup_plan <- scan_duplicates(s'.C, threshold=0.92)       // cosine similarity
     contradictions <- scan_contradictions(s'.C)                // same subject+predicate, diff object
-    log_preview(dedup_plan, contradictions)                    // NEVER auto-deletes
-    // Live deletions require explicit GUI action (Preview/Run buttons)
+    // DAEMON_MODE=dev (current config.yaml): dry_run=True — log preview only, never auto-deletes;
+    //   live deletions require explicit GUI action (Preview/Run buttons)
+    // DAEMON_MODE=user: CROSS_DEDUP_AUTO_EXECUTE=True — dedup plan auto-executes at shutdown
 
     // Step 9: Session-end reflection
     reflection <- reflect(s.H, summaries)                     // LLM meta-reflection
@@ -557,7 +570,14 @@ delta_shutdown(s):
     return s'
 ```
 
-**Critical invariant**: No user data is auto-deleted at shutdown. Dedup runs dry_run=True only. Thread cap enforcement (Step 6c) is the only deletion, and it removes lowest-priority threads when over the cap.
+Synthesis dreaming (Section 13) is NOT part of delta_shutdown: it runs as a
+separate standalone step driven by `main.py` after `process_shutdown_memory()`
+returns, under its own `SYNTHESIS_DREAM_TIMEOUT_S` (240s) budget (entry:
+`MemoryCoordinator.run_synthesis_dreaming()`), so its slow per-candidate LLM
+coherence judge isn't cancelled by the shared `SHUTDOWN_TASK_TIMEOUT_S` (60s)
+budget.
+
+**Critical invariant**: In dev mode (the current config.yaml setting), no user data is auto-deleted at shutdown — dedup runs dry_run=True; thread cap enforcement (Step 6c) is the only deletion, removing lowest-priority threads when over the cap. In user mode, the dedup plan auto-executes (`CROSS_DEDUP_AUTO_EXECUTE=True`); protected collections (conversations, obsidian_notes, reference_docs, wiki_knowledge) are never scanned in either mode.
 
 **Code**: `shutdown_processor.py`
 
@@ -574,11 +594,11 @@ C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U 
 | Category | Collections | Characteristics |
 |----------|-------------|-----------------|
 | Episodic | `conversations` | Raw turns. Recency-biased retrieval. Protected from dedup. |
-| Semantic | `facts`, `wiki_knowledge` | Triples + external knowledge. Truth-scored. Wiki queries route through FAISS (40M vectors); ChromaDB `wiki_knowledge` is fallback only. Wiki protected from dedup. |
+| Semantic | `facts`, `wiki_knowledge` | Triples + external knowledge. Truth-scored. Wiki queries route through FAISS (41M vectors); ChromaDB `wiki_knowledge` is fallback only. Wiki protected from dedup. |
 | Procedural | `procedural`, `procedural_skills` | Git commits + reusable patterns. Skill dedup at 0.85 threshold. |
 | Summary | `summaries` | Block-compressed conversation history. Relevance-biased. |
 | Reference | `obsidian_notes`, `reference_docs` | User notes + system docs. Protected from dedup. Gated at 0.30 threshold. |
-| Meta | `reflections`, `threads`, `proposals` | Session insights + open loops + code plans. Priority-scored (threads). |
+| Meta | `reflections`, `threads`, `proposals`, `daemon_self_notes` | Session insights + open loops + code plans + Daemon's own session notes (`ground_truth: False`). Priority-scored (threads). |
 | Synthesis | `synthesis_results` | Cross-domain insights with convergence tracking. Produced by shutdown dreaming. |
 | Visual | `visual_memories` | CLIP-embedded image metadata for visual recall. Intent-gated (disabled for casual/emotional/meta). Images dropped for non-vision models. |
 
@@ -617,7 +637,7 @@ Each intent type has a corresponding entry in the `_PROFILES` dict (`intent_clas
 CASUAL_SOCIAL zeroes out wiki, skills, proposals, git, and reference docs retrieval counts; TEMPORAL_RECALL threads a `_temporal_anchor_hours` key to reshape the scorer's decay curve. GENERAL uses all defaults unchanged.
 
 where:
-- **w_override** is a subset of R^6 overriding the weight vector [w_relevance, w_recency, w_truth, w_importance, w_continuity, w_topic_match]
+- **w_override** is a subset of R^6 overriding the weight vector [w_relevance, w_recency, w_truth, w_importance, w_continuity, w_structure]. Note the `structure` entries in the intent profiles are **inert**: `rank_memories()` never reads a `structure` weight — the structure term is always added directly as `0.15 * density_alignment`
 - **r_override** overrides retrieval counts (max memories, max facts, max summaries, etc.)
 - **g_override** overrides the gating threshold
 
@@ -716,25 +736,33 @@ Pi : {session_id, response_mode, model_name, thinking_block,
 
 The synthesis pipeline transforms candidate cross-domain connections into validated insights. It operates on the synthesis memory Sigma_t, independent of the conversational agent loop.
 
-### 13.1 Candidate Generation (Three-Tier)
+### 13.1 Candidate Generation
 
-Three generators run in parallel at shutdown, producing candidates for the shared filter:
+**Current state (2026-06-30):** the SOLE active generator is
+`PooledConceptSynthesisGenerator` (`knowledge/synthesis_pooled_generator.py`,
+config `synthesis_pooled.enabled: true`). It pairs prominent curated concepts
+from the 48-concept `CONCEPT_POOL` (`knowledge/synthesis_concept_pool.py`) in
+the non-obvious cosine band `0.2 <= cos(a,b) <= 0.45` and articulates a bridge
+claim per pair. The three original tiers below are **RETIRED** (config
+`synthesis_retrieval.enabled: false`, `graph_walk.enabled: false`,
+`synthesis_generator.enabled: false`) — kept here for the record; all
+generators feed the same shared filter:
 
 ```
-Tier 0 — RETRIEVAL (RetrievalSynthesisGenerator):
+Tier 0 — RETRIEVAL (RetrievalSynthesisGenerator) [RETIRED]:
   For each personal fact f in sample(C_facts):
     q_struct <- LLM_few_shot(f)                    // structural query extraction
     results  <- FAISS_search(q_struct, k=5)        // 40M Wikipedia vectors
     claim    <- LLM_adversarial(f, results)        // adversarial evaluation
     c        = (entity(f), wiki_article, claim, [], domains, dist)
 
-Tier 1 — WALK (GraphWalkGenerator):
+Tier 1 — WALK (GraphWalkGenerator) [RETIRED]:
   walk      <- biased_markov_walk(G, start, steps)  // Node2Vec-style, 2.0x personal return bias
   constraint: |domains(walk)| >= 2, hub_dampening(degree > 15)
   claim     <- LLM_narrate(walk)                    // walk narration prompt
   c         = (walk[0], walk[-1], claim, walk, domains, dist)
 
-Tier 2 — XSTORE (SynthesisGenerator):
+Tier 2 — XSTORE (SynthesisGenerator) [RETIRED]:
   a         <- sample(C_facts)                      // personal entity
   b         <- FAISS_sample(C_wiki)                 // random Wikipedia article
   claim     <- LLM_bridge(a, b)                     // bridge articulation
@@ -771,15 +799,16 @@ The pipeline short-circuits: if any g_i.passed = false, subsequent stages do not
 | g_3 | External novelty | 3 sub-checks: (a) max_sim(claim, C_wiki) < 0.88 (near-verbatim only), (b) cos(a, b) < 0.45 (concept co-occurrence — replaced an inverted bigram-FAISS signal 2026-06-27), (c) template_sim(claim) via regex generic pattern detection | O(log n) vector search |
 | g_4 | Internal novelty | path_hash not in existing.unique_paths (convergence pass) OR no match | O(log m) vector search |
 | g_5 | Coherence judge (`claude-opus-4.8`) | Two-pass: Pass 1 LLM_structural_coherence(a, b, claim) >= MODERATE; Pass 2 (MODERATE only) LLM_factual_skeptic(claim) = PASS | O(1-2) LLM calls |
-| g_6 | Composite score | composite(c) >= 0.65 | O(1) arithmetic |
+| g_6 | Composite score | composite(c) >= 0.70 (config `composite_min_score`) | O(1) arithmetic |
 
 ### 13.3 Composite Scoring
 
 ```
 score(c) = w_coh * coh(c) + w_nov * nov(c) + w_dist * dist_score(c) + w_str * str(c)
 
-where:
-  w_coh = 0.30, w_nov = 0.40, w_dist = 0.15, w_str = 0.15
+where (config.yaml `synthesis.weights`, recalibrated 2026-06-30 —
+accept is novelty-ranked, structural is dead weight):
+  w_coh = 0.35, w_nov = 0.60, w_dist = 0.05, w_str = 0.0
   coh(c) = CoherenceLevel.value in {0.0, 0.33, 0.66, 1.0}
   nov(c) = w_claim * (1 - claim_sim)           // claim novelty
          + w_cooc * (1 - cooccurrence_sim)      // co-occurrence novelty
@@ -825,12 +854,12 @@ On acceptance, a provisional bridge edge is created in the knowledge graph:
 
 ```
 If F(c).status = ACCEPTED:
-  G_{t+1}.E = G_t.E  U  {(c.a, c.b, relation=claim_summary, weight=0.5, provisional=true)}
+  G_{t+1}.E = G_t.E  U  {(c.a, c.b, relation=claim_summary, weight=0.0, status="provisional")}
 ```
 
-Provisional bridges mature to full weight (1.0) when independently rediscovered via convergence (Section 13.4). This creates a feedback loop: accepted synthesis insights densify the graph, enabling the walk generator (Tier 1) to produce candidates that cross the personal-wikidata boundary.
+Provisional bridges start at weight=0.0 and mature when independently rediscovered via convergence (Section 13.4). This creates a feedback loop: accepted synthesis insights densify the graph, enabling the walk generator (Tier 1) to produce candidates that cross the personal-wikidata boundary.
 
-**Code**: `knowledge/synthesis_models.py`, `knowledge/synthesis_filter.py`, `knowledge/synthesis_retriever.py`, `knowledge/graph_walk_generator.py`, `knowledge/synthesis_generator.py`, `memory/synthesis_memory.py`
+**Code**: `knowledge/synthesis_models.py`, `knowledge/synthesis_filter.py`, `knowledge/synthesis_pooled_generator.py` (active), `knowledge/synthesis_concept_pool.py`, `knowledge/synthesis_retriever.py` (retired), `knowledge/graph_walk_generator.py` (retired), `knowledge/synthesis_generator.py` (retired), `memory/synthesis_memory.py`
 
 ---
 
@@ -886,9 +915,10 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | Pi | Provenance record (session_id, response_mode, prompt_hash, ...) | `memory_storage.py` + `gui/handlers.py` |
 | Sigma | Synthesis memory (accepted SynthesisResult set) | `synthesis_memory.py` (ChromaDB `synthesis_results`) |
 | F | Synthesis filter (7-stage pipeline g_0 . ... . g_6; g_3 has 3 sub-checks; g_5 has 2-pass structure) | `synthesis_filter.py` |
-| Gen_0 | Retrieval synthesis generator (structural query -> FAISS -> adversarial eval) | `knowledge/synthesis_retriever.py` |
-| Gen_1 | Graph walk generator (biased Markov walk -> narration) | `knowledge/graph_walk_generator.py` |
-| Gen_2 | Cross-store synthesis generator (random pairing -> bridge articulation) | `knowledge/synthesis_generator.py` |
+| Gen_pool | Pooled concept generator (SOLE active: prominent concept pairs, cos 0.2-0.45) | `knowledge/synthesis_pooled_generator.py` |
+| Gen_0 | Retrieval synthesis generator (structural query -> FAISS -> adversarial eval) [RETIRED] | `knowledge/synthesis_retriever.py` |
+| Gen_1 | Graph walk generator (biased Markov walk -> narration) [RETIRED] | `knowledge/graph_walk_generator.py` |
+| Gen_2 | Cross-store synthesis generator (random pairing -> bridge articulation) [RETIRED] | `knowledge/synthesis_generator.py` |
 | is_uncertain | Uncertainty detection (length guard + ~18 keyword regex patterns + 8 semantic anchors, threshold 0.70) | `core/uncertainty_detector.py` |
 | pi_plan | Response plan (key_points, tone, avoid, strategy) | `core/response_planner.py` |
 | plan | Response planning function (lightweight LLM call) | `core/response_planner.py:create_plan()` |

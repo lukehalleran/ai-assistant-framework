@@ -28,6 +28,8 @@ Module Contract
   - Dynamic config: gym/health queries get expanded semantic pool and bypass gating
   - Topic pre-filtering with fallback to unfiltered when no matches
   - Deduplication via _get_memory_key (id → timestamp+content → content hash)
+  - Hybrid/semantic path surfaces metadata['timestamp'] as the top-level timestamp [2026-07-08]
+    so the scorer's recency term sees real age (a missing key scored as "now" → recency=1.0)
   - Optional strict top-up controlled by MEM_TOPUP_ENABLE env var
 - Dependencies:
   - memory.storage.multi_collection_chroma_store (vector queries)
@@ -1074,6 +1076,9 @@ class MemoryRetriever:
                         "query": result.get("query", ""),
                         "response": result.get("response", ""),
                         "metadata": result.get("metadata", {}),
+                        # Surface the stored timestamp so the scorer's recency
+                        # term sees real age (a missing key scored as "now").
+                        "timestamp": (result.get("metadata") or {}).get("timestamp"),
                         "collection": result.get("collection", "unknown"),
                         "final_score": boosted_score,
                         "semantic_score": result.get("semantic_score", 0.0),

@@ -134,6 +134,22 @@ _GENERIC_TOKENS = frozenset({
 AUDIT_CAPTURE_STAGES = frozenset({"coherence_judge", "composite_scoring"})
 
 
+# Fail-open sentinel reasons: when the judge LLM errors or returns empty content the
+# stage passes with a defaulted MODERATE (right for prod — an empty channel is not a
+# judgment; wrong for measurement — a defaulted verdict is not a rating). Instrument
+# scripts must exclude such rows from measured accept/level rates via
+# is_defaulted_coherence(); keep these strings in sync with _moderate_default below.
+DEFAULTED_COHERENCE_REASONS = (
+    "LLM unavailable -- default MODERATE",
+    "Empty coherence response -- default MODERATE",
+)
+
+
+def is_defaulted_coherence(justification) -> bool:
+    """True when a coherence level came from the fail-open MODERATE default, not a rating."""
+    return (justification or "") in DEFAULTED_COHERENCE_REASONS
+
+
 def _extract_faiss_similarity(results: list) -> float:
     """Extract the top cosine similarity from FAISS search results (0-1 scale)."""
     if not results:

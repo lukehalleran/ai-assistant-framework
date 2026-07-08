@@ -69,18 +69,18 @@ system — all data stays on disk, API calls go to LLM providers only.
 ### Key Numbers
 
 ```
-Python lines:           ~162,000 (incl. tests)
-Python files:           456+
-Test files:             211
-Test functions:         3,800+
+Python lines:           ~182,000 (incl. tests)
+Python files:           516+
+Test files:             245
+Test functions:         ~5,000
 ChromaDB collections:   14
-Prompt sections:        28 (conditional)
+Prompt sections:        31 (conditional)
 Intent types:           9
-Parallel retrieval:     20 async tasks
+Parallel retrieval:     22 async tasks
 Memory tiers:           5
-Agentic tools:          19
+Agentic tools:          20
 Gating latency:         ~200ms
-Config options:         180+
+Config options:         ~380 keys (52 YAML sections)
 ```
 
 ### Entry Points
@@ -144,9 +144,9 @@ core/                    # Request orchestration, context pipeline, agentic loop
     ├── builder.py       # Thin orchestrator: parallel task dispatch, intent overrides, budget
     ├── context_gatherer.py  # Mixin compositor: init + properties (composes 3 gatherer mixins)
     ├── gatherer_web.py      # WebSearchMixin: web search retrieval + trigger logic
-    ├── gatherer_memory.py   # MemoryRetrievalMixin: 17 memory/summary/reflection/facts methods
-    ├── gatherer_knowledge.py # KnowledgeRetrievalMixin: 16 knowledge retrieval methods
-    ├── formatter.py     # 28-section assembly + attention ordering + feature inventory
+    ├── gatherer_memory.py   # MemoryRetrievalMixin: 18 memory/summary/reflection/facts methods
+    ├── gatherer_knowledge.py # KnowledgeRetrievalMixin: 19 knowledge retrieval methods
+    ├── formatter.py     # 31-section assembly + attention ordering + feature inventory
     ├── hygiene.py       # ContentHygiene: dedup, caps, backfill
     └── token_manager.py # Priority-based budget management
 
@@ -175,10 +175,13 @@ knowledge/               # External knowledge integration
 ├── web_search_manager.py      # Tavily API + caching + numbered web citations
 ├── wolfram_manager.py         # Wolfram Alpha + rate limiting
 ├── sandbox_manager.py         # E2B code sandbox
-├── synthesis_generator.py     # Cross-store synthesis candidates (Tier 2)
-├── synthesis_retriever.py     # Structural query + FAISS synthesis (Tier 0)
+├── synthesis_pooled_generator.py # PRIMARY discovery generator (pooled prominent concepts)
+├── synthesis_concept_pool.py  # Curated prominent cross-domain concept pool
+├── synthesis_generator.py     # Cross-store synthesis candidates (Tier 2, RETIRED)
+├── synthesis_retriever.py     # Structural query + FAISS synthesis (Tier 0, RETIRED)
 ├── synthesis_filter.py        # 7-stage synthesis filter
-├── graph_walk_generator.py    # Biased Markov walk synthesis (Tier 1)
+├── doc_cooccurrence.py        # Document co-occurrence "known" oracle
+├── graph_walk_generator.py    # Biased Markov walk synthesis (Tier 1, RETIRED)
 ├── synthesis_models.py        # Synthesis pipeline data models + enums
 ├── implementation_detector.py # Proposal implementation tracking
 ├── reference_docs_manager.py  # Auto-seeded docs/
@@ -192,7 +195,7 @@ knowledge/               # External knowledge integration
 
 eval/                    # Prompt section ablation & eval system
 ├── schema.py              # Pure data models (no Daemon imports)
-├── section_registry.py    # 28-entry canonical section registry
+├── section_registry.py    # 31-entry canonical section registry
 ├── snapshots.py           # Snapshot capture, replay, save/load
 ├── variants.py            # LOO, AOI, bundle, reorder variant generation
 ├── corpus.py              # 27-query seed corpus (3 per intent type)
@@ -207,6 +210,9 @@ utils/
 ├── tone_detector.py           # Crisis detection (250+ keywords)
 ├── web_search_trigger.py      # Keyword + semantic + LLM trigger detection
 ├── location_resolver.py       # User location (override → IP geo → profile) for query localization
+│                              #   + strip_unjustified_location() scope-guard backstop [2026-07-08]:
+│                              #   location is for physical-surroundings queries only, never
+│                              #   institution/account/login (wrong-college regression guard)
 ├── file_processor.py          # File upload processing
 ├── text_chunking.py           # Header-based + size-based chunking
 ├── destructive_op_guard.py    # Git command classifier (blocks destructive ops)
@@ -254,7 +260,7 @@ User types: "How's my squat progress looking?"
     │     "squat" resolves to graph entity → neighbors: powerlifting, deadlift
     │     Expanded query: "How's my squat progress looking? powerlifting deadlift"
     │
-    ├─ 4. Parallel Retrieval (20 async tasks, 30s timeout)
+    ├─ 4. Parallel Retrieval (22 async tasks, 30s timeout)
     │     Recent conversations, semantic memories, facts, summaries,
     │     reflections, wiki, personal notes, graph context, threads,
     │     proactive insights, procedural skills, Google Calendar events,
@@ -269,14 +275,14 @@ User types: "How's my squat progress looking?"
     │     continuity + structure + graph bonus − staleness penalty
     │     Intent FACTUAL_RECALL boosts truth weight to 0.30
     │
-    ├─ 7. Prompt Assembly (28 conditional sections)
+    ├─ 7. Prompt Assembly (31 conditional sections)
     │     Token-budgeted: priority-based trimming, middle-out compression,
     │     LLM compression for oversized items
     │     High-signal sections placed at end for transformer attention
     │     ResponsePlanner runs in parallel with retrieval (Step 4), plan injected into system prompt
     │
     ├─ 8. Agentic Gate Check (core/agentic/gate.py)
-    │     4-tier: keyword heuristic → knowledge keywords → entity match → LLM fallback
+    │     4-tier: keyword heuristics → entity match → doc/note intent → LLM fallback
     │     If triggered → ReAct loop (think → tool → observe, max 5 rounds)
     │     If not → standard generation
     │     If propose_action called → GUI shows approve/reject buttons before execution
@@ -359,7 +365,7 @@ information downstream:
 ContextResult:
   processed_query    — rewritten query (or original if rewrite skipped)
   original_query     — always preserved unmodified
-  tone_level         — CRISIS / ELEVATED / CONCERN / CONVERSATIONAL
+  tone_level         — HIGH (crisis) / MEDIUM (elevated) / CONCERN / CONVERSATIONAL
   tone_instructions  — mode-specific response guidelines
   topics             — extracted topic list
   primary_topic      — main topic string
@@ -460,7 +466,7 @@ Each intent maps to a profile with three override sets:
 **Weight overrides** reshape the scoring function. The general pattern is
 lowered recency and raised continuity: five intents (FACTUAL_RECALL,
 TECHNICAL_HELP, CREATIVE_EXPLORATION, PROJECT_WORK, TEMPORAL_RECALL via
-anchor) lower recency from the default 0.25, while five intents
+anchor) lower recency from the default 0.22, while five intents
 (EMOTIONAL_SUPPORT 0.40, CASUAL_SOCIAL 0.25, TEMPORAL_RECALL 0.20,
 TECHNICAL_HELP 0.20, CREATIVE_EXPLORATION 0.20) raise continuity from
 the default 0.10. FACTUAL_RECALL boosts truth to 0.30 and drops recency
@@ -725,25 +731,25 @@ The `WikidataEntityMapper` embedding threshold was also raised from 0.60 to
 
 ### Parallel Retrieval Architecture
 
-When a prompt is being built, `builder.py` launches 20 async retrieval
+When a prompt is being built, `builder.py` launches up to 22 async retrieval
 tasks via `asyncio.gather()` with a 30-second timeout. Each task is
 implemented across three gatherer mixins (composed by `context_gatherer.py`)
 and fetches from a different source or collection:
 
 | Task | Source | Count | Notes |
 |------|--------|-------|-------|
-| Recent conversations | Corpus (recency) | 15 | Recency-ordered, no gating |
-| Semantic memories | ChromaDB multi-collection | 15 | Cosine + cross-encoder gated |
+| Recent conversations | Corpus (recency) | 10 | Recency-ordered, no gating |
+| Semantic memories | ChromaDB multi-collection | 30 | Cosine + cross-encoder gated |
 | Recent summaries | ChromaDB `summaries` | 5 | Time-ordered |
 | Semantic summaries | ChromaDB `summaries` | 5 | Relevance-ordered |
-| Recent reflections | ChromaDB `reflections` | 3 | Time-ordered |
-| Semantic reflections | ChromaDB `reflections` | 3 | Relevance-ordered |
+| Recent reflections | ChromaDB `reflections` | 5 | Time-ordered |
+| Semantic reflections | ChromaDB `reflections` | 5 | Relevance-ordered |
 | Graph context | Knowledge graph BFS | 12 sentences | Natural language from traversal |
 | Procedural skills | ChromaDB `procedural_skills` | 5 (over-fetched 3x) | Adaptive workflows, filtered by SkillActivationPolicy |
 | Unresolved threads | ChromaDB `threads` | 3 | Priority-ranked |
 | Proactive insights | ContextSurfacer | 2 | LLM once/session, cached |
-| Wiki content | FAISS (40M vectors, IVFPQ index) | 3 | Gated at 0.30 threshold; falls back to ChromaDB if FAISS unavailable |
-| Reference docs | ChromaDB `reference_docs` | 5 | Auto-seeded from docs/ |
+| Wiki content | FAISS (41M vectors, IVFPQ index) | 3 | Gated at 0.30 threshold; falls back to ChromaDB if FAISS unavailable |
+| Reference docs | ChromaDB `reference_docs` | 15 | Auto-seeded from docs/ |
 | Personal notes | ChromaDB `obsidian_notes` | 5 | Gated at 0.30 threshold |
 | Git commits | ChromaDB `procedural` | 10 | Project history |
 | Web search | Tavily API | if triggered | Cached 72 hours |
@@ -892,19 +898,29 @@ parameterized by intent.
 
 ### Default Weight Vector
 
+Live weights come from `config.yaml` `gating.score_weights` (the
+0.35/0.25/0.20 vector hard-coded in `app_config.py` is only a fallback
+if the YAML key is absent — it isn't, so it's dead):
+
 ```
-relevance:  0.35    # Embedding similarity from ChromaDB
-recency:    0.25    # Temporal decay (active-day aware)
-truth:      0.20    # Evidence-based correctness via TruthScorer
-importance: 0.05    # Content-based retention priority
-continuity: 0.10    # Token overlap with current conversation
-structure:  0.05    # Numeric/operator density alignment
+relevance:   0.30    # Embedding similarity from ChromaDB
+recency:     0.22    # Temporal decay (active-day aware)
+truth:       0.18    # Evidence-based correctness via TruthScorer
+importance:  0.05    # Content-based retention priority
+continuity:  0.10    # Token overlap with current conversation
+topic_match: 0.10    # Topic alignment
 ```
+
+Structure is NOT part of the weighted sum — the `structure` dict entry is
+unused; structural (numeric/operator density) alignment is added directly
+as an additive `0.15 * density_alignment` term.
 
 ### 12-Step Scoring Algorithm
 
 1. **Base relevance** — Embedding similarity + per-collection boost
-   (facts +0.15, summaries +0.10, semantic +0.05, wiki +0.05)
+   (live `memory.collection_boosts` in config.yaml: conversations +0.30,
+   facts +0.10, summaries +0.10, semantic +0.05, wiki +0.05,
+   daemon_self_notes −0.05)
 2. **Recency decay** — Two-regime temporal decay when a temporal anchor
    is present. Small anchors (<=48h, e.g. "today"/"yesterday"): flat
    plateau inside window, steep dropoff outside. Large anchors (>48h,
@@ -924,7 +940,8 @@ structure:  0.05    # Numeric/operator density alignment
    query and memory
 7. **Penalties** — Analogy penalty (-0.1), size penalty (scales from 10KB+)
 8. **Anchor bonus** — Salient token overlap with conversation context;
-   deictic queries get +0.2 or -0.15 based on overlap
+   deictic queries get +0.2·overlap or a -0.25 penalty
+   (`gating.deictic_anchor_penalty`) when overlap < 0.05
 9. **Tone adjustment** — Dismissive language in memory → truth reduced 0.2
 10. **Topic match** — 1.0 exact / 0.5 unknown / 0.2 mismatch (usually
     weight=0.0, enabled per-intent)
@@ -944,9 +961,10 @@ curve uses two regimes depending on anchor size:
 - **Small anchor** (<=48h, "today"/"yesterday"): Flat plateau inside
   window (1.0 → 0.85), steep dropoff outside. All memories within the
   window score nearly equal — relevance/truth/importance differentiate.
-- **Large anchor** (>48h, "last week"/"last month"): Peak near the
-  anchor time, penalize too-recent. The floor scales with anchor size
-  (0.45 at 168h+). User asked about a specific past period, not now.
+- **Large anchor** (>48h, "last week"/"last month"): Sqrt ramp from a
+  floor up to 1.0 at the anchor time, so too-recent memories score lower.
+  The floor scales with anchor size: `max(0.60, 1 − anchor/500)` (~0.66
+  at 168h). User asked about a specific past period, not now.
 
 This makes memories from the target time period rank much higher than
 they would with standard decay.
@@ -956,16 +974,16 @@ they would with standard decay.
 Memory: *"User's squat is 365lb, set last month at the gym"*
 
 ```
-relevance:    0.35 × 0.82 = 0.287    (high semantic match)
-recency:      0.25 × 0.45 = 0.113    (3 weeks old)
-truth:        0.20 × 0.85 = 0.170    (confirmed once)
+relevance:    0.30 × 0.82 = 0.246    (high semantic match)
+recency:      0.22 × 0.45 = 0.099    (3 weeks old)
+truth:        0.18 × 0.85 = 0.153    (confirmed once)
 importance:   0.05 × 0.60 = 0.030    (moderate)
 continuity:   0.10 × 0.15 = 0.015    ("squat" token overlap)
-structure:    0.15 × 0.90 = 0.135    (numeric density "365lb")
+structure:    0.15 × 0.90 = 0.135    (additive, numeric density "365lb")
 graph_bonus:  0.05                    (1 neighbor "powerlifting")
 staleness:    0.00                    (no stale claims)
 ─────────────────────────────────────
-final_score:  0.805
+final_score:  0.728
 ```
 
 ---
@@ -975,9 +993,10 @@ final_score:  0.805
 **Files**: `core/prompt/formatter.py` (`_assemble_prompt()`), `core/prompt/hygiene.py` (`ContentHygiene`),
 `core/prompt/token_manager.py`
 
-### 28 Conditional Sections
+### 31 Conditional Sections
 
-The prompt is assembled from up to 28 sections, ordered by transformer
+The prompt is assembled from up to 30 in-prompt sections (31 entries in
+the eval section registry, which also counts the system prompt), ordered by transformer
 attention patterns — high-signal, low-token sections are placed at the
 end for maximum attention weight:
 
@@ -1016,9 +1035,12 @@ end for maximum attention weight:
 
 ### Token Budget Management
 
-The prompt has a finite token budget: `min(context_window * 0.25, ceiling)`
-clamped to `[floor, ceiling]`, with separate caps for local vs API models.
-Default budget: 40,000 tokens (API models), 12,000 tokens (local models).
+The prompt has a finite token budget: `context_window *
+PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION` (0.12) clamped to
+`[PROMPT_TOKEN_BUDGET_FLOOR=8,000, PROMPT_TOKEN_BUDGET_CEILING=16,000]`,
+with separate caps for local vs API models. Default budget:
+`PROMPT_TOKEN_BUDGET_DEFAULT=15,000` tokens (API models),
+`PROMPT_TOKEN_BUDGET_LOCAL=12,000` tokens (local models).
 
 Sections are assigned priorities for trimming:
 
@@ -1151,7 +1173,7 @@ When a query needs more than stored memory — real-time information,
 computation, or deeper memory exploration — Daemon enters a multi-round
 ReAct (Reason + Act) loop.
 
-### Triggering: 5-Tier Gate
+### Triggering: 4-Tier Gate
 
 The agentic gate in `core/agentic/gate.py` (`evaluate_agentic_gate()`) decides whether to enter the loop:
 
@@ -1169,12 +1191,15 @@ The agentic gate in `core/agentic/gate.py` (`evaluate_agentic_gate()`) decides w
    file-offer) route to tools so `file_read`/`file_list`/`get_full_document`
    are offered; this also counts as an explicit request (bypasses the
    intent veto), and a gate miss degrades to an honest enhanced-mode offer.
-1b. **Knowledge keywords** (instant, added 2026-03-31) — Domain-specific
+   Tier 1 also covers knowledge keywords (added 2026-03-31) — domain-specific
    keywords for reference docs and knowledge base queries.
 2. **Entity match** (instant) — Query terms checked against knowledge
    graph alias index. Mentions of known entities (Biscuit, Sam, etc.)
    auto-route to agentic memory search
-3. **LLM fallback** — Piggybacks on the web search trigger LLM call (zero
+3. **Document generation / self-note intent** (instant) — "write a report
+   about X" / "make a note for yourself" style requests detected without
+   an LLM call.
+4. **LLM fallback** — Piggybacks on the web search trigger LLM call (zero
    extra cost). The `WebSearchDecision` model includes a
    `needs_memory_search` field. Memory search takes priority over web
    search: if the LLM returns both `should_search=True` and
@@ -1217,7 +1242,11 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
   retry is silently discarded and the original stays visible.
 - This prevents the jarring UX of showing the same response twice.
 
-### 19 Tools (18 action + done_searching)
+### 22 Tool Definitions (21 action + done_searching; 20 offered in the loop)
+
+`recall_image` has a tool definition and dispatch route but is deliberately
+excluded from the iteration tool list (visual retrieval already runs in the
+RAG pipeline; re-offering it in the loop wasted API credits).
 
 | Tool | Implementation | Key Feature |
 |------|---------------|-------------|
@@ -1239,6 +1268,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
 | Generate Document | DocumentGenerator | Structured markdown reports/summaries from web search + ChromaDB sources. Output to `documents/`. Also triggered directly by "write a report about X". |
 | Create Daemon Note | DaemonNotesManager | Structured self-notes for future sessions (decisions, risks, next steps). Stored in `daemon_self_notes` collection with `ground_truth: False`. |
 | Propose Action | `core/actions/` (types + executors) | Propose internet write action requiring user confirmation (email, telegram, discord, GitHub issues, calendar events). GUI shows approve/reject buttons; execution only on explicit approval. |
+| Lookup Contact | GoogleContactsManager (`core/actions/google_contacts.py`) | Resolve a person's name to an email address via People API saved + other contacts, with Gmail header-search fallback. |
 | Done Searching | Control signal | Model declares search complete, triggers final synthesis |
 
 ### ReAct Loop Structure
@@ -1530,11 +1560,11 @@ The `TruthScorer` is a stateless utility that computes truth scores based
 on evidence history rather than access counts (the old echo-chamber system
 was removed).
 
-**Initial scores** by source:
-- `user_stated`: 0.85 (user directly said it)
-- `corrected`: 0.90 (user corrected a previous fact)
+**Initial scores** by source (`TRUTH_SCORER_SOURCE_SCORES`):
+- `user_stated`: 0.80 (user directly said it)
+- `corrected`: 0.85 (user corrected a previous fact)
 - `llm_extracted`: 0.70 (LLM inferred it)
-- `inferred`: 0.60 (system deduced it)
+- `inferred`: 0.50 (system deduced it)
 
 **Score adjustments**:
 - Confirmation: +0.08 (user restates the fact)
@@ -1825,31 +1855,41 @@ via the `ClaimIndex`.
 
 ## 21. Synthesis Pipeline
 
-**Files**: `knowledge/synthesis_retriever.py`, `knowledge/graph_walk_generator.py`,
+**Files**: `knowledge/synthesis_pooled_generator.py`, `knowledge/synthesis_concept_pool.py`,
+`knowledge/synthesis_retriever.py`, `knowledge/graph_walk_generator.py`,
 `knowledge/synthesis_generator.py`, `knowledge/synthesis_filter.py`,
-`memory/synthesis_memory.py`, `knowledge/synthesis_models.py`
+`knowledge/doc_cooccurrence.py`, `memory/synthesis_memory.py`, `knowledge/synthesis_models.py`
 **Deep dive**: `SYNTHESIS_FILTER.md`
 
 The synthesis pipeline is Daemon's long-term value proposition — automated
 discovery of non-obvious connections between concepts from different
 domains. It runs as a "dreaming" step during session shutdown.
 
-> **Current status (2026-04):** All three generators (retrieval, graph walk,
-> cross-store) are **disabled** in `config.yaml` pending grading validation.
-> No new synthesis candidates are being generated. Existing results in the
-> audit queue are available for grading. See `docs/grading_plan.md` for the
-> validation protocol.
+> **Current status (2026-06-30):** Synthesis generation is **enabled** for
+> organic audit-queue accumulation, but the discovery generator is now the
+> `PooledConceptSynthesisGenerator` alone (`synthesis_pooled.enabled: true`).
+> The three original tiers (retrieval, graph walk, cross-store) are
+> **RETIRED** (`enabled: false` in `config.yaml`) — they paired
+> thin/low-prominence concepts and produced ~0 accepts. See
+> `docs/SYNTHESIS_VALIDATION.md` and `docs/grading_plan.md`.
 
-### Candidate Generation (Three-Tier)
+### Candidate Generation
 
-Three generators run in parallel at shutdown, each with independent quotas.
-All produce `SynthesisCandidate` objects for the same filter pipeline.
+**Primary — PooledConceptSynthesisGenerator**
+(`knowledge/synthesis_pooled_generator.py`): pairs PROMINENT curated
+concepts from `synthesis_concept_pool.py` (`CONCEPT_POOL`, 48 curated
+cross-domain concepts, growable) within the non-obvious cosine band
+(`min_cos=0.2`, `max_cos=0.45`), then uses an LLM to articulate the bridge.
+~17% accept / ~46% MODERATE+STRONG vs ~0 for the retired tiers — the lever
+is concept prominence, not anchoring. Config: `synthesis_pooled`
+(`candidates_per_session: 8`).
+
+The retired tiers (kept in-tree, all `enabled: false`):
 
 **Tier 0 — RetrievalSynthesisGenerator** (`knowledge/synthesis_retriever.py`):
-Structural query extraction (few-shot LLM) → FAISS semantic search (40M
-vectors) → adversarial evaluation. Highest-quality candidates because the
-retrieval query targets structural patterns rather than surface similarity.
-Drop-in replacement interface for `SynthesisGenerator`.
+Structural query extraction (few-shot LLM) → FAISS semantic search (41M
+vectors) → adversarial evaluation. Drop-in replacement interface for
+`SynthesisGenerator`.
 
 **Tier 1 — GraphWalkGenerator** (`knowledge/graph_walk_generator.py`):
 Biased Markov random walks on the unified personal+wikidata graph.
@@ -1857,7 +1897,8 @@ Node2Vec-style return bias (2.0x toward personal nodes). Hub dampening
 (log-scale penalty for degree > `GRAPH_WALK_HUB_DEGREE_THRESHOLD`=15)
 prevents walks from being dominated by highly-connected nodes. Cross-domain
 walk constraint requires walks to touch >= `GRAPH_WALK_MIN_DOMAINS`=2
-distinct domain categories. Activated only when bridge edges >= 40.
+distinct domain categories. Self-gates until bridge edges >= 40
+(`GRAPH_WALK_MIN_BRIDGE_EDGES`).
 
 **Tier 2 — SynthesisGenerator** (`knowledge/synthesis_generator.py`):
 Cross-store sampling from ChromaDB facts + FAISS wiki. Forms cross-domain
@@ -1865,10 +1906,11 @@ pairs, uses LLM to articulate bridges. Namespace resolution via
 `_resolve_to_graph()` with 4-strategy fallback (EntityResolver → direct ID
 → slug form → display_name index).
 
-### 8-Stage Filter Pipeline
+### 7-Stage Filter Pipeline
 
-Candidates pass through 8 stages, ordered cheap-to-expensive. Any stage
-failure immediately rejects the candidate (short-circuit):
+Candidates pass through 7 stages (0–6), ordered cheap-to-expensive. Any stage
+failure immediately rejects the candidate (short-circuit); storage happens
+post-pipeline for survivors:
 
 | Stage | Gate | Cost | What It Does |
 |-------|------|------|-------------|
@@ -1878,8 +1920,8 @@ failure immediately rejects the candidate (short-circuit):
 | 3 | External Novelty | ~15ms | 3 sub-checks: claim sim vs wiki, concept co-occurrence vs wiki, template specificity vs generic patterns |
 | 4 | Internal Novelty | ~10ms | Check synthesis memory — new paths to same insight pass (convergence) |
 | 5 | Coherence Judge | ~1-4s | Two-pass LLM: structural coherence (Pass 1), factual skeptic (Pass 2, MODERATE only) |
-| 6 | Composite Score | ~0ms | Weighted: coherence(0.30) + novelty(0.40) + distance(0.15) + structural(0.15) ≥ 0.65 |
-| 7 | Storage | ~10ms | ChromaDB write to `synthesis_results`; composite-rejected stored for FN audit |
+| 6 | Composite Score | ~0ms | Weighted: coherence(0.35) + novelty(0.60) + distance(0.05) + structural(0.0) ≥ 0.70 (recalibrated 2026-06-30: accept is novelty-ranked) |
+| — | Storage (post-pipeline) | ~10ms | ChromaDB write to `synthesis_results`; judgment-stage rejects stored for FN audit |
 
 ### Stage 3: External Novelty (Three Sub-Checks)
 
@@ -1956,7 +1998,7 @@ model: `claude-opus-4.8` (upgraded from `gpt-4o-mini`, then `sonnet-4.5`).
 
 | Model | Precision | Recall | F1 |
 |-------|-----------|--------|-----|
-| Claude Opus 4.6 (two-pass) | Current production model | — | — |
+| Claude Opus 4.8 (two-pass) | Current production model | — | — |
 | Sonnet 4.5 (two-pass) | 90.9% | 100% | 95.2% |
 | GPT-4o-mini (two-pass) | 83.3% | 100% | 90.9% |
 
@@ -2027,10 +2069,14 @@ Step 8:  Open thread processing — Three phases:
          b. New thread extraction (commitments, deadlines, questions)
          c. Cap enforcement (prune lowest-priority if over max)
 
-Step 9:  Synthesis dreaming — Three-tier parallel candidate generation:
-         Tier 0 RetrievalSynthesisGenerator, Tier 1 GraphWalkGenerator,
-         Tier 2 SynthesisGenerator → 7-stage filter → convergence tracking
-         → provisional bridge creation on acceptance
+Step 9:  Synthesis dreaming — NOT part of this pipeline anymore: pulled out
+         of Phase B into its own standalone shutdown step
+         (`run_synthesis_dreaming()`, driven by main.py under its own
+         `SYNTHESIS_DREAM_TIMEOUT_S=240` budget, so the shared
+         `SHUTDOWN_TASK_TIMEOUT_S=60` budget can't cancel the slow
+         per-candidate coherence judge). PooledConceptSynthesisGenerator
+         → 7-stage filter → convergence tracking → provisional bridge
+         creation on acceptance
 
 Step 10: Wiki-to-graph enrichment — Tracked wiki articles from session
          added as graph nodes, linked to existing entities via
@@ -2117,7 +2163,7 @@ Secure Python execution in ephemeral Firecracker microVMs:
 6.5M+ articles (40M+ vectors) semantically indexed with FAISS:
 
 - Pipeline: download dump → parse XML → chunk (512 tokens) →
-  embed (BAAI/bge-small-en-v1.5) → build FAISS IVFPQ index
+  embed (sentence-transformers/all-MiniLM-L6-v2) → build FAISS IVFPQ index
 - IVFPQ compression: 48 subquantizers × 8 bits = 48 bytes/vector
   (~32x reduction from 1536-byte float32), index fits in ~2 GB RAM
 - Zero-copy metadata: parquet file read on-demand per query via

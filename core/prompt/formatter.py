@@ -952,6 +952,10 @@ class PromptFormatter:
                         citation_instruction = (
                             "Cite web sources using [WEB_N] markers (e.g., 'According to Reuters [WEB_1]...'). "
                             "Every factual claim from web sources MUST include a citation.\n"
+                            "Search results may be skewed toward the user's geographic area. NEVER assume an "
+                            "institution or business from these results (a school, bank, clinic, company) is "
+                            "the user's own unless the user or memory named it — say the institution is "
+                            "unidentified and ask, instead of presenting a nearby one's details as theirs.\n"
                         )
                         sections.append(
                             f"[WEB SEARCH RESULTS] n={len(ws_lines)}{cache_note}\n"

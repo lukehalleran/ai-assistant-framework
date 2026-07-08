@@ -24,12 +24,7 @@ nano .env  # or vim, emacs, etc.
 
 ### 2. Build and Run
 
-**Option A: Using helper script (recommended)**
-```bash
-./docker-compose-helper.sh start
-```
-
-**Option B: Using docker-compose directly**
+**Option A: Using docker-compose (recommended)**
 ```bash
 # Build image
 docker-compose build
@@ -41,10 +36,10 @@ docker-compose up -d
 docker-compose logs -f daemon-gui
 ```
 
-**Option C: Using standalone Docker**
+**Option B: Using standalone Docker**
 ```bash
 # Build image
-./build-docker.sh
+docker build -t daemon-rag-agent:latest .
 
 # Run container
 docker run -d \
@@ -113,17 +108,17 @@ The Dockerfile uses a two-stage build for optimal image size:
 
 ## Usage
 
-### Helper Script Commands
+### Common Commands
 
 ```bash
-./docker-compose-helper.sh start     # Build and start
-./docker-compose-helper.sh stop      # Stop services
-./docker-compose-helper.sh restart   # Restart services
-./docker-compose-helper.sh logs      # View logs
-./docker-compose-helper.sh status    # Check status
-./docker-compose-helper.sh health    # Test health endpoint
-./docker-compose-helper.sh cli       # Interactive CLI mode
-./docker-compose-helper.sh clean     # Remove all data
+docker-compose up -d --build         # Build and start
+docker-compose down                  # Stop services
+docker-compose restart daemon-gui    # Restart services
+docker-compose logs -f daemon-gui    # View logs
+docker-compose ps                    # Check status
+curl http://localhost:7860/health    # Test health endpoint
+docker-compose run --rm daemon-gui cli  # Interactive CLI mode
+docker-compose down -v               # Remove all data (volumes)
 ```
 
 ### Common Tasks
@@ -164,7 +159,7 @@ docker volume inspect daemon-rag-agent_daemon-data
 
 ### Environment Variables
 
-All configuration is done via `.env` file. See `.env.example` for full list of 105+ variables.
+Configuration is done via the `.env` file (a minimal template — most settings are controlled by `config/config.yaml`, with `config/config.local.yaml` for local overrides). See `.env.example` for the shipped template.
 
 **Required:**
 ```env
@@ -173,14 +168,14 @@ OPENAI_API_KEY=sk-...
 
 **Common overrides:**
 ```env
-# Model settings
-MODEL_MAX_TOKENS=4096
-PROMPT_TOKEN_BUDGET=2048
-DEFAULT_MODEL=gpt-4o-mini
+# Optional API keys
+# ANTHROPIC_API_KEY=..., TAVILY_API_KEY=..., WOLFRAM_APP_ID=..., E2B_API_KEY=...
 
-# Memory settings
-SUMMARY_EVERY_N=20
-MAX_CONVERSATIONS_BEFORE_SUMMARY=25
+# Mode: "user" (streamlined) or "dev" (all features)
+DAEMON_MODE=user
+
+# Prompt token budget (default 15000 from config.yaml)
+PROMPT_TOKEN_BUDGET=15000
 
 # Paths (inside container)
 CORPUS_FILE=/app/data/corpus_v4.json
@@ -355,9 +350,8 @@ docker-compose exec daemon-gui curl http://localhost:7860/health
 # Increase Docker memory limit
 # Docker Desktop: Settings → Resources → Memory
 
-# Or reduce model token limits in .env:
-MODEL_MAX_TOKENS=2048
-PROMPT_TOKEN_BUDGET=1024
+# Or reduce the prompt token budget in .env (floor is 8000):
+PROMPT_TOKEN_BUDGET=8000
 ```
 
 ### Slow Performance
@@ -368,11 +362,7 @@ PROMPT_TOKEN_BUDGET=1024
 
 **To improve:**
 1. Enable GPU support (see GPU section)
-2. Reduce context window:
-   ```env
-   PROMPT_MAX_MEMS=20
-   PROMPT_MAX_SEMANTIC=10
-   ```
+2. Reduce retrieval/context settings in `config/config.yaml` (e.g. the `token_budget:` section, per-section retrieval counts)
 3. Increase CPU allocation:
    ```yaml
    deploy:
@@ -610,9 +600,8 @@ jobs:
 - Data volumes: variable (starts ~100MB, grows with conversations)
 
 ### Q: Can I use other LLM providers?
-**A:** Yes, set provider in `.env`:
+**A:** Yes. Models/providers are configured in `config/config.yaml` (`models:` section — OpenRouter/OpenAI-compatible, Anthropic, DeepSeek, local). Set the matching API key in `.env`:
 ```env
-LLM_PROVIDER=anthropic  # or 'openai', 'openrouter'
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 

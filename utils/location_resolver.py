@@ -18,6 +18,12 @@ Resolution chain (first hit wins):
 
 Key API:
   - get_user_location() -> Optional[str]   module-level, sync, non-blocking
+  - strip_unjustified_location(terms, query, location) -> List[str]
+        backstop AFTER the trigger/decompose LLMs: removes the injected user
+        location from generated search terms when the original query gave no
+        reason to localize (2026-07-08 incident: "college login" queries got
+        "Springfield IL" appended, retrieval returned Springfield Community
+        College, and the response asserted it was the user's school)
   - LocationResolver                        cache + background-refresh manager
 
 Side effects: outbound HTTPS to ipinfo.io / ip-api.com (disable via
@@ -205,6 +211,149 @@ class LocationResolver:
         self._profile_location = location
         self._profile_mtime = mtime
         return location
+
+
+# ----------------------------------------------------------------------
+# Unjustified-localization backstop
+# ----------------------------------------------------------------------
+
+# Cues in the ORIGINAL user query that justify carrying the user's location
+# into search terms. Deliberately mirrors WebSearchManager's localization
+# shapes: physical-surroundings queries only.
+_LOCAL_INTENT_RE = re.compile(
+    r"\b(?:near\s+me|nearby|locally?|around\s+here|close\s+by|"
+    r"my\s+(?:area|city|town|location|neighborhood))\b",
+    re.I,
+)
+_WEATHER_SHAPE_RE = re.compile(
+    r"\b(weather|forecast|heat\s+(?:advisory|warning|index|wave)|"
+    r"air\s+quality|uv\s+index|wind\s+chill|excessive\s+heat)\b",
+    re.I,
+)
+# Words that are weather-ish only alongside a current-conditions cue
+# ("how hot is it outside" yes; "what temperature to bake salmon" no).
+# Slightly broader than WebSearchManager's set on purpose: a false KEEP
+# here just preserves pre-backstop behavior, a false STRIP breaks a
+# legitimate local query.
+_AMBIGUOUS_WEATHER_RE = re.compile(
+    r"\b(temperature|humidity|hot|cold|warm|chilly|humid|rain(?:ing)?|"
+    r"snow(?:ing)?|wind[gy]?)\b",
+    re.I,
+)
+_CURRENT_CONDITIONS_RE = re.compile(
+    r"\b(outside|outdoors|today|tonight|tomorrow|right\s+now|currently|"
+    r"this\s+(?:week|weekend|morning|afternoon|evening))\b",
+    re.I,
+)
+
+_US_STATES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+    "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+    "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
+}
+_US_STATES_INV = {v.lower(): k for k, v in _US_STATES.items()}
+
+
+def _city_variants(city: str) -> list:
+    """'Springfield' and 'Saint Charles' are the same city to a geocoder and
+    to the LLM — cover both spellings whichever one the resolver returned."""
+    variants = [city]
+    low = city.lower()
+    if low.startswith("st. "):
+        variants.append("Saint " + city[4:])
+    elif low.startswith("st "):
+        variants.append("Saint " + city[3:])
+    elif low.startswith("saint "):
+        variants.append("St. " + city[6:])
+        variants.append("St " + city[6:])
+    return variants
+
+
+def _location_patterns(location: str) -> list:
+    """Compiled patterns matching the location as the LLM tends to render it:
+    'City, ST' / 'City ST' / 'City Statename' / bare 'City'. Longest first so
+    the state tail never survives a bare-city removal."""
+    parts = [p.strip() for p in location.split(",")]
+    city = parts[0] if parts else location.strip()
+    state = parts[1] if len(parts) > 1 else ""
+
+    state_forms = []
+    if state:
+        state_forms.append(state)
+        if state.upper() in _US_STATES:
+            state_forms.append(_US_STATES[state.upper()])
+        elif state.lower() in _US_STATES_INV:
+            state_forms.append(_US_STATES_INV[state.lower()])
+
+    patterns = []
+    for c in _city_variants(city):
+        c_esc = re.escape(c)
+        for s in state_forms:
+            patterns.append(rf"\b{c_esc}\s*,?\s+{re.escape(s)}\b\.?")
+        patterns.append(rf"\b{c_esc}\b")
+    return [re.compile(p, re.I) for p in patterns]
+
+
+def query_justifies_location(query: str, location: str) -> bool:
+    """Does the user's own query give a reason to localize? True only for
+    physical-surroundings shapes (weather/current conditions, near-me/local
+    phrasing) or when the user themselves named the place. Account, login,
+    school, employer, product, etc. queries do NOT justify localization —
+    the user's institutions are not determined by where they are sitting."""
+    if not query:
+        return False
+    if _LOCAL_INTENT_RE.search(query):
+        return True
+    if _WEATHER_SHAPE_RE.search(query):
+        return True
+    if _AMBIGUOUS_WEATHER_RE.search(query) and _CURRENT_CONDITIONS_RE.search(query):
+        return True
+    # User typed the place themselves (any spelling variant of the city)
+    q_low = query.lower()
+    city = location.split(",")[0].strip()
+    return any(v.lower() in q_low for v in _city_variants(city))
+
+
+def strip_unjustified_location(terms, query: str, location: Optional[str]):
+    """Backstop behind the trigger/decompose LLM prompts: if the ORIGINAL
+    query gives no reason to localize, remove the injected user location from
+    every generated search term. Terms that were nothing but the location are
+    dropped. Returns the (possibly unchanged) list; logs when it fires."""
+    if not terms or not location:
+        return terms
+    if query_justifies_location(query or "", location):
+        return terms
+
+    patterns = _location_patterns(location)
+    cleaned = []
+    changed = False
+    for term in terms:
+        new = term
+        for pat in patterns:
+            new = pat.sub("", new)
+        if new != term:
+            changed = True
+            # tidy the amputation site: dangling connectors + doubled spaces
+            new = re.sub(r"\s+(?:in|at|near|around|for|of)\s*$", "", new, flags=re.I)
+            new = re.sub(r"\s{2,}", " ", new).strip(" ,;-")
+        if new:
+            cleaned.append(new)
+    if changed:
+        logger.info(
+            f"[Location] Stripped unjustified location '{location}' from search "
+            f"terms (query gave no local cue): {terms} -> {cleaned}"
+        )
+    return cleaned if changed else terms
 
 
 _resolver: Optional[LocationResolver] = None

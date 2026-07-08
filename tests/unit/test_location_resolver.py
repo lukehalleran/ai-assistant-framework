@@ -174,3 +174,100 @@ class TestModuleAccessor:
         monkeypatch.setattr(lr, "_resolver", None)
         monkeypatch.setattr(lr, "LOCATION_ENABLED", False)
         assert lr.get_user_location() is None
+
+
+class TestStripUnjustifiedLocation:
+    """Backstop behind the trigger/decompose LLM prompts (2026-07-08 incident:
+    a school-login query got 'Springfield IL' appended by the trigger LLM,
+    retrieval returned Springfield Community College, and the response asserted
+    a college the user never attended — with its IT desk phone number — as
+    'your school'). Institution/account queries must stay place-free."""
+
+    LOC = "Springfield, IL"
+
+    def test_strips_location_from_institution_query_terms(self):
+        # The literal turn-1 incident terms.
+        query = ("great, its still fucked and no one can help me Login Attempt "
+                 "Failed ... Your account failed to login successfully 5 or more times.")
+        terms = [
+            "login attempt failed account archived temporary access expired 2026",
+            "how to resolve login issues account archived Springfield IL",
+        ]
+        out = lr.strip_unjustified_location(terms, query, self.LOC)
+        assert out == [
+            "login attempt failed account archived temporary access expired 2026",
+            "how to resolve login issues account archived",
+        ]
+
+    def test_strips_full_state_name_variant(self):
+        # The literal turn-2 incident terms ("Illinois" spelled out).
+        query = ("thats a phone number for a college I never attended and almost "
+                 "all of that message was fabrication")
+        terms = [
+            "phone number college Springfield Illinois",
+            "verify college phone number Springfield Illinois",
+        ]
+        out = lr.strip_unjustified_location(terms, query, self.LOC)
+        assert out == ["phone number college", "verify college phone number"]
+
+    def test_saint_spelling_variant_stripped(self):
+        out = lr.strip_unjustified_location(
+            ["university portal login Saint Charles IL"],
+            "my university portal won't let me log in", self.LOC)
+        assert out == ["university portal login"]
+
+    def test_weather_query_keeps_location(self):
+        terms = ["weather forecast Springfield IL today"]
+        out = lr.strip_unjustified_location(
+            terms, "whats the weather like today", self.LOC)
+        assert out == terms
+
+    def test_near_me_query_keeps_location(self):
+        terms = ["best pizza restaurants Springfield IL"]
+        out = lr.strip_unjustified_location(
+            terms, "any good pizza places near me", self.LOC)
+        assert out == terms
+
+    def test_user_named_city_keeps_location_any_spelling(self):
+        terms = ["events Saint Charles IL this weekend"]
+        out = lr.strip_unjustified_location(
+            terms, "events in saint charles this weekend", self.LOC)
+        assert out == terms
+
+    def test_ambiguous_weather_needs_current_conditions_cue(self):
+        # "temperature" alone (oven settings, hardware) does not justify place.
+        out = lr.strip_unjustified_location(
+            ["safe internal temperature chicken Springfield IL"],
+            "what temperature should chicken be cooked to", self.LOC)
+        assert out == ["safe internal temperature chicken"]
+        # ...but with a current-conditions cue it does.
+        terms = ["temperature outside right now Springfield IL"]
+        out = lr.strip_unjustified_location(
+            terms, "how hot is it outside right now", self.LOC)
+        assert out == terms
+
+    def test_location_only_term_dropped(self):
+        out = lr.strip_unjustified_location(
+            ["Springfield Illinois", "account archived fix"],
+            "my account is archived", self.LOC)
+        assert out == ["account archived fix"]
+
+    def test_dangling_connector_cleaned(self):
+        out = lr.strip_unjustified_location(
+            ["community college enrollment office in Springfield, IL"],
+            "how do I email the enrollment office", self.LOC)
+        assert out == ["community college enrollment office"]
+
+    def test_no_location_or_empty_terms_passthrough(self):
+        assert lr.strip_unjustified_location([], "anything", self.LOC) == []
+        terms = ["some query Springfield IL"]
+        assert lr.strip_unjustified_location(terms, "anything", None) == terms
+
+    def test_query_justifies_location_shapes(self):
+        assert lr.query_justifies_location("weather today", self.LOC)
+        assert lr.query_justifies_location("coffee shops near me", self.LOC)
+        assert lr.query_justifies_location("news in Springfield", self.LOC)
+        assert not lr.query_justifies_location(
+            "my college login keeps failing", self.LOC)
+        assert not lr.query_justifies_location(
+            "phone number for my school's IT desk", self.LOC)

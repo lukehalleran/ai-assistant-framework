@@ -7,7 +7,7 @@ Two-step generation where the LLM provides internal reasoning before delivering 
 
 Three core layers of thinking separation exist, plus six operational layers (defense in depth, 9 total — see table below):
 1. **Native API reasoning** — for Claude/DeepSeek-R1, thinking is separated at the OpenRouter API level via `extra_body={"reasoning": {"effort": "medium"}}`. Thinking arrives in `delta.reasoning_content`, not in the text response.
-2. **Tag-based parsing** — `<thinking>`/`<think>`/`<output>` tags parsed by `ResponseParser.parse_thinking_block()`
+2. **Tag-based parsing** — `<thinking>`/`<think>`/`<reasoning>`/`<reason>` tags (+ `<output>` wrappers) parsed by `ResponseParser.parse_thinking_block()` (the `<reasoning>`/`<reason>` family was added 2026-07-03 after a model dumped literal `<reasoning>` tags in the content channel)
 3. **Heuristic fallback** — `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning patterns, instruction echoes)
 4. **Storage boundary guard** — `ResponseParser.sanitize_for_storage()` runs inside `memory_storage.store_interaction()`; no storage path can persist thinking artifacts into memory (see "Storage Boundary Guard" section)
 
@@ -26,8 +26,11 @@ def parse_thinking_block(response: str) -> Tuple[str, str]:
     Handles (in order):
     1. <thinking>...</thinking> (Anthropic/OpenAI style)
     2. <think>...</think> (DeepSeek/Qwen/GLM style)
-    3. <output>...</output> wrapper (some OpenRouter providers)
-    4. Heuristic detection of untagged thinking (fallback)
+    3. <reasoning>...</reasoning> / <reason>...</reason> (literal reasoning
+       tags leaked into the content channel by some OpenRouter-proxied
+       reasoning models — observed 2026-07-03)
+    4. <output>...</output> wrapper (some OpenRouter providers)
+    5. Heuristic detection of untagged thinking (fallback)
 
     Returns:
         Tuple of (thinking_part, final_answer_part)
@@ -37,7 +40,7 @@ def parse_thinking_block(response: str) -> Tuple[str, str]:
 ```
 
 **Functionality:**
-- Tries both `</thinking>` and `</think>` delimiters
+- Tries all four close-tag delimiters: `</thinking>`, `</think>`, `</reasoning>`, `</reason>` (`_THINK_OPEN_TAGS`)
 - Extracts content between open and close tags
 - Unwraps `<output>...</output>` wrapper if present in final answer
 - Falls back to `_detect_untagged_thinking()` when no tags found
@@ -86,9 +89,9 @@ if self.supports_reasoning(target_model):
     }
 ```
 
-When enabled, OpenRouter returns thinking in `delta.reasoning_content` streaming chunks (not in the text body). The `ResponseGenerator` already handles these via synthetic `<thinking>` tag emission (lines 177-188 of `response_generator.py`).
+When enabled, OpenRouter returns thinking in `delta.reasoning_content` streaming chunks (not in the text body). The `ResponseGenerator` handles these via the `InterleavedReasoningFilter`, which emits synthetic `<thinking>`/`</thinking>` markers around suppressed reasoning chunks (see section 6).
 
-**Supported models:** All `anthropic/claude-*` models, `deepseek-r1`.
+**Supported models** (`supports_reasoning()` in `model_manager.py`): all `anthropic/claude-*` models, plus the DeepSeek reasoning family (`deepseek-r1`, `deepseek-v4`). Both `generate_async()` and `generate_once()` accept `disable_reasoning=True` to suppress the separation (used by the reasoning-only recovery retry).
 
 ### 3. Conditional Thinking Instruction (`core/orchestrator.py`) (CHANGED 2026-04-05)
 
@@ -156,7 +159,7 @@ Shared by `core/response_generator.py` (`generate_streaming_response`) and `core
 
 **Reasoning-only recovery (`ResponseGenerator._recover_reasoning_only()`, NEW 2026-06):** the complementary failure — a reasoning model swallows the *entire* answer into the hidden reasoning channel and streams **empty** visible content. When the filter reports `reasoning_seen` but not `content_emitted`, the generator closes the dangling `<thinking>` marker and retries **once** non-streaming via `generate_once(disable_reasoning=True)`, forcing the answer into normal content instead of resolving to an empty/dead response.
 
-### 7. Test Suite (`test_thinking_blocks.py`)
+### 7. Test Suite (`tests/test_thinking_blocks.py`)
 
 Covers (tag-based parsing):
 - Normal thinking block extraction (both `<thinking>` and `<think>` variants)
@@ -164,7 +167,7 @@ Covers (tag-based parsing):
 - Thinking blocks with newlines
 - Empty responses, malformed tags
 
-Heuristic detection has dedicated test coverage in `tests/unit/test_thinking_heuristic.py` (23 test functions) covering `likely_untagged_thinking()` true positives, true negatives, length bail-outs, edge cases, and consistency with `_detect_untagged_thinking()`.
+Heuristic detection has dedicated test coverage in `tests/unit/test_thinking_heuristic.py` (42 test functions) covering `likely_untagged_thinking()` true positives, true negatives, length bail-outs, edge cases, and consistency with `_detect_untagged_thinking()`.
 
 ## How It Works
 
@@ -190,7 +193,7 @@ Streaming Chunks
 Full Response
     ↓
 ResponseParser.parse_thinking_block()
-    ├─ Layer 1: Tag-based (<thinking>/<think>/<output>)
+    ├─ Layer 1: Tag-based (<thinking>/<think>/<reasoning>/<reason>/<output>)
     ├─ Layer 2: Heuristic (_detect_untagged_thinking)
     └─ Layer 3: Strip leaked tag fragments
     ↓
@@ -223,8 +226,8 @@ The answer to 2 + 2 is 4.
 
 | Layer | Mechanism | Handles |
 |-------|-----------|---------|
-| API | `extra_body={"reasoning": {"effort": "medium"}}` | Claude, DeepSeek-R1 — thinking never reaches text body |
-| Tags | `parse_thinking_block()` | `<thinking>`, `<think>`, `<output>` wrappers |
+| API | `extra_body={"reasoning": {"effort": "medium"}}` | Claude, DeepSeek-R1/V4 — thinking never reaches text body |
+| Tags | `parse_thinking_block()` | `<thinking>`, `<think>`, `<reasoning>`, `<reason>`, `<output>` wrappers |
 | Heuristic | `_detect_untagged_thinking()` | Models that ignore tag instruction and dump reasoning as plain text |
 | Sentence | `_count_sentence_pattern_hits()` | Single-paragraph chain-of-thought without blank-line breaks |
 | Agentic | `_detect_untagged_thinking()` on final output | Thinking leak in agentic path final generation |
@@ -269,7 +272,7 @@ Tests: `tests/unit/test_thinking_leak_storage.py` (30 tests).
 - **No breaking changes:** If LLM doesn't include `<thinking>` tags AND heuristic finds nothing, full response is returned as-is
 - **Raw mode:** Thinking instruction NOT added in raw mode; API reasoning NOT requested
 - **Graceful degradation:** Parser handles malformed tags safely
-- **Multi-provider:** Supports `<thinking>` (Anthropic/OpenAI), `<think>` (DeepSeek/Qwen/GLM), and native API reasoning
+- **Multi-provider:** Supports `<thinking>` (Anthropic/OpenAI), `<think>` (DeepSeek/Qwen/GLM), `<reasoning>`/`<reason>` (leaked literal tags from OpenRouter-proxied reasoning models), and native API reasoning
 
 ## Configuration
 

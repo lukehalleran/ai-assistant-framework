@@ -1,5 +1,19 @@
 # Synthesis Pipeline — Calibration & Validation Plan
 
+> **STATUS NOTE (2026-07): this plan is a historical record (2026-03/04) and no
+> longer describes the live pipeline.** Since it was written: the three
+> generator tiers described below (Retrieval / GraphWalk / Cross-Store) were
+> **RETIRED** (`enabled: false` in config.yaml, 2026-06-30) in favor of the
+> pooled concept generator (`knowledge/synthesis_pooled_generator.py`,
+> `SYNTHESIS_POOLED_ENABLED`, sole generator dreaming uses); the stage-3
+> bigram-FAISS co-occurrence gate was found **inverted** and replaced with
+> direct `cos(A,B) > 0.45` (2026-06-27, see the SUPERSEDED note inside);
+> the composite was recalibrated to weights coherence 0.35 / novelty 0.60 /
+> distance 0.05 / structural 0.0 at threshold **0.70** (2026-06-30); and
+> dreaming now runs as its own standalone shutdown step under
+> `SYNTHESIS_DREAM_TIMEOUT_S`. Current state: `SYNTHESIS_FILTER.md`;
+> evidence log: `SYNTHESIS_VALIDATION.md`.
+
 ## What We're Proving
 
 Daemon's synthesis pipeline claims that an AI system can **generate genuinely novel cross-domain insights** — connections between personal knowledge and general knowledge that are structurally sound, non-trivial, and not already documented. If the calibration results below hold, this concept works because:

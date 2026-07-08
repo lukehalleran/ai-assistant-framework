@@ -28,7 +28,7 @@ You: Do you recall the last day off I mentioned?
 - ✅ Agent should mention "Tuesday" (from step 2)
 - ✅ Agent should reference the actual conversation you just had
 - ✅ Agent should NOT mention random unrelated topics
-- ✅ You should see debug log: `[MemoryCoordinator] Detected meta-conversational query`
+- ✅ You should see debug log: `[MemoryRetriever] Detected meta-conversational query`
 
 **Bad behavior (what we fixed):**
 - ❌ "I'm coming up short on specifics"
@@ -49,16 +49,17 @@ Each should retrieve the relevant part of your current conversation.
 Look for these log messages to confirm the fix is working:
 
 ```bash
-grep "Meta-conversational" conversation_logs/*.txt
-grep "Detected meta-conversational query" conversation_logs/*.txt
+grep "meta-conversational" daemon_debug*.log
+grep "Detected meta-conversational query" daemon_debug*.log
 ```
 
 You should see entries like:
 ```
-[MemoryCoordinator] Detected meta-conversational query: Do you recall...
-[MemoryCoordinator] Using meta-conversational retrieval strategy
-[MemoryCoordinator] Meta-conversational retrieval returned N memories
+[MemoryRetriever] Detected meta-conversational query: Do you recall...
+[MemoryRetriever] Using meta-conversational retrieval strategy
 ```
+
+(Debug logs go to `daemon_debug*.log` in the repo root, not `conversation_logs/` — the latter holds conversation transcripts only.)
 
 ---
 
@@ -67,8 +68,6 @@ You should see entries like:
 ### Step 1: Start the GUI
 ```bash
 python main.py
-# or
-make -f Makefile.fast run
 ```
 
 ### Step 2: Open browser
@@ -80,7 +79,7 @@ Follow the same conversation flow as the CLI test above.
 ### Step 4: Monitor the terminal
 Watch for debug logs in the terminal where you started the GUI:
 ```
-[MemoryCoordinator] Detected meta-conversational query...
+[MemoryRetriever] Detected meta-conversational query...
 ```
 
 ---
@@ -149,7 +148,7 @@ If something seems wrong, check these:
 
 ### 1. Check if detection is working
 ```bash
-python test_meta_conversational.py
+python tests/test_meta_conversational.py
 ```
 Should show all tests passing.
 
@@ -161,7 +160,7 @@ cat conversation_logs/$(ls -t conversation_logs/ | head -1)
 
 ### 3. Grep for meta-conversational debug logs
 ```bash
-grep -r "meta-conversational\|Meta-conversational" conversation_logs/ | tail -20
+grep "meta-conversational\|Meta-conversational" daemon_debug*.log | tail -20
 ```
 
 ### 4. Check if the query checker is imported correctly
@@ -228,7 +227,7 @@ The fix is working correctly if:
 
 ```bash
 # 1. Run unit tests
-python test_meta_conversational.py
+python tests/test_meta_conversational.py
 
 # 2. Start CLI
 python main.py cli
@@ -241,7 +240,7 @@ You: Do you recall my day off?
 Agent: [should mention Tuesday] ✓
 
 # 4. Check logs
-grep "Meta-conversational" conversation_logs/*.txt
+grep "meta-conversational" daemon_debug*.log
 
 # Done! If all 3 steps work, the fix is live.
 ```

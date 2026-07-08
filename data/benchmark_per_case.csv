@@ -6,7 +6,7 @@ factual_brother_job,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_brother_
 factual_cat_name,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_cat', 'mem_conv_dog', 'mem_conv_cat_mochi_hiding', 'mem_conv_greeting', 'mem_conv_dog_vet']",True
 factual_girlfriend_name,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_relationship_worry', 'mem_conv_dog', 'mem_conv_stress', 'mem_conv_brother_job', 'mem_conv_cat']",True
 factual_web_framework,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_python_web', 'mem_conv_cors_fix', 'mem_conv_api', 'mem_conv_project_auth', 'mem_conv_python']",True
-factual_apartment_lease,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_apartment', 'mem_conv_project_auth', 'mem_conv_mom_visit', 'mem_conv_cat', 'mem_conv_greeting']",True
+factual_apartment_lease,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_apartment', 'mem_conv_project_auth', 'mem_conv_mom_visit', 'mem_conv_greeting', 'mem_conv_cat']",True
 factual_mom_visit,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_mom_visit', 'mem_conv_dog_vet', 'mem_conv_greeting', 'mem_conv_cat', 'mem_conv_stress']",True
 factual_promotion_date,factual_recall,True,1.0,1.0,1.0,1.0,[1],"['mem_conv_promotion', 'mem_conv_project_auth', 'mem_conv_greeting', 'mem_conv_stress', 'mem_conv_mom_visit']",True
 temporal_recent_today,temporal_recall,True,1.0,0.5,1.0,1.0,"[2, 1]","['mem_conv_greeting', 'mem_conv_dog', 'mem_conv_project_auth', 'mem_conv_stress', 'mem_conv_python']",True

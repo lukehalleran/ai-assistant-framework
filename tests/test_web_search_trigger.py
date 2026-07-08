@@ -909,5 +909,67 @@ class TestUserLocationInjection:
         assert "User location:" not in prompt
 
 
+class TestUnjustifiedLocationStrip:
+    """The trigger LLM sometimes localizes queries the prompt forbids
+    localizing (institution/account queries — the 2026-07-08 wrong-college
+    incident). The parse path must strip location the query never justified."""
+
+    def test_prompt_forbids_institution_localization(self):
+        from utils.web_search_trigger import _build_llm_trigger_prompt
+
+        prompt = _build_llm_trigger_prompt(
+            "my college login keeps failing", "2026-07-08",
+            user_location="Saint Charles, IL",
+        )
+        assert "LOCATION IS ONLY FOR PHYSICAL SURROUNDINGS" in prompt
+        assert "not their college unless they named it" in prompt
+
+    @pytest.mark.asyncio
+    async def test_parsed_terms_lose_unjustified_location(self):
+        from unittest.mock import AsyncMock
+        import utils.web_search_trigger as wst
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value=(
+            '{"should_search": true, "confidence": 0.8, "reason": "login issue", '
+            '"search_terms": ["login attempt failed account archived 2026", '
+            '"how to resolve login issues account archived Saint Charles IL"], '
+            '"search_depth": "quick", "num_searches": 2}'
+        ))
+
+        with patch("utils.location_resolver.get_user_location",
+                   return_value="Saint Charles, IL"):
+            parsed = await wst._classify_with_llm_unified(
+                "my school account says archived and login failed", mock_manager
+            )
+
+        assert parsed is not None
+        assert parsed.search_terms == [
+            "login attempt failed account archived 2026",
+            "how to resolve login issues account archived",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_justified_location_terms_survive(self):
+        from unittest.mock import AsyncMock
+        import utils.web_search_trigger as wst
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value=(
+            '{"should_search": true, "confidence": 0.9, "reason": "weather", '
+            '"search_terms": ["weather forecast Saint Charles IL today"], '
+            '"search_depth": "quick", "num_searches": 1}'
+        ))
+
+        with patch("utils.location_resolver.get_user_location",
+                   return_value="Saint Charles, IL"):
+            parsed = await wst._classify_with_llm_unified(
+                "how hot is it in my area today", mock_manager
+            )
+
+        assert parsed is not None
+        assert parsed.search_terms == ["weather forecast Saint Charles IL today"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

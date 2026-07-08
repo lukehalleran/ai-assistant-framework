@@ -34,7 +34,7 @@ resolved, and stale information is penalized in ranking.
 | `memory/memory_coordinator.py` | Thin orchestrator (~551 lines), creates all components, delegates to retriever/storage/shutdown |
 | `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks, supersession + per-relation TTL filter |
 | `memory/relation_classifier.py` | Single source of truth for relation→TTL: health-transient vs standard-ephemeral vs durable (+ permanent-condition overrides). Used by user_profile + memory_retriever |
-| `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 7 additive bonuses/penalties) with intent overrides, graph boost, size penalty |
+| `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 8 additive bonuses/penalties incl. health-framing decay + timeline bonus) with intent overrides, graph boost, size penalty |
 | `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion, reflection embedding cleanup |
 | `memory/skill_activation.py` | SkillActivationPolicy (post-retrieval skill filter) + SkillCooldownStore (JSON-backed TTL) |
 | `core/prompt/builder.py` | UnifiedPromptBuilder: thin orchestrator for parallel task dispatch, intent overrides, budget |
@@ -124,7 +124,7 @@ UnifiedPromptBuilder.build_prompt()
   │
   ├─ 1. Query Analysis
   │     IntentClassifier → FACTUAL_RECALL (pattern: "how's my")
-  │     Retrieval overrides: max_facts=30, max_mems=20
+  │     Retrieval overrides: max_mems=20, max_recent=5, max_wiki=5
   │     Weight overrides: truth=0.30 (boosted for factual recall)
   │
   ├─ 2. Graph Query Expansion
@@ -143,7 +143,7 @@ UnifiedPromptBuilder.build_prompt()
   │     ├── procedural_skills (5, over-fetched 3x) ← ChromaDB procedural_skills
   │     ├── unresolved_threads (3)        ← ThreadStore
   │     ├── proactive_insights (2)        ← ContextSurfacer
-  │     ├── wiki_content (3)              ← FAISS (40M wiki vectors; ChromaDB fallback)
+  │     ├── wiki_content (3)              ← FAISS (41M wiki vectors; ChromaDB fallback)
   │     ├── reference_docs (5)            ← ChromaDB reference_docs
   │     ├── personal_notes (5)            ← Obsidian vault
   │     ├── git_commits (10)              ← ChromaDB procedural
@@ -244,8 +244,9 @@ ShutdownProcessor.process_shutdown_memory()
   ├─ Phase C (sequential — must follow Phase B) ──────────────────
   │  ├─ Knowledge graph + alias + category cache save (JSON flush)
   │  └─ Cross-collection dedup
-  │        Mode depends on DAEMON_MODE:
-  │          Dev mode (default): dry_run=True — preview/log only, never auto-deletes
+  │        Mode depends on DAEMON_MODE (config.yaml currently sets mode: dev;
+  │        the code-level default when unset is "user"):
+  │          Dev mode: dry_run=True — preview/log only, never auto-deletes
   │          User mode: auto-executes deletions (CROSS_DEDUP_AUTO_EXECUTE=True)
   │        Live deletions also available via GUI Preview/Run buttons in Status tab
   │        Double-run guard: class-level _dedup_ran flag prevents running twice per process
@@ -259,10 +260,12 @@ Synthesis dreaming — SEPARATE standalone step [CHANGED 2026-06-19] ──
   SHUTDOWN_TASK_TIMEOUT_S (60s) reflection/fact budget, so no candidate
   ever persisted. Entry: MemoryCoordinator.run_synthesis_dreaming().
     ├─ Auto-halt check: skips if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
-    ├─ Tier 0: RetrievalSynthesisGenerator (structural query → FAISS → adversarial eval)
-    ├─ Tier 1: GraphWalkGenerator (biased Markov walks, hub-dampened, cross-domain)
-    ├─ Tier 2: SynthesisGenerator (cross-store sampling, FAISS wiki search)
-    ├─ All → SynthesisFilter → SynthesisMemory
+    ├─ PooledConceptSynthesisGenerator — the SOLE active generator (2026-06-30):
+    │     pairs prominent curated concepts (48-concept CONCEPT_POOL) in the
+    │     non-obvious cosine band 0.2-0.45 (config: synthesis_pooled, enabled: true)
+    ├─ Retired tiers (config enabled: false): Tier 0 RetrievalSynthesisGenerator,
+    │     Tier 1 GraphWalkGenerator, Tier 2 SynthesisGenerator
+    ├─ Candidates → SynthesisFilter → SynthesisMemory
     └─ On acceptance: provisional bridge edge created (weight=0.0, status="provisional")
 ```
 
@@ -290,18 +293,20 @@ structure:  0.05    # In SCORE_WEIGHTS dict but UNUSED — actual structure is a
 ### Step-by-Step
 
 1. **Base relevance** — Embedding similarity from ChromaDB query + collection boost
-2. **Recency decay** — Uses `time_manager.current()` for consistent reference time. Active-day aware: `1/(1 + decay_rate * age_hours)`. Temporal anchor override for TEMPORAL_RECALL queries uses a two-regime decay: small anchors (<=48h, e.g. "today"/"yesterday") get a flat plateau inside the window so relevance/truth differentiate; large anchors (>48h, e.g. "last week") peak near the anchor and penalize too-recent memories
+2. **Recency decay** — Uses `time_manager.current()` for consistent reference time. Active-day aware: `1/(1 + decay_rate * age_hours)`. Temporal anchor override for TEMPORAL_RECALL queries uses a two-regime decay: small anchors (<=48h, e.g. "today"/"yesterday") get a flat plateau inside the window so relevance/truth differentiate; large anchors (>48h, e.g. "last week") peak near the anchor and penalize too-recent memories. **Timestamp fallback (2026-07-08):** a missing/empty top-level `timestamp` falls back to `metadata['timestamp']` before defaulting to now (tz-aware stragglers normalized to naive local). Before this, the hybrid/semantic retrieval path — which set no top-level timestamp — scored every memory recency=1.0, silently disabling the recency term for the main retrieval path (months-old memories ranked as fresh); the retriever now also surfaces the metadata timestamp at top level. Tests: `tests/unit/test_recency_metadata_fallback.py`
 3. **Truth score** — `TruthScorer.compute_effective_truth(metadata)`: stored score + time decay from last confirmation
 4. **Importance** — Stored importance score (default 0.5)
 5. **Continuity** — Token overlap with last exchange (+0.3 * overlap) + recency bonus (+0.1 if within 10 minutes). Tokens are stemmed via `_stem()` (minimal suffix stripping for common mismatches like anxious/anxiety, deployed/deployment). Tag-keyword bonus: if query stems match memory tags, adds up to +0.15 to continuity (scales with number of tag hits, capped at 3)
 6. **Structural alignment** — `0.15 * density_alignment` where density_alignment measures numeric/operator density match between query and memory. Added as direct bonus, not through weighted sum
 7. **Penalties** — Analogy penalty (-0.1 for mathy queries matching analogies) + size penalty (see below)
-8. **Anchor bonus** — Salient token overlap with conversation context. Deictic queries ("explain that", "what about it") get +0.2 bonus or -0.15 penalty based on overlap
+8. **Anchor bonus** — Salient token overlap with conversation context. Deictic queries ("explain that", "what about it") get +0.2·overlap bonus, or a -`DEICTIC_ANCHOR_PENALTY` penalty (live config.yaml 0.25; code default 0.1) when anchor overlap < 0.05; non-deictic queries get +0.1·overlap
 9. **Tone adjustment** — Dismissive language in memory → truth reduced by 0.2
-10. **Topic match** — 1.0 exact, 0.5 unknown, 0.2 mismatch (usually weight=0.0)
+10. **Topic match** — 1.0 exact, 0.5 unknown, 0.2 mismatch (live weight 0.10 from config.yaml `gating.score_weights`)
 11. **Meta-conversational bonus** — +0.15 for episodic memories when query is about recall ("did we discuss...")
 12. **Graph proximity bonus** — +0.05 per knowledge graph neighbor mentioned in memory, capped at 0.15
 13. **Staleness penalty** — `staleness_ratio * STALENESS_WEIGHT`, 2x multiplier at >=0.8 ratio, reflections at 60% weight, capped at 0.4
+14. **Health-framing decay** — stale free-text illness/recovery narrative in personal-narrative collections past the health-transient TTL gets a ramped penalty (`HEALTH_FRAMING_DECAY_WEIGHT=0.25` base, capped at 0.4)
+15. **Timeline bonus** — +0.15 for summaries/reflections when the query is a progression query ("how long", "over time")
 
 ### Size Penalty (Large Document Demotion)
 
@@ -630,7 +635,7 @@ fitness, preferences, hobbies, study, finance, relationships, goals):
 2. **Prefix lookup** — first underscore-delimited token checked against `_PREFIX_CATEGORY_MAP` (~60 entries)
 3. **Cache check** — persistent `data/category_cache.json` checked before heavier layers
 4. **Token overlap** — relation tokens scored against per-category keyword sets (`_CATEGORY_TOKENS`, ~30 categories with keyword sets); requires >= 2 matching tokens
-5. **Embedding similarity** — `BAAI/bge-small-en-v1.5` cosine similarity against per-category exemplar phrases; threshold 0.40. Results cached persistently in `data/category_cache.json`
+5. **Embedding similarity** — `all-MiniLM-L6-v2` (the shared ModelManager embedder) cosine similarity against per-category exemplar phrases; threshold 0.30. Results cached persistently in `data/category_cache.json`
 6. **Default** — falls back to `PREFERENCES`. For batch/cleanup, `categorize_relation_deep()` adds an LLM micro-call (gpt-4o-mini, 10 tokens) before defaulting
 
 ### Ephemeral vs Snapshot Relations
@@ -737,7 +742,7 @@ Stage 5: Cap
   Final = episodic + gated[:20 - len(episodic)]
 ```
 
-**Timing:** ~200ms total (FAISS ~50ms, cosine ~50ms, cross-encoder ~100ms)
+**Timing:** ~200ms total (ChromaDB HNSW candidate generation ~50ms, cosine ~50ms, cross-encoder ~100ms). No FAISS in the live memory path — FAISS is used only for the wiki index and visual memory.
 
 ---
 
@@ -796,16 +801,17 @@ YAML section: `skill_activation:` in `config/config.yaml`.
 
 ## Token Budget Management
 
-The prompt has a finite token budget (default 25% of model context window,
-floor 8K, ceiling 60K). Sections are prioritized:
+The prompt has a finite token budget (default 15,000 tokens, floor 8K,
+ceiling 16K, context fraction 0.12 — config.yaml `token_budget`). Sections
+are prioritized:
 
 ```
 Priority 10: STM summary (metadata, never trimmed)
 Priority  9: User profile (identity, naturally bounded)
-Priority  8: Narrative state (temporal grounding, hard cap 500 tokens)
+Priority  8: Narrative state (temporal grounding, hard cap 500 tokens), web search results
 Priority  7: Recent conversations, graph context, unresolved threads
 Priority  6: Semantic chunks, personal notes, user uploads
-Priority  5: Reference docs, memories, web search results
+Priority  5: Reference docs, memories
 Priority  4: Procedural skills, facts
 Priority  3: Summaries, proposed_features, git commits, proactive insights
 Priority  2: Reflections, dreams, codebase changes
@@ -843,9 +849,10 @@ The final prompt is assembled with these sections (in attention-optimized order)
 [PROPOSED FEATURES]                    ← code proposals
 [KNOWLEDGE GRAPH]                      ← entity relationships (natural language)
 [UNRESOLVED THREADS]                   ← open commitments/deadlines
-[PROACTIVE INSIGHTS]                   ← cross-domain connections
 [UPCOMING SCHEDULE]                    ← schedule facts for next N days (intent-gated)
+[GOOGLE CALENDAR]                      ← upcoming calendar events (if enabled)
 [DAEMON SELF-NOTES]                    ← Daemon's own session notes (caveat-labeled)
+[PROACTIVE INSIGHTS]                   ← cross-domain connections
 [USER PROFILE]                         ← categorized facts (high-attention zone)
 [ACTIVE FEATURES]                      ← feature inventory (always)
 [CODEBASE CHANGES SINCE LAST SESSION]  ← git diff (first message only)
@@ -864,7 +871,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Old unrelated memories ranking high | Recency weight too low | Increase `recency` in `SCORE_WEIGHTS` |
-| Memories from wrong topic | Topic filtering disabled | Set `topic_match` weight > 0 |
+| Memories from wrong topic | Topic weight too low | Increase `topic_match` weight (live 0.10) |
 | Too many low-quality results | Gate threshold too low | Raise `GATE_REL_THRESHOLD_RETRIEVAL` (default 0.60, bge space — small moves shift pass rate a lot) |
 | Large docs drowning out small facts | Size penalty too weak | Lower `LARGE_DOC_SIZE_THRESHOLD` in `memory_scorer.py` (default 10KB) or raise `LARGE_DOC_BASE_PENALTY` (default -0.25) |
 
@@ -890,7 +897,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Old facts never decay | Decay rate too low | Increase `TRUTH_SCORER_DECAY_RATE` (default 0.05/week) |
+| Old facts never decay | Decay rate too low | Increase `TRUTH_SCORER_DECAY_RATE` (default 0.02/week) |
 | Confirmed facts decaying too fast | Confirmation boost too small | Increase `TRUTH_SCORER_CONFIRMED_BOOST` (default +0.08) |
 | Corrections not penalizing enough | Correction penalty too mild | Increase `TRUTH_SCORER_CORRECTION_PENALTY` (default -0.25) |
 
@@ -910,10 +917,10 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | Constant | Default | Purpose |
 |----------|---------|---------|
 | `SCORE_WEIGHTS` | see above | 6-factor weights dict |
-| `RECENCY_DECAY_RATE` | varies | Exponential decay speed |
-| `DEICTIC_THRESHOLD` | 0.60 | Acceptance threshold for follow-up queries |
-| `NORMAL_THRESHOLD` | 0.35 | Acceptance threshold for normal queries |
-| `COSINE_SIMILARITY_THRESHOLD` | 0.25 | Minimum cosine gate |
+| `RECENCY_DECAY_RATE` | 0.05 | Exponential decay speed (config.yaml `memory.recency_decay_rate`) |
+| `DEICTIC_THRESHOLD` | 0.25 | Acceptance threshold for follow-up queries (live config.yaml; code default 0.60) |
+| `NORMAL_THRESHOLD` | 0.15 | Acceptance threshold for normal queries (live config.yaml; code default 0.35) |
+| `COSINE_SIMILARITY_THRESHOLD` | 0.15 | Minimum cosine gate (live config.yaml; code default 0.25) |
 
 ### Gating
 | Constant | Default | Purpose |
@@ -939,17 +946,17 @@ The final prompt is assembled with these sections (in attention-optimized order)
 ### Token Budget
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `PROMPT_TOKEN_BUDGET_DEFAULT` | 40000 | Base token budget (model-aware; LOCAL=12000, FLOOR=8000, CEILING=60000) |
-| `PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION` | 0.25 | Fraction of model context window |
-| `PROMPT_MAX_RECENT` | 15 | Max recent conversations |
-| `PROMPT_MAX_MEMS` | 15 | Max semantic memories |
-| `PROMPT_MAX_FACTS` | 30 | Max facts |
+| `PROMPT_TOKEN_BUDGET_DEFAULT` | 15000 | Base token budget (model-aware; LOCAL=12000, FLOOR=8000, CEILING=16000) |
+| `PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION` | 0.12 | Fraction of model context window |
+| `PROMPT_MAX_RECENT` | 10 | Max recent conversations (live config.yaml `prompt_max_recent`; code default 15) |
+| `PROMPT_MAX_MEMS` | 30 | Max semantic memories (live config.yaml `prompt_max_mems`; code default 15) |
+| `PROMPT_MAX_RECENT_FACTS` | 30 | Max facts (builder default; no YAML key) |
 
 ### Graph
 | Constant | Default | Purpose |
 |----------|---------|---------|
 | `KNOWLEDGE_GRAPH_ENABLED` | True | Master toggle |
-| `KNOWLEDGE_GRAPH_MAX_DEPTH` | 2 | BFS traversal depth |
+| `KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH` | 2 | BFS traversal depth |
 | `GRAPH_SCORING_BOOST_ENABLED` | True | Enable graph-proximity bonus in scoring |
 | `GRAPH_SCORING_BOOST_CAP` | 0.15 | Max graph bonus per memory |
 | `GRAPH_QUERY_EXPANSION_MAX_TERMS` | 8 | Max neighbor names appended to query |

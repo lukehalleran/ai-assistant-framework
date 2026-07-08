@@ -14,8 +14,10 @@ Module Contract
   - Ranked memory list with final_score and optional debug dict per item
   - Individual truth/importance scores for new memories
 - Key behaviors:
-  - 12-step scoring pipeline: base relevance + collection boost, recency decay (active-day or hourly),
-    evidence-based truth (TruthScorer), importance, continuity (token overlap + last-10m),
+  - 12-step scoring pipeline: base relevance + collection boost, recency decay (active-day or hourly;
+    timestamp resolves top-level -> metadata['timestamp'] -> now, tz-aware values normalized to naive
+    local [2026-07-08] — without the metadata fallback the hybrid/semantic path scored every memory
+    recency=1.0), evidence-based truth (TruthScorer), importance, continuity (token overlap + last-10m),
     structural alignment (numeric/op density), topic match, analogy penalty, anchor bonus
     (deictic follow-ups), meta-conversational bonus, graph proximity bonus, staleness penalty,
     health-framing decay
@@ -414,13 +416,24 @@ class MemoryScorer:
 
             # 2) recency with decay (using active days)
             ts = m.get('timestamp')
+            if ts is None or ts == '':
+                # Retrieval paths that don't set a top-level timestamp (e.g.
+                # the hybrid/semantic path) still carry one in the Chroma
+                # metadata. Without this fallback, every such memory defaulted
+                # to now → rec=1.0, silently disabling the recency term for
+                # the main retrieval path (months-old memories scored fresh).
+                ts = (m.get('metadata') or {}).get('timestamp')
             if isinstance(ts, str):
                 try:
                     ts = datetime.fromisoformat(ts)
                 except Exception:
                     ts = now
-            elif not isinstance(ts, datetime):
+            if not isinstance(ts, datetime):
                 ts = now
+            elif ts.tzinfo is not None:
+                # Stored timestamps are naive local; normalize any tz-aware
+                # straggler so the subtraction against naive `now` can't raise.
+                ts = ts.astimezone().replace(tzinfo=None)
 
             age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
 

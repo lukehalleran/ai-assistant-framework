@@ -14,7 +14,12 @@ Module Contract:
   - User location (resolved internally via utils/location_resolver.py) — injected
     into the trigger prompt so location-dependent queries (weather, local news,
     "near me") carry the user's place in search_terms instead of leaking literal
-    "my area" to the search engine [NEW 2026-07-02]
+    "my area" to the search engine [NEW 2026-07-02]. Localization is limited to
+    physical-surroundings queries: the prompt forbids attaching the location to
+    institution/account/login queries, and parsed search_terms pass through
+    location_resolver.strip_unjustified_location() as a deterministic backstop
+    (2026-07-08: a school-login query localized to "Springfield IL" retrieved
+    a college the user never attended, asserted as "your school")
 - Outputs:
   - WebSearchDecision with:
     - should_search: bool
@@ -891,6 +896,11 @@ def _build_llm_trigger_prompt(
             f"local events, or nearby places, include \"{user_location.strip()}\" explicitly in every "
             f"relevant search term. NEVER emit \"my area\", \"near me\", \"local\", or \"nearby\" as "
             f"literal search text — replace them with the user's location."
+            f"\n- LOCATION IS ONLY FOR PHYSICAL SURROUNDINGS: never add the user's location to "
+            f"queries about their accounts, logins, school/college/university, employer, bank, "
+            f"healthcare, or any website/service they use. Their institutions are NOT determined "
+            f"by where they are — a college in their city is not their college unless they named "
+            f"it. If the institution is unnamed, search the error/issue generically without any place."
         )
     return f"""Analyze if this query needs real-time web search OR stored memory search, and generate optimized search terms.
 
@@ -1015,6 +1025,15 @@ async def _classify_with_llm_unified(
         logger.debug(f"[WebSearchTrigger] LLM raw response: {response[:200]}...")
         parsed = LLMSearchTriggerResponse.parse(response)
         if parsed:
+            if parsed.search_terms and user_location:
+                # Backstop: the prompt forbids localizing institution/account
+                # queries, but the LLM sometimes does it anyway (2026-07-08:
+                # "college login" + injected city -> wrong college asserted as
+                # the user's school). Strip location the query never justified.
+                from utils.location_resolver import strip_unjustified_location
+                parsed.search_terms = strip_unjustified_location(
+                    parsed.search_terms, query, user_location
+                )
             logger.debug(
                 f"[WebSearchTrigger] LLM parsed: should_search={parsed.should_search}, "
                 f"conf={parsed.confidence}, terms={parsed.search_terms}"

@@ -1,8 +1,10 @@
 # Prompt Building Pipeline
 
-Operational guide for the 4-module prompt assembly system — parallel
-retrieval, token budgets, section ordering, intent-driven overrides,
-and middle-out compression.
+Operational guide for the modular prompt assembly system
+(`core/prompt/`: builder, context gatherer + 3 retrieval mixins,
+formatter, hygiene, summarizer, token manager, proposal filter) —
+parallel retrieval, token budgets, section ordering, intent-driven
+overrides, and middle-out compression.
 
 For formal notation see `FORMAL_MODEL.md`. For config constants see
 `QUICK_REFERENCE.md`. For memory retrieval details see `MEMORY_SYSTEM.md`.
@@ -11,7 +13,7 @@ For formal notation see `FORMAL_MODEL.md`. For config constants see
 
 ## What the Pipeline Does
 
-Every user query triggers a full prompt build: 21 parallel async
+Every user query triggers a full prompt build: up to 22 parallel async
 retrievals across memory, knowledge graph, web search, Google Calendar,
 files, and profile data. Results are filtered, deduplicated, scored, compressed
 to fit a token budget, and assembled into a final prompt string with
@@ -26,13 +28,15 @@ The pipeline lives in `core/prompt/` and is orchestrated by
 
 | File | Purpose |
 |------|---------|
-| `core/prompt/builder.py` | Thin orchestrator (~1,624 lines): parallel task dispatch, intent overrides, budget, eval hooks. Delegates assembly to formatter and hygiene to ContentHygiene |
-| `core/prompt/context_gatherer.py` | Mixin compositor (~379 lines): init, properties, utilities. Composes WebSearchMixin + MemoryRetrievalMixin + KnowledgeRetrievalMixin |
-| `core/prompt/gatherer_web.py` | WebSearchMixin (~216 lines): `_get_web_search_results()`, `should_trigger_web_search()` |
-| `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin (~834 lines): 17 memory/summary/reflection/facts/profile retrieval methods |
-| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin (~1,233 lines): 17 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, semantic chunks, dreams, codebase, Google Calendar) |
-| `core/prompt/formatter.py` | Section formatting + prompt assembly (~1,642 lines): `_assemble_prompt()` (~780 lines), `_build_feature_inventory()`, `_staleness_prefix`, `_is_multimodal_model`, `_load_upload_image` |
+| `core/prompt/builder.py` | Thin orchestrator (~1,821 lines): parallel task dispatch, intent overrides, budget, eval hooks. Delegates assembly to formatter and hygiene to ContentHygiene |
+| `core/prompt/context_gatherer.py` | Mixin compositor (~380 lines): init, properties, utilities. Composes WebSearchMixin + MemoryRetrievalMixin + KnowledgeRetrievalMixin |
+| `core/prompt/gatherer_web.py` | WebSearchMixin (~226 lines): `_get_web_search_results()`, `should_trigger_web_search()` |
+| `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin (~946 lines): 18 memory/summary/reflection/facts/profile/schedule retrieval methods |
+| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin (~1,285 lines): 22 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, semantic chunks, dreams, codebase, visual memories, daemon self-notes, Google Calendar) |
+| `core/prompt/formatter.py` | Section formatting + prompt assembly (~1,650 lines): `_assemble_prompt()`, `_build_feature_inventory()`, `_staleness_prefix`, `_is_multimodal_model`, `_load_upload_image` |
 | `core/prompt/hygiene.py` | ContentHygiene (~345 lines): `_hygiene_and_caps()`, `_backfill_recent_conversations()` |
+| `core/prompt/summarizer.py` | LLMSummarizer (~403 lines): LLM dynamic compression of oversized items |
+| `core/prompt/proposal_filter.py` | Code proposal retrieval + filtering (~765 lines) |
 | `core/prompt/token_manager.py` | Budget computation, priority trimming, middle-out compression |
 
 ---
@@ -77,7 +81,7 @@ key_points, tone, avoid list, and strategy. The plan is injected into
 the system prompt before `_assemble_prompt()`. If the planner times out
 or fails, the prompt proceeds without a plan.
 
-### Step 4 — Parallel Retrieval (21 tasks, 30s timeout)
+### Step 4 — Parallel Retrieval (up to 22 tasks, 30s timeout)
 
 All tasks execute simultaneously via `asyncio.wait()` (not `asyncio.gather`).
 Completed tasks survive a timeout — only the still-pending sections fall back
@@ -347,6 +351,20 @@ substitutes literal "my area"/"near me" and appends the location to placeless
 weather-type queries — applied before the cache check so cache keys are
 location-aware. Without this, "temperature in my area" went to Tavily verbatim
 and returned arbitrary big-market results (the DC-weather-in-Illinois bug).
+
+**Localization scope guard (2026-07-08):** location is for physical-surroundings
+queries ONLY. Both LLM prompts (trigger + decompose) forbid attaching the
+location to institution/account/login queries, and parsed trigger search terms +
+decompose sub-queries pass through
+`location_resolver.strip_unjustified_location()` — a deterministic backstop that
+removes the injected place whenever the original query gave no local cue
+(weather/current-conditions shape, "near me"/local phrasing, or the user naming
+the place themselves). Downstream, the `[WEB SEARCH RESULTS]` block (formatter)
+and the agentic final-response instructions carry an institution-identity guard:
+never present a geo-matched institution from results as the user's own.
+Regression guards for the wrong-college incident — a school-login query
+localized to "Springfield IL" retrieved Springfield Community College and its
+IT-desk number was presented as the user's school's.
 
 In agentic mode, the `fetch_url` tool provides direct URL content retrieval
 via `WebSearchManager._tavily_extract()`. URLs detected in user messages are
