@@ -997,7 +997,7 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
 
 **user_profile.py**:
 - `UserProfile` class: Persistent manager for categorized user facts
-- Storage: `data/user_profile.json` with atomic writes (temp file + os.replace())
+- Storage: `data/user_profile.json` with atomic writes (temp file + os.replace()); strict load via `utils/safe_json.load_critical_json` — an existing-but-corrupt profile is quarantined (`.corrupt-<ts>` copy) and raises `CorruptStoreError` instead of silently starting empty [2026-07-14]
 - Thread-safe: threading.Lock() for concurrent access
 - **Append-only**: Facts never deleted, only marked `is_current=False` when superseded
 - Conflict resolution:
@@ -3196,6 +3196,8 @@ class EntityResolver:
     add_alias(alias, entity_id) → None
     get_aliases(entity_id) → List[str]
     save() / load()                               # JSON at data/entity_aliases.json
+                                                  # (atomic write + strict load via utils/safe_json;
+                                                  #  corrupt file → quarantine + CorruptStoreError, 2026-07-14)
 ```
 - Possessive alias extraction: "my brother Drew" → alias "brother" → entity "Drew"
 - `normalize_relation(text)` → snake_case, strips common prefixes
@@ -3616,7 +3618,7 @@ if STALENESS_ENABLED:
 - Items with `staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD` (0.6) get `[HISTORICAL -- some claims outdated]` prefix
 - Applied to summaries and reflections in prompt assembly
 
-**Persistence**: JSON at `data/claim_index.json` (same pattern as entity_aliases.json — loaded at startup, saved on shutdown)
+**Persistence**: JSON at `data/claim_index.json` (same pattern as entity_aliases.json — loaded at startup, saved on shutdown; atomic write + strict load via `utils/safe_json`: corrupt file → quarantine + `CorruptStoreError` [2026-07-14])
 
 **Integration Points**:
 1. **Init**: Created in `MemoryCoordinator.__init__()` when `STALENESS_ENABLED`, loaded from `STALENESS_INDEX_PATH`
@@ -5059,6 +5061,10 @@ daemon/
 │   ├── destructive_op_guard.py # Git command classifier (blocks destructive git ops) [NEW 2026-05]
 │   ├── fs_snapshot.py         # Filesystem manifest for agent session safety [NEW 2026-05]
 │   ├── turn_telemetry.py      # One JSONL line per completed turn → logs/turn_records.jsonl [NEW 2026-07-03]
+│   ├── safe_json.py           # Atomic JSON writes + strict corrupt-load (quarantine + CorruptStoreError) + schema_version check (StoreVersionError) for critical stores [NEW 2026-07-14]
+│   ├── preflight.py           # Startup preflight: data-dir writable (fatal), API keys / spaCy model (warn) [NEW 2026-07-14]
+│   ├── backup_manager.py      # Shutdown-phase backups of the memory stores (JSON always, chroma interval-throttled, retention+prune) [NEW 2026-07-14]
+│   ├── log_rotation.py        # Startup log bounding: rotate turn_records/daily_notes, archive audit log, gzip+prune daemon_debug archives [NEW 2026-07-14]
 │   └── python_fs_guard.py     # Python filesystem guard: 10 monkey-patches (os/shutil delete/move/copy-overwrite), ContextVar agent mode [NEW 2026-05]
 │
 ├── knowledge/
@@ -5086,6 +5092,7 @@ daemon/
 │   ├── wikidata_models.py     # Pydantic models for Wikidata import [NEW 2026-04]
 │   ├── wikidata_resolver.py   # WikidataEntityMapper: personal <-> Wikidata entity resolution [NEW 2026-04]
 │   ├── wiki_enrichment.py     # Shutdown: wiki articles -> graph bridges (gated: convo-entity-only, junk-filtered) [UPDATED 2026-05-18]
+│   ├── wikidata_enrichment.py # Shutdown: anchored Wikidata typed edges (exact-match personal entities -> whitelisted relations, 1-hop, capped; taxonomic forward-only) [NEW 2026-07-14]
 │   ├── wiki_tracker.py        # Session-level Wikipedia article tracking [NEW 2026-04]
 │   ├── clip_manager.py        # OpenCLIP singleton for CLIP image/text encoding [NEW 2026-05]
 │   ├── visual_memory_store.py # Dual storage: ChromaDB + FAISS for visual memories [NEW 2026-05]
@@ -5099,10 +5106,21 @@ daemon/
 │   ├── handlers.py            # UI event handlers (streaming, agentic routing) [ENHANCED 2026-01]
 │   ├── wizard.py              # First-run onboarding wizard [NEW 2025-12-11]
 │   ├── theme.py               # Dark theme definition
+│   ├── settings_core.py       # THE settings apply logic (extracted from tab closures) — shared by the Gradio tab AND api/routes/settings.py [NEW 2026-07-14]
 │   └── tabs/                  # GUI tab modules [NEW 2026-04]
 │       ├── proposals.py       # Proposals tab (browse, filter, manage, generate code proposals)
-│       ├── settings.py        # Settings tab (model selection, feature toggles, personality)
+│       ├── settings.py        # Settings tab — thin Gradio widget layer over gui/settings_core.py [REFACTORED 2026-07-14]
 │       └── synthesis.py       # Synthesis tab (blind review queue, two-layer grading, audit stats)
+│
+├── api/                       # FastAPI backend for the React SPA [NEW 2026-07-14]
+│   ├── app.py                 # create_app + lifespan + mount /admin (Gradio) + SPA static
+│   ├── state.py               # AppState/ChatSession (single-user in-process state + uploads)
+│   ├── chat_service.py        # SSE adapter wrapping THE deployed gui.handlers.handle_submit
+│   ├── schemas.py             # Pydantic request/response models (mirrored in web/src/api/types.ts)
+│   ├── sse.py                 # SSE event formatting
+│   └── routes/                # chat, actions, files, models, system,
+│                              #   debug (per-turn records + prompt TXT export + provenance),
+│                              #   settings (thin layer over gui/settings_core.py) [2026-07-14]
 │
 ├── integrations/
 │   └── wikipedia_api.py       # Wikipedia API client

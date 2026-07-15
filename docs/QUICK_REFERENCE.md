@@ -1010,6 +1010,47 @@ class EntityResolver:
     resolve_or_create(text, display_name) -> str
     save() / load()                       # JSON at data/entity_aliases.json
 
+# utils/safe_json.py — Persistence safety for critical JSON stores [NEW 2026-07-14]
+# Used by: graph, entity aliases, user profile, corpus, claim index
+def atomic_write_json(path, data):        # temp + fsync + os.replace (crash can't truncate)
+def load_critical_json(path, label):      # missing → None (fresh); 0-byte → fresh + warning;
+                                          # corrupt → quarantine copy (<path>.corrupt-<ts>) +
+                                          # raise CorruptStoreError (NEVER silent empty reset —
+                                          # that would overwrite user data on next save).
+                                          # main.py catches CorruptStoreError → actionable
+                                          # message + exit(1); memory_coordinator re-raises it
+                                          # through its broad init excepts.
+
+# utils/preflight.py — Startup preflight for gui/cli modes [NEW 2026-07-14]
+def run_preflight() -> PreflightResult:   # fatal: data dir unwritable (aborts startup)
+                                          # warnings: OPENAI_API_KEY missing/placeholder,
+                                          # TAVILY_API_KEY missing, spaCy model missing
+                                          # (all warn + continue: graceful degradation)
+
+# utils/backup_manager.py — Automated memory-store backups [NEW 2026-07-14]
+# Shutdown phase 5/5 (main._do_shutdown_async) + scripts/restore_backup.py --backup-now
+def run_backup(reason, include_chroma=None) -> BackupResult:
+    # <backup.dir>/<ts>/ = JSON stores (every run) + chroma tree (only when the
+    # newest chroma backup is older than backup.min_interval_hours; sqlite files
+    # copied via the sqlite3 backup API). Retention: newest N + newest chroma
+    # backup; prune only touches dirs containing our manifest.json.
+# Restore: scripts/restore_backup.py --restore <name> [--apply]  (dry-run default,
+#   refuses while Daemon runs, moves current data to *.pre-restore-<ts>, never deletes)
+# Export: scripts/export_user_data.py [--no-chroma]  → portable tar.gz + import README
+
+# utils/log_rotation.py — Startup log-growth bounding [NEW 2026-07-14]
+def run_startup_log_maintenance():        # turn_records.jsonl / daily_notes.log:
+                                          #   numbered rotation over size cap
+                                          # actions_audit.jsonl: timestamped archive
+                                          #   (audit history never deleted)
+                                          # daemon_debug_<ts>.log archives: gzip >7d,
+                                          #   delete >90d (live log untouched)
+                                          # YAML section log_maintenance
+
+# Store schema versions [NEW 2026-07-14]: knowledge_graph.json + claim_index.json
+# carry schema_version (missing=1). check_schema_version() refuses newer-than-
+# supported files (StoreVersionError → same startup-abort path as corruption).
+
 # memory/graph_utils.py — Shared helpers for scoring + expansion
 def extract_graph_entities(text, resolver) -> Set[str]:
     """Trigram→bigram→single word alias resolution, strips punctuation, skips stopwords."""
@@ -1047,6 +1088,15 @@ def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, 
 # scripts/cleanup_graph_junk.py --execute       # Remove junk nodes, migrate to metadata
 # scripts/graph_junk_cleanup.py                 # Manual junk cleanup; dry-run-first, --apply removes
 #   only reviewed/uncommented ids after a JSON backup (GraphMemory.remove_entity()). [NEW 2026-06]
+# scripts/graph_relation_normalize.py           # Re-canonicalize edge relations through the deployed
+#   normalize_relation(); merges (src,canon,tgt) collisions. Dry-run-first, --apply backs up. [NEW 2026-07-14]
+
+# Wikidata typed-edge enrichment [NEW 2026-07-14] (knowledge/wikidata_enrichment.py):
+# Shutdown Phase B step: personal entities exact-matching the offline cache
+# (data/wikidata_cache.json) gain whitelisted typed edges (instance_of, part_of, ...).
+# Anchored (never mass import), 1-hop, capped (5/entity, 50/run, 25 new nodes/run);
+# taxonomic relations forward-only (reverse instance_of = category-member junk fan-in).
+# Idempotent via wikidata_qid metadata stamp. Config: wikidata_enrichment YAML section.
 ```
 
 ---

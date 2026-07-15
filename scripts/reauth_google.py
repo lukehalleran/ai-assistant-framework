@@ -39,6 +39,7 @@ async def main() -> int:
     if token_path.exists():
         backup = token_path.with_suffix(token_path.suffix + ".bak")
         backup.write_bytes(token_path.read_bytes())
+        backup.chmod(0o600)  # contains bearer/refresh tokens
         print(f"• Backed up existing token → {backup}")
 
     print("• Opening your browser for Google consent…")

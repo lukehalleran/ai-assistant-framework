@@ -312,12 +312,17 @@ class TestClaimIndexPersistence:
         assert idx.total_claims == 0
 
     def test_load_corrupted_json(self, tmp_path):
-        """Loading corrupted JSON should not crash."""
+        """Corrupt existing index must fail loudly (quarantine + raise),
+        never silently reset — a reset would overwrite staleness history."""
+        from utils.safe_json import CorruptStoreError
+
         path = str(tmp_path / "bad.json")
         with open(path, "w") as f:
             f.write("{invalid json")
-        idx = ClaimIndex(persist_path=path)
-        assert idx.total_claims == 0
+        with pytest.raises(CorruptStoreError):
+            ClaimIndex(persist_path=path)
+        assert os.path.exists(path)
+        assert any(p.name.startswith("bad.json.corrupt-") for p in tmp_path.iterdir())
 
     def test_dirty_flag_saves(self, tmp_path):
         """Only saves when dirty."""

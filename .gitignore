@@ -100,3 +100,10 @@ config/config.local.yaml
 # Commit-message scratchpad (git log is the real archive) + gh token
 commit_message.txt
 .gh_token
+
+# React frontend build artifacts (web/ source is committed)
+web/node_modules/
+web/dist/
+
+# Gzipped debug-log archives (log_rotation gzips daemon_debug logs >7d; *.log rule misses .gz)
+*.log.gz

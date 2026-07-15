@@ -1,0 +1,28 @@
+# Daemon — project metadata + dependency declaration.
+# This is an application, not a library: the wheel is never published.
+# Install for development:
+#     python3.11 -m venv venv && venv/bin/pip install -r requirements.txt
+#     venv/bin/python -m spacy download en_core_web_sm
+# Reproducible install (exact known-good versions from the dev machine):
+#     venv/bin/pip install -r requirements.lock.txt
+# Frozen executable: pyinstaller daemon.spec --clean --noconfirm
+
+[project]
+name = "daemon"
+version = "1.1.0"
+description = "Conversational RAG system with 5-tier hierarchical memory (single-user desktop app)"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { text = "Proprietary" }
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools]
+# Metadata-only: the app runs from the repo / PyInstaller bundle, not a wheel.
+packages = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

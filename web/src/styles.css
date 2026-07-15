@@ -1,0 +1,28 @@
+/* Horizontal-overflow guards: wide content (code, tables, math, images) must
+   scroll inside its own bubble, never widen the page and shift the layout. */
+
+.markdown-body {
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.markdown-body pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.markdown-body table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.katex-display {
+  overflow-x: auto;
+  max-width: 100%;
+}

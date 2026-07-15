@@ -8,7 +8,17 @@ is deliberately simple (exact match + alias table) — fuzzy and semantic
 matching can be added later without changing the interface.
 
 Relation normalization maps raw relation strings ("lives in",
-"resides in") to canonical forms ("lives_in").
+"resides in") to canonical forms ("lives_in") via three layers:
+exact synonym table (RELATION_SYNONYMS), hygiene (spaces/hyphens →
+underscores, punctuation stripped, repeats collapsed), then conservative
+family-collapse patterns ("asked_about_wakeup_time" → "asked_about") —
+per-fact specifics belong in the object, not the relation name.
+Historical edges predating a pattern can be re-canonicalized with
+scripts/graph_relation_normalize.py (dry-run-first).
+
+Persistence (entity_aliases.json): atomic write (utils.safe_json) and
+strict load — an existing-but-corrupt file is quarantined and raises
+CorruptStoreError instead of silently starting empty [2026-07-14].
 """
 
 import json
@@ -19,6 +29,7 @@ from typing import Optional
 from memory.graph_memory import GraphMemory
 from memory.graph_models import GraphNode
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_json, load_critical_json
 
 logger = get_logger("entity_resolver")
 
@@ -52,6 +63,10 @@ RELATION_SYNONYMS: dict[str, list[str]] = {
     "born_in": ["born in", "from", "originally from", "native of"],
     "interested_in": ["interested in", "curious about", "passionate about"],
     "skilled_at": ["skilled at", "good at", "proficient in", "experienced in"],
+    "asked_about": ["asked about", "asks about", "inquired about", "inquire_about",
+                    "inquired_about", "inquires_about"],
+    "concerned_about": ["concerned about", "worried about", "worried_about",
+                        "worries_about"],
 }
 
 # Build reverse lookup for fast matching
@@ -62,19 +77,44 @@ for canonical, synonyms in RELATION_SYNONYMS.items():
         _RELATION_REVERSE[syn.lower()] = canonical
 
 
+# Family-collapse patterns, applied after exact synonym lookup.  These fold
+# LLM-invented per-fact variants ("asked_about_wakeup_time", "class_start_date",
+# "classes_started_on") into one canonical predicate — the specifics live in
+# the fact's object/value, not the relation name.  Keep this list conservative:
+# only families where the collapsed form loses nothing the object doesn't carry.
+_RELATION_FAMILY_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"^ask(s|ed)?_about_.+$"), "asked_about"),
+    (re.compile(r"^inquire[sd]?_about_.+$"), "asked_about"),
+    (re.compile(r"^concern(s|ed)?_about_.+$"), "concerned_about"),
+    (re.compile(r"^worrie[sd]_about_.+$"), "concerned_about"),
+    (re.compile(r"^class(es)?_start(s|ed)?(_(date|time|on|day))?$"), "classes_start"),
+]
+
+
 def normalize_relation(raw: str) -> str:
     """Map raw relation strings to canonical forms.
 
     Examples:
         "lives in" -> "lives_in"
         "resides in" -> "lives_in"
+        "asked_about_wakeup_time" -> "asked_about"  (family collapse)
         "favorite_color" -> "favorite_color"  (pass-through)
     """
     raw_lower = raw.lower().strip()
     if raw_lower in _RELATION_REVERSE:
         return _RELATION_REVERSE[raw_lower]
-    # Pass through, replacing spaces with underscores
-    return re.sub(r"\s+", "_", raw_lower)
+    # Hygiene: spaces/hyphens -> underscores, drop stray punctuation, collapse repeats
+    rel = re.sub(r"[\s\-]+", "_", raw_lower)
+    rel = re.sub(r"[^a-z0-9_]", "", rel)
+    rel = re.sub(r"_+", "_", rel).strip("_")
+    if not rel:  # punctuation-only input — fall back to space-joined form
+        return re.sub(r"\s+", "_", raw_lower)
+    if rel in _RELATION_REVERSE:
+        return _RELATION_REVERSE[rel]
+    for pattern, canonical in _RELATION_FAMILY_PATTERNS:
+        if pattern.match(rel):
+            return canonical
+    return rel
 
 
 # ------------------------------------------------------------------
@@ -134,28 +174,26 @@ class EntityResolver:
 
         Format: {"entity_id": ["alias1", "alias2", ...], ...}
         """
-        if not self.aliases_path or not os.path.exists(self.aliases_path):
+        # Corrupt existing file raises CorruptStoreError (quarantined copy kept)
+        # instead of silently continuing empty and overwriting on next save.
+        aliases_data = load_critical_json(self.aliases_path, "Entity alias store")
+        if aliases_data is None:
             return
-        try:
-            with open(self.aliases_path, "r", encoding="utf-8") as f:
-                aliases_data = json.load(f)
-            count = 0
-            # Use bulk_import to suppress auto-saves while rebuilding in-memory
-            # alias index from the persisted file (no graph changes to flush).
-            with self.graph.bulk_import():
-                for entity_id, aliases in aliases_data.items():
-                    eid = entity_id.lower().strip()
-                    for alias in aliases:
-                        a_lower = alias.lower().strip()
-                        if a_lower:
-                            self.graph.register_alias(a_lower, eid)
-                            count += 1
-            # Clear dirty flag — we just loaded what's already on disk.
-            self.graph._dirty = False
-            self.graph._modification_count = 0
-            logger.info(f"[EntityResolver] Loaded {count} external aliases from {self.aliases_path}")
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"[EntityResolver] Failed to load aliases from {self.aliases_path}: {e}")
+        count = 0
+        # Use bulk_import to suppress auto-saves while rebuilding in-memory
+        # alias index from the persisted file (no graph changes to flush).
+        with self.graph.bulk_import():
+            for entity_id, aliases in aliases_data.items():
+                eid = entity_id.lower().strip()
+                for alias in aliases:
+                    a_lower = alias.lower().strip()
+                    if a_lower:
+                        self.graph.register_alias(a_lower, eid)
+                        count += 1
+        # Clear dirty flag — we just loaded what's already on disk.
+        self.graph._dirty = False
+        self.graph._modification_count = 0
+        logger.info(f"[EntityResolver] Loaded {count} external aliases from {self.aliases_path}")
 
     def resolve(self, mention: str) -> Optional[str]:
         """Resolve a mention to a canonical entity_id.
@@ -209,10 +247,8 @@ class EntityResolver:
             if alias != eid:  # skip self-references
                 by_entity.setdefault(eid, []).append(alias)
 
-        os.makedirs(os.path.dirname(self.aliases_path) or ".", exist_ok=True)
         try:
-            with open(self.aliases_path, "w", encoding="utf-8") as f:
-                json.dump(by_entity, f, indent=2, ensure_ascii=False)
+            atomic_write_json(self.aliases_path, by_entity)
             logger.info(f"[EntityResolver] Saved aliases to {self.aliases_path}")
         except OSError as e:
             logger.warning(f"[EntityResolver] Failed to save aliases: {e}")

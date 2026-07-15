@@ -233,6 +233,12 @@ guard for the wrong-college incident: a school-login query localized to
 was asserted as the user's school's. Upstream, the localization itself is also scoped
 — see `location_resolver.strip_unjustified_location()`.
 
+**[WIKI_N] citation instruction** [2026-07-14]: when the session's
+`_current_wiki_source_map` is non-empty, `_generate_final_response` prepends a citation
+instruction telling the model to cite Wikipedia content with the numbered [WIKI_N]
+markers from the context headers and never a bare `[Wikipedia]` tag, so the GUI can
+link each citation to its article (see the `search_memory` wiki_knowledge block above).
+
 ---
 
 ## Available Tools
@@ -298,6 +304,13 @@ wiki_knowledge: ChromaDB is queried first (like all collections). Then FAISS
                 additionally attempted. If FAISS returns results, they are
                 preferred over the ChromaDB results. If FAISS is unavailable
                 or returns nothing, the ChromaDB results are used as fallback.
+Citations:      FAISS wiki results carry [WIKI_N] headers (2026-07-14), mirroring
+                [WEB_N]: ToolExecutor keeps a session-wide _current_wiki_source_map
+                (title/section/article URL, numbering continues across rounds) and
+                format_wiki_faiss_results(start_index=...) emits the matching
+                [WIKI_N] header per result. gui/handlers._apply_web_citations
+                linkifies [WIKI_N] markers into a Wikipedia-labeled Sources footer.
+                Regression: tests/unit/test_wiki_citations.py.
                 When FAISS is unavailable (checked via is_faiss_available() in
                 knowledge/semantic_search.py — file-existence check, no full load),
                 a prominent warning is prepended to the result telling the LLM

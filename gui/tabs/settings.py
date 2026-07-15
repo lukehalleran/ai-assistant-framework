@@ -2,9 +2,15 @@
 gui/tabs/settings.py — Runtime settings tab for streaming, web search, duel mode, tokens, temperature.
 
 Extracted from gui/launch.py to reduce file size.
+
+2026-07-14: the apply logic moved to gui/settings_core.py so the FastAPI
+settings routes (api/routes/settings.py) call the SAME deployed functions.
+This module is now purely the Gradio widget layer — each button handler is a
+thin wrapper returning the core result's message.
 """
-import logging
 import gradio as gr
+
+from gui import settings_core
 
 
 def build_settings_tab(orchestrator, _load_settings, _save_settings):
@@ -39,30 +45,14 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
         fast_status = gr.Markdown(visible=True)
 
         def _apply_fast(disable_bo: bool, disable_rw: bool, disable_sums: bool, bo_budget: float):
-            try:
-                cfg = getattr(orchestrator, 'config', {}) or {}
-                feats = cfg.setdefault('features', {}) if isinstance(cfg, dict) else {}
-                feats['enable_best_of'] = not bool(disable_bo)
-                feats['enable_query_rewrite'] = not bool(disable_rw)
-                feats['disable_llm_summaries'] = bool(disable_sums)
-                feats['best_of_latency_budget_s'] = float(bo_budget)
-                try:
-                    pb = getattr(orchestrator, 'prompt_builder', None)
-                    if pb is not None:
-                        setattr(pb, 'force_llm_summaries', False if disable_sums else True)
-                except (AttributeError, TypeError):
-                    pass
-                ok, err = _save_settings(lambda d: d.setdefault('features', {}).update({
-                    'enable_best_of': not bool(disable_bo),
-                    'enable_query_rewrite': not bool(disable_rw),
-                    'disable_llm_summaries': bool(disable_sums),
-                    'best_of_latency_budget_s': float(bo_budget),
-                }))
-                if not ok:
-                    return f"Applied runtime settings. Persist failed: {err}"
-                return "Streaming settings updated (persisted)."
-            except Exception as e:
-                return f"Failed to apply: {e}"
+            return settings_core.apply_streaming(
+                orchestrator,
+                disable_best_of=disable_bo,
+                disable_query_rewrite=disable_rw,
+                disable_llm_summaries=disable_sums,
+                best_of_latency_budget_s=bo_budget,
+                save=_save_settings,
+            )["message"]
 
         apply_fast_btn.click(_apply_fast, inputs=[disable_bestof, disable_rewrite, disable_summaries, bestof_budget], outputs=[fast_status])
 
@@ -96,26 +86,12 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
         ws_status = gr.Markdown(visible=True)
 
         def _apply_web_search(enabled: bool, daily_limit: int):
-            try:
-                cfg = getattr(orchestrator, 'config', {}) or {}
-                ws_cfg = cfg.setdefault('web_search', {}) if isinstance(cfg, dict) else {}
-                ws_cfg['enabled'] = bool(enabled)
-                ws_cfg['daily_credit_limit'] = int(daily_limit)
-                try:
-                    import config.app_config as app_cfg
-                    app_cfg.WEB_SEARCH_ENABLED = bool(enabled)
-                    app_cfg.WEB_SEARCH_DAILY_CREDIT_LIMIT = int(daily_limit)
-                except (ImportError, AttributeError):
-                    pass
-                ok, err = _save_settings(lambda d: d.setdefault('web_search', {}).update({
-                    'enabled': bool(enabled),
-                    'daily_credit_limit': int(daily_limit),
-                }))
-                if not ok:
-                    return f"Applied runtime settings. Persist failed: {err}"
-                return f"Web search settings updated: enabled={enabled}, daily_limit={daily_limit}"
-            except Exception as e:
-                return f"Failed to apply: {e}"
+            return settings_core.apply_web_search(
+                orchestrator,
+                enabled=enabled,
+                daily_credit_limit=daily_limit,
+                save=_save_settings,
+            )["message"]
 
         apply_ws_btn.click(
             _apply_web_search,
@@ -134,13 +110,10 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
             _duel_enabled_default = False
             _gens_default = []
 
-        try:
-            _mm = orchestrator.model_manager
-            _api_aliases = list(getattr(_mm, 'api_models', {}).keys())
-            _local_models = list(getattr(_mm, 'models', {}).keys())
-            _all_model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
-        except (AttributeError, TypeError):
-            _all_model_choices = ['claude-fable-5', 'claude-opus-4.8', 'gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5', 'gpt-4o', 'gpt-4o-mini']
+        _all_model_choices = settings_core.model_choices(orchestrator) or [
+            'claude-fable-5', 'claude-opus-4.8', 'gpt-5.1', 'gpt-5', 'gpt-4-turbo',
+            'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5', 'gpt-4o', 'gpt-4o-mini'
+        ]
 
         _m1_value = _gens_default[0] if len(_gens_default) > 0 else (_all_model_choices[0] if _all_model_choices else None)
         _m2_value = _gens_default[1] if len(_gens_default) > 1 else (next((m for m in _all_model_choices if m != _m1_value), _m1_value))
@@ -154,29 +127,13 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
         duel_status = gr.Markdown(visible=True)
 
         def _apply_duel_settings(enable: bool, m1: str, m2: str):
-            try:
-                m1 = (m1 or '').strip()
-                m2 = (m2 or '').strip()
-                if enable and (not m1 or not m2):
-                    return "Select both Model 1 and Model 2."
-                if enable and m1 == m2:
-                    return "Pick two different models for duel mode."
-                cfg = getattr(orchestrator, 'config', {}) or {}
-                feats = cfg.setdefault('features', {}) if isinstance(cfg, dict) else {}
-                feats['best_of_duel_mode'] = bool(enable)
-                feats['best_of_generator_models'] = [m1, m2] if m1 and m2 else feats.get('best_of_generator_models', [])
-
-                def _updater(d):
-                    f = d.setdefault('features', {})
-                    f['best_of_duel_mode'] = bool(enable)
-                    if m1 and m2:
-                        f['best_of_generator_models'] = [m1, m2]
-                ok, err = _save_settings(_updater)
-                if not ok:
-                    return f"Applied runtime duel settings. Persist failed: {err}"
-                return f"Duel mode={'ON' if enable else 'OFF'} | Model 1={m1 or '-'} Model 2={m2 or '-'} (persisted)."
-            except Exception as e:
-                return f"Failed to apply: {e}"
+            return settings_core.apply_duel(
+                orchestrator,
+                enabled=enable,
+                model_1=m1,
+                model_2=m2,
+                save=_save_settings,
+            )["message"]
 
         apply_duel_btn.click(_apply_duel_settings, inputs=[duel_enable, duel_model_1, duel_model_2], outputs=[duel_status])
 
@@ -202,32 +159,13 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
         tok_status = gr.Markdown(visible=True)
 
         def _apply_tokens(gen_max: int, judge_max: int, stream_max: int):
-            try:
-                gen_max = int(gen_max); judge_max = int(judge_max); stream_max = int(stream_max)
-                cfg = getattr(orchestrator, 'config', {}) or {}
-                feats = cfg.setdefault('features', {}) if isinstance(cfg, dict) else {}
-                models_cfg = cfg.setdefault('models', {}) if isinstance(cfg, dict) else {}
-                feats['best_of_max_tokens'] = gen_max
-                feats['best_of_selector_max_tokens'] = judge_max
-                models_cfg['default_max_tokens'] = stream_max
-                try:
-                    mm = getattr(orchestrator, 'model_manager', None)
-                    if mm is not None:
-                        setattr(mm, 'default_max_tokens', int(stream_max))
-                except (AttributeError, TypeError, ValueError):
-                    pass
-                def _updater(d):
-                    f = d.setdefault('features', {})
-                    f['best_of_max_tokens'] = int(gen_max)
-                    f['best_of_selector_max_tokens'] = int(judge_max)
-                    m = d.setdefault('models', {})
-                    m['default_max_tokens'] = int(stream_max)
-                ok, err = _save_settings(_updater)
-                if not ok:
-                    return f"Applied runtime tokens. Persist failed: {err}"
-                return f"Applied: generators={gen_max} judge={judge_max} streaming={stream_max} (persisted)."
-            except Exception as e:
-                return f"Failed to apply: {e}"
+            return settings_core.apply_tokens(
+                orchestrator,
+                best_of_max_tokens=gen_max,
+                judge_max_tokens=judge_max,
+                streaming_max_tokens=stream_max,
+                save=_save_settings,
+            )["message"]
 
         apply_tok_btn.click(_apply_tokens, inputs=[gen_max_tok, judge_max_tok, stream_max_tok], outputs=[tok_status])
 
@@ -252,20 +190,9 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
         temp_status = gr.Markdown(visible=True)
 
         def _apply_temperature(t: float):
-            try:
-                t = float(t)
-                try:
-                    mm = getattr(orchestrator, 'model_manager', None)
-                    if mm is not None:
-                        setattr(mm, 'default_temperature', t)
-                except (AttributeError, TypeError):
-                    pass
-                ok, err = _save_settings(lambda d: d.setdefault('models', {}).update({'default_temperature': float(t)}))
-                if not ok:
-                    return f"Applied runtime temperature={t:.2f}. Persist failed: {err}"
-                return f"Model temperature set to {t:.2f} (persisted)."
-            except Exception as e:
-                return f"Failed to apply: {e}"
+            return settings_core.apply_temperature(
+                orchestrator, temperature=t, save=_save_settings,
+            )["message"]
 
         apply_temp_btn.click(_apply_temperature, inputs=[model_temp], outputs=[temp_status])
 
@@ -287,41 +214,8 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
         status_md = gr.Markdown(visible=True)
 
         def _apply_summary_n(n: int):
-            import os
-            from pathlib import Path
-            import yaml
-            try:
-                n = int(n)
-                try:
-                    mc = getattr(orchestrator, 'memory_system', None)
-                    if mc and getattr(mc, 'consolidator', None):
-                        mc.consolidator.consolidation_threshold = n
-                except (AttributeError, TypeError):
-                    pass
-                try:
-                    pb = getattr(orchestrator, 'prompt_builder', None)
-                    if pb and getattr(pb, 'consolidator', None):
-                        pb.consolidator.consolidation_threshold = n
-                except (AttributeError, TypeError):
-                    pass
-                try:
-                    os.environ['SUMMARY_EVERY_N'] = str(n)
-                except (OSError, TypeError):
-                    pass
-                try:
-                    cfg_path = Path('config') / 'config.yaml'
-                    data = {}
-                    if cfg_path.exists():
-                        with open(cfg_path, 'r', encoding='utf-8') as f:
-                            data = yaml.safe_load(f) or {}
-                    mem = data.setdefault('memory', {})
-                    mem['summary_interval'] = int(n)
-                    with open(cfg_path, 'w', encoding='utf-8') as f:
-                        yaml.safe_dump(data, f, sort_keys=False)
-                except Exception as _e:
-                    return f"Applied (runtime). Persist failed: {_e}"
-                return f"Summary cadence updated: every {n} exchanges (persisted)."
-            except Exception as e:
-                return f"Failed to apply: {e}"
+            return settings_core.apply_summary_cadence(
+                orchestrator, every_n=n, save=_save_settings,
+            )["message"]
 
         apply_btn.click(_apply_summary_n, inputs=[summary_n], outputs=[status_md])

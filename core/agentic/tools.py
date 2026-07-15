@@ -151,6 +151,8 @@ class ToolExecutor:
 
         # Web source map for citation tracking across rounds
         self._current_web_source_map = {}
+        # Wikipedia source map — same session-wide [WIKI_N] numbering scheme
+        self._current_wiki_source_map = {}
 
     def get_tool_health(self) -> str:
         """Return a status summary of tool backends for the agentic system prompt.
@@ -1520,7 +1522,17 @@ Provide a focused summary with the most important information."""
                             tracker.track(t, r.get("text", "")[:500])
                     logger.info(f"[AgenticSearch] wiki_knowledge using FAISS index "
                                 f"({len(faiss_results)} results)")
-                    return self.formatter.format_wiki_faiss_results(faiss_results)
+                    # Register [WIKI_N] citation ids (session-continuing, like WEB_N)
+                    from urllib.parse import quote as _q
+                    start = len(self._current_wiki_source_map)
+                    for j, r in enumerate(faiss_results, 1):
+                        _title = r.get("title", "") or "Unknown"
+                        self._current_wiki_source_map[f"WIKI_{start + j}"] = {
+                            "title": _title,
+                            "section": r.get("section", ""),
+                            "url": f"https://en.wikipedia.org/wiki/{_q(_title.replace(' ', '_'))}",
+                        }
+                    return self.formatter.format_wiki_faiss_results(faiss_results, start_index=start)
                 else:
                     # FAISS returned nothing — check if the index is actually available
                     from knowledge.semantic_search import is_faiss_available

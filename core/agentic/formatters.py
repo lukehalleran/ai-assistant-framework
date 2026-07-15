@@ -238,15 +238,20 @@ class AgenticFormatter:
 
         return "\n\n".join(lines)
 
-    def format_wiki_faiss_results(self, results: list[dict]) -> str:
-        """Format FAISS wiki search results for the agentic LLM."""
+    def format_wiki_faiss_results(self, results: list[dict], start_index: int = 0) -> str:
+        """Format FAISS wiki search results for the agentic LLM.
+
+        Headers carry session-wide [WIKI_N] citation ids (start_index continues
+        numbering across rounds, mirroring [WEB_N]) so the final response can
+        cite Wikipedia properly instead of improvising a bare [Wikipedia].
+        """
         lines = []
         for i, r in enumerate(results, 1):
             title = r.get("title", "Unknown")
             section = r.get("section", "")
             text = r.get("text", "").strip()
             score = r.get("similarity", 0.0)
-            header = f"[{i}] Wikipedia: {title}"
+            header = f"[WIKI_{start_index + i}] Wikipedia: {title}"
             if section:
                 header += f" / {section}"
             header += f" (score: {score:.3f})"

@@ -41,6 +41,13 @@ _EXCLUDED_PREFIXES: tuple[str, ...] = (
     "RECOVERY_",
 )
 
+# Relative-path prefixes (POSIX-style). data/backups churns on every
+# shutdown (utils/backup_manager.py) — hashing ~600MB of copies per audit
+# adds noise and minutes for files the app itself wrote.
+_EXCLUDED_PATH_PREFIXES: tuple[str, ...] = (
+    "data/backups/",
+)
+
 _EXCLUDED_NAMES: set[str] = {
     ".Rhistory",
 }
@@ -60,6 +67,11 @@ def should_exclude(rel: str) -> bool:
     # Any path component is an excluded dir?
     for part in parts:
         if part in _EXCLUDED_DIRS:
+            return True
+
+    # Excluded relative-path prefixes (e.g. data/backups/)
+    for path_prefix in _EXCLUDED_PATH_PREFIXES:
+        if rel.startswith(path_prefix):
             return True
 
     basename = parts[-1] if parts else ""

@@ -116,7 +116,14 @@ class HybridRetriever:
                         if not isinstance(item, dict):
                             item = {"content": str(item), "id": str(hash(str(item)))}
 
-                        # Normalize result format
+                        # Normalize result format.
+                        # The store wrapper emits relevance_score (1/(1+dist)),
+                        # NOT a raw "distance" key — reading distance with a 1.0
+                        # default zeroed semantic_score for EVERY doc, so hybrid
+                        # ranking silently degraded to keyword-only (fixed 2026-07-14).
+                        _rel = item.get("relevance_score")
+                        if not isinstance(_rel, (int, float)):
+                            _rel = 1.0 - item.get("distance", 1.0)
                         memory = {
                             "id": item.get("id", str(hash(str(item)))),
                             "content": item.get("content", ""),
@@ -124,7 +131,7 @@ class HybridRetriever:
                             "response": item.get("response", ""),
                             "metadata": item.get("metadata", {}),
                             "collection": collection_name,
-                            "semantic_score": 1.0 - item.get("distance", 1.0),  # Convert distance to similarity
+                            "semantic_score": max(0.0, float(_rel)),
                             "distance": item.get("distance", 1.0)
                         }
                         memories.append(memory)

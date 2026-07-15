@@ -14,7 +14,16 @@ Module Contract
   - Health check endpoint at /health (HTTP 200 for healthy, 503 for degraded)
 - Key pieces:
   - IS_FROZEN: Detects PyInstaller frozen executable mode
-  - launch_gui(): Main entry point, routes to wizard or normal UI
+  - build_demo(orchestrator, dev_tabs=None): constructs the Gradio Blocks app
+    (tabs + queue(), no launch). Used by BOTH the legacy standalone launch and
+    the FastAPI path (api/app.py mounts it at /admin via gr.mount_gradio_app).
+  - launch_gui(): LEGACY standalone entry (python main.py --legacy-gui), routes
+    to wizard or build_demo + _launch_demo (share tunnel, browser open).
+  - check_first_run(orchestrator, force_wizard): shared first-run wizard check
+    (main.py uses it to route wizard sessions to the legacy path).
+  - start_background_tasks(orchestrator): kicks off the startup daemon threads
+    (notes catch-up, ref-docs seed, model warmup); called by launch_gui AND the
+    FastAPI lifespan.
   - _launch_wizard_ui(): First-run setup wizard interface
   - _run_daily_notes_catchup(): Background thread for daily notes catch-up on startup [NEW 2026-01-18]
     - Generates yesterday's daily note if missing
@@ -522,48 +531,49 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
         traceback.print_exc()
         raise
 
-def launch_gui(orchestrator, force_wizard=False):
-    conversation_logger = get_conversation_logger()
-
-    # ------- Configurable networking (via env) -------
-    # GRADIO_SHARE: 1/true to request public gradio.live tunnel; 0/false for local only
-    # GRADIO_SERVER_NAME: usually "127.0.0.1" (safer for local), or "0.0.0.0" for LAN
-    # GRADIO_PORT: desired port (falls back to free port if occupied)
-    SHARE = _env_flag("GRADIO_SHARE", True)   # default True to keep your current behavior
-    SERVER_NAME = os.getenv("GRADIO_SERVER_NAME", "127.0.0.1")  # use loopback by default
-    PORT = int(os.getenv("GRADIO_PORT", "7860"))
-    PORT = _find_free_port(PORT)
-
-    from config.app_config import DAEMON_MODE as _DAEMON_MODE
-    _show_dev_tabs = (_DAEMON_MODE == "dev")
-
-    # ------- First-run wizard check -------
+def check_first_run(orchestrator, force_wizard=False):
+    """First-run wizard check, shared by the legacy and FastAPI entry paths."""
     try:
         # force_wizard=True (from `python main.py wizard`) always forces wizard mode
         # This is useful for testing/re-running setup
         if force_wizard:
             print("[DEBUG] Force wizard mode enabled")
-            is_first_run = True
-        else:
-            has_profile = orchestrator.user_profile is not None
-            if has_profile:
-                corpus_mgr = orchestrator.memory_system.corpus_manager
-                is_first_run = orchestrator.user_profile.is_first_run(corpus_mgr)
+            return True
+        has_profile = orchestrator.user_profile is not None
+        if has_profile:
+            corpus_mgr = orchestrator.memory_system.corpus_manager
+            is_first_run = orchestrator.user_profile.is_first_run(corpus_mgr)
 
-                # Debug logging
-                print(f"[DEBUG] First-run check:")
-                print(f"  - User profile exists: {has_profile}")
-                print(f"  - Corpus count: {len(corpus_mgr.corpus) if hasattr(corpus_mgr, 'corpus') else 0}")
-                print(f"  - Identity name: '{orchestrator.user_profile.identity.name}'")
-                print(f"  - Is first run: {is_first_run}")
-            else:
-                print("[DEBUG] No user profile found, skipping wizard")
-                is_first_run = False
+            # Debug logging
+            print(f"[DEBUG] First-run check:")
+            print(f"  - User profile exists: {has_profile}")
+            print(f"  - Corpus count: {len(corpus_mgr.corpus) if hasattr(corpus_mgr, 'corpus') else 0}")
+            print(f"  - Identity name: '{orchestrator.user_profile.identity.name}'")
+            print(f"  - Is first run: {is_first_run}")
+            return is_first_run
+        print("[DEBUG] No user profile found, skipping wizard")
+        return False
     except Exception as e:
         print(f"[DEBUG] First-run check failed: {e}")
         import traceback
         traceback.print_exc()
-        is_first_run = False
+        return False
+
+
+def launch_gui(orchestrator, force_wizard=False):
+    # ------- Configurable networking (via env) -------
+    # GRADIO_SHARE: 1/true to request public gradio.live tunnel; 0/false for local only
+    # GRADIO_SERVER_NAME: usually "127.0.0.1" (safer for local), or "0.0.0.0" for LAN
+    # GRADIO_PORT: desired port (falls back to free port if occupied)
+    # Default OFF (2026-07-14): a public tunnel to an unauthenticated app with
+    # the full memory behind it must be an explicit opt-in, never a default.
+    # (Remote/mobile access goes through Tailscale + the FastAPI server.)
+    SHARE = _env_flag("GRADIO_SHARE", False)
+    SERVER_NAME = os.getenv("GRADIO_SERVER_NAME", "127.0.0.1")  # use loopback by default
+    PORT = int(os.getenv("GRADIO_PORT", "7860"))
+    PORT = _find_free_port(PORT)
+
+    is_first_run = check_first_run(orchestrator, force_wizard=force_wizard)
 
     if is_first_run:
         print("[DEBUG] Launching wizard UI...")
@@ -578,28 +588,48 @@ def launch_gui(orchestrator, force_wizard=False):
     else:
         print("[DEBUG] Launching normal chat UI...")
 
-    # ------- Daily notes catch-up (run in background) -------
-    # Creates its own model_manager to avoid sharing httpx clients across event loops
+    start_background_tasks(orchestrator)
+
+    demo = build_demo(orchestrator)
+    return _launch_demo(demo, orchestrator, SHARE, SERVER_NAME, PORT)
+
+
+def start_background_tasks(orchestrator):
+    """Kick off the non-blocking startup daemon threads.
+
+    Shared by the legacy Gradio launch path and the FastAPI lifespan handler —
+    each helper spawns its own daemon thread with its own event loop.
+    """
+    # Daily/weekly/monthly notes catch-up: each creates its own model_manager
+    # to avoid sharing httpx clients across event loops.
     _run_daily_notes_catchup()
-
-    # ------- Weekly notes catch-up (run in background) -------
-    # Generates last week's summary if week is complete (today is Monday+)
     _run_weekly_notes_catchup()
-
-    # ------- Monthly notes catch-up (run in background) -------
-    # Migrates weekly folders into monthly parents, generates last month's summary
     _run_monthly_notes_catchup()
 
-    # ------- Reference docs auto-seed (run in background) -------
-    # Seeds docs/ directory into ChromaDB reference_docs collection (mtime-based idempotency).
-    # Reuse the app's store so it doesn't load a second BGE model / open a duplicate client.
+    # Reference docs auto-seed: seeds docs/ into ChromaDB reference_docs
+    # (mtime-based idempotency). Reuse the app's store so it doesn't load a
+    # second BGE model / open a duplicate client.
     _run_reference_docs_seed(orchestrator.memory_system.chroma_store)
 
-    # ------- Model warmup (run in background) -------
-    # Pre-load/first-infer the models that otherwise cold-load on the first message.
+    # Model warmup: pre-load/first-infer the models that otherwise cold-load
+    # on the first message.
     _run_model_warmup(orchestrator)
 
-    # ------- Normal chat UI (non-first-run) -------
+
+def build_demo(orchestrator, dev_tabs=None):
+    """Construct the Gradio Blocks app (chat + tabs) without launching it.
+
+    Returns the demo with `.queue()` already configured, ready either for
+    `demo.launch()` (legacy path) or `gr.mount_gradio_app()` (FastAPI path).
+    dev_tabs=None resolves from DAEMON_MODE.
+    """
+    conversation_logger = get_conversation_logger()
+
+    if dev_tabs is None:
+        from config.app_config import DAEMON_MODE as _DAEMON_MODE
+        dev_tabs = (_DAEMON_MODE == "dev")
+    _show_dev_tabs = dev_tabs
+
     def get_summary_status():
         cm = orchestrator.memory_system.corpus_manager
         corpus = cm.corpus
@@ -1121,36 +1151,10 @@ def launch_gui(orchestrator, force_wizard=False):
         yield _chatbot_view, _state_view, "", debug_entries, typing_text, timer_text, gr.update(visible=thinking_visible), thinking_a_text, thinking_b_text, winner_text, _final_action_id, _final_action_visible
 
     # ---- Settings persistence helpers ----
-    def _load_settings():
-        """Load persisted UI settings from config/config.yaml (best-effort)."""
-        try:
-            import yaml  # type: ignore
-            from pathlib import Path
-            cfg_path = Path('config') / 'config.yaml'
-            if cfg_path.exists():
-                with open(cfg_path, 'r', encoding='utf-8') as f:
-                    return yaml.safe_load(f) or {}
-        except (IOError, OSError, ImportError):
-            pass
-        return {}
-
-    def _save_settings(updater):
-        """Update config/config.yaml with a callable that mutates the dict."""
-        try:
-            import yaml  # type: ignore
-            from pathlib import Path
-            cfg_path = Path('config') / 'config.yaml'
-            data = {}
-            if cfg_path.exists():
-                with open(cfg_path, 'r', encoding='utf-8') as f:
-                    data = yaml.safe_load(f) or {}
-            updater(data)
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(cfg_path, 'w', encoding='utf-8') as f:
-                yaml.safe_dump(data, f, sort_keys=False)
-            return True, None
-        except Exception as e:
-            return False, str(e)
+    # Single implementation lives in gui/settings_core.py (shared with the
+    # FastAPI settings routes); these locals keep existing call sites working.
+    from gui.settings_core import load_settings as _load_settings
+    from gui.settings_core import save_settings as _save_settings
 
     # Apply persisted active model at startup (if present)
     try:
@@ -1660,6 +1664,11 @@ def launch_gui(orchestrator, force_wizard=False):
         api_open=True  # Keep API connections open during long context building (mobile fix)
     )
 
+    return demo
+
+
+def _launch_demo(demo, orchestrator, SHARE, SERVER_NAME, PORT):
+    """Legacy standalone Gradio launch (share tunnel, browser open, frozen wait)."""
     # --- Launch logic with graceful fallback ---
     # prevent_thread_lock so we can inspect URLs or handle fallback
     try:

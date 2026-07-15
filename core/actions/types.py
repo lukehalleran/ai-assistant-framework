@@ -79,6 +79,19 @@ class ActionResult(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class ActionOutcome(BaseModel):
+    """Transport-agnostic result of an approve/reject decision on a pending action.
+
+    Returned by gui.handlers.execute_pending_action_core / reject_pending_action_core;
+    consumed by both the Gradio button wrappers and the FastAPI action routes.
+    `message` is the assistant-styled chat line to append to the conversation.
+    """
+    status: Literal["executed", "failed", "rejected", "not_found"]
+    message: str
+    action_type: Optional[str] = None
+    summary: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Pending Actions Store
 # ---------------------------------------------------------------------------

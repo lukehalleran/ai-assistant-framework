@@ -1780,6 +1780,7 @@ What would you like to do?""")
 
         # Instructions
         has_web = bool(session.accumulated_context)
+        has_wiki = bool(getattr(self._tool_executor, "_current_wiki_source_map", None))
         citation_line = (
             "- Cite web sources using [WEB_N] markers (e.g., 'According to Reuters [WEB_1]...'). "
             "Every factual claim from web sources MUST include a [WEB_N] citation.\n"
@@ -1790,6 +1791,12 @@ What would you like to do?""")
             "institution is unidentified and ask."
             if has_web else "- Cite web sources when stating facts from search results"
         )
+        if has_wiki:
+            citation_line = (
+                "- Cite Wikipedia content using the [WIKI_N] markers from the context headers "
+                "(e.g., 'first recorded in 610 AD [WIKI_1]...'). NEVER write a bare [Wikipedia] "
+                "tag — use the numbered [WIKI_N] marker so the source can be linked.\n"
+            ) + citation_line
         action_instruction = ""
         if _has_pending_action:
             action_instruction = (

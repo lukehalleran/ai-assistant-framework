@@ -236,6 +236,20 @@ These systems are complete and working. Listed here for context, not as active w
 - `wikidata_models.py` Pydantic models for future Wikidata subgraph import
 - 28 tests across 2 files
 
+### Richer Graph: Lateral Edges (2026-07-14)
+- Graph audit: user-star topology (797/896 edges touched `user`, 99 lateral); query
+  expansion ranks by NON-hub edge count, so lateral entity–entity edges are the payoff
+- Cleanup: 431 orphan wiki nodes removed; `entity_aliases.json` 14,772 → 52 (stale
+  aliases were silently blocking wiki-enrichment node creation via `_title_exists_in_graph`)
+- Entity–entity edges: LLM extractor prompt requests them; shutdown `_extract_llm_facts`
+  now feeds `_ingest_fact_to_graph` (was ChromaDB-only); known-entity objects bypass
+  junk-object demotion
+- Relation family-collapse in `normalize_relation()` + `scripts/graph_relation_normalize.py`
+  migration (15 historical edges)
+- `knowledge/wikidata_enrichment.py`: anchored typed edges from the offline Wikidata cache
+  (exact-match personal entities, whitelist, 1-hop, capped, taxonomic forward-only);
+  shutdown Phase B step; 16 tests in `tests/unit/test_wikidata_enrichment.py`
+
 ### Synthesis Calibration + IVFPQ Threshold Tuning (2026-03-31)
 - Calibration fixture expanded 54 → 72 candidates (7 tiers)
 - IVFPQ-aware threshold recalibration (novelty, co-occurrence, composite)

@@ -61,6 +61,11 @@ uvicorn>=0.27.0
 httpx==0.28.1
 requests==2.32.3
 
+# Google integrations (OAuth for Gmail send / Calendar / Contacts;
+# API calls themselves go over raw REST via requests — no googleapiclient)
+google-auth==2.56.0
+google-auth-oauthlib==1.4.0
+
 # Configuration and utilities
 PyYAML==6.0.2
 python-dotenv==1.1.0

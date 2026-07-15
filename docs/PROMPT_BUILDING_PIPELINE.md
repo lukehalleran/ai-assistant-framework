@@ -112,7 +112,24 @@ default to `[]` without affecting other sections.
 | upcoming_schedule | `get_upcoming_schedule()` | 5 events (gated by TEMPORAL_RECALL/PROJECT_WORK intent) |
 | google_calendar | `get_google_calendar_events()` | 10 events (gated by `GOOGLE_CALENDAR_ENABLED`) |
 
-Per-task timing is tracked and logged for bottleneck detection.
+Per-task timing is tracked and logged for bottleneck detection. Since 2026-07-14
+the gather also emits live progress lines to the streaming UI via the
+`utils/turn_progress.py` bus: a "Retrieving context from N sources" line at
+launch, a per-task completion line for any task taking ≥0.2s (label + duration +
+hit count, from the `_TASK_LABELS` map in `builder.py`), and a "Context
+retrieved — gating, dedup, token budget…" line when the gather finishes.
+`gui/handlers.py` relays these events to the chat UI (0.3s poll, heartbeat
+after ~6s of silence); emission is a no-op outside a live turn.
+
+**Note-image gate** [2026-07-14]: Obsidian note images are attached to the
+multimodal call only when `builder._should_include_note_images()` passes —
+config (`OBSIDIAN_INCLUDE_IMAGES`) + multimodal model + the QUERY signaling
+visual intent (`_query_wants_visual`, the same gate visual memories use). An
+attached image reads to the model as "the user just showed me this": a course
+note surfacing on an unrelated turn shipped its embedded screenshot and the
+model narrated it as a topic pivot. The `[N image(s) attached]` text indicator
+still renders either way; user uploads are unaffected. Regression:
+`tests/unit/test_note_image_gate.py`.
 
 ### Step 5 — Post-Fetch Processing
 

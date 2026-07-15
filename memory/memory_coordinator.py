@@ -34,6 +34,7 @@ from datetime import datetime
 from collections import deque
 
 from utils.logging_utils import get_logger
+from utils.safe_json import CorruptStoreError, StoreVersionError
 from utils.topic_manager import TopicManager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from memory.fact_extractor import FactExtractor
@@ -151,6 +152,10 @@ class MemoryCoordinator:
                     gm.node_count(), gm.edge_count(),
                 )
                 return gm, er
+            except (CorruptStoreError, StoreVersionError):
+                # A corrupt or newer-versioned existing store must stop startup,
+                # not silently disable the graph (next save would overwrite it).
+                raise
             except Exception as e:
                 logger.debug(f"[MemoryCoordinator] Knowledge graph init failed (non-fatal): {e}")
                 return None, None
@@ -170,6 +175,8 @@ class MemoryCoordinator:
                     ci.total_claims, ci.total_documents,
                 )
                 return ci
+            except (CorruptStoreError, StoreVersionError):
+                raise
             except Exception as e:
                 logger.debug(f"[MemoryCoordinator] Claim index init failed (non-fatal): {e}")
                 return None

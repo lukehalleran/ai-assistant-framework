@@ -1182,9 +1182,14 @@ class MemoryStorage:
 
             canon_rel = normalize_relation(rel)
 
+            # An object that resolves to an entity ALREADY in the graph is
+            # always edge-worthy — the heuristics below exist to avoid creating
+            # junk nodes, not to block links between known entities.
+            obj_resolved = self.entity_resolver.resolve(obj)
+
             # Non-entity objects (sentence fragments, generic words) get stored
             # as metadata on the subject node instead of creating junk nodes.
-            if not self._is_graph_worthy_object(obj):
+            if not obj_resolved and not self._is_graph_worthy_object(obj):
                 subj_display = subj if subj.lower() != "user" else "User"
                 subj_type = "person" if subj.lower() == "user" else (entity_type or "other")
                 subj_id = self.entity_resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)

@@ -484,6 +484,20 @@ class WikidataImportSection(BaseModel):
     embedding_match_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
 
 
+class WikidataEnrichmentSection(BaseModel):
+    """Anchored shutdown-time Wikidata typed-edge enrichment (1-hop, capped)."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    relation_whitelist: List[str] = Field(default_factory=lambda: [
+        "instance_of", "subclass_of", "part_of", "has_part",
+        "uses", "has_use", "has_effect", "has_cause", "main_subject",
+    ])
+    max_edges_per_entity: int = Field(default=5, ge=1)
+    max_new_nodes_per_run: int = Field(default=25, ge=0)
+    max_edges_per_run: int = Field(default=50, ge=1)
+    shutdown_step_timeout_s: float = Field(default=30.0, gt=0.0)
+
+
 class ThreadSurfacingSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
@@ -607,6 +621,37 @@ class TurnTelemetrySection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
     path: str = "logs/turn_records.jsonl"
+
+
+class BackupSection(BaseModel):
+    """Automated local backups of the memory stores (utils/backup_manager.py)."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    dir: str = "data/backups"
+    retention: int = Field(default=5, ge=1)
+    min_interval_hours: float = Field(default=12, ge=0)
+    include_chroma: bool = True
+
+
+class LogMaintenanceSection(BaseModel):
+    """Startup log-growth bounding (utils/log_rotation.py)."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    turn_records_max_mb: float = Field(default=50, gt=0)
+    daily_notes_max_mb: float = Field(default=20, gt=0)
+    audit_max_mb: float = Field(default=20, gt=0)
+    debug_compress_age_days: float = Field(default=7, ge=0)
+    debug_keep_days: float = Field(default=90, ge=1)
+
+
+class ApiSection(BaseModel):
+    """FastAPI server settings (React frontend at /, Gradio admin UI at /admin)."""
+    model_config = ConfigDict(extra="ignore")
+    host: str = "127.0.0.1"
+    port: int = Field(default=8000, ge=1, le=65535)
+    cors_origins: List[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    serve_frontend: bool = True
+    frontend_dist_dir: str = "web/dist"
 
 
 class EntityFactsSection(BaseModel):
@@ -944,6 +989,8 @@ class DaemonConfig(BaseModel):
     uncertainty_fallback: UncertaintyFallbackSection = Field(default_factory=UncertaintyFallbackSection)
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)
+    backup: BackupSection = Field(default_factory=BackupSection)
+    log_maintenance: LogMaintenanceSection = Field(default_factory=LogMaintenanceSection)
     file_access: FileAccessSection = Field(default_factory=FileAccessSection)
     memory_expansion: MemoryExpansionSection = Field(default_factory=MemoryExpansionSection)
     obsidian: ObsidianSection = Field(default_factory=ObsidianSection)
@@ -971,6 +1018,7 @@ class DaemonConfig(BaseModel):
     synthesis_retrieval: SynthesisRetrievalSection = Field(default_factory=SynthesisRetrievalSection)
     synthesis_audit: SynthesisAuditSection = Field(default_factory=SynthesisAuditSection)
     wikidata_import: WikidataImportSection = Field(default_factory=WikidataImportSection)
+    wikidata_enrichment: WikidataEnrichmentSection = Field(default_factory=WikidataEnrichmentSection)
     graph_walk: GraphWalkSection = Field(default_factory=GraphWalkSection)
     visual_memory: VisualMemorySection = Field(default_factory=VisualMemorySection)
     wiki_enrichment: WikiEnrichmentSection = Field(default_factory=WikiEnrichmentSection)
@@ -993,6 +1041,7 @@ class DaemonConfig(BaseModel):
     daemon_notes: DaemonNotesSection = Field(default_factory=DaemonNotesSection)
     action_guard: ActionGuardSection = Field(default_factory=ActionGuardSection)
     internet_actions: InternetActionsSection = Field(default_factory=InternetActionsSection)
+    api: ApiSection = Field(default_factory=ApiSection)
 
 
 # =============================================================================

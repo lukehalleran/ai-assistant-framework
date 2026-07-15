@@ -187,6 +187,7 @@ knowledge/               # External knowledge integration
 ├── reference_docs_manager.py  # Auto-seeded docs/
 ├── wiki_tracker.py            # Session-level Wikipedia article tracking
 ├── wiki_enrichment.py         # Shutdown: tracked wiki articles → graph nodes
+├── wikidata_enrichment.py     # Shutdown: anchored Wikidata typed edges for personal entities (1-hop, capped)
 ├── wikidata_resolver.py       # Personal ↔ Wikidata entity resolution
 ├── wikidata_models.py         # Pydantic models for Wikidata import
 ├── git_memory.py              # Git commit history extractor
@@ -637,7 +638,12 @@ graph-boosted scoring.
   weight rather than creating parallel edges (DiGraph, not MultiDiGraph).
 - **Persistence**: JSON at `data/knowledge_graph.json` (nodes + edges) and
   `data/entity_aliases.json` (alias table). Dirty-flag optimization —
-  only writes when changes exist.
+  only writes when changes exist. Both stores (and the profile, corpus,
+  and claim index) write atomically (temp + `os.replace` via
+  `utils/safe_json.py`) and load strictly: an existing-but-corrupt file
+  is copied to `<path>.corrupt-<timestamp>` and raises `CorruptStoreError`
+  so startup fails with an actionable message instead of silently starting
+  empty and overwriting user data on the next save [2026-07-14].
 
 ### Entity Resolution
 
@@ -2087,11 +2093,20 @@ Step 10: Wiki-to-graph enrichment — Tracked wiki articles from session
 Step 11: Knowledge graph save — JSON flush (dirty-flag optimization)
 
 Step 12: Cross-collection dedup — Dry-run preview only (never auto-deletes)
+
+Step 13: Backup [2026-07-14] — utils/backup_manager.py runs as the FINAL
+         shutdown phase (main._do_shutdown_async 5/5, after dreaming, so
+         every store write has landed). JSON stores copied every shutdown;
+         the ChromaDB tree only when the newest chroma backup is older than
+         backup.min_interval_hours (sqlite files via the sqlite3 backup
+         API). Retention: newest N + the newest chroma-including backup.
 ```
 
 **Critical invariant**: No user data is auto-deleted at shutdown. Dedup
 runs dry-run only. Thread cap enforcement (Step 7c) is the only deletion,
-and it removes lowest-priority threads when over the cap.
+and it removes lowest-priority threads when over the cap. (Backup pruning
+in Step 13 deletes only backup directories the backup manager itself
+created — identified by its manifest.json — never live data.)
 
 ### Session-End Reflection
 
@@ -2414,6 +2429,7 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `behavioral_patterns` | Cross-turn habit detection | `behavioral_patterns.enabled` |
 | `wiki_enrichment` | Session wiki articles to graph | `WIKI_ENRICHMENT_ENABLED`, `WIKI_ENRICHMENT_MAX_PER_SESSION` |
 | `wikidata_import` | Wikidata entity resolution | `WIKIDATA_*` constants |
+| `wikidata_enrichment` | Anchored typed edges from offline Wikidata cache | `WIKIDATA_ENRICHMENT_ENABLED`, `WIKIDATA_ENRICHMENT_RELATION_WHITELIST`, `WIKIDATA_ENRICHMENT_MAX_EDGES_PER_ENTITY/RUN`, `WIKIDATA_ENRICHMENT_MAX_NEW_NODES` |
 | `graph_walk` | Biased Markov walk synthesis | `GRAPH_WALK_ENABLED`, `GRAPH_WALK_MIN_BRIDGE_EDGES` |
 | `uncertainty_fallback` | "I don't know" detection + retry | `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD` |
 | `internet_actions` | Human-in-the-loop write actions + Google OAuth2 | `INTERNET_ACTIONS_ENABLED`, `GOOGLE_CALENDAR_ENABLED`, `INTERNET_ACTIONS_GOOGLE_CLIENT_ID/SECRET/TOKEN_PATH`, channel-specific settings |

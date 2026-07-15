@@ -15,7 +15,9 @@ Module Contract
   - Success/failure booleans and counts
   - UPDATED: Query-relevant facts ranked by hybrid score (2/3 semantic + 1/3 recent)
 - Key behaviors:
-  - JSON persistence with atomic writes (temp file swap)
+  - JSON persistence with atomic writes (temp file swap); strict load — an
+    existing-but-corrupt profile is quarantined and raises CorruptStoreError
+    instead of silently starting empty [2026-07-14]
   - Append-only fact storage: facts are never deleted, only marked is_current=False
   - Conflict resolution: same (relation,value) → confidence boost; same relation, diff value → supersede
   - get_category TTL: transient facts are dropped past a per-relation TTL via the
@@ -42,6 +44,7 @@ from pathlib import Path
 import threading
 
 from utils.logging_utils import get_logger
+from utils.safe_json import load_critical_json
 from memory.user_profile_schema import (
     ProfileCategory, ProfileFact, categorize_relation,
     ProfilePreferences, ProfileIdentity, SCHEMA_VERSION
@@ -118,15 +121,16 @@ class UserProfile:
         logger.info(f"[UserProfile] Initialized from {self.profile_path} - identity.name='{self.identity.name}'")
 
     def _load_or_init(self) -> Dict:
-        """Load existing profile or create new one."""
-        if os.path.exists(self.profile_path):
-            try:
-                with open(self.profile_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                logger.debug(f"[UserProfile] Loaded {len(data.get('raw_log', []))} facts")
-                return data
-            except Exception as e:
-                logger.error(f"[UserProfile] Failed to load: {e}")
+        """Load existing profile or create new one.
+
+        Missing file → new profile. Existing-but-corrupt file → quarantined
+        copy + CorruptStoreError (a fresh empty profile would overwrite the
+        user's accumulated facts on the next save).
+        """
+        data = load_critical_json(self.profile_path, "User profile")
+        if data is not None:
+            logger.debug(f"[UserProfile] Loaded {len(data.get('raw_log', []))} facts")
+            return data
 
         # Initialize empty profile
         return {

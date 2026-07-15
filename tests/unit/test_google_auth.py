@@ -1,6 +1,7 @@
 """Tests for core.actions.google_auth — GoogleAuthManager."""
 
 import json
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
@@ -159,6 +160,41 @@ class TestTokenPersistence:
 
         mgr._save_token(mock_creds)
         assert token_file.exists()
+
+    def test_saved_token_is_owner_only(self, tmp_path):
+        """Token file holds bearer/refresh tokens — must be 0600."""
+        token_file = tmp_path / "token.json"
+        mgr = GoogleAuthManager(token_path=str(token_file))
+
+        mock_creds = MagicMock()
+        mock_creds.token = "tok"
+        mock_creds.refresh_token = "ref"
+        mock_creds.token_uri = "uri"
+        mock_creds.client_id = "cid"
+        mock_creds.client_secret = "csec"
+        mock_creds.scopes = set(SCOPES)
+        mock_creds.expiry = None
+
+        mgr._save_token(mock_creds)
+        assert os.stat(token_file).st_mode & 0o777 == 0o600
+        assert not os.path.exists(str(token_file) + ".tmp")
+
+    def test_load_tightens_permissive_token_file(self, tmp_path):
+        """Pre-fix token files (0644) get chmodded to 0600 on load."""
+        token_file = tmp_path / "token.json"
+        token_file.write_text(json.dumps({
+            "token": "tok",
+            "refresh_token": "ref",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "cid",
+            "client_secret": "csec",
+            "scopes": SCOPES,
+        }))
+        os.chmod(token_file, 0o644)
+
+        mgr = GoogleAuthManager(token_path=str(token_file))
+        mgr._load_token()
+        assert os.stat(token_file).st_mode & 0o777 == 0o600
 
 
 class TestScopeUpgrade:

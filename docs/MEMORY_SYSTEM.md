@@ -56,13 +56,50 @@ resolved, and stale information is penalized in ranking.
 | `memory/truth_scorer.py` | Stateless truth computation: initial score + adjustments + time decay |
 | `memory/claim_tracker.py` | Claim extraction, hashing, reverse index, staleness cascade |
 
+### Persistence Safety (2026-07-14)
+
+The five critical JSON stores (knowledge graph, entity aliases, user profile,
+corpus, claim index) share one safety contract via `utils/safe_json.py`:
+
+- **Atomic writes**: temp file + `os.replace` — a crash mid-write can never
+  truncate an existing store.
+- **Strict loads**: a missing file is a fresh start; a 0-byte file is a fresh
+  start with a warning; an existing file with unparseable content is copied to
+  `<path>.corrupt-<timestamp>` and raises `CorruptStoreError`. Startup then
+  aborts with an actionable message (`main.py` catches it) instead of silently
+  running with empty state — which would overwrite the user's data on the next
+  save. `memory_coordinator.py` re-raises `CorruptStoreError` through its
+  otherwise-broad init exception handlers so the error can't be swallowed.
+- **Schema versions**: `knowledge_graph.json` and `claim_index.json` carry a
+  `schema_version` field (missing = 1, the pre-versioning format). Loads
+  refuse files written by a newer build (`StoreVersionError` — same
+  startup-abort path) instead of silently dropping unknown fields. The user
+  profile has its own `SCHEMA_VERSION` (2.0) with in-place migration.
+- **Backups**: `utils/backup_manager.py` runs as the final shutdown phase —
+  JSON stores every shutdown, the ChromaDB tree on a 12h throttle, retention
+  keeps the newest 5 plus the newest chroma backup. Restore (dry-run-first,
+  never deletes current data) via `scripts/restore_backup.py`; portable
+  export via `scripts/export_user_data.py`.
+
 ### Knowledge Graph
 | File | Purpose |
 |------|---------|
 | `memory/graph_memory.py` | NetworkX DiGraph: CRUD, BFS traversal, JSON persistence |
 | `memory/graph_models.py` | Pydantic models: GraphNode, GraphEdge |
-| `memory/entity_resolver.py` | Alias resolution + relation normalization |
+| `memory/entity_resolver.py` | Alias resolution + relation normalization (synonym table + family-collapse patterns, e.g. `asked_about_*` → `asked_about`) |
 | `memory/graph_utils.py` | Entity extraction, neighbor lookups, expansion ranking |
+| `knowledge/wikidata_enrichment.py` | Anchored shutdown-time Wikidata typed edges: personal entities that exact-match the offline cache get whitelisted relations (`instance_of`, `part_of`, ...) as 1-hop edges; taxonomic relations forward-only; capped per entity/run |
+
+**Graph ingestion paths (both feed `_ingest_fact_to_graph`):** the per-turn
+regex extractor (`extract_and_store_facts`) and — since 2026-07-14 — the
+shutdown LLM triple path (`_extract_llm_facts`), previously ChromaDB-only.
+The LLM extractor prompt explicitly requests entity–entity relations
+("Sam sibling_of Biscuit") so lateral (non-user) edges accumulate; an
+object that resolves to an existing graph entity is always edge-worthy,
+bypassing the junk-object heuristics that would demote it to node metadata.
+Maintenance: `scripts/graph_junk_cleanup.py` (curated node removal),
+`scripts/graph_relation_normalize.py` (re-canonicalize edge relations through
+the deployed `normalize_relation()`; dry-run first, backs up on `--apply`).
 
 ### Shutdown & Consolidation
 | File | Purpose |
@@ -239,7 +276,9 @@ ShutdownProcessor.process_shutdown_memory()
   │  │     → extract new (prompt lists ALREADY TRACKED threads; extracted dupes of
   │  │       resolved/open threads dropped, open twins get last_referenced refreshed)
   │  │     → enforce cap
-  │  └─ Wiki-to-graph enrichment (session wiki articles → graph nodes)
+  │  ├─ Wiki-to-graph enrichment (session wiki articles → graph nodes)
+  │  └─ Wikidata typed-edge enrichment (personal entities → whitelisted
+  │        typed edges from the offline cache; anchored, 1-hop, capped)
   │
   ├─ Phase C (sequential — must follow Phase B) ──────────────────
   │  ├─ Knowledge graph + alias + category cache save (JSON flush)

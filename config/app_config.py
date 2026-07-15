@@ -1073,6 +1073,46 @@ TURN_TELEMETRY_PATH: str = str(TURN_TELEMETRY_CFG.get("path", "logs/turn_records
 TURN_TELEMETRY_ENABLED = bool(int(os.getenv("TURN_TELEMETRY_ENABLED", "1" if TURN_TELEMETRY_ENABLED else "0")))
 
 # --------------------------------------------------------------------
+# Backup Configuration [2026-07-14]
+# --------------------------------------------------------------------
+# Automated local backups of the memory stores (final shutdown phase).
+# JSON stores are backed up every shutdown; the ChromaDB tree (~600MB)
+# only when the newest chroma backup is older than min_interval_hours.
+# See utils/backup_manager.py; restore via scripts/restore_backup.py.
+BACKUP_CFG = config.get("backup", {}) or {}
+BACKUP_ENABLED: bool = bool(BACKUP_CFG.get("enabled", True))
+BACKUP_DIR: str = str(os.getenv("DAEMON_BACKUP_DIR", BACKUP_CFG.get("dir", os.path.join("data", "backups"))))
+BACKUP_RETENTION: int = int(BACKUP_CFG.get("retention", 5))
+BACKUP_MIN_INTERVAL_HOURS: float = float(BACKUP_CFG.get("min_interval_hours", 12))
+BACKUP_INCLUDE_CHROMA: bool = bool(BACKUP_CFG.get("include_chroma", True))
+BACKUP_ENABLED = bool(int(os.getenv("BACKUP_ENABLED", "1" if BACKUP_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Log Maintenance Configuration [2026-07-14]
+# --------------------------------------------------------------------
+# Startup pass bounding log growth (utils/log_rotation.py): numbered
+# rotation for turn_records/daily_notes, timestamped archive (never
+# deleted) for actions_audit, gzip-then-prune for daemon_debug archives.
+LOG_MAINTENANCE_CFG = config.get("log_maintenance", {}) or {}
+LOG_MAINTENANCE_ENABLED: bool = bool(LOG_MAINTENANCE_CFG.get("enabled", True))
+LOG_MAINTENANCE_TURN_RECORDS_MAX_MB: float = float(LOG_MAINTENANCE_CFG.get("turn_records_max_mb", 50))
+LOG_MAINTENANCE_DAILY_NOTES_MAX_MB: float = float(LOG_MAINTENANCE_CFG.get("daily_notes_max_mb", 20))
+LOG_MAINTENANCE_AUDIT_MAX_MB: float = float(LOG_MAINTENANCE_CFG.get("audit_max_mb", 20))
+LOG_MAINTENANCE_DEBUG_COMPRESS_AGE_DAYS: float = float(LOG_MAINTENANCE_CFG.get("debug_compress_age_days", 7))
+LOG_MAINTENANCE_DEBUG_KEEP_DAYS: float = float(LOG_MAINTENANCE_CFG.get("debug_keep_days", 90))
+LOG_MAINTENANCE_ENABLED = bool(int(os.getenv("LOG_MAINTENANCE_ENABLED", "1" if LOG_MAINTENANCE_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# API Server Configuration (FastAPI frontend; Gradio mounted at /admin)
+# --------------------------------------------------------------------
+API_CFG = config.get("api", {}) or {}
+API_HOST: str = str(os.getenv("DAEMON_API_HOST", API_CFG.get("host", "127.0.0.1")))
+API_PORT: int = int(os.getenv("DAEMON_API_PORT", API_CFG.get("port", 8000)))
+API_CORS_ORIGINS: list = list(API_CFG.get("cors_origins", ["http://localhost:5173"]))
+API_SERVE_FRONTEND: bool = bool(API_CFG.get("serve_frontend", True))
+FRONTEND_DIST_DIR: str = str(API_CFG.get("frontend_dist_dir", "web/dist"))
+
+# --------------------------------------------------------------------
 # Entity Facts Configuration
 # --------------------------------------------------------------------
 # Allow non-user-centric triples (entity-to-entity) through to ChromaDB.
@@ -1598,6 +1638,32 @@ WIKIDATA_EMBEDDING_MATCH_THRESHOLD: float = float(WIKIDATA_CFG.get("embedding_ma
 # Environment variable overrides
 WIKIDATA_IMPORT_ENABLED = bool(int(os.getenv(
     "WIKIDATA_IMPORT_ENABLED", "1" if WIKIDATA_IMPORT_ENABLED else "0"
+)))
+
+# --------------------------------------------------------------------
+# Wikidata Enrichment (anchored shutdown-time typed edges)
+# For personal graph entities that exact-match a cached Wikidata entity,
+# add whitelisted typed relations as edges (1 hop, capped). NOT the mass
+# import — every edge touches an entity the user actually talked about.
+# --------------------------------------------------------------------
+WIKIDATA_ENRICH_CFG = config.get("wikidata_enrichment", {})
+WIKIDATA_ENRICHMENT_ENABLED: bool = bool(WIKIDATA_ENRICH_CFG.get("enabled", True))
+WIKIDATA_ENRICHMENT_RELATION_WHITELIST: list = list(WIKIDATA_ENRICH_CFG.get(
+    "relation_whitelist",
+    ["instance_of", "subclass_of", "part_of", "has_part",
+     "uses", "has_use", "has_effect", "has_cause", "main_subject"],
+))
+WIKIDATA_ENRICHMENT_MAX_EDGES_PER_ENTITY: int = int(
+    WIKIDATA_ENRICH_CFG.get("max_edges_per_entity", 5))
+WIKIDATA_ENRICHMENT_MAX_NEW_NODES: int = int(
+    WIKIDATA_ENRICH_CFG.get("max_new_nodes_per_run", 25))
+WIKIDATA_ENRICHMENT_MAX_EDGES_PER_RUN: int = int(
+    WIKIDATA_ENRICH_CFG.get("max_edges_per_run", 50))
+WIKIDATA_ENRICHMENT_TIMEOUT_S: float = float(
+    WIKIDATA_ENRICH_CFG.get("shutdown_step_timeout_s", 30.0))
+
+WIKIDATA_ENRICHMENT_ENABLED = bool(int(os.getenv(
+    "WIKIDATA_ENRICHMENT_ENABLED", "1" if WIKIDATA_ENRICHMENT_ENABLED else "0"
 )))
 
 # --------------------------------------------------------------------

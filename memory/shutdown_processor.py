@@ -13,7 +13,10 @@ Module Contract
     Main entry: runs all consolidation phases and returns results summary.
     Phases are parallelized via asyncio.gather where independent:
       Phase A (parallel): facts + LLM facts + behavioral patterns + skills
+        (LLM facts also feed the knowledge graph via storage._ingest_fact_to_graph —
+         same hook as the per-turn path; entity–entity triples become lateral edges)
       Phase B (parallel): proposals + impl tracking + threads + wiki enrichment
+        + wikidata enrichment (anchored typed edges from the offline cache)
       Phase C (sequential): graph save, category cache, cross-dedup
   - run_synthesis_dreaming() -> None
     Standalone step (NOT part of process_shutdown_memory): cross-domain candidate
@@ -259,6 +262,7 @@ class ShutdownProcessor:
                 self._check_implementation_tracking(),
                 self._process_open_threads(session_conversations),
                 self._run_wiki_enrichment(),
+                self._run_wikidata_enrichment(),
                 return_exceptions=True,
             )
             for r in phase_b:
@@ -733,6 +737,21 @@ class ShutdownProcessor:
                 )
                 if result is not None:
                     kept += 1
+                    # Feed knowledge graph — same hook the per-turn path uses.
+                    # Without this, LLM-extracted triples (the richest source
+                    # of entity-entity relations) never became graph edges.
+                    try:
+                        from memory.memory_storage import _get_graph_enabled
+                        if getattr(self._storage, 'graph_memory', None) and \
+                                getattr(self._storage, 'entity_resolver', None) and \
+                                _get_graph_enabled():
+                            self._storage._ingest_fact_to_graph(
+                                subj=subj, rel=rel, obj=obj,
+                                fact_id=str(result),
+                                confidence=0.75,
+                            )
+                    except Exception as graph_err:
+                        logger.debug(f"[Shutdown] Graph ingestion failed: {graph_err}")
                 else:
                     logger.debug(f"[Shutdown] LLM fact skipped as duplicate: {fact_text}")
             except (AttributeError, TypeError, ValueError):
@@ -1708,6 +1727,51 @@ JSON:"""
             logger.warning("[Shutdown] Wiki enrichment timed out (non-fatal)")
         except Exception as e:
             logger.warning("[Shutdown] Wiki enrichment failed (non-fatal): %s", e)
+
+    async def _run_wikidata_enrichment(self):
+        """Step 6.95: Add Wikidata typed edges to personal graph entities.
+
+        Anchored + capped (see knowledge/wikidata_enrichment.py) — pure local
+        work over the offline cache, no LLM or network calls.
+        """
+        try:
+            # Test-isolation guard: root-level integration tests build shutdown
+            # processors around default-path components; without this, a test
+            # run enriches + saves the LIVE data/knowledge_graph.json (observed
+            # 2026-07-14). Same convention as scripts/bin/usercustomize.py.
+            if os.environ.get("PYTEST_CURRENT_TEST"):
+                logger.debug("[Shutdown] Wikidata enrichment skipped under pytest")
+                return
+
+            from config.app_config import (
+                WIKIDATA_ENRICHMENT_ENABLED,
+                WIKIDATA_PERSIST_PATH,
+            )
+            if not WIKIDATA_ENRICHMENT_ENABLED:
+                return
+
+            mc = self.memory_coordinator
+            graph_memory = getattr(mc, "graph_memory", None) if mc else None
+            entity_resolver = getattr(mc, "entity_resolver", None) if mc else None
+            if not graph_memory or not entity_resolver:
+                return
+
+            from knowledge.wikidata_enrichment import WikidataGraphEnricher
+            enricher = WikidataGraphEnricher(
+                graph_memory, entity_resolver, cache_path=WIKIDATA_PERSIST_PATH,
+            )
+            result = enricher.enrich()
+
+            if result.get("edges_added", 0) > 0:
+                logger.info(
+                    "[Shutdown] Wikidata enrichment: %d entities matched, "
+                    "%d edges added, %d nodes created",
+                    result.get("matched", 0),
+                    result.get("edges_added", 0),
+                    result.get("nodes_created", 0),
+                )
+        except Exception as e:
+            logger.warning("[Shutdown] Wikidata enrichment failed (non-fatal): %s", e)
 
     # ------------------------------------------------------------------
     # Knowledge graph persistence

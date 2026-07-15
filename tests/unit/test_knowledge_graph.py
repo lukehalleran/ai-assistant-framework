@@ -11,7 +11,7 @@ import json
 import os
 import tempfile
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -517,11 +517,18 @@ class TestGraphMemoryPersistence:
         assert g.node_count() == 0
 
     def test_load_corrupted_file(self, tmp_path):
+        """Corrupt existing graph must fail loudly (quarantine + raise),
+        never start empty — an empty graph would overwrite user data on save."""
+        from utils.safe_json import CorruptStoreError
+
         path = str(tmp_path / "bad.json")
         with open(path, "w") as f:
             f.write("not valid json")
-        g = GraphMemory(persist_path=path)
-        assert g.node_count() == 0
+        with pytest.raises(CorruptStoreError):
+            GraphMemory(persist_path=path)
+        # Original preserved + quarantine copy made
+        assert os.path.exists(path)
+        assert any(p.name.startswith("bad.json.corrupt-") for p in tmp_path.iterdir())
 
     def test_persistence_preserves_edge_weights(self, tmp_graph_path):
         g1 = GraphMemory(persist_path=tmp_graph_path)
@@ -569,6 +576,36 @@ class TestRelationNormalization:
     def test_case_insensitive(self):
         assert normalize_relation("LIVES IN") == "lives_in"
         assert normalize_relation("Works On") == "works_on"
+
+    def test_family_collapse_asked_about(self):
+        assert normalize_relation("asked_about_wakeup_time") == "asked_about"
+        assert normalize_relation("ask_about_bench_press") == "asked_about"
+        assert normalize_relation("inquire_about") == "asked_about"
+        assert normalize_relation("inquired_about_the_weather") == "asked_about"
+
+    def test_family_collapse_concerned_about(self):
+        assert normalize_relation("concerned_about_mother") == "concerned_about"
+        assert normalize_relation("worried about") == "concerned_about"
+
+    def test_family_collapse_classes_start(self):
+        assert normalize_relation("class_start_date") == "classes_start"
+        assert normalize_relation("classes_start_time") == "classes_start"
+        assert normalize_relation("classes_started_on") == "classes_start"
+        assert normalize_relation("classes_start") == "classes_start"
+
+    def test_family_collapse_not_overeager(self):
+        # Prefix-similar but distinct relations must NOT collapse
+        assert normalize_relation("asked_question") == "asked_question"
+        assert normalize_relation("concerned") == "concerned"
+        assert normalize_relation("classmate_of") == "classmate_of"
+
+    def test_hygiene_punctuation_stripped(self):
+        assert normalize_relation("works-at!") == "works_at"  # hyphen -> underscore -> canonical
+        assert normalize_relation("a__b___c") == "a_b_c"
+
+    def test_hygiene_punctuation_only_falls_back(self):
+        # Degenerate input should not normalize to empty string
+        assert normalize_relation("???") == "???"
 
 
 # =====================================================================
@@ -743,6 +780,85 @@ class TestIngestFactToGraph:
 
         assert graph.node_count() == 0
 
+    def test_ingest_entity_entity_lateral_edge(self, graph, resolver):
+        """A triple between two non-user entities creates a lateral edge
+        (the structure query expansion ranks by non-hub edge count)."""
+        from memory.memory_storage import MemoryStorage
+        storage = MemoryStorage(
+            corpus_manager=MagicMock(),
+            chroma_store=MagicMock(),
+            fact_extractor=MagicMock(),
+            graph_memory=graph,
+            entity_resolver=resolver,
+        )
+
+        with patch("memory.memory_storage._get_graph_enabled", return_value=True), \
+             patch("config.app_config.KNOWLEDGE_GRAPH_MIN_CONFIDENCE", 0.5):
+            storage._ingest_fact_to_graph(
+                subj="Sam", rel="sibling_of", obj="Biscuit",
+                fact_id="fact_ee", entity_type="animal", confidence=0.9,
+            )
+
+        assert graph.node_count() == 2
+        edges = graph.get_relations("sam", direction="out")
+        assert len(edges) == 1
+        assert edges[0].target_id == "biscuit"
+        assert "user" not in (edges[0].source_id, edges[0].target_id)
+
+    def test_ingest_known_entity_object_bypasses_worthiness(self, graph, resolver):
+        """An object that resolves to an existing graph entity is edge-worthy
+        even when _is_graph_worthy_object would reject it (e.g. 4+ words)."""
+        from memory.memory_storage import MemoryStorage
+        # Pre-create a 4-word entity (would fail the <4-word heuristic)
+        long_name = "modern portfolio theory framework"
+        graph.add_entity(GraphNode(entity_id=_normalize_id(long_name),
+                                   display_name=long_name, entity_type="concept"))
+        resolver.learn_alias(long_name, _normalize_id(long_name))
+
+        storage = MemoryStorage(
+            corpus_manager=MagicMock(),
+            chroma_store=MagicMock(),
+            fact_extractor=MagicMock(),
+            graph_memory=graph,
+            entity_resolver=resolver,
+        )
+        assert not storage._is_graph_worthy_object(long_name)  # heuristic rejects
+
+        with patch("memory.memory_storage._get_graph_enabled", return_value=True), \
+             patch("config.app_config.KNOWLEDGE_GRAPH_MIN_CONFIDENCE", 0.5):
+            storage._ingest_fact_to_graph(
+                subj="Dr. Smith", rel="teaches", obj=long_name,
+                fact_id="fact_bypass", confidence=0.9,
+            )
+
+        edges = graph.get_relations(_normalize_id("Dr. Smith"), direction="out")
+        assert len(edges) == 1
+        assert edges[0].target_id == _normalize_id(long_name)
+
+    def test_ingest_unknown_unworthy_object_still_metadata(self, graph, resolver):
+        """The bypass must not weaken the junk-node defense: an UNRESOLVED
+        unworthy object still goes to subject metadata, not a node."""
+        from memory.memory_storage import MemoryStorage
+        storage = MemoryStorage(
+            corpus_manager=MagicMock(),
+            chroma_store=MagicMock(),
+            fact_extractor=MagicMock(),
+            graph_memory=graph,
+            entity_resolver=resolver,
+        )
+
+        with patch("memory.memory_storage._get_graph_enabled", return_value=True), \
+             patch("config.app_config.KNOWLEDGE_GRAPH_MIN_CONFIDENCE", 0.5):
+            storage._ingest_fact_to_graph(
+                subj="user", rel="goal", obj="a four word descriptive phrase here",
+                confidence=0.9,
+            )
+
+        # Only the subject node exists; phrase stored as metadata
+        assert graph.node_count() == 1
+        node = graph.get_entity("user")
+        assert node.metadata.get("goal") == "a four word descriptive phrase here"
+
     def test_ingest_user_subject_type(self, graph, resolver):
         from memory.memory_storage import MemoryStorage
         storage = MemoryStorage(
@@ -763,6 +879,59 @@ class TestIngestFactToGraph:
         user_node = graph.get_entity("user")
         assert user_node is not None
         assert user_node.entity_type == "person"
+
+
+# =====================================================================
+# Shutdown LLM-fact path feeds the graph (real storage, no mock hook)
+# =====================================================================
+
+class TestShutdownLLMFactsGraphIngestion:
+    @pytest.mark.asyncio
+    async def test_shutdown_llm_facts_create_graph_edges(self, graph, resolver):
+        """_extract_llm_facts must push stored triples into the knowledge
+        graph. Uses a REAL MemoryStorage + GraphMemory so dead wiring can't
+        hide behind a mock (the .intent_type lesson)."""
+        from memory.memory_storage import MemoryStorage
+        from memory.shutdown_processor import ShutdownProcessor
+
+        mock_chroma = MagicMock()
+        mock_chroma.add_fact.return_value = "fact-doc-1"
+
+        storage = MemoryStorage(
+            corpus_manager=MagicMock(),
+            chroma_store=mock_chroma,
+            fact_extractor=MagicMock(),
+            graph_memory=graph,
+            entity_resolver=resolver,
+        )
+        storage.fact_verifier = None
+
+        mock_mm = MagicMock()
+        mock_mm.generate_once = AsyncMock(return_value=(
+            '[{"subject": "Sam", "relation": "sibling_of", "object": "Biscuit",'
+            ' "category": "hobbies", "confidence": 0.9, "user_connection": "user\'s cat"}]'
+        ))
+
+        proc = ShutdownProcessor(
+            corpus_manager=MagicMock(),
+            chroma_store=mock_chroma,
+            consolidator=MagicMock(),
+            fact_extractor=MagicMock(),
+            model_manager=mock_mm,
+            user_profile=None,
+            storage=storage,
+            session_start=datetime.now(),
+        )
+
+        with patch("memory.memory_storage._get_graph_enabled", return_value=True), \
+             patch("config.app_config.KNOWLEDGE_GRAPH_MIN_CONFIDENCE", 0.5):
+            await proc._extract_llm_facts(
+                [{"query": "Sam is Biscuit's brother", "response": "Noted!"}]
+            )
+
+        edges = graph.get_relations("sam", direction="out")
+        assert len(edges) == 1, "shutdown LLM fact never reached the graph"
+        assert edges[0].target_id == "biscuit"
 
 
 # =====================================================================

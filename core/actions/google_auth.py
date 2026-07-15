@@ -8,11 +8,14 @@ Module Contract
   - get_google_auth() -> GoogleAuthManager | None: Lazy singleton from config.
 - Dependencies: google-auth-oauthlib, google.oauth2.credentials
 - Side effects: Reads/writes token file at configured path. Opens browser for OAuth consent.
-  Run as __main__ for one-time browser auth: python -m core.actions.google_auth
+  Token file is written atomically with owner-only permissions (0600 — it holds bearer +
+  refresh tokens and the client secret); pre-fix permissive files are tightened on load
+  [2026-07-14]. Run as __main__ for one-time browser auth: python -m core.actions.google_auth
 """
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -192,13 +195,35 @@ class GoogleAuthManager:
         if credentials.expiry:
             token_data["expiry"] = credentials.expiry.isoformat()
 
-        self._token_path.write_text(json.dumps(token_data, indent=2))
+        # Bearer + refresh tokens and client secret: owner-only (0600), and
+        # atomic so a crash mid-write can't truncate an existing token file.
+        tmp_path = str(self._token_path) + ".tmp"
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(token_data, indent=2))
+            os.replace(tmp_path, self._token_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
         logger.debug(f"[GoogleAuth] Token saved to {self._token_path}")
 
     def _load_token(self):
         """Load credentials from token file. Returns Credentials or None."""
         if not self._token_path.exists():
             return None
+
+        # Tighten files written before the 0600 fix (2026-07-14).
+        try:
+            if os.stat(self._token_path).st_mode & 0o077:
+                os.chmod(self._token_path, 0o600)
+                logger.info(f"[GoogleAuth] Tightened token file permissions to 0600: {self._token_path}")
+        except OSError:
+            pass
 
         try:
             from google.oauth2.credentials import Credentials

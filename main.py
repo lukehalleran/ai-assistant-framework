@@ -2,18 +2,26 @@
 # main.py
 
 Module Contract
-- Purpose: Application entry point. Builds the orchestrator stack, launches GUI or runs small CLI tests,
-  and coordinates graceful shutdown work (reflections + summaries/facts).
+- Purpose: Application entry point. Builds the orchestrator stack, launches the web UI (FastAPI +
+  React, Gradio dev UI at /admin) or runs small CLI tests, and coordinates graceful shutdown work
+  (reflections + summaries/facts).
 - Inputs:
   - CLI arg `mode`: "gui" (default), "cli", "test-summaries", "inspect-summaries", "test-prompt-summaries",
     "export-profile", "show-profile", "wizard", "embed-vault", "vault-stats", "clear-vault",
     "upload-doc", "list-docs", "delete-doc", "clear-docs" [NEW: reference docs commands]
-  - Environment: GRADIO_* networking flags; config/app_config.py settings (paths, memory, models)
+  - CLI flag `--legacy-gui`: standalone Gradio launch instead of the FastAPI server (wizard sessions
+    route here automatically)
+  - Environment: DAEMON_API_HOST/DAEMON_API_PORT (FastAPI), GRADIO_* networking flags (legacy path);
+    config/app_config.py settings (paths, memory, models)
 - Outputs:
-  - Starts a Gradio app (GUI) or runs test routines; at shutdown triggers memory_system tasks.
+  - Default GUI mode: uvicorn serving api.app.create_app() — React SPA at /, Gradio at /admin,
+    /health; at shutdown the FastAPI lifespan triggers memory_system tasks.
   - "export-profile" writes data/user_profile_export.md; "show-profile" prints to console
 - Key functions/classes:
   - build_orchestrator() → DaemonOrchestrator fully wired with model_manager, prompt_builder, memory_system
+  - _run_shutdown_tasks(orch) (sync, own loop) / run_shutdown_tasks_async(orch) (FastAPI lifespan) —
+    both share _do_shutdown_async(): pending storage → reflection/facts → daily note → synthesis
+    dreaming, with a shared _shutdown_requested double-run guard
   - test_orchestrator(), test_prompt_with_summaries(), inspect_summaries(): small helpers for ad‑hoc testing
   - __main__ block: selects mode, launches, and on shutdown runs:
       • memory_system.run_shutdown_reflection(...)
@@ -89,6 +97,7 @@ print(f"[DEBUG main.py START] SEM_INDEX_PATH = {os.environ.get('SEM_INDEX_PATH',
 print(f"[DEBUG main.py START] SEM_META_PATH = {os.environ.get('SEM_META_PATH', 'NOT SET')}")
 
 from utils.logging_utils import get_logger, configure_logging
+from utils.safe_json import CorruptStoreError, StoreVersionError
 from utils.time_manager import TimeManager
 # Setup logging early to avoid duplicate handlers
 configure_logging()
@@ -483,6 +492,39 @@ _idle_check_interval = int(os.getenv("IDLE_CHECK_INTERVAL_MINUTES", "30"))  # De
 _idle_timeout_minutes = int(os.getenv("IDLE_TIMEOUT_MINUTES", "60"))  # Default 1 hour
 
 
+def _mark_session_end(orchestrator):
+    """Record session end for time tracking (best-effort)."""
+    try:
+        time_mgr = getattr(orchestrator, "time_manager", None)
+        if time_mgr and hasattr(time_mgr, "mark_session_end"):
+            time_mgr.mark_session_end()
+            logger.info("[Shutdown] Session end time recorded")
+    except Exception as e:
+        logger.debug(f"[Shutdown] Could not mark session end: {e}")
+
+
+def _gather_session_state(orchestrator):
+    """Collect this session's conversation buffer + last summaries for shutdown processing."""
+    session_convos = []
+    session_summaries = []
+
+    try:
+        logger_obj = getattr(orchestrator, "conversation_logger", None)
+        if logger_obj and hasattr(logger_obj, "buffer"):
+            session_convos = list(logger_obj.buffer)
+    except (AttributeError, TypeError):
+        pass
+
+    try:
+        pb = getattr(orchestrator, "prompt_builder", None)
+        if pb and isinstance(getattr(pb, "_last_summaries", None), list):
+            session_summaries = list(pb._last_summaries)
+    except (AttributeError, TypeError):
+        pass
+
+    return session_convos, session_summaries
+
+
 def _run_shutdown_tasks(orchestrator):
     """Run reflection and summary tasks - callable from signal handler or idle thread."""
     global _shutdown_requested
@@ -492,124 +534,160 @@ def _run_shutdown_tasks(orchestrator):
     _shutdown_requested = True
     logger.info("[Shutdown] Running reflection and summary tasks...")
 
-    # Mark session end for time tracking
+    _mark_session_end(orchestrator)
+
     try:
-        time_mgr = getattr(orchestrator, "time_manager", None)
-        if time_mgr and hasattr(time_mgr, "mark_session_end"):
-            time_mgr.mark_session_end()
-            logger.info("[Shutdown] Session end time recorded")
+        session_convos, session_summaries = _gather_session_state(orchestrator)
+
+        # Run in new event loop (we're outside any running loop here)
+        asyncio.run(_do_shutdown_async(orchestrator, session_convos, session_summaries))
+
     except Exception as e:
-        logger.debug(f"[Shutdown] Could not mark session end: {e}")
+        logger.error(f"[Shutdown] Task execution failed: {e}")
+
+
+async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
+    """The session-end shutdown sequence (pending storage → reflection/facts →
+    daily note → synthesis dreaming). Shared by the legacy sync path
+    (_run_shutdown_tasks, own event loop) and the FastAPI lifespan
+    (run_shutdown_tasks_async, uvicorn's loop).
+
+    Each phase announces itself with its time bound on the console — a clean
+    exit can legitimately take ~5 minutes (60s reflection/facts cap + 240s
+    dreaming cap) and a silent gap reads as a hang."""
+    from config.app_config import SHUTDOWN_TASK_TIMEOUT_S as _REFL_S
+    from config.app_config import SYNTHESIS_DREAM_TIMEOUT_S as _DREAM_S
+    print(f"[Shutdown] Session-end processing started — worst case ~{(10 + _REFL_S + _DREAM_S) // 60 + 1:.0f} min "
+          f"(storage drain → reflection/facts ≤{_REFL_S}s → daily note → dreaming ≤{_DREAM_S}s → backup)")
+
+    # Close persistent sandbox session if active
+    try:
+        agentic = getattr(orchestrator, '_agentic_controller', None)
+        if agentic and hasattr(agentic, 'close_sandbox'):
+            await agentic.close_sandbox()
+    except Exception as e:
+        logger.debug(f"[Shutdown] Sandbox cleanup: {e}")
+
+    # Wait for any pending background storage tasks first
+    print("[Shutdown] 1/5 Draining pending memory writes (≤10s)…")
+    try:
+        from gui.handlers import wait_for_pending_storage
+        await wait_for_pending_storage(timeout=10.0)
+    except Exception as e:
+        logger.warning(f"[Shutdown] wait_for_pending_storage failed: {e}")
+
+    # Reflection and summary/fact processing are independent — overlap
+    # them so the reflection LLM call isn't a serial bookend. Both use
+    # explicit model_name internally now, so there's no active-model race.
+    # Bounded by SHUTDOWN_TASK_TIMEOUT_S so a hung LLM call (e.g. a slow
+    # reasoning model) can't block exit — we persist whatever finished.
+    from config.app_config import SHUTDOWN_TASK_TIMEOUT_S
+    print(f"[Shutdown] 2/5 Session reflection + fact extraction (≤{SHUTDOWN_TASK_TIMEOUT_S}s)…")
+    try:
+        _refl, _proc = await asyncio.wait_for(
+            asyncio.gather(
+                orchestrator.memory_system.run_shutdown_reflection(
+                    session_conversations=session_convos,
+                    session_summaries=session_summaries
+                ),
+                orchestrator.memory_system.process_shutdown_memory(
+                    session_conversations=session_convos
+                ),
+                return_exceptions=True,
+            ),
+            timeout=SHUTDOWN_TASK_TIMEOUT_S,
+        )
+        if isinstance(_refl, Exception):
+            logger.error(f"[Shutdown] Reflection failed: {_refl}")
+        else:
+            logger.info("[Shutdown] Reflection completed")
+        if isinstance(_proc, Exception):
+            logger.error(f"[Shutdown] Summary/fact processing failed: {_proc}")
+        else:
+            logger.info("[Shutdown] Summary/fact processing completed")
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"[Shutdown] reflection/summary tasks exceeded "
+            f"{SHUTDOWN_TASK_TIMEOUT_S}s — proceeding with whatever completed"
+        )
+
+    # Generate today's daily note from this session's conversations
+    print("[Shutdown] 3/5 Daily note…")
+    try:
+        from config.app_config import DAILY_NOTES_ENABLED
+        if DAILY_NOTES_ENABLED:
+            from utils.daily_notes_generator import DailyNotesGenerator
+            from datetime import date
+            gen = DailyNotesGenerator(model_manager=orchestrator.model_manager)
+            result = await gen.generate_for_date(date.today())
+            if result.success:
+                logger.info(f"[Shutdown] Daily note generated ({result.conversation_count} conversations)")
+            elif result.skipped_reason:
+                logger.info(f"[Shutdown] Daily note skipped: {result.skipped_reason}")
+            else:
+                logger.warning(f"[Shutdown] Daily note failed: {result.error}")
+    except Exception as e:
+        logger.warning(f"[Shutdown] Daily note generation failed (non-critical): {e}")
+
+    # Synthesis dreaming — runs AFTER, and OUTSIDE, the reflection/fact
+    # budget above, with its own (longer) timeout. The filter's per-
+    # candidate LLM coherence judging can't fit inside SHUTDOWN_TASK_TIMEOUT_S
+    # alongside reflection + fact extraction, so before this split it was
+    # cancelled mid-flight on every exit and never persisted a candidate.
+    try:
+        from config.app_config import SYNTHESIS_DREAM_TIMEOUT_S
+        print(f"[Shutdown] 4/5 Synthesis dreaming (≤{SYNTHESIS_DREAM_TIMEOUT_S}s — the embedding "
+              f"'Batches' bar below may sit at 0% for a while)…")
+        await asyncio.wait_for(
+            orchestrator.memory_system.run_synthesis_dreaming(),
+            timeout=SYNTHESIS_DREAM_TIMEOUT_S,
+        )
+        logger.info("[Shutdown] Synthesis dreaming completed")
+        print("[Shutdown] 4/5 Synthesis dreaming done.")
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"[Shutdown] Synthesis dreaming exceeded {SYNTHESIS_DREAM_TIMEOUT_S}s — skipped"
+        )
+    except Exception as e:
+        logger.warning(f"[Shutdown] Synthesis dreaming failed (non-fatal): {e}")
+
+    # Backup — LAST, after every store write above has landed. Local file
+    # copies (a few MB of JSON always; the ~600MB chroma tree only when the
+    # newest chroma backup is older than BACKUP_MIN_INTERVAL_HOURS).
+    try:
+        from config.app_config import BACKUP_ENABLED
+        if BACKUP_ENABLED:
+            print("[Shutdown] 5/5 Backing up memory stores…")
+            from utils.backup_manager import run_shutdown_backup
+            _bk = await asyncio.to_thread(run_shutdown_backup)
+            if _bk.ok and _bk.path:
+                print(f"[Shutdown] 5/5 Backup written: {_bk.path}"
+                      f"{' (+chroma)' if _bk.chroma_included else ''} — exiting.")
+            elif _bk.skipped_reason:
+                logger.info(f"[Shutdown] Backup skipped: {_bk.skipped_reason}")
+            else:
+                logger.warning(f"[Shutdown] Backup failed (non-fatal): {_bk.error}")
+    except Exception as e:
+        logger.warning(f"[Shutdown] Backup failed (non-fatal): {e}")
+
+
+async def run_shutdown_tasks_async(orchestrator):
+    """Async shutdown entry for the FastAPI lifespan (already inside uvicorn's loop).
+
+    Same double-run guard + sequence as _run_shutdown_tasks, so the idle monitor,
+    a signal handler, and lifespan shutdown can't run the tasks twice.
+    """
+    global _shutdown_requested
+    if _shutdown_requested:
+        return
+    _shutdown_requested = True
+    logger.info("[Shutdown] Running reflection and summary tasks (lifespan)...")
+
+    _mark_session_end(orchestrator)
 
     try:
-        # Gather session data
-        session_convos = []
-        session_summaries = []
-
-        try:
-            logger_obj = getattr(orchestrator, "conversation_logger", None)
-            if logger_obj and hasattr(logger_obj, "buffer"):
-                session_convos = list(logger_obj.buffer)
-        except (AttributeError, TypeError):
-            pass
-
-        try:
-            pb = getattr(orchestrator, "prompt_builder", None)
-            if pb and isinstance(getattr(pb, "_last_summaries", None), list):
-                session_summaries = list(pb._last_summaries)
-        except (AttributeError, TypeError):
-            pass
-
-        # Run shutdown tasks
-        async def _do_shutdown():
-            # Close persistent sandbox session if active
-            try:
-                agentic = getattr(orchestrator, '_agentic_controller', None)
-                if agentic and hasattr(agentic, 'close_sandbox'):
-                    await agentic.close_sandbox()
-            except Exception as e:
-                logger.debug(f"[Shutdown] Sandbox cleanup: {e}")
-
-            # Wait for any pending background storage tasks first
-            try:
-                from gui.handlers import wait_for_pending_storage
-                await wait_for_pending_storage(timeout=10.0)
-            except Exception as e:
-                logger.warning(f"[Shutdown] wait_for_pending_storage failed: {e}")
-
-            # Reflection and summary/fact processing are independent — overlap
-            # them so the reflection LLM call isn't a serial bookend. Both use
-            # explicit model_name internally now, so there's no active-model race.
-            # Bounded by SHUTDOWN_TASK_TIMEOUT_S so a hung LLM call (e.g. a slow
-            # reasoning model) can't block exit — we persist whatever finished.
-            from config.app_config import SHUTDOWN_TASK_TIMEOUT_S
-            try:
-                _refl, _proc = await asyncio.wait_for(
-                    asyncio.gather(
-                        orchestrator.memory_system.run_shutdown_reflection(
-                            session_conversations=session_convos,
-                            session_summaries=session_summaries
-                        ),
-                        orchestrator.memory_system.process_shutdown_memory(
-                            session_conversations=session_convos
-                        ),
-                        return_exceptions=True,
-                    ),
-                    timeout=SHUTDOWN_TASK_TIMEOUT_S,
-                )
-                if isinstance(_refl, Exception):
-                    logger.error(f"[Shutdown] Reflection failed: {_refl}")
-                else:
-                    logger.info("[Shutdown] Reflection completed")
-                if isinstance(_proc, Exception):
-                    logger.error(f"[Shutdown] Summary/fact processing failed: {_proc}")
-                else:
-                    logger.info("[Shutdown] Summary/fact processing completed")
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"[Shutdown] reflection/summary tasks exceeded "
-                    f"{SHUTDOWN_TASK_TIMEOUT_S}s — proceeding with whatever completed"
-                )
-
-            # Generate today's daily note from this session's conversations
-            try:
-                from config.app_config import DAILY_NOTES_ENABLED
-                if DAILY_NOTES_ENABLED:
-                    from utils.daily_notes_generator import DailyNotesGenerator
-                    from datetime import date
-                    gen = DailyNotesGenerator(model_manager=orchestrator.model_manager)
-                    result = await gen.generate_for_date(date.today())
-                    if result.success:
-                        logger.info(f"[Shutdown] Daily note generated ({result.conversation_count} conversations)")
-                    elif result.skipped_reason:
-                        logger.info(f"[Shutdown] Daily note skipped: {result.skipped_reason}")
-                    else:
-                        logger.warning(f"[Shutdown] Daily note failed: {result.error}")
-            except Exception as e:
-                logger.warning(f"[Shutdown] Daily note generation failed (non-critical): {e}")
-
-            # Synthesis dreaming — runs AFTER, and OUTSIDE, the reflection/fact
-            # budget above, with its own (longer) timeout. The filter's per-
-            # candidate LLM coherence judging can't fit inside SHUTDOWN_TASK_TIMEOUT_S
-            # alongside reflection + fact extraction, so before this split it was
-            # cancelled mid-flight on every exit and never persisted a candidate.
-            try:
-                from config.app_config import SYNTHESIS_DREAM_TIMEOUT_S
-                await asyncio.wait_for(
-                    orchestrator.memory_system.run_synthesis_dreaming(),
-                    timeout=SYNTHESIS_DREAM_TIMEOUT_S,
-                )
-                logger.info("[Shutdown] Synthesis dreaming completed")
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"[Shutdown] Synthesis dreaming exceeded {SYNTHESIS_DREAM_TIMEOUT_S}s — skipped"
-                )
-            except Exception as e:
-                logger.warning(f"[Shutdown] Synthesis dreaming failed (non-fatal): {e}")
-
-        # Run in new event loop
-        asyncio.run(_do_shutdown())
-
+        session_convos, session_summaries = _gather_session_state(orchestrator)
+        await _do_shutdown_async(orchestrator, session_convos, session_summaries)
     except Exception as e:
         logger.error(f"[Shutdown] Task execution failed: {e}")
 
@@ -668,6 +746,39 @@ if __name__ == "__main__":
             # Force wizard mode for testing
             print("[WIZARD MODE] Forcing wizard to launch regardless of first-run status")
             mode = "gui"  # Continue to GUI launch
+
+        # Single-instance guard for modes that run a full orchestrator against
+        # the live data dir (two concurrent instances sharing ChromaDB/corpus
+        # caused the duplicate-threads incident). Kernel releases the lock on
+        # ANY process death, so zombies can't strand it. Keep the handle
+        # referenced for the process lifetime.
+        _instance_lock = None
+        if mode in ("gui", "cli"):
+            from utils.single_instance import (
+                SingleInstanceError,
+                acquire_single_instance_lock,
+            )
+            try:
+                _instance_lock = acquire_single_instance_lock()
+            except SingleInstanceError as e:
+                print(f"[Startup] {e}")
+                close_splash()
+                sys.exit(1)
+
+            # Preflight: surface missing keys / unwritable data dir / missing
+            # spaCy model as actionable messages now, instead of cryptic
+            # failures on first use. Only unrecoverable-data conditions abort.
+            from utils.preflight import print_preflight, run_preflight
+            _preflight = run_preflight()
+            print_preflight(_preflight)
+            if not _preflight.ok:
+                close_splash()
+                sys.exit(1)
+
+            # Bound log growth: rotate oversized JSONL/notes logs, gzip +
+            # prune old daemon_debug archives (the live log is untouched).
+            from utils.log_rotation import run_startup_log_maintenance
+            run_startup_log_maintenance()
 
         if mode == "cli":
             asyncio.run(test_orchestrator())
@@ -1431,6 +1542,8 @@ if __name__ == "__main__":
             sys.exit(0)
 
         else:
+            legacy_gui = "--legacy-gui" in sys.argv
+
             print(f"[DEBUG] Building orchestrator (mode={mode}, force_wizard={force_wizard})...")
             orchestrator = build_orchestrator()
             print("[DEBUG] Orchestrator built successfully")
@@ -1438,27 +1551,54 @@ if __name__ == "__main__":
             # Store orchestrator reference for signal handlers and idle monitor
             _orchestrator_ref = orchestrator
 
-            # Register signal handlers for graceful shutdown
-            signal.signal(signal.SIGTERM, _signal_handler)
-            signal.signal(signal.SIGINT, _signal_handler)
-            logger.info("[Startup] Registered signal handlers for SIGTERM and SIGINT")
-
-            # Start idle monitoring thread
-            idle_thread = threading.Thread(target=_idle_monitor_thread, daemon=True, name="IdleMonitor")
-            idle_thread.start()
-            logger.info(f"[Startup] Started idle monitor (check every {_idle_check_interval}m, timeout {_idle_timeout_minutes}m)")
-
             # Close splash screen before showing GUI
             from utils.bootstrap import update_splash as _update_splash
             _update_splash("Launching interface...")
             close_splash()
 
-            print(f"[DEBUG] About to call launch_gui(orchestrator, force_wizard={force_wizard})")
-            launch_gui(orchestrator, force_wizard=force_wizard)
-            print("[DEBUG] launch_gui() returned")
+            from gui.launch import check_first_run
+            needs_wizard = check_first_run(orchestrator, force_wizard=force_wizard)
+
+            if legacy_gui or needs_wizard:
+                # Legacy standalone-Gradio path. The first-run wizard is a
+                # standalone Gradio app, so it also routes through here.
+                signal.signal(signal.SIGTERM, _signal_handler)
+                signal.signal(signal.SIGINT, _signal_handler)
+                logger.info("[Startup] Registered signal handlers for SIGTERM and SIGINT")
+
+                idle_thread = threading.Thread(target=_idle_monitor_thread, daemon=True, name="IdleMonitor")
+                idle_thread.start()
+                logger.info(f"[Startup] Started idle monitor (check every {_idle_check_interval}m, timeout {_idle_timeout_minutes}m)")
+
+                print(f"[DEBUG] About to call launch_gui(orchestrator, force_wizard={force_wizard})")
+                launch_gui(orchestrator, force_wizard=force_wizard)
+                print("[DEBUG] launch_gui() returned")
+            else:
+                # New default: FastAPI owns the process. uvicorn installs its
+                # own SIGINT/SIGTERM handlers and runs the lifespan shutdown
+                # (reflection/facts/daily-note/dreaming) on exit; the idle
+                # monitor is started by the lifespan startup.
+                from api.app import create_app, mount_admin_and_frontend
+                from config.app_config import API_HOST, API_PORT
+
+                app = create_app(orchestrator)
+                app = mount_admin_and_frontend(app, orchestrator)
+
+                import uvicorn
+                print(f"[GUI] Web UI:   http://{API_HOST}:{API_PORT}/")
+                print(f"[GUI] Admin UI: http://{API_HOST}:{API_PORT}/admin")
+                print(f"[GUI] Health:   http://{API_HOST}:{API_PORT}/health")
+                uvicorn.run(app, host=API_HOST, port=API_PORT, log_level="info")
 
     except KeyboardInterrupt:
         print("\nInterrupted by user")
+    except (CorruptStoreError, StoreVersionError) as e:
+        # A persistent store exists but couldn't be loaded (corrupt, or written
+        # by a newer build). The message is actionable — no traceback noise.
+        logger.critical(f"Startup aborted: {e}")
+        print(f"\n[Startup] FATAL: {e}")
+        close_splash()
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Startup failed: {e}")
         import traceback

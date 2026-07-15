@@ -86,14 +86,20 @@ def test_init_converts_timestamp_strings(temp_corpus_file):
     assert isinstance(cm.corpus[0]["timestamp"], datetime)
 
 
-def test_init_handles_corrupt_file(temp_corpus_file):
-    """CorpusManager handles corrupted JSON gracefully"""
+def test_init_corrupt_file_fails_loudly(temp_corpus_file):
+    """Corrupt existing corpus must fail loudly (quarantine + raise),
+    never load empty — empty would overwrite conversation history on save."""
+    from utils.safe_json import CorruptStoreError
+
     with open(temp_corpus_file, "w") as f:
         f.write("{invalid json")
 
-    cm = CorpusManager(corpus_file=temp_corpus_file)
-
-    assert cm.corpus == []
+    with pytest.raises(CorruptStoreError):
+        CorpusManager(corpus_file=temp_corpus_file)
+    assert os.path.exists(temp_corpus_file)
+    quarantines = [p for p in os.listdir(os.path.dirname(temp_corpus_file))
+                   if ".corrupt-" in p]
+    assert quarantines
 
 
 def test_init_handles_invalid_timestamp(temp_corpus_file):

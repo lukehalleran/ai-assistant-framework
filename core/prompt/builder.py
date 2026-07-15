@@ -307,6 +307,23 @@ PROMPT_MIN_RECENT_FLOOR = _cfg_int("prompt_min_recent_floor", 5)
 
 # _staleness_prefix, _is_multimodal_model, _load_upload_image moved to formatter.py
 # Re-exported above via: from .formatter import _staleness_prefix, _is_multimodal_model, _load_upload_image
+
+
+def _should_include_note_images(model_name: str, query: str, intent_type=None) -> bool:
+    """Gate for attaching Obsidian note images to the multimodal call.
+
+    Mirrors the visual-memory gate: an attached image reads to the model as
+    "the user just showed me this", so beyond config + model support the QUERY
+    must signal visual intent (_query_wants_visual). Without the gate, a course
+    note surfacing on an unrelated turn shipped its embedded screenshot and the
+    model narrated it as a topic pivot (the diet-problem incident, 2026-07-14).
+    The "[N image(s) attached]" text indicator still renders either way, so the
+    model can offer to look when it's actually relevant.
+    """
+    if not (OBSIDIAN_INCLUDE_IMAGES and _is_multimodal_model(model_name)):
+        return False
+    from .gatherer_knowledge import _query_wants_visual
+    return _query_wants_visual(query or "", intent_type)
 PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 15)
 PROMPT_MAX_GIT_COMMITS = _cfg_int("prompt_max_git_commits", 10)
 PROMPT_MAX_SKILLS = _cfg_int("prompt_max_skills", 5)
@@ -788,12 +805,44 @@ class UnifiedPromptBuilder:
             tasks = {}
             task_timings = {}
 
+            # Live per-task progress for the streaming UI (no-op outside a turn)
+            from utils.turn_progress import emit as _progress_emit
+
+            _TASK_LABELS = {
+                "recent": "recent conversations",
+                "memories": "memory retrieval",
+                "user_profile": "user profile",
+                "summaries": "summaries",
+                "reflections": "reflections",
+                "semantic": "wiki semantic index",
+                "wiki": "wiki articles",
+                "personal_notes": "Obsidian notes",
+                "reference_docs": "reference docs",
+                "user_uploads": "past uploads",
+                "web_search": "web search",
+                "git_commits": "git history",
+                "graph_context": "knowledge graph",
+                "unresolved_threads": "open threads",
+                "procedural_skills": "skills",
+                "google_calendar": "calendar",
+                "visual_memories": "visual memories",
+                "daemon_self_notes": "self notes",
+                "proposed_features": "proposals",
+                "dreams": "synthesis insights",
+            }
+
             async def _timed_task(name: str, coro):
                 """Wrapper to time individual tasks"""
                 _start = time.time()
                 try:
                     result = await coro
                     task_timings[name] = time.time() - _start
+                    # Surface slow/fruitful tasks live; skip sub-perceptual ones
+                    _dur = task_timings[name]
+                    if _dur >= 0.2:
+                        _label = _TASK_LABELS.get(name, name)
+                        _n = f" · {len(result)} hits" if isinstance(result, (list, tuple)) else ""
+                        _progress_emit(f"📥 {_label} ✓ {_dur:.1f}s{_n}")
                     return result
                 except Exception as e:
                     task_timings[name] = time.time() - _start
@@ -848,7 +897,7 @@ class UnifiedPromptBuilder:
             # Personal notes from Obsidian vault
             # Check if model is multimodal to decide whether to load images
             current_model = getattr(self.model_manager, 'active_model_name', '') if self.model_manager else ''
-            include_note_images = OBSIDIAN_INCLUDE_IMAGES and _is_multimodal_model(current_model)
+            include_note_images = _should_include_note_images(current_model, user_input, intent_type)
             logger.debug(f"[PromptBuilder] image check: model={current_model}, OBSIDIAN_INCLUDE_IMAGES={OBSIDIAN_INCLUDE_IMAGES}, is_multimodal={_is_multimodal_model(current_model)}, include_note_images={include_note_images}")
 
             if eff_max_personal_notes > 0:
@@ -983,6 +1032,7 @@ class UnifiedPromptBuilder:
 
             # Gather all results with timeout — use asyncio.wait so completed
             # tasks survive a timeout instead of wiping the entire context.
+            _progress_emit(f"🔎 Retrieving context from {len(tasks)} sources in parallel…")
             _gather_start = time.time()
             try:
                 done, pending = await asyncio.wait(
@@ -1022,6 +1072,9 @@ class UnifiedPromptBuilder:
                     logger.info(
                         f"[BUILD_PROMPT TIMING] total={_gather_elapsed:.2f}s | {timing_str}"
                     )
+                _progress_emit(
+                    f"🧱 Context retrieved ({_gather_elapsed:.1f}s) — gating, dedup, token budget…"
+                )
 
             except Exception as _gather_exc:
                 logger.warning("Unexpected error during context gathering: %s", _gather_exc)

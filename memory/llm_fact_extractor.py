@@ -5,6 +5,9 @@ Additive LLM-assisted fact extractor used at shutdown to augment regex/spaCy/REB
 ENHANCED: Now extracts facts with category classification for user profile building.
 ENHANCED (2026-03): Extracts entity facts (non-user subjects) with user_connection metadata.
 ENHANCED (2026-04): Accepts existing profile facts so LLM reuses relation names for updates/cancellations.
+ENHANCED (2026-07): Prompt explicitly requests entity–entity relations (both subject AND object
+are named entities, e.g. "Sam sibling_of Biscuit") — these become lateral knowledge-graph
+edges via the shutdown graph-ingestion hook.
 
 Contract
 - Inputs: list of recent messages — either plain strings (user-only) or dicts with
@@ -268,6 +271,17 @@ ENTITY FACTS (in addition to user facts):
   → {{"subject": "Jordan", "relation": "moved_from", "object": "London", "category": "relationships", "confidence": 0.75, "user_connection": "user's boss"}}
 - Example: Daemon says "Clover is your mom's black cat, male, with long fur"
   → {{"subject": "Clover", "relation": "species", "object": "cat, black, long fur, male", "category": "hobbies", "confidence": 0.85, "user_connection": "user's mom's cat"}}
+
+ENTITY-ENTITY RELATIONS (high value — do not skip these):
+- When a statement relates TWO named entities to each other, extract that link as its own
+  fact with the entity NAME as the object — not a description.
+- Example: "Sam is Biscuit's brother"
+  → {{"subject": "Sam", "relation": "sibling_of", "object": "Biscuit", "category": "hobbies", "confidence": 0.9, "user_connection": "user's cat"}}
+- Example: "My professor Dr. Smith teaches Bayesian Statistics"
+  → {{"subject": "Dr. Smith", "relation": "teaches", "object": "Bayesian Statistics", "category": "education", "confidence": 0.9, "user_connection": "user's professor"}}
+- Example: "Jordan works at Deloitte"
+  → {{"subject": "Jordan", "relation": "works_at", "object": "Deloitte", "category": "career", "confidence": 0.9, "user_connection": "user's boss"}}
+- If a sentence supports BOTH a user fact and an entity-entity fact, output both.
 
 RULES:
 - Subject is "user" for personal facts, or the entity name for entity facts

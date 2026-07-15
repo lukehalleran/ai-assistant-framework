@@ -863,24 +863,46 @@ async def _prepare_submit_context(ctx):
 
     # Use merged_input (user text + file contents) so file content appears in the prompt.
     import time as _time_mod
+    from utils import turn_progress
+
     ctx.t_prepare_start = _time_mod.perf_counter()
-    prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
-        user_input=ctx.merged_input,
-        files=ctx.files,
-        use_raw_mode=False,  # enhanced mode
-        return_context=True  # Always get raw context for images and agentic search
-    ))
 
-    # Yield progress every 2 seconds while waiting
-    progress_messages = ["💭 Analyzing context...", "🔍 Searching memories...", "📚 Building prompt..."]
-    progress_idx = 0
-    while not prepare_task.done():
-        await asyncio.sleep(2)
-        if not prepare_task.done():
-            yield {"role": "assistant", "content": progress_messages[progress_idx % len(progress_messages)], "is_progress": True}
-            progress_idx += 1
+    # Install the per-turn progress bus BEFORE prepare_prompt starts so the
+    # prompt builder's live events (per-source retrieval completions, gating/
+    # assembly milestones) stream to the UI instead of canned placeholders.
+    _progress_q = turn_progress.begin_turn()
+    try:
+        prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
+            user_input=ctx.merged_input,
+            files=ctx.files,
+            use_raw_mode=False,  # enhanced mode
+            return_context=True  # Always get raw context for images and agentic search
+        ))
 
-    prep_result = await prepare_task
+        # Relay real pipeline events while waiting; fall back to a heartbeat
+        # if the pipeline is quiet so mobile SSE connections stay alive.
+        _quiet_polls = 0
+        while not prepare_task.done():
+            await asyncio.sleep(0.3)
+            events = turn_progress.drain(_progress_q)
+            if events:
+                _quiet_polls = 0
+                for _ev in events:
+                    yield {"role": "assistant", "content": _ev, "is_progress": True}
+            else:
+                _quiet_polls += 1
+                if _quiet_polls >= 20:  # ~6s of silence
+                    _quiet_polls = 0
+                    _elapsed_s = _time_mod.perf_counter() - ctx.t_prepare_start
+                    yield {"role": "assistant", "content": f"💭 Working... ({_elapsed_s:.0f}s)", "is_progress": True}
+
+        prep_result = await prepare_task
+        # Flush any events emitted between the last poll and completion
+        for _ev in turn_progress.drain(_progress_q):
+            yield {"role": "assistant", "content": _ev, "is_progress": True}
+    finally:
+        turn_progress.end_turn()
+
     ctx.t_prepare_elapsed = _time_mod.perf_counter() - ctx.t_prepare_start
 
     # Unpack result - always expect 3 values now
@@ -1339,8 +1361,8 @@ async def _self_repair_note(ctx, detected):
         return None
 
 
-def _apply_web_citations(text, web_map):
-    """Make [WEB_N] citations clickable + append a Sources footer (display only).
+def _apply_web_citations(text, web_map, wiki_map=None):
+    """Make [WEB_N]/[WIKI_N] citations clickable + append a Sources footer (display only).
 
     gr.Chatbot renders markdown, so each inline [WEB_N] is rewritten to
     `[[WEB_N](url)]` — literal brackets around a clickable "WEB_N" pointing at the
@@ -1348,8 +1370,9 @@ def _apply_web_citations(text, web_map):
     web_map are STRIPPED from the display (with their preceding space): on a
     turn with no web search the model can still imitate [WEB_N] from replayed
     history, and leaving it renders as literal bracket junk to the user.
-    Applied to the DISPLAY string only; the stored response keeps the canonical
-    [WEB_N] markers.
+    [WIKI_N] markers (agentic Wikipedia results) are handled identically via
+    wiki_map — article-URL links + Sources entries. Applied to the DISPLAY
+    string only; the stored response keeps the canonical markers.
 
     NOTE: do NOT use the `[\\[WEB_N\\]](url)` escaped-bracket form — this chatbot
     registers `\\[ ... \\]` as a LaTeX display-math delimiter (see gr.Chatbot
@@ -1358,30 +1381,35 @@ def _apply_web_citations(text, web_map):
     """
     if not text:
         return text
-    web_map = web_map or {}
     import re as _re
     # Idempotency guard: the linkified form [[WEB_N](url)] still contains the literal
     # substring [WEB_N], so a second pass would re-wrap it ([[[WEB_N](url)](url)]) and
     # re-append Sources. If any marker is already linkified, this text is done — return it.
-    if _re.search(r'\[\[WEB_\d+\]\(', text):
-        return text
-    cited = sorted(set(_re.findall(r'\[WEB_(\d+)\]', text)), key=int)
-    if not cited:
+    if _re.search(r'\[\[(?:WEB|WIKI)_\d+\]\(', text):
         return text
 
-    def _repl(m):
-        key = f"WEB_{m.group(2)}"
-        url = ((web_map.get(key) or {}).get("url") or "").strip()
-        return f"{m.group(1)}[[{key}]({url})]" if url else ""
-
-    out = _re.sub(r'( ?)\[WEB_(\d+)\]', _repl, text)
-
+    out = text
     footer = []
-    for _n in cited:
-        key = f"WEB_{_n}"
-        src = web_map.get(key)
-        if src and (src.get("url") or "").strip():
-            footer.append(f"[{key}] [{src.get('title') or src['url']}]({src['url']})")
+    for prefix, src_map in (("WEB", web_map or {}), ("WIKI", wiki_map or {})):
+        cited = sorted(set(_re.findall(r'\[' + prefix + r'_(\d+)\]', out)), key=int)
+        if not cited:
+            continue
+
+        def _repl(m, _prefix=prefix, _map=src_map):
+            key = f"{_prefix}_{m.group(2)}"
+            url = ((_map.get(key) or {}).get("url") or "").strip()
+            return f"{m.group(1)}[[{key}]({url})]" if url else ""
+
+        out = _re.sub(r'( ?)\[' + prefix + r'_(\d+)\]', _repl, out)
+
+        for _n in cited:
+            key = f"{prefix}_{_n}"
+            src = src_map.get(key)
+            if src and (src.get("url") or "").strip():
+                title = src.get("title") or src["url"]
+                if prefix == "WIKI":
+                    title = f"Wikipedia: {title}"
+                footer.append(f"[{key}] [{title}]({src['url']})")
     if footer:
         out += "\n\n---\n**Sources:**\n" + "\n".join(footer)
     return out
@@ -1736,8 +1764,10 @@ async def _run_agentic_search(ctx):
             or getattr(agentic_controller, '_current_web_source_map', None)
             or {}
         )
-        if _web_map:
-            display_output = _apply_web_citations(display_output, _web_map)
+        _wiki_map = getattr(getattr(agentic_controller, '_tool_executor', None),
+                            '_current_wiki_source_map', None) or {}
+        if _web_map or _wiki_map:
+            display_output = _apply_web_citations(display_output, _web_map, wiki_map=_wiki_map)
             # Also set on orchestrator for provenance
             orchestrator._web_source_map = _web_map
 
@@ -1995,6 +2025,7 @@ async def _run_enhanced(ctx):
 
         # Streaming path (duel mode handled above, old best-of code removed)
         logger.info(f"[Handle Submit] >>> Starting streaming with model={model_name}")
+        yield {"role": "assistant", "content": f"✨ Generating response ({model_name})…", "is_progress": True}
         _t_stream_start = _time_mod.perf_counter()
         thinking_started = False
         thinking_complete = False
@@ -2681,18 +2712,19 @@ async def handle_submit(
 # Internet Actions — Approve / Reject handlers (called by GUI buttons)
 # ---------------------------------------------------------------------------
 
-async def execute_pending_action(action_id: str, chat_history: list, orchestrator=None):
-    """Execute an approved internet action. Called by GUI Approve button.
+async def execute_pending_action_core(action_id: str, orchestrator=None):
+    """Approve + execute a pending internet action; transport-agnostic core.
 
-    Does NOT go through submit_chat — directly modifies chat_history and returns.
+    Returns an ActionOutcome whose `message` is the assistant-styled chat line.
+    Shared by the Gradio Approve button and the FastAPI approve route.
     """
-    import gradio as gr
-    from core.actions.types import PendingActionsStore
+    from core.actions.types import ActionOutcome
     from core.actions.audit import ActionAuditLog
     from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
 
     if not action_id:
-        return chat_history, gr.update(value=None), gr.update(visible=False)
+        return ActionOutcome(status="not_found",
+                             message="Action expired or not found. Ask me again if you still want this.")
 
     # Load proposal from the global store
     from core.agentic.tools import ToolExecutor
@@ -2700,11 +2732,8 @@ async def execute_pending_action(action_id: str, chat_history: list, orchestrato
     proposal = store.approve(action_id)
 
     if not proposal:
-        chat_history.append({
-            "role": "assistant",
-            "content": "Action expired or not found. Ask me again if you still want this."
-        })
-        return chat_history, gr.update(value=None), gr.update(visible=False)
+        return ActionOutcome(status="not_found",
+                             message="Action expired or not found. Ask me again if you still want this.")
 
     # Audit: log approval
     audit = ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG)
@@ -2719,27 +2748,39 @@ async def execute_pending_action(action_id: str, chat_history: list, orchestrato
 
         if result.success:
             store.mark_executed(action_id, result.message)
-            msg = f"[ACTION EXECUTED: {proposal.action_type.value}] {result.message}"
-        else:
-            store.mark_failed(action_id, result.message)
-            msg = f"Action failed: {result.message}\n\nWant me to try something else?"
+            return ActionOutcome(
+                status="executed",
+                message=f"[ACTION EXECUTED: {proposal.action_type.value}] {result.message}",
+                action_type=proposal.action_type.value,
+                summary=proposal.summary,
+            )
+        store.mark_failed(action_id, result.message)
+        return ActionOutcome(
+            status="failed",
+            message=f"Action failed: {result.message}\n\nWant me to try something else?",
+            action_type=proposal.action_type.value,
+            summary=proposal.summary,
+        )
     except Exception as e:
         store.mark_failed(action_id, str(e))
-        msg = f"Action failed with error: {e}\n\nWant me to try something else?"
         logger.error(f"[Actions] Execution failed for {action_id}: {e}")
+        return ActionOutcome(
+            status="failed",
+            message=f"Action failed with error: {e}\n\nWant me to try something else?",
+            action_type=proposal.action_type.value,
+            summary=proposal.summary,
+        )
 
-    chat_history.append({"role": "assistant", "content": msg})
-    return chat_history, gr.update(value=None), gr.update(visible=False)
 
-
-async def reject_pending_action(action_id: str, chat_history: list, orchestrator=None):
-    """Reject a pending internet action. Called by GUI Reject button."""
-    import gradio as gr
+async def reject_pending_action_core(action_id: str, orchestrator=None):
+    """Reject a pending internet action; transport-agnostic core (see execute_pending_action_core)."""
+    from core.actions.types import ActionOutcome
     from core.actions.audit import ActionAuditLog
     from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
 
     if not action_id:
-        return chat_history, gr.update(value=None), gr.update(visible=False)
+        return ActionOutcome(status="not_found",
+                             message="Action already expired or was not found.")
 
     from core.agentic.tools import ToolExecutor
     store = ToolExecutor._get_pending_actions_store()
@@ -2749,14 +2790,34 @@ async def reject_pending_action(action_id: str, chat_history: list, orchestrator
     audit.log_decision(action_id, approved=False)
 
     if proposal:
-        chat_history.append({
-            "role": "assistant",
-            "content": f"[ACTION REJECTED] Cancelled: {proposal.summary}"
-        })
-    else:
-        chat_history.append({
-            "role": "assistant",
-            "content": "Action already expired or was not found."
-        })
+        return ActionOutcome(
+            status="rejected",
+            message=f"[ACTION REJECTED] Cancelled: {proposal.summary}",
+            action_type=proposal.action_type.value,
+            summary=proposal.summary,
+        )
+    return ActionOutcome(status="not_found",
+                         message="Action already expired or was not found.")
 
+
+async def execute_pending_action(action_id: str, chat_history: list, orchestrator=None):
+    """Execute an approved internet action. Called by GUI Approve button.
+
+    Does NOT go through submit_chat — directly modifies chat_history and returns.
+    """
+    import gradio as gr
+
+    outcome = await execute_pending_action_core(action_id, orchestrator)
+    if action_id:  # legacy behavior: empty id appends nothing
+        chat_history.append({"role": "assistant", "content": outcome.message})
+    return chat_history, gr.update(value=None), gr.update(visible=False)
+
+
+async def reject_pending_action(action_id: str, chat_history: list, orchestrator=None):
+    """Reject a pending internet action. Called by GUI Reject button."""
+    import gradio as gr
+
+    outcome = await reject_pending_action_core(action_id, orchestrator)
+    if action_id:  # legacy behavior: empty id appends nothing
+        chat_history.append({"role": "assistant", "content": outcome.message})
     return chat_history, gr.update(value=None), gr.update(visible=False)

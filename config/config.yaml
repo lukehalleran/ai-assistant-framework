@@ -232,6 +232,26 @@ intent_classifier:
 turn_telemetry:
   enabled: true
   path: logs/turn_records.jsonl
+backup:
+  enabled: true
+  dir: data/backups
+  retention: 5
+  min_interval_hours: 12
+  include_chroma: true
+log_maintenance:
+  enabled: true
+  turn_records_max_mb: 50
+  daily_notes_max_mb: 20
+  audit_max_mb: 20
+  debug_compress_age_days: 7
+  debug_keep_days: 90
+api:
+  host: 127.0.0.1
+  port: 8000
+  cors_origins:
+  - http://localhost:5173
+  serve_frontend: true
+  frontend_dist_dir: web/dist
 entity_facts:
   enabled: true
   per_turn_cap: 4
@@ -381,6 +401,22 @@ wikidata_import:
   max_total_entities: 50000
   sparql_batch_size: 500
   embedding_match_threshold: 0.6
+wikidata_enrichment:
+  enabled: true
+  relation_whitelist:
+  - instance_of
+  - subclass_of
+  - part_of
+  - has_part
+  - uses
+  - has_use
+  - has_effect
+  - has_cause
+  - main_subject
+  max_edges_per_entity: 5
+  max_new_nodes_per_run: 25
+  max_edges_per_run: 50
+  shutdown_step_timeout_s: 30.0
 graph_walk:
   enabled: false
   max_walk_length: 8

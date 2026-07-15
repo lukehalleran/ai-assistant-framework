@@ -9,7 +9,9 @@ Module Contract:
     - Inputs: Summary/reflection text, fact correction events
     - Outputs: Staleness metadata updates on affected documents
     - Dependencies: entity_resolver (for canonicalization), app_config (settings)
-    - Persistence: JSON at data/claim_index.json (same pattern as entity_aliases.json)
+    - Persistence: JSON at data/claim_index.json (same pattern as entity_aliases.json):
+      atomic write via utils.safe_json; strict load — an existing-but-corrupt file
+      is quarantined and raises CorruptStoreError, never silently reset [2026-07-14]
 """
 
 import hashlib
@@ -21,6 +23,11 @@ from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_json, check_schema_version, load_critical_json
+
+# On-disk schema version for claim_index.json (missing field = v1).
+# Bump on shape changes + migrate in load(); newer-version files are refused.
+CLAIM_INDEX_SCHEMA_VERSION = 1
 
 logger = get_logger("claim_tracker")
 
@@ -338,14 +345,13 @@ class ClaimIndex:
             logger.debug("[ClaimIndex] No changes to save")
             return
 
-        os.makedirs(os.path.dirname(self._persist_path) or ".", exist_ok=True)
         data = {
+            "schema_version": CLAIM_INDEX_SCHEMA_VERSION,
             "index": self._index,
             "doc_claims": self._doc_claims,
         }
         try:
-            with open(self._persist_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            atomic_write_json(self._persist_path, data)
             self._dirty = False
             logger.info(
                 f"[ClaimIndex] Saved {self.total_claims} claims across "
@@ -355,20 +361,21 @@ class ClaimIndex:
             logger.warning(f"[ClaimIndex] Failed to save: {e}")
 
     def load(self) -> None:
-        """Load index from JSON file."""
-        if not self._persist_path or not os.path.exists(self._persist_path):
+        """Load index from JSON file.
+
+        Missing file → fresh start. Existing-but-corrupt file → quarantined
+        copy + CorruptStoreError (never silently reset, which would let the
+        next save overwrite the user's staleness history).
+        """
+        data = load_critical_json(self._persist_path, "Claim/staleness index")
+        if data is None:
             return
-        try:
-            with open(self._persist_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self._index = data.get("index", {})
-            self._doc_claims = data.get("doc_claims", {})
-            self._dirty = False
-            logger.info(
-                f"[ClaimIndex] Loaded {self.total_claims} claims across "
-                f"{self.total_documents} documents from {self._persist_path}"
-            )
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"[ClaimIndex] Failed to load: {e}")
-            self._index = {}
-            self._doc_claims = {}
+        check_schema_version(data, current=CLAIM_INDEX_SCHEMA_VERSION,
+                             path=self._persist_path, label="Claim/staleness index")
+        self._index = data.get("index", {})
+        self._doc_claims = data.get("doc_claims", {})
+        self._dirty = False
+        logger.info(
+            f"[ClaimIndex] Loaded {self.total_claims} claims across "
+            f"{self.total_documents} documents from {self._persist_path}"
+        )

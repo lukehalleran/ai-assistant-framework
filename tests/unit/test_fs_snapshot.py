@@ -61,6 +61,14 @@ class TestShouldExclude:
     def test_rpm_extension(self):
         assert should_exclude("rstudio-2026.01.0-392-x86_64.rpm") is True
 
+    def test_backup_dir_excluded(self):
+        """data/backups churns every shutdown (backup_manager) — never hashed."""
+        assert should_exclude("data/backups/20260714_182627/manifest.json") is True
+        assert should_exclude("data/backups/20260714_182627/chroma_db_v4/chroma.sqlite3") is True
+
+    def test_other_data_files_still_included(self):
+        assert should_exclude("data/knowledge_graph.json") is False
+
     def test_normal_python_file_allowed(self):
         assert should_exclude("utils/fs_snapshot.py") is False
 

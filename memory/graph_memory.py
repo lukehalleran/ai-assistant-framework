@@ -10,6 +10,9 @@ mentions.
 Persistence uses a dirty-flag so saves only happen when the graph
 has actually changed (not on every insertion).  Uses orjson for
 fast serialization (falls back to stdlib json if unavailable).
+Saves are atomic (temp + fsync + os.replace); loads are strict — an
+existing-but-corrupt graph file is quarantined and raises
+CorruptStoreError instead of silently starting empty [2026-07-14].
 
 Stats helpers: count_by_source() for provenance counts,
 count_bridge_edges() for cross-provenance edge counts.
@@ -52,6 +55,11 @@ from memory.graph_models import GraphEdge, GraphNode
 from utils.logging_utils import get_logger
 
 logger = get_logger("graph_memory")
+
+# On-disk schema version for knowledge_graph.json. Files without the field
+# are v1 (pre-versioning). Bump when the payload shape changes and add a
+# migration in load(); loads REFUSE files from newer versions (StoreVersionError).
+GRAPH_SCHEMA_VERSION = 1
 
 # Default persist path (overridden by config)
 _DEFAULT_PERSIST_PATH = os.path.join("data", "knowledge_graph.json")
@@ -419,7 +427,7 @@ class GraphMemory:
         # Serialize edges from index (authoritative)
         edges = [e.to_dict() for e in self._edge_index.values()]
 
-        payload = {"nodes": nodes, "edges": edges}
+        payload = {"schema_version": GRAPH_SCHEMA_VERSION, "nodes": nodes, "edges": edges}
 
         try:
             # Atomic write: write to temp file, then rename.
@@ -437,7 +445,12 @@ class GraphMemory:
             logger.error(f"[GraphMemory] Save failed: {e}")
 
     def load(self) -> None:
-        """Load graph from JSON file.  No-op if file doesn't exist."""
+        """Load graph from JSON file.  No-op if file doesn't exist.
+
+        An existing-but-corrupt file raises CorruptStoreError (with a
+        quarantined copy) instead of starting empty — an empty graph would
+        overwrite the user's accumulated graph on the next save.
+        """
         if not os.path.exists(self.persist_path):
             logger.info(f"[GraphMemory] No graph file at {self.persist_path}, starting fresh")
             return
@@ -446,8 +459,13 @@ class GraphMemory:
             with open(self.persist_path, "r", encoding="utf-8") as f:
                 payload = _json_load(f)
         except (ValueError, OSError) as e:
-            logger.error(f"[GraphMemory] Failed to load {self.persist_path}: {e}")
-            return
+            from utils.safe_json import corrupt_store
+            raise corrupt_store(self.persist_path, "Knowledge graph", e) from e
+
+        # Refuse files written by a NEWER build (missing version = v1).
+        from utils.safe_json import check_schema_version
+        check_schema_version(payload, current=GRAPH_SCHEMA_VERSION,
+                             path=self.persist_path, label="Knowledge graph")
 
         # Load nodes
         for nid, data in payload.get("nodes", {}).items():

@@ -14,8 +14,12 @@ Module Contract
   - Narrative context text (cached temporal grounding) [NEW 2026-01-17]
 - Key behaviors:
   - Atomic save with .tmp swap; timestamps normalized to datetime/ISO
+  - Strict load: existing-but-corrupt corpus file is quarantined and raises
+    CorruptStoreError (utils.safe_json), never silently loads empty [2026-07-14]
   - Size bounded by CORPUS_MAX_ENTRIES (config/env)
   - Narrative context cached to separate file (NARRATIVE_CONTEXT_PATH) [NEW 2026-01-17]
+  - Narrative save/read both reject API-error sentinel text (API_ERROR_PREFIXES) —
+    a failed LLM call must never persist or surface as temporal grounding [2026-07-09]
 - Side effects:
   - Writes to CORPUS_FILE JSON on each add.
   - Writes to NARRATIVE_CONTEXT_PATH for temporal grounding cache [NEW 2026-01-17]
@@ -25,6 +29,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from utils.logging_utils import get_logger, log_and_time
+from utils.safe_json import load_critical_json
 from config.app_config import CORPUS_MAX_ENTRIES
 
 logger = get_logger("corpus_manager")
@@ -51,44 +56,42 @@ class CorpusManager:
 
     @log_and_time("Load Corpus")
     def _load_corpus(self) -> List[Dict]:
-        """Load corpus from disk"""
-        if os.path.exists(self.corpus_file):
-            try:
-                with open(self.corpus_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    logger.info(f"[CorpusManager] Loaded {len(data)} entries from {self.corpus_file}")
-                    # Convert timestamp strings back to datetime
-                    for entry in data:
-                        if isinstance(entry.get("timestamp"), str):
-                            try:
-                                entry["timestamp"] = datetime.fromisoformat(entry["timestamp"])
-                            except Exception:
-                                pass
+        """Load corpus from disk.
 
-                    # Enforce max_entries limit on load (trim oldest, keep newest)
-                    trimmed = False
-                    if len(data) > self.max_entries:
-                        logger.info(f"[CorpusManager] Trimming corpus from {len(data)} to {self.max_entries} entries")
-                        data = data[-self.max_entries:]
-                        trimmed = True
-
-                    logger.info(f"Loaded {len(data)} corpus entries")
-                    self.corpus = data
-
-                    # Save trimmed corpus so next startup doesn't need to trim again
-                    if trimmed:
-                        self.save_corpus()
-                        logger.info("[CorpusManager] Saved trimmed corpus to disk")
-
-                    return data
-
-            except Exception as e:
-                logger.error(f"Error loading corpus: {e}")
-
-        else:
+        Missing file → empty corpus. Existing-but-corrupt file → quarantined
+        copy + CorruptStoreError (an empty corpus would overwrite the user's
+        conversation history on the next save).
+        """
+        data = load_critical_json(self.corpus_file, "Conversation corpus")
+        if data is None:
             logger.warning(f"[CorpusManager] Corpus file not found: {self.corpus_file}")
+            return []
 
-        return []
+        logger.info(f"[CorpusManager] Loaded {len(data)} entries from {self.corpus_file}")
+        # Convert timestamp strings back to datetime
+        for entry in data:
+            if isinstance(entry.get("timestamp"), str):
+                try:
+                    entry["timestamp"] = datetime.fromisoformat(entry["timestamp"])
+                except Exception:
+                    pass
+
+        # Enforce max_entries limit on load (trim oldest, keep newest)
+        trimmed = False
+        if len(data) > self.max_entries:
+            logger.info(f"[CorpusManager] Trimming corpus from {len(data)} to {self.max_entries} entries")
+            data = data[-self.max_entries:]
+            trimmed = True
+
+        logger.info(f"Loaded {len(data)} corpus entries")
+        self.corpus = data
+
+        # Save trimmed corpus so next startup doesn't need to trim again
+        if trimmed:
+            self.save_corpus()
+            logger.info("[CorpusManager] Saved trimmed corpus to disk")
+
+        return data
 
     def clean_for_json(self, entry):
         if isinstance(entry, dict):
@@ -394,15 +397,35 @@ class CorpusManager:
         return items[:limit]
 
     # --- Narrative Context (Temporal Grounding) ---
+    @staticmethod
+    def _is_api_error_text(text: str) -> bool:
+        """True if text is an LLM error sentinel, not a real narrative.
+
+        generate_once() surfaces transport failures as '[API Error] ...'
+        strings instead of raising; a poisoned save replays the error dump
+        into every prompt's [TEMPORAL GROUNDING] section (seen live
+        2026-07-08: a 402 error persisted as the narrative for a full day).
+        """
+        from models.model_manager import API_ERROR_PREFIXES
+        return (text or "").lstrip().startswith(API_ERROR_PREFIXES)
+
     def save_narrative_context(self, text: str) -> bool:
         """
         Save the synthesized narrative context to data/narrative_context.txt
         Uses atomic write pattern (temp file → rename) for safety.
+        Refuses API-error sentinel text (keeps the previous good narrative).
 
         Returns:
             True on success, False on failure.
         """
         from config.app_config import NARRATIVE_CONTEXT_PATH
+
+        if self._is_api_error_text(text):
+            logger.warning(
+                "[CorpusManager] Refusing to save API-error sentinel as narrative "
+                f"context: {text.strip()[:120]!r}"
+            )
+            return False
 
         try:
             narrative_path = NARRATIVE_CONTEXT_PATH
@@ -443,6 +466,16 @@ class CorpusManager:
 
             with open(narrative_path, 'r', encoding='utf-8') as f:
                 content = f.read()
+
+            # Read-side guard: neutralize an already-poisoned cache file
+            # (written before the save-side guard existed).
+            if self._is_api_error_text(content):
+                logger.warning(
+                    "[CorpusManager] Cached narrative context is an API-error "
+                    "sentinel — ignoring it (regenerate via `python main.py "
+                    "refresh-narrative`)"
+                )
+                return ""
 
             # Prepend generation timestamp so the LLM knows how stale this is
             mtime = os.path.getmtime(narrative_path)
