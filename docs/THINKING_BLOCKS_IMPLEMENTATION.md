@@ -1,11 +1,11 @@
 # Two-Step Generation with Thinking Blocks - Implementation Summary
 
-*Last verified: 2026-06-10*
+*Last verified: 2026-07-23*
 
 ## Overview
 Two-step generation where the LLM provides internal reasoning before delivering the final answer. The thinking block is logged for debugging but only the final answer is shown to users and stored in memory.
 
-Three core layers of thinking separation exist, plus six operational layers (defense in depth, 9 total — see table below):
+**Four** core layers of thinking separation exist, plus five operational layers (defense in depth, 9 total — see table below):
 1. **Native API reasoning** — for Claude/DeepSeek-R1, thinking is separated at the OpenRouter API level via `extra_body={"reasoning": {"effort": "medium"}}`. Thinking arrives in `delta.reasoning_content`, not in the text response.
 2. **Tag-based parsing** — `<thinking>`/`<think>`/`<reasoning>`/`<reason>` tags (+ `<output>` wrappers) parsed by `ResponseParser.parse_thinking_block()` (the `<reasoning>`/`<reason>` family was added 2026-07-03 after a model dumped literal `<reasoning>` tags in the content channel)
 3. **Heuristic fallback** — `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning patterns, instruction echoes)
@@ -91,7 +91,7 @@ if self.supports_reasoning(target_model):
 
 When enabled, OpenRouter returns thinking in `delta.reasoning_content` streaming chunks (not in the text body). The `ResponseGenerator` handles these via the `InterleavedReasoningFilter`, which emits synthetic `<thinking>`/`</thinking>` markers around suppressed reasoning chunks (see section 6).
 
-**Supported models** (`supports_reasoning()` in `model_manager.py`): all `anthropic/claude-*` models, plus the DeepSeek reasoning family (`deepseek-r1`, `deepseek-v4`). Both `generate_async()` and `generate_once()` accept `disable_reasoning=True` to suppress the separation (used by the reasoning-only recovery retry).
+**Supported models** (`supports_reasoning()` in `model_manager.py`): all `anthropic/claude-*` models, the DeepSeek reasoning family (`deepseek-r1`, `deepseek-v4`), plus the Moonshot Kimi reasoning family (`kimi-k3`, `kimi-k2-thinking`, `kimi-k2.6`). Both `generate_async()` and `generate_once()` accept `disable_reasoning=True` to suppress the separation (used by the reasoning-only recovery retry).
 
 ### 3. Conditional Thinking Instruction (`core/orchestrator.py`) (CHANGED 2026-04-05)
 

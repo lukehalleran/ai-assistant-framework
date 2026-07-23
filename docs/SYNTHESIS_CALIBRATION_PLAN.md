@@ -34,7 +34,7 @@ Daemon's synthesis pipeline claims that an AI system can **generate genuinely no
 **Code:** `shutdown_processor.py:_run_synthesis_dreaming()` → `RetrievalSynthesisGenerator` → `SynthesisFilter` → `SynthesisMemory`
 
 - **When:** Session shutdown (Step 6.8), runs first in three-tier parallel generation
-- **What:** Extracts structural queries from personal facts via few-shot LLM prompting, searches FAISS (40M vectors) for Wikipedia articles sharing the structural pattern, adversarially evaluates the connection. Produces candidates naming specific mechanisms rather than surface metaphors.
+- **What:** Extracts structural queries from personal facts via few-shot LLM prompting, searches FAISS (41M vectors) for Wikipedia articles sharing the structural pattern, adversarially evaluates the connection. Produces candidates naming specific mechanisms rather than surface metaphors.
 - **Gate:** `SYNTHESIS_GENERATOR_ENABLED=True` AND graph has ≥`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` (20) nodes
 - **Output:** Accepted results stored in `synthesis_results` ChromaDB collection; provisional bridge edges created in knowledge graph
 - **Volume:** ~15 candidates per session (shared across all tiers), expect 0–2 acceptances from this tier
@@ -53,7 +53,7 @@ Daemon's synthesis pipeline claims that an AI system can **generate genuinely no
 **Code:** `shutdown_processor.py:_run_synthesis_dreaming()` → `SynthesisGenerator` → `SynthesisFilter` → `SynthesisMemory`
 
 - **When:** Session shutdown (Step 6.8), fills remaining candidate quota after Tiers 0 and 1
-- **What:** Samples personal entities from `facts` ChromaDB collection and Wikipedia articles via FAISS (`semantic_search_with_neighbors()` from `knowledge/semantic_search.py`, backed by a 40M-vector IVFPQ index), pairs cross-domain, LLM-articulates bridges, runs 7-stage filter
+- **What:** Samples personal entities from `facts` ChromaDB collection and Wikipedia articles via FAISS (`semantic_search_with_neighbors()` from `knowledge/semantic_search.py`, backed by a 41M-vector IVFPQ index), pairs cross-domain, LLM-articulates bridges, runs 7-stage filter
 - **Gate:** `SYNTHESIS_GENERATOR_ENABLED=True` AND graph has ≥`SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` (20) nodes
 - **Output:** Accepted results stored in `synthesis_results` ChromaDB collection
 - **Volume:** Fills remaining quota (~15 candidates minus Tier 0/1 output), expect 0–2 acceptances
@@ -131,11 +131,11 @@ The original plan assumed wiki novelty checks would run against a curated subset
 (500-2000 articles), making Stage 3 novelty scores optimistic. **This is no
 longer true.** The FAISS IVFPQ migration (2026-03-31) means:
 
-- The **full 40M-vector Wikipedia index** (~2.2 GB RAM) is loaded by
+- The **full 41M-vector Wikipedia index** (~2.2 GB RAM) is loaded by
   `semantic_search_with_neighbors()` from the T9 external drive
-- `SynthesisGenerator._sample_wiki_articles()` samples from **all 40M vectors**
+- `SynthesisGenerator._sample_wiki_articles()` samples from **all 41M vectors**
 - `SynthesisFilter._stage_3_novelty_external()` checks novelty against
-  **all 40M vectors**
+  **all 41M vectors**
 - No ChromaDB wiki collection needed — no memory choking, no subset workaround
 
 **This means Stage 3 novelty scores are production-realistic from day one.**
@@ -181,11 +181,11 @@ offset and will give misleadingly optimistic gate behavior.
 
 ### Co-occurrence Gate Recalibration (2026-03-31)
 
-**Finding:** At 40M scale, the co-occurrence gate (`"concept_a concept_b"` →
+**Finding:** At 41M scale, the co-occurrence gate (`"concept_a concept_b"` →
 FAISS search) was the actual bottleneck, not claim similarity. With 0.60
 threshold, 9/10 candidates were rejected at co-occurrence because FAISS
-returns 0.65-0.75 similarity for *any* two-word English query against 40M
-articles. The gate measured "do these words exist near each other somewhere
+returns 0.65-0.75 similarity for *any* two-word English query against 41M
+passages. The gate measured "do these words exist near each other somewhere
 in Wikipedia?" (always yes) not "is this specific connection documented."
 
 **Fix:** Raised `SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD` from 0.60 to 0.85.
@@ -245,7 +245,7 @@ Incorporated into the plan below. Key points:
 
 #### Step 1.1 — Verify FAISS Index
 
-The full 40M-vector FAISS IVFPQ index should already be available at
+The full 41M-vector FAISS IVFPQ index should already be available at
 `/run/media/lukeh/T9/wiki_data/vector_index_ivf.faiss`. Verify it loads:
 
 ```python
@@ -267,7 +267,7 @@ returns garbage results if the index is partially paged out to swap.
 #### ~~Step 1.2 — Load Wiki Subset into ChromaDB~~ (REMOVED)
 
 No longer needed. The synthesis pipeline queries Wikipedia directly via the
-full FAISS IVFPQ index (40M vectors). ChromaDB `wiki_knowledge` is not part
+full FAISS IVFPQ index (41M vectors). ChromaDB `wiki_knowledge` is not part
 of the synthesis path.
 
 #### Step 1.3 — Generate Synthetic Personal Facts
@@ -335,7 +335,7 @@ gate is broken before touching the full fixture.
 
 | Pair Type | Count | Expected Result | What It Proves |
 |-----------|-------|----------------|----------------|
-| TRUE connections (known) | 8 | Rejected at **novelty gate** (Stage 3) | Novelty detection works — full 40M FAISS index catches known connections |
+| TRUE connections (known) | 8 | Rejected at **novelty gate** (Stage 3) | Novelty detection works — full 41M FAISS index catches known connections |
 | FALSE connections (forced) | 6 | Rejected at **coherence gate** (Stage 5) | Coherence judge works — mechanistically wrong claims fail structural test |
 | COVERAGE_ASYMMETRY | 4 | Varies (pathway-aware) | Novelty gate doesn't overfit on Wikipedia coverage — sparse but real connections aren't auto-rejected |
 
@@ -361,7 +361,7 @@ leaked" — it's what coherence score the LLM assigned, what mechanism it
 invented, and whether the factual skeptic pass fired. Check `--verbose` output
 and `data/synthesis_verification_results.json` for full details.
 
-**Note:** With the full 40M FAISS index, Stage 3 novelty scores here are
+**Note:** With the full 41M FAISS index, Stage 3 novelty scores here are
 production-realistic — no subset optimism caveat.
 
 ### Verification Finding: Novelty Gate Dominance (2026-03-31)
@@ -371,14 +371,14 @@ ALL rejections happened at the novelty gate (Stage 3). No pair reached the
 coherence judge (Stage 5), including 4 pairs specifically designed with obscure
 topics and novel phrasing to bypass novelty.
 
-**Root cause:** With 40M Wikipedia articles, FAISS finds some article matching
+**Root cause:** With a 41M-passage corpus (from ~6.5M articles), FAISS finds some article matching
 any well-written English claim text. Claim similarity of 0.60+ is nearly
 guaranteed for fluent prose — the gate measures "does text like this exist
 in Wikipedia?" not "is this specific cross-domain connection documented?"
 Even Pysanka ↔ Erlang (deliberately obscure) scored 0.951 claim similarity.
 
 **Interpretation:** This is correct pipeline behavior, not a bug. The novelty
-gate is the primary defense layer with a 40M-article corpus. The coherence
+gate is the primary defense layer with a 41M-passage corpus. The coherence
 judge is a safety net for the rare case where a candidate has genuinely novel
 phrasing (which is what the real generator produces — cross-domain bridges
 from personal facts, not polished Wikipedia-like prose).
@@ -393,7 +393,7 @@ from personal facts, not polished Wikipedia-like prose).
 pathway" when novelty catches a pair expected at coherence. But the pipeline's
 job is to reject bad candidates — which gate does it is an implementation
 detail. Both gates are validated; they just can't be validated simultaneously
-with real FAISS data because novelty dominates at 40M scale.
+with real FAISS data because novelty dominates at 41M scale.
 
 #### Step 2.2 — Run Mock Calibration Against Fixture
 ```bash
@@ -466,7 +466,7 @@ distinguish "filter too tight" from "unlucky sampling" in a single session.
 acceptance rate is >60%, the filter is too loose. Sweet spot: 10-30%.
 Result: 4/30 = 13% — within target band.
 
-**Note on Stage 3:** With the full 40M FAISS index, Stage 3 (novelty) and
+**Note on Stage 3:** With the full 41M FAISS index, Stage 3 (novelty) and
 Stage 6 (composite) are the primary rejection gates. The novelty gate catches
 candidates whose connections are already documented; composite scoring catches
 candidates with weak multi-signal profiles. The coherence judge now rejects
@@ -522,7 +522,7 @@ whether convergence detection fires:
 
 **What we're measuring:** Whether the same structural insight can be
 independently rediscovered from different random entity pairs. With 75
-candidates against the full 40M FAISS index, convergence is plausible but not
+candidates against the full 41M FAISS index, convergence is plausible but not
 guaranteed — it depends on sampling diversity and the user's fact graph
 richness. The mechanism just needs to work when it does fire.
 
@@ -596,7 +596,7 @@ For each run, capture:
 |---|-----------|-----------|-----------|-----------|
 | 1 | Filter F1 on labeled fixture | ≥ 85% | Mock calibration (Step 2.2) | The filter reliably separates signal from noise |
 | 2 | Zero hard failures on verification pairs | 0 false connections accepted | Verification script (Step 2.1) — **PASSED** | No mechanistically wrong claims survive |
-| 3 | Novelty gate catches known connections | 100% rejection rate | Verification script (Step 2.1) — **PASSED** (22/22 rejected) | Full 40M FAISS index catches all known connections |
+| 3 | Novelty gate catches known connections | 100% rejection rate | Verification script (Step 2.1) — **PASSED** (22/22 rejected) | Full 41M FAISS index catches all known connections |
 | 4 | Coherence gate catches forced connections | ≥ 90% of noise/borderline tiers rejected at Stage 5 | Mock + live calibration (Steps 2.2, 2.3) | LLM judge distinguishes structure from metaphor (tested with mock novelty scores) |
 | 5 | End-to-end acceptance rate | 10-30% of generated candidates | End-to-end run (Step 3.1) | Realistic: most candidates should fail, but some survive |
 | 6 | At least 1 accepted insight is genuinely interesting | Human judgment | End-to-end run (Step 3.1) | The whole point — AI found a non-obvious connection |
@@ -624,7 +624,7 @@ Update `docs/SYNTHESIS_FILTER.md` with:
 
 ### Experiment: Retrieval-Based Synthesis vs. Random Pairing
 
-Three experiments were run against production data (30,929 graph nodes, 8,343 edges, 40M FAISS vectors, 2,179 facts):
+Three experiments were run against production data (30,929 graph nodes, 8,343 edges, 41M FAISS vectors, 2,179 facts):
 
 | Experiment | Generator | Coherence Calibration | Candidates | Accepted | Rate |
 |---|---|---|---|---|---|

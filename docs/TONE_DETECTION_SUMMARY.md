@@ -185,7 +185,7 @@ The system runs automatically in the orchestrator. No manual intervention needed
 
 ## Files Modified
 
-1. `utils/tone_detector.py` - New file (now ~1000 lines: `CrisisLevel` enum, 250+ weighted keywords with composite harm scoring, semantic exemplars, observational filter)
+1. `utils/tone_detector.py` - New file (now ~1,127 lines: `CrisisLevel` enum, 250+ weighted keywords with composite harm scoring, semantic exemplars, observational filter)
 2. `tests/test_tone_detection.py` - New file (~515 lines)
 3. `core/orchestrator.py` - Modified
    - Added tone detection before prompt prep

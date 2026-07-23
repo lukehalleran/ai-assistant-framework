@@ -53,7 +53,7 @@ Consolidation is largely complete (3,800+ tests, 0 failures, clean module extrac
 ### 2. Proposals Pipeline — Wiki-Enriched Idea Generation
 - **Status**: Extracted to standalone branch. Core modules (`knowledge/proposal_generator.py`, `memory/proposal_store.py`, `memory/code_proposal.py`) still on master pending cleanup.
 - **Why**: Current proposals are generated from Daemon's own context (goals, retrieval, code state). Adding wiki-seeded generation would surface ideas the user wouldn't arrive at independently — cross-domain techniques, algorithms, architectural patterns from unrelated fields.
-- Design wiki→proposal bridge: use FAISS wiki index (40M vectors) to retrieve domain-adjacent concepts given current project state / goals
+- Design wiki→proposal bridge: use FAISS wiki index (41M vectors) to retrieve domain-adjacent concepts given current project state / goals
 - Generate proposals that apply techniques from unrelated domains to Daemon's architecture (e.g., biological memory consolidation → summary compression, information-theoretic coding → dedup thresholds)
 - Quality bar: proposals must be actionable and specific (file paths, method signatures), not vague metaphor
 - Remove dead imports/references from master once standalone extraction is confirmed complete
@@ -81,7 +81,7 @@ Consolidation is largely complete (3,800+ tests, 0 failures, clean module extrac
 - **Prerequisite**: Synthesis re-enablement (Goal 1) must land first
 
 ### 5. Additional Data Ingestion
-- Wikipedia embedded via FAISS IVFPQ index (40M vectors, ~2 GB RAM) — **done**
+- Wikipedia embedded via FAISS IVFPQ index (41M vectors, ~2 GB RAM) — **done**
 - arXiv paper abstracts/full text — planned
 - PubMed abstracts — planned
 - These expand the source pool for both synthesis candidates and wiki-enriched proposals
@@ -117,7 +117,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **Escalation tracker**: 4-state emotional momentum (VALIDATE → GROUNDING → QUIET → GENTLE)
 - **User profile**: Append-only with temporal history, 12 categories, hybrid retrieval, canonicalized relation namespace (safe aliases, ephemeral relations, 5-layer categorization)
 - **Temporal awareness**: Narrative context (3-tier: monthly/weekly/daily), temporal-aware recency decay
-- **Knowledge integration**: Obsidian vault (multimodal, mtime-based re-embedding), reference docs, git commits, procedural skills, Wikipedia (FAISS IVFPQ 40M vectors)
+- **Knowledge integration**: Obsidian vault (multimodal, mtime-based re-embedding), reference docs, git commits, procedural skills, Wikipedia (FAISS IVFPQ 41M vectors)
 - **Knowledge graph**: Queryable fact graph with connectivity-ranked query expansion, junk node prevention at ingestion, graph-boosted memory scoring, wiki enrichment at shutdown
 - **Proactive surfacing**: Cross-domain insight generation from knowledge graph, session-cached LLM calls, novelty-filtered
 - **Synthesis pipeline**: Cross-store candidate generation, 7-stage filter (`claude-opus-4.8` coherence judge), LLM bridge articulation, convergence tracking, human audit queue with two-layer grading and auto-halt. Dreaming re-enabled 2026-06-15; the three tier generators are retired (`enabled: false`) in favor of the pooled-concept generator (see `docs/grading_plan.md`, `docs/SYNTHESIS_VALIDATION.md`)
@@ -259,7 +259,7 @@ These systems are complete and working. Listed here for context, not as active w
 ### FAISS IVFPQ + Zero-Copy Semantic Search + Knowledge Routing (2026-03-31)
 - `build_faiss_index.py`: IVFFlat+OnDiskInvertedLists → IVFPQ (Product Quantization). 48 subquantizers × 8 bits = 48 bytes/vector (~32x compression). Full 41M-vector index fits in ~2 GB RAM, no ondisk inverted lists needed.
 - `semantic_search.py`: Zero-copy parquet metadata — no DataFrame loaded into RAM. Row-group offset index built at load time, metadata read on-demand for just the ~8 result rows per query. Total footprint: FAISS index (~2.2 GB) + embedder (~0.4 GB).
-- `controller.py`: FAISS Wikipedia for all wiki queries — agentic `search_memory(wiki_knowledge)`, prompt retrieval, and synthesis pipeline all route through FAISS (40M vectors). ChromaDB `wiki_knowledge` retained as fallback only.
+- `controller.py`: FAISS Wikipedia for all wiki queries — agentic `search_memory(wiki_knowledge)`, prompt retrieval, and synthesis pipeline all route through FAISS (41M vectors). ChromaDB `wiki_knowledge` retained as fallback only.
 - `handlers.py` + `web_search_trigger.py`: Knowledge search intent routing — keyword-based (`explain in depth`, `how does`, `consult wikipedia`, etc.) and LLM-based `needs_knowledge_search` field. 3-way routing: web search vs memory search vs knowledge search.
 
 ### Git Stats Agentic Tool (2026-03-29)

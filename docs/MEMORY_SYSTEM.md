@@ -31,7 +31,7 @@ resolved, and stale information is penalized in ranking.
 ### Core Pipeline
 | File | Purpose |
 |------|---------|
-| `memory/memory_coordinator.py` | Thin orchestrator (~551 lines), creates all components, delegates to retriever/storage/shutdown |
+| `memory/memory_coordinator.py` | Thin orchestrator (~639 lines), creates all components, delegates to retriever/storage/shutdown |
 | `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks, supersession + per-relation TTL filter |
 | `memory/relation_classifier.py` | Single source of truth for relation→TTL: health-transient vs standard-ephemeral vs durable (+ permanent-condition overrides). Used by user_profile + memory_retriever |
 | `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 8 additive bonuses/penalties incl. health-framing decay + timeline bonus) with intent overrides, graph boost, size penalty |
@@ -169,7 +169,7 @@ UnifiedPromptBuilder.build_prompt()
   │     graph neighbors: ["powerlifting", "deadlift", "bench press"]
   │     expanded query: "How's my squat progress looking? powerlifting deadlift bench press"
   │
-  ├─ 3. Parallel Retrieval (20+ async tasks, 30s timeout)
+  ├─ 3. Parallel Retrieval (22 async tasks, 30s timeout)
   │     ├── recent_conversations (15)     ← corpus_manager
   │     ├── semantic_memories (20)        ← ChromaDB [conversations, summaries, reflections]
   │     ├── user_profile (3000 tokens)    ← UserProfile (categorized facts)

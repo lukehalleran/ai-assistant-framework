@@ -109,7 +109,7 @@ Example: "what about my brother" -> "what about my brother Sam Mom Biscuit"
 candidates : X x C -> P(D)
 ```
 
-20+ parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
+22 parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
 - Conversations (recent by time + semantic by expanded query)
 - Facts (user profile: hybrid 2/3 semantic + 1/3 recent)
 - Summaries (recent + semantic, separate)
@@ -385,7 +385,7 @@ AGENT(q, s):
     return (r, s')
 ```
 
-**Key distinction**: Web search runs as one of the 20 parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
+**Key distinction**: Web search runs as one of the 22 parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
 
 ### 6.1 Memory Expansion (expand_memory)
 
@@ -768,7 +768,7 @@ generators feed the same shared filter:
 Tier 0 — RETRIEVAL (RetrievalSynthesisGenerator) [RETIRED]:
   For each personal fact f in sample(C_facts):
     q_struct <- LLM_few_shot(f)                    // structural query extraction
-    results  <- FAISS_search(q_struct, k=5)        // 40M Wikipedia vectors
+    results  <- FAISS_search(q_struct, k=5)        // 41M Wikipedia vectors
     claim    <- LLM_adversarial(f, results)        // adversarial evaluation
     c        = (entity(f), wiki_article, claim, [], domains, dist)
 
@@ -888,7 +888,7 @@ Agent(q, s_t) =
     let x       = phi(q, s_t)                       in    // perceive
     let iota    = classify_intent(q, x.tone)         in    // interpret
     let q'      = expand(q, s_t.G)                   in    // expand (graph-augmented query)
-    let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (20 parallel retrievals)
+    let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (22 parallel retrievals)
     let pi_plan = plan(q, x) if should_plan(x)      in    // plan response (parallel with remember)
     let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (30-section prompt + plan injection)
     let r       = generate_or_search(p)              in    // act (LLM + optional agentic loop)
@@ -920,7 +920,7 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | P | Prompt space (30 context sections + system prompt; 31 registry entries) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
 | A = R U T | Action space | Response or tool call |
 | phi | Context function (8 integer stages + 2 half-stages) | `context_pipeline.py` |
-| rho_iota | Retrieval function (20 parallel tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |
+| rho_iota | Retrieval function (22 parallel tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |
 | sigma_iota | Scoring function (parameterized by intent + graph) | `memory_scorer.py` -> `rank_memories()` |
 | beta | Prompt construction (X x D* x iota x E -> P) | `prompt/builder.py` |
 | iota | Intent classification | `intent_classifier.py` |

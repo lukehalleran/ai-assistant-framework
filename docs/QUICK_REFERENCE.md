@@ -81,7 +81,7 @@ prompt_ctx = await prompt_builder.build_prompt_from_context(context)
 ## Memory Operations
 
 ```python
-# memory/memory_coordinator.py — Thin orchestrator (~630 lines, plus new component wiring)
+# memory/memory_coordinator.py — Thin orchestrator (~639 lines, plus new component wiring)
 # All methods delegate to modular components. No inline logic.
 # Init: parallel disk reads via ThreadPoolExecutor(3) for graph, profile, claims [CHANGED 2026-05-19]
 class MemoryCoordinator:
@@ -2584,7 +2584,7 @@ class SynthesisFilter:
 # 0: text_sanity      — min tokens, verb check, repetition ratio (~0ms)
 # 1: domain_crossing   — min 2 distinct domains (~1ms)
 # 2: semantic_distance  — endpoint distance in [0.20, 0.90] (~5ms)
-# 3: novelty_external   — 3 sub-checks (~15ms, FAISS wiki vector search, 40M vectors):
+# 3: novelty_external   — 3 sub-checks (~15ms, FAISS wiki vector search, 41M vectors):
 #      a) claim similarity: full claim vs wiki via FAISS (hard gate at SYNTHESIS_NOVELTY_KNOWN_THRESHOLD=0.88)
 #      b) co-occurrence: direct cos(concept_a, concept_b) — known if > 0.45 (replaced
 #         the inverted bigram-FAISS "concept_a concept_b" query, 2026-06-27)
@@ -2639,7 +2639,7 @@ SYNTHESIS_AUDIT_MIN_GRADED = 10            # Minimum graded results before auto-
 #   batch_size: 100
 #   distance_min: 0.20
 #   distance_max: 0.90
-#   cooccurrence_known_threshold: 0.85   # 40M-scale recalibrated
+#   cooccurrence_known_threshold: 0.85   # 41M-scale recalibrated
 #   coherence_model: claude-opus-4.8
 #   coherence_min_level: MODERATE
 #   weights: {coherence: 0.35, novelty: 0.60, distance: 0.05, structural: 0.0}
@@ -2662,7 +2662,7 @@ class SynthesisGenerator:
     def __init__(self, chroma_store, model_manager, graph_memory=None, entity_resolver=None): ...
     async def generate_candidates(count=5) -> List[SynthesisCandidate]:
         # 1. Sample personal entities from facts collection (broad query seeds)
-        # 2. Sample wiki articles via FAISS semantic_search_with_neighbors (40M vectors)
+        # 2. Sample wiki articles via FAISS semantic_search_with_neighbors (41M vectors)
         # 3. Form cross-domain pairs (deduplicated, domain-classified)
         # 4. Parallel LLM bridge articulation (semaphore-limited concurrency)
         # 5. Package as SynthesisCandidate objects for filter pipeline
@@ -2712,7 +2712,7 @@ class RetrievalSynthesisGenerator:
     async def generate_candidates(count=5) -> List[SynthesisCandidate]:
         # 1. Sample personal facts from ChromaDB
         # 2. LLM structural query extraction (few-shot): fact → structural pattern query
-        # 3. FAISS semantic search (40M vectors) using structural query
+        # 3. FAISS semantic search (41M vectors) using structural query
         # 4. Adversarial evaluation: LLM judges structural vs surface connection
         # 5. Package as SynthesisCandidate objects
     # Same interface as SynthesisGenerator — drop-in replacement

@@ -300,7 +300,7 @@ Five memory tiers modeled on cognitive architecture â€” plus a synthesis store â
 | Tier | What It Stores | Retrieval Bias |
 |------|---------------|----------------|
 | **Episodic** | Raw conversation turns | Recency |
-| **Semantic** | Extracted fact triples + full English Wikipedia (40M+ vectors) | Truth score + relevance |
+| **Semantic** | Extracted fact triples + full English Wikipedia (41M+ vectors) | Truth score + relevance |
 | **Procedural** | Git commits + learned skill patterns | Pattern matching |
 | **Summary** | LLM-compressed conversation blocks (with source backlinks) | Relevance |
 | **Meta** | Session reflections + open threads + code proposals + proactive insights | Priority / urgency |

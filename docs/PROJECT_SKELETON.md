@@ -58,7 +58,7 @@ USER QUERY
 RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 ```
 
-**Note**: Memory system fully refactored (Jan 2026). `memory/memory_coordinator.py` is now a thin orchestrator (~632 lines, down from 1,694) delegating to:
+**Note**: Memory system fully refactored (Jan 2026). `memory/memory_coordinator.py` is now a thin orchestrator (~639 lines, down from 1,694) delegating to:
 - `memory/memory_retriever.py` - Retrieval operations (incl. `get_semantic_top_memories`)
 - `memory/memory_storage.py` - Storage operations
 - `memory/memory_scorer.py` - Scoring and ranking
@@ -370,13 +370,13 @@ PromptBuilder.build_prompt(context, memories)  →  final prompt
 ---
 
 ### 2.3 memory/memory_coordinator.py (Thin Orchestrator)
-**Purpose**: Unified interface for all memory operations — thin delegation layer (~632 lines)
+**Purpose**: Unified interface for all memory operations — thin delegation layer (~639 lines)
 
 **Status**: Fully refactored (Jan 2026). All inline logic extracted to modular components. Acts as state-syncing orchestrator with ~24 delegation methods.
 
 **Architecture**:
 ```python
-MemoryCoordinator (memory_coordinator.py, ~632 lines)
+MemoryCoordinator (memory_coordinator.py, ~639 lines)
     ↓
 ├── MemoryRetriever (memory_retriever.py) - Retrieval + semantic top memories
 ├── MemoryScorer (memory_scorer.py) - Scoring and ranking
@@ -819,7 +819,7 @@ INTENT_STYLE_INSTRUCTIONS_ENABLED = True     # Per-intent style block in system-
 
 **Turn telemetry [NEW 2026-07-03]**: `utils/turn_telemetry.py:record_turn()` appends one JSONL line per completed turn to `logs/turn_records.jsonl` (intent + confidence + source, tone, gate decision + veto reason, response mode, plan shape, uncertainty/review outcomes, response length). Assembled in `gui/handlers.py:_write_turn_telemetry()` from `orchestrator._last_turn_signals` + `SubmitContext.telemetry` at the duel/agentic/enhanced storage-dispatch sites. Never raises; YAML section `turn_telemetry`. Purpose: offline intent confusion-matrix + routing accuracy analysis.
 
-**Tests**: `tests/unit/test_intent_classifier.py` — 81 tests; `tests/unit/test_turn_telemetry.py` — 14; `tests/unit/test_intent_style_instructions.py` — 12; real-IntentResult veto regression in `tests/unit/test_agentic_gate.py`
+**Tests**: `tests/unit/test_intent_classifier.py` — 89 tests; `tests/unit/test_turn_telemetry.py` — 14; `tests/unit/test_intent_style_instructions.py` — 12; real-IntentResult veto regression in `tests/unit/test_agentic_gate.py`
 
 ---
 
@@ -1603,7 +1603,7 @@ agentic_search:
 - `recall_image` tool [NEW 2026-05]: CLIP text-to-image retrieval from visual memory. Returns matching image captions + base64 data for multimodal context injection.
 - `fetch_url` tool [NEW 2026-05]: Fetch web page content by URL via Tavily extract API. Auto-triggered for URLs in user messages (Round 1). URL reroute: web_search queries containing URLs auto-reroute here. Results registered in `web_source_map` for `[WEB_N]` citation tracking. Gated on `web_search_manager.is_available()`.
 - `wiki_knowledge` added to `search_memory` valid collections [NEW 2026-03-30]: enables agentic search of pre-embedded Wikipedia corpus
-- FAISS Wikipedia fallback [NEW 2026-03-31]: `_search_wiki_faiss()` + `_format_wiki_faiss_results()` — when searching `wiki_knowledge`, always prefers FAISS semantic search (40M vectors, IVFPQ index) over sparse ChromaDB data
+- FAISS Wikipedia fallback [NEW 2026-03-31]: `_search_wiki_faiss()` + `_format_wiki_faiss_results()` — when searching `wiki_knowledge`, always prefers FAISS semantic search (41M vectors, IVFPQ index) over sparse ChromaDB data
 - `generate_document` tool [NEW 2026-05]: Research & save markdown documents (report/summary). `SearchDecision` extended with `wants_generate_document`, `generate_document_topic`, `generate_document_type`, `generate_document_focus`, `generate_document_reason`. **[2026-06-08]** Bounded trigger (`DOCUMENT_TRIGGER_PATTERN` `_VERB_NOUN_GAP`): doc-noun must be the near-object of the save-verb, so incidental co-occurrence in a long message ("Create a new dataframe … Print the model summary") no longer false-fires the `_run_doc_generation` bypass. LLM API-error sentinels ("[API Error] … 402", "[CREDITS EXHAUSTED]") detected on topic-refine/outline/draft → `RuntimeError`, never a corrupt frontmatter-only file. **[2026-06-09]** Incidental-position guard (`_doc_trigger_is_incidental`): in a long message (>60 words) the trigger must touch the head/tail (220-char) window — a doc-phrase buried mid-body of an analytical request answers in chat. Content-aware generation: `generate(source_material=…)` makes substantial pasted material (≥400 chars) the PRIMARY source `[INPUT_1]` (ranked first, full-rendered, emphasized in draft prompts) and suppresses web/wiki search, grounding "evaluate THIS proposal" requests in the actual content instead of a bare topic web search.
 - `create_daemon_note` tool [NEW 2026-05]: Save working context as self-note for future sessions. `SearchDecision` extended with `wants_create_daemon_note`, `daemon_note_title`, `daemon_note_category`, `daemon_note_summary`, `daemon_note_reason`.
 - `propose_action` tool [NEW 2026-05-25, ENHANCED 2026-05-27]: Propose internet write action requiring user confirmation (human-in-the-loop). `SearchDecision` extended with `wants_action`, `action_type` (ActionType value: send_telegram, send_email, calendar_create_event, etc.), `action_params` (message, recipient, subject; calendar: summary, start_time, end_time, time_zone, calendar_id, location, description), `action_summary` (human-readable summary), `action_reason` (why the action was proposed). Does NOT execute — creates `ActionProposal` for GUI approval/rejection.
@@ -2005,10 +2005,10 @@ from config.app_config import config
 ---
 
 ### 2.12 knowledge/WikiManager.py + semantic_search.py (Wikipedia Search) **[ENHANCED 2026-03-31]**
-**Purpose**: FAISS IVFPQ-based Wikipedia semantic search (40M+ vectors)
+**Purpose**: FAISS IVFPQ-based Wikipedia semantic search (41M+ vectors)
 
 **Data Sources**:
-- Preprocessed Wikipedia dump (40M+ chunked passages)
+- Preprocessed Wikipedia dump (41M chunked passages)
 - FAISS IVFPQ index (~2 GB in RAM; 48 subquantizers × 8 bits = 48 bytes/vector)
 - Parquet metadata (zero-copy: row-group offset index built at load time, rows read on-demand per query — no DataFrame in RAM)
 
@@ -3284,7 +3284,7 @@ GRAPH_QUERY_EXPANSION_ENABLED = True
 GRAPH_QUERY_EXPANSION_MAX_TERMS = 8
 ```
 
-**Tests**: `tests/unit/test_knowledge_graph.py` (70 tests), `tests/unit/test_graph_integration.py` (50 tests)
+**Tests**: `tests/unit/test_knowledge_graph.py` (89 tests), `tests/unit/test_graph_integration.py` (57 tests)
 
 ---
 
@@ -3921,14 +3921,14 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 ---
 
 ### 2.15i Synthesis Generator (knowledge/synthesis_generator.py) **[NEW 2026-03-28]**
-**Purpose**: Cross-store candidate generator for the knowledge synthesis pipeline. Samples entities from personal ChromaDB stores (facts) and Wikipedia via FAISS semantic search (40M vectors), uses an LLM to articulate cross-domain connections, and packages results as SynthesisCandidate objects for the filter pipeline.
+**Purpose**: Cross-store candidate generator for the knowledge synthesis pipeline. Samples entities from personal ChromaDB stores (facts) and Wikipedia via FAISS semantic search (41M vectors), uses an LLM to articulate cross-domain connections, and packages results as SynthesisCandidate objects for the filter pipeline.
 
 **Class**: `SynthesisGenerator(chroma_store, model_manager, graph_memory=None, entity_resolver=None)`
 
 **Key Methods**:
 - `async generate_candidates(count=5)` → `List[SynthesisCandidate]` — main entry point
 - `_sample_personal_entities(n)` → `List[Dict]` — broad query seeds against facts collection
-- `_sample_wiki_articles(n)` → `List[Dict]` — broad query seeds via FAISS `semantic_search_with_neighbors()` (40M wiki vectors)
+- `_sample_wiki_articles(n)` → `List[Dict]` — broad query seeds via FAISS `semantic_search_with_neighbors()` (41M wiki vectors)
 - `_form_pairs(personal, wiki, max_pairs)` → `List[Tuple]` — cross-domain pairing with dedup
 - `_classify_domain(item)` → `str` — reuses `categorize_relation()` for facts, keyword heuristics for wiki
 - `async _articulate_bridge(...)` → `Optional[str]` — LLM bridge call, returns None on NO_CONNECTION
@@ -3937,7 +3937,7 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 
 **Pipeline Flow**:
 ```
-1. Over-sample entities from facts (ChromaDB) + wiki (FAISS, 40M vectors) (count * 3)
+1. Over-sample entities from facts (ChromaDB) + wiki (FAISS, 41M vectors) (count * 3)
 2. Form cross-domain pairs (deduplicated by concept name, skip same-domain)
 3. Parallel LLM bridge articulation (semaphore = SYNTHESIS_GENERATOR_LLM_CONCURRENCY)
 4. Package valid bridges as SynthesisCandidate objects
@@ -4970,7 +4970,7 @@ daemon/
 │       └── base.py          # Utilities and fallbacks
 │
 ├── memory/
-│   ├── memory_coordinator.py      # Thin orchestrator (~632 lines, delegates to components)
+│   ├── memory_coordinator.py      # Thin orchestrator (~639 lines, delegates to components)
 │   ├── shutdown_processor.py      # Session-end summaries, facts, reflections [NEW - EXTRACTED]
 │   ├── memory_scorer.py           # Scoring and ranking operations [NEW - REFACTORED]
 │   ├── memory_retriever.py        # Retrieval operations + config-driven ephemeral predicates + TTL filter [ENHANCED 2026-05-27]
@@ -5335,7 +5335,7 @@ except Exception as e:
 - `test_memory_coordinator_helpers.py` - Ranking and scoring
 - `test_prompt_builder_methods.py` - Context assembly
 - `test_orchestrator_helpers.py` - Thinking block parsing
-- `test_intent_classifier.py` - Intent classification, tone bias, STM refinement, profiles (74 tests) **[NEW 2026-02-15]**
+- `test_intent_classifier.py` - Intent classification, tone bias, STM refinement, profiles (89 tests) **[NEW 2026-02-15]**
 - `test_thread_models.py` - Thread data model validation, serialization, priority scoring **[NEW 2026-03-20]**
 - `test_thread_store.py` - Thread ChromaDB CRUD, status lifecycle, cap enforcement **[NEW 2026-03-20]**
 - `test_thread_extractor.py` - Thread LLM extraction, resolution detection **[NEW 2026-03-20]**
@@ -5497,7 +5497,7 @@ python main.py inspect-summaries
 | response_parser.py | Parse: extract thinking blocks, strip reflections/XML/prompt artifacts [NEW 2026-01-23] |
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
 | intent_classifier.py | Classify: regex-first query intent (9 types), produces weight/retrieval/gate overrides [NEW 2026-02-15] |
-| memory_coordinator.py | Hub: thin orchestrator (~632 lines) delegating to modular components [REFACTORED] |
+| memory_coordinator.py | Hub: thin orchestrator (~639 lines) delegating to modular components [REFACTORED] |
 | shutdown_processor.py | Shutdown: block summaries + fact extraction + procedural skills + reflections + user profile [NEW - EXTRACTED] |
 | memory_scorer.py | Scoring: calculate truth/importance, rank by composite score with temporal decay [NEW - REFACTORED] |
 | memory_retriever.py | Retrieval: get_memories pipeline with gating and ranking [NEW - REFACTORED] |
@@ -5663,7 +5663,7 @@ SYNTHESIS_ENABLED = True
 SYNTHESIS_DISTANCE_MIN = 0.20
 SYNTHESIS_DISTANCE_MAX = 0.90
 SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88   # Near-verbatim rehashes only
-SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # 40M-scale recalibrated
+SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # 41M-scale recalibrated
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
 SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.8"
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
@@ -6013,8 +6013,8 @@ Mechanical safeguards for AI coding agent sessions: pre-session snapshots, post-
 ### 17.3 Tests
 
 - `tests/unit/test_fs_snapshot.py` — 40 tests (manifest CRUD, diffing, exclusions, CLI)
-- `tests/unit/test_destructive_op_guard.py` — 52 tests (safe/destructive classification, unlock mechanisms)
-- `tests/unit/test_shell_cmd_guard.py` — 127 tests (shell command classification, safe/destructive/blocked)
+- `tests/unit/test_destructive_op_guard.py` — 15 tests (safe/destructive classification, unlock mechanisms)
+- `tests/unit/test_shell_cmd_guard.py` — 92 tests (shell command classification, safe/destructive/blocked)
 - `tests/unit/test_python_fs_guard.py` — 85 tests (monkey-patched fs ops, agent mode, ContextVar gating, copy-overwrite guards)
 
 See `docs/AGENT_SAFETY.md` for full workflow documentation.
@@ -6045,7 +6045,7 @@ This document compresses a ~143K LOC codebase by focusing on architecture, data 
 **Previous Changes** (2026-05-09):
 - **Eval System** (Section 2.15j) — Full prompt section ablation & eval system (Phases 1-2, 4-6). Snapshot capture, variant generation (LOO/AOI/bundle/reorder), side-effect-free generation harness, pairwise judge, objective checks. 246 tests.
 - **Missing Modules Added** — Documented eval/, gui/tabs/, and multiple missing files in core/, memory/, knowledge/, utils/ directories.
-- **Line Count Updates** — memory_coordinator.py updated from ~632 to ~551 lines; unit test count from 20+ to 60+; total test files 152.
+- **Line Count Updates** — memory_coordinator.py updated from ~632 to ~639 lines; unit test count from 20+ to 60+; total test files 152.
 
 **Previous Changes** (2026-04-05):
 - **Thinking Leak Fix — Native API Reasoning** (Section 2.1.1, model_manager) — `generate_async()` and `generate_once()` now pass `extra_body={"reasoning": {"effort": "medium"}}` for models where `supports_reasoning()` returns True (Claude, DeepSeek-R1). Thinking arrives via `delta.reasoning_content` instead of being mixed into the text response.
@@ -6055,7 +6055,7 @@ This document compresses a ~143K LOC codebase by focusing on architecture, data 
 - **User Profile — Relative Timestamps** (Section 2.4) — `get_context_injection()` now formats fact timestamps as relative labels ("today", "yesterday", "3 days ago") via `format_relative_timestamp()` instead of raw ISO strings.
 
 **Previous Changes** (2026-04-01):
-- **Retrieval-Based Synthesis Generator** — `knowledge/synthesis_retriever.py`: RetrievalSynthesisGenerator (Tier 0) with structural query extraction (few-shot LLM), FAISS semantic search (40M vectors), adversarial evaluation. Drop-in replacement interface. Config: `SYNTHESIS_RETRIEVAL_*` constants; YAML section `synthesis_retrieval`.
+- **Retrieval-Based Synthesis Generator** — `knowledge/synthesis_retriever.py`: RetrievalSynthesisGenerator (Tier 0) with structural query extraction (few-shot LLM), FAISS semantic search (41M vectors), adversarial evaluation. Drop-in replacement interface. Config: `SYNTHESIS_RETRIEVAL_*` constants; YAML section `synthesis_retrieval`.
 - **Three-Tier Parallel Synthesis** — Shutdown step 6.8 now runs RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) with independent quotas. Provisional bridge creation on filter acceptance (weight=0.0, status="provisional").
 - **Bridge Quality Cleanup** — `GraphMemory.prune_garbage_bridges()` removes 5 categories of noise edges. `WikidataEntityMapper` embedding threshold raised 0.60→0.80 with exact-match blocklist.
 - **GraphWalkGenerator Improvements** — Hub dampening (log-scale penalty for degree > 15). Cross-domain walk constraint (min 2 domain categories). Config: `GRAPH_WALK_HUB_DEGREE_THRESHOLD`, `GRAPH_WALK_MIN_DOMAINS`.
@@ -6063,8 +6063,8 @@ This document compresses a ~143K LOC codebase by focusing on architecture, data 
 - **Retrieval-Aware Filter Stages** — Stage 2 (distance) inverted scoring for retrieval candidates. Stage 3 (novelty) skips claim-similarity gate for retrieval candidates.
 
 **Previous Changes** (2026-03-28):
-- **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks via FAISS wiki search, 40M vectors: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
-- **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts (ChromaDB) + wiki (FAISS `semantic_search_with_neighbors()`, 40M vectors), LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 72 labeled candidates in 7 tiers.
+- **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks via FAISS wiki search, 41M vectors: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
+- **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts (ChromaDB) + wiki (FAISS `semantic_search_with_neighbors()`, 41M vectors), LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 72 labeled candidates in 7 tiers.
 - **Context Management Fixes** (Sections 2.7, 2.8b) — Post-budget floor for recent conversations (`PROMPT_MIN_RECENT_FLOOR=5`), budget-enforced accumulated context in agentic controller (`_append_accumulated()` trims oldest rounds), budget-aware final prompt assembly (trims low-value sections to preserve conversation history + agentic results).
 
 **Previous Changes** (2026-03-26):

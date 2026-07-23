@@ -176,7 +176,7 @@ structural query extraction and FAISS semantic search.
 1. LLM structural query extraction (few-shot): given a personal fact,
    generate a query describing the *structural pattern* (e.g. "systems
    where load-bearing stress drives adaptive restructuring").
-2. FAISS semantic search against 40M Wikipedia vectors using the
+2. FAISS semantic search against 41M Wikipedia vectors using the
    structural query. Top-K results filtered by minimum similarity.
 3. Adversarial evaluation: LLM judges whether the connection is
    genuinely structural or surface-level.
@@ -212,7 +212,7 @@ sampling from ChromaDB facts + FAISS wiki.
    and friends", "my work and career") → query `facts` collection
 2. Sample 6 random query seeds from `_WIKI_QUERY_SEEDS` (e.g. "scientific
    discovery breakthrough", "biological mechanism adaptation") → FAISS
-   `semantic_search_with_neighbors()` against 40M Wikipedia vectors (IVFPQ
+   `semantic_search_with_neighbors()` against 41M Wikipedia vectors (IVFPQ
    index). Results normalized to match the ChromaDB dict shape.
 3. Form cross-domain pairs: shuffle, deduplicate by concept name, skip
    same-domain pairs. Domain classification reuses `categorize_relation()`
@@ -260,7 +260,7 @@ Candidate Generation (standalone shutdown dreaming step, main.py-driven):
   │     └── LLM articulation (parallel, semaphore) → SynthesisCandidate[]
   └── [RETIRED fallback — runs only if pooled is disabled, behind per-tier flags]
         ├── [Tier 0] RetrievalSynthesisGenerator
-        │     (structural query → FAISS 40M vectors → adversarial eval)
+        │     (structural query → FAISS 41M vectors → adversarial eval)
         ├── [Tier 1] GraphWalkGenerator (if bridges >= 40)
         │     (biased Markov walks, hub-dampened, cross-domain → LLM narration)
         └── [Tier 2] SynthesisGenerator
@@ -364,7 +364,7 @@ Three sub-checks, each targeting a different failure mode.
 
 #### Sub-check 1: Claim Similarity
 
-Searches the FAISS wiki index (40M vectors) for the **full articulated
+Searches the FAISS wiki index (41M vectors) for the **full articulated
 claim** via `semantic_search_with_neighbors()`. Catches direct rehashes.
 Similarity scores are cosine similarity (0-1) returned directly from FAISS,
 extracted by `_extract_faiss_similarity()`.
@@ -684,7 +684,7 @@ endpoint_distance: 0.55
 - Distance: 0.55 (within [0.20, 0.90])
 - Score: 1.0 (at midpoint — peak score)
 
-**Stage 3 — Novelty External:** PASS (FAISS wiki index, 40M vectors)
+**Stage 3 — Novelty External:** PASS (FAISS wiki index, 41M vectors)
 - Sub-check 1 (claim sim): 0.15 — claim text is novel (< 0.88 threshold)
 - Sub-check 2 (co-occurrence): direct `cos(concept_a, concept_b)` = 0.10 —
   the two concepts are not a documented pairing (< 0.45 active known gate,

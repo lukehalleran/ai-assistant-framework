@@ -152,7 +152,7 @@ core/                    # Request orchestration, context pipeline, agentic loop
     └── token_manager.py # Priority-based budget management
 
 memory/                  # 5-tier memory system
-├── memory_coordinator.py    # Thin orchestrator (~551 lines)
+├── memory_coordinator.py    # Thin orchestrator (~639 lines)
 ├── memory_retriever.py      # Parallel ChromaDB retrieval + semantic-primary fact ranking
 ├── memory_scorer.py         # 12-step composite scoring
 ├── memory_storage.py        # Persistence + fact extraction + graph ingestion + reflection embedding cleanup
@@ -606,7 +606,7 @@ from all modification — raw turns are the ground truth.
 
 ### MemoryCoordinator — The Thin Orchestrator
 
-`memory_coordinator.py` (~551 lines) is a pure delegation layer. It
+`memory_coordinator.py` (~639 lines) is a pure delegation layer. It
 creates ~16 components in `__init__()` and exposes ~24 methods that
 forward to the appropriate component:
 
@@ -2191,7 +2191,7 @@ Secure Python execution in ephemeral Firecracker microVMs:
 `knowledge/wiki_enrichment.py`, `knowledge/wikidata_resolver.py`,
 `knowledge/wikidata_models.py`
 
-6.5M+ articles (40M+ vectors) semantically indexed with FAISS:
+6.5M+ articles (41M+ vectors) semantically indexed with FAISS:
 
 - Pipeline: download dump → parse XML → chunk (512 tokens) →
   embed (sentence-transformers/all-MiniLM-L6-v2) → build FAISS IVFPQ index
@@ -2917,7 +2917,7 @@ Arrows indicate "calls" or "data flows to."
        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ PromptBuilder                                                │
-│  ├─ ContextGatherer (20 parallel retrieval tasks)            │
+│  ├─ ContextGatherer (22 parallel retrieval tasks)            │
 │  │    ├─ MemoryRetriever (ChromaDB queries)                  │
 │  │    ├─ GraphMemory (BFS traversal + query expansion)       │
 │  │    ├─ WebSearchManager (Tavily API)                       │

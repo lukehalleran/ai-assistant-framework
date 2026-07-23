@@ -52,7 +52,7 @@ Retrieval outperforms random nearly 2:1 (42% vs 23%). The walk generator produce
 | Stage | Rejections | % | Role |
 |-------|-----------|---|------|
 | **Coherence judge (Stage 5)** | **48** | **44%** | Primary quality gate — de-jargon + variable swap tests |
-| External novelty (Stage 3) | 23 | 21% | FAISS 40M corpus catches documented connections |
+| External novelty (Stage 3) | 23 | 21% | FAISS 41M corpus catches documented connections |
 | Domain crossing (Stage 1) | 4 | 4% | Same-domain pairs filtered |
 | Semantic distance (Stage 2) | 2 | 2% | Endpoints too close or too far |
 | Composite scoring (Stage 6) | 0 | 0% | All weak candidates already caught by coherence |
