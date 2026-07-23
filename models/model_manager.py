@@ -14,9 +14,20 @@ Module Contract
 - Key methods:
   - load_model(), load_openai_model(), switch_model(), get_active_model_name(), get_embedder()
   - truncate_prompt(): ensures local prompts fit context window
+  - Model capability registry [NEW 2026-07-22]: module-level MODEL_CAPABILITIES is the SINGLE
+    SOURCE OF TRUTH (keyed by full OpenRouter slug: reasoning/vision/tools/caching), alongside
+    API_MODEL_ALIASES. The four supports_* methods delegate to pure _slug_supports_*() functions
+    derived from it. Registering a model without a caps row — or a classifier drifting from the
+    declared intent — fails loudly (tests/unit/test_model_capability_wiring.py); the deployed
+    table is validated against OpenRouter's live /models metadata by
+    scripts/verify_model_capabilities_live.py. This closed the recurring "registered but silently
+    feature-disabled" dead-wiring class (e.g. Kimi K3 was tool-disabled; fable-5 vision+tools OFF).
   - supports_tools(): checks if a model supports function/tool calling
-  - supports_vision(model_name): returns True if model supports image/vision input (GPT-4o+, Claude, Gemini; False for DeepSeek, GLM). generate_async() silently drops images for non-vision models [NEW 2026-05-10]
-  - supports_reasoning(model_name): returns True if model may return extended thinking/reasoning content (Anthropic Claude, DeepSeek-R1) [NEW 2026-03-26]
+  - supports_vision(model_name): image/vision input (GPT-4o+, ALL Claude incl. fable-5, Gemini,
+    Kimi K3/K2.6; False for DeepSeek, GLM). generate_async() now requests reasoning separation even
+    on image turns — multimodal reasoning models support both [UPDATED 2026-07-22]
+  - supports_reasoning(model_name): extended thinking/reasoning (Anthropic Claude, DeepSeek R1+v4,
+    Moonshot Kimi K3/K2-Thinking/K2.6) [UPDATED 2026-07-22]
   - generate_once(): handles list-of-content-blocks responses (Anthropic extended thinking) by extracting text blocks [ENHANCED 2026-03-26]
   - generate_async() and generate_once(): pass extra_body={"reasoning": {"effort": "medium"}} for
     reasoning models so thinking arrives via delta.reasoning_content (API-level separation) [ENHANCED 2026-04-05]
@@ -155,6 +166,181 @@ _cross_encoder_lock = asyncio.Lock()
 
 
 # Set OpenAI API key for API calls
+# ---------------------------------------------------------------------------
+# Model registry + capability matrix (SINGLE SOURCE OF TRUTH)
+# ---------------------------------------------------------------------------
+# Historically, "hooking up" a model meant adding it to api_models and then
+# remembering to also touch four independent substring allowlists
+# (supports_reasoning / supports_vision / supports_tools /
+# supports_prompt_caching). Forgetting one silently disabled a feature for that
+# model with NO error — e.g. a new model would parse fine but never call tools,
+# or leak its chain-of-thought. That is the codebase's recurring "dead wiring"
+# failure mode (see CLAUDE.md Critical Rule #3, tests/unit/test_tool_wiring_parity.py).
+#
+# Fix: declare every model's capabilities in ONE place (MODEL_CAPABILITIES),
+# keyed by the full OpenRouter slug. The classifiers below derive their answer
+# from pure slug-functions, and tests/unit/test_model_capability_wiring.py
+# asserts (a) every registered slug has a capability row and (b) each classifier
+# agrees with the declared row. Add a model → the parity test forces you to
+# declare its caps, and any drift between a substring list and the declared
+# intent fails loudly.
+#
+# Alias -> full OpenRouter slug. Module-level so the parity test can enumerate
+# the roster without constructing a ModelManager (which loads local HF weights).
+API_MODEL_ALIASES = {
+    # Anthropic Claude (all are reasoning + vision + tools + explicit caching)
+    # "claude-opus" is the generic alias; repointed 2026-07-22 from the retired
+    # anthropic/claude-3-opus (no longer served on OpenRouter) to the current opus.
+    "claude-opus": "anthropic/claude-opus-4.8",
+    "claude-opus-4.5": "anthropic/claude-opus-4.5",
+    "claude-opus-4.6": "anthropic/claude-opus-4.6",
+    "claude-opus-4.7": "anthropic/claude-opus-4.7",
+    "claude-opus-4.8": "anthropic/claude-opus-4.8",
+    # Mythos-class (2026-06-09); ~2x Opus 4.8 price. Falls back to Opus 4.8 on
+    # high-risk queries.
+    "claude-fable-5": "anthropic/claude-fable-5",
+    "fable-5": "anthropic/claude-fable-5",
+    "sonnet-4.5": "anthropic/claude-sonnet-4.5",
+    "sonnet-4.6": "anthropic/claude-sonnet-4.6",
+    "haiku-4.5": "anthropic/claude-haiku-4.5",
+    # OpenAI via OpenRouter
+    "gpt-4o-mini": "openai/gpt-4o-mini",
+    "gpt-4o": "openai/gpt-4o",
+    "gpt-4.1": "openai/gpt-4.1",
+    "gpt-5": "openai/gpt-5",
+    "gpt-5.1": "openai/gpt-5.1",
+    "gpt-5.5": "openai/gpt-5.5",
+    # GLM
+    "glm-4.6": "z-ai/glm-4.6",
+    "glm-4.7": "z-ai/glm-4.7",
+    "glm-5": "z-ai/glm-5",
+    "glm-5-turbo": "z-ai/glm-5-turbo",
+    "glm-5.2": "z-ai/glm-5.2",
+    # DeepSeek
+    "deepseek-v3.1": "deepseek/deepseek-chat-v3.1",
+    "deepseek-v4": "deepseek/deepseek-v4-pro",
+    "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+    "deepseek-r1": "deepseek/deepseek-r1-0528",
+    # Moonshot AI (Kimi) via OpenRouter. Kimi K3: 2.8T-param multimodal reasoning
+    # model, 1.05M ctx ($3/M in, $15/M out). "kimi-3" alias matches common usage.
+    "kimi-k3": "moonshotai/kimi-k3",
+    "kimi-3": "moonshotai/kimi-k3",
+    "kimi-k2-thinking": "moonshotai/kimi-k2-thinking",
+    "kimi-k2.6": "moonshotai/kimi-k2.6",
+    # Google Gemini
+    "gemini-3-pro": "google/gemini-3.1-pro-preview",
+}
+
+# Per-model capability truth, keyed by full slug.
+#   reasoning: emits separable extended thinking (request reasoning separation)
+#   vision:    accepts image input
+#   tools:     supports function/tool calling (required by the agentic loop)
+#   caching:   "explicit" = we inject cache_control breakpoints (Anthropic/GPT);
+#              "implicit" = provider auto-caches server-side, no markers (Kimi);
+#              None       = no prompt caching
+_CLAUDE = {"reasoning": True, "vision": True, "tools": True, "caching": "explicit"}
+_GPT = {"reasoning": False, "vision": True, "tools": True, "caching": "explicit"}
+MODEL_CAPABILITIES = {
+    "anthropic/claude-opus-4.5": _CLAUDE,
+    "anthropic/claude-opus-4.6": _CLAUDE,
+    "anthropic/claude-opus-4.7": _CLAUDE,
+    "anthropic/claude-opus-4.8": _CLAUDE,
+    "anthropic/claude-fable-5": _CLAUDE,
+    "anthropic/claude-sonnet-4.5": _CLAUDE,
+    "anthropic/claude-sonnet-4.6": _CLAUDE,
+    "anthropic/claude-haiku-4.5": _CLAUDE,
+    "openai/gpt-4o-mini": _GPT,
+    "openai/gpt-4o": _GPT,
+    "openai/gpt-4.1": _GPT,
+    "openai/gpt-5": _GPT,
+    "openai/gpt-5.1": _GPT,
+    "openai/gpt-5.5": _GPT,
+    # All GLM models on OpenRouter support tools (verified 2026-07-22).
+    "z-ai/glm-4.6": {"reasoning": False, "vision": False, "tools": True, "caching": None},
+    "z-ai/glm-4.7": {"reasoning": False, "vision": False, "tools": True, "caching": None},
+    "z-ai/glm-5": {"reasoning": False, "vision": False, "tools": True, "caching": None},
+    "z-ai/glm-5-turbo": {"reasoning": False, "vision": False, "tools": True, "caching": None},
+    "z-ai/glm-5.2": {"reasoning": False, "vision": False, "tools": True, "caching": None},
+    "deepseek/deepseek-chat-v3.1": {"reasoning": False, "vision": False, "tools": True, "caching": None},
+    "deepseek/deepseek-v4-pro": {"reasoning": True, "vision": False, "tools": True, "caching": None},
+    "deepseek/deepseek-v4-flash": {"reasoning": True, "vision": False, "tools": True, "caching": None},
+    # deepseek-r1 tools=True: verified against OpenRouter's supported_parameters
+    # (tools + tool_choice present) on 2026-07-22.
+    "deepseek/deepseek-r1-0528": {"reasoning": True, "vision": False, "tools": True, "caching": None},
+    # Kimi caches server-side automatically (implicit) — no cache_control markers.
+    "moonshotai/kimi-k3": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit"},
+    "moonshotai/kimi-k2-thinking": {"reasoning": True, "vision": False, "tools": True, "caching": "implicit"},
+    "moonshotai/kimi-k2.6": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit"},
+    # Gemini caching disabled pending OpenRouter support (see supports below).
+    "google/gemini-3.1-pro-preview": {"reasoning": False, "vision": True, "tools": True, "caching": None},
+}
+
+
+def _slug_supports_reasoning(full_slug: str) -> bool:
+    """Whether a full model slug emits separable extended thinking/reasoning."""
+    s = str(full_slug).lower()
+    if s.startswith("anthropic/claude"):
+        return True
+    if "deepseek-r1" in s or "deepseek-v4" in s:
+        return True
+    # Moonshot reasoning variants: K3 reasoning model, K2 Thinking, and K2.6
+    # (OpenRouter reports `reasoning` in its supported_parameters).
+    if "kimi-k3" in s or "kimi-k2-thinking" in s or "kimi-k2.6" in s:
+        return True
+    return False
+
+
+def _slug_supports_vision(full_slug: str) -> bool:
+    """Whether a full model slug accepts image/vision input."""
+    s = str(full_slug).lower()
+    # Text-only families never take image input.
+    if "deepseek" in s or "glm" in s:
+        return False
+    # All Anthropic Claude models are multimodal — a startswith check (not a
+    # per-name substring list) so new Claude models like fable-5 aren't missed.
+    if s.startswith("anthropic/claude"):
+        return True
+    vision_patterns = ("gpt-4o", "gpt-4.1", "gpt-5", "gemini",
+                       "kimi-k3", "kimi-k2.6", "kimi-k2.5")
+    return any(p in s for p in vision_patterns)
+
+
+def _slug_supports_tools(full_slug: str) -> bool:
+    """Whether a full model slug supports function/tool calling."""
+    s = str(full_slug).lower()
+    # All Anthropic Claude models support tools (startswith, not per-name).
+    if s.startswith("anthropic/claude"):
+        return True
+    tool_patterns = ("gpt-4", "gpt-5",
+                     "deepseek-chat", "deepseek-coder", "deepseek-v4", "deepseek-r1",
+                     "gemini", "glm", "kimi")
+    return any(p in s for p in tool_patterns)
+
+
+def _slug_supports_prompt_caching(full_slug: str) -> bool:
+    """Whether we should inject explicit cache_control breakpoints for a slug.
+
+    Implicit/server-side auto-caching models (DeepSeek, Kimi) return False —
+    they cache automatically without markers, so we must NOT send cache_control.
+    """
+    s = str(full_slug).lower()
+    if s.startswith("anthropic/claude"):
+        return True
+    if s.startswith("openai/gpt"):
+        # gpt-4o, gpt-4o-mini, gpt-5+ and gpt-4.1+ support caching.
+        if "gpt-4o" in s or "gpt-5" in s:
+            return True
+        if "gpt-4." in s:
+            try:
+                version = s.split("gpt-4.")[1].split("-")[0].split("/")[0]
+                if float(version) >= 1:
+                    return True
+            except (IndexError, ValueError):
+                pass
+    # NOTE: Gemini caching temporarily disabled pending OpenRouter support.
+    return False
+
+
 class ModelManager:
     """Manager class for handling both local and API-based language models."""
 
@@ -208,40 +394,10 @@ class ModelManager:
         # Runtime-overridable defaults (mutable via GUI and persisted to config)
         self.default_temperature = DEFAULT_TEMPERATURE
         self.default_max_tokens = DEFAULT_MAX_TOKENS
-        # Common API model aliases
-        self.api_models["claude-opus"] = "anthropic/claude-3-opus"
-        self.api_models["claude-opus-4.5"] = "anthropic/claude-opus-4.5"
-        self.api_models["claude-opus-4.6"] = "anthropic/claude-opus-4.6"
-        self.api_models["claude-opus-4.7"] = "anthropic/claude-opus-4.7"
-        self.api_models["claude-opus-4.8"] = "anthropic/claude-opus-4.8"
-        # Mythos-class (released 2026-06-09); ~2x the price of Opus 4.8
-        # ($10/M in, $50/M out). Falls back to Opus 4.8 on high-risk queries.
-        self.api_models["claude-fable-5"] = "anthropic/claude-fable-5"
-        self.api_models["fable-5"] = "anthropic/claude-fable-5"
-        self.api_models["sonnet-4.5"] = "anthropic/claude-sonnet-4.5"
-        self.api_models["sonnet-4.6"] = "anthropic/claude-sonnet-4.6"
-        self.api_models["haiku-4.5"] = "anthropic/claude-haiku-4.5"
-        # OpenAI models via OpenRouter
-        self.api_models["gpt-4o-mini"] = "openai/gpt-4o-mini"
-        self.api_models["gpt-4o"] = "openai/gpt-4o"
-        self.api_models["gpt-4.1"] = "openai/gpt-4.1"
-        # Add GPT‑5 support (via OpenRouter naming)
-        self.api_models["gpt-5"] = "openai/gpt-5"
-        self.api_models["gpt-5.1"] = "openai/gpt-5.1"
-        self.api_models["gpt-5.5"] = "openai/gpt-5.5"
-        # GLM models
-        self.api_models["glm-4.6"] = "z-ai/glm-4.6"
-        self.api_models["glm-4.7"] = "z-ai/glm-4.7"
-        self.api_models["glm-5"] = "z-ai/glm-5"
-        self.api_models["glm-5-turbo"] = "z-ai/glm-5-turbo"
-        self.api_models["glm-5.2"] = "z-ai/glm-5.2"
-        # DeepSeek models
-        self.api_models["deepseek-v3.1"] = "deepseek/deepseek-chat-v3.1"
-        self.api_models["deepseek-v4"] = "deepseek/deepseek-v4-pro"
-        self.api_models["deepseek-v4-flash"] = "deepseek/deepseek-v4-flash"
-        self.api_models["deepseek-r1"] = "deepseek/deepseek-r1-0528"
-        # Google Gemini models
-        self.api_models["gemini-3-pro"] = "google/gemini-3.1-pro-preview"
+        # Register API model aliases from the module-level single source of truth.
+        # Capabilities are declared alongside in MODEL_CAPABILITIES and enforced
+        # by tests/unit/test_model_capability_wiring.py.
+        self.api_models.update(API_MODEL_ALIASES)
 
     def reinitialize_clients(self, api_key: str = None) -> bool:
         """
@@ -479,55 +635,18 @@ class ModelManager:
         """
         if model_name not in self.api_models:
             return False
-        full = self.api_models[model_name]
-        # Claude Sonnet 4.5+ and Opus 4.5+ have extended thinking
-        if full.startswith("anthropic/claude"):
-            return True
-        # DeepSeek models with reasoning support (R1 + v4 family)
-        if "deepseek-r1" in full or "deepseek-v4" in full:
-            return True
-        return False
+        return _slug_supports_reasoning(self.api_models[model_name])
 
     def supports_prompt_caching(self, model_name):
-        """Check if a given API model supports prompt caching."""
+        """Check if a given API model supports EXPLICIT prompt caching.
+
+        True only for models that need cache_control breakpoints injected
+        (Anthropic, recent GPT). Implicit/server-side auto-caching models
+        (DeepSeek, Kimi) return False — they cache without markers.
+        """
         if model_name not in self.api_models:
             return False
-
-        full_model_name = self.api_models[model_name]
-
-        # Anthropic Claude models (all versions)
-        if full_model_name.startswith("anthropic/claude"):
-            return True
-
-        # Google Gemini 2.5+ and 3+ models
-        # TEMPORARILY DISABLED: Gemini 3 Pro just released, OpenRouter support pending
-        # if full_model_name.startswith("google/gemini"):
-        #     # Extract version number - format: google/gemini-X.Y-...
-        #     try:
-        #         version_part = full_model_name.split("gemini-")[1].split("-")[0]
-        #         major_version = float(version_part.split(".")[0])
-        #         if major_version >= 2:
-        #             minor_version = float(version_part.split(".")[1]) if "." in version_part else 0
-        #             if major_version > 2 or (major_version == 2 and minor_version >= 5):
-        #                 return True
-        #     except (IndexError, ValueError):
-        #         pass
-
-        # OpenAI GPT-4o and newer models
-        if full_model_name.startswith("openai/gpt"):
-            # gpt-4o, gpt-4o-mini, gpt-4.1+, gpt-5+ support caching
-            if "gpt-4o" in full_model_name or "gpt-5" in full_model_name:
-                return True
-            # gpt-4.1 and above
-            if "gpt-4." in full_model_name:
-                try:
-                    version = full_model_name.split("gpt-4.")[1].split("-")[0].split("/")[0]
-                    if float(version) >= 1:
-                        return True
-                except (IndexError, ValueError):
-                    pass
-
-        return False
+        return _slug_supports_prompt_caching(self.api_models[model_name])
 
     @staticmethod
     def _strip_cache_breakpoint(text):
@@ -977,21 +1096,7 @@ class ModelManager:
             return False
 
         if target_model in self.api_models:
-            full_model = self.api_models[target_model].lower()
-
-            # Models known to support vision/image input
-            vision_capable_patterns = [
-                "gpt-4o", "gpt-4.1", "gpt-5",
-                "claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
-                "gemini",
-            ]
-            # Explicitly exclude text-only models
-            text_only_patterns = [
-                "deepseek", "glm",
-            ]
-            if any(pattern in full_model for pattern in text_only_patterns):
-                return False
-            return any(pattern in full_model for pattern in vision_capable_patterns)
+            return _slug_supports_vision(self.api_models[target_model])
 
         return False
 
@@ -1019,21 +1124,12 @@ class ModelManager:
         # get_active_model_name(). Handle both, or tools get silently dropped and
         # the model can only narrate instead of calling propose_action/etc.
         full_model = (
-            self.api_models[target_model].lower()
+            self.api_models[target_model]
             if target_model in self.api_models
-            else str(target_model).lower()
+            else str(target_model)
         )
 
-        # Models known to support tool calling
-        tool_capable_patterns = [
-            "gpt-4", "gpt-5",
-            "claude-3", "claude-opus", "claude-sonnet", "claude-haiku",
-            "deepseek-chat", "deepseek-coder", "deepseek-v4",
-            "gemini",
-            "glm-5",
-        ]
-
-        return any(pattern in full_model for pattern in tool_capable_patterns)
+        return _slug_supports_tools(full_model)
 
     async def generate_once_with_tools(
         self,
@@ -1267,21 +1363,21 @@ class ModelManager:
                 )
 
                 # Request native reasoning separation for models that support it
-                # (Claude, DeepSeek-R1). Thinking arrives via delta.reasoning_content
-                # instead of being mixed into the text response.
-                # Skip when images are present — OpenRouter may not find an endpoint
-                # that supports both extended thinking and image input simultaneously.
+                # (Claude, DeepSeek-R1, Kimi K3). Thinking arrives via
+                # delta.reasoning_content instead of being mixed into the text
+                # response — so it's requested even on image turns (multimodal
+                # reasoning models like Kimi K3 / Claude / Gemini support both
+                # extended thinking and image input on the same endpoint).
                 # Ask OpenRouter for usage accounting so prompt-cache stats are
                 # observable on the streaming (main) path.
                 create_kwargs["extra_body"] = {"usage": {"include": True}}
 
-                if self.supports_reasoning(target_model) and not images and not disable_reasoning:
+                if self.supports_reasoning(target_model) and not disable_reasoning:
                     create_kwargs["extra_body"]["reasoning"] = {"effort": "medium"}
-                    logger.info(f"[generate_async] Enabled native reasoning for {target_model}")
+                    logger.info(f"[generate_async] Enabled native reasoning for {target_model}"
+                                + (" (images present)" if images else ""))
                 elif disable_reasoning and self.supports_reasoning(target_model):
                     logger.info(f"[generate_async] Native reasoning disabled by caller for {target_model} (recovery retry)")
-                elif images and self.supports_reasoning(target_model):
-                    logger.info(f"[generate_async] Skipping native reasoning for {target_model} (images present, would conflict on OpenRouter)")
 
                 stream = await self.async_client.chat.completions.create(**create_kwargs)
                 return stream

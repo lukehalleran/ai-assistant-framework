@@ -229,7 +229,12 @@ Side effects: May call LLM for tone detection, query rewriting, STM analysis
 
 **Pipeline Stages**:
 1. **Topic Extraction** - Extract topics via TopicManager
-2. **Tone Detection** - Detect emotional state via analyze_emotional_context
+2. **Tone Detection** - Detect emotional state via analyze_emotional_context.
+   Passes `previous_tone` (`self._last_tone_level`) so distress is sticky across
+   short turns (anti-flatline, 2026-07-21). The resulting `CrisisLevel` is mapped
+   to `ToneLevel` via `from_string`, which accepts both the `.name` and `.value`
+   encodings — a prior `.value` mismatch silently fed the EscalationTracker
+   CONVERSATIONAL every turn (see docs/postmortems/2026-07-tone-flatline.md).
 3. **File Processing** - Extract text from uploaded files (PDF/DOCX/XLSX/CSV/JSON/YAML/HTML/XML/MD/TXT/LOG/PY) via FileProcessor
 4. **Heavy Topic Check** - Check for sensitive content via QueryChecker
 4.5. **Intent Classification** - Regex-first query intent via IntentClassifier (no LLM) **[NEW 2026-02-15]**
@@ -240,7 +245,10 @@ Side effects: May call LLM for tone detection, query rewriting, STM analysis
 8. **Thread Context** - Get active thread via memory_system
 
 **Key Classes**:
-- `ToneLevel` - Enum mapping crisis levels (CRISIS/ELEVATED/CONCERN/CONVERSATIONAL)
+- `ToneLevel` - Enum mapping crisis levels (CRISIS/ELEVATED/CONCERN/CONVERSATIONAL).
+  `from_string` accepts BOTH CrisisLevel.name ("HIGH"/"MEDIUM"/"CONCERN") and
+  CrisisLevel.value ("crisis_support"/"elevated_support"/"light_support") — the
+  pipeline passes `.value`. Regression: `tests/unit/test_tonelevel_from_string.py`.
 - `ContextResult` - Immutable dataclass with all processed context
 - `ContextPipeline` - Main builder class
 - `IntentResult` - Intent classification output (carried on ContextResult) **[NEW 2026-02-15]**

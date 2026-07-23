@@ -53,7 +53,7 @@ memory:
   hybrid_reflections_enabled: true
   user_profile_facts_per_category: 5
   prompt_max_recent: 10
-  semantic_retrieval_limit: 100
+  semantic_retrieval_limit: 40
   prompt_max_semantic: 15
   force_min_memories: true
 models:
@@ -69,7 +69,7 @@ models:
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
-  active: deepseek-v4
+  active: kimi-3
 gating:
   confidence_threshold: 2.0
   gate_rel_threshold: 0.18
@@ -153,6 +153,8 @@ agentic_search:
   prefer_native_tools: true
   memory_search_enabled: true
   memory_search_limit: 7
+  reuse_decision_answer: true
+  decision_max_tokens: 1600
 uncertainty_fallback:
   enabled: true
   semantic_threshold: 0.7
@@ -232,6 +234,9 @@ intent_classifier:
 turn_telemetry:
   enabled: true
   path: logs/turn_records.jsonl
+light_prompt:
+  enabled: true
+  max_words: 8
 backup:
   enabled: true
   dir: data/backups
@@ -299,7 +304,7 @@ session_diff:
   max_committed: 20
   max_uncommitted: 20
 token_budget:
-  default: 15000
+  default: 10000
   local_model: 12000
   floor: 8000
   ceiling: 16000
@@ -373,7 +378,7 @@ synthesis:
   convergence_strong_paths: 3
   convergence_strong_sources: 2
 synthesis_pooled:
-  enabled: true
+  enabled: false
   candidates_per_session: 8
   llm_concurrency: 5
   min_cos: 0.2
@@ -457,7 +462,7 @@ skill_activation:
   stm_bonus: 0.1
   use_stm: true
 code_proposals:
-  enabled: true
+  enabled: false
   collection: proposals
   dedup_threshold: 0.7
   max_per_session: 5
@@ -470,6 +475,14 @@ escalation_tracker:
   enabled: true
   threshold: 3
   deescalation_window: 2
+  distress_threshold: 5
+valence_retrieval:
+  enabled: true
+  max_negative_fraction: 0.5
+  negative_threshold: 0.3
+canary:
+  enabled: true
+  consecutive_threshold: 4
 cross_dedup:
   enabled: true
   duplicate_threshold: 0.92

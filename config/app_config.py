@@ -541,6 +541,31 @@ ESCALATION_THRESHOLD: int = int(ESCALATION_CFG.get("threshold", 3))
 ESCALATION_DEESCALATION_WINDOW: int = int(ESCALATION_CFG.get("deescalation_window", 2))
 # Sliding window size for tone history
 ESCALATION_MAX_HISTORY: int = int(ESCALATION_CFG.get("max_history", 10))
+# Consecutive CONCERN-or-higher turns before a mild-but-persistent spiral
+# upgrades to grounding (slow-spiral guard; higher than ESCALATION_THRESHOLD)
+ESCALATION_DISTRESS_THRESHOLD: int = int(ESCALATION_CFG.get("distress_threshold", 5))
+
+# Valence-aware retrieval — caps mood-congruent recall during distress sessions
+VALENCE_CFG = config.get("valence_retrieval", {})
+VALENCE_RETRIEVAL_ENABLED: bool = bool(VALENCE_CFG.get("enabled", True))
+VALENCE_MAX_NEGATIVE_FRACTION: float = float(VALENCE_CFG.get("max_negative_fraction", 0.5))
+VALENCE_NEGATIVE_THRESHOLD: float = float(VALENCE_CFG.get("negative_threshold", 0.30))
+VALENCE_RETRIEVAL_ENABLED = bool(int(os.getenv("VALENCE_RETRIEVAL_ENABLED", "1" if VALENCE_RETRIEVAL_ENABLED else "0")))
+VALENCE_MAX_NEGATIVE_FRACTION = float(os.getenv("VALENCE_MAX_NEGATIVE_FRACTION", str(VALENCE_MAX_NEGATIVE_FRACTION)))
+VALENCE_NEGATIVE_THRESHOLD = float(os.getenv("VALENCE_NEGATIVE_THRESHOLD", str(VALENCE_NEGATIVE_THRESHOLD)))
+
+# Runtime safety canary — log-only tone-flatline monitor (reuses valence scorer)
+CANARY_CFG = config.get("canary", {})
+CANARY_ENABLED: bool = bool(CANARY_CFG.get("enabled", True))
+CANARY_CONSECUTIVE_THRESHOLD: int = int(CANARY_CFG.get("consecutive_threshold", 4))
+CANARY_ENABLED = bool(int(os.getenv("CANARY_ENABLED", "1" if CANARY_ENABLED else "0")))
+CANARY_CONSECUTIVE_THRESHOLD = int(os.getenv("CANARY_CONSECUTIVE_THRESHOLD", str(CANARY_CONSECUTIVE_THRESHOLD)))
+
+# Tone stickiness (anti-amplification): distress tone carries across terse turns
+# WITHIN a session, but must NOT carry across a long gap into a fresh session —
+# otherwise a calm/technical message hours later gets floored to the earlier
+# distress tone. Gap (minutes) beyond which the pipeline drops the carried tone.
+TONE_STICKINESS_MAX_GAP_MINUTES: int = int(os.getenv("TONE_STICKINESS_MAX_GAP_MINUTES", "30"))
 
 # Environment variable overrides for Escalation Tracker
 ESCALATION_ENABLED = bool(int(os.getenv("ESCALATION_ENABLED", "1" if ESCALATION_ENABLED else "0")))
@@ -673,6 +698,7 @@ PROFILE_PERSONAL_PREFERENCE_SLOTS: list = _PERSONAL_VOCAB_CFG.get("preference_sl
 ESCALATION_THRESHOLD = int(os.getenv("ESCALATION_THRESHOLD", str(ESCALATION_THRESHOLD)))
 ESCALATION_DEESCALATION_WINDOW = int(os.getenv("ESCALATION_DEESCALATION_WINDOW", str(ESCALATION_DEESCALATION_WINDOW)))
 ESCALATION_MAX_HISTORY = int(os.getenv("ESCALATION_MAX_HISTORY", str(ESCALATION_MAX_HISTORY)))
+ESCALATION_DISTRESS_THRESHOLD = int(os.getenv("ESCALATION_DISTRESS_THRESHOLD", str(ESCALATION_DISTRESS_THRESHOLD)))
 
 # --------------------------------------------------------------------
 # Obsidian Vault Configuration
@@ -1073,6 +1099,20 @@ TURN_TELEMETRY_PATH: str = str(TURN_TELEMETRY_CFG.get("path", "logs/turn_records
 TURN_TELEMETRY_ENABLED = bool(int(os.getenv("TURN_TELEMETRY_ENABLED", "1" if TURN_TELEMETRY_ENABLED else "0")))
 
 # --------------------------------------------------------------------
+# Light-Prompt Path [2026-07-15]
+# --------------------------------------------------------------------
+# Terse casual acknowledgments ("ok", "hmm not working yet") route to the
+# builder's lightweight context (recent turns only) instead of the full
+# retrieval apparatus — a 7-word ack was pulling 23K-token prompts.
+# Detection: utils/query_checker.is_casual_acknowledgment (conservative:
+# any question/command/request shape or heavy topic disqualifies; builder
+# additionally requires a non-crisis tone level).
+LIGHT_PROMPT_CFG = config.get("light_prompt", {}) or {}
+LIGHT_PROMPT_ENABLED: bool = bool(LIGHT_PROMPT_CFG.get("enabled", True))
+LIGHT_PROMPT_ENABLED = bool(int(os.getenv("LIGHT_PROMPT_ENABLED", "1" if LIGHT_PROMPT_ENABLED else "0")))
+LIGHT_PROMPT_MAX_WORDS: int = int(os.getenv("LIGHT_PROMPT_MAX_WORDS", LIGHT_PROMPT_CFG.get("max_words", 8)))
+
+# --------------------------------------------------------------------
 # Backup Configuration [2026-07-14]
 # --------------------------------------------------------------------
 # Automated local backups of the memory stores (final shutdown phase).
@@ -1279,6 +1319,15 @@ HEALTH_FRAMING_DECAY_ENABLED = bool(int(os.getenv("HEALTH_FRAMING_DECAY_ENABLED"
 AGENTIC_CFG = config.get("agentic_search", {})
 AGENTIC_MEMORY_SEARCH_ENABLED: bool = bool(AGENTIC_CFG.get("memory_search_enabled", True))
 AGENTIC_MEMORY_SEARCH_LIMIT: int = int(AGENTIC_CFG.get("memory_search_limit", 7))
+# Reuse a substantive answer written during the decision round as the final
+# response, skipping the second full-context synthesis call (saves ~20-30s
+# per turn where the model answers instead of calling tools).
+AGENTIC_REUSE_DECISION_ANSWER: bool = bool(AGENTIC_CFG.get("reuse_decision_answer", True))
+# Token cap for decision-round calls (native tools + XML). High enough that a
+# complete final answer fits — a capped answer fails the reuse truncation
+# check and falls back to the synthesis call. Tool-call rounds emit few
+# tokens regardless, so the ceiling doesn't slow them.
+AGENTIC_DECISION_MAX_TOKENS: int = int(AGENTIC_CFG.get("decision_max_tokens", 1600))
 
 # --------------------------------------------------------------------
 # Uncertainty Fallback (retry via agentic search on "I don't know" responses)

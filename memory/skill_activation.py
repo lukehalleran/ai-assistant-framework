@@ -106,9 +106,8 @@ class SkillCooldownStore:
     def save(self) -> None:
         """Persist cooldown state to disk."""
         try:
-            os.makedirs(os.path.dirname(self.persist_path) or ".", exist_ok=True)
-            with open(self.persist_path, "w", encoding="utf-8") as f:
-                json.dump(self._entries, f, indent=2, ensure_ascii=False)
+            from utils.safe_json import atomic_write_json
+            atomic_write_json(self.persist_path, self._entries)
         except OSError as e:
             logger.warning(f"[SkillCooldownStore] Failed to save {self.persist_path}: {e}")
 

@@ -103,12 +103,12 @@ class TimeManager:
 
     def _save_last_query_time(self):
         if self.last_query_time:
-            with open(self.time_file, "w") as f:
-                data = {"last_query_time": self.last_query_time.isoformat()}
-                # Also save previous_query_time for next load
-                if self.previous_query_time:
-                    data["previous_query_time"] = self.previous_query_time.isoformat()
-                json.dump(data, f)
+            from utils.safe_json import atomic_write_json
+            data = {"last_query_time": self.last_query_time.isoformat()}
+            # Also save previous_query_time for next load
+            if self.previous_query_time:
+                data["previous_query_time"] = self.previous_query_time.isoformat()
+            atomic_write_json(self.time_file, data)
 
     def _load_last_session_time(self):
         if os.path.exists(self.session_file):
@@ -121,9 +121,9 @@ class TimeManager:
 
     def _save_last_session_time(self):
         if self.last_session_end_time:
-            os.makedirs(os.path.dirname(self.session_file), exist_ok=True)
-            with open(self.session_file, "w") as f:
-                json.dump({"last_session_end_time": self.last_session_end_time.isoformat()}, f)
+            from utils.safe_json import atomic_write_json
+            atomic_write_json(self.session_file,
+                              {"last_session_end_time": self.last_session_end_time.isoformat()})
 
     # ---------- active days tracking ----------
     def _load_active_days(self) -> set:
@@ -140,9 +140,9 @@ class TimeManager:
     def _save_active_days(self):
         """Save set of active days to persistent storage"""
         try:
-            os.makedirs(os.path.dirname(self.active_days_file), exist_ok=True)
-            with open(self.active_days_file, "w") as f:
-                json.dump({"active_days": sorted(list(self.active_days))}, f)
+            from utils.safe_json import atomic_write_json
+            atomic_write_json(self.active_days_file,
+                              {"active_days": sorted(list(self.active_days))})
         except Exception as e:
             logger.warning(f"Failed to save active days: {e}")
 

@@ -54,6 +54,11 @@ export default function SettingsPage() {
   // Temperature + cadence
   const [temperature, setTemperature] = useState(0.7)
   const [summaryN, setSummaryN] = useState(10)
+  // Shutdown LLM steps: synthesis dreaming + code proposals
+  const [synEnabled, setSynEnabled] = useState(false)
+  const [synCount, setSynCount] = useState(8)
+  const [propEnabled, setPropEnabled] = useState(true)
+  const [propCount, setPropCount] = useState(5)
 
   useEffect(() => {
     api
@@ -74,6 +79,10 @@ export default function SettingsPage() {
         setStreamMax(s.tokens.streaming_max_tokens)
         setTemperature(s.temperature)
         setSummaryN(s.summary_every_n)
+        setSynEnabled(s.synthesis.enabled)
+        setSynCount(s.synthesis.candidates_per_session)
+        setPropEnabled(s.proposals.enabled)
+        setPropCount(s.proposals.max_per_session)
       })
       .catch((err) =>
         notifications.show({
@@ -299,6 +308,78 @@ export default function SettingsPage() {
               onClick={() => apply('summary-cadence', { every_n: summaryN })}
             >
               Apply
+            </Button>
+          </Group>
+        </Section>
+
+        <Section title="💤 Synthesis dreaming (shutdown LLM step — API cost)">
+          <Switch
+            label="Enable synthesis dreaming"
+            description="Generates cross-domain synthesis candidates at shutdown (LLM calls incl. the Opus coherence judge)"
+            checked={synEnabled}
+            onChange={(e) => setSynEnabled(e.currentTarget.checked)}
+          />
+          <Text size="xs" c="dimmed">
+            Candidates per shutdown: {synCount}
+          </Text>
+          <Slider
+            min={1}
+            max={20}
+            step={1}
+            value={synCount}
+            onChange={setSynCount}
+            marks={[
+              { value: 1, label: '1' },
+              { value: 8, label: '8' },
+              { value: 20, label: '20' },
+            ]}
+          />
+          <Divider my={4} style={{ visibility: 'hidden' }} />
+          <Group>
+            <Button
+              size="xs"
+              loading={busy === 'synthesis'}
+              onClick={() =>
+                apply('synthesis', { enabled: synEnabled, candidates_per_session: synCount })
+              }
+            >
+              Apply synthesis settings
+            </Button>
+          </Group>
+        </Section>
+
+        <Section title="🛠️ Code proposals (shutdown LLM step — API cost)">
+          <Switch
+            label="Enable code proposals"
+            description="Generates goal-directed code proposals at shutdown (LLM calls)"
+            checked={propEnabled}
+            onChange={(e) => setPropEnabled(e.currentTarget.checked)}
+          />
+          <Text size="xs" c="dimmed">
+            Max proposals per shutdown: {propCount}
+          </Text>
+          <Slider
+            min={1}
+            max={10}
+            step={1}
+            value={propCount}
+            onChange={setPropCount}
+            marks={[
+              { value: 1, label: '1' },
+              { value: 5, label: '5' },
+              { value: 10, label: '10' },
+            ]}
+          />
+          <Divider my={4} style={{ visibility: 'hidden' }} />
+          <Group>
+            <Button
+              size="xs"
+              loading={busy === 'proposals'}
+              onClick={() =>
+                apply('proposals', { enabled: propEnabled, max_per_session: propCount })
+              }
+            >
+              Apply proposal settings
             </Button>
           </Group>
         </Section>

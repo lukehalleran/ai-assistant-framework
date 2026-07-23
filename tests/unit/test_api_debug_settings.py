@@ -245,6 +245,79 @@ class TestSettingsRoutes:
         assert resp.json()["ok"] is True
         assert orch.memory_system.consolidator.consolidation_threshold == 25
 
+    @pytest.mark.asyncio
+    async def test_get_snapshot_includes_shutdown_llm_sections(self, tmp_path, monkeypatch):
+        app, _ = self._app(tmp_path, monkeypatch)
+        async with _client(app) as client:
+            resp = await client.get("/api/settings")
+        body = resp.json()
+        assert set(body["synthesis"]) == {"enabled", "candidates_per_session"}
+        assert set(body["proposals"]) == {"enabled", "max_per_session"}
+
+    @pytest.mark.asyncio
+    async def test_put_synthesis_off_mutates_runtime_and_persists(self, tmp_path, monkeypatch):
+        import config.app_config as app_cfg
+        monkeypatch.setattr(app_cfg, "SYNTHESIS_POOLED_ENABLED", True)
+        monkeypatch.setattr(app_cfg, "SYNTHESIS_GENERATOR_ENABLED", True)
+        monkeypatch.setattr(app_cfg, "SYNTHESIS_POOLED_CANDIDATES_PER_SESSION", 8)
+        app, orch = self._app(tmp_path, monkeypatch)
+        async with _client(app) as client:
+            resp = await client.put("/api/settings/synthesis", json={
+                "enabled": False, "candidates_per_session": 4,
+            })
+        assert resp.json()["ok"] is True
+        assert app_cfg.SYNTHESIS_POOLED_ENABLED is False
+        # OFF also forces the legacy generator flag off — the dreaming gate is
+        # (GENERATOR or POOLED), so a stale yaml flag can't resurrect dreaming
+        assert app_cfg.SYNTHESIS_GENERATOR_ENABLED is False
+        assert app_cfg.SYNTHESIS_POOLED_CANDIDATES_PER_SESSION == 4
+        assert orch.config["synthesis_pooled"]["enabled"] is False
+        import yaml
+        data = yaml.safe_load(open(tmp_path / "config" / "config.yaml"))
+        assert data["synthesis_pooled"] == {"enabled": False, "candidates_per_session": 4}
+        assert data["synthesis_generator"]["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_put_synthesis_on_leaves_retired_generator_off(self, tmp_path, monkeypatch):
+        import config.app_config as app_cfg
+        monkeypatch.setattr(app_cfg, "SYNTHESIS_POOLED_ENABLED", False)
+        monkeypatch.setattr(app_cfg, "SYNTHESIS_GENERATOR_ENABLED", False)
+        app, _ = self._app(tmp_path, monkeypatch)
+        async with _client(app) as client:
+            resp = await client.put("/api/settings/synthesis", json={
+                "enabled": True, "candidates_per_session": 8,
+            })
+        assert resp.json()["ok"] is True
+        assert app_cfg.SYNTHESIS_POOLED_ENABLED is True
+        assert app_cfg.SYNTHESIS_GENERATOR_ENABLED is False  # retired tier stays retired
+
+    @pytest.mark.asyncio
+    async def test_put_synthesis_count_out_of_range_is_422(self, tmp_path, monkeypatch):
+        app, _ = self._app(tmp_path, monkeypatch)
+        async with _client(app) as client:
+            resp = await client.put("/api/settings/synthesis", json={
+                "enabled": True, "candidates_per_session": 50,
+            })
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_put_proposals_mutates_runtime_and_persists(self, tmp_path, monkeypatch):
+        import config.app_config as app_cfg
+        monkeypatch.setattr(app_cfg, "CODE_PROPOSALS_ENABLED", True)
+        monkeypatch.setattr(app_cfg, "CODE_PROPOSALS_MAX_PER_SESSION", 5)
+        app, orch = self._app(tmp_path, monkeypatch)
+        async with _client(app) as client:
+            resp = await client.put("/api/settings/proposals", json={
+                "enabled": False, "max_per_session": 2,
+            })
+        assert resp.json()["ok"] is True
+        assert app_cfg.CODE_PROPOSALS_ENABLED is False
+        assert app_cfg.CODE_PROPOSALS_MAX_PER_SESSION == 2
+        assert orch.config["code_proposals"]["enabled"] is False
+        import yaml
+        data = yaml.safe_load(open(tmp_path / "config" / "config.yaml"))
+        assert data["code_proposals"] == {"enabled": False, "max_per_session": 2}
+
 
 class TestGradioParityWiring:
     """The Gradio tab and the API must call THE SAME core functions."""
@@ -254,7 +327,8 @@ class TestGradioParityWiring:
         import gui.tabs.settings as tab
         src = inspect.getsource(tab)
         for fn in ("apply_streaming", "apply_web_search", "apply_duel",
-                   "apply_tokens", "apply_temperature", "apply_summary_cadence"):
+                   "apply_tokens", "apply_temperature", "apply_summary_cadence",
+                   "apply_synthesis", "apply_proposals"):
             assert f"settings_core.{fn}" in src, f"Gradio tab no longer calls settings_core.{fn}"
 
     def test_api_routes_import_core(self):
@@ -262,5 +336,6 @@ class TestGradioParityWiring:
         import api.routes.settings as routes
         src = inspect.getsource(routes)
         for fn in ("apply_streaming", "apply_web_search", "apply_duel",
-                   "apply_tokens", "apply_temperature", "apply_summary_cadence"):
+                   "apply_tokens", "apply_temperature", "apply_summary_cadence",
+                   "apply_synthesis", "apply_proposals"):
             assert f"settings_core.{fn}" in src, f"API route no longer calls settings_core.{fn}"

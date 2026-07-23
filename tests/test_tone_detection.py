@@ -31,16 +31,22 @@ from utils.tone_detector import (
 )
 from utils.logging_utils import get_logger
 
-# Semantic similarity tests require that short messages (< 8 words) go through
-# the full semantic detection pipeline. Since commit 33246a2 (chat latency
-# optimizations), short messages bypass semantic detection entirely via an
-# early-return fast path. These tests will fail until the short-message path
-# is updated to check for emotional keywords before skipping semantic detection.
-# Tracked as a known issue — the optimization is correct for casual messages but
-# too aggressive for short crisis signals like "I'm overwhelmed".
-_skip_short_msg_semantic = pytest.mark.skip(
-    reason="Short-message fast path (word_count < 8) bypasses semantic detection since 33246a2. "
-           "Fix: add emotional keyword check before early return in tone_detector.py."
+# Short-message semantic tests: the <8-word fast path no longer blanket-bypasses
+# semantic detection — it only exits early for recognizably casual messages
+# (fixed after the 33246a2 regression). These tests now RUN wherever the
+# sentence-transformer embedder is loadable; they skip only if it isn't (so a
+# weightless CI box doesn't fail on missing model files rather than on logic).
+def _embedder_available() -> bool:
+    try:
+        from utils.tone_detector import _get_embedder
+        return _get_embedder(None) is not None
+    except Exception:
+        return False
+
+
+_skip_short_msg_semantic = pytest.mark.skipif(
+    not _embedder_available(),
+    reason="ALLOW_SKIP: env-gate — sentence-transformer embedder not loadable",
 ) if HAS_PYTEST else lambda f: f
 
 logger = get_logger("test_tone")
@@ -262,10 +268,10 @@ TEST_CASES = [
 
 async def _run_crisis_detection_test(test_case):
     """Test individual crisis detection cases (shared implementation)."""
-    # Skip cases that require semantic detection on short messages — bypassed
-    # since the word_count < 8 fast path was added in 33246a2
-    if test_case.get("requires_embedder"):
-        pytest.skip("Short-message fast path bypasses semantic detection (33246a2)")
+    # Cases needing semantic detection require the embedder; skip only when it
+    # can't load (the short-message fast path no longer blanket-bypasses them).
+    if test_case.get("requires_embedder") and not _embedder_available():
+        pytest.skip("sentence-transformer embedder not loadable in this environment")
     message = test_case["message"]
     expected = test_case["expected"]
     description = test_case["description"]

@@ -68,6 +68,24 @@ class TestTier1Keywords:
         assert "tools" in d.modes
 
     @pytest.mark.asyncio
+    async def test_what_is_bigram_does_not_trigger_tools(self):
+        """'what is' mid-sentence is not a tool signal (2026-07-16: 'I will
+        see what is said on Reddit…' matched the bare 'what is ' keyword and
+        fired irrelevant web searches)."""
+        d = await evaluate_agentic_gate(
+            "I will see what is said on Reddit I don't wanna hear that guy talk"
+        )
+        assert "tools" not in d.modes
+        assert not d.should_trigger
+
+    @pytest.mark.asyncio
+    async def test_contact_lookup_by_possessive_still_triggers(self):
+        """Removing 'what is ' must not lose 'what is <name>'s email' coverage."""
+        d = await evaluate_agentic_gate("what is Meagan's email")
+        assert d.should_trigger
+        assert "tools" in d.modes
+
+    @pytest.mark.asyncio
     async def test_url_triggers_web_search(self):
         d = await evaluate_agentic_gate("check out https://example.com for details")
         assert d.should_trigger
@@ -303,6 +321,149 @@ class TestContinuationOverride:
         )
         # Previous turn had no agentic signals → stays skipped
         assert not d.should_trigger
+
+    @pytest.mark.asyncio
+    async def test_long_casual_sentence_is_not_continuation(self):
+        """Regression (2026-07-15): an 11-word vibe remark starting with 'yeah'
+        matched 'yeah' as a substring, and 'issues' in the prior query ("sleep
+        issues") looked like a GitHub signal — overriding the casual skip and
+        burning a 60s agentic loop + web credits on a conversational statement.
+        A continuation must be terse; this message stays skipped and the LLM
+        fallback is never consulted.
+        """
+        corpus = MagicMock()
+        corpus.get_recent_memories = MagicMock(return_value=[
+            {
+                "query": ("I wish benzos were not horrifically addictive and "
+                          "life destroying I feel like they totally fix my "
+                          "sleep issues"),
+                "response": "That tradeoff is real...",
+            },
+        ])
+        mock_llm = AsyncMock(return_value=MagicMock(
+            should_search=True,
+            search_terms=["benzodiazepine addiction 2026"],
+            needs_memory_search=False,
+            needs_knowledge_search=False,
+            needs_document_generation=False,
+        ))
+        with patch(
+            "utils.web_search_trigger.analyze_for_web_search_llm",
+            new=mock_llm,
+        ):
+            d = await evaluate_agentic_gate(
+                "Yeah they seem like the worst drug to get addicted to",
+                corpus_manager=corpus,
+                model_manager=MagicMock(),
+            )
+        assert not d.should_trigger
+        mock_llm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stored_agentic_mode_enables_continuation(self):
+        """response_mode='agentic-search' on the previous corpus entry is the
+        ground-truth continuation signal — no keyword inference needed."""
+        corpus = MagicMock()
+        corpus.get_recent_memories = MagicMock(return_value=[
+            {
+                "query": "how did my sleep trend this month",
+                "response": "Pulled the data...",
+                "response_mode": "agentic-search",
+            },
+        ])
+        llm_decision = MagicMock(
+            should_search=True,
+            search_terms=["sleep trends"],
+            needs_memory_search=False,
+            needs_knowledge_search=False,
+            needs_document_generation=False,
+        )
+        with patch(
+            "utils.web_search_trigger.analyze_for_web_search_llm",
+            new_callable=AsyncMock,
+            return_value=llm_decision,
+        ):
+            d = await evaluate_agentic_gate(
+                "yes please",
+                corpus_manager=corpus,
+                model_manager=MagicMock(),
+            )
+        assert d.should_trigger
+
+    @pytest.mark.asyncio
+    async def test_stored_enhanced_mode_blocks_keyword_inference(self):
+        """When response_mode is present and NOT agentic, tool-flavored words
+        in the previous query ('issues', 'search') must not resurrect the
+        override — ground truth wins over inference."""
+        corpus = MagicMock()
+        corpus.get_recent_memories = MagicMock(return_value=[
+            {
+                "query": "search results for my sleep issues on github were funny",
+                "response": "Ha, yes.",
+                "response_mode": "enhanced",
+            },
+        ])
+        d = await evaluate_agentic_gate(
+            "yes please",
+            corpus_manager=corpus,
+        )
+        assert not d.should_trigger
+
+    @pytest.mark.asyncio
+    async def test_legacy_entry_ambiguous_word_does_not_override(self):
+        """Legacy entries (no response_mode) fall back to word-boundary
+        inference — 'issues' inside 'sleep issues' no longer counts."""
+        corpus = MagicMock()
+        corpus.get_recent_memories = MagicMock(return_value=[
+            {
+                "query": "they totally fix my sleep issues",
+                "response": "They do work fast.",
+            },
+        ])
+        d = await evaluate_agentic_gate(
+            "yes please",
+            corpus_manager=corpus,
+        )
+        assert not d.should_trigger
+
+
+# ===========================================================================
+# Post-hoc intent veto (gate run concurrently with the context pipeline)
+# ===========================================================================
+
+class TestApplyIntentVetoPostHoc:
+
+    @pytest.mark.asyncio
+    async def test_posthoc_veto_suppresses_trigger(self):
+        """A decision made without intent_info can be vetoed afterwards."""
+        from core.agentic.gate import apply_intent_veto
+        d = await evaluate_agentic_gate(
+            "do you remember anything about our conversations?"
+        )
+        assert d.should_trigger
+        assert d.veto_exempt is False
+        d2 = apply_intent_veto(
+            d, {"intent_type": "meta_conversational", "confidence": 0.85}
+        )
+        assert not d2.should_trigger
+        assert d2.reason.startswith("intent-veto")
+
+    @pytest.mark.asyncio
+    async def test_posthoc_veto_respects_exemption(self):
+        """Explicit search requests carry veto_exempt and are never suppressed."""
+        from core.agentic.gate import apply_intent_veto
+        d = await evaluate_agentic_gate("search for python tutorials")
+        assert d.should_trigger
+        assert d.veto_exempt is True
+        d2 = apply_intent_veto(
+            d, {"intent_type": "meta_conversational", "confidence": 0.95}
+        )
+        assert d2.should_trigger
+
+    def test_posthoc_veto_noop_without_intent(self):
+        from core.agentic.gate import apply_intent_veto, AgenticDecision
+        d = AgenticDecision(should_trigger=True)
+        assert apply_intent_veto(d, None).should_trigger is True
 
 
 # ===========================================================================

@@ -177,6 +177,21 @@ def test_add_entry_with_thread_metadata(corpus_manager):
     assert entry["topic"] == "programming"
 
 
+def test_add_entry_with_response_mode(corpus_manager):
+    """add_entry records response_mode when provided (agentic-gate ground truth)"""
+    corpus_manager.add_entry("Question", "Answer", response_mode="agentic-search")
+
+    entry = corpus_manager.corpus[0]
+    assert entry["response_mode"] == "agentic-search"
+
+
+def test_add_entry_without_response_mode_omits_field(corpus_manager):
+    """add_entry leaves response_mode absent when not provided"""
+    corpus_manager.add_entry("Question", "Answer")
+
+    assert "response_mode" not in corpus_manager.corpus[0]
+
+
 def test_add_entry_saves_to_file(corpus_manager):
     """add_entry persists to file"""
     corpus_manager.add_entry("Test", "Response")

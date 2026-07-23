@@ -1102,10 +1102,14 @@ JSON:"""
         try:
             from knowledge.proposal_generator import GoalDirectedGenerator
             from memory.proposal_store import ProposalStore
+            # Read at call time so the Settings slider applies without restart
+            # (was unwired — the generator always used its class default of 5)
+            from config.app_config import CODE_PROPOSALS_MAX_PER_SESSION
 
             generator = GoalDirectedGenerator(
                 model_manager=self.model_manager,
                 repo_path=".",
+                max_proposals=CODE_PROPOSALS_MAX_PER_SESSION,
             )
             proposal_store = ProposalStore(chroma_store=self.chroma_store)
             dedup_context = proposal_store.get_for_dedup()

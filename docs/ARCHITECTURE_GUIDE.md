@@ -397,6 +397,21 @@ Four crisis levels drive system behavior:
 | CONCERN | Brief acknowledgment | 2-4 sentences | Monitored |
 | CONVERSATIONAL | Direct, concise | Max 3 sentences | Normal |
 
+**Anti-amplification (2026-07-21).** A distress session built from short messages
+must not flatline. `detect_crisis_level(..., previous_tone=...)` makes distress
+*sticky*: the `<8-word` latency fast path exits early only for recognizably-casual
+messages; ambiguous/emotional short turns run full detection; a non-casual terse
+reply mid-distress is floored at CONCERN; explicit acks ("ok") still decay. The
+detected `CrisisLevel` feeds two consumers — the system prompt (directly) and the
+Escalation FSM (via `ToneLevel.from_string`, which accepts BOTH the `.name` and
+`.value` encodings; a prior mismatch fed the FSM CONVERSATIONAL every turn). A
+log-only **safety canary** (`core/safety_canary.py`) emits
+`SAFETY_CANARY_TONE_FLATLINE` if N consecutive negative-affect messages read as
+CONVERSATIONAL. Retrieval adds a **valence cap** (`memory/valence.py`): during
+distress, `[RELEVANT MEMORIES]` is capped at 50% negative-affect and backfilled
+with lower-affect hits, so mood-congruent recall can't saturate the prompt into a
+rumination amplifier. See `docs/postmortems/2026-07-tone-flatline.md`.
+
 ### STM Analysis
 
 Short-term memory analysis runs an LLM pass over a 24-hour time-windowed

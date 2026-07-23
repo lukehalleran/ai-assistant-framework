@@ -3,10 +3,12 @@ import type {
   DebugRecordsResponse,
   DuelSettings,
   ModelListResponse,
+  ProposalsSettings,
   SessionState,
   SettingsApplyResult,
   SettingsSnapshot,
   StreamingSettings,
+  SynthesisSettings,
   TokenSettings,
   UploadedFileInfo,
   WebSearchSettings,
@@ -70,14 +72,18 @@ export const api = {
       | 'duel'
       | 'tokens'
       | 'temperature'
-      | 'summary-cadence',
+      | 'summary-cadence'
+      | 'synthesis'
+      | 'proposals',
     body:
       | StreamingSettings
       | WebSearchSettings
       | DuelSettings
       | TokenSettings
       | { temperature: number }
-      | { every_n: number },
+      | { every_n: number }
+      | SynthesisSettings
+      | ProposalsSettings,
   ) =>
     fetch(`/api/settings/${section}`, {
       method: 'PUT',

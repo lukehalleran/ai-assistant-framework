@@ -107,6 +107,96 @@ def _normalize(q: str) -> str:
     return (q or "").strip().lower()
 
 
+# Openers that mark a terse acknowledgment / status remark ("ok", "hmm not
+# working yet", "yeah makes sense") — turns that need conversational
+# continuity, not the full retrieval apparatus.
+ACK_STARTERS: frozenset = frozenset({
+    "ok", "okay", "kk", "k", "cool", "nice", "sweet", "great", "awesome",
+    "yeah", "yep", "yup", "ya", "sure", "right", "true", "word", "bet",
+    "thanks", "thank", "thx", "ty", "lol", "lmao", "haha", "heh",
+    "hmm", "hm", "hmmm", "huh", "ugh", "oof", "welp", "whew", "phew",
+    "alright", "gotcha", "got", "makes", "sounds", "fair", "interesting",
+    "damn", "dang", "sheesh", "wow", "oh", "ah", "aw", "meh", "nope", "nah",
+})
+
+# Words that signal an actual information request even without a "?"
+_REQUEST_MARKERS: tuple = (
+    "can you", "could you", "would you", "will you", "do you", "should i",
+    "should we", "help me", "show me", "give me", "explain",
+)
+
+
+def is_casual_acknowledgment(q: str, max_words: int = 8) -> bool:
+    """
+    True for terse acknowledgment/status turns that don't need heavy
+    retrieval ("ok", "hmm not working yet", "yeah makes sense", "thanks").
+
+    Conservative by design — any question/command/request shape disqualifies,
+    because a false positive means answering a real query without context.
+    Feeds QueryAnalysis.is_small_talk, which routes the builder to
+    _build_lightweight_context (recent turns only, no memories/wiki/git/web).
+    That routing was DEAD until 2026-07-15: the builder read
+    query_analysis.is_small_talk but no code ever set it, so a 7-word "Hmm
+    not working yet" pulled a 23K-token full-apparatus prompt.
+    """
+    ql = _normalize(q)
+    if not ql:
+        return False
+    words = ql.split()
+    if len(words) > max_words:
+        return False
+    if "?" in ql or is_question(ql) or is_command(ql) or is_meta_conversational(ql):
+        return False
+    # Interrogative anywhere ("ok how do i fix this") = real question
+    if any(w in QUESTION_LEADS for w in words):
+        return False
+    if any(m in ql for m in _REQUEST_MARKERS):
+        return False
+    first = words[0].strip(".,!…:;'\"")
+    return first in ACK_STARTERS
+
+
+def is_continuation_answer(q: str, last_assistant_response: str, max_words: int = 6) -> bool:
+    """
+    True when the current message is a SHORT reply directly answering the
+    assistant's own immediately-preceding question — e.g. assistant asks
+    "What was the error?" and the user replies "amplification".
+
+    Such a turn must be interpreted from the immediate exchange, not free-
+    associated across the whole corpus: a bare noun like "amplification" otherwise
+    triggers corpus-wide semantic retrieval that surfaces a topically-matching but
+    contextually-wrong old memory, which then hijacks the response (observed
+    2026-07-21). Routes to the lightweight-context path (recent turns only).
+
+    Deliberately narrow — requires the prior assistant turn to end in a question,
+    a short reply, and NOT itself be a question/command/meta turn (a counter-
+    question like "why?" is excluded). Heavy/crisis topics are filtered by the
+    caller, not here.
+    """
+    ql = _normalize(q)
+    lr = (last_assistant_response or "").strip()
+    if not ql or not lr:
+        return False
+    # The assistant must have asked something in its last turn. Check for a
+    # question mark ANYWHERE, not just at the end — Daemon typically asks a
+    # question and then appends a trailing sentence ("...what was the error?
+    # You mentioned the last exchange was bad."), so the turn rarely ends on "?".
+    if "?" not in lr:
+        return False
+    words = ql.split()
+    if len(words) > max_words:
+        return False
+    # A short reply that is itself a question/command/meta is not an answer.
+    if "?" in ql or is_question(ql) or is_command(ql) or is_meta_conversational(ql):
+        return False
+    if any(w in QUESTION_LEADS for w in words):
+        return False
+    # A request ("show me the diff", "can you...") is an action, not a bare answer.
+    if any(m in ql for m in _REQUEST_MARKERS):
+        return False
+    return True
+
+
 def is_deictic(query: str) -> bool:
     """True if the query likely refers to earlier context (anaphora)."""
     if not query:
@@ -223,6 +313,7 @@ class QueryAnalysis:
     intents: Set[str]
     is_heavy_topic: bool = False  # Crisis/sensitive topics requiring inline fact extraction
     is_meta_conversational: bool = False  # Query asking about conversation history itself
+    is_small_talk: bool = False  # Terse acknowledgment → builder's lightweight-context path
 
 
 def analyze_query(q: str, model_manager=None) -> QueryAnalysis:
@@ -257,6 +348,14 @@ def analyze_query(q: str, model_manager=None) -> QueryAnalysis:
     # Heavy topic classification (synchronous - uses heuristics only by default)
     q_is_heavy = _is_heavy_topic_heuristic(q)
 
+    # Terse acknowledgments route to the lightweight prompt path — but never
+    # for heavy/crisis topics, which need the full context apparatus.
+    try:
+        from config.app_config import LIGHT_PROMPT_MAX_WORDS as _lp_max
+    except Exception:
+        _lp_max = 8
+    q_is_small_talk = (not q_is_heavy) and is_casual_acknowledgment(q, max_words=_lp_max)
+
     return QueryAnalysis(
         text=q or "",
         tokens=tokens,
@@ -269,6 +368,7 @@ def analyze_query(q: str, model_manager=None) -> QueryAnalysis:
         intents=intents,
         is_heavy_topic=q_is_heavy,
         is_meta_conversational=q_is_meta,
+        is_small_talk=q_is_small_talk,
     )
 
 

@@ -219,3 +219,67 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
             )["message"]
 
         apply_btn.click(_apply_summary_n, inputs=[summary_n], outputs=[status_md])
+
+        # --- Shutdown LLM steps: synthesis dreaming + code proposals ---
+        gr.Markdown("### 💤 Shutdown LLM steps (API cost)")
+        try:
+            _settings = _load_settings()
+            _syn_cfg = (_settings.get('synthesis_pooled', {}) or {})
+            _syn_enabled_default = bool(_syn_cfg.get('enabled', False))
+            _syn_count_default = int(_syn_cfg.get('candidates_per_session', 8))
+            _prop_cfg = (_settings.get('code_proposals', {}) or {})
+            _prop_enabled_default = bool(_prop_cfg.get('enabled', True))
+            _prop_count_default = int(_prop_cfg.get('max_per_session', 5))
+        except (AttributeError, TypeError, KeyError, ValueError):
+            _syn_enabled_default = False
+            _syn_count_default = 8
+            _prop_enabled_default = True
+            _prop_count_default = 5
+
+        with gr.Row():
+            synthesis_enabled = gr.Checkbox(
+                label="Enable Synthesis Dreaming",
+                value=_syn_enabled_default,
+                info="Generate cross-domain synthesis candidates at shutdown (LLM calls incl. Opus coherence judge)"
+            )
+            synthesis_count = gr.Slider(
+                label="Synthesis Candidates per Shutdown",
+                minimum=1, maximum=20, step=1,
+                value=_syn_count_default,
+            )
+        apply_syn_btn = gr.Button("Apply Synthesis Settings")
+        syn_status = gr.Markdown(visible=True)
+
+        def _apply_synthesis(enabled: bool, count: int):
+            return settings_core.apply_synthesis(
+                orchestrator,
+                enabled=enabled,
+                candidates_per_session=count,
+                save=_save_settings,
+            )["message"]
+
+        apply_syn_btn.click(_apply_synthesis, inputs=[synthesis_enabled, synthesis_count], outputs=[syn_status])
+
+        with gr.Row():
+            proposals_enabled = gr.Checkbox(
+                label="Enable Code Proposals",
+                value=_prop_enabled_default,
+                info="Generate goal-directed code proposals at shutdown (LLM calls)"
+            )
+            proposals_count = gr.Slider(
+                label="Max Proposals per Shutdown",
+                minimum=1, maximum=10, step=1,
+                value=_prop_count_default,
+            )
+        apply_prop_btn = gr.Button("Apply Proposal Settings")
+        prop_status = gr.Markdown(visible=True)
+
+        def _apply_proposals(enabled: bool, count: int):
+            return settings_core.apply_proposals(
+                orchestrator,
+                enabled=enabled,
+                max_per_session=count,
+                save=_save_settings,
+            )["message"]
+
+        apply_prop_btn.click(_apply_proposals, inputs=[proposals_enabled, proposals_count], outputs=[prop_status])

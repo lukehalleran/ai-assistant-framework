@@ -190,6 +190,12 @@ class TestGatherProposalContext:
 
 
 class TestGenerateProposalsPipeline:
+    @pytest.fixture(autouse=True)
+    def _proposals_enabled(self, monkeypatch):
+        # Pin the gate ON: these test _generate_proposals' behavior, which must
+        # not depend on the owner's live config.yaml toggle (off since 2026-07-15)
+        monkeypatch.setattr("config.app_config.CODE_PROPOSALS_ENABLED", True)
+
     @pytest.mark.asyncio
     @patch("memory.shutdown_processor.ShutdownProcessor._gather_proposal_context", new_callable=AsyncMock)
     async def test_uses_pipeline_when_coordinator_available(
@@ -267,6 +273,30 @@ class TestGenerateProposalsPipeline:
         await shutdown_processor._generate_proposals(sess)
         # No LLM call should have been made
         shutdown_processor.model_manager.generate_once.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disabled_flag_skips_entirely(self, shutdown_processor, monkeypatch):
+        """CODE_PROPOSALS_ENABLED=False (the Settings toggle) → no generator at all."""
+        monkeypatch.setattr("config.app_config.CODE_PROPOSALS_ENABLED", False)
+        with patch("knowledge.proposal_generator.GoalDirectedGenerator") as mock_cls:
+            await shutdown_processor._generate_proposals(_make_session_items())
+            mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("memory.shutdown_processor.ShutdownProcessor._gather_proposal_context", new_callable=AsyncMock)
+    async def test_max_per_session_reaches_generator(self, mock_gather, shutdown_processor, monkeypatch):
+        """The Settings slider (CODE_PROPOSALS_MAX_PER_SESSION) must be passed to
+        the generator — it was dead wiring before 2026-07-15 (class default 5)."""
+        monkeypatch.setattr("config.app_config.CODE_PROPOSALS_MAX_PER_SESSION", 2)
+        mock_gather.return_value = "ctx"
+        mock_gen = MagicMock()
+        mock_gen.generate_proposals_with_context = AsyncMock(return_value=[])
+        mock_store = MagicMock()
+        mock_store.get_for_dedup.return_value = ""
+        with patch("knowledge.proposal_generator.GoalDirectedGenerator", return_value=mock_gen) as mock_cls:
+            with patch("memory.proposal_store.ProposalStore", return_value=mock_store):
+                await shutdown_processor._generate_proposals(_make_session_items())
+        assert mock_cls.call_args.kwargs["max_proposals"] == 2
 
 
 # ------------------------------------------------------------------

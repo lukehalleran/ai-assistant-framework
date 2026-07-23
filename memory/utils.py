@@ -9,6 +9,55 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 
+# Bare connectivity-check exchanges ("test") — worthless as memories but they
+# embed close to everything short and compete for retrieval slots.
+_TRIVIAL_TEST_QUERIES = frozenset({"test", "testing", "test test", "hello test"})
+
+
+def is_junk_conversation_doc(content: str = "", query: str = "", response: str = "") -> bool:
+    """
+    True for stored conversation docs that should never surface at retrieval:
+
+    - API-error sentinel turns: transport failures persisted as replies
+      before the 2026-07-03 storage-time guard (`_is_api_error_response`).
+      Historical docs from Feb–March 2026 predate it and were seen ranking
+      in top-10 retrieval (2026-07-15). Detected via the assistant side of
+      the doc starting with any `models.model_manager.API_ERROR_PREFIXES`.
+    - Bare connectivity-test exchanges (query is literally "test"/"testing").
+
+    Works on either the flat doc text ("User: ...\\nAssistant: ...") or the
+    separate query/response fields — callers pass whatever they have.
+    This is the RETRIEVAL-TIME belt; `scripts/purge_error_memories.py` is the
+    (dry-run-first) suspenders for the stored docs themselves.
+    """
+    from models.model_manager import API_ERROR_PREFIXES
+
+    content = content or ""
+    query = query or ""
+    response = response or ""
+
+    # Assistant text: explicit response field, else the doc's Assistant: part
+    assistant_text = response
+    user_text = query
+    if content:
+        head, sep, tail = content.partition("\nAssistant:")
+        if sep:
+            if not assistant_text:
+                assistant_text = tail
+            if not user_text and head.startswith("User:"):
+                user_text = head[len("User:"):]
+        elif not assistant_text:
+            assistant_text = content
+
+    if assistant_text.lstrip().startswith(API_ERROR_PREFIXES):
+        return True
+
+    if user_text.strip().lower() in _TRIVIAL_TEST_QUERIES:
+        return True
+
+    return False
+
+
 def format_recent_conversations(
     entries: List[Dict],
     id_prefix: str = "recent",

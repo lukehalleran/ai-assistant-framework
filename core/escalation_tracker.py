@@ -13,6 +13,15 @@ the tone instructions injected into the system prompt. Prevents the
 "therapeutic echo chamber" problem where identical validating responses
 are repeated when a user is spiraling.
 
+Two escalation tracks (2026-07-21):
+- consecutive_elevated_count (ELEVATED/CRISIS only) → GROUNDING at escalation_threshold.
+- consecutive_distress_count (CONCERN-inclusive) → GROUNDING at distress_threshold
+  (higher). Catches a slow spiral built from many terse CONCERN turns that never
+  spikes to ELEVATED — the failure mode where a short-message distress session
+  ran unchecked. Kept separate so consecutive_elevated_count semantics are intact.
+GROUNDING/QUIET instructions explicitly forbid the "excavating question every
+turn" pattern (each downward probe deepens the spiral).
+
 Integration:
     Orchestrator.__init__:  self.escalation_tracker = EscalationTracker()
     process_user_query:     tracker.update(tone_level, user_message)
@@ -46,6 +55,7 @@ class ResponseStrategy(Enum):
 # Tone levels that count as "elevated" for escalation tracking
 # Import here to avoid circular imports at module level
 _ELEVATED_LEVELS = None
+_DISTRESS_LEVELS = None
 
 
 def _get_elevated_levels():
@@ -55,6 +65,20 @@ def _get_elevated_levels():
         from core.context_pipeline import ToneLevel
         _ELEVATED_LEVELS = {ToneLevel.CRISIS, ToneLevel.ELEVATED}
     return _ELEVATED_LEVELS
+
+
+def _get_distress_levels():
+    """
+    Distress = any non-casual tone (CONCERN included). Sustained distress at
+    merely CONCERN level still warrants grounding after enough turns — that is
+    the slow-spiral case a CRISIS/ELEVATED threshold misses. Kept separate from
+    _ELEVATED_LEVELS so consecutive_elevated_count semantics are unchanged.
+    """
+    global _DISTRESS_LEVELS
+    if _DISTRESS_LEVELS is None:
+        from core.context_pipeline import ToneLevel
+        _DISTRESS_LEVELS = {ToneLevel.CRISIS, ToneLevel.ELEVATED, ToneLevel.CONCERN}
+    return _DISTRESS_LEVELS
 
 
 class EscalationTracker:
@@ -83,20 +107,27 @@ class EscalationTracker:
         escalation_threshold: int = 3,
         deescalation_window: int = 2,
         max_history: int = 10,
+        distress_threshold: int = 5,
     ):
         """
         Args:
-            escalation_threshold: Consecutive elevated messages before strategy shift
+            escalation_threshold: Consecutive ELEVATED/CRISIS messages before strategy shift
             deescalation_window: Consecutive calm messages before gentle re-engagement ends
             max_history: Sliding window size for tone history
+            distress_threshold: Consecutive distress messages (CONCERN-or-higher)
+                before a mild-but-persistent spiral upgrades to grounding. Set
+                higher than escalation_threshold so pure-CONCERN sessions only
+                ground after a genuinely sustained run.
         """
         self.escalation_threshold = escalation_threshold
         self.deescalation_window = deescalation_window
         self.max_history = max_history
+        self.distress_threshold = distress_threshold
 
         # State
         self.tone_history: List = []  # List[ToneLevel]
         self.consecutive_elevated_count: int = 0
+        self.consecutive_distress_count: int = 0
         self.consecutive_calm_count: int = 0
         self.last_suggestions: List[str] = []
         self.ignored_suggestion_count: int = 0
@@ -130,6 +161,7 @@ class EscalationTracker:
             self.tone_history = self.tone_history[-self.max_history:]
 
         is_elevated = tone_level in elevated_levels
+        is_distress = tone_level in _get_distress_levels()
 
         # Track consecutive counts
         if is_elevated:
@@ -140,6 +172,14 @@ class EscalationTracker:
             # Don't reset consecutive_elevated_count immediately —
             # we need it for de-escalation detection
             pass
+
+        # Distress counter (CONCERN-inclusive) resets immediately on any
+        # non-distress (CONVERSATIONAL) turn — a genuine casual turn breaks the
+        # spiral. Maintained separately from consecutive_elevated_count.
+        if is_distress:
+            self.consecutive_distress_count += 1
+        else:
+            self.consecutive_distress_count = 0
 
         # Check engagement with previous suggestions
         if self.last_suggestions and is_elevated:
@@ -203,8 +243,36 @@ class EscalationTracker:
         GROUNDING always precedes QUIET to avoid skipping the intermediate step.
         """
         elevated_levels = _get_elevated_levels()
+        distress_levels = _get_distress_levels()
         is_elevated = current_tone in elevated_levels
 
+        strategy = self._compute_base_strategy(current_tone, need_type, is_elevated)
+
+        # Sustained mild-but-persistent distress (e.g. a long run of CONCERN-level
+        # turns that never spiked to ELEVATED) also warrants grounding — this is
+        # the slow-spiral case the elevated threshold misses. Only UPGRADE (never
+        # downgrade) and only while currently in distress, so calm turns still
+        # de-escalate normally and elevated-path semantics are untouched.
+        if (
+            strategy == ResponseStrategy.VALIDATE_AND_SUGGEST
+            and current_tone in distress_levels
+            and self.consecutive_distress_count >= self.distress_threshold
+        ):
+            logger.debug(
+                f"[EscalationTracker] Sustained distress "
+                f"({self.consecutive_distress_count} >= {self.distress_threshold}) → GROUNDING_PRESENCE"
+            )
+            strategy = ResponseStrategy.GROUNDING_PRESENCE
+
+        return strategy
+
+    def _compute_base_strategy(
+        self,
+        current_tone,
+        need_type: Optional[str],
+        is_elevated: bool,
+    ) -> ResponseStrategy:
+        """Original elevated/de-escalation strategy logic (unchanged)."""
         # --- De-escalation detection ---
         if not is_elevated and self._was_recently_elevated():
             # Check if the de-escalation window has passed
@@ -375,6 +443,12 @@ class EscalationTracker:
                 "- Do NOT repeat coping suggestions already given.\n"
                 "- Match their intensity with presence, not words.\n"
                 "- If they're venting, let them vent without redirecting.\n"
+                "- Do NOT end with a probing question that digs further down "
+                "('what's sitting heaviest', 'which part', 'is it X or Y'). Each "
+                "such question opens another door downward and deepens the spiral. "
+                "It is completely fine to ask nothing and simply sit with what they said.\n"
+                "- If you do ask anything, let it open outward or toward footing "
+                "(rest, the next small thing), never further into the pain.\n"
                 "- Silence and brevity can be more powerful than paragraphs."
             )
         elif self.current_strategy == ResponseStrategy.QUIET_COMPANIONSHIP:
@@ -385,6 +459,7 @@ class EscalationTracker:
                 "- Maximum 1-2 sentences. Absolute minimum.\n"
                 "- Just be there: 'I'm here.' or 'I'm listening.'\n"
                 "- No suggestions, no reframes, no coping strategies.\n"
+                "- Do NOT ask a probing question. No excavation. Presence, not inquiry.\n"
                 "- Don't try to be helpful -- just be present.\n"
                 "- Less is more. The relationship itself is the support."
             )
@@ -456,6 +531,7 @@ class EscalationTracker:
         return {
             "strategy": self.current_strategy.value,
             "consecutive_elevated": self.consecutive_elevated_count,
+            "consecutive_distress": self.consecutive_distress_count,
             "consecutive_calm": self.consecutive_calm_count,
             "ignored_suggestions": self.ignored_suggestion_count,
             "velocity": self.get_escalation_velocity(),
@@ -467,6 +543,7 @@ class EscalationTracker:
         """Reset tracker state (e.g., new session)."""
         self.tone_history.clear()
         self.consecutive_elevated_count = 0
+        self.consecutive_distress_count = 0
         self.consecutive_calm_count = 0
         self.last_suggestions.clear()
         self.ignored_suggestion_count = 0

@@ -778,7 +778,8 @@ class MemoryStorage:
                 thread_started=thread_info.get("started"),
                 thread_topic=thread_info.get("topic"),
                 is_heavy_topic=is_heavy,
-                topic=self.current_topic
+                topic=self.current_topic,
+                response_mode=(provenance or {}).get("response_mode"),
             )
 
             # Update conversation context

@@ -384,6 +384,43 @@ class MemoryRetrievalMixin:
             logger.debug(f"[ContextGatherer] Query expansion failed: {e}")
             return query
 
+    def _apply_valence_cap(self, memories: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        """
+        Cap mood-congruent negative recall during a distress session, else return
+        the plain top-`limit`. Gated by `self._distress_active` (set by the
+        builder from crisis_level) and VALENCE_RETRIEVAL_ENABLED. No-op and
+        fail-open on any error so retrieval never breaks over an affect signal.
+        """
+        top = memories[:limit]
+        if not getattr(self, "_distress_active", False):
+            return top
+        try:
+            from config.app_config import (
+                VALENCE_RETRIEVAL_ENABLED,
+                VALENCE_MAX_NEGATIVE_FRACTION,
+                VALENCE_NEGATIVE_THRESHOLD,
+            )
+            if not VALENCE_RETRIEVAL_ENABLED:
+                return top
+            from memory.valence import cap_negative_memories
+            selected, displaced = cap_negative_memories(
+                memories,
+                limit,
+                max_negative_fraction=VALENCE_MAX_NEGATIVE_FRACTION,
+                negative_threshold=VALENCE_NEGATIVE_THRESHOLD,
+                content_key="content",
+            )
+            if displaced > 0:
+                logger.info(
+                    f"[Valence] Distress session: capped {displaced} high-negative "
+                    f"memor{'y' if displaced == 1 else 'ies'} "
+                    f"(kept {len(selected)}/{limit}, frac<={VALENCE_MAX_NEGATIVE_FRACTION})"
+                )
+            return selected or top
+        except Exception as e:
+            logger.warning(f"[Valence] cap skipped (fail-open): {e}")
+            return top
+
     async def _get_semantic_memories(self, query: str = "", limit: int = PROMPT_MAX_MEMS) -> List[Dict[str, Any]]:
         """Get relevant memories using semantic search only."""
         try:
@@ -468,10 +505,13 @@ class MemoryRetrievalMixin:
                 elif len(gated_memories) < limit:
                     logger.debug(f"Only {len(gated_memories)} memories after gating (force min disabled), keeping high-quality results only")
 
-                semantic_memories = gated_memories[:limit]  # Ensure we don't exceed limit
-
-                # Limit to requested number
-                semantic_memories = semantic_memories[:limit]
+                # Valence-aware selection: during an active distress session,
+                # cap the fraction of high-negative-affect memories so semantic
+                # NN recall doesn't saturate the prompt with mood-congruent
+                # distress (the rumination-amplifier failure mode). Operates on
+                # the full gated pool so freed slots backfill with lower-affect,
+                # still-relevant memories. Outside distress → plain top-`limit`.
+                semantic_memories = self._apply_valence_cap(gated_memories, limit)
                 logger.debug(f"After limiting to {limit}: {len(semantic_memories)} memories")
 
             except Exception as e:

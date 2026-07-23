@@ -666,11 +666,14 @@ States: {VALIDATE_AND_SUGGEST (VAS), GROUNDING_PRESENCE (GP),
 
 **Tracked variables**:
 - `consecutive_elevated_count` — increments on CRISIS/ELEVATED, resets on calm
+- `consecutive_distress_count` — increments on CONCERN/ELEVATED/CRISIS, resets on
+  CONVERSATIONAL. Separate, CONCERN-inclusive counter (2026-07-21) for the slow
+  spiral that never spikes to ELEVATED.
 - `consecutive_calm_count` — increments on CONCERN/CONVERSATIONAL, resets on elevated
 - `ignored_suggestion_count` — tracks unengaged suggestions (caps at +2/-1)
 - `last_need_type` — PRESENCE or PERSPECTIVE (from emotional context)
 
-**Transitions** (evaluated in this order):
+**Transitions** (base strategy evaluated in this order, then a sustained-distress upgrade):
 
 ```
 // De-escalation path (tone just dropped)
@@ -687,7 +690,20 @@ if consecutive_elevated < threshold:             -> VAS     // not yet escalated
 if consecutive_elevated > threshold
    AND ignored_suggestions >= 2:                 -> QC      // suggestions ignored
 else:                                            -> GP      // at/past threshold
+
+// Sustained-distress UPGRADE (applied after base; never downgrades)
+if base == VAS AND tone in {CONCERN,ELEVATED,CRISIS}
+   AND consecutive_distress_count >= distress_threshold:  -> GP
 ```
+
+**Input-mapping caveat (2026-07-21)**: this FSM only works if it actually
+receives the detected tone. The pipeline maps `CrisisLevel → ToneLevel` via
+`ToneLevel.from_string(crisis_level.value)`; `from_string` must accept the
+`.value` encoding (`light_support`/`elevated_support`/`crisis_support`) as well
+as the `.name` scale — otherwise every level defaults to CONVERSATIONAL and the
+FSM is fed CONVERSATIONAL every turn (the tone-flatline incident; see
+`docs/postmortems/2026-07-tone-flatline.md`). GP/QC instructions also forbid
+excavating questions (each downward probe deepens the spiral).
 
 **FSM output modifies prompt construction**:
 

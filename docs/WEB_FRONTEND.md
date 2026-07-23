@@ -45,10 +45,10 @@ python main.py
 | `POST /api/uploads` | multipart ≤100MB; returns `file_ids` referenced by ChatRequest |
 | `GET /api/models` / `PUT /api/models/active` | model list + switch (persists to config.yaml) |
 | `GET /api/status`, `GET /api/graph?limit=N` | showcase-panel data (corpus stats; degree-trimmed knowledge graph) |
-| `GET /api/debug` | server-held per-turn debug records (query, full prompt, response, tokens, timings, provenance) — survive SPA reloads; cleared with DELETE /api/session [2026-07-14] |
+| `GET /api/debug` | server-held per-turn debug records (query, full prompt, response, tokens, timings, provenance) — cleared with DELETE /api/session. The SPA shows only the ongoing UI session's turns (Gradio parity): `web/src/api/debugSession.ts` snapshots the record count at page load and Debug/Provenance hide everything before it [2026-07-15] |
 | `GET /api/debug/prompt?index=-1` | one turn's full prompt as TXT (Content-Disposition attachment; system prompt included only in dev mode — mirrors the Gradio download button) [2026-07-14] |
 | `GET /api/provenance?index=-1` | one turn's provenance view (provenance dict + mode/model/citations/tokens, thinking display-capped at 500 chars) [2026-07-14] |
-| `GET /api/settings` / `PUT /api/settings/{streaming,web-search,duel,tokens,temperature,summary-cadence}` | Settings tab parity: GET snapshot + per-section apply. Thin layer over `gui/settings_core.py` — THE same functions the Gradio tab calls (no forked logic); 400 = validation error, `persisted:false` = runtime applied but YAML write failed [2026-07-14] |
+| `GET /api/settings` / `PUT /api/settings/{streaming,web-search,duel,tokens,temperature,summary-cadence,synthesis,proposals}` | Settings tab parity: GET snapshot + per-section apply. Thin layer over `gui/settings_core.py` — THE same functions the Gradio tab calls (no forked logic); 400 = validation error, `persisted:false` = runtime applied but YAML write failed [2026-07-14; synthesis/proposals shutdown-LLM toggles + count sliders added 2026-07-15] |
 | `GET /health` | pre-existing health check, reused |
 
 Config: `api:` section in config.yaml (`host` 127.0.0.1, `port` 8000,
@@ -82,10 +82,18 @@ _apply_web_citations(wiki_map=)`).
 between Chat / Debug / Provenance / Settings (no react-router; the chat column
 stays mounted-but-hidden so an in-flight stream keeps rendering). Debug =
 per-turn accordion (query → prompt → response, token counts, phase + retrieval
-waterfalls, full-prompt TXT download); Provenance = per-turn JSON with turn
-selector; Settings = the six Gradio sections (streaming, web search, duel,
-tokens, temperature, summary cadence) applying through the shared
-`gui/settings_core.py`. Components: `web/src/components/debug/DebugPage.tsx`,
+waterfalls, full-prompt TXT download, 📋 copy button on every text block);
+Provenance = per-turn JSON (copy button) with turn selector; Settings = the
+eight Gradio sections (streaming, web search, duel, tokens, temperature,
+summary cadence, and — 2026-07-15 — the two shutdown-LLM steps: synthesis
+dreaming and code proposals, each an on/off toggle plus a per-shutdown count
+slider) applying through the shared `gui/settings_core.py`. Both Debug and
+Provenance are scoped to the ongoing UI session (2026-07-15): Gradio's
+`debug_state` is a per-page-load `gr.State`, so its debug tab never shows a
+backlog — the SPA matches by snapshotting the server record count at app mount
+(`web/src/api/debugSession.ts`; reset by Clear chat, self-heals if the count
+shrinks after a server restart; prompt-export links keep absolute indices).
+Components: `web/src/components/debug/DebugPage.tsx`,
 `debug/ProvenancePage.tsx`, `settings/SettingsPage.tsx`.
 
 Not yet: graph view (stretch), PyInstaller packaging.

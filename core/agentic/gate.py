@@ -6,9 +6,14 @@ Module Contract
   routed to the agentic search loop (tools, web, memory, knowledge, etc.)
   or fall through to standard enhanced streaming.
 - Public interface:
-  - AgenticDecision (dataclass): structured gate result
+  - AgenticDecision (dataclass): structured gate result (incl. veto_exempt)
   - evaluate_agentic_gate(user_text, entity_resolver, model_manager,
     corpus_manager, intent_info) -> AgenticDecision
+  - apply_intent_veto(decision, intent_info) -> AgenticDecision — the intent
+    veto, extracted so handle_submit can run the gate CONCURRENTLY with
+    prepare_prompt (intent_info=None at launch, veto applied post-hoc once
+    the context pipeline's classification exists). evaluate_agentic_gate
+    still applies it inline when intent_info is passed.
 - Dependencies:
   - memory.graph_utils.extract_graph_entities (Tier 2 entity match)
   - utils.web_search_trigger.analyze_for_web_search_llm (Tier 4 LLM fallback)
@@ -31,6 +36,13 @@ Module Contract
   suppress it. The enhanced (tool-less) streaming path carries a matching
   [ACTION HONESTY] note so a gate miss degrades to an honest "I can't this turn"
   + offer, never a confabulated reason.
+- Continuation override: a terse affirmation (≤ CONTINUATION_MAX_WORDS words
+  containing a CONTINUATION_PHRASES entry) after an agentic turn bypasses the
+  casual skip. "Previous turn was agentic" is read from the corpus entry's
+  stored response_mode (ground truth, written by memory_storage from
+  provenance); a word-boundary keyword fallback covers only legacy entries
+  that predate the field. Long messages that merely contain "yeah"/"sure"
+  are new statements, never continuations (2026-07-15 benzo-turn incident).
 - Follow-up resolution: Tier 4 builds a compact recent-conversation digest from
   corpus_manager (_build_recent_context) and passes it as conversation_context to
   analyze_for_web_search_llm, so elliptical follow-ups ("check the news", "any
@@ -61,6 +73,11 @@ class AgenticDecision:
     self_note_intent: Optional[Dict[str, Any]] = None
     skip_initial_search: bool = False
     reason: str = ""
+    # True when the trigger is an explicit request (search keywords, URL,
+    # file access, doc-gen, self-note) that the intent veto must never
+    # suppress. Lets apply_intent_veto() run post-hoc without recomputing
+    # gate internals.
+    veto_exempt: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -94,8 +111,12 @@ TOOL_KEYWORDS = [
     'send telegram', 'send discord', 'message on telegram',
     'message on discord', 'notify ', 'text him', 'text her',
     # Contact lookup / email by name (no @ required)
+    # NOTE: no bare "what is " here — it matched any sentence containing the
+    # bigram ("I will see what is said on Reddit…") and fired irrelevant
+    # searches (2026-07-16). "'s email"/"'s contact" already cover
+    # "what is <name>'s email".
     'look up contact', 'lookup contact', 'find email', 'find contact',
-    "what is ", "'s email", "'s contact",
+    "'s email", "'s contact",
 ]
 
 MEMORY_KEYWORDS = [
@@ -215,6 +236,24 @@ CONTINUATION_PHRASES = (
     'go ahead', 'yes please', 'please do', 'go for it',
     'run it', "let's go", 'sure', 'yep',
     'yes', 'yeah', 'do that',
+)
+
+# A genuine continuation/affirmation is terse ("yes please", "ok try again").
+# Longer messages that merely CONTAIN one of the phrases above are new
+# statements, not continuations — "Yeah they seem like the worst drug to get
+# addicted to" (11 words) matched 'yeah' as a substring and rode the
+# continuation override into a pointless 60s agentic loop (2026-07-15).
+CONTINUATION_MAX_WORDS = 6
+
+# Fallback tool-intent inference for LEGACY corpus entries that predate the
+# stored `response_mode` field. Word-boundary anchored and deliberately
+# narrow: the old bare-substring list matched conversational text ('issues'
+# inside "my sleep issues", 'loc' inside "local") and flagged emotional turns
+# as agentic-intent. New entries carry response_mode and never reach this.
+_PREV_AGENTIC_QUERY_PATTERN = re.compile(
+    r'\b(?:search|look\s+up|github|git\s+stats?|pull\s+requests?|'
+    r'open\s+issues|closed\s+issues|commits?|lines\s+of\s+code|'
+    r'calculate|compute|wolfram)\b'
 )
 
 EXPLICIT_SEARCH_KEYWORDS = [
@@ -392,22 +431,25 @@ async def evaluate_agentic_gate(
     # ── Context-aware continuation override ───────────────────────────
     _prev_was_agentic = False
     if any(_skip_patterns):
-        _is_continuation = any(p in _lower for p in CONTINUATION_PHRASES)
+        _is_continuation = (
+            len(_words) <= CONTINUATION_MAX_WORDS
+            and any(p in _lower for p in CONTINUATION_PHRASES)
+        )
         if _is_continuation and corpus_manager is not None:
             try:
                 _recent = corpus_manager.get_recent_memories(2)
                 for _prev in _recent:
                     _prev_query = (_prev.get('query', '') or '').lower()
                     _prev_response = (_prev.get('response', '') or '')[:800]
-                    _prev_had_signals = (
-                        '?' in _prev_query
-                        or any(w in _prev_query for w in (
-                            'search', 'find', 'look', 'github', 'git',
-                            'issues', 'pull request', 'pr ', 'commits',
-                            'stats', 'loc', 'lines', 'code',
-                            'calculate', 'compute', 'wolfram',
-                        ))
-                    )
+                    _prev_mode = (_prev.get('response_mode', '') or '').lower()
+                    if _prev_mode:
+                        # Ground truth: the stored mode of the previous turn.
+                        _prev_had_signals = _prev_mode == 'agentic-search'
+                    else:
+                        # Legacy entry without response_mode — infer from query.
+                        _prev_had_signals = bool(
+                            _PREV_AGENTIC_QUERY_PATTERN.search(_prev_query)
+                        )
                     _prev_mentioned_tools = any(w in _prev_response.lower() for w in (
                         'let me pull', 'let me grab', 'let me run',
                         'let me check', 'let me search', 'let me query',
@@ -435,7 +477,7 @@ async def evaluate_agentic_gate(
     #     honesty offer actually get carried out on the next turn.
     if not needs_files and corpus_manager is not None:
         _is_pronoun_retrieval = bool(FILE_RETRIEVAL_PRONOUN_PATTERN.search(_lower))
-        _is_affirmation = (
+        _is_affirmation = len(_words) <= CONTINUATION_MAX_WORDS and (
             any(p in _lower for p in CONTINUATION_PHRASES)
             or (bool(_words) and all(w in FILLER_WORDS for w in _words))
         )
@@ -556,32 +598,11 @@ async def evaluate_agentic_gate(
         if triggered:
             logger.debug(f"[Agentic Gate] Triggered — modes: {', '.join(triggered)}")
 
-    # ── Intent-based veto ─────────────────────────────────────────────
-    _veto_reason = None
-    _has_explicit_search = (
+    # ── Intent-veto exemption (explicit requests are never vetoed) ────
+    _veto_exempt = (
         any(kw in _lower for kw in EXPLICIT_SEARCH_KEYWORDS) or _has_url or needs_files
+        or bool(doc_gen_intent) or bool(self_note_intent)
     )
-    if should_trigger and not _has_explicit_search and not doc_gen_intent and not self_note_intent:
-        if intent_info is not None:
-            _intent_type = (
-                getattr(intent_info, 'intent_type', None)
-                if not isinstance(intent_info, dict)
-                else intent_info.get('intent_type')
-            )
-            _intent_conf = (
-                getattr(intent_info, 'confidence', 0)
-                if not isinstance(intent_info, dict)
-                else intent_info.get('confidence', 0)
-            )
-            _type_val = getattr(_intent_type, 'value', str(_intent_type)) if _intent_type else ''
-            if _type_val in VETO_INTENTS and _intent_conf >= 0.75:
-                logger.info(
-                    f"[Agentic Gate] VETOED by intent classifier: "
-                    f"{_intent_type} (conf={_intent_conf:.2f})"
-                )
-                should_trigger = False
-                search_terms = []
-                _veto_reason = f"intent-veto: {_type_val}@{_intent_conf:.2f}"
 
     # ── Build modes list ──────────────────────────────────────────────
     if needs_computation:
@@ -611,14 +632,12 @@ async def evaluate_agentic_gate(
     # ── Build reason string ───────────────────────────────────────────
     if should_trigger:
         reason = f"triggered: {', '.join(modes) if modes else 'llm-fallback'}"
-    elif _veto_reason:
-        reason = _veto_reason
     elif any(_skip_patterns) and not _prev_was_agentic:
         reason = "casual/short message"
     else:
         reason = "no trigger"
 
-    return AgenticDecision(
+    decision = AgenticDecision(
         should_trigger=should_trigger,
         modes=modes,
         search_terms=search_terms,
@@ -627,4 +646,48 @@ async def evaluate_agentic_gate(
         self_note_intent=self_note_intent,
         skip_initial_search=skip_initial,
         reason=reason,
+        veto_exempt=_veto_exempt,
     )
+
+    # Intent veto — applied here when intent_info was available at call time.
+    # Callers that run the gate CONCURRENTLY with the context pipeline pass
+    # intent_info=None and apply the veto post-hoc via apply_intent_veto().
+    if intent_info is not None:
+        decision = apply_intent_veto(decision, intent_info)
+
+    return decision
+
+
+def apply_intent_veto(decision: AgenticDecision, intent_info) -> AgenticDecision:
+    """Apply the intent-classifier veto to a gate decision (idempotent).
+
+    Extracted so the gate can run concurrently with the context pipeline:
+    the veto needs the pipeline's intent classification, which isn't
+    available when the gate is launched early. Explicit requests (search
+    keywords, URL, file access, doc-gen, self-note — recorded on
+    decision.veto_exempt) are never suppressed.
+    """
+    if decision is None or not decision.should_trigger or intent_info is None:
+        return decision
+    if decision.veto_exempt:
+        return decision
+    _intent_type = (
+        getattr(intent_info, 'intent_type', None)
+        if not isinstance(intent_info, dict)
+        else intent_info.get('intent_type')
+    )
+    _intent_conf = (
+        getattr(intent_info, 'confidence', 0)
+        if not isinstance(intent_info, dict)
+        else intent_info.get('confidence', 0)
+    )
+    _type_val = getattr(_intent_type, 'value', str(_intent_type)) if _intent_type else ''
+    if _type_val in VETO_INTENTS and _intent_conf >= 0.75:
+        logger.info(
+            f"[Agentic Gate] VETOED by intent classifier: "
+            f"{_intent_type} (conf={_intent_conf:.2f})"
+        )
+        decision.should_trigger = False
+        decision.search_terms = []
+        decision.reason = f"intent-veto: {_type_val}@{_intent_conf:.2f}"
+    return decision

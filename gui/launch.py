@@ -360,6 +360,30 @@ def _run_model_warmup(orchestrator):
             _get_search_anchors()
         except Exception as e:
             print(f"[Warmup] anchors skip: {e}")
+        # 5) Wiki FAISS cold-touch (USB-backed index): the first semantic
+        #    search of a session reads cold mmap pages off the T9 drive and
+        #    routinely blows the 1.5s SEM_TIMEOUT_S, so turn 1 loses its wiki
+        #    chunks and the zombie thread occupies a wiki-executor slot. One
+        #    tiny background query here pulls the hot pages into the OS cache
+        #    off the critical path. Runs on the dedicated wiki executor so it
+        #    can never block anything else.
+        try:
+            from core.prompt.gatherer_knowledge import (
+                _WIKI_SEM_EXECUTOR, _WIKI_SEM_INFLIGHT,
+            )
+            from knowledge.semantic_search import semantic_search_with_neighbors
+            # Hold an in-flight slot like any real search — submissions must
+            # never exceed the semaphore or a queued future could be cancelled
+            # before its release-in-finally ever runs.
+            if _WIKI_SEM_INFLIGHT.acquire(blocking=False):
+                def _wiki_warm():
+                    try:
+                        semantic_search_with_neighbors("warm up", 2)
+                    finally:
+                        _WIKI_SEM_INFLIGHT.release()
+                _WIKI_SEM_EXECUTOR.submit(_wiki_warm)
+        except Exception as e:
+            print(f"[Warmup] wiki faiss skip: {e}")
         print(f"[Warmup] Model warmup complete ({_t.time() - t0:.1f}s)")
 
     threading.Thread(target=_warm_task, daemon=True).start()

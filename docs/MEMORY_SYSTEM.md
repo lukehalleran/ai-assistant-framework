@@ -195,6 +195,9 @@ UnifiedPromptBuilder.build_prompt()
   │     Top 2 recent → bypass gating
   │     Remaining → cosine similarity → cross-encoder reranking
   │     Forced minimum: 8 memories even if below threshold
+  │     (Gate scoring uses the store's bge embedder — device is GPU
+  │      auto-detected since 2026-07-15 (`_resolve_embed_device`,
+  │      CHROMA_DEVICE env overrides); CPU-pinned it was ~5s per gate call.)
   │
   ├─ 5. Scoring (MemoryScorer.rank_memories)
   │     12-step algorithm → final_score per memory
@@ -301,7 +304,8 @@ Synthesis dreaming — SEPARATE standalone step [CHANGED 2026-06-19] ──
     ├─ Auto-halt check: skips if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
     ├─ PooledConceptSynthesisGenerator — the SOLE active generator (2026-06-30):
     │     pairs prominent curated concepts (48-concept CONCEPT_POOL) in the
-    │     non-obvious cosine band 0.2-0.45 (config: synthesis_pooled, enabled: true)
+    │     non-obvious cosine band 0.2-0.45 (config: synthesis_pooled — enabled: false
+    │     since 2026-07-15, API-cost pause; toggle + count slider in Settings)
     ├─ Retired tiers (config enabled: false): Tier 0 RetrievalSynthesisGenerator,
     │     Tier 1 GraphWalkGenerator, Tier 2 SynthesisGenerator
     ├─ Candidates → SynthesisFilter → SynthesisMemory
@@ -910,6 +914,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Old unrelated memories ranking high | Recency weight too low | Increase `recency` in `SCORE_WEIGHTS` |
+| `[API unavailable]`/"test" turns surfacing | Junk docs stored pre-2026-07-03 guard | Retrieval already filters them (`memory/utils.is_junk_conversation_doc`); purge stored docs via `scripts/purge_error_memories.py` (dry-run first) |
 | Memories from wrong topic | Topic weight too low | Increase `topic_match` weight (live 0.10) |
 | Too many low-quality results | Gate threshold too low | Raise `GATE_REL_THRESHOLD_RETRIEVAL` (default 0.60, bge space — small moves shift pass rate a lot) |
 | Large docs drowning out small facts | Size penalty too weak | Lower `LARGE_DOC_SIZE_THRESHOLD` in `memory_scorer.py` (default 10KB) or raise `LARGE_DOC_BASE_PENALTY` (default -0.25) |

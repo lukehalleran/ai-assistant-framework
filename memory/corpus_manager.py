@@ -135,6 +135,7 @@ class CorpusManager:
         thread_topic: Optional[str] = None,
         is_heavy_topic: Optional[bool] = None,
         topic: Optional[str] = None,
+        response_mode: Optional[str] = None,
     ):
         """
         Add a new interaction to corpus with optional thread metadata.
@@ -150,6 +151,10 @@ class CorpusManager:
             thread_topic: Topic of the thread
             is_heavy_topic: Whether this is a heavy/crisis topic
             topic: Detected topic for this conversation
+            response_mode: How the turn was answered ("agentic-search",
+                "enhanced", "best-of-duel", ...) — the agentic gate's
+                continuation check reads this as ground truth instead of
+                re-inferring tool intent from keywords
         """
         # Trim obvious trailing/leading whitespace to avoid blank lines in prompts
         q = (query or "").strip()
@@ -174,6 +179,8 @@ class CorpusManager:
             entry["is_heavy_topic"] = is_heavy_topic
         if topic:
             entry["topic"] = topic
+        if response_mode:
+            entry["response_mode"] = response_mode
 
         self.corpus.append(entry)
         self._episodic_cache = None  # Invalidate cache

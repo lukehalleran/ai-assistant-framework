@@ -45,6 +45,8 @@ import os
 import re
 import asyncio
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
@@ -127,6 +129,21 @@ DREAMS_ENABLED = _parse_bool(os.getenv("DREAMS_ENABLED", "1"))
 
 # Semantic search configuration
 SEM_K = int(os.getenv("SEM_K", "50"))
+
+# Dedicated executor + in-flight guard for the wiki semantic search
+# (USB-T9-backed FAISS). A search that outlives SEM_TIMEOUT_S keeps its
+# thread alive — asyncio.wait_for cancels the future, not the blocking I/O —
+# and on the SHARED default executor those zombie threads starved every
+# other run_in_executor task (observed: semantic=19.3s wall despite the
+# 1.5s timeout; prompt builds stretched to 30s+). Isolating wiki search in
+# its own 2-worker pool caps the damage to wiki itself, and the non-blocking
+# semaphore skips a new search while a previous one is still stuck, so
+# zombie threads can't pile up across turns.
+_WIKI_SEM_MAX_CONCURRENT = int(os.getenv("WIKI_SEM_MAX_CONCURRENT", "2"))
+_WIKI_SEM_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_WIKI_SEM_MAX_CONCURRENT, thread_name_prefix="wiki-sem"
+)
+_WIKI_SEM_INFLIGHT = threading.Semaphore(_WIKI_SEM_MAX_CONCURRENT)
 # Hard cap on the wiki FAISS semantic-chunks lookup. The 41M-row index lives on
 # external storage; at the old 8s ceiling this task timed out on ~30% of turns
 # (see daemon_debug logs: "semantic=8.00s") and floored the whole prompt build.
@@ -321,6 +338,36 @@ class KnowledgeRetrievalMixin:
             logger.warning(f"[ContextGatherer] Failed to get reference docs: {e}")
             return []
 
+    # user_uploads existence cache: the full hybrid retrieval below costs
+    # ~0.9s EVERY turn even when the user has never uploaded anything. A
+    # metadata-only probe (where type=user_upload, limit=1) is ~ms; a positive
+    # answer is cached for the session, a negative one for 60s so a fresh
+    # upload becomes visible promptly.
+    _uploads_exist_cache: Optional[bool] = None
+    _uploads_exist_checked_at: float = 0.0
+    _UPLOADS_NEGATIVE_TTL_S = 60.0
+
+    def _any_user_uploads_exist(self) -> bool:
+        """Cheap existence probe for type='user_upload' docs; fails open."""
+        import time as _t
+        if self._uploads_exist_cache is True:
+            return True
+        if (self._uploads_exist_cache is False
+                and (_t.time() - self._uploads_exist_checked_at) < self._UPLOADS_NEGATIVE_TTL_S):
+            return False
+        try:
+            coll = self.reference_docs_manager.chroma_store._get_collection('reference_docs')
+            got = coll.get(where={"type": "user_upload"}, limit=1)
+            exists = bool(got and got.get("ids"))
+        except Exception as e:
+            logger.debug(f"[ContextGatherer] upload existence probe failed (fail-open): {e}")
+            return True
+        self._uploads_exist_cache = exists
+        self._uploads_exist_checked_at = _t.time()
+        if not exists:
+            logger.debug("[ContextGatherer] No user uploads in store — skipping uploads retrieval")
+        return exists
+
     async def get_user_uploads(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """
         Get relevant user-uploaded items from reference_docs collection,
@@ -335,6 +382,10 @@ class KnowledgeRetrievalMixin:
         """
         manager = self.reference_docs_manager
         if not manager:
+            return []
+
+        # Skip the ~0.9s hybrid retrieval entirely when no uploads exist.
+        if not self._any_user_uploads_exist():
             return []
 
         try:
@@ -1102,14 +1153,33 @@ class KnowledgeRetrievalMixin:
         if not query:
             return []
 
+        # In-flight guard: if all wiki-search slots are occupied (previous
+        # turns' searches still blocked on USB I/O), skip this turn rather
+        # than queue behind them — the timeout would fire anyway and the
+        # queued search would run pointlessly after.
+        if not _WIKI_SEM_INFLIGHT.acquire(blocking=False):
+            logger.warning(
+                "[ContextGatherer] Wiki semantic search still running from a "
+                "previous turn — skipping wiki chunks this turn"
+            )
+            return []
+
+        def _search_and_release():
+            try:
+                return semantic_search_with_neighbors(query, k)
+            finally:
+                # Released by the WORKER THREAD when the search actually
+                # finishes — not at timeout — so the slot stays held for as
+                # long as the thread is genuinely stuck.
+                _WIKI_SEM_INFLIGHT.release()
+
         try:
-            # Use semantic search with neighbors
+            # Use semantic search with neighbors (dedicated executor — see
+            # _WIKI_SEM_EXECUTOR comment above)
             results = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
-                    None,
-                    semantic_search_with_neighbors,
-                    query,
-                    k
+                    _WIKI_SEM_EXECUTOR,
+                    _search_and_release,
                 ),
                 timeout=SEM_TIMEOUT_S
             )

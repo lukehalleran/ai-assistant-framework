@@ -307,12 +307,14 @@ class DaemonOrchestrator:
                 ESCALATION_THRESHOLD,
                 ESCALATION_DEESCALATION_WINDOW,
                 ESCALATION_MAX_HISTORY,
+                ESCALATION_DISTRESS_THRESHOLD,
             )
             if ESCALATION_ENABLED:
                 self.escalation_tracker = EscalationTracker(
                     escalation_threshold=ESCALATION_THRESHOLD,
                     deescalation_window=ESCALATION_DEESCALATION_WINDOW,
                     max_history=ESCALATION_MAX_HISTORY,
+                    distress_threshold=ESCALATION_DISTRESS_THRESHOLD,
                 )
                 self.logger.info(
                     f"[Orchestrator] EscalationTracker enabled "
@@ -323,6 +325,22 @@ class DaemonOrchestrator:
                 self.logger.debug("[Orchestrator] EscalationTracker disabled via config")
         except Exception as e:
             self.logger.warning(f"[Orchestrator] Failed to initialize EscalationTracker: {e}")
+
+        # Runtime safety canary — log-only monitor for tone-flatline miswires
+        self.safety_canary = None
+        try:
+            from config.app_config import CANARY_ENABLED, CANARY_CONSECUTIVE_THRESHOLD
+            if CANARY_ENABLED:
+                from core.safety_canary import SafetyCanary
+                self.safety_canary = SafetyCanary(
+                    threshold=CANARY_CONSECUTIVE_THRESHOLD,
+                    session_id=str(getattr(self.memory_system, 'session_id', None) or "session"),
+                )
+                self.logger.info(
+                    f"[Orchestrator] SafetyCanary enabled (threshold={CANARY_CONSECUTIVE_THRESHOLD})"
+                )
+        except Exception as e:
+            self.logger.warning(f"[Orchestrator] Failed to initialize SafetyCanary: {e}")
 
         # Correction/Confirmation Detector — truth score evidence from user messages
         self.correction_detector = None
@@ -564,9 +582,13 @@ class DaemonOrchestrator:
         """Return mode-specific response instructions based on detected crisis level."""
         return _ext_get_tone_instructions(tone_level, getattr(self, "user_profile", None))
 
-    def _get_response_instructions(self, ctx: EmotionalContext) -> str:
+    def _get_response_instructions(self, ctx: EmotionalContext,
+                                   suppress_style_modifier: bool = False) -> str:
         """Generate response instructions based on combined emotional context."""
-        return _ext_get_response_instructions(ctx, getattr(self, "user_profile", None))
+        return _ext_get_response_instructions(
+            ctx, getattr(self, "user_profile", None),
+            suppress_style_modifier=suppress_style_modifier,
+        )
 
     # ---------- 1b) Session Headers Instructions ----------
     def _get_session_headers_instructions(self) -> str:
@@ -1009,14 +1031,15 @@ class DaemonOrchestrator:
 
         # --- Response mode instructions (from ContextResult tone) ---
         if not use_raw_mode:
-            emotional_ctx = context.emotional_context
-            if emotional_ctx:
-                response_instructions = self._get_response_instructions(emotional_ctx)
-                system_prompt = system_prompt.rstrip() + response_instructions
-
-            # --- Intent style instructions (per-turn tail, after the cache
-            # breakpoint — never invalidates the cached prefix). Crisis tone
-            # suppresses it inside the function; tone owns style then.
+            # Resolve the per-intent style block FIRST: when a confident
+            # intent owns the turn's style, the standing profile style
+            # modifier is suppressed for the turn — previously BOTH were
+            # injected and could contradict ("WARM & SUPPORTIVE / prioritize
+            # connection" + "TECHNICAL HELP / skip reassurance"), leaving the
+            # model to paper over the conflict. Precedence: crisis tone >
+            # intent style > profile style modifier (crisis suppression of
+            # the intent block happens inside get_intent_style_instructions).
+            _intent_style = ""
             try:
                 from config.app_config import INTENT_STYLE_INSTRUCTIONS_ENABLED
                 if INTENT_STYLE_INSTRUCTIONS_ENABLED and context.intent is not None:
@@ -1026,10 +1049,21 @@ class DaemonOrchestrator:
                         getattr(context.intent, "confidence", None),
                         getattr(context, "crisis_level_str", None),
                     )
-                    if _intent_style:
-                        system_prompt = system_prompt.rstrip() + _intent_style
             except Exception as e:
-                logger.debug(f"[Orchestrator] Intent style injection failed (non-fatal): {e}")
+                logger.debug(f"[Orchestrator] Intent style resolution failed (non-fatal): {e}")
+                _intent_style = ""
+
+            emotional_ctx = context.emotional_context
+            if emotional_ctx:
+                response_instructions = self._get_response_instructions(
+                    emotional_ctx, suppress_style_modifier=bool(_intent_style)
+                )
+                system_prompt = system_prompt.rstrip() + response_instructions
+
+            # Intent style appended in the per-turn tail (after the cache
+            # breakpoint — never invalidates the cached prefix).
+            if _intent_style:
+                system_prompt = system_prompt.rstrip() + _intent_style
 
             # Escalation adaptation: append strategy-specific overrides
             if self.escalation_tracker:
@@ -1525,6 +1559,17 @@ class DaemonOrchestrator:
                 user_input,
                 need_type=need_type_str,
             )
+
+        # Runtime safety canary (log only): flags a sustained negative-affect
+        # streak that the tone/safety path is reading as CONVERSATIONAL — a
+        # cheap tripwire for the NEXT unknown miswire. No behavior change.
+        # getattr guard: a safety tripwire must never break a turn, even under a
+        # partially-constructed orchestrator (e.g. __new__-based test fixtures).
+        if getattr(self, "safety_canary", None):
+            try:
+                self.safety_canary.observe(user_input, context.tone_level)
+            except Exception as _canary_exc:
+                self.logger.debug(f"[SafetyCanary] skipped: {_canary_exc}")
 
         debug_info["context_pipeline"] = {
             "tone_level": context.tone_level.value,

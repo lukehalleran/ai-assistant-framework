@@ -110,6 +110,18 @@ class SummaryCadenceSettings(BaseModel):
     every_n: int = Field(ge=1, le=200)
 
 
+class SynthesisSettings(BaseModel):
+    """Synthesis dreaming — LLM candidate generation at shutdown."""
+    enabled: bool = False
+    candidates_per_session: int = Field(default=8, ge=1, le=20)
+
+
+class ProposalsSettings(BaseModel):
+    """Goal-directed code proposals — LLM generation at shutdown."""
+    enabled: bool = True
+    max_per_session: int = Field(default=5, ge=1, le=10)
+
+
 class SettingsSnapshot(BaseModel):
     streaming: StreamingSettings
     web_search: WebSearchSettings
@@ -117,6 +129,8 @@ class SettingsSnapshot(BaseModel):
     tokens: TokenSettings
     temperature: float
     summary_every_n: int
+    synthesis: SynthesisSettings
+    proposals: ProposalsSettings
     model_choices: List[str] = Field(default_factory=list)
 
 

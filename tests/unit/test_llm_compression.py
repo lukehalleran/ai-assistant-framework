@@ -151,6 +151,53 @@ class TestLLMCompression:
         assert result["memories"][0]["content"] == big_content
 
     @pytest.mark.asyncio
+    async def test_success_cached_across_calls(self, builder):
+        """Identical content compresses once; later turns reuse the cache."""
+        big = "Important fact about the user. " * 250
+        builder.model_manager.generate_once = AsyncMock(
+            return_value="Compressed once for the cache test."
+        )
+        await builder._llm_compress_oversized({"memories": [_make_item(big)]})
+        assert builder.model_manager.generate_once.call_count == 1
+
+        result = await builder._llm_compress_oversized({"memories": [_make_item(big)]})
+        # No second LLM call — cache hit still applies the compressed text.
+        assert builder.model_manager.generate_once.call_count == 1
+        assert result["memories"][0]["content"] == "Compressed once for the cache test."
+
+    @pytest.mark.asyncio
+    async def test_timeout_cached_no_rewait(self, builder):
+        """A recorded timeout is never re-paid for identical content.
+
+        Regression: git_commits timed out (flat 3s) on 7/7 turns of a session
+        because each turn re-attempted the same blob.
+        """
+        big = "y" * 8000
+        calls = {"n": 0}
+
+        async def _slow(*args, **kwargs):
+            calls["n"] += 1
+            await asyncio.sleep(10)
+            return "should not reach"
+
+        builder.model_manager.generate_once = _slow
+        with patch("core.prompt.builder.LLM_COMPRESSION_TIMEOUT", 0.01):
+            await builder._llm_compress_oversized({"memories": [_make_item(big)]})
+            result = await builder._llm_compress_oversized({"memories": [_make_item(big)]})
+
+        assert calls["n"] == 1  # second turn skipped the LLM attempt entirely
+        assert result["memories"][0]["content"] == big  # middle-out handles later
+
+    @pytest.mark.asyncio
+    async def test_transient_error_not_cached(self, builder):
+        """API errors are transient — retry on the next turn, don't poison the cache."""
+        big = "z" * 8000
+        builder.model_manager.generate_once = AsyncMock(side_effect=RuntimeError("API down"))
+        await builder._llm_compress_oversized({"memories": [_make_item(big)]})
+        await builder._llm_compress_oversized({"memories": [_make_item(big)]})
+        assert builder.model_manager.generate_once.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_llm_error_falls_back_gracefully(self, builder):
         """On LLM error, item stays unchanged."""
         big_content = "z" * 8000

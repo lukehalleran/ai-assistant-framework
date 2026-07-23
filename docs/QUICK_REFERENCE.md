@@ -126,6 +126,12 @@ class MemoryRetriever:
         5. Rank with MemoryScorer
         6. Deduplicate by memory key
         7. Return top K
+
+        Pool caps (2026-07-15): hybrid retriever per-collection n_results =
+        min(limit*3, 200); gym/health semantic_count capped at 120. Junk guard:
+        memory/utils.is_junk_conversation_doc drops API-error-sentinel turns +
+        bare "test" exchanges at retrieval (purge stored docs:
+        scripts/purge_error_memories.py, dry-run first).
         """
 
     async def get_semantic_top_memories(query, limit=10) -> List[Dict]:
@@ -284,8 +290,26 @@ class EscalationTracker:
 
 # Config (app_config.py):
 ESCALATION_ENABLED = True
-ESCALATION_THRESHOLD = 3          # Consecutive elevated before strategy shift
+ESCALATION_THRESHOLD = 3          # Consecutive ELEVATED/CRISIS before strategy shift
 ESCALATION_DEESCALATION_WINDOW = 2  # Consecutive calm before gentle ends
+ESCALATION_DISTRESS_THRESHOLD = 5  # Consecutive CONCERN-or-higher → grounding (slow-spiral guard)
+```
+
+## Anti-amplification / Valence Retrieval **[NEW 2026-07-21]**
+```python
+# utils/tone_detector.py — detect_crisis_level(msg, history, model_manager, previous_tone)
+#   <8-word fast path exits early ONLY for recognizably-casual msgs; distress is
+#   sticky across terse turns (previous_tone + heavy history); non-casual terse
+#   reply mid-distress floored at CONCERN. Prevents short-turn spirals flatlining.
+# core/escalation_tracker.py — consecutive_distress_count (CONCERN-inclusive) →
+#   GROUNDING_PRESENCE at distress_threshold; GROUNDING/QUIET forbid excavating questions.
+# memory/valence.py — negative_affect_score(text); cap_negative_memories(...)
+# core/prompt/gatherer_memory.py::_apply_valence_cap — caps negative [RELEVANT MEMORIES]
+#   fraction during distress (builder sets _distress_active from crisis_level).
+VALENCE_RETRIEVAL_ENABLED = True
+VALENCE_MAX_NEGATIVE_FRACTION = 0.5   # max negative memories per prompt in distress
+VALENCE_NEGATIVE_THRESHOLD = 0.30
+# Tests: tests/unit/test_anti_amplification.py
 ```
 
 ---
@@ -432,8 +456,13 @@ class UnifiedPromptBuilder:
         fresh_facts, summaries, reflections, wiki, semantic_chunks, dreams,
         web_search_results (if triggered), graph_context, threads, ...
         Final string assembly is PromptFormatter._assemble_prompt().
-        Token budget: PROMPT_TOKEN_BUDGET_DEFAULT=15000 (floor 8K, ceiling 16K).
+        Token budget: PROMPT_TOKEN_BUDGET_DEFAULT=10000 (floor 8K, ceiling 16K;
+        lowered from 15000 on 2026-07-15 via preregistered scripts/budget_experiment.py).
         retrieval_overrides / weight_overrides / intent_type come from IntentClassifier.
+        Light-prompt path (2026-07-15): terse casual acks (QueryAnalysis.is_small_talk,
+        set by query_checker.is_casual_acknowledgment; YAML light_prompt) short-circuit
+        to _build_lightweight_context (recent 3 turns only) via _should_use_light_path —
+        elevated tone always gets full context.
         """
 
     async def build_prompt_from_context(context: ContextResult, ...) -> Dict[str, Any]:
@@ -1620,10 +1649,14 @@ SUMMARIZE_AT_SHUTDOWN_ONLY = True   # env SUMMARIZE_AT_SHUTDOWN_ONLY, memory_sto
 
 # Models
 DEFAULT_MODEL_NAME = config["models"]["default"]   # yaml: "llama" (local fallback)
-# API alias registry (models/model_manager.py): gpt-4o-mini, gpt-4o, gpt-4.1, gpt-5,
-#   gpt-5.1, gpt-5.5, claude-opus[-4.5/-4.6/-4.7/-4.8], claude-fable-5 (alias fable-5),
-#   sonnet-4.5, sonnet-4.6, glm-4.6, glm-4.7, glm-5, glm-5-turbo, glm-5.2,
-#   deepseek-v3.1, deepseek-v4, deepseek-v4-flash, deepseek-r1, gemini-3-pro
+# API alias registry (models/model_manager.py API_MODEL_ALIASES): gpt-4o-mini, gpt-4o, gpt-4.1,
+#   gpt-5, gpt-5.1, gpt-5.5, claude-opus (→4.8) / -4.5/-4.6/-4.7/-4.8, claude-fable-5 (alias fable-5),
+#   sonnet-4.5, sonnet-4.6, haiku-4.5, glm-4.6, glm-4.7, glm-5, glm-5-turbo, glm-5.2,
+#   deepseek-v3.1, deepseek-v4, deepseek-v4-flash, deepseek-r1, gemini-3-pro,
+#   kimi-k3 (alias kimi-3), kimi-k2-thinking, kimi-k2.6
+# Capability truth: MODEL_CAPABILITIES (single source of truth, keyed by full slug) — the four
+#   supports_* classifiers derive from it; pinned by tests/unit/test_model_capability_wiring.py +
+#   scripts/verify_model_capabilities_live.py (validates vs OpenRouter's live /models).
 ```
 
 ---
@@ -2031,6 +2064,12 @@ class AgenticSearchController:
         3b. Track memory_search_counts per collection (diversity enforcement) [ENHANCED 2026-03-23]
         4. Repeat until done or max_turns reached
         5. Yield AgenticEvent for each stage (thinking/searching/computed/done)
+        6. Final answer: a substantive decision-round answer is REUSED verbatim
+           (vetted by _usable_decision_answer(); final synthesis call skipped,
+           final_prompt_hash="decision-answer-reuse") — otherwise
+           _generate_final_response() streams a fresh full-context synthesis.
+           Config: agentic_search.reuse_decision_answer /
+           agentic_search.decision_max_tokens (1600, both decision paths) [NEW 2026-07-15]
         """
 
     # ToolExecutor.get_tool_health() → "[TOOL STATUS]" prompt section [UPDATED 2026-05]

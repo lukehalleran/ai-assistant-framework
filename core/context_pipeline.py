@@ -4,7 +4,9 @@ Context Pipeline - Builder pattern for prompt preparation.
 Purpose: Transform raw user input into fully processed context ready for prompt building.
 Inputs: User query, optional files, configuration flags
 Outputs: ContextResult with all context components
-Side effects: May call LLM for tone detection, query rewriting, STM analysis
+Side effects: May call LLM for tone detection, query rewriting, STM analysis.
+Publishes live stage-progress lines to utils.turn_progress (no-op outside a turn)
+so the streaming UI shows pipeline activity instead of a single "Thinking..." stall.
 
 This module extracts the prepare_prompt workflow from the orchestrator,
 making it testable, maintainable, and independently evolvable.
@@ -37,6 +39,7 @@ from config.app_config import (
     INTENT_ENABLED,
 )
 from core.intent_classifier import IntentClassifier, IntentResult, IntentType
+from utils.turn_progress import emit as _progress_emit
 
 if TYPE_CHECKING:
     from utils.topic_manager import TopicManager
@@ -56,14 +59,43 @@ class ToneLevel(Enum):
 
     @classmethod
     def from_string(cls, level: str) -> "ToneLevel":
-        """Convert string crisis level to ToneLevel enum."""
+        """
+        Convert a crisis-level string to ToneLevel. Accepts BOTH encodings so
+        callers passing either CrisisLevel.name ("HIGH"/"MEDIUM"/"CONCERN") or
+        CrisisLevel.value ("crisis_support"/"elevated_support"/"light_support")
+        map correctly.
+
+        WARNING (2026-07-21): the pipeline passes `crisis_level.value`, whose
+        forms are "*_support"/"conversational" — NOT the name-scale keys. Before
+        this table accepted them, every level defaulted to CONVERSATIONAL, so the
+        EscalationTracker was fed CONVERSATIONAL every turn and GROUNDING/QUIET
+        could never fire in production. Unit tests missed it by calling
+        tracker.update(ToneLevel.CRISIS) directly, bypassing this conversion;
+        the golden-transcript replay (through the real path) caught it. Keep both
+        encodings mapped. Regression: tests/unit/test_tonelevel_from_string.py.
+        """
+        if level is None:
+            return cls.CONVERSATIONAL
         level_map = {
+            # CrisisLevel.name scale
             "HIGH": cls.CRISIS,
             "MEDIUM": cls.ELEVATED,
             "CONCERN": cls.CONCERN,
             "CONVERSATIONAL": cls.CONVERSATIONAL,
+            # CrisisLevel.value encodings (what the pipeline actually passes)
+            "crisis_support": cls.CRISIS,
+            "elevated_support": cls.ELEVATED,
+            "light_support": cls.CONCERN,
+            "conversational": cls.CONVERSATIONAL,
         }
-        return level_map.get(level, cls.CONVERSATIONAL)
+        if level in level_map:
+            return level_map[level]
+        # Case-insensitive fallback across both scales.
+        low = str(level).strip().lower()
+        for key, val in level_map.items():
+            if key.lower() == low:
+                return val
+        return cls.CONVERSATIONAL
 
 
 @dataclass
@@ -203,6 +235,12 @@ class ContextPipeline:
         self.memory_system = memory_system
         self.config = config or {}
 
+        # Session tone memory: the prior turn's detected crisis level, fed back
+        # into tone detection so distress stays sticky across short/terse turns
+        # (prevents a spiral built from brief messages from flatlining at
+        # CONVERSATIONAL). Reset on new session via reset_session_tone().
+        self._last_tone_level: Optional[object] = None
+
         # Configuration with defaults
         self._use_stm = self.config.get("USE_STM_PASS", USE_STM_PASS)
         self._stm_min_depth = self.config.get("STM_MIN_CONVERSATION_DEPTH", STM_MIN_CONVERSATION_DEPTH)
@@ -269,6 +307,7 @@ class ContextPipeline:
 
         # Stages 1+2: Topic Extraction + Tone Detection (parallelized — independent)
         if not use_raw_mode:
+            _progress_emit("🧠 Analyzing query — topics + tone…")
             (primary_topic, topics), (tone_level, emotional_context) = await asyncio.gather(
                 self._extract_topics(user_input),
                 self._detect_tone(user_input, conversation_history),
@@ -300,6 +339,9 @@ class ContextPipeline:
                 f"Stage 4a (Intent): {intent_result.intent.value} "
                 f"(conf={intent_result.confidence:.2f})"
             )
+            _progress_emit(
+                f"🧭 Intent: {intent_result.intent.value} · tone: {tone_level.value}"
+            )
             if intent_result.intent == IntentType.CASUAL_SOCIAL and intent_result.confidence >= 0.70:
                 is_small_talk = True
                 logger.debug("Stage 4a: is_small_talk=True (CASUAL_SOCIAL, high confidence)")
@@ -321,6 +363,7 @@ class ContextPipeline:
                     and intent_result.intent != IntentType.EMOTIONAL_SUPPORT):
                 skip_heavy = True
         if not skip_heavy:
+            _progress_emit("📋 Topic analysis + fact extraction…")
             is_heavy_topic, extracted_facts, query_analysis = await self._check_heavy_topics(
                 user_input,
                 topics
@@ -346,6 +389,8 @@ class ContextPipeline:
 
         if run_rewrite and run_stm:
             # Both needed — run in parallel for ~1-2s savings
+            _progress_emit("✍️ Refining query + reading short-term context…")
+
             async def _do_rewrite():
                 return await self._rewrite_query(user_input, query_analysis)
 
@@ -367,12 +412,14 @@ class ContextPipeline:
                 logger.debug("Stage 6 (STM): analysis complete")
 
         elif run_rewrite:
+            _progress_emit("✍️ Refining query for retrieval…")
             rewritten = await self._rewrite_query(user_input, query_analysis)
             if rewritten and rewritten != user_input:
                 processed_query = rewritten
                 logger.debug("Stage 5 (Rewrite): query rewritten")
 
         elif run_stm:
+            _progress_emit("🧵 Reading short-term context…")
             try:
                 async with asyncio.timeout(10.0):
                     stm_summary = await self._analyze_stm(user_input, conversation_history)
@@ -493,17 +540,33 @@ class ContextPipeline:
             if conversation_history:
                 recent_memories = conversation_history[:3]
 
-            # Analyze emotional context
+            # Over-stickiness guard: distress tone is sticky across terse turns
+            # WITHIN a session, but a long gap means a new session — a calm
+            # message hours after a distressed one must be classified on its own
+            # merits, not floored to the earlier tone. Drop the carried tone when
+            # the gap since the last turn exceeds the threshold.
+            if self._should_reset_tone_stickiness(recent_memories):
+                logger.info(
+                    f"[ContextPipeline] Session gap exceeded — clearing carried tone "
+                    f"stickiness (was {self._last_tone_level})"
+                )
+                self._last_tone_level = None
+
+            # Analyze emotional context. previous_tone carries the prior turn's
+            # crisis level so distress is sticky across short/terse messages.
             emotional_ctx = await analyze_emotional_context(
                 message=query,
                 conversation_history=recent_memories,
-                model_manager=self.model_manager
+                model_manager=self.model_manager,
+                previous_tone=self._last_tone_level,
             )
 
             # Convert crisis level to ToneLevel
             if emotional_ctx and hasattr(emotional_ctx, 'crisis_level'):
                 level_str = emotional_ctx.crisis_level.value if hasattr(emotional_ctx.crisis_level, 'value') else str(emotional_ctx.crisis_level)
                 tone_level = ToneLevel.from_string(level_str)
+                # Remember this turn's crisis level for the next call's stickiness.
+                self._last_tone_level = emotional_ctx.crisis_level
             else:
                 tone_level = ToneLevel.CONVERSATIONAL
 
@@ -515,6 +578,35 @@ class ContextPipeline:
         except Exception as e:
             logger.warning(f"Tone detection failed: {e}")
             return ToneLevel.CONVERSATIONAL, None
+
+    def _should_reset_tone_stickiness(self, recent_memories) -> bool:
+        """
+        True when the carried tone (`_last_tone_level`) should be dropped because
+        the gap since the last stored turn exceeds TONE_STICKINESS_MAX_GAP_MINUTES
+        (a new session). Within-session (turns minutes apart) keeps stickiness.
+
+        Fail-CLOSED toward preserving within-session stickiness: on any parse
+        uncertainty it returns False (keeps the carried tone) rather than risk
+        dropping distress mid-session. `recent_memories[0]` is the newest turn
+        (get_recent_memories / conversation_history are newest-first).
+        """
+        if self._last_tone_level is None:
+            return False  # nothing carried
+        if not recent_memories:
+            return True   # no prior turn on record → treat as a fresh session
+        try:
+            from datetime import datetime, timedelta
+            from config.app_config import TONE_STICKINESS_MAX_GAP_MINUTES
+            newest = recent_memories[0]
+            ts = newest.get("timestamp") if isinstance(newest, dict) else None
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            if not isinstance(ts, datetime):
+                return False
+            return (datetime.now() - ts) > timedelta(minutes=TONE_STICKINESS_MAX_GAP_MINUTES)
+        except Exception as e:
+            logger.debug(f"[ContextPipeline] tone-stickiness gap check failed: {e}")
+            return False
 
     async def _process_files(
         self,

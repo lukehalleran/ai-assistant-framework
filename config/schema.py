@@ -267,6 +267,8 @@ class AgenticSearchSection(BaseModel):
     prefer_native_tools: bool = True
     memory_search_enabled: bool = True
     memory_search_limit: int = Field(default=7, ge=1)
+    reuse_decision_answer: bool = True
+    decision_max_tokens: int = Field(default=1600, ge=100)
 
 
 class FileAccessSection(BaseModel):
@@ -549,6 +551,30 @@ class EscalationSection(BaseModel):
     threshold: int = Field(default=3, ge=1)
     deescalation_window: int = Field(default=2, ge=1)
     max_history: int = Field(default=10, ge=1)
+    # Consecutive CONCERN-or-higher turns before a mild-but-persistent spiral
+    # upgrades to grounding presence (higher than `threshold`, which is for
+    # ELEVATED/CRISIS). Catches slow spirals built from many terse CONCERN turns.
+    distress_threshold: int = Field(default=5, ge=1)
+
+
+class CanarySection(BaseModel):
+    """Runtime safety canary — log-only monitor for tone-flatline miswires."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    # Consecutive negative-affect-but-CONVERSATIONAL user turns before a WARNING.
+    consecutive_threshold: int = Field(default=4, ge=1)
+
+
+class ValenceRetrievalSection(BaseModel):
+    """Valence-aware memory retrieval — caps mood-congruent recall during distress."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    # Max fraction of retrieved memories allowed to be high-negative-affect while
+    # the session is in distress. The rest are backfilled with lower-affect,
+    # still-relevant memories to break the rumination-amplifier loop.
+    max_negative_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Negative-affect score (0..1) at/above which a memory counts as "negative".
+    negative_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
 
 
 class CrossDedupSection(BaseModel):
@@ -621,6 +647,13 @@ class TurnTelemetrySection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
     path: str = "logs/turn_records.jsonl"
+
+
+class LightPromptSection(BaseModel):
+    """Lightweight-context path for terse casual acknowledgments."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    max_words: int = Field(default=8, ge=1, le=20)
 
 
 class BackupSection(BaseModel):
@@ -989,6 +1022,7 @@ class DaemonConfig(BaseModel):
     uncertainty_fallback: UncertaintyFallbackSection = Field(default_factory=UncertaintyFallbackSection)
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)
+    light_prompt: LightPromptSection = Field(default_factory=LightPromptSection)
     backup: BackupSection = Field(default_factory=BackupSection)
     log_maintenance: LogMaintenanceSection = Field(default_factory=LogMaintenanceSection)
     file_access: FileAccessSection = Field(default_factory=FileAccessSection)
@@ -1027,6 +1061,8 @@ class DaemonConfig(BaseModel):
     code_proposals: CodeProposalsSection = Field(default_factory=CodeProposalsSection)
     behavioral_patterns: BehavioralPatternsSection = Field(default_factory=BehavioralPatternsSection)
     escalation_tracker: EscalationSection = Field(default_factory=EscalationSection)
+    valence_retrieval: ValenceRetrievalSection = Field(default_factory=ValenceRetrievalSection)
+    canary: CanarySection = Field(default_factory=CanarySection)
     cross_dedup: CrossDedupSection = Field(default_factory=CrossDedupSection)
     user_profile: UserProfileSection = Field(default_factory=UserProfileSection)
     git_stats: GitStatsSection = Field(default_factory=GitStatsSection)

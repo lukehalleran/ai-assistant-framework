@@ -81,6 +81,16 @@ export interface TokenSettings {
   streaming_max_tokens: number
 }
 
+export interface SynthesisSettings {
+  enabled: boolean
+  candidates_per_session: number
+}
+
+export interface ProposalsSettings {
+  enabled: boolean
+  max_per_session: number
+}
+
 export interface SettingsSnapshot {
   streaming: StreamingSettings
   web_search: WebSearchSettings
@@ -88,6 +98,8 @@ export interface SettingsSnapshot {
   tokens: TokenSettings
   temperature: number
   summary_every_n: number
+  synthesis: SynthesisSettings
+  proposals: ProposalsSettings
   model_choices: string[]
 }
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 import { fetchEventSource } from '@microsoft/fetch-event-source'
+import { resetDebugBaseline } from './debugSession'
 import type { ChatMessage, ChatRequest, CompletePayload, DebugRecord, DuelThinking } from './types'
 
 // Server sends CUMULATIVE content on `message` events (replace-render): the
@@ -226,6 +227,7 @@ export function useChatStream() {
 
   const clearAll = useCallback(async () => {
     await fetch('/api/session', { method: 'DELETE' })
+    resetDebugBaseline() // server records are gone; new turns start at index 0
     dispatch({ type: 'cleared' })
   }, [])
 

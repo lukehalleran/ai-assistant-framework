@@ -16,6 +16,7 @@ import {
 import { useDisclosure } from '@mantine/hooks'
 import { notifications } from '@mantine/notifications'
 import { api } from './api/client'
+import { captureDebugBaseline } from './api/debugSession'
 import { useChatStream } from './api/useChatStream'
 import ActivityLog from './components/chat/ActivityLog'
 import ChatInput from './components/chat/ChatInput'
@@ -43,6 +44,9 @@ export default function App() {
   const [asideOpened, { toggle: toggleAside }] = useDisclosure(false)
 
   useEffect(() => {
+    // Debug/Provenance show only turns from this page load (Gradio parity) —
+    // snapshot the server-held record count before any chatting happens.
+    captureDebugBaseline()
     api
       .getModels()
       .then((m) => {

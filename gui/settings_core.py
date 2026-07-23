@@ -87,6 +87,8 @@ def get_settings_snapshot(orchestrator) -> dict:
     feat = settings.get("features", {}) or {}
     ws = settings.get("web_search", {}) or {}
     models_cfg = settings.get("models", {}) or {}
+    syn = settings.get("synthesis_pooled", {}) or {}
+    props = settings.get("code_proposals", {}) or {}
     mm = getattr(orchestrator, "model_manager", None)
 
     try:
@@ -124,6 +126,14 @@ def get_settings_snapshot(orchestrator) -> dict:
                            getattr(mm, "default_temperature", 0.7) or 0.7)
         ),
         "summary_every_n": summary_n,
+        "synthesis": {
+            "enabled": bool(syn.get("enabled", False)),
+            "candidates_per_session": int(syn.get("candidates_per_session", 8)),
+        },
+        "proposals": {
+            "enabled": bool(props.get("enabled", True)),
+            "max_per_session": int(props.get("max_per_session", 5)),
+        },
         "model_choices": model_choices(orchestrator),
     }
 
@@ -303,5 +313,74 @@ def apply_summary_cadence(orchestrator, *, every_n: int,
         if not ok:
             return _result(True, False, f"Applied (runtime). Persist failed: {err}")
         return _result(True, True, f"Summary cadence updated: every {n} exchanges (persisted).")
+    except Exception as e:
+        return _result(False, False, f"Failed to apply: {e}")
+
+
+def apply_synthesis(orchestrator, *, enabled: bool, candidates_per_session: int,
+                    save: Optional[Callable] = None) -> dict:
+    """Synthesis dreaming (shutdown LLM step). ON enables the pooled discovery
+    generator (the sole live one — retired tiers stay retired); OFF also forces
+    the legacy generator flag off so `_run_synthesis_dreaming`'s
+    (GENERATOR or POOLED) gate can't resurrect dreaming from a stale yaml."""
+    save = save or save_settings
+    try:
+        n = int(candidates_per_session)
+        if not 1 <= n <= 20:
+            return _result(False, False, "Candidates per session must be 1-20.")
+        cfg = getattr(orchestrator, "config", {}) or {}
+        if isinstance(cfg, dict):
+            cfg.setdefault("synthesis_pooled", {}).update(
+                {"enabled": bool(enabled), "candidates_per_session": n})
+        try:
+            import config.app_config as app_cfg
+            app_cfg.SYNTHESIS_POOLED_ENABLED = bool(enabled)
+            app_cfg.SYNTHESIS_POOLED_CANDIDATES_PER_SESSION = n
+            if not enabled:
+                app_cfg.SYNTHESIS_GENERATOR_ENABLED = False
+        except (ImportError, AttributeError):
+            pass
+
+        def _updater(d):
+            d.setdefault("synthesis_pooled", {}).update(
+                {"enabled": bool(enabled), "candidates_per_session": n})
+            if not enabled:
+                d.setdefault("synthesis_generator", {})["enabled"] = False
+
+        ok, err = save(_updater)
+        if not ok:
+            return _result(True, False, f"Applied runtime synthesis settings. Persist failed: {err}")
+        return _result(True, True,
+                       f"Synthesis dreaming {'ON' if enabled else 'OFF'}, "
+                       f"{n} candidates per shutdown (persisted).")
+    except Exception as e:
+        return _result(False, False, f"Failed to apply: {e}")
+
+
+def apply_proposals(orchestrator, *, enabled: bool, max_per_session: int,
+                    save: Optional[Callable] = None) -> dict:
+    """Goal-directed code proposals (shutdown LLM step)."""
+    save = save or save_settings
+    try:
+        n = int(max_per_session)
+        if not 1 <= n <= 10:
+            return _result(False, False, "Max proposals per session must be 1-10.")
+        cfg = getattr(orchestrator, "config", {}) or {}
+        if isinstance(cfg, dict):
+            cfg.setdefault("code_proposals", {}).update(
+                {"enabled": bool(enabled), "max_per_session": n})
+        try:
+            import config.app_config as app_cfg
+            app_cfg.CODE_PROPOSALS_ENABLED = bool(enabled)
+            app_cfg.CODE_PROPOSALS_MAX_PER_SESSION = n
+        except (ImportError, AttributeError):
+            pass
+        ok, err = save(lambda d: d.setdefault("code_proposals", {}).update(
+            {"enabled": bool(enabled), "max_per_session": n}))
+        if not ok:
+            return _result(True, False, f"Applied runtime proposal settings. Persist failed: {err}")
+        return _result(True, True,
+                       f"Code proposals {'ON' if enabled else 'OFF'}, "
+                       f"max {n} per shutdown (persisted).")
     except Exception as e:
         return _result(False, False, f"Failed to apply: {e}")

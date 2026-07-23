@@ -13,10 +13,12 @@ from fastapi import APIRouter, HTTPException, Request
 
 from api.schemas import (
     DuelSettings,
+    ProposalsSettings,
     SettingsApplyResult,
     SettingsSnapshot,
     StreamingSettings,
     SummaryCadenceSettings,
+    SynthesisSettings,
     TemperatureSettings,
     TokenSettings,
     WebSearchSettings,
@@ -95,4 +97,22 @@ async def put_temperature(request: Request, body: TemperatureSettings):
 async def put_summary_cadence(request: Request, body: SummaryCadenceSettings):
     return _to_response(settings_core.apply_summary_cadence(
         _orchestrator(request), every_n=body.every_n,
+    ))
+
+
+@router.put("/synthesis", response_model=SettingsApplyResult)
+async def put_synthesis(request: Request, body: SynthesisSettings):
+    return _to_response(settings_core.apply_synthesis(
+        _orchestrator(request),
+        enabled=body.enabled,
+        candidates_per_session=body.candidates_per_session,
+    ))
+
+
+@router.put("/proposals", response_model=SettingsApplyResult)
+async def put_proposals(request: Request, body: ProposalsSettings):
+    return _to_response(settings_core.apply_proposals(
+        _orchestrator(request),
+        enabled=body.enabled,
+        max_per_session=body.max_per_session,
     ))

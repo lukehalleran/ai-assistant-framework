@@ -101,6 +101,7 @@ def _make_flow_orch(**overrides):
     orch.memory_system.store_interaction = AsyncMock()
 
     orch.escalation_tracker = None
+    orch.safety_canary = None
     orch._agentic_controller = agentic_controller
     orch._agentic_config = {}
     orch.user_profile = None
@@ -396,6 +397,7 @@ def _make_bfp_orch(**overrides):
     orch.enable_citations = False
     orch.user_profile = None
     orch.escalation_tracker = None
+    orch.safety_canary = None
     orch.response_planner = None
     orch.time_manager = None
 

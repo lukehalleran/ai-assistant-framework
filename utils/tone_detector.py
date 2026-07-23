@@ -8,8 +8,13 @@ Module Contract
   - CrisisLevel(Enum): CONVERSATIONAL, CONCERN, MEDIUM, HIGH
   - ToneAnalysis: level, confidence, trigger, raw_scores, explanation
 - Key public functions:
-  - detect_crisis_level(message, model_manager, conversation_history) -> ToneAnalysis  [async]
-    Main entry point — runs full 4-stage pipeline.
+  - detect_crisis_level(message, conversation_history, model_manager, previous_tone) -> ToneAnalysis  [async]
+    Main entry point — runs full pipeline. `previous_tone` makes distress STICKY
+    across short turns: the <8-word fast path only exits early for recognizably
+    casual messages (greeting/ack/logistics), and during an established distress
+    session a non-casual terse reply is floored at CONCERN rather than resetting
+    to CONVERSATIONAL. This closed the regression where a spiral built from terse
+    messages flatlined at CONVERSATIONAL, starving the escalation tracker.
   - format_tone_log(analysis, message) -> str  [formatted log string]
   - should_log_tone_shift(prev_level, new_level) -> bool
   - format_tone_shift_log(prev_level, new_level, query) -> str
@@ -450,6 +455,102 @@ def _get_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
 
 # ===== Detection Functions =====
 
+# Recognizably casual / acknowledgment / logistics short messages.
+# The <8-word fast path exists ONLY to skip embedding for these (greetings,
+# thanks, "ok", "what time is it"). It must NOT skip ambiguous or emotional
+# short messages — that regression (commit 33246a2) let an entire distress
+# session made of short turns flatline at CONVERSATIONAL.
+_CASUAL_SHORT_MARKERS = {
+    "hi", "hey", "hello", "yo", "sup", "heya", "hiya",
+    "thanks", "thank you", "ty", "thx", "cheers", "much appreciated",
+    "ok", "okay", "k", "kk", "cool", "nice", "great", "awesome", "perfect",
+    "got it", "gotcha", "sure", "yep", "yeah", "yup", "yes", "no", "nope", "nah",
+    "lol", "haha", "lmao", "np", "no problem", "sounds good", "will do", "on it",
+    "brb", "gtg", "ttyl", "later", "bye", "goodnight", "gn", "morning", "good morning",
+    "same", "true", "right", "makes sense", "fair", "word", "for sure", "indeed",
+    "what time is it", "what's up", "whats up", "how are you", "how's it going",
+    "hows it going", "good", "fine", "alright", "not much", "nothing much",
+}
+
+# First-person emotional hint words: if a very short message contains one of
+# these, it is NOT treated as low-signal casual (it goes to semantic detection).
+_EMOTION_HINT_WORDS = {
+    "lonely", "scared", "sad", "hopeless", "anxious", "depressed", "empty",
+    "numb", "alone", "worthless", "done", "hurts", "hurt", "crying", "cry",
+    "panic", "help", "afraid", "terrified", "overwhelmed", "exhausted",
+    "worthless", "hate", "tired", "lost", "stuck", "trapped", "broken",
+}
+
+
+def _normalize_short(message: str) -> str:
+    """Lowercase + strip surrounding punctuation/whitespace for marker matching."""
+    return message.strip().lower().strip(" .!?,;:~-—)(\"'")
+
+
+def _is_explicit_casual(message: str) -> bool:
+    """
+    True only for an EXPLICIT casual/acknowledgment marker (greeting, "ok",
+    "thanks", "what time is it"). Used to decide whether a short message is
+    allowed to relax tone back to CONVERSATIONAL during a distress session.
+    """
+    return _normalize_short(message) in _CASUAL_SHORT_MARKERS
+
+
+def _is_casual_short_message(message: str) -> bool:
+    """
+    Broader casual check for the fast-path-skip decision (only consulted when
+    the session is NOT already in distress). True for explicit markers OR very
+    short (<=2 word) low-signal fragments with no emotional hint word
+    (e.g. "the store", "2nd", "on monday"). Ambiguous emotional short messages
+    ("i dont feel like an adult", "i guess im sad") return False so they still
+    reach semantic detection.
+    """
+    norm = _normalize_short(message)
+    if not norm:
+        return True  # empty / punctuation-only
+    if norm in _CASUAL_SHORT_MARKERS:
+        return True
+    words = norm.split()
+    if len(words) <= 2 and not any(w in _EMOTION_HINT_WORDS for w in words):
+        return True
+    return False
+
+
+def _recent_distress_from_history(conversation_history: Optional[List[dict]]) -> bool:
+    """True if any of the recent turns was flagged as a heavy/crisis topic."""
+    if not conversation_history:
+        return False
+    try:
+        recent = conversation_history[-TONE_CONFIG["context_window"]:]
+        for turn in recent:
+            if isinstance(turn, dict) and turn.get("is_heavy_topic", False):
+                return True
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug(f"[ToneDetector] history distress check failed: {e}")
+    return False
+
+
+def _session_in_distress(
+    previous_tone: Optional[object],
+    conversation_history: Optional[List[dict]],
+) -> bool:
+    """
+    Whether the session is already carrying distress, so a new short message
+    should maintain rather than reset tone. Accepts previous_tone in any
+    encoding: a CrisisLevel, or a string like "CrisisLevel.CONCERN",
+    "concern", "light_support", "MEDIUM", "elevated_support", "crisis_support".
+    """
+    if previous_tone is not None:
+        pt = str(previous_tone).lower()
+        distress_markers = (
+            "high", "medium", "concern", "crisis", "elevated",
+            "light_support", "elevated_support", "crisis_support",
+        )
+        if any(k in pt for k in distress_markers):
+            return True
+    return _recent_distress_from_history(conversation_history)
+
+
 def _check_observational_language(message: str) -> bool:
     """
     Check if message is discussing world events/other people rather than personal crisis.
@@ -662,7 +763,8 @@ def _check_keyword_crisis(message: str) -> Optional[Tuple[CrisisLevel, str]]:
 def _semantic_crisis_detection(
     message: str,
     conversation_history: Optional[List[dict]] = None,
-    model_manager=None
+    model_manager=None,
+    force_escalation: bool = False,
 ) -> Tuple[CrisisLevel, float, Dict[str, float]]:
     """
     Semantic similarity-based crisis detection.
@@ -706,21 +808,13 @@ def _semantic_crisis_detection(
 
     logger.debug(f"[ToneDetector] Semantic scores: {similarity_scores}")
 
-    # Check for recent distress in conversation history
-    recent_distress = 0.0
-    if conversation_history:
-        try:
-            recent_turns = conversation_history[-TONE_CONFIG["context_window"]:]
-            for turn in recent_turns:
-                # Check if prior turn was flagged as crisis/concern
-                if turn.get("is_heavy_topic", False):
-                    recent_distress = 0.5
-                    break
-        except Exception as e:
-            logger.debug(f"[ToneDetector] Failed to check conversation history: {e}")
+    # Check for recent distress in conversation history OR a forced-escalation
+    # signal from the caller (sustained-distress session). NOTE: this previously
+    # set recent_distress = 0.5 and gated on `> 0.5`, so the boost never fired.
+    recent_distress = bool(force_escalation) or _recent_distress_from_history(conversation_history)
 
     # Apply escalation boost if recent distress detected (but not to conversational)
-    if recent_distress > 0.5:
+    if recent_distress:
         boosted_scores = {k: (v * TONE_CONFIG["escalation_boost"] if k != "conversational" else v) for k, v in similarity_scores.items()}
         logger.debug(f"[ToneDetector] Applied escalation boost: {boosted_scores}")
         similarity_scores = boosted_scores
@@ -822,7 +916,8 @@ Classification:"""
 async def detect_crisis_level(
     message: str,
     conversation_history: Optional[List[dict]] = None,
-    model_manager=None
+    model_manager=None,
+    previous_tone: Optional[object] = None,
 ) -> ToneAnalysis:
     """
     Hybrid crisis detection combining keyword, semantic, and LLM approaches.
@@ -831,10 +926,14 @@ async def detect_crisis_level(
         message: User message to analyze
         conversation_history: Recent conversation turns (optional)
         model_manager: Optional model manager for embedder and LLM access
+        previous_tone: The prior turn's detected tone (CrisisLevel or string).
+            Makes distress sticky across short messages so a spiral built from
+            terse turns does not flatline at CONVERSATIONAL.
 
     Returns:
         ToneAnalysis with detected crisis level and metadata
     """
+    session_distress = _session_in_distress(previous_tone, conversation_history)
     # Stage 0: Check if discussing world events (not personal crisis)
     if _check_observational_language(message):
         logger.debug("[ToneDetector] Detected observational/world event language - defaulting to conversational")
@@ -858,25 +957,56 @@ async def detect_crisis_level(
             explanation=f"Explicit crisis language detected: {trigger}"
         )
 
-    # Stage 1.5: Fast-path exit for obviously safe short messages.
-    # If keyword check found nothing AND message is short, skip the
-    # expensive semantic embedding. This saves ~200-500ms per message
-    # for casual queries like "hey", "thanks", "what time is it".
+    # Stage 1.5: Fast-path exit for RECOGNIZABLY CASUAL short messages only.
+    # The latency optimization (skip embedding, ~200-500ms) is preserved for
+    # greetings/acks/logistics ("hey", "thanks", "what time is it"), but it must
+    # NOT swallow ambiguous or emotional short messages, and must NOT reset tone
+    # mid-distress. A short message is fast-pathed to CONVERSATIONAL only when:
+    #   (a) it carries no keyword harm signal, AND
+    #   (b) the session is not already in distress, AND
+    #   (c) it is recognizably casual (not an ambiguous emotional fragment).
     word_count = len(message.split())
     if word_count < 8:
-        logger.debug(f"[ToneDetector] Short message ({word_count} words), no crisis keywords — fast CONVERSATIONAL")
-        return ToneAnalysis(
-            level=CrisisLevel.CONVERSATIONAL,
-            confidence=0.95,
-            trigger="short_no_keywords",
-            raw_scores={},
-            explanation="Short message with no crisis indicators"
+        base_score, _, _ = _calculate_harm_score(message)
+        if base_score == 0 and not session_distress and _is_casual_short_message(message):
+            logger.debug(f"[ToneDetector] Casual short message ({word_count} words) — fast CONVERSATIONAL")
+            return ToneAnalysis(
+                level=CrisisLevel.CONVERSATIONAL,
+                confidence=0.95,
+                trigger="short_casual",
+                raw_scores={},
+                explanation="Recognizably casual short message"
+            )
+        logger.debug(
+            f"[ToneDetector] Short message ({word_count} words) not fast-pathed "
+            f"(harm={base_score:.0f}, session_distress={session_distress}) — running semantic"
         )
 
-    # Stage 2: Semantic detection for nuanced cases
+    # Stage 2: Semantic detection for nuanced cases.
+    # force_escalation carries the sustained-distress signal so the escalation
+    # boost applies even when the current terse message lacks its own signal.
     level, confidence, raw_scores = _semantic_crisis_detection(
-        message, conversation_history, model_manager
+        message, conversation_history, model_manager, force_escalation=session_distress
     )
+
+    # Sticky floor: during an established distress session, do not let a
+    # non-casual terse reply collapse tone all the way back to CONVERSATIONAL
+    # (that reset is what starved the escalation tracker across this class of
+    # session). Explicit casual markers ("ok", "lol") are still allowed to
+    # relax, so genuine disengagement de-escalates normally.
+    if (
+        session_distress
+        and level == CrisisLevel.CONVERSATIONAL
+        and not _is_explicit_casual(message)
+    ):
+        logger.debug("[ToneDetector] Distress-sticky floor: CONVERSATIONAL → CONCERN")
+        return ToneAnalysis(
+            level=CrisisLevel.CONCERN,
+            confidence=max(confidence, TONE_CONFIG["threshold_concern"]),
+            trigger="distress_sticky_floor",
+            raw_scores=raw_scores,
+            explanation="Maintained CONCERN — session already in distress",
+        )
 
     # Stage 3: LLM fallback for borderline cases
     # Use LLM when semantic scores are close to thresholds (within 0.10)

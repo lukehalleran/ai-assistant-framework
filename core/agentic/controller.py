@@ -39,6 +39,15 @@ Contract:
       round 1 when nothing was gathered (no rounds, empty accumulated_context) and no answer text
       was provided. It nudges once to force real tool use first — glm-5.2 was signaling done on
       round 1 without searching, so memory-seeking queries got a promissory non-answer.
+    - Decision-answer reuse [NEW 2026-07-15]: when the loop exits because the model answered
+      instead of calling tools (implicit wants_answer or done + answer text), the decision
+      round's text is vetted by _usable_decision_answer() (≥200 chars post-sanitize, ends at a
+      sentence boundary, not promissory "let me check…" narration, no action dispatched that
+      round) and, if it passes, IS the final response — the second full-context synthesis call
+      is skipped (~20-30s saved). Config: agentic_search.reuse_decision_answer (default true),
+      agentic_search.decision_max_tokens (default 1600, both decision paths — high enough that
+      complete answers don't truncate; capped answers fail the boundary check and fall back).
+      Provenance: final_prompt_hash is set to the sentinel "decision-answer-reuse".
     - Provenance: computes final_prompt_hash (SHA-256[:16]) on assembled prompt
 
 Modular Architecture (2026-05-09):
@@ -612,6 +621,11 @@ class AgenticSearchController:
                     f"propose_action on first decision round"
                 )
 
+            # Answer text written during the decision round that ended the loop.
+            # When substantive (see _usable_decision_answer), it IS the final
+            # response — the second full-context synthesis call is skipped.
+            _decision_answer_text: Optional[str] = None
+
             # === ROUNDS 2-N: Model-driven iteration ===
             while session.can_continue and session.current_round <= self.max_rounds:
                 session.state = AgentState.THINKING
@@ -776,6 +790,13 @@ class AgenticSearchController:
                         continue  # retry this round; the model should call tools now
                     session.model_signaled_done = True
                     session.done_reason = done_d.done_reason if done_d else None
+                    # Answer text alongside done is a reuse candidate — unless an
+                    # action was dispatched this round (its result arrived AFTER
+                    # the text was written, so the text can't reflect it).
+                    if not _action_decisions:
+                        _decision_answer_text = "".join(
+                            d.partial_response or "" for d in decisions
+                        ).strip() or None
                     logger.info(f"[AgenticSearch] Model signaled done: {session.done_reason}")
                     break
 
@@ -830,6 +851,10 @@ class AgenticSearchController:
                             )
                             continue  # Retry the loop iteration
 
+                    if not _action_decisions:
+                        _decision_answer_text = "".join(
+                            d.partial_response or "" for d in decisions
+                        ).strip() or None
                     logger.info("[AgenticSearch] Model ready to answer (implicit)")
                     break
 
@@ -917,15 +942,33 @@ class AgenticSearchController:
                 metadata={"total_rounds": len(session.rounds)}
             )
 
-            # Generate final response
-            async for chunk in self._generate_final_response(
-                query=query,
-                system_prompt=system_prompt,  # Use original system prompt for final
-                model_name=model_name,
-                session=session,
-                initial_context=initial_context
-            ):
-                yield chunk
+            # Reuse a substantive decision-round answer instead of paying a
+            # second full-context synthesis call (the observed pattern: a 32s
+            # decision call whose answer text was discarded, followed by a 24s
+            # re-generation of essentially the same answer).
+            from config.app_config import AGENTIC_REUSE_DECISION_ANSWER
+            _reused_answer = (
+                self._usable_decision_answer(_decision_answer_text)
+                if (AGENTIC_REUSE_DECISION_ANSWER and _decision_answer_text)
+                else None
+            )
+            if _reused_answer:
+                session.final_prompt_hash = "decision-answer-reuse"
+                logger.info(
+                    f"[AgenticSearch] Reusing decision-round answer "
+                    f"({len(_reused_answer)} chars) — final synthesis call skipped"
+                )
+                yield _reused_answer
+            else:
+                # Generate final response
+                async for chunk in self._generate_final_response(
+                    query=query,
+                    system_prompt=system_prompt,  # Use original system prompt for final
+                    model_name=model_name,
+                    session=session,
+                    initial_context=initial_context
+                ):
+                    yield chunk
 
             session.state = AgentState.DONE
             session.end_time = datetime.now()
@@ -1191,10 +1234,11 @@ class AgenticSearchController:
             {"role": "user", "content": prompt},
         ]
 
+        from config.app_config import AGENTIC_DECISION_MAX_TOKENS
         create_kwargs = dict(
             model=full_model,
             messages=messages,
-            max_tokens=800,
+            max_tokens=AGENTIC_DECISION_MAX_TOKENS,
             temperature=0.3,
             stream=False,
         )
@@ -1233,12 +1277,14 @@ class AgenticSearchController:
         """
         # Check if model_manager has tool support
         if hasattr(self.model_manager, 'generate_once_with_tools'):
+            from config.app_config import AGENTIC_DECISION_MAX_TOKENS
             return await self.model_manager.generate_once_with_tools(
                 prompt=prompt,
                 model_name=model_name,
                 system_prompt=system_prompt,
                 tools=tools,
                 tool_choice=tool_choice,
+                max_tokens=AGENTIC_DECISION_MAX_TOKENS,
             )
         else:
             # Fallback to standard generation
@@ -1251,6 +1297,45 @@ class AgenticSearchController:
                 temperature=0.3
             )
             return response
+
+    # Openers that mark a decision-round text as a PLAN, not an answer —
+    # promissory narration must go through the real synthesis call.
+    _PROMISSORY_OPENERS = (
+        'let me pull', 'let me grab', 'let me run', 'let me check',
+        'let me search', 'let me query', 'let me look',
+        "i'll hit", "i'll search", "i'll check", "i'll look",
+    )
+
+    def _usable_decision_answer(self, text: str) -> Optional[str]:
+        """Vet a decision-round answer for reuse as the final response.
+
+        Returns the sanitized text when it is a complete, substantive answer,
+        or None to fall back to the full synthesis call. Guards:
+        - substance: ≥ 200 chars after reasoning-tag sanitization (short
+          fragments and "Ok."-style stubs re-generate instead)
+        - truncation: must end at a sentence/formatting boundary — the
+          decision call has a token cap and finish_reason is not surfaced,
+          so a mid-sentence ending is treated as capped output
+        - narration: promissory openers ("Let me check…") are plans the
+          model failed to execute, never final answers
+        """
+        from core.response_parser import ResponseParser
+        candidate = (text or "").strip()
+        if len(candidate) < 200:
+            return None
+        sanitized = (ResponseParser.sanitize_for_storage(candidate) or "").strip()
+        if len(sanitized) < 200:
+            return None
+        if sanitized[-1] not in '.!?"\')]}`*:;…”’':
+            logger.info(
+                "[AgenticSearch] Decision answer looks truncated "
+                "(no terminal punctuation) — falling back to synthesis call"
+            )
+            return None
+        _head = sanitized[:150].lower()
+        if any(m in _head for m in self._PROMISSORY_OPENERS):
+            return None
+        return sanitized
 
     async def _generate_final_response(
         self,
@@ -1628,7 +1713,7 @@ You are in round {round_number} of up to {self.max_rounds} search rounds."""]
         )
 
         parts.append("""Based on the search results above:
-1. If you have enough information to fully answer the question, signal you're done and answer.
+1. If you have enough information to fully answer the question, write your COMPLETE final answer to the user now — finished, user-facing prose (it may be shown to them verbatim), with no preamble about what you did or plan to do.
 2. If you need more specific information, request another search with a focused query.
 3. Consider what's missing: different aspects, more recent data, or more specific details.
 

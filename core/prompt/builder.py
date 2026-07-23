@@ -422,6 +422,13 @@ class UnifiedPromptBuilder:
             token_budget = _compute_token_budget(model_manager)
         self.token_budget = token_budget
 
+        # LLM-compression result cache: content-hash → compressed text, or None
+        # for a recorded timeout (don't retry — middle-out handles it). The same
+        # oversized item (git_commits especially) recurs turn after turn; without
+        # this, each turn re-paid the full compression timeout for an identical
+        # blob (observed: flat 3s on 7/7 turns of a session, 100% timeout rate).
+        self._llm_compress_cache: Dict[str, Optional[str]] = {}
+
         # Initialize modular components
         self.token_manager = TokenManager(
             model_manager=self.model_manager,
@@ -483,6 +490,17 @@ class UnifiedPromptBuilder:
         logger.warning("No memory coordinator provided, using fallback")
         return _FallbackMemoryCoordinator()
 
+    _LLM_COMPRESS_CACHE_MAX = 200
+
+    def _store_compress_cache(self, key: str, value: Optional[str]) -> None:
+        """Record a compression outcome; bounded FIFO to cap memory."""
+        cache = self._llm_compress_cache
+        if len(cache) >= self._LLM_COMPRESS_CACHE_MAX:
+            # Drop the oldest half — simple, no per-entry bookkeeping.
+            for k in list(cache.keys())[: self._LLM_COMPRESS_CACHE_MAX // 2]:
+                del cache[k]
+        cache[key] = value
+
     async def _llm_compress_oversized(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Pre-pass: LLM-compress heavily oversized items before budget trimming.
 
@@ -540,10 +558,33 @@ class UnifiedPromptBuilder:
         candidates = candidates[:LLM_COMPRESSION_MAX_BATCH]
 
         logger.info(f"[LLM-COMPRESS] {len(candidates)} items queued for LLM compression")
+        from utils.turn_progress import emit as _progress_emit
+        _progress_emit(f"🗜️ Compressing {len(candidates)} oversized items…")
 
         # Build compression tasks
         async def _compress_one(section: str, idx: int, item, item_tokens: int, max_tok: int):
             item_text = self.token_manager._extract_text(item)
+
+            # Cache lookup: identical content recurs across turns (git_commits
+            # especially). A cached string is reused; a cached None records a
+            # prior timeout — skip straight to middle-out instead of re-paying
+            # the timeout every turn.
+            import hashlib as _hashlib
+            # Key includes the compression target: the same text compressed
+            # for a different budget must not reuse the other target's result.
+            _key = _hashlib.sha256(
+                f"{max_tok}:{item_text}".encode("utf-8", "replace")
+            ).hexdigest()
+            if _key in self._llm_compress_cache:
+                _cached = self._llm_compress_cache[_key]
+                if _cached is None:
+                    logger.debug(
+                        f"[LLM-COMPRESS] {section}[{idx}]: cached timeout — middle-out"
+                    )
+                    return None
+                logger.info(f"[LLM-COMPRESS] {section}[{idx}]: cache hit")
+                return (section, idx, _cached)
+
             target = max_tok
             prompt = (
                 f"Compress the following text to approximately {target} tokens. "
@@ -570,10 +611,15 @@ class UnifiedPromptBuilder:
                     logger.info(
                         f"[LLM-COMPRESS] {section}[{idx}]: {item_tokens}→{new_tokens} tokens (LLM)"
                     )
+                    self._store_compress_cache(_key, compressed.strip())
                     return (section, idx, compressed.strip())
             except asyncio.TimeoutError:
                 logger.warning(f"[LLM-COMPRESS] Timeout compressing {section}[{idx}], falling back to middle-out")
+                # Deterministic for identical content — record so the next turn
+                # doesn't wait out the same timeout again.
+                self._store_compress_cache(_key, None)
             except Exception as e:
+                # Transient failures (API errors) are NOT cached — retry next turn.
                 logger.warning(f"[LLM-COMPRESS] Failed {section}[{idx}]: {e}, falling back to middle-out")
             return None
 
@@ -680,11 +726,29 @@ class UnifiedPromptBuilder:
             except Exception as e:
                 logger.warning(f"Query analysis failed: {e}")
 
-            # Check if this is small-talk that doesn't need heavy retrieval
-            is_small_talk = getattr(query_analysis, "is_small_talk", False)
-            logger.warning(f"SMALL_TALK CHECK: is_small_talk={is_small_talk}")
-            if is_small_talk:
-                logger.warning("USING LIGHTWEIGHT CONTEXT - this will drop separated keys!")
+            # Check if this is small-talk that doesn't need heavy retrieval.
+            # NOTE: QueryAnalysis.is_small_talk was never set before 2026-07-15
+            # (dead getattr default), so this path never fired — a 7-word
+            # "Hmm not working yet" pulled a 23K-token full-apparatus prompt.
+            # Config-gated (light_prompt.enabled); crisis tone always gets the
+            # full context regardless of message shape.
+            if self._should_use_light_path(query_analysis, crisis_level):
+                logger.info(
+                    "[BUILD_PROMPT] Casual acknowledgment — using lightweight context "
+                    f"(light_prompt path): {user_input[:60]!r}"
+                )
+                return await self._build_lightweight_context(user_input, stm_summary=stm_summary, codebase_changes=codebase_changes)
+
+            # Continuation-answer: a short reply to the assistant's own prior
+            # question ("What was the error?" -> "amplification"). Interpret it
+            # from the immediate exchange, not corpus-wide semantic retrieval,
+            # which otherwise pulls a topically-matching but unrelated memory
+            # that hijacks the response. Heavy/crisis topics keep full context.
+            if self._is_continuation_answer(user_input, query_analysis):
+                logger.info(
+                    "[BUILD_PROMPT] Continuation-answer to prior question — using "
+                    f"lightweight context (no corpus retrieval): {user_input[:60]!r}"
+                )
                 return await self._build_lightweight_context(user_input, stm_summary=stm_summary, codebase_changes=codebase_changes)
 
             # Step 2: Gather narrative context (synchronous, cheap file read)
@@ -776,6 +840,20 @@ class UnifiedPromptBuilder:
             if scorer:
                 scorer._graph_memory = getattr(self.memory_coordinator, 'graph_memory', None)
                 scorer._entity_resolver = getattr(self.memory_coordinator, 'entity_resolver', None)
+
+            # Flag distress on the gatherer so valence-aware retrieval caps
+            # mood-congruent recall this turn (cleared after gather). Accepts any
+            # crisis_level encoding ("CrisisLevel.CONCERN", "light_support", ...).
+            _cl = (crisis_level or "").upper()
+            _distress_active = any(
+                k in _cl for k in (
+                    "HIGH", "MEDIUM", "CONCERN", "CRISIS", "ELEVATED",
+                    "LIGHT_SUPPORT", "ELEVATED_SUPPORT", "CRISIS_SUPPORT",
+                )
+            )
+            self.context_gatherer._distress_active = _distress_active
+            if _distress_active:
+                logger.info(f"[BUILD_PROMPT] Distress session — valence-aware retrieval active (crisis_level={crisis_level})")
 
             # Apply intent-driven gate threshold override (cleared after gather)
             _gate_override = kwargs.get('_gate_threshold_override')
@@ -1087,6 +1165,11 @@ class UnifiedPromptBuilder:
                 if scorer:
                     scorer._graph_memory = None
                     scorer._entity_resolver = None
+                # Clear distress flag from gatherer (set before gather)
+                try:
+                    self.context_gatherer._distress_active = False
+                except Exception:
+                    pass
                 # Restore gate threshold (set before gather)
                 if _saved_gate_threshold is not None and _gate_obj is not None:
                     _gate_obj.cosine_threshold = _saved_gate_threshold
@@ -1163,6 +1246,7 @@ class UnifiedPromptBuilder:
                         "fresh_facts": gathered.get("recent_facts", [])
                     }
 
+                    _progress_emit("💭 Generating on-demand reflection…")
                     on_demand_reflections = await self.summarizer._reflect_on_demand(
                         context_for_reflection,
                         user_input,
@@ -1658,6 +1742,66 @@ class UnifiedPromptBuilder:
             _suppress_reference_docs=context.has_files,
             _gate_threshold_override=gate_threshold_override,
         )
+
+    def _should_use_light_path(self, query_analysis: Any, crisis_level: Optional[str]) -> bool:
+        """
+        Route terse casual acknowledgments to the lightweight context.
+
+        Config-gated (light_prompt.enabled); crisis/elevated tone always gets
+        the full context regardless of message shape. crisis_level arrives as
+        "CrisisLevel.HIGH" (str of enum, orchestrator path) or as the enum
+        value ("crisis_support", "light_support") via crisis_level_str —
+        the substring check covers both encodings.
+        """
+        from config.app_config import LIGHT_PROMPT_ENABLED
+        if not LIGHT_PROMPT_ENABLED:
+            return False
+        if not getattr(query_analysis, "is_small_talk", False):
+            return False
+        _cl = (crisis_level or "").upper()
+        return not any(k in _cl for k in ("HIGH", "MEDIUM", "CONCERN", "SUPPORT", "CRISIS"))
+
+    def _is_continuation_answer(self, user_input: str, query_analysis: Any) -> bool:
+        """
+        True if `user_input` is a short reply directly answering the assistant's
+        immediately-preceding question — route it to the lightweight path so a
+        bare token isn't semantically matched against the whole corpus.
+
+        Gated by light_prompt.enabled and the SAME heavy-topic exclusion as the
+        casual-ack path (crisis/heavy short replies keep the full apparatus).
+        Unlike _should_use_light_path it is NOT blocked by an elevated tone,
+        because a short factual answer to the assistant's own question doesn't
+        need the support apparatus — the answer is in the immediate exchange, and
+        the system-prompt tone still applies to the lightweight prompt.
+        """
+        from config.app_config import LIGHT_PROMPT_ENABLED
+        if not LIGHT_PROMPT_ENABLED:
+            return False
+        if getattr(query_analysis, "is_heavy_topic", False):
+            return False  # crisis/heavy short replies keep full context
+        # Content-based crisis guard: the heavy-topic heuristic MISSES crisis
+        # phrasing that the tone keyword scorer catches (e.g. "i want to die"),
+        # so check the message for any crisis/emotional keyword before stripping
+        # context. Benign answers ("amplification") score None and pass.
+        try:
+            from utils.tone_detector import _check_keyword_crisis
+            if _check_keyword_crisis(user_input) is not None:
+                return False
+        except Exception as e:
+            logger.debug(f"[BUILD_PROMPT] continuation crisis-guard failed: {e}")
+            return False
+        # Cheap peek at the last stored assistant turn (in-memory, no LLM/DB).
+        last_resp = ""
+        try:
+            cm = getattr(self.memory_coordinator, "corpus_manager", None)
+            recent = cm.get_recent_memories(count=1) if cm else []
+            if recent:
+                last_resp = recent[0].get("response", "") or ""
+        except Exception as e:
+            logger.debug(f"[BUILD_PROMPT] continuation-answer peek failed: {e}")
+            return False
+        from utils.query_checker import is_continuation_answer
+        return is_continuation_answer(user_input, last_resp)
 
     async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None,
                                           codebase_changes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

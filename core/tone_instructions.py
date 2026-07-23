@@ -5,8 +5,8 @@ Module Contract
 - Purpose: Generate tone-specific, intent-style, and session-header instructions
   for system prompts.
 - Inputs:
-  - get_tone_instructions(tone_level, user_profile=None) -> str
-  - get_response_instructions(ctx, user_profile=None) -> str
+  - get_tone_instructions(tone_level, user_profile=None, suppress_style_modifier=False) -> str
+  - get_response_instructions(ctx, user_profile=None, suppress_style_modifier=False) -> str
   - get_intent_style_instructions(intent_value, confidence, crisis_level_str) -> str
   - get_session_headers_instructions() -> str
 - Outputs: Instruction strings appended to system prompt.
@@ -16,6 +16,11 @@ Intent style: a short per-intent response-style block injected into the system
 prompt tail (after the cache breakpoint — per-turn content never invalidates
 the cached prefix). Tone owns style during crisis: any non-CONVERSATIONAL
 level returns "". EMOTIONAL_SUPPORT and GENERAL have no block by design.
+
+Style precedence (2026-07-15): crisis tone > intent style > profile style
+modifier. When the intent block fires, the orchestrator passes
+suppress_style_modifier=True so the standing "WARM & SUPPORTIVE"/"DIRECT &
+CONCISE" preference doesn't contradict it in the same prompt.
 """
 
 from utils.logging_utils import get_logger
@@ -26,20 +31,28 @@ from utils.need_detector import NeedType
 logger = get_logger("tone_instructions")
 
 
-def get_tone_instructions(tone_level: CrisisLevel, user_profile=None) -> str:
+def get_tone_instructions(tone_level: CrisisLevel, user_profile=None,
+                          suppress_style_modifier: bool = False) -> str:
     """
     Return mode-specific response instructions based on detected crisis level.
 
     Args:
         tone_level: Detected crisis level from tone_detector
         user_profile: Optional UserProfile for style modifier injection
+        suppress_style_modifier: Skip the profile style modifier ("WARM &
+            SUPPORTIVE" / "DIRECT & CONCISE") for this turn. Set when a
+            confident per-intent style block owns the turn's style — the
+            standing preference and the intent block were previously BOTH
+            injected and could contradict ("prioritize connection" vs "skip
+            reassurance, lead with the diagnosis"), leaving the model to
+            paper over the conflict.
 
     Returns:
         String containing tone-specific instructions to append to system prompt
     """
     # Inject style modifier BEFORE tone instructions (unless in HIGH crisis mode)
     style_modifier = ""
-    if tone_level != CrisisLevel.HIGH:
+    if tone_level != CrisisLevel.HIGH and not suppress_style_modifier:
         try:
             if user_profile:
                 style_modifier = user_profile.get_style_modifier()
@@ -127,7 +140,8 @@ def get_tone_instructions(tone_level: CrisisLevel, user_profile=None) -> str:
         return style_modifier + base_instructions if style_modifier else base_instructions
 
 
-def get_response_instructions(ctx: EmotionalContext, user_profile=None) -> str:
+def get_response_instructions(ctx: EmotionalContext, user_profile=None,
+                              suppress_style_modifier: bool = False) -> str:
     """
     Generate response instructions based on combined emotional context.
 
@@ -151,7 +165,8 @@ def get_response_instructions(ctx: EmotionalContext, user_profile=None) -> str:
         return get_tone_instructions(CrisisLevel.HIGH, user_profile)
 
     # Combined instructions for non-crisis
-    base = get_tone_instructions(ctx.crisis_level, user_profile)
+    base = get_tone_instructions(ctx.crisis_level, user_profile,
+                                 suppress_style_modifier=suppress_style_modifier)
 
     if ctx.need_type == NeedType.PRESENCE:
         presence_addon = """

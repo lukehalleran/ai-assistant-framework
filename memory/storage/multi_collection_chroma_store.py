@@ -33,6 +33,9 @@ Module Contract
 - Key behaviors:
   - Collections are lazily initialized on first access via _get_collection(name)
   - SentenceTransformer embedding function configured once, shared across all collections
+  - Embedder device: CHROMA_DEVICE env override, else torch GPU auto-detect
+    (_resolve_embed_device — CPU-pinning this model made memory-gate scoring
+    the prompt-build long pole, 2026-07-15)
   - _flatten_for_chroma() ensures all metadata values are primitives or JSON strings
   - Fact deduplication via cosine similarity check before insertion
   - Results un-nested from ChromaDB's nested format into flat dicts
@@ -83,6 +86,26 @@ def _flatten_for_chroma(md: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 flat[k] = str(v)
     return flat
 
+def _resolve_embed_device() -> str:
+    """
+    Device for the store's SentenceTransformer embedder.
+
+    CHROMA_DEVICE env wins when set; otherwise use the GPU when torch sees
+    one. This embedder is also the memory gate's scoring model (injected via
+    main.py as retrieval_embedder) — pinned to CPU it was the prompt-build
+    long pole, ~5s per batch-cosine-gate call on multi-hundred candidate
+    pools (2026-07-15 trace).
+    """
+    env = (os.getenv("CHROMA_DEVICE") or "").strip()
+    if env:
+        return env
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
 class MultiCollectionChromaStore:
     """ChromaDB store with separate collections for different memory types"""
 
@@ -98,10 +121,11 @@ class MultiCollectionChromaStore:
         # Single, shared embedder for this store instance
         model_name = os.getenv("CHROMA_ST_MODEL", "BAAI/bge-small-en-v1.5")
         self.embedding_model_name = model_name
-        device = os.getenv("CHROMA_DEVICE", "cpu")  # set to "cuda" if desired
+        device = _resolve_embed_device()
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=model_name, device=device
         )
+        logger.info(f"[Chroma] Embedder {model_name} on device={device}")
 
         # Keep your existing dict of collections (None placeholders are fine)
         self.collections = {

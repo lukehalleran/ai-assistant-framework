@@ -51,6 +51,8 @@ Agentic search activates when ALL conditions are met:
    - Tier 3: Document *generation* or self-note intent detection
    - Tier 4: LLM fallback — piggybacks on web search trigger call (`needs_memory_search`, `needs_knowledge_search`, `needs_document_generation`)
    - Casual skip filter, continuation override, and intent-based veto all handled inside gate
+   - **Continuation override** [tightened 2026-07-15]: requires a TERSE affirmation (≤ `CONTINUATION_MAX_WORDS`=6 words containing a continuation phrase) AND ground truth that the prior turn was agentic — corpus entries now store `response_mode` (written from provenance); a word-boundary keyword fallback covers only legacy entries. Long messages merely containing "yeah"/"sure" are new statements (the benzo-turn incident: 'yeah' substring + "sleep **issues**" matching the GitHub word list burned a 60s loop on a vibe remark).
+   - **Concurrent evaluation** [2026-07-15]: `handle_submit` launches the gate as an asyncio task BEFORE `prepare_prompt`, hiding the Tier-4 LLM call (~2s) behind prompt building. The intent veto needs the context pipeline's classification, so the gate is launched with `intent_info=None` and the dispatcher applies `gate.apply_intent_veto(decision, intent)` post-hoc; `AgenticDecision.veto_exempt` records explicit requests (search keywords / URL / file access / doc-gen / self-note) the veto must never suppress.
    - `AgenticDecision.skip_initial_search` computed by gate (True for computation, memory, knowledge, tools modes — or whenever no seed search terms were distilled, so the controller never blind-searches the raw message verbatim)
 
 The controller is lazy-initialized on first use via the orchestrator's
@@ -165,6 +167,24 @@ markers instead of narrating what it would do.
 ### Final Generation
 
 After the loop exits:
+- **Decision-answer reuse** [2026-07-15]: if the loop ended because the model
+  answered instead of calling tools (implicit `wants_answer`, or `done` with
+  answer text), the decision round's text is vetted by
+  `_usable_decision_answer()` — ≥200 chars after
+  `ResponseParser.sanitize_for_storage()`, ends at a sentence/formatting
+  boundary (truncation proxy: `finish_reason` isn't surfaced), no promissory
+  "let me check…" opener, and no action dispatched in that same round. A
+  passing answer IS the final response: it is yielded directly and the second
+  full-context synthesis call is skipped (~20-30s saved; the observed
+  pattern was a 32s decision call discarded + 24s re-generation).
+  `final_prompt_hash` is set to the sentinel `decision-answer-reuse`.
+  Config: `agentic_search.reuse_decision_answer` (default true) and
+  `agentic_search.decision_max_tokens` (default 1600 — applies to BOTH
+  decision paths, replacing the old hardcoded 500 native / 800 XML caps, so
+  a complete answer fits; tool-call rounds emit few tokens regardless). The
+  iteration prompt's option 1 now asks for a COMPLETE user-facing answer,
+  not "signal you're done and answer".
+- Otherwise (`_generate_final_response`):
 - Assemble final prompt: `[TIME CONTEXT]` + RAG context + accumulated search results + query
 - Budget-enforce: trim low-priority sections if over `context_budget * 5`
 - Compute `final_prompt_hash` (SHA-256[:16]) for provenance

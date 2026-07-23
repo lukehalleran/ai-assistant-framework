@@ -909,14 +909,17 @@ Current date: {current_date}
 {location_line}Available search budget: {remaining_credits:.0f} credits
 {context_block}
 WEB SEARCH CRITERIA:
-- SEARCH if: current events, recent news, live data (stocks, weather, sports), time-sensitive health info, or references dates/years needing verification
+- SEARCH if: current events, recent news, live data (stocks, weather, sports), time-sensitive health info the user is explicitly asking about (recalls, outbreaks, new guidance), or references dates/years needing verification
 - DON'T SEARCH if: historical facts, scientific concepts, how-to guides, personal/emotional topics, or can be answered with general knowledge
 - NEVER SEARCH for:
   * Casual acknowledgments (nice, thanks, cool, got it, okay)
+  * Statements of opinion, feeling, or reaction ("X seems terrible", "I wish X", "that's the worst") — even when the topic touches health, drugs, news, or tech. The user is conversing, not requesting information; searching interrupts the conversation
+  * Statements of the user's OWN plan to look something up themselves ("I'll check Reddit", "I'm gonna google it later", "I will see what is said on X") — they are declining information, not requesting it
   * Meta-comments about the conversation or system
   * Greetings or short responses under 5 words that aren't explicit search requests
   * Follow-up references to prior conversation ("watched it", "saw that", "just read it", "i just watched", etc.) - these refer to something already discussed, not web content
   * Comments about media the user consumed ("i just watched", "i finished reading", "just saw") - these are conversation follow-ups, not search requests
+- should_search=true requires an actual information need: the reply would be materially wrong or stale without fresh external facts. When in doubt, false.
 
 MEMORY SEARCH CRITERIA (needs_memory_search):
 - TRUE if: the user wants to recall past conversations, stored facts about themselves or people they know, personal notes, uploaded documents, or anything from their history with this assistant

@@ -1109,6 +1109,8 @@ class MemoryRetriever:
                 n_results=n_results
             )
 
+            from memory.utils import is_junk_conversation_doc
+
             for collection_name, results in batch_results.items():
                 if not results:
                     continue
@@ -1117,6 +1119,10 @@ class MemoryRetriever:
                     if item is not None:
                         if not isinstance(item, dict):
                             item = {"content": str(item), "id": str(uuid.uuid4())}
+                        # Same junk guard as the hybrid path (error sentinels
+                        # stored before the storage-time guard, "test" turns)
+                        if is_junk_conversation_doc(content=item.get("content", "")):
+                            continue
                         memories.append(self._parse_result(item, collection_name))
 
         except Exception as e:
@@ -1270,7 +1276,11 @@ class MemoryRetriever:
         if is_gym_health_query:
             cfg = {
                 'recent_count': 0,
-                'semantic_count': max(50, limit * 5),
+                # Wider pool for recall diversity, but capped: with
+                # limit=semantic_retrieval_limit (40) an uncapped ×5 became a
+                # 200-doc hybrid limit → 600/collection candidate pools and
+                # multi-second gate encodes (2026-07-15 latency trace).
+                'semantic_count': min(max(50, limit * 5), 120),
                 'max_memories': limit,
             }
         else:

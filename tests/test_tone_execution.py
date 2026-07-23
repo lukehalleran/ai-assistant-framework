@@ -14,7 +14,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Skip when run via pytest - this is a manual integration script
-pytestmark = pytest.mark.skip(reason="Manual integration test - run directly with python")
+pytestmark = pytest.mark.skip(
+    reason="ALLOW_SKIP: manual integration script — run directly with python, not a logic gate"
+)
 
 from utils.logging_utils import get_logger
 

@@ -25,7 +25,8 @@ class EmotionalContext:
 async def analyze_emotional_context(
     message: str,
     conversation_history: Optional[List[Dict[str, Any]]] = None,
-    model_manager=None
+    model_manager=None,
+    previous_tone: Optional[object] = None,
 ) -> EmotionalContext:
     """
     Unified emotional analysis combining severity and need-type.
@@ -34,12 +35,16 @@ async def analyze_emotional_context(
         message: User message to analyze
         conversation_history: Recent conversation turns (optional)
         model_manager: Optional model manager for embedder/LLM access
+        previous_tone: Prior turn's tone (CrisisLevel/str); makes distress sticky
+            across short turns (see tone_detector.detect_crisis_level).
 
     Returns:
         EmotionalContext with both crisis level and need type
     """
     # Get tone analysis (async)
-    tone = await detect_crisis_level(message, conversation_history, model_manager)
+    tone = await detect_crisis_level(
+        message, conversation_history, model_manager, previous_tone=previous_tone
+    )
 
     # Get need analysis (sync, but fast)
     need = detect_need_type(message, model_manager)

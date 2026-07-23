@@ -95,12 +95,12 @@ default to `[]` without affecting other sections.
 | user_profile | `get_user_profile_context()` | 3000 tokens |
 | summaries | `_get_summaries_separate()` | 5 recent + 5 semantic |
 | dreams | `_get_dreams()` | 3 |
-| semantic | `_get_semantic_chunks()` | 8 |
+| semantic | `_get_semantic_chunks()` | 8 (dedicated 2-worker executor + non-blocking in-flight semaphore [2026-07-15] — a USB-stalled search that outlives SEM_TIMEOUT_S can't starve the shared default executor, and a saturated pool makes the turn SKIP wiki chunks instead of queuing; warmup touch at startup via `_run_model_warmup`) |
 | reflections | `_get_reflections_separate()` | 5 recent + 5 semantic |
 | wiki | `_get_wiki_content()` | 3 |
 | personal_notes | `get_personal_notes()` | 5 |
 | reference_docs | `get_reference_docs()` | 5 |
-| user_uploads | `get_user_uploads()` | 5 |
+| user_uploads | `get_user_uploads()` | 5 (skipped via ~ms metadata existence probe when no uploads exist — was ~0.9s/turn; negative cached 60s, positive for session) |
 | git_commits | `get_git_commits()` | varies |
 | procedural_skills | `get_procedural_skills()` | 5 (over-fetched 3x, filtered by SkillActivationPolicy) |
 | proposed_features | `get_proposed_features()` | 3 |
@@ -160,6 +160,11 @@ still renders either way; user uploads are unaffected. Regression:
 - Items >= 3x token limit → LLM-generated summary
 - Items 1-3x limit → defer to middle-out
 - Fallback: middle-out if LLM compression fails
+- **Content-hash result cache** [2026-07-15]: identical content compresses
+  once per session (`builder._llm_compress_cache`, bounded FIFO 200). A
+  recorded TIMEOUT is also cached (skip straight to middle-out) — the same
+  `git_commits` blob was re-paying the flat 3s timeout on every turn of a
+  session. Transient API errors are NOT cached (retried next turn).
 
 ### Step 7 — Token Budget Management
 
@@ -431,6 +436,19 @@ times, confidence qualifiers for heuristic resolutions, and scope markers
 If `query_analysis.is_small_talk = True`, returns minimal context:
 3 recent conversations, no memories/summaries/reflections/web search.
 
+**This path was dead wiring until 2026-07-15** — the builder read the flag
+but nothing ever set it, so a 7-word acknowledgment ("Hmm not working yet")
+pulled a full ~23K-token prompt. It's now set by
+`utils/query_checker.is_casual_acknowledgment()` (conservative: ack opener +
+≤ `light_prompt.max_words` (8); any question/command/request/meta shape or
+heavy topic disqualifies) and routed through `builder._should_use_light_path`:
+config-gated (`light_prompt.enabled` / `LIGHT_PROMPT_ENABLED`), and elevated
+tone (both `"CrisisLevel.HIGH"` and `"crisis_support"`-style encodings)
+always gets the full context. The ContextPipeline computes a *separate*
+`is_small_talk` (CASUAL_SOCIAL intent, conf ≥ 0.70) used for heavy-topic
+skip and telemetry — the two signals coexist deliberately.
+Tests: `tests/unit/test_light_prompt_path.py`.
+
 ---
 
 ## Key Configuration
@@ -438,7 +456,7 @@ If `query_analysis.is_small_talk = True`, returns minimal context:
 ```python
 # Token budget
 # Token budget (active values from config/app_config.py)
-PROMPT_TOKEN_BUDGET_DEFAULT = 15000
+PROMPT_TOKEN_BUDGET_DEFAULT = 10000   # lowered from 15000 on 2026-07-15 (preregistered experiment)
 PROMPT_TOKEN_BUDGET_LOCAL = 12000
 PROMPT_TOKEN_BUDGET_FLOOR = 8000
 PROMPT_TOKEN_BUDGET_CEILING = 16000

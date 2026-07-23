@@ -437,12 +437,11 @@ class WebSearchRateLimiter:
     def _save_state(self) -> None:
         """Persist credit state to disk."""
         try:
-            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-            with open(self.state_file, "w") as f:
-                json.dump({
-                    "credits_today": self._credits_today,
-                    "date": self._current_date
-                }, f)
+            from utils.safe_json import atomic_write_json
+            atomic_write_json(self.state_file, {
+                "credits_today": self._credits_today,
+                "date": self._current_date
+            })
         except Exception as e:
             log.debug(f"[WebSearch] Failed to save rate limit state: {e}")
 

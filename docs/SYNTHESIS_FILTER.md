@@ -128,9 +128,13 @@ STRONG   = 1.0    # predictive cross-domain connection
 
 ## Candidate Generation
 
-**Current status (2026-06-30):** The Pooled Concept generator
-(`knowledge/synthesis_pooled_generator.py`, `synthesis_pooled.enabled: true`)
-is the SOLE generator dreaming uses. The three legacy personal→wiki tiers
+**Current status:** The Pooled Concept generator
+(`knowledge/synthesis_pooled_generator.py`) is the SOLE generator dreaming
+uses when enabled — `synthesis_pooled.enabled` is **false since 2026-07-15**
+(API-cost pause; on/off toggle + candidates-per-shutdown slider live in the
+Settings UI → `settings_core.apply_synthesis`, which on OFF also forces
+`synthesis_generator.enabled` false so the (GENERATOR or POOLED) dreaming
+gate stays closed). The three legacy personal→wiki tiers
 below are RETIRED in `config.yaml` (`synthesis_generator.enabled: false`,
 `synthesis_retrieval.enabled: false`, `graph_walk.enabled: false`) — each
 paired thin/low-prominence concepts and yielded ≈0 accepts. Their code is
@@ -230,8 +234,8 @@ instead of the old 0.55 fallback.
 ### Shutdown Orchestration
 
 `_run_synthesis_dreaming()` in `shutdown_processor.py`: when
-`SYNTHESIS_POOLED_ENABLED` is on (the live config), the pooled concept
-generator is the ONLY generator run. Otherwise the retired legacy path runs
+`SYNTHESIS_POOLED_ENABLED` is on (OFF in the live config since 2026-07-15 —
+Settings-controlled), the pooled concept generator is the ONLY generator run. Otherwise the retired legacy path runs
 whichever of Tiers 0/1/2 are enabled, with independent quotas (graph walk
 additionally self-gates on `GRAPH_WALK_MIN_BRIDGE_EDGES`). All candidates
 then pass through the same `SynthesisFilter` pipeline.

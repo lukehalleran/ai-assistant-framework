@@ -13,11 +13,14 @@ import {
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import { api } from '../../api/client'
+import { debugBaselineFor } from '../../api/debugSession'
 import type { DebugRecord } from '../../api/types'
 
 // Debug Trace (Gradio dev tab → SPA, 2026-07-14): per-turn Query → Prompt →
 // Response with token counts, timing waterfall, and full-prompt TXT export.
-// Reads the server-held records (survive page reloads), refreshed on demand.
+// Like the Gradio tab, only the ongoing UI session's turns are shown — the
+// server-held backlog before this page load is hidden via debugSession's
+// baseline (absolute indices are kept for the prompt-export links).
 
 function seconds(v: unknown): string {
   const n = typeof v === 'number' ? v : parseFloat(String(v))
@@ -82,15 +85,112 @@ function PromptBlock({ label, text }: { label: string; text: string }) {
   )
 }
 
+// Assemble one turn's full debug output as plain text with section headers —
+// the single-click copy target (replaces the old per-block copy buttons).
+function recordToText(rec: DebugRecord, index: number): string {
+  const lines: string[] = []
+  const totalWall = rec.phase_timings?.total_wall
+  lines.push(
+    `=== TURN #${index + 1} — ${rec.mode || 'enhanced'} · ${rec.model || '?'}` +
+      `${totalWall ? ` · ${seconds(totalWall)}` : ''} ===`,
+  )
+  if (rec.prompt_tokens != null) {
+    lines.push(
+      `Tokens — prompt: ${rec.prompt_tokens} · system: ${rec.system_tokens ?? 0} · ` +
+        `total: ${rec.total_tokens ?? rec.prompt_tokens}`,
+    )
+  }
+  const timingBlock = (title: string, timings?: Record<string, number> | null) => {
+    const entries = Object.entries(timings || {})
+      .filter(([, v]) => Number.isFinite(v) && v > 0.01)
+      .sort((a, b) => b[1] - a[1])
+    if (!entries.length) return
+    lines.push('', `--- ${title} ---`)
+    for (const [name, v] of entries) lines.push(`${name}: ${seconds(v)}`)
+  }
+  timingBlock('PIPELINE PHASES', rec.phase_timings)
+  timingBlock('RETRIEVAL TASKS', rec.task_timings)
+  const textBlock = (title: string, text?: string | null) => {
+    if (!text) return
+    lines.push('', `--- ${title} ---`, text)
+  }
+  textBlock('QUERY', rec.query)
+  textBlock('PROMPT', rec.prompt)
+  textBlock('SYSTEM PROMPT', rec.system_prompt)
+  textBlock('RESPONSE', rec.response)
+  return lines.join('\n')
+}
+
+// Clipboard write that also works in INSECURE contexts (the SPA is usually
+// reached over plain HTTP via Tailscale — on Android navigator.clipboard is
+// undefined there, which made Mantine's CopyButton silently no-op).
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (window.isSecureContext && navigator.clipboard) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // fall through to the legacy path
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+function CopyAllButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+  const onClick = async () => {
+    const ok = await copyText(value)
+    if (ok) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } else {
+      notifications.show({
+        color: 'red',
+        title: 'Copy failed',
+        message: 'Clipboard is unavailable in this browser context.',
+      })
+    }
+  }
+  return (
+    <Button
+      size="compact-xs"
+      variant={copied ? 'light' : 'outline'}
+      color={copied ? 'teal' : 'gray'}
+      onClick={onClick}
+    >
+      {copied ? '✓ Copied' : `📋 ${label}`}
+    </Button>
+  )
+}
+
 export default function DebugPage() {
   const [records, setRecords] = useState<DebugRecord[]>([])
+  // Absolute index of this session's first record (for prompt-export links)
+  const [baseline, setBaseline] = useState(0)
   const [loading, setLoading] = useState(false)
 
   const refresh = useCallback(() => {
     setLoading(true)
     api
       .getDebugRecords()
-      .then((r) => setRecords(r.records))
+      .then(async (r) => {
+        const base = await debugBaselineFor(r.count)
+        setBaseline(base)
+        setRecords(r.records.slice(base))
+      })
       .catch((err) =>
         notifications.show({
           color: 'red',
@@ -108,9 +208,17 @@ export default function DebugPage() {
       <Stack gap="md" p="md" maw={960} mx="auto">
         <Group justify="space-between">
           <Text fw={700}>🔎 Query → Prompt → Response</Text>
-          <Button size="xs" variant="outline" color="gray" loading={loading} onClick={refresh}>
-            Refresh
-          </Button>
+          <Group gap="xs">
+            {records.length > 0 && (
+              <CopyAllButton
+                label="Copy session"
+                value={records.map((r, i) => recordToText(r, i)).join('\n\n\n')}
+              />
+            )}
+            <Button size="xs" variant="outline" color="gray" loading={loading} onClick={refresh}>
+              Refresh
+            </Button>
+          </Group>
         </Group>
 
         {!records.length && (
@@ -145,12 +253,17 @@ export default function DebugPage() {
                 </Accordion.Control>
                 <Accordion.Panel>
                   <Stack gap="md">
-                    {rec.prompt_tokens != null && (
-                      <Text size="xs" c="dimmed">
-                        Tokens — prompt: {rec.prompt_tokens} · system: {rec.system_tokens ?? 0} ·
-                        total: {rec.total_tokens ?? rec.prompt_tokens}
-                      </Text>
-                    )}
+                    <Group justify="space-between">
+                      {rec.prompt_tokens != null ? (
+                        <Text size="xs" c="dimmed">
+                          Tokens — prompt: {rec.prompt_tokens} · system: {rec.system_tokens ?? 0} ·
+                          total: {rec.total_tokens ?? rec.prompt_tokens}
+                        </Text>
+                      ) : (
+                        <span />
+                      )}
+                      <CopyAllButton label="Copy all" value={recordToText(rec, i)} />
+                    </Group>
                     {rec.phase_timings && (
                       <TimingBars title="Pipeline phases" timings={rec.phase_timings} />
                     )}
@@ -171,7 +284,7 @@ export default function DebugPage() {
                         size="xs"
                         variant="outline"
                         component="a"
-                        href={api.promptExportUrl(i)}
+                        href={api.promptExportUrl(baseline + i)}
                       >
                         📥 Download full prompt as TXT
                       </Button>

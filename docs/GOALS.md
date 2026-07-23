@@ -25,7 +25,7 @@ Consolidation is largely complete (3,800+ tests, 0 failures, clean module extrac
 ## Active Goals (Current Sprint)
 
 ### 1. Synthesis Pipeline Re-enablement
-- **Status**: RE-ENABLED — synthesis dreaming turned back on 2026-06-15. The three original tier generators (Tier 0/1/2) are now RETIRED (`enabled: false` in `config.yaml`); the sole active generator is `PooledConceptSynthesisGenerator` (`knowledge/synthesis_pooled_generator.py`, `synthesis_pooled.enabled: true`, shipped 2026-06-30), running behind the audit auto-halt
+- **Status**: PAUSED (2026-07-15, API cost — turned off via the new Settings toggle; had been re-enabled 2026-06-15). The three original tier generators (Tier 0/1/2) are RETIRED (`enabled: false` in `config.yaml`); the generator dreaming uses when re-enabled is `PooledConceptSynthesisGenerator` (`knowledge/synthesis_pooled_generator.py`, `synthesis_pooled.enabled`, shipped 2026-06-30), running behind the audit auto-halt
 - **Why**: The synthesis pipeline is the core vision of this project. Everything else supports it. It's been frozen while the grading protocol (`docs/grading_plan.md`) validates filter quality. Time to close that loop.
 - Complete grading on existing audit queue candidates (two-layer: 3 binary screening Qs + 1-5 gut-feel slider)
 - Validate FP rate is below `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` (0.50) — this gates auto-halt

@@ -7,7 +7,12 @@ Module Contract:
 - Purpose: Enhance semantic search quality with 3-tier approach
 - Inputs: User query, retrieval limits
 - Outputs: Ranked list of memories with hybrid scores
-- Key collaborators: MultiCollectionChromaStore, query rewriter, keyword matcher
+- Key collaborators: MultiCollectionChromaStore, query rewriter, keyword matcher,
+  memory.utils.is_junk_conversation_doc (drops API-error-sentinel turns and bare
+  "test" exchanges stored before the storage-time guards)
+- Candidate pool: per-collection n_results = min(limit * 3, 200) — n_results is
+  PER collection across 4 collections, so uncapped large limits ballooned the
+  downstream gate's encode work (2026-07-15 latency fix)
 - Side effects: None (read-only retrieval)
 - Async behavior: Main methods are async for ChromaDB queries
 """
@@ -21,6 +26,7 @@ from utils.logging_utils import get_logger
 from utils.query_rewriter import rewrite_query, extract_keywords
 from utils.keyword_matcher import calculate_keyword_score
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+from memory.utils import is_junk_conversation_doc
 from config.app_config import CHROMA_PATH
 
 logger = get_logger("hybrid_retriever")
@@ -68,8 +74,13 @@ class HybridRetriever:
         expanded_query = rewrite_query(query)
         logger.debug(f"[HybridRetriever] Expanded query: '{expanded_query}'")
 
-        # Step 2: Semantic search with expanded query
-        semantic_results = await self._semantic_search(expanded_query, limit * candidate_multiplier)
+        # Step 2: Semantic search with expanded query.
+        # Per-collection cap: n_results is PER collection (×4 collections), so
+        # an uncapped limit×3 with a 200-doc limit meant 600/collection →
+        # ~1700 candidates encoded by the downstream gate (2026-07-15 trace).
+        semantic_results = await self._semantic_search(
+            expanded_query, min(limit * candidate_multiplier, 200)
+        )
 
         # Step 3: Keyword matching
         keyword_results = self._keyword_match(query, semantic_results)
@@ -96,6 +107,7 @@ class HybridRetriever:
         """
         memories = []
         collections_to_query = ['conversations', 'summaries', 'reflections', 'procedural']
+        junk_dropped = 0
 
         try:
             # Batch query all collections
@@ -115,6 +127,17 @@ class HybridRetriever:
                     if item:
                         if not isinstance(item, dict):
                             item = {"content": str(item), "id": str(hash(str(item)))}
+
+                        # Drop junk docs stored before the storage-time
+                        # guards (API-error sentinel turns, bare "test"
+                        # exchanges) — they were ranking in top-10 retrieval.
+                        if is_junk_conversation_doc(
+                            content=item.get("content", ""),
+                            query=item.get("query", ""),
+                            response=item.get("response", ""),
+                        ):
+                            junk_dropped += 1
+                            continue
 
                         # Normalize result format.
                         # The store wrapper emits relevance_score (1/(1+dist)),
@@ -141,6 +164,8 @@ class HybridRetriever:
             import traceback
             traceback.print_exc()
 
+        if junk_dropped:
+            logger.info(f"[HybridRetriever] Dropped {junk_dropped} junk docs (error sentinels / test exchanges)")
         logger.info(f"[HybridRetriever] Semantic search found {len(memories)} candidates")
         return memories
 

@@ -790,6 +790,10 @@ class SubmitContext:
     merged_input: str
     files_result: Any
     agentic_enabled: bool = False
+    # Agentic gate evaluated CONCURRENTLY with prepare_prompt (intent veto
+    # applied post-hoc in the dispatcher once the context pipeline's intent
+    # classification is available).
+    gate_task: Any = None
     # --- set by _prepare_submit_context ---
     full_prompt: str = ""
     system_prompt: str = ""
@@ -2618,6 +2622,22 @@ async def handle_submit(
 
     # Build the enhanced-path prompt context (fast-mode limits, prepare_prompt, image inject).
     ctx.agentic_enabled = agentic_enabled
+
+    # Kick off the agentic gate CONCURRENTLY with prompt building. The gate
+    # only needs the query + recent corpus; its Tier-4 LLM fallback (~2s) was
+    # previously serialized after prepare_prompt. The intent veto needs the
+    # context pipeline's classification, so it is applied post-hoc in the
+    # dispatcher via gate.apply_intent_veto().
+    if agentic_enabled:
+        from core.agentic.gate import evaluate_agentic_gate
+        ctx.gate_task = asyncio.create_task(evaluate_agentic_gate(
+            user_text=user_text,
+            entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
+            model_manager=orchestrator.model_manager,
+            corpus_manager=getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None),
+            intent_info=None,  # not classified yet — veto applied post-hoc
+        ))
+
     async for _c in _prepare_submit_context(ctx):
         yield _c
 
@@ -2644,17 +2664,35 @@ async def handle_submit(
         async for _c in _run_duel(ctx, _DUEL_GENS, _DUEL_SELS, _features_duel):
             yield _c
         if ctx.handled:
+            _gt = getattr(ctx, 'gate_task', None)
+            if _gt is not None:
+                # Duel serviced the turn; gate unused. If the gate already
+                # finished (possibly with an error), retrieve the exception so
+                # asyncio doesn't log "Task exception was never retrieved".
+                _gt.cancel()
+                _gt.add_done_callback(
+                    lambda t: None if t.cancelled() else t.exception()
+                )
             return
         # else duel bailed (timeout/exception) — fall through to agentic/streaming
 
     if agentic_enabled:
-        from core.agentic.gate import evaluate_agentic_gate
-        _gate_decision = await evaluate_agentic_gate(
-            user_text=user_text,
-            entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
-            model_manager=orchestrator.model_manager,
-            corpus_manager=getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None),
-            intent_info=raw_context.get("intent") if raw_context else None,
+        from core.agentic.gate import evaluate_agentic_gate, apply_intent_veto
+        if getattr(ctx, 'gate_task', None) is not None:
+            # Gate ran concurrently with prepare_prompt; its ~2s LLM fallback
+            # is already paid for by now on all but the fastest prepares.
+            _gate_decision = await ctx.gate_task
+        else:
+            _gate_decision = await evaluate_agentic_gate(
+                user_text=user_text,
+                entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
+                model_manager=orchestrator.model_manager,
+                corpus_manager=getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None),
+                intent_info=None,
+            )
+        # Post-hoc intent veto with the context pipeline's classification.
+        _gate_decision = apply_intent_veto(
+            _gate_decision, raw_context.get("intent") if raw_context else None
         )
         should_use_agentic = _gate_decision.should_trigger
         search_terms = _gate_decision.search_terms
