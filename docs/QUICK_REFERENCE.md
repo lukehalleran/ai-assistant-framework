@@ -1461,8 +1461,8 @@ CHROMA_PATH = "./data/chroma_db_v4"
 
 # Token budgets (model-aware — see config.yaml token_budget: section)
 # Auto-computed: min(context_window * 0.25, ceiling) clamped to [floor, ceiling]
-# Override: PROMPT_TOKEN_BUDGET=15000 env var forces a specific value
-PROMPT_TOKEN_BUDGET_DEFAULT = 15000   # API models fallback
+# Override: PROMPT_TOKEN_BUDGET=10000 env var forces a specific value
+PROMPT_TOKEN_BUDGET_DEFAULT = 10000   # API models default (deployed config.yaml token_budget.default)
 PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
 PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
 PROMPT_TOKEN_BUDGET_CEILING = 16000   # Maximum budget
@@ -2978,10 +2978,8 @@ pytest -m "not benchmark"
 # Docs: docs/BENCHMARK_METRICS.md (metric definitions + interpretation guide)
 # Usage: python scripts/benchmark_retrieval.py
 
-# Current scores (2026-05-16):
-#   Synth: MRR=0.9149, R@1=0.8056, R@3=0.9236, R@topK=1.0000
-#   Real:  MRR=0.8766, R@1=0.8413, R@3=0.8730, R@topK=1.0000
-#   Combined: MRR=0.8970, R@1=0.8222, R@3=0.9000, R@topK=1.0000
+# Current scores: see docs/METRICS_SNAPSHOT.md (regenerated) /
+#   docs/BENCHMARK_METRICS.md for current retrieval-benchmark numbers.
 ```
 
 ---
@@ -3015,9 +3013,10 @@ pytest -m "not benchmark"
 - **HIT** = served from cache (cheap). **WRITE** = wrote to cache this turn (~1.25x).
   **MISS** = no cache activity.
 - `supports_prompt_caching()` gates `cache_control` to **Anthropic / recent GPT** models.
-  The active model is **`deepseek-v4`** (config `models.active`), which auto-caches
-  server-side and gets no `cache_control` — explicit caching only fires if you switch
-  the active model to an Anthropic one.
+  The active model is user-selected via config.yaml `models.active` (changed
+  frequently — e.g. deepseek-v4, kimi-3); prompt-caching behavior depends on whichever
+  model is active. Server-side auto-cachers (DeepSeek, Kimi) get no `cache_control`;
+  explicit caching only fires when the active model is an Anthropic / recent-GPT one.
 - Anthropic minimum cacheable prefix is **1024–4096 tokens** (model-dependent); a
   smaller stable base silently won't cache (`cache_read=0` on repeats).
 

@@ -16,8 +16,7 @@ Implemented a crisis vs. casual tone detection system that differentiates genuin
 
 2. **`tests/test_tone_detection.py`** - Comprehensive test suite
    - 30 test cases covering all scenarios
-   - 90% pass rate (27/30 tests passing)
-   - Semantic tests pending full embedder initialization
+   - The 3 previously-pending semantic tests were un-skipped 2026-07-21 (anti-amplification batch) and now run (embedder-gated)
 
 3. **Integration in `core/orchestrator.py`**
    - Tone detection runs before prompt preparation
@@ -121,7 +120,7 @@ All tone detection logged to backend only (not visible to user):
 
 ## Testing Results
 
-**Main Test Suite:** 27/30 passing (90%)
+**Main Test Suite:** 30 test cases; the 3 previously-pending semantic tests were un-skipped 2026-07-21 and now run (embedder-gated)
 
 **Passing Categories:**
 - ✓ All status updates (3/3)
@@ -132,7 +131,7 @@ All tone detection logged to backend only (not visible to user):
 - ✓ Observational language filtering
 
 **Known Limitations:**
-- 3 semantic tests pending (require embedder initialization)
+- The 3 semantic tests were un-skipped 2026-07-21 and now run (embedder-gated — they require embedder initialization)
 - Semantic detection works in full system but not standalone tests
 
 ## Configuration

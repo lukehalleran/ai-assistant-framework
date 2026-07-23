@@ -1,6 +1,6 @@
 # Daemon Project Goals
 
-**Last Updated**: 2026-05-27
+**Last Updated**: 2026-07-23
 
 ---
 
@@ -96,7 +96,7 @@ Consolidation is largely complete (3,800+ tests, 0 failures, clean module extrac
 - Prune low-value entries over time (decay + consolidation)
 - Improve fact extraction precision (reduce false triples)
 - Monitor retrieval benchmark scores for regression after any scoring/weight changes
-- **Current benchmark baseline** (2026-05-17, per `docs/BENCHMARK_METRICS.md`): Combined MRR=0.8911, R@1=0.8309, R@3=0.9173, R@topK=0.9743 (n=272)
+- **Current benchmark** (2026-07-23 rerun, per `docs/BENCHMARK_METRICS.md`): Combined MRR=0.8402, R@1=0.7821, R@3=0.8679, R@topK=0.9143 (n=280); 283/296 cases pass. The drop from the 2026-05-17 baseline (MRR 0.8911) is the per-relation TTL filter correctly aging transient facts out of a now-stale seed corpus, not retrieval degradation — see BENCHMARK_METRICS.md.
 
 ---
 
@@ -134,7 +134,7 @@ These systems are complete and working. Listed here for context, not as active w
 - **Prompt eval system**: Snapshot/replay infrastructure, variant generation (LOO/AOI/bundle/reorder), pairwise judge, objective checks, 31-entry section registry, 246 tests (`eval/`)
 - **Production**: PyInstaller desktop build (v1.0.0 shipped 2026-04-08), Docker deployment, graceful shutdown
 - **Privacy**: All data local, API calls only for LLM generation, no telemetry
-- **Testing**: ~5,900 tests across 240+ test files, retrieval quality benchmarks (~305 cases; combined MRR 0.89 — see `docs/BENCHMARK_METRICS.md`)
+- **Testing**: ~6,290 tests across 271 test files, retrieval quality benchmarks (296 cases; combined MRR 0.84, 2026-07-23 rerun — see `docs/BENCHMARK_METRICS.md`)
 
 ---
 

@@ -844,7 +844,7 @@ YAML section: `skill_activation:` in `config/config.yaml`.
 
 ## Token Budget Management
 
-The prompt has a finite token budget (default 15,000 tokens, floor 8K,
+The prompt has a finite token budget (default 10,000 tokens, floor 8K,
 ceiling 16K, context fraction 0.12 — config.yaml `token_budget`). Sections
 are prioritized:
 
@@ -990,7 +990,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 ### Token Budget
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `PROMPT_TOKEN_BUDGET_DEFAULT` | 15000 | Base token budget (model-aware; LOCAL=12000, FLOOR=8000, CEILING=16000) |
+| `PROMPT_TOKEN_BUDGET_DEFAULT` | 10000 | Base token budget (model-aware; LOCAL=12000, FLOOR=8000, CEILING=16000) |
 | `PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION` | 0.12 | Fraction of model context window |
 | `PROMPT_MAX_RECENT` | 10 | Max recent conversations (live config.yaml `prompt_max_recent`; code default 15) |
 | `PROMPT_MAX_MEMS` | 30 | Max semantic memories (live config.yaml `prompt_max_mems`; code default 15) |

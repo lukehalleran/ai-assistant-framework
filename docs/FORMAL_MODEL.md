@@ -290,7 +290,7 @@ prompt = [
     [WEB SEARCH RESULTS]                     // if triggered (Tavily results with sources)
     [RELEVANT INFORMATION]                   // if available (semantic chunks)
     [DREAMS]                                 // if enabled
-    [USER'S PERSONAL NOTES]                  // if available (Obsidian vault, gated at 0.30)
+    [USER'S PERSONAL NOTES]                  // if available (Obsidian vault, gated at 0.45)
     [USER UPLOADED ITEMS]                    // if available (files/images)
     [VISUAL MEMORIES]                        // if available (CLIP-matched image metadata)
     [DAEMON DOCUMENTATION]                   // if available (reference docs from docs/)
@@ -315,7 +315,7 @@ prompt = [
 
 Sections near the end receive higher attention weight in transformer models. The ordering places high-signal, low-token sections (user profile, time, STM, query) in the high-attention zone.
 
-Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 15,000 tokens (API) / 12,000 (local) with two-tier compression: heavily oversized items (≥3x over token limit) get LLM summary via `_llm_compress_oversized()` (async parallel batch, ~0.3-0.5s), while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle).
+Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 10,000 tokens (API) / 12,000 (local) with two-tier compression: heavily oversized items (≥3x over token limit) get LLM summary via `_llm_compress_oversized()` (async parallel batch, ~0.3-0.5s), while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle).
 
 **Code**: `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration)
 
@@ -597,7 +597,7 @@ C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U 
 | Semantic | `facts`, `wiki_knowledge` | Triples + external knowledge. Truth-scored. Wiki queries route through FAISS (41M vectors); ChromaDB `wiki_knowledge` is fallback only. Wiki protected from dedup. |
 | Procedural | `procedural`, `procedural_skills` | Git commits + reusable patterns. Skill dedup at 0.85 threshold. |
 | Summary | `summaries` | Block-compressed conversation history. Relevance-biased. |
-| Reference | `obsidian_notes`, `reference_docs` | User notes + system docs. Protected from dedup. Gated at 0.30 threshold. |
+| Reference | `obsidian_notes`, `reference_docs` | User notes + system docs. Protected from dedup. Gated at 0.45 threshold. |
 | Meta | `reflections`, `threads`, `proposals`, `daemon_self_notes` | Session insights + open loops + code plans + Daemon's own session notes (`ground_truth: False`). Priority-scored (threads). |
 | Synthesis | `synthesis_results` | Cross-domain insights with convergence tracking. Produced by shutdown dreaming. |
 | Visual | `visual_memories` | CLIP-embedded image metadata for visual recall. Intent-gated (disabled for casual/emotional/meta). Images dropped for non-vision models. |

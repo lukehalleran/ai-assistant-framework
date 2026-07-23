@@ -4,10 +4,10 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://github.com/lukehalleran/ai-assistant-framework/actions/workflows/tests.yml/badge.svg)](https://github.com/lukehalleran/ai-assistant-framework/actions/workflows/tests.yml)
-[![Tests](https://img.shields.io/badge/tests-5%2C904-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-6%2C291-brightgreen.svg)](#testing)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
-> ~190K lines of Python (≈144K code) across 544 files | 14 ChromaDB collections | ~5,900 tests | 20 agentic tools | solo-built part-time over ~14 months
+> ~208K lines of Python (≈159K code) across 635 files | 14 ChromaDB collections | ~6,290 tests | 20 agentic tools | solo-built part-time over ~14 months
 
 Daemon is built around persistent memory, evaluated retrieval, knowledge-graph context, agentic tools, and experimental literature-backed synthesis. It stores your memory locally, retrieves context through a multi-stage RAG pipeline, tracks fact truth and staleness over time, and supports human-gated self-improvement through structured code proposals and isolated agent-branch experiments.
 
@@ -20,7 +20,7 @@ It is a stateful agent architecture, not a chatbot wrapper: every query passes t
 ## TL;DR
 
 - **Persistent hierarchical memory** across **14 ChromaDB collections** (episodic, semantic, procedural, summary, meta, synthesis)
-- **Evaluated multi-stage RAG** — intent-parameterized scoring, **20+ parallel retrieval tasks**, multi-stage gating (~200ms), cross-encoder rerank; **retrieval benchmarks gate every scoring change** (combined MRR 0.89 across 272 cases — versioned in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md))
+- **Evaluated multi-stage RAG** — intent-parameterized scoring, **20+ parallel retrieval tasks**, multi-stage gating (~200ms), cross-encoder rerank; **retrieval benchmarks gate every scoring change** (versioned in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md); current numbers in [METRICS_SNAPSHOT.md](docs/METRICS_SNAPSHOT.md))
 - **Knowledge-graph reasoning** (NetworkX) with entity alias resolution, BFS query expansion, and graph-boosted scoring
 - **ReAct agentic tool loop** — **20 tools** (web, sandbox, memory, files, git/github, academic search, image recall, document generation, action proposals, contact lookup) with a context inventory that prevents redundant searches
 - **Literature-backed synthesis** — narrows a large conceptual space into evidence-backed *candidate* connections and validates them against independent corpora (candidates, not discoveries)
@@ -94,7 +94,7 @@ Images are ingested through OpenCLIP ViT-B/32 → vision-LLM caption → entity 
 
 Retrieval quality is **measured, not asserted** — no scoring or weight change ships without a before/after benchmark run.
 
-- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2), two suites — synthetic seeds + adversarial cases sampled from production ChromaDB (each target paired with its nearest-neighbor distractors). Latest snapshot (2026-05-17): combined **MRR 0.89** (R@1 0.83, R@3 0.92, R@topK 0.97) across **272 retrieval cases**, 305/305 cases passing. Per-suite: Synth n=72 MRR 0.91 · Real v2 (adversarial) n=200 MRR 0.88.
+- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2), two suites — synthetic seeds + adversarial cases sampled from production ChromaDB (each target paired with its nearest-neighbor distractors). Latest rerun (2026-07-23): **283/296 cases pass (95.6%)**; combined **MRR 0.84** (R@1 0.78) over 280 retrieval cases. ~Half the recall misses are the per-relation TTL filter correctly aging transient facts out of a now-stale seed corpus (not retrieval degradation) — the 2026-05-17 snapshot (MRR 0.89, 305/305) is retained as a dated historical baseline in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md).
 - **Prompt-section ablation eval** (`eval/`): snapshot capture → deterministic replay → leave-one-out / add-one-in variants → blind pairwise A/B judging → 5 automated objective checks. Entirely side-effect-free (a persistence guard asserts no ChromaDB/JSON mutation during eval).
 - **Synthesis validation** (`scripts/synthesis_*`, `docs/SYNTHESIS_VALIDATION.md`): judge-discrimination tests, the document-co-occurrence oracle hardening (n=99), controlled-distance and discovery-mining experiments — all using literature as ground truth.
 
@@ -169,7 +169,7 @@ User Query
     +- Composite Scoring --- 6 weighted factors + graph/anchor/meta bonuses +
     |                        staleness/size/deictic penalties, all parameterized by intent
     |
-    +- Prompt Assembly ----- 31 conditional sections, token-budgeted (15K default,
+    +- Prompt Assembly ----- 31 conditional sections, token-budgeted (10K default,
     |                        floor 8K / ceiling 16K); two-tier compression
     |                        (LLM summary + middle-out slicing); guaranteed recency floors
     |
@@ -256,19 +256,18 @@ python -m pytest --cov=. --cov-report=html   # With coverage
 
 > The default `pytest` run excludes integration tests and benchmarks via `pytest.ini`. Markers: `slow`, `semantic`, `benchmark`.
 
-**~5,900 tests across 240+ test files** (exact live count in the badge above and `docs/METRICS_SNAPSHOT.md`; run `pytest --collect-only`). Coverage spans every subsystem — prompt-section eval (246), synthesis audit (40), knowledge graph, intent classification, web-search trigger, fact verification, escalation FSM, cross-deduplication, claim tracking, visual memory, and retrieval benchmarks (real embeddings, recall@K + MRR), among others.
+**~6,290 tests across 271 test files** (exact live count in the badge above and `docs/METRICS_SNAPSHOT.md`; run `pytest --collect-only`). Coverage spans every subsystem — prompt-section eval (246), synthesis audit (40), knowledge graph, intent classification, web-search trigger, fact verification, escalation FSM, cross-deduplication, claim tracking, visual memory, and retrieval benchmarks (real embeddings, recall@K + MRR), among others.
 
 <!-- METRICS:BEGIN -->
 <!-- Generated by scripts/generate_doc_metrics.py — do not edit by hand. -->
-_Snapshot: 2026-07-05 · git `61e875a`_
+_Snapshot: 2026-07-23 · git `b6004ea`_
 
-- **Python:** 544 files · 189,953 total lines · 144,172 non-blank/non-comment  <sub>(git ls-files '*.py', excl venv/ data/)</sub>
-- **Tests:** 5904 collected across 242 test files  <sub>(python -m pytest --collect-only -q; pytest.ini exclusions applied)</sub>
+- **Python:** 635 files · 207,988 total lines · 158,679 non-blank/non-comment  <sub>(git ls-files '*.py', excl venv/ data/)</sub>
+- **Tests:** 6291 collected across 271 test files  <sub>(python -m pytest --collect-only -q; pytest.ini exclusions applied)</sub>
 - **Agentic tools:** 21 dispatch-table types (20 exposed in the loop; recall_image excluded)
 - **ChromaDB collections:** 14
-- **Retrieval benchmark (ledger):** MRR=0.8911 · R@1=0.8309 · n=272  <sub>(docs/BENCHMARK_METRICS.md (Combined row))</sub>
-- **Retrieval benchmark (CSV cross-check):** MRR=0.8405 · R@1=0.7821 · n=280  <sub>(data/benchmark_per_case.csv (computed))</sub>
-  - ⚠️ **Ledger and CSV disagree** (n 272≠280, MRR 0.8911≠0.8405). Needs an owner-blessed re-run before either is quoted as canonical.
+- **Retrieval benchmark (ledger):** MRR=0.8402 · R@1=0.7821 · n=280  <sub>(docs/BENCHMARK_METRICS.md (Combined row))</sub>
+- **Retrieval benchmark (CSV cross-check):** MRR=0.8402 · R@1=0.7821 · n=280  <sub>(data/benchmark_per_case.csv (computed))</sub>
 <!-- METRICS:END -->
 
 _Volatile counts above are regenerated from primary sources by `scripts/generate_doc_metrics.py` (see `docs/METRICS_SNAPSHOT.md`)._
@@ -394,14 +393,14 @@ eval/                        # Prompt ablation & eval system
 
 agent_branch/                # Sandboxed, human-gated self-modification harness
 scripts/                     # Validation harnesses (synthesis_*, oracle, miner)
-tests/                       # 240+ test files, ~5,900 tests
+tests/                       # 271 test files, ~6,290 tests
 ```
 
 ---
 
 ## Prompt Architecture
 
-The prompt is assembled from **31 conditional sections**, ordered by transformer attention patterns (high-signal sections at the end). Default token budget **15,000** (floor 8K, ceiling 16K) with two-tier compression (LLM summary + middle-out slicing); the escalation FSM overrides the budget during crisis states. The stable personality/identity prefix is split at a cache breakpoint so per-turn churn doesn't invalidate prompt caching.
+The prompt is assembled from **31 conditional sections**, ordered by transformer attention patterns (high-signal sections at the end). Default token budget **10,000** (floor 8K, ceiling 16K) with two-tier compression (LLM summary + middle-out slicing); the escalation FSM overrides the budget during crisis states. The stable personality/identity prefix is split at a cache breakpoint so per-turn churn doesn't invalidate prompt caching.
 
 ---
 
@@ -422,7 +421,7 @@ export WIKI_DATA_ROOT=~/daemon-wiki-data
 
 ## Configuration
 
-Central config: `config/config.yaml` (56 sections) → Pydantic v2 validation (`config/schema.py`) → ~500 module-level constants (`config/app_config.py`) with environment-variable overrides. The active model is multi-provider and config-selectable.
+Central config: `config/config.yaml` (63 sections) → Pydantic v2 validation (`config/schema.py`) → ~500 module-level constants (`config/app_config.py`) with environment-variable overrides. The active model is multi-provider and config-selectable.
 
 ```yaml
 memory:
@@ -433,7 +432,7 @@ gating:
   score_weights: { relevance: 0.30, recency: 0.22, truth: 0.18,
                    importance: 0.05, continuity: 0.10, structure: 0.05, topic_match: 0.10 }
 token_budget:
-  default: 15000   # floor 8000, ceiling 16000
+  default: 10000   # floor 8000, ceiling 16000
 ```
 
 ---

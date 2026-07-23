@@ -1189,7 +1189,7 @@ UnifiedPromptBuilder (core/prompt/builder.py) — Thin orchestrator
 
 **Token Budget Strategy**:
 ```python
-Total budget: 15000 tokens (default, configurable)
+Total budget: 10000 tokens (default, configurable)
 
 Allocation with separated sections:
 1. System prompt (fixed ~500-800)
@@ -1945,7 +1945,7 @@ from config.app_config import config
 - `_log_cache_usage(usage, ...)` → greppable `[PromptCache] HIT|WRITE|MISS` log lines **[NEW 2026-06]**
 - Alias mapping via the `self.api_models` dict (e.g. "deepseek-v4" → "deepseek/deepseek-v4-pro"); there is no `_get_client()`/`_map_alias_to_model()` method
 
-**Model Aliases** (includes `sonnet-4.6` added 2026-03-10, `glm-5-turbo` added 2026-03-20, `deepseek-v4`/`deepseek-v4-flash` — current active model is `deepseek-v4`):
+**Model Aliases** (includes `sonnet-4.6` added 2026-03-10, `glm-5-turbo` added 2026-03-20, `deepseek-v4`/`deepseek-v4-flash` — active model is user-selectable via config.yaml `models.active`, changed frequently):
 - All routing goes through OpenRouter base URL
 
 **Environment Variables**:
@@ -4471,7 +4471,7 @@ SYSTEM_PROMPT_PATH = "./core/system_prompt.txt"
 # Memory Limits (in prompt/builder.py — model-aware)
 # Token budget auto-computed from context window, clamped to [floor, ceiling]
 # Override with PROMPT_TOKEN_BUDGET env var for legacy compat
-PROMPT_TOKEN_BUDGET_DEFAULT = 15000   # config.yaml token_budget.default
+PROMPT_TOKEN_BUDGET_DEFAULT = 10000   # config.yaml token_budget.default
 PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
 PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
 PROMPT_TOKEN_BUDGET_CEILING = 16000   # Maximum budget
@@ -4914,7 +4914,7 @@ daemon/
 ├── config/
 │   ├── app_config.py          # Central configuration loader (~300 module-level constants)
 │   ├── schema.py              # Pydantic v2 config validation (section models + DaemonConfig)
-│   ├── config.yaml            # YAML config (52 sections)
+│   ├── config.yaml            # YAML config (63 sections)
 │   ├── config.local.example.yaml # Template for gitignored config.local.yaml (personal vocab + overrides)
 │   ├── feature_registry.py    # Typed loader for shipped-feature catalog (deps, conflicts)
 │   ├── feature_registry.yaml  # Retrospective shipped-feature catalog
@@ -5389,9 +5389,9 @@ except Exception as e:
 **Last Full Unit Run**: 2026-06-27 — 3658 passed, 0 failures (~77s)
 
 **Test Collection**:
-- ~245 test files, ~5,000 test functions total
+- ~271 test files, ~6,290 test functions total
 - Unit tests in `tests/unit/`, integration/other tests in `tests/`
-- Benchmark suite (~305 cases) in `tests/benchmarks/` — not re-run every pass
+- Benchmark suite (296 cases) in `tests/benchmarks/` — not re-run every pass
 
 **Note**: Run the suite memory-capped (`systemd-run --user --scope -p MemoryMax=9G`) — uncapped runs have OOM-frozen the 16GB box.
 
@@ -5413,7 +5413,7 @@ except Exception as e:
 export CHROMA_DEVICE=cpu
 
 # Override model-aware budget with a fixed value
-export PROMPT_TOKEN_BUDGET=15000
+export PROMPT_TOKEN_BUDGET=10000
 export PROMPT_MAX_MEMS=20
 ```
 
@@ -5507,7 +5507,7 @@ python main.py inspect-summaries
 | corpus_manager.py | JSON CRUD: load/save/query short-term memories |
 | multi_collection_chroma_store.py | Vector DB: embed, store, semantic search across 14 collections |
 | gate_system.py | Filter: ChromaDB HNSW candidates → cosine → cross-encoder → top K |
-| prompt/builder.py | Assemble: system + separated context sections + STM within 15K tokens |
+| prompt/builder.py | Assemble: system + separated context sections + STM within 10K tokens |
 | response_generator.py | Stream: async LLM + Best-of-N + Duel modes (buffer fix + DeepSeek EOS) [FIXED] |
 | best_of_handler.py | Orchestrate: duel/ensemble/single mode selection + timeout fallback [NEW] |
 | gui/handlers.py | Relay: streaming chunks + thinking blocks + tag stripping (reply/response/answer) [FIXED] |
@@ -5603,7 +5603,7 @@ HYBRID_SEMANTIC_WEIGHT = 0.7
 HYBRID_KEYWORD_WEIGHT = 0.3
 
 # Prompt Limits (model-aware — auto-computed from context window)
-PROMPT_TOKEN_BUDGET_DEFAULT = 15000  # floor 8000, ceiling 16000; override: PROMPT_TOKEN_BUDGET env var
+PROMPT_TOKEN_BUDGET_DEFAULT = 10000  # floor 8000, ceiling 16000; override: PROMPT_TOKEN_BUDGET env var
 PROMPT_MAX_RECENT = 15
 PROMPT_MAX_MEMS = 15
 PROMPT_MAX_FACTS = 30

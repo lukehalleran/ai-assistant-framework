@@ -70,8 +70,8 @@ system — all data stays on disk, API calls go to LLM providers only.
 
 ```
 Python lines:           ~182,000 (incl. tests)
-Python files:           516+
-Test files:             245
+Python files:           635
+Test files:             271
 Test functions:         ~5,000
 ChromaDB collections:   14
 Prompt sections:        31 (conditional)
@@ -80,14 +80,15 @@ Parallel retrieval:     22 async tasks
 Memory tiers:           5
 Agentic tools:          20
 Gating latency:         ~200ms
-Config options:         ~380 keys (52 YAML sections)
+Config options:         ~380 keys (63 YAML sections)
 ```
 
 ### Entry Points
 
 | Entry | Command | What Happens |
 |-------|---------|-------------|
-| GUI | `python main.py` | Gradio web UI at `http://localhost:7860` |
+| Web UI | `python main.py` | FastAPI/uvicorn at `http://127.0.0.1:8000` (React SPA at `/`, Gradio dev tabs at `/admin`) |
+| Legacy GUI | `python main.py --legacy-gui` | Standalone Gradio web UI at `http://localhost:7860` |
 | CLI | `python main.py cli` | Terminal-based chat loop |
 | Wizard | `python main.py wizard` | First-run onboarding (mode, keys, vault, wiki index) |
 | Docker | `docker-compose up -d` | Containerized deployment |
@@ -771,7 +772,7 @@ and fetches from a different source or collection:
 | Proactive insights | ContextSurfacer | 2 | LLM once/session, cached |
 | Wiki content | FAISS (41M vectors, IVFPQ index) | 3 | Gated at 0.30 threshold; falls back to ChromaDB if FAISS unavailable |
 | Reference docs | ChromaDB `reference_docs` | 15 | Auto-seeded from docs/ |
-| Personal notes | ChromaDB `obsidian_notes` | 5 | Gated at 0.30 threshold |
+| Personal notes | ChromaDB `obsidian_notes` | 5 | Gated at 0.45 threshold |
 | Git commits | ChromaDB `procedural` | 10 | Project history |
 | Web search | Tavily API | if triggered | Cached 72 hours |
 | Google Calendar | Calendar API (OAuth2) | 10 | 5-min module cache, read-only |
@@ -1032,7 +1033,7 @@ end for maximum attention weight:
 [RECENT REFLECTIONS]               — if available
 [SEMANTIC REFLECTIONS]             — if available
 [DREAMS]                           — if enabled
-[USER'S PERSONAL NOTES]            — if available (Obsidian, gated 0.30)
+[USER'S PERSONAL NOTES]            — if available (Obsidian, gated 0.45)
 [USER UPLOADED ITEMS]              — if files uploaded
 [VISUAL MEMORIES]                  — if available (entity-gated CLIP retrieval)
 [DAEMON DOCUMENTATION]             — if available (reference docs)
@@ -1060,7 +1061,7 @@ The prompt has a finite token budget: `context_window *
 PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION` (0.12) clamped to
 `[PROMPT_TOKEN_BUDGET_FLOOR=8,000, PROMPT_TOKEN_BUDGET_CEILING=16,000]`,
 with separate caps for local vs API models. Default budget:
-`PROMPT_TOKEN_BUDGET_DEFAULT=15,000` tokens (API models),
+`PROMPT_TOKEN_BUDGET_DEFAULT=10,000` tokens (API models),
 `PROMPT_TOKEN_BUDGET_LOCAL=12,000` tokens (local models).
 
 Sections are assigned priorities for trimming:
@@ -2227,7 +2228,7 @@ User's personal notes synced from Obsidian:
 - Changed files: old chunks deleted, re-embedded (not skip-if-exists)
 - Multimodal support for embedded images
 - Stored in `obsidian_notes` collection (protected, never deduped)
-- Higher relevance gate (0.30 vs general 0.18) to prevent topically
+- Higher relevance gate (0.45 vs general 0.18) to prevent topically
   similar but contextually irrelevant notes from leaking
 
 ### Git Memory

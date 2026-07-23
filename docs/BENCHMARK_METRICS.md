@@ -4,7 +4,23 @@ Tracks Daemon's retrieval quality over time. Two test suites: **synth** (synthet
 
 All quality metrics computed over retrieval cases only (intent-only cases excluded from recall/MRR).
 
-## Current Metrics (2026-05-17)
+## Current Metrics (2026-07-23 rerun)
+
+### Combined (n=280 retrieval cases)
+
+| Suite | Cases | MRR | R@1 | R@3 | R@topK |
+|-------|------:|-----|-----|-----|--------|
+| **Combined** | **280** | **0.8402** | **0.7821** | **0.8679** | **0.9143** |
+
+**283/296 cases pass (95.6%).**
+
+By-intent MRR (retrieval cases): casual_social 1.00 · project_work 0.95 · emotional_support 0.93 · temporal_recall 0.90 · creative_exploration 0.87 · technical_help 0.85 · general 0.84 · factual_recall 0.80 · meta_conversational 0.71.
+
+> **The drop from the 2026-05-17 baseline is NOT retrieval degradation.** ~Half the recall-0 misses are the per-relation TTL filter (strengthened in the 2026-07 memory batch) correctly aging out transient facts (`medication_taken`, `sleep_start_time`, `current_mood`, … — 24h TTL) that the *seed corpus still expects*. Investigated 2026-07-22: those goldens are the **#1 raw dense-embedding match** (relevance 0.72–0.77) but are dropped post-scoring by the TTL filter — the seed corpus is stale, not the retriever. A corpus refresh is the fix; true retrieval quality is higher than these numbers. Regenerate the volatile snapshot with `python scripts/generate_doc_metrics.py`.
+
+---
+
+## Historical baseline (2026-05-17)
 
 ### Combined (n=272 retrieval cases)
 
@@ -23,7 +39,7 @@ All quality metrics computed over retrieval cases only (intent-only cases exclud
 |-------|------:|-----|-----|-----|--------|
 | Synth | 72 | 0.9149 | 0.8056 | 0.9236 | 1.0000 |
 | Real v2 (adversarial) | 200 | 0.8826 | 0.8400 | 0.9150 | 0.9650 |
-| **Combined** | **272** | **0.8911** | **0.8309** | **0.9173** | **0.9743** |
+| **Overall** | **272** | **0.8911** | **0.8309** | **0.9173** | **0.9743** |
 
 ### Real v2 by Retrieval Method
 

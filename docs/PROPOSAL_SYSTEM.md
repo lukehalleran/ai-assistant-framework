@@ -261,7 +261,7 @@ is aware of its own pending self-improvement ideas.
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `CODE_PROPOSALS_ENABLED` | True | Master switch (also env `CODE_PROPOSALS_ENABLED`) |
+| `CODE_PROPOSALS_ENABLED` | True | Master switch (also env `CODE_PROPOSALS_ENABLED`). **Deployed state currently OFF** — `config.yaml code_proposals.enabled: false` (2026-07-15 API-cost pause); the `True` here is the code-constant default. |
 | `CODE_PROPOSALS_COLLECTION` | `proposals` | ChromaDB collection |
 | `CODE_PROPOSALS_DEDUP_THRESHOLD` | 0.70 | Semantic dedup cosine |
 | `CODE_PROPOSALS_KEYWORD_DEDUP_TAG_THRESHOLD` | 0.60 | Title-overlap dedup |

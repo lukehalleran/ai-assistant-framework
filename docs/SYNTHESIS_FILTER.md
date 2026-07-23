@@ -255,7 +255,7 @@ exit, so no new candidate ever persisted (the audit queue looked frozen).
 
 ```
 Candidate Generation (standalone shutdown dreaming step, main.py-driven):
-  ├── [PRIMARY] PooledConceptSynthesisGenerator (SYNTHESIS_POOLED_ENABLED — live)
+  ├── [PRIMARY] PooledConceptSynthesisGenerator (SYNTHESIS_POOLED_ENABLED — sole generator when enabled; OFF in live config since 2026-07-15)
   │     ├── CONCEPT_POOL pairs in cosine band [0.20, 0.45]
   │     └── LLM articulation (parallel, semaphore) → SynthesisCandidate[]
   └── [RETIRED fallback — runs only if pooled is disabled, behind per-tier flags]
@@ -948,18 +948,20 @@ defaults.
 | `SYNTHESIS_LOG_ALL_REJECTIONS` | `True` | — | Log every rejection |
 | `SYNTHESIS_DEFAULT_BATCH_SIZE` | `100` | — | Batch runner size |
 
-> **Live generator state (config.yaml, 2026-06-30):** the **Pooled Concept**
+> **Live generator state (config.yaml, 2026-07-23):** the **Pooled Concept**
 > generator (`synthesis_pooled`, `SYNTHESIS_POOLED_ENABLED`) is the *sole*
-> enabled generator dreaming uses. The three tiers below carry `enabled: True`
-> as an app_config code default but are set `enabled: false` in `config.yaml`
-> (retired — each paired thin/low-prominence concepts and yielded ≈0 accepts).
-> The "Default" column is the code default, not the live value.
+> generator dreaming *would* use *when enabled*, but it is currently **OFF**
+> (`synthesis_pooled.enabled: false` — API-cost pause since 2026-07-15). The
+> three tiers below carry `enabled: True` as an app_config code default but are
+> set `enabled: false` in `config.yaml` (retired — each paired thin/low-prominence
+> concepts and yielded ≈0 accepts). The "Default" column is the code default, not
+> the live value.
 
 ### Pooled Concept Generator (PRIMARY)
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `SYNTHESIS_POOLED_ENABLED` | `False` (live: **true** in config.yaml) | Master toggle — sole active generator |
+| `SYNTHESIS_POOLED_ENABLED` | `False` (live: **false** in config.yaml — OFF since 2026-07-15, API-cost pause) | Master toggle — sole generator dreaming uses when enabled |
 | `SYNTHESIS_POOLED_CANDIDATES_PER_SESSION` | `8` | Target candidates per shutdown |
 | `SYNTHESIS_POOLED_LLM_CONCURRENCY` | `5` | Max parallel articulation calls |
 

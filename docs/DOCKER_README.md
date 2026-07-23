@@ -174,8 +174,8 @@ OPENAI_API_KEY=sk-...
 # Mode: "user" (streamlined) or "dev" (all features)
 DAEMON_MODE=user
 
-# Prompt token budget (default 15000 from config.yaml)
-PROMPT_TOKEN_BUDGET=15000
+# Prompt token budget (default 10000 from config.yaml)
+PROMPT_TOKEN_BUDGET=10000
 
 # Paths (inside container)
 CORPUS_FILE=/app/data/corpus_v4.json

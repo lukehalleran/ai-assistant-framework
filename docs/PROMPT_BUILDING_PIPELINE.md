@@ -191,10 +191,10 @@ Restore critical sections that budget trimming may have removed:
 ```
 Priority: env override > model-aware > default
 
-Model-aware = 25% of context window
+Model-aware = 0.12 of context window
   Local models:  max(8000, min(computed, 12000))
   API models:    max(8000, min(computed, 16000))
-  Default:       15000
+  Default:       10000
   Floor:         8000
 ```
 
