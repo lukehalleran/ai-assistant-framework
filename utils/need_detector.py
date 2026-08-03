@@ -9,6 +9,10 @@ Complements tone_detector.py (severity) with a second axis:
 - NEUTRAL: Mixed or unclear signals
 
 Uses hybrid detection (keyword + semantic) following tone_detector.py patterns.
+Semantic prototypes = NEED_EXEMPLARS seeds + per-user LEARNED exemplars
+(utils.adaptive_exemplars, domain "need", 2026-08-03): a high-confidence
+keyword fast-path classification teaches the store (never neutral — absence
+of signal is not a phrasing). Toggle: NEED_EXEMPLAR_LEARNING env (default on).
 """
 
 import os
@@ -39,6 +43,10 @@ NEED_CONFIG = {
     # Message length thresholds
     "short_message_threshold": int(os.getenv("NEED_SHORT_MSG", "40")),
     "long_message_threshold": int(os.getenv("NEED_LONG_MSG", "80")),
+
+    # Grow per-user semantic exemplars from high-confidence keyword
+    # classifications via utils.adaptive_exemplars (2026-08-02).
+    "exemplar_learning": os.getenv("NEED_EXEMPLAR_LEARNING", "1") not in ("0", "false", "False"),
 }
 
 
@@ -207,12 +215,31 @@ def _get_embedder(model_manager=None):
         return None
 
 
+def _adaptive_store_version() -> int:
+    try:
+        from utils.adaptive_exemplars import get_store
+        return get_store().version
+    except Exception:
+        return -1
+
+
 def _get_need_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
-    """Compute and cache exemplar embeddings for need types."""
+    """Compute and cache exemplar embeddings for need types.
+
+    Prototypes = code seeds (NEED_EXEMPLARS) merged with per-user LEARNED
+    exemplars (utils.adaptive_exemplars, domain "need") — high-confidence
+    keyword classifications teach the semantic channel (2026-08-02, same
+    seed+learn pattern as the tone detector). Cache is keyed on the adaptive
+    store's version.
+    """
     global _need_exemplar_embeddings_cache
 
-    if _need_exemplar_embeddings_cache is not None:
-        return _need_exemplar_embeddings_cache
+    _version = _adaptive_store_version()
+    if (
+        isinstance(_need_exemplar_embeddings_cache, tuple)
+        and _need_exemplar_embeddings_cache[0] == _version
+    ):
+        return _need_exemplar_embeddings_cache[1]
 
     embedder = _get_embedder(model_manager)
     if embedder is None:
@@ -220,20 +247,28 @@ def _get_need_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
 
     logger.info("[NeedDetector] Computing need exemplar embeddings (one-time setup)...")
 
-    _need_exemplar_embeddings_cache = {}
-
+    prototypes: Dict[str, np.ndarray] = {}
     for need_type, examples in NEED_EXEMPLARS.items():
         try:
-            embeddings = embedder.encode(examples, convert_to_numpy=True)
-            mean_embedding = np.mean(embeddings, axis=0)
-            _need_exemplar_embeddings_cache[need_type] = mean_embedding
-            logger.debug(f"[NeedDetector] Computed {need_type} exemplar from {len(examples)} examples")
+            merged = list(examples)
+            try:
+                from utils.adaptive_exemplars import get_store
+                merged += get_store().get_learned("need", need_type)
+            except Exception:
+                pass
+            embeddings = embedder.encode(merged, convert_to_numpy=True)
+            prototypes[need_type] = np.mean(embeddings, axis=0)
+            logger.debug(
+                f"[NeedDetector] Computed {need_type} exemplar from {len(examples)} seed "
+                f"+ {len(merged) - len(examples)} learned examples"
+            )
         except Exception as e:
             logger.error(f"[NeedDetector] Failed to compute {need_type} exemplar: {e}")
-            _need_exemplar_embeddings_cache[need_type] = np.zeros(384)
+            prototypes[need_type] = np.zeros(384)
 
+    _need_exemplar_embeddings_cache = (_version, prototypes)
     logger.info("[NeedDetector] Need exemplar embeddings ready")
-    return _need_exemplar_embeddings_cache
+    return prototypes
 
 
 # ===== Detection Functions =====
@@ -466,6 +501,22 @@ def detect_need_type(message: str, model_manager=None) -> NeedAnalysis:
     # Fast path: high-confidence keyword match
     if keyword_result.confidence >= NEED_CONFIG["high_confidence_threshold"]:
         logger.debug(f"[NeedDetector] Fast path: {keyword_result.need_type.value}")
+        # Deterministic confirmation independent of the semantic prototypes →
+        # teach the store so paraphrases match semantically (never neutral —
+        # it's the absence of signal, not a phrasing to learn).
+        if (
+            keyword_result.need_type != NeedType.NEUTRAL
+            and NEED_CONFIG.get("exemplar_learning", True)
+        ):
+            try:
+                from utils.adaptive_exemplars import get_store
+                get_store().record(
+                    "need", keyword_result.need_type.value, message, "keyword",
+                    embedder=_get_embedder(model_manager),
+                    seed_texts=NEED_EXEMPLARS.get(keyword_result.need_type.value, []),
+                )
+            except Exception as e:
+                logger.debug(f"[NeedDetector] exemplar learning skipped: {e}")
         return keyword_result
 
     # Stage 2: Semantic detection

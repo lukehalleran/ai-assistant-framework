@@ -13,7 +13,10 @@ Both calls are advisory — failures return None and never block.
 
 Inputs:
     - model_manager (generate_once)
-    - ContextResult from context_pipeline
+    - ContextResult from context_pipeline (incl. last_exchange — the newest
+      prior turn, included in the planner prompt so pronoun-anchored
+      fragments and referent corrections are planned against what they
+      actually refer to instead of blind off the raw query, 2026-07-28)
 
 Outputs:
     - ResponsePlan (Pydantic, or None)
@@ -158,14 +161,37 @@ class ResponsePlanner:
         thread_ctx = getattr(context, "thread_context", None)
         thread_depth = thread_ctx.get("thread_depth", 0) if thread_ctx else 0
 
+        # Previous exchange — without it, a pronoun-anchored fragment
+        # ("It was maybe 3 years of...") or a referent correction ("No I
+        # mean...") is planned blind and the plan confidently reinforces
+        # whatever the topic classifier guessed (2026-07-28 incident: a
+        # long-covid frequency fragment got an "exercise routine" plan).
+        exchange_block = ""
+        last_ex = getattr(context, "last_exchange", None)
+        if isinstance(last_ex, dict):
+            last_user = str(last_ex.get("query") or "").strip()
+            last_asst = str(last_ex.get("response") or "").strip()
+            if last_user or last_asst:
+                exchange_block = (
+                    "Previous exchange (use it to resolve pronouns and fragments):\n"
+                    f"User: {last_user[:400]}\n"
+                    f"Assistant: {last_asst[:400]}\n\n"
+                )
+
         prompt = (
             "You are a response planner. Given the query and context signals below, "
             "produce a JSON response plan.\n\n"
+            f"{exchange_block}"
             f"Query: {query}\n"
             f"Intent: {intent_type}\n"
             f"Tone level: {tone_level}\n"
             f"Topics: {topics_str}\n"
             f"Thread depth: {thread_depth}\n\n"
+            "If the query is a fragment, opens with a pronoun (\"It was...\", "
+            "\"That's...\"), or corrects an interpretation (\"No I mean...\"), "
+            "resolve what it refers to from the previous exchange and plan for "
+            "THAT — do not treat it as a standalone statement, and do not trust "
+            "the Topics label over the previous exchange.\n\n"
             "Output ONLY valid JSON with these fields:\n"
             '- "key_points": list of 2-4 strings (what the response must cover)\n'
             '- "tone": single word (warm, analytical, empathetic, casual, direct, etc.)\n'

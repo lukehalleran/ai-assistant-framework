@@ -12,6 +12,11 @@ Module Contract:
   - create_session() -> PersistentSession: Create stateful session
   - is_available() -> bool: Check if E2B is configured
   - format_for_prompt(result: SandboxResult) -> str: Format for LLM context
+- PersistentSession liveness (2026-07-24): is_closed reflects only an explicit
+  local close(); E2B can kill a sandbox server-side (idle ~5 min / crash) with
+  the wrapper unaware. is_alive() is a best-effort backend probe (E2B is_running)
+  so callers recycle a dead handle instead of failing the next run(); run() also
+  self-marks closed when a backend death is detected mid-turn.
 - Outputs:
   - SandboxResult with success status, stdout, stderr, error, results, execution time
 - Side effects:
@@ -518,8 +523,35 @@ class PersistentSession:
 
     @property
     def is_closed(self) -> bool:
-        """Check if session has been closed."""
+        """Check if session has been closed (explicit local close())."""
         return self._closed
+
+    def is_alive(self) -> bool:
+        """Best-effort liveness check against the E2B backend.
+
+        `is_closed` only reflects an explicit local close(); E2B can kill the
+        sandbox server-side (idle timeout — SDK default ~5 min — or a crash)
+        with this wrapper none the wiser. Reusing that dead handle fails the
+        next run(), so callers probe here before reuse. Pure predicate (no side
+        effects): returns False on any probe error — an unknown state is treated
+        as dead so the caller recreates. If the SDK exposes no cheap probe,
+        assume alive (run() will surface a genuinely dead sandbox).
+        """
+        if self._closed:
+            return False
+        probe = getattr(self._sandbox, "is_running", None)
+        if not callable(probe):
+            return True
+        try:
+            return bool(probe(request_timeout=5))
+        except TypeError:
+            # Older SDK without the request_timeout kwarg.
+            try:
+                return bool(probe())
+            except Exception:
+                return False
+        except Exception:
+            return False
 
     @property
     def execution_count(self) -> int:
@@ -568,6 +600,15 @@ class PersistentSession:
 
         except Exception as e:
             logger.error(f"[Sandbox] Session execution error: {e}")
+            # If the backend sandbox is gone (E2B killed it server-side), mark
+            # the session dead so the next _get_sandbox_session() recreates it
+            # rather than reusing a dead handle for every subsequent call.
+            try:
+                if not self.is_alive():
+                    self._closed = True
+                    logger.info("[Sandbox] Session sandbox no longer running — marked closed")
+            except Exception:
+                pass
             return SandboxResult(
                 code=code,
                 success=False,

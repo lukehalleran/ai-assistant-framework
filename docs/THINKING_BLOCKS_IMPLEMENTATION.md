@@ -5,11 +5,11 @@
 ## Overview
 Two-step generation where the LLM provides internal reasoning before delivering the final answer. The thinking block is logged for debugging but only the final answer is shown to users and stored in memory.
 
-**Four** core layers of thinking separation exist, plus five operational layers (defense in depth, 9 total — see table below):
+**Four** core layers of thinking separation exist, plus six operational layers (defense in depth, 10 total — see table below):
 1. **Native API reasoning** — for Claude/DeepSeek-R1, thinking is separated at the OpenRouter API level via `extra_body={"reasoning": {"effort": "medium"}}`. Thinking arrives in `delta.reasoning_content`, not in the text response.
 2. **Tag-based parsing** — `<thinking>`/`<think>`/`<reasoning>`/`<reason>` tags (+ `<output>` wrappers) parsed by `ResponseParser.parse_thinking_block()` (the `<reasoning>`/`<reason>` family was added 2026-07-03 after a model dumped literal `<reasoning>` tags in the content channel)
 3. **Heuristic fallback** — `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning patterns, instruction echoes)
-4. **Storage boundary guard** — `ResponseParser.sanitize_for_storage()` runs inside `memory_storage.store_interaction()`; no storage path can persist thinking artifacts into memory (see "Storage Boundary Guard" section)
+4. **Storage boundary guard** — `ResponseParser.sanitize_for_storage()` runs inside `memory_storage.store_interaction()`; no storage path can persist thinking artifacts into memory (see "Storage Boundary Guard" section). Since 2026-07-25 the same transform also runs at the RETRIEVAL boundary (`formatter._strip_stored_thinking()`) so pre-guard historical docs can't leak into live prompts.
 
 ## Changes Made
 
@@ -139,10 +139,15 @@ if not use_raw_mode:
 
 During streaming, `handlers.py`:
 1. Checks `ResponseParser.has_incomplete_thinking_block(final_output)` after each chunk
-2. Also checks `ResponseParser.likely_untagged_thinking(final_output)` to suppress untagged chain-of-thought before `parse_thinking_block()` can find a clean split point
-3. Shows "Thinking..." indicator while thinking block is incomplete
-4. Once `</thinking>` arrives, switches to displaying final answer
-5. After streaming completes, re-parses to ensure clean storage
+2. Checks `ResponseParser.is_empty_thinking_shell(final_output)` — between the synthetic
+   `</thinking>` marker and the first real content token the buffer is exactly
+   `<thinking></thinking>`; `parse_thinking_block()` returns `("", "")` for it, so without
+   this check the fallthrough displayed the literal tags for the gap (~1s flash observed
+   2026-08-03). The 💭 indicator stays up instead **[NEW 2026-08-03]**
+3. Also checks `ResponseParser.likely_untagged_thinking(final_output)` to suppress untagged chain-of-thought before `parse_thinking_block()` can find a clean split point
+4. Shows "Thinking..." indicator while thinking block is incomplete
+5. Once `</thinking>` arrives, switches to displaying final answer
+6. After streaming completes, re-parses to ensure clean storage
 
 **Image limitation:** When images are present in the request, native reasoning is skipped in `generate_async()` because OpenRouter may not support both extended thinking and image input simultaneously. The system falls back to tag-based and heuristic parsing layers.
 
@@ -234,7 +239,10 @@ The answer to 2 + 2 is 4.
 | Streaming | `strip_thinking_tag_leaks()` + stuck recovery | XML marker fragments and stuck thinking state after streaming ends |
 | Interleaved | `InterleavedReasoningFilter.feed()` (`core/reasoning_stream_filter.py`) | Reasoning model fuses a discarded pre-answer draft onto the real answer with NO separator, e.g. `…system.Let me check…` — untagged, so tag/heuristic/storage strippers miss it [NEW 2026-06] |
 | Cleanup | `strip_thinking_tag_leaks()` | Partial/malformed tags (e.g., `/think>`, `<|think|>`) |
+| Empty shell | `is_empty_thinking_shell()` in the handlers streaming loop | Buffer that is ONLY the synthetic `<thinking></thinking>` pair (reasoning ended, first content token not yet arrived) — `parse_thinking_block()` returns `("", "")` for it and the fallthrough flashed the literal tags [NEW 2026-08-03] |
+| Stream artifact | `strip_trailing_stream_artifact()` (inside `sanitize_for_storage()` + both `add_summary` paths) | Endpoint-level quirk, not thinking-related: the OpenRouter kimi-3 endpoint emits a lone `e` content token before `finish_reason=stop` on both streaming ("…landed?e") and non-streaming (summaries "…them.e") paths. Strips a letter glued to terminal punctuation at end-of-text; "i.e"-abbreviations preserved [NEW 2026-08-03] |
 | **Storage boundary** | `ResponseParser.sanitize_for_storage()` in `memory_storage.store_interaction()` | ANY leak that survives display-layer defenses — never persisted. All-thinking responses skip storage entirely (returns None) [NEW 2026-06-10] |
+| **Retrieval boundary** | `formatter._strip_stored_thinking()` applies the sanitize transform to retrieved memory content during prompt assembly | Docs stored BEFORE the storage guard existed (pre-2026-06-10) — a Feb-07 stored `<thinking>` block surfaced verbatim in a live prompt on 2026-07-25. Historical repair (`repair_thinking_leaks.py --apply`) remains owner-gated; this layer makes retrieval safe either way [NEW 2026-07-25] |
 
 ## Storage Boundary Guard (2026-06-10)
 
@@ -249,9 +257,10 @@ storage did not. Result: 752/5920 conversation docs, 429/2000 corpus entries,
 **The fix (three parts):**
 1. `ResponseParser.sanitize_for_storage(text)` — canonical pre-persistence strip:
    empty `<thinking></thinking>` pairs anywhere, leading tagged blocks, unclosed
-   leading blocks (→ `""`), stray fragments, reflection blocks. Deliberately does
-   NOT apply untagged-thinking heuristics (false positives must not eat real
-   conversation content at the storage boundary).
+   leading blocks (→ `""`), stray fragments, reflection blocks, and (2026-08-03)
+   the kimi-3 trailing stream artifact (lone `e` glued to final punctuation).
+   Deliberately does NOT apply untagged-thinking heuristics (false positives must
+   not eat real conversation content at the storage boundary).
 2. `memory_storage.store_interaction()` calls it before ANY persistence (corpus,
    conversation context, ChromaDB) — covers every storage path including future ones.
    The agentic handler path additionally routes through `_sanitize_response_text()`.

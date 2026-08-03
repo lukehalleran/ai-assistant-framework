@@ -10,15 +10,27 @@ Module Contract:
            consumers (builder.py intent-type extraction, agentic gate veto,
            response planner) read .intent_type; keep the alias intact or the
            whole intent→suppression layer silently dies (2026-07-03 regression).
-  Side effects: None. Pure computation, no LLM calls.
+  Side effects: No LLM calls. The semantic tier (2026-08-03) uses the shared
+           SentenceTransformer embedder, and independent-channel teachers append
+           to data/adaptive_exemplars.json via utils.adaptive_exemplars.
 
 Integration:
   - Runs as Stage 4.5 in ContextPipeline (after heavy-topic check, before query rewrite)
+  - Semantic tier (2026-08-03): when regex confidence < 0.50, the query is scored
+    against per-intent exemplar prototypes (INTENT_EXEMPLARS seeds + per-user
+    learned exemplars from utils.adaptive_exemplars, domain "intent"). A clear
+    winner (cosine ≥ INTENT_SEMANTIC_MIN_SIM=0.45, margin ≥ 0.05) classifies at
+    conf 0.60 with source="semantic" — reaches routing floors, stays below the
+    0.75 veto floor. GENERAL has no prototype (it is the fallback, not a class).
+    Learning teachers are channels independent of the prototypes: confident regex
+    hits (≥ 0.85) and STM refinements; the semantic tier never teaches itself and
+    GENERAL is never learned. Envs: INTENT_SEMANTIC_TIER, INTENT_EXEMPLAR_LEARNING.
   - STM refinement: if classifier confidence < STM_REFINEMENT_THRESHOLD and STM
     produced an intent string, refine_with_stm() maps the free-text intent to a
     categorical IntentType, upgrading confidence to INTENT_STM_REFINED_CONFIDENCE
     (0.60 default — reaches the 0.60 routing floors, stays below the 0.75
-    agentic-veto floor).
+    agentic-veto floor). refine_with_stm(query=...) also teaches the learned
+    exemplar store when a refinement lands.
   - ContextResult carries the IntentResult in its .intent field.
   - PromptBuilder reads intent.retrieval_overrides to adjust max_* counts.
   - MemoryScorer reads intent.weight_overrides via rank_memories(weight_overrides=...).
@@ -28,6 +40,7 @@ Dependencies: config.app_config (INTENT_* constants), enum, re, dataclasses
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -455,8 +468,167 @@ _STM_KEYWORD_PATTERNS: List[Tuple[re.Pattern, IntentType]] = [
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Classifier
+# Semantic tier: seed exemplars per intent (+ per-user learned via the
+# adaptive store). Fills the gap between regex (lexical) and STM (needs a
+# prior STM pass): a query with no regex hit used to land general@0.00 —
+# every 2026-08-02 distress vent did, starving the tone-corroborated agentic
+# veto. GENERAL has no prototype by design (it is the fallback, not a class).
 # ═══════════════════════════════════════════════════════════════════════════
+
+INTENT_EXEMPLARS: Dict[str, List[str]] = {
+    "emotional_support": [
+        "I am so unhappy",
+        "I feel like nobody cares about me",
+        "today was awful and I just need to vent",
+        "I'm really struggling right now",
+        "everything feels pointless lately",
+        "I'm embarrassed about how I reacted earlier",
+    ],
+    "casual_social": [
+        "hey what's up",
+        "lol that's funny",
+        "good morning, slept okay",
+        "not much, just chilling tonight",
+        "haha yeah exactly",
+    ],
+    "technical_help": [
+        "why is this function throwing a TypeError",
+        "how do I fix this docker build error",
+        "my code won't compile and I don't know why",
+        "what's wrong with this SQL query",
+    ],
+    "factual_recall": [
+        "what did I say my dosage was",
+        "what's my cat's name again",
+        "which gym do I usually go to",
+        "what did we decide about the budget",
+    ],
+    "temporal_recall": [
+        "when did I last go to the doctor",
+        "what did we talk about last week",
+        "how long have I been doing this routine",
+    ],
+    "creative_exploration": [
+        "write me a short story about a lighthouse",
+        "let's brainstorm names for the app",
+        "imagine a world where nobody sleeps",
+    ],
+    "meta_conversational": [
+        "how does your memory system work",
+        "why did you answer it that way",
+        "what model are you running on right now",
+    ],
+    "project_work": [
+        "let's fix the retrieval bug in the gate system",
+        "the scorer threshold needs updating in config",
+        "next step is wiring the new endpoint into the API",
+    ],
+}
+
+# Fires only when regex is unconfident; result confidence is capped at the
+# STM-refined floor (0.60) — enough for routing floors, deliberately below
+# the 0.75 hard-veto floor. Thresholds are MiniLM-space cosine.
+_SEMANTIC_TIER_CONFIG = {
+    "enabled": os.getenv("INTENT_SEMANTIC_TIER", "1") not in ("0", "false", "False"),
+    "min_sim": float(os.getenv("INTENT_SEMANTIC_MIN_SIM", "0.45")),
+    "min_margin": float(os.getenv("INTENT_SEMANTIC_MIN_MARGIN", "0.05")),
+    "confidence": 0.60,
+    # Grow per-user exemplars from confirmed classifications (regex ≥0.85 and
+    # STM refinements teach; the semantic tier itself and GENERAL never do).
+    "exemplar_learning": os.getenv("INTENT_EXEMPLAR_LEARNING", "1") not in ("0", "false", "False"),
+}
+
+_intent_prototype_cache = None
+
+
+def _intent_store_version() -> int:
+    try:
+        from utils.adaptive_exemplars import get_store
+        return get_store().version
+    except Exception:
+        return -1
+
+
+def _get_intent_prototypes():
+    """Per-intent mean embeddings (seeds + learned), version-keyed cache."""
+    global _intent_prototype_cache
+    _version = _intent_store_version()
+    if (
+        isinstance(_intent_prototype_cache, tuple)
+        and _intent_prototype_cache[0] == _version
+    ):
+        return _intent_prototype_cache[1]
+    try:
+        from models.model_manager import ModelManager
+        embedder = ModelManager._get_cached_embedder()
+        if embedder is None:
+            return {}
+        import numpy as np
+        protos = {}
+        for label, seeds in INTENT_EXEMPLARS.items():
+            merged = list(seeds)
+            try:
+                from utils.adaptive_exemplars import get_store
+                merged += get_store().get_learned("intent", label)
+            except Exception:
+                pass
+            vecs = embedder.encode(merged, convert_to_numpy=True,
+                                   normalize_embeddings=True)
+            proto = np.mean(vecs, axis=0)
+            protos[label] = proto / (np.linalg.norm(proto) + 1e-9)
+        _intent_prototype_cache = (_version, protos)
+        return protos
+    except Exception as e:
+        logger.debug(f"intent prototypes unavailable: {e}")
+        return {}
+
+
+def _semantic_intent(query: str):
+    """Return (intent_label, top_sim) when the semantic tier fires, else None."""
+    protos = _get_intent_prototypes()
+    if not protos:
+        return None
+    try:
+        from models.model_manager import ModelManager
+        embedder = ModelManager._get_cached_embedder()
+        if embedder is None:
+            return None
+        import numpy as np
+        q = embedder.encode([query], convert_to_numpy=True,
+                            normalize_embeddings=True)[0]
+        sims = sorted(
+            ((float(np.dot(q, p)), label) for label, p in protos.items()),
+            reverse=True,
+        )
+        (top, label), (second, _) = sims[0], (sims[1] if len(sims) > 1 else (0.0, ""))
+        if top >= _SEMANTIC_TIER_CONFIG["min_sim"] and \
+                top - second >= _SEMANTIC_TIER_CONFIG["min_margin"]:
+            return label, top
+    except Exception as e:
+        logger.debug(f"semantic intent tier skipped: {e}")
+    return None
+
+
+def _learn_intent_exemplar(query: str, label: str, source: str) -> None:
+    """Teach the adaptive store a CONFIRMED intent classification.
+
+    Teachers are channels independent of the semantic prototypes: confident
+    regex hits and STM refinements. GENERAL is never learned (fallback, not
+    a phrasing), and the semantic tier never teaches itself.
+    """
+    if not _SEMANTIC_TIER_CONFIG.get("exemplar_learning", True):
+        return
+    if label not in INTENT_EXEMPLARS:
+        return
+    try:
+        from utils.adaptive_exemplars import get_store
+        get_store().record(
+            "intent", label, query, source,
+            seed_texts=INTENT_EXEMPLARS.get(label, []),
+        )
+    except Exception as e:
+        logger.debug(f"intent exemplar learning skipped: {e}")
+
 
 class IntentClassifier:
     """
@@ -520,7 +692,31 @@ class IntentClassifier:
         elif emotional_bias and best_intent == IntentType.EMOTIONAL_SUPPORT:
             best_conf = min(best_conf + 0.10, 1.0)
 
+        # --- Semantic tier (regex unconfident only) ----------------------
+        # Exemplar-prototype similarity (seeds + per-user learned). Confidence
+        # is capped at the 0.60 routing floor, below the 0.75 hard-veto floor.
+        _semantic_hit = None
+        if (
+            _SEMANTIC_TIER_CONFIG["enabled"]
+            and best_conf < INTENT_STM_REFINEMENT_THRESHOLD
+        ):
+            _semantic_hit = _semantic_intent(query_stripped)
+            if _semantic_hit is not None:
+                _label, _sim = _semantic_hit
+                try:
+                    best_intent = IntentType(_label)
+                    best_conf = _SEMANTIC_TIER_CONFIG["confidence"]
+                except ValueError:
+                    _semantic_hit = None
+
         result = self._build_result(best_intent, best_conf)
+        if _semantic_hit is not None:
+            result.source = "semantic"
+
+        # Teach the adaptive store from CONFIDENT regex hits only — an
+        # independent lexical channel; the semantic tier never teaches itself.
+        if result.source == "regex" and best_conf >= 0.85:
+            _learn_intent_exemplar(query_stripped, best_intent.value, "regex")
 
         # Thread temporal anchor for TEMPORAL_RECALL so the scorer can
         # reshape the recency decay curve around the referenced time window.
@@ -551,6 +747,7 @@ class IntentClassifier:
         self,
         result: IntentResult,
         stm_intent: Optional[str],
+        query: Optional[str] = None,
     ) -> IntentResult:
         """
         Optionally refine a low-confidence classification using STM's
@@ -563,6 +760,9 @@ class IntentClassifier:
         Args:
             result: The regex-based IntentResult.
             stm_intent: Free-text intent from STMAnalyzer (e.g. "Get practical solution").
+            query: The raw user query — when provided, a successful refinement
+                teaches the semantic tier's adaptive store (STM is an
+                LLM-derived channel independent of the prototypes).
 
         Returns:
             Possibly upgraded IntentResult (source="stm_refined").
@@ -588,6 +788,8 @@ class IntentClassifier:
                     f"STM refined {result.intent.value}→{intent_type.value} "
                     f"(stm_intent='{stm_intent}', conf={refined_conf:.2f})"
                 )
+                if query:
+                    _learn_intent_exemplar(query, intent_type.value, "stm_refined")
                 return refined
 
         return result  # No keyword match → keep original

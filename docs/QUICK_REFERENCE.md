@@ -310,6 +310,18 @@ VALENCE_RETRIEVAL_ENABLED = True
 VALENCE_MAX_NEGATIVE_FRACTION = 0.5   # max negative memories per prompt in distress
 VALENCE_NEGATIVE_THRESHOLD = 0.30
 # Tests: tests/unit/test_anti_amplification.py
+
+# Borderline arbitration [FIXED 2026-07-25] — the Stage-4 borderline LLM
+# fallback was dead since it shipped (generate_async returns a stream;
+# .strip() crashed every call → borderline cases silently defaulted
+# CONVERSATIONAL). Now generate_once under a timeout, plus a deterministic
+# backstop: arbiter unavailable + top distress > conversational+0.08 +
+# >= backstop floor → CONCERN (never higher).
+TONE_LLM_FALLBACK_TIMEOUT_S = 4.0
+TONE_BACKSTOP_MIN_SCORE = 0.37
+# Tone-corroborated agentic veto: emotional_support @>=0.60 + tone >= CONCERN
+# vetoes the agentic gate (gate.apply_intent_veto(..., tone_level=...)).
+# Tests: tests/unit/test_tone_borderline_fallback.py
 ```
 
 ---
@@ -333,7 +345,7 @@ class IntentType(str, Enum):
 class IntentResult:
     intent: IntentType
     confidence: float              # 0.0 – 1.0
-    source: str = "regex"          # "regex" | "stm_refined"
+    source: str = "regex"          # "regex" | "stm_refined" | "semantic" [NEW 2026-08-03]
     weight_overrides: Dict[str, float]   # Override SCORE_WEIGHTS per intent
     retrieval_overrides: Dict[str, int]  # Override PROMPT_MAX_* per intent
     gate_threshold_override: Optional[float]  # Override gate threshold
@@ -373,12 +385,28 @@ class IntentClassifier:
 # PromptBuilder             → extracts retrieval_overrides + weight_overrides
 # MemoryScorer              → uses weight_overrides in rank_memories()
 
+# Semantic tier [NEW 2026-08-03]: when regex conf < 0.50, score the query
+# against per-intent exemplar prototypes (INTENT_EXEMPLARS seeds + per-user
+# learned exemplars from utils/adaptive_exemplars, domain "intent"; GENERAL has
+# no prototype). Winner needs cos >= INTENT_SEMANTIC_MIN_SIM (0.45) + margin
+# 0.05 → conf 0.60, source="semantic" (below the 0.75 veto floor). Teachers:
+# regex hits >= 0.85 and STM refinements (refine_with_stm(query=...)); the
+# tier never teaches itself, GENERAL never learned. Auto-labeling for the
+# confusion matrix: scripts/auto_label_intents.py (LLM labels turn_records,
+# --verify = dual-model agreement); scripts/label_intents.py = optional audit.
+# Tests: tests/unit/test_intent_semantic_tier.py
+
 # Config (app_config.py):
 INTENT_ENABLED = True
 INTENT_STM_REFINEMENT_THRESHOLD = 0.50
 INTENT_STM_REFINED_CONFIDENCE = 0.60   # [NEW 2026-07-03]
 PROMPT_SECTION_GATING_ENABLED = True  # Phase 8 eval-driven gating
 INTENT_STYLE_INSTRUCTIONS_ENABLED = True  # [NEW 2026-07-03] per-intent style block
+# Semantic tier envs [NEW 2026-08-03]:
+#   INTENT_SEMANTIC_TIER (default on), INTENT_SEMANTIC_MIN_SIM=0.45,
+#   INTENT_SEMANTIC_MIN_MARGIN=0.05, INTENT_EXEMPLAR_LEARNING (default on)
+# Sibling adaptive-learning envs: TONE_EXEMPLAR_LEARNING, NEED_EXEMPLAR_LEARNING
+#   (store: data/adaptive_exemplars.json via utils/adaptive_exemplars)
 
 # Intent → response style [NEW 2026-07-03]:
 # core/tone_instructions.py:get_intent_style_instructions(intent, conf, crisis)
@@ -458,6 +486,14 @@ class UnifiedPromptBuilder:
         Final string assembly is PromptFormatter._assemble_prompt().
         Token budget: PROMPT_TOKEN_BUDGET_DEFAULT=10000 (floor 8K, ceiling 16K;
         lowered from 15000 on 2026-07-15 via preregistered scripts/budget_experiment.py).
+        2026-07-25: the default is now the OPERATIVE cap for API models — the
+        model-aware fraction (ctx*0.12, ctx via MODEL_CONTEXT_LIMITS registry)
+        can only lower the budget below it. Before this, prod silently ran
+        15360 (the losing experiment arm) because the fraction capped only at
+        the 16K ceiling and get_context_limit() hardcoded 128K for API models.
+        reference_docs (self-docs) suppressed on distress/emotional_support
+        turns (_should_suppress_reference_docs); near-empty Obsidian note
+        chunks dropped (PERSONAL_NOTES_MIN_CHARS=60).
         retrieval_overrides / weight_overrides / intent_type come from IntentClassifier.
         Light-prompt path (2026-07-15): terse casual acks (QueryAnalysis.is_small_talk,
         set by query_checker.is_casual_acknowledgment; YAML light_prompt) short-circuit
@@ -526,9 +562,22 @@ class ResponseParser:
         (every path funnels through memory_storage.store_interaction). Removes empty
         <thinking></thinking> pairs, a leading tagged thinking block, unclosed leading
         thinking (whole text is reasoning → returns ""), stray tag fragments, reflection
-        blocks. Skips the untagged-thinking heuristics (false-positive risk at the
-        storage boundary). Prevents persisted leaks from re-teaching the model to emit
-        literal thinking tags."""
+        blocks, and the kimi-3 trailing stream artifact [2026-08-03]. Skips the
+        untagged-thinking heuristics (false-positive risk at the storage boundary).
+        Prevents persisted leaks from re-teaching the model to emit literal thinking tags."""
+
+    @staticmethod
+    def is_empty_thinking_shell(text: str) -> bool:  # [NEW 2026-08-03]
+        """True when text is ONLY thinking-tag markers (± whitespace) — the
+        <thinking></thinking> shell between reasoning end and the first content
+        token. Streaming keeps the 💭 indicator up instead of flashing the tags."""
+
+    @staticmethod
+    def strip_trailing_stream_artifact(text: str) -> str:  # [NEW 2026-08-03]
+        """Remove the kimi-3 endpoint's stray trailing 'e' (lone content token
+        before EOS: "…landed?e" / "…them.e"). Only strips a letter glued to
+        terminal punctuation at end-of-text; "i.e"-abbreviations preserved.
+        Wired into sanitize_for_storage() + both add_summary paths."""
 ```
 
 ---
@@ -2436,8 +2485,11 @@ def load_operating_principles() -> str:
 # Files:
 # config/prompts/default_personality.txt — 94 lines: tone, interaction style, response approach, examples
 # config/prompts/custom_personality.txt — created by GUI "Personality" tab Set button
-# config/prompts/operating_principles.txt — 255 lines: AI limitations, facts handling, claim grounding,
-#   response modes, knowledge source instructions, agentic tool docs, guardrails
+# config/prompts/operating_principles.txt — 206 lines: AI limitations, facts handling, claim grounding,
+#   response modes, knowledge source instructions, agentic tool docs, guardrails.
+#   2026-08-02: the [USER'S PERSONAL NOTES]/[DAEMON DOCUMENTATION]/[TEMPORAL GROUNDING]
+#   guidance blocks (~1.2K tok) moved to core/prompt/section_instructions.py — appended to the
+#   system-prompt tail (post-cache-breakpoint) only when the section exists in the turn's context
 # Placeholder substitution: {USER_NAME}, {USER_PRONOUNS}, {PRONOUN_SUBJ}, {PRONOUN_OBJ}, {PRONOUN_POSS}
 
 # gui/launch.py — "Personality" tab:

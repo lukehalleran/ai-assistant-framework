@@ -16,9 +16,13 @@ Contract:
       result must be surfaced as a conflict, not silently trusted), while still
       forbidding replies to old turns as if they were the current message.
     - Session-grounded decisions: _compute_recent_conversation_digest() builds a
-      short content digest of this session's recent turns (not just the inventory's
+      short content digest of the most recent turns (not just the inventory's
       counts), injected into every _build_iteration_prompt() so the loop won't search
-      to re-derive — or contradict — a fact already settled in-session
+      to re-derive — or contradict — a fact already settled, or ask the user to
+      re-explain it. Ordering is timestamp-aware (2026-08-02: the gatherer's
+      recent_conversations is NEWEST-first; the old tail-slice fed the decision
+      rounds the N OLDEST turns, and via decision-answer reuse the final reply
+      asked the user to re-explain 20-minute-old context twice in one day)
     - Falls back gracefully on search/API failures (partial failure: gather returns_exceptions=True)
     - Reasoning-only recovery [NEW 2026-06-14]: _generate_final_response() tracks whether any
       visible content was emitted; if the model streamed only reasoning (deepseek-v4 etc. can
@@ -48,6 +52,21 @@ Contract:
       agentic_search.decision_max_tokens (default 1600, both decision paths — high enough that
       complete answers don't truncate; capped answers fail the boundary check and fall back).
       Provenance: final_prompt_hash is set to the sentinel "decision-answer-reuse".
+    - Latency guards [NEW 2026-07-24]: the rounds-2-N loop is bounded two ways so a
+      slow/misbehaving model can't hang the turn (observed: kimi-3 narrating tool
+      intent in prose instead of emitting XML markers, ~55-60s/round, hung a turn
+      ~2 min until the user hit Retry). (1) _get_model_decision() wraps each
+      decision-LLM call in asyncio.wait_for(AGENTIC_ROUND_TIMEOUT_S, default 75s);
+      on timeout it returns wants_answer=True so the loop exits into final
+      synthesis (backstop vs. a stalled connection). (2) A wall-clock deadline
+      (AGENTIC_LOOP_TIMEOUT_S, default 120s) is checked at the top of the loop;
+      once exceeded no new round starts and the loop synthesizes from gathered
+      context. Config: agentic_search.round_timeout_s / loop_timeout_s.
+    - Sandbox lifecycle [fixed 2026-07-24]: the persistent E2B session is recycled
+      in _get_sandbox_session() by cheap local checks (is_closed, then age_seconds
+      vs _sandbox_session_timeout) then a backend liveness probe (session.is_alive
+      → E2B is_running). Prior bugs: the age recycle read `.age` (nonexistent; dead)
+      and is_closed couldn't see a server-side kill, so a dead handle was reused.
     - Provenance: computes final_prompt_hash (SHA-256[:16]) on assembled prompt
 
 Modular Architecture (2026-05-09):
@@ -238,16 +257,31 @@ class AgenticSearchController:
 
     async def _get_sandbox_session(self):
         """Get or create a persistent sandbox session."""
-        # Check if existing session is still alive and not timed out
+        # Check if existing session is still usable, recycling a stale one.
+        # NOTE (2026-07-24): this block had two defects. (1) The age recycle was
+        # DEAD — it checked `.age`, but PersistentSession exposes `age_seconds`,
+        # so hasattr(...,'age') was always False and a long-lived session was
+        # never closed here. (2) `is_closed` only reflects an explicit local
+        # close(), so a sandbox E2B killed server-side (idle ~5 min / crash) read
+        # as alive and the next run() failed. Now: cheap local checks first
+        # (is_closed, then age_seconds), then a best-effort backend liveness
+        # probe (is_alive → E2B is_running) only for a session young enough to
+        # otherwise reuse — so we pay one probe per reusing turn, not per round.
         if self._sandbox_session is not None:
+            _drop_reason = None
             if self._sandbox_session.is_closed:
-                self._sandbox_session = None
-            elif hasattr(self._sandbox_session, 'age') and self._sandbox_session.age > self._sandbox_session_timeout:
-                logger.info("[AgenticSearch] Sandbox session timed out, closing")
-                try:
-                    await self._sandbox_session.close()
-                except Exception:
-                    pass
+                _drop_reason = ""  # already closed; just detach
+            elif getattr(self._sandbox_session, 'age_seconds', 0) > self._sandbox_session_timeout:
+                _drop_reason = "timed out"
+            elif not self._sandbox_session.is_alive():
+                _drop_reason = "died server-side"
+            if _drop_reason is not None:
+                if _drop_reason:
+                    logger.info(f"[AgenticSearch] Sandbox session {_drop_reason}, recreating")
+                    try:
+                        await self._sandbox_session.close()
+                    except Exception:
+                        pass
                 self._sandbox_session = None
 
         if self._sandbox_session is None and self.sandbox_manager:
@@ -626,8 +660,25 @@ class AgenticSearchController:
             # response — the second full-context synthesis call is skipped.
             _decision_answer_text: Optional[str] = None
 
+            # Wall-clock budget for the rounds-2-N loop. A slow/misbehaving model
+            # (observed 2026-07-24: kimi-3 narrating tool intent in prose instead
+            # of emitting XML markers, ~55-60s/round) could otherwise run every
+            # round to max_rounds and hang the turn for minutes. Once exceeded,
+            # stop starting new rounds and fall through to final synthesis with
+            # whatever was gathered.
+            from config.app_config import AGENTIC_LOOP_TIMEOUT_S
+            _loop_deadline = time.monotonic() + AGENTIC_LOOP_TIMEOUT_S
+
             # === ROUNDS 2-N: Model-driven iteration ===
             while session.can_continue and session.current_round <= self.max_rounds:
+                if time.monotonic() > _loop_deadline:
+                    logger.warning(
+                        f"[AgenticSearch] Loop wall-clock budget "
+                        f"({AGENTIC_LOOP_TIMEOUT_S:.0f}s) exceeded after "
+                        f"{len(session.rounds)} round(s) — stopping and "
+                        f"synthesizing from gathered context"
+                    )
+                    break
                 session.state = AgentState.THINKING
 
                 # Build prompt with accumulated context
@@ -1176,17 +1227,24 @@ class AgenticSearchController:
         Returns:
             List of SearchDecision(s) indicating model's choice(s)
         """
+        # Per-round backstop against a stalled connection / hung provider call.
+        # Generous (default 75s) so it never cuts a legitimate full-length
+        # decision round; on timeout we answer with whatever context we have.
+        from config.app_config import AGENTIC_ROUND_TIMEOUT_S
         try:
             if session.protocol == SearchProtocol.NATIVE_TOOLS:
                 # Use tool calling. tools_override lets a caller restrict the tool set
                 # (e.g. to just propose_action) so research-eager models can't wander.
                 _tools = tools_override if tools_override is not None else handler.get_tools()
-                response = await self._generate_with_tools(
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    model_name=model_name,
-                    tools=_tools,
-                    tool_choice=tool_choice,
+                response = await asyncio.wait_for(
+                    self._generate_with_tools(
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        model_name=model_name,
+                        tools=_tools,
+                        tool_choice=tool_choice,
+                    ),
+                    timeout=AGENTIC_ROUND_TIMEOUT_S,
                 )
             else:
                 # Use standard generation for XML markers.
@@ -1194,14 +1252,25 @@ class AgenticSearchController:
                 # phase. Models with native reasoning (DeepSeek) burn the token
                 # budget on chain-of-thought, leaving nothing for XML markers.
                 # The decision phase just needs to emit tool tags, not reason.
-                response = await self._generate_decision_no_reasoning(
-                    prompt=prompt,
-                    model_name=model_name,
-                    system_prompt=system_prompt,
+                response = await asyncio.wait_for(
+                    self._generate_decision_no_reasoning(
+                        prompt=prompt,
+                        model_name=model_name,
+                        system_prompt=system_prompt,
+                    ),
+                    timeout=AGENTIC_ROUND_TIMEOUT_S,
                 )
 
             return handler.parse_response(response)
 
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[AgenticSearch] Decision generation timed out after "
+                f"{AGENTIC_ROUND_TIMEOUT_S:.0f}s — answering with current context"
+            )
+            # Treat a stalled decision call as an implicit "ready to answer";
+            # the loop exits into final synthesis with what was gathered.
+            return [SearchDecision(wants_answer=True)]
         except Exception as e:
             logger.error(f"[AgenticSearch] Decision generation failed: {e}")
             # On error, signal to answer with current context
@@ -1614,8 +1683,27 @@ class AgenticSearchController:
         if not recent:
             return ""
 
-        # Keep the most recent turns (the tail). recent_conversations is oldest-first.
-        tail = recent[-self._DIGEST_MAX_TURNS:]
+        # The gatherer returns recent_conversations NEWEST-FIRST. Order by
+        # timestamp when parseable (robust to either ordering) so the digest
+        # keeps the most recent turns; assuming oldest-first here silently fed
+        # the decision rounds the N OLDEST turns (2026-08-02: two turn-1 queries
+        # referencing "earlier" got yesterday's turns in the digest, and the
+        # reused decision answer asked the user to re-explain).
+        def _conv_ts(conv):
+            raw = str(conv.get('timestamp', '') or '')
+            try:
+                return datetime.fromisoformat(raw.replace(' ', 'T', 1)[:26])
+            except (ValueError, TypeError):
+                return None
+        ordered = list(recent)
+        stamps = [_conv_ts(c) for c in ordered]
+        if all(s is not None for s in stamps):
+            ordered = [c for _, c in sorted(zip(stamps, ordered), key=lambda p: p[0])]
+        else:
+            # No usable timestamps: trust the gatherer contract (newest-first)
+            # and flip to oldest-first for rendering.
+            ordered = list(reversed(ordered))
+        tail = ordered[-self._DIGEST_MAX_TURNS:]
         lines = []
         for conv in tail:
             user_msg = (conv.get('query', conv.get('user', '')) or '').strip()
@@ -1629,11 +1717,13 @@ class AgenticSearchController:
             return ""
 
         header = (
-            "[THIS SESSION — EARLIER TURNS] What was already said this session "
-            "(most recent last). If these already establish a fact relevant to the "
-            "question, USE it — do NOT search to re-derive what's settled, and do NOT "
-            "request a search whose answer contradicts what was established here without "
-            "good reason."
+            "[RECENT CONVERSATION — EARLIER TURNS] What was said in the most recent "
+            "turns, including just-ended sessions (most recent last). Pronouns and "
+            "references like \"that\"/\"earlier\" in the user's question usually point "
+            "here. If these already establish a fact relevant to the question, USE it — "
+            "do NOT search to re-derive what's settled, do NOT ask the user to re-explain "
+            "something these turns already state, and do NOT request a search whose answer "
+            "contradicts what was established here without good reason."
         )
         return header + "\n" + "\n".join(lines)
 

@@ -183,7 +183,9 @@ Side effects: None (pure functions)
 
 **Key Methods** (all static):
 - `parse_thinking_block(response)` → Tuple[str, str] - Extract thinking content and final answer. Tries tag-based extraction first (`<thinking>`/`<think>`/`<reasoning>`/`<reason>`/`<output>`), then heuristic fallback (`_detect_untagged_thinking`) for models that dump reasoning without tags **[ENHANCED 2026-04-05; `<reasoning>`/`<reason>` tag family added 2026-07-03]**
-- `sanitize_for_storage(text)` → str - Storage-boundary cleaner called from `memory_storage.store_interaction()`; strips thinking/reasoning blocks and artifacts so leaks can never persist into memory **[NEW 2026-07-03]**
+- `sanitize_for_storage(text)` → str - Storage-boundary cleaner called from `memory_storage.store_interaction()`; strips thinking/reasoning blocks and artifacts (incl. the kimi-3 trailing-`e` stream artifact since 2026-08-03) so leaks can never persist into memory **[NEW 2026-07-03]**
+- `is_empty_thinking_shell(text)` → bool - True when text is ONLY thinking-tag markers — the `<thinking></thinking>` shell between reasoning end and first content token; handlers keep the 💭 indicator up instead of flashing literal tags **[NEW 2026-08-03]**
+- `strip_trailing_stream_artifact(text)` → str - Removes the kimi-3 endpoint's stray trailing `e` (lone content token before EOS, "…landed?e"); letter-glued-to-terminal-punctuation only, "i.e" preserved; also applied in both `add_summary` paths **[NEW 2026-08-03]**
 - `likely_untagged_thinking(response)` → bool - Cheap check for untagged chain-of-thought (used by streaming paths)
 - `_detect_untagged_thinking(response)` → Tuple[str, str] - Heuristic fallback: pattern-based detection of untagged chain-of-thought (meta-reasoning, instruction echoes). Requires ≥2 distinct pattern hits, ≥20 char remaining answer **[NEW 2026-04-05]**
 - `has_incomplete_thinking_block(response)` → bool - Returns True if opening `<thinking>`/`<think>` tag present but closing tag not yet (for streaming suppression) **[NEW 2026-03-26]**
@@ -740,14 +742,15 @@ ESCALATION_DEESCALATION_WINDOW = 2  # Consecutive calm before gentle re-engageme
 ---
 
 ### 2.1.4 core/intent_classifier.py (Query Intent Classifier) **[NEW 2026-02-15]**
-**Purpose**: Fast, regex-first classification of user query intent. No LLM calls. Produces per-intent weight overrides, retrieval count overrides, and gate threshold overrides that tune downstream memory retrieval and scoring.
+**Purpose**: Fast, regex-first classification of user query intent. No LLM calls. Produces per-intent weight overrides, retrieval count overrides, and gate threshold overrides that tune downstream memory retrieval and scoring. Since 2026-08-03 a SEMANTIC TIER backs the regex: when regex confidence < 0.50, the query is scored against per-intent exemplar prototypes (`INTENT_EXEMPLARS` seeds + per-user learned exemplars via `utils/adaptive_exemplars`; GENERAL has no prototype — it is the fallback) — a clear winner (cos ≥ 0.45, margin ≥ 0.05) classifies at conf 0.60 `source="semantic"`, below the 0.75 veto floor. Teachers: confident regex hits (≥ 0.85) + STM refinements; the tier never teaches itself and GENERAL is never learned.
 
 **Module Contract**:
 ```
-Purpose: Classify user query into 1 of 9 intent types via regex patterns
+Purpose: Classify user query into 1 of 9 intent types via regex patterns + semantic exemplar tier
 Inputs: query (str), optional tone_level (str)
 Outputs: IntentResult with intent type, confidence, weight/retrieval/gate overrides
-Side effects: None (pure computation, no LLM calls)
+Side effects: No LLM calls; semantic tier uses the shared embedder and teachers
+              append to data/adaptive_exemplars.json
 ```
 
 **Key Types**:
@@ -4063,7 +4066,12 @@ Phase 7-8: (not yet implemented) — intent-conditioned gating, production deplo
    - Applies pattern multipliers for dangerous combinations (1.2x-1.4x)
    - Routes based on thresholds: ≥20 HIGH, ≥10 MEDIUM, ≥4 CONCERN
 3. **Semantic similarity** - Compare embeddings to crisis exemplars (fallback for nuanced language)
-4. **LLM fallback** - For borderline cases near thresholds
+4. **LLM fallback** - For borderline cases near thresholds [FIXED 2026-07-25:
+   was calling `generate_async` (stream object) and crashing on `.strip()` —
+   every borderline case silently defaulted CONVERSATIONAL; now `generate_once`
+   under `TONE_LLM_FALLBACK_TIMEOUT_S`=4s, with a deterministic backstop when
+   the arbiter is unavailable: top distress > conversational+0.08 and >=
+   `TONE_BACKSTOP_MIN_SCORE`=0.37 → CONCERN (never higher)]
 
 **Harm Scoring System** (NEW):
 - **250+ keywords** across HIGH/MEDIUM/CONCERN categories
@@ -4967,6 +4975,7 @@ daemon/
 │       ├── token_manager.py  # Budget management
 │       ├── summarizer.py     # LLM summarization + on-demand reflections
 │       ├── proposal_filter.py # Proposal prompt injection pipeline [NEW 2026-02-09]
+│       ├── section_instructions.py # Conditional per-section system-prompt guidance blocks (injected only when the section exists) [NEW 2026-08-02]
 │       └── base.py          # Utilities and fallbacks
 │
 ├── memory/
@@ -5047,7 +5056,8 @@ daemon/
 │   ├── startup.py             # Staged imports with splash progress [NEW 2025-12-12]
 │   ├── topic_manager.py       # Topic extraction
 │   ├── time_manager.py        # Temporal utilities
-│   ├── tone_detector.py       # Crisis detection (harm scoring + semantic + LLM)
+│   ├── tone_detector.py       # Crisis detection (harm scoring + semantic + LLM arbiter + backstop)
+│   ├── adaptive_exemplars.py  # AdaptiveExemplarStore: per-user learned exemplars (tone/need/web_search/intent domains), independent-channel teachers only [NEW 2026-08-02]
 │   ├── need_detector.py       # Need-type detection (PRESENCE vs PERSPECTIVE) [NEW]
 │   ├── emotional_context.py   # Combined emotional analysis (tone + need) [NEW]
 │   ├── query_checker.py       # Query analysis + heavy topic + thread detection

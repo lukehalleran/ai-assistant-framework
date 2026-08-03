@@ -23,6 +23,9 @@ Module Contract
   - _format_memory(mem) -> str  [single memory → "timestamp: User: Q / Daemon: A" with tags; uses format_relative_timestamp for day labels]
   - _format_web_search_results(web_search_result, max_chars) -> str  [WebSearchResult → [WEB SEARCH RESULTS] section]
   - _load_directives() -> str  [loads core/system_prompt.txt with header stripping]
+  - _strip_stored_thinking(text) -> str  [2026-07-25: applies the sanitize_for_storage transform
+    at the RETRIEVAL boundary — pre-guard docs (stored before the storage-time strip) with
+    literal <thinking>/<reasoning> blocks surfaced verbatim in live prompts]
   - _get_time_context() -> str  [current time + time_manager deltas]
 - Module-level utilities (imported by other prompt modules):
   - _parse_bool(s, default) -> bool
@@ -110,6 +113,27 @@ def _truncate_list(items: List[Any], limit: int) -> List[Any]:
 
 # Alias for backward compatibility - delegates to ResponseParser
 _strip_prompt_artifacts = ResponseParser.strip_prompt_artifacts
+
+
+def _strip_stored_thinking(text: str) -> str:
+    """Retrieval-boundary thinking strip for HISTORICAL stored docs.
+
+    ~780 conversation docs stored before the sanitize_for_storage() boundary
+    (2026-07-03) still carry literal <thinking>/<reasoning> blocks; the repair
+    script's --apply is owner-gated and has not run. One such doc surfaced
+    verbatim in a live distress prompt (2026-07-25). Applies the SAME
+    conservative transform as the storage boundary (leading tagged block
+    removed, answer kept; mid-text quoted tags untouched). If the whole text
+    was reasoning, returns the original — dropping content at render time is
+    worse than showing it, and that shape is rare.
+    """
+    if not text or "<think" not in text and "<reason" not in text:
+        return text
+    try:
+        cleaned = ResponseParser.sanitize_for_storage(text)
+        return cleaned if cleaned else text
+    except Exception:
+        return text
 
 
 # Obsidian image loading for multimodal models
@@ -503,6 +527,12 @@ class PromptFormatter:
             if response:
                 response = _strip_prompt_artifacts(response)
                 response = _sanitize_embedded_headers(response)
+                # Read-time thinking strip (2026-07-25): ~780 pre-guard docs
+                # still carry stored <thinking> blocks (repair --apply is
+                # owner-gated) and one surfaced VERBATIM in a live prompt.
+                # sanitize_for_storage is the storage-boundary defense; this is
+                # the same conservative transform at the retrieval boundary.
+                response = _strip_stored_thinking(response)
 
             # Get timestamp - check multiple possible locations and format as datetime
             timestamp = mem.get("timestamp", "")

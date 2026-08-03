@@ -2,6 +2,14 @@
 Shared memory utilities.
 
 Common functions used across memory coordinator implementations.
+
+Retrieval/storage junk guards:
+- is_junk_conversation_doc(query, response) [2026-07-15, extended 07-25]: drops
+  API-error-sentinel turns, bare "test" exchanges, and the owner's box-test
+  battery (exact-match) at retrieval — hybrid + fallback paths both call it.
+- is_junk_summary(text) [2026-07-25]: rejects "-"/near-empty/truncated-fragment
+  summaries; enforced at BOTH storage (chroma add_summary, corpus add_summary)
+  and retrieval (MemoryRetriever.get_summaries).
 """
 
 import uuid
@@ -11,7 +19,17 @@ from typing import List, Dict, Any
 
 # Bare connectivity-check exchanges ("test") — worthless as memories but they
 # embed close to everything short and compete for retrieval slots.
-_TRIVIAL_TEST_QUERIES = frozenset({"test", "testing", "test test", "hello test"})
+# The four Python-project lines are the owner's standing box-test battery
+# (exact-match only): re-run for months after changes, they had accreted 547
+# stored conversation docs by 2026-07-25 and were surfacing as [RELEVANT
+# MEMORIES] inside unrelated emotional conversations.
+_TRIVIAL_TEST_QUERIES = frozenset({
+    "test", "testing", "test test", "hello test",
+    "hey, i'm working on a python project",
+    "it's a rag system with vector search",
+    "using chromadb for the vector store",
+    "should i add prompt caching?",
+})
 
 
 def is_junk_conversation_doc(content: str = "", query: str = "", response: str = "") -> bool:
@@ -55,6 +73,31 @@ def is_junk_conversation_doc(content: str = "", query: str = "", response: str =
     if user_text.strip().lower() in _TRIVIAL_TEST_QUERIES:
         return True
 
+    return False
+
+
+# A real session summary is at least a sentence. Historical junk in the
+# summaries collection ("-", truncated fragments like "* The user is
+# experiencing sleep") embeds close to the null/empty embedding and was
+# dominating "recent summaries" while the store held fresh full summaries.
+SUMMARY_MIN_CHARS = 40
+
+
+def is_junk_summary(text: Any) -> bool:
+    """True for summary docs that should never be stored or surfaced.
+
+    Shared by the storage-time guard (reject before add_summary) and the
+    retrieval-time filter in MemoryRetriever.get_summaries — same
+    belt-and-suspenders split as is_junk_conversation_doc.
+    """
+    if not text or not isinstance(text, str):
+        return True
+    stripped = text.strip()
+    if len(stripped) < SUMMARY_MIN_CHARS:
+        return True
+    # Placeholder/divider docs ("-", "...", "***") carry no letters to speak of.
+    if sum(1 for c in stripped if c.isalpha()) < 20:
+        return True
     return False
 
 

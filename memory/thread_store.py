@@ -23,6 +23,10 @@ Module Contract
     dropping just-extracted threads that duplicate an existing/resolved one);
     _norm_keywords() is the single keyword normalizer (digit tokens kept) —
     quick-resolution matching uses it on both message and thread sides too
+  - check_quick_resolutions (2026-07-25): resolution signals include past-action
+    verbs ("did the"/"sent"/"emailed" — question + second-person guarded) and a
+    signal-adjacent-object rule with a digit-conflict guard ("I did the email
+    yesterday" resolves the email thread; "did hw6" cannot resolve the hw7 thread)
   - touch_thread(): refresh last_referenced when a duplicate extraction shows
     the tracked task is still live
 - Dependencies:
@@ -49,7 +53,15 @@ COLLECTION_NAME = "threads"
 _COMPLETION_SIGNALS = re.compile(
     r"\b(?:submitted|turned\s+in|finished|completed|done\s+with|handed\s+in|"
     r"wrapped\s+up|knocked\s+out|got\s+it\s+done|already\s+(?:did|done|submitted|finished)|"
-    r"just\s+(?:submitted|finished|turned\s+in))\b",
+    r"just\s+(?:submitted|finished|turned\s+in)|"
+    # 2026-07-25: plain past-action verbs — "I did the email yesterday"
+    # resolved nothing (no signal matched AND bag-of-words overlap was 1 < 2,
+    # so the email thread kept surfacing past its deadline). Second-person
+    # forms ("did you send…", "you sent…") are excluded: those are questions
+    # about Daemon's actions, not the user reporting their own completion.
+    r"(?<!you\s)(?:sent|emailed)\b|replied\s+to\b|"
+    r"(?<!you\s)did\s+(?:the|my|that|it)\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -130,11 +142,24 @@ def check_quick_resolutions(user_message: str, open_threads: List[OpenThread]) -
     if not user_message or not open_threads:
         return []
 
-    msg_lower = user_message.lower()
+    # Question sentences are not completion reports ("What did the email
+    # say?" must not resolve the email thread) — only declaratives count.
+    sentences = re.split(r"(?<=[.!?])\s+", user_message)
+    declarative = " . ".join(p for p in sentences if not p.rstrip().endswith("?"))
+    msg_lower = declarative.lower()
 
     # Must contain at least one completion signal
     if not _COMPLETION_SIGNALS.search(msg_lower):
         return []
+
+    # Signal-adjacent objects: the tokens right after a completion verb name
+    # WHAT was completed ("did the EMAIL yesterday"). Lets a 1-keyword match
+    # resolve when it is the completed object itself, without loosening the
+    # global 2-keyword floor into a wildcard.
+    object_words = set()
+    for m in _COMPLETION_SIGNALS.finditer(msg_lower):
+        tail = msg_lower[m.end():]
+        object_words |= _norm_keywords(" ".join(tail.split()[:4]))
 
     # Same normalization on both sides (digit tokens kept: "hw6" is what
     # distinguishes numbered tasks, so "done with hw6" can't match hw7's thread
@@ -146,14 +171,22 @@ def check_quick_resolutions(user_message: str, open_threads: List[OpenThread]) -
         keywords = _norm_keywords(f"{thread.topic} {thread.summary}")
         if not keywords:
             continue
-        # Require at least 2 keyword overlaps (or 1 if topic has ≤2 keywords)
+        # Require at least 2 keyword overlaps (or 1 if topic has ≤2 keywords),
+        # OR a direct hit on the completed object. The object shortcut is
+        # blocked on a digit-token mismatch: numeric tokens are what
+        # distinguish "homework 6" from hw7's thread, so a generic object
+        # word ("homework") must not bridge conflicting numbers.
         overlap = msg_words & keywords
         min_required = min(2, len(keywords))
-        if len(overlap) >= min_required:
+        _msg_digits = {w for w in msg_words if any(c.isdigit() for c in w)}
+        _kw_digits = {w for w in keywords if any(c.isdigit() for c in w)}
+        _digit_conflict = bool(_msg_digits and _kw_digits and not (_msg_digits & _kw_digits))
+        _object_hit = bool(object_words & keywords) and not _digit_conflict
+        if len(overlap) >= min_required or _object_hit:
             resolved_ids.append(thread.thread_id)
             logger.info(
                 f"[QuickResolve] Thread '{thread.topic}' matched: "
-                f"signal + keywords {overlap}"
+                f"signal + keywords {overlap or (object_words & keywords)}"
             )
 
     return resolved_ids

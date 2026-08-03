@@ -23,7 +23,9 @@ Module Contract
     (main.py uses it to route wizard sessions to the legacy path).
   - start_background_tasks(orchestrator): kicks off the startup daemon threads
     (notes catch-up, ref-docs seed, model warmup); called by launch_gui AND the
-    FastAPI lifespan.
+    FastAPI lifespan. Warmup steps 6-7 [2026-08-02]: tone+need exemplar
+    embeddings (previously computed INSIDE turn 1) and an end-to-end read-only
+    get_memories pass (turn-1 memories task ran 8-17s cold vs 3-5s warm).
   - _launch_wizard_ui(): First-run setup wizard interface
   - _run_daily_notes_catchup(): Background thread for daily notes catch-up on startup [NEW 2026-01-18]
     - Generates yesterday's daily note if missing
@@ -384,6 +386,31 @@ def _run_model_warmup(orchestrator):
                 _WIKI_SEM_EXECUTOR.submit(_wiki_warm)
         except Exception as e:
             print(f"[Warmup] wiki faiss skip: {e}")
+        # 6) Tone + need detector exemplar embeddings (one-time per process,
+        #    otherwise computed INSIDE the user's first message — visible as a
+        #    multi-second "Computing exemplar embeddings" stall on turn 1).
+        try:
+            mm = getattr(orchestrator, "model_manager", None)
+            from utils.tone_detector import _get_exemplar_embeddings
+            _get_exemplar_embeddings(mm)
+            from utils.need_detector import _get_need_exemplar_embeddings
+            _get_need_exemplar_embeddings(mm)
+        except Exception as e:
+            print(f"[Warmup] tone/need exemplars skip: {e}")
+        # 7) End-to-end memory retrieval warm pass. The per-model embedders are
+        #    warmed above, but turn 1 still paid a cold retrieval CHAIN
+        #    (lazy collection opens + HNSW index loads + first batch-gate
+        #    encode + reranker on real pool sizes): 2026-08-02 timings showed
+        #    the memories task at 8-17s on turn 1 vs 3-5s on turn 2 with the
+        #    per-task gather all waiting on it. One read-only retrieval here
+        #    moves that off the first message.
+        try:
+            import asyncio as _aio
+            mem_sys = getattr(orchestrator, "memory_system", None)
+            if mem_sys is not None and hasattr(mem_sys, "get_memories"):
+                _aio.run(mem_sys.get_memories("warm up retrieval path", limit=3))
+        except Exception as e:
+            print(f"[Warmup] retrieval chain skip: {e}")
         print(f"[Warmup] Model warmup complete ({_t.time() - t0:.1f}s)")
 
     threading.Thread(target=_warm_task, daemon=True).start()

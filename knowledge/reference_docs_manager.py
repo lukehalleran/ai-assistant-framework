@@ -22,6 +22,13 @@ Module Contract:
 - Side effects:
   - Writes to reference_docs ChromaDB collection
   - Logging of indexing progress
+- Collection access (2026-08-02): ALL reads/writes go through _collection() →
+  store._get_collection('reference_docs'). Reading the raw store.collections dict
+  returned the None placeholder before first open, so cold-startup lookups silently
+  no-oped — the auto-seed re-uploaded the alphabetically-first doc every startup
+  without deleting old chunks (15,336 duplicate chunks = 93% of the collection;
+  purged via scripts/dedup_reference_docs.py). Regression:
+  tests/unit/test_refdocs_lazy_collection.py.
 - Error handling:
   - Graceful handling of unsupported file types
   - Per-chunk error handling (one bad chunk doesn't stop indexing)
@@ -105,6 +112,16 @@ class ReferenceDocsManager:
                 logger.error(f"[RefDocs] Failed to load ChromaDB store: {e}")
                 raise
         return self._chroma_store
+
+    def _collection(self):
+        """Open (or return) the reference_docs collection via the store's lazy
+        opener. NEVER read chroma_store.collections directly — it holds None
+        placeholders until first access, and a raw .get() silently no-ops
+        (2026-08-02: startup auto-seed saw "no stored hash" for the
+        alphabetically-first doc before anything had opened the collection,
+        re-uploaded it WITHOUT deleting the old chunks — one duplicate copy
+        per startup, 15K junk chunks accumulated)."""
+        return self.chroma_store._get_collection('reference_docs')
 
     def _strip_frontmatter(self, content: str) -> str:
         """Strip YAML frontmatter from markdown content."""
@@ -346,7 +363,7 @@ class ReferenceDocsManager:
     def _get_document_chunks(self, title: str) -> List[Dict[str, Any]]:
         """Get all chunks for a specific document by title."""
         try:
-            collection = self.chroma_store.collections.get('reference_docs')
+            collection = self._collection()
             if not collection:
                 return []
 
@@ -572,7 +589,7 @@ class ReferenceDocsManager:
     def _keyword_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search documents by keyword matching on title, section, content."""
         try:
-            collection = self.chroma_store.collections.get('reference_docs')
+            collection = self._collection()
             if not collection:
                 return []
 
@@ -643,7 +660,7 @@ class ReferenceDocsManager:
             List of dicts with title, file_type, chunk_count, upload_time
         """
         try:
-            collection = self.chroma_store.collections.get('reference_docs')
+            collection = self._collection()
             if not collection:
                 return []
 
@@ -683,7 +700,7 @@ class ReferenceDocsManager:
             True if successful, False otherwise
         """
         try:
-            collection = self.chroma_store.collections.get('reference_docs')
+            collection = self._collection()
             if not collection:
                 return False
 
@@ -707,7 +724,7 @@ class ReferenceDocsManager:
     def get_stats(self) -> Dict[str, Any]:
         """Get statistics about the reference docs collection."""
         try:
-            collection = self.chroma_store.collections.get('reference_docs')
+            collection = self._collection()
             count = collection.count() if collection else 0
             docs = self.list_documents()
 

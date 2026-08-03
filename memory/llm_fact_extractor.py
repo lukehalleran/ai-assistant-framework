@@ -8,6 +8,10 @@ ENHANCED (2026-04): Accepts existing profile facts so LLM reuses relation names 
 ENHANCED (2026-07): Prompt explicitly requests entity–entity relations (both subject AND object
 are named entities, e.g. "Sam sibling_of Biscuit") — these become lateral knowledge-graph
 edges via the shutdown graph-ingestion hook.
+ENHANCED (2026-08-02): Prompt carries a RELATION NAMING section — a ~40-relation core
+vocabulary plus the rule that specifics belong in the OBJECT, not the relation name
+(inflow-side fix for the single-use-relation explosion; pairs with
+entity_resolver.normalize_relation canonicalization on the read/ingest side).
 
 Contract
 - Inputs: list of recent messages — either plain strings (user-only) or dicts with
@@ -241,6 +245,21 @@ OUTPUT FORMAT (strict JSON array):
 [
   {{"subject": "user", "relation": "snake_case_relation", "object": "value", "category": "category_name", "confidence": 0.0-1.0}}
 ]
+
+RELATION NAMING (keeps the knowledge graph queryable — 2026-08-02: 630 of 696
+stored relations were single-use inventions):
+- PREFER these core relations whenever one fits: name, age, lives_in, works_at,
+  works_on, occupation, studies, studies_at, completed, attends, likes,
+  dislikes, wants_to, owns, has_cat, has_dog, drinks, eats, plays, uses,
+  interested_in, skilled_at, concerned_about, talked_about, friend_of,
+  sibling_of, parent_of, child_of, spouse_of, works_with, medication_name,
+  medication_dose, condition, symptom, sleep_quality, gym_schedule,
+  work_schedule, class_schedule, exam_date, goal, deadline.
+- The SPECIFICS belong in the OBJECT, not the relation name. Write
+  {{"relation": "drinks", "object": "diet coke"}} — NOT
+  {{"relation": "drink_preference", "object": "diet coke"}}.
+- Only invent a new relation name when no core relation and no existing
+  profile relation fits, and keep it a short generic verb or noun.
 
 EXAMPLES:
 Input: "I'm Sarah, a software developer from Seattle"

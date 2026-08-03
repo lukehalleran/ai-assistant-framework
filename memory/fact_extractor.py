@@ -21,6 +21,12 @@ Module Contract:
     with metadata: fact_scope="entity", entity_type (spaCy NER), user_connection (possessive patterns)
     Entity facts require min confidence of ENTITY_FACT_MIN_CONFIDENCE (default 0.55)
     Controlled by ENTITY_FACTS_ENABLED toggle
+  - JUNK/POLARITY GUARDS (2026-08-02): _is_junk_object() (wired into _clean_triple) drops
+    adverbial/temporal/negation-fragment objects ("for a bit", "yesterday", "not good",
+    profanity-intensifier rants) — schedule relations exempt; _polarity_conflict() blocks
+    positive-preference triples the source text negates ("hate my life" ≠ likes|my life);
+    the _canonicalize_preferences "i like " rewrite requires the object in the clause
+    directly after the trigger (a bare substring hit used to rewrite ANY co-occurring triple)
   - SCHEDULE EXTRACTION (2026-05): Structured schedule/calendar event extraction.
     5 pattern categories: work_schedule, class_schedule, exam_date, shift_pattern, day_off.
     Past-tense guard blocks "worked", "had class", "work was". Negation patterns trigger
@@ -130,6 +136,86 @@ def _refine_is_relation(rel: str, obj: str) -> str:
             return "is_a"
     return rel
 
+
+# Relations whose objects may legitimately be time/duration-shaped; everything
+# else with a prepositional/temporal-fragment object is extraction noise
+# (2026-08-02: "dad_show_up | for a bit", "dad_show_up | with food",
+# "goal | yesterday" were stored as durable facts from emotional turns).
+_TEMPORAL_OK_RELATIONS = {
+    "work_schedule", "class_schedule", "exam_date", "shift_pattern", "day_off",
+    "classes_start", "appointment", "meeting",
+}
+
+# Bare feeling adjectives are transient state, not fact objects — feeling
+# relations are already ephemeral-blocked, so these only ever appear as junk
+# ("unhappiness | unhappy").
+_FEELING_ADJ_OBJECTS = {
+    "unhappy", "happy", "sad", "angry", "upset", "tired", "exhausted",
+    "anxious", "depressed", "miserable", "lonely", "bored", "stressed",
+    "annoyed", "frustrated", "overwhelmed",
+}
+
+_JUNK_OBJECT_PATTERNS = [
+    # Prepositional fragments: "for a bit", "with the food", "in a while"
+    re.compile(r"^(?:for|with|in|on|at|by|of|to|from)\s+(?:a|an|the|some|few|it|that|this)\b"),
+    # Short bare-preposition fragments: "with food", "for now"
+    re.compile(r"^(?:for|with)\s+\w+$"),
+    # Duration fragments: "a bit", "a while", "a few hours"
+    re.compile(r"^(?:a|the)\s+(?:bit|while|lot)\b"),
+    re.compile(r"^(?:a\s+)?few\s+(?:seconds|minutes|hours|days|weeks|months|years)\b"),
+    # Negation fragments: "not good", "not eaten yet", "no idea"
+    re.compile(r"^(?:not|no)\s"),
+    # Bare temporal deictics as the whole object
+    re.compile(r"^(?:yesterday|today|tomorrow|tonight|last night|this morning|"
+               r"this afternoon|this evening|this week|last week|earlier|later|"
+               r"soon|now|recently|already|yet)$"),
+    # Profanity-intensifier fragments are rant phrasing, not entities
+    # ("my fucking life")
+    re.compile(r"\b(?:fucking|fuckin|goddamn|damn)\b"),
+]
+
+
+def _is_junk_object(obj: str, rel: str) -> bool:
+    """True when the object is an adverbial/temporal/negation fragment that
+    carries no durable factual content (extraction noise from casual or
+    emotional phrasing)."""
+    o = (obj or "").strip().lower()
+    r = (rel or "").strip().lower()
+    if not o:
+        return True
+    if r in _TEMPORAL_OK_RELATIONS:
+        return False
+    if o in _FEELING_ADJ_OBJECTS:
+        return True
+    return any(p.match(o) for p in _JUNK_OBJECT_PATTERNS)
+
+
+# Negative governors for the polarity guard. If one of these appears directly
+# before the object in the source text, a positive-preference triple about
+# that object is an extraction inversion and must be dropped (2026-08-02:
+# "Feel like I hate my fucking life" was stored as user | likes |
+# my fucking life).
+_NEG_PREF_GOVERNORS = (
+    r"(?:hate[sd]?|hating|can'?t\s+stand|cannot\s+stand|don'?t\s+(?:really\s+)?like|"
+    r"do\s+not\s+like|dislike[sd]?|sick\s+of|fed\s+up\s+with|tired\s+of|despise[sd]?)"
+)
+
+_POSITIVE_PREF_RELATIONS = {"likes", "loves", "enjoys", "prefers"}
+
+
+def _polarity_conflict(source_text: str, rel: str, obj: str) -> bool:
+    """True when a positive-preference relation contradicts negative sentiment
+    toward the same object in the source text."""
+    r = (rel or "").strip().lower()
+    if r not in _POSITIVE_PREF_RELATIONS and not r.startswith("favorite_"):
+        return False
+    o = (obj or "").strip().lower()
+    if not o:
+        return False
+    text_l = (source_text or "").lower()
+    pattern = _NEG_PREF_GOVERNORS + r"\s+(?:\w+\s+){0,2}?" + re.escape(o)
+    return re.search(pattern, text_l) is not None
+
 def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str,str,str]]:
     """Return a cleaned/normalized (s,r,o) or None to drop the triple."""
     if not subj or not obj or not rel:
@@ -145,6 +231,10 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
 
     # Drop trivial subjects/objects
     if s in _STOP_SUBJECTS or o in _STOP_OBJECTS:
+        return None
+
+    # Drop adverbial/temporal/negation fragment objects (extraction noise)
+    if _is_junk_object(o, r):
         return None
 
     # Drop bare units as subjects or objects (unless a numeric value is present)
@@ -338,10 +428,22 @@ def _canonicalize_preferences(q_text: str, r_text: str, s: str, r: str, o: str, 
         if re.search(pat, ql) or re.search(pat, rl):
             return (user_name, relname, o or s)
 
-    # "I like/love X" → Luke | likes | X
-    like_triggers = ("i like ", "i love ", "i really like ", "i really love ")
-    if any(t in ql for t in like_triggers) or any(t in rl for t in like_triggers):
-        return (user_name, "likes", o or s)
+    # "I like/love X" → Luke | likes | X — but ONLY when this triple's object
+    # actually follows the trigger. A bare substring check rewrote ANY triple
+    # in a message containing "i like " to likes|<object>, including objects
+    # the text was negative about.
+    target = (o or s or "").strip().lower()
+    if target:
+        for text_l in (ql, rl):
+            m = re.search(r"\bi\s+(?:really\s+)?(?:like|love)\s+(.{1,80})", text_l)
+            if not m:
+                continue
+            # Only the clause directly after the trigger counts — "I like the
+            # gym but cardio is awful" must not rewrite a cardio triple.
+            clause = re.split(r"\b(?:but|and|though|however|while)\b|[,.;!?]",
+                              m.group(1))[0]
+            if target in clause:
+                return (user_name, "likes", o or s)
 
     return (s, r, o)
 
@@ -786,6 +888,15 @@ class FactExtractor:
 
             # Canonicalize preferences (maps to Luke | favorite_* | X or Luke | likes | X when applicable)
             s3, r3, o3 = _canonicalize_preferences(query, response, s2, r2, o2, user_name="user")
+
+            # Polarity guard: never store a positive preference the source text
+            # negates ("I hate X" must not become likes|X)
+            if _polarity_conflict(text, r3, o3):
+                logger.info(
+                    f"[FactExtractor] Blocked polarity-inverted fact: "
+                    f"subj='{s3}' rel='{r3}' obj='{o3}'"
+                )
+                continue
 
             # Final canon for the key (lowercasing etc. as you had)
             subj_c, rel_c, obj_c = self._canon(s3), self._canon(r3), self._canon(o3)

@@ -22,6 +22,10 @@ Module Contract
     table is validated against OpenRouter's live /models metadata by
     scripts/verify_model_capabilities_live.py. This closed the recurring "registered but silently
     feature-disabled" dead-wiring class (e.g. Kimi K3 was tool-disabled; fable-5 vision+tools OFF).
+    [2026-07-30] Rows may also declare "forced_top_p": a top_p value the endpoint MANDATES
+    (Kimi K3 400s on anything but 0.95). resolve_top_p(model, requested) is applied on every
+    API path that sends top_p (generate_with_openai / generate_once / generate_async) and
+    overrides caller-supplied values for such models; tests/unit/test_forced_top_p.py.
   - supports_tools(): checks if a model supports function/tool calling
   - supports_vision(model_name): image/vision input (GPT-4o+, ALL Claude incl. fable-5, Gemini,
     Kimi K3/K2.6; False for DeepSeek, GLM). generate_async() now requests reasoning separation even
@@ -268,12 +272,41 @@ MODEL_CAPABILITIES = {
     # (tools + tool_choice present) on 2026-07-22.
     "deepseek/deepseek-r1-0528": {"reasoning": True, "vision": False, "tools": True, "caching": None},
     # Kimi caches server-side automatically (implicit) — no cache_control markers.
-    "moonshotai/kimi-k3": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit"},
+    # forced_top_p: the K3 endpoint 400s on any top_p other than 0.95
+    # ("Invalid value for 'top_p': 0.9. This endpoint requires top_p=0.95",
+    # observed 2026-07-30) — resolve_top_p() overrides whatever the caller asked for.
+    "moonshotai/kimi-k3": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit", "forced_top_p": 0.95},
     "moonshotai/kimi-k2-thinking": {"reasoning": True, "vision": False, "tools": True, "caching": "implicit"},
     "moonshotai/kimi-k2.6": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit"},
     # Gemini caching disabled pending OpenRouter support (see supports below).
     "google/gemini-3.1-pro-preview": {"reasoning": False, "vision": True, "tools": True, "caching": None},
 }
+
+# Context-window sizes by full slug — ONLY models whose limits are confidently
+# known are listed; everything else falls back to DEFAULT_API_CONTEXT_LIMIT.
+# (get_context_limit() previously hardcoded 128000 for ALL API models — the
+# "Default GPT-4 Turbo context" comment survived three model generations and
+# fed the token-budget computation a wrong ctx for every non-GPT model.)
+# When adding entries, verify against OpenRouter /models context_length
+# (extend scripts/verify_model_capabilities_live.py).
+DEFAULT_API_CONTEXT_LIMIT = 128_000
+MODEL_CONTEXT_LIMITS = {
+    # Anthropic Claude: 200K standard tier across current models.
+    **{slug: 200_000 for slug in MODEL_CAPABILITIES if slug.startswith("anthropic/claude")},
+    "openai/gpt-4o": 128_000,
+    "openai/gpt-4o-mini": 128_000,
+    # Kimi K3: 1.05M ctx (see alias comment above).
+    "moonshotai/kimi-k3": 1_050_000,
+}
+
+
+def _slug_forced_top_p(full_slug: str):
+    """Provider-mandated top_p for a full slug, or None when any value is accepted.
+
+    Some endpoints reject requests whose top_p differs from a fixed value instead
+    of clamping it. Declared per model in MODEL_CAPABILITIES ("forced_top_p").
+    """
+    return MODEL_CAPABILITIES.get(str(full_slug), {}).get("forced_top_p")
 
 
 def _slug_supports_reasoning(full_slug: str) -> bool:
@@ -490,11 +523,19 @@ class ModelManager:
         return models
 
     def get_context_limit(self):
-        """Get the maximum context window based on active model."""
-        if self.is_api_model(self.get_active_model_name()):
-            # For API models (OpenAI), assume known context window
-            # logger.debug(f" Using OpenAI model, assuming 128000 token context window.")
-            return 128000  # Default GPT-4 Turbo context
+        """Get the maximum context window based on active model.
+
+        API models resolve through MODEL_CONTEXT_LIMITS (registry, keyed by
+        full slug); unknown slugs fall back to DEFAULT_API_CONTEXT_LIMIT.
+        """
+        active = self.get_active_model_name()
+        if self.is_api_model(active):
+            # active may be an alias (key in api_models) OR an already-resolved
+            # full slug — same dual-form caveat as supports_tools().
+            full_model = (
+                self.api_models[active] if active in self.api_models else str(active)
+            )
+            return MODEL_CONTEXT_LIMITS.get(full_model, DEFAULT_API_CONTEXT_LIMIT)
         model = self.get_model()
         if model:
             return model.config.max_position_embeddings
@@ -637,6 +678,24 @@ class ModelManager:
             return False
         return _slug_supports_reasoning(self.api_models[model_name])
 
+    def resolve_top_p(self, model_name, requested=None):
+        """Effective top_p for a request against `model_name` (alias or full slug).
+
+        A model with a declared forced_top_p (MODEL_CAPABILITIES) always gets that
+        value — its endpoint rejects anything else — regardless of what the caller
+        asked for. Otherwise the caller's value, falling back to DEFAULT_TOP_P.
+        """
+        slug = self.api_models.get(model_name, model_name)
+        forced = _slug_forced_top_p(slug)
+        if forced is not None:
+            if requested is not None and requested != forced:
+                logger.debug(
+                    f"[ModelManager] {slug} requires top_p={forced}; "
+                    f"overriding requested {requested}"
+                )
+            return forced
+        return DEFAULT_TOP_P if requested is None else requested
+
     def supports_prompt_caching(self, model_name):
         """Check if a given API model supports EXPLICIT prompt caching.
 
@@ -767,7 +826,7 @@ class ModelManager:
         # Apply global defaults if not provided (allow runtime override)
         max_tokens = (self.default_max_tokens if max_tokens is None else max_tokens)
         temperature = (self.default_temperature if temperature is None else temperature)
-        top_p = DEFAULT_TOP_P if top_p is None else top_p
+        top_p = self.resolve_top_p(model_name, top_p)
 
         if self.client is None:
             return self._stub_response(prompt)
@@ -1028,7 +1087,7 @@ class ModelManager:
                     messages=messages,
                     max_tokens=(max_tokens if max_tokens is not None else self.default_max_tokens),
                     temperature=temperature if temperature is not None else self.default_temperature,
-                    top_p=top_p if top_p is not None else DEFAULT_TOP_P,
+                    top_p=self.resolve_top_p(target_model, top_p),
                     stop=stop_sequences,
                     stream=False,
                 )
@@ -1354,7 +1413,7 @@ class ModelManager:
                     messages=messages,
                     max_tokens=kwargs.get('max_tokens', self.default_max_tokens),
                     temperature=kwargs.get('temperature', self.default_temperature),
-                    top_p=kwargs.get('top_p', DEFAULT_TOP_P),
+                    top_p=self.resolve_top_p(target_model, kwargs.get('top_p')),
                     stop=stop_sequences,
                     stream=True,
                     # Ask the provider to emit a trailing usage chunk so the

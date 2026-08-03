@@ -8,6 +8,18 @@ Module Contract
 - Outputs:
   - Yields streaming dicts {role, content, debug?, is_progress?} as Gradio updates.
 - Behavior:
+  - Pacing ingress (2026-07-25): handle_submit calls time_manager.mark_query_time() at INGRESS
+    (was post-prompt-build in ResponseGenerator, skipped entirely by agentic turns — [TIME
+    CONTEXT] showed "53 m" for a 2-min gap).
+  - Agentic gate veto forwarding (2026-08-02): apply_intent_veto receives tone_level AND the raw
+    query so the tone-corroborated + tone-statement vetoes can fire; a veto teaches "no_search"
+    to the adaptive web-search anchors.
+  - Citation-outcome teacher (2026-08-03): _write_turn_telemetry(response_text=...) — a response
+    citing [WEB_ markers teaches "search_worthy" (utils.adaptive_exemplars, domain "web_search");
+    elevated-tone turns never teach. All 3 telemetry call sites (enhanced/agentic/duel) pass text.
+  - Empty-thinking-shell suppression (2026-08-03): between the synthetic </thinking> marker and
+    the first content token the stream buffer is exactly "<thinking></thinking>";
+    is_empty_thinking_shell() keeps the 💭 indicator up instead of flashing the literal tags.
   - RAW mode: send directly through orchestrator.process_user_query(use_raw_mode=True)
   - DUEL mode: If BEST_OF_DUEL_MODE enabled, two models compete + judge picks winner. Builds provenance with response_mode="best-of-duel". Runs BEFORE agentic check.
   - AGENTIC: If agentic_search.enabled, delegates to core/agentic/gate.py:evaluate_agentic_gate()
@@ -561,12 +573,18 @@ def _dispatch_storage(
     return task
 
 
-def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len):
+def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
+                          response_text=None):
     """Assemble + append the per-turn telemetry JSONL record (never raises).
 
     Merges orchestrator._last_turn_signals (intent/tone/plan, captured in
     build_full_prompt) with ctx.telemetry (gate + post-answer check fields)
     and the per-call outcome fields. See utils/turn_telemetry.py.
+
+    When response_text is provided and the response actually CITED web
+    results ([WEB_ markers), the query teaches the web-trigger's positive
+    anchors via utils.adaptive_exemplars — an outcome-confirmed "this was
+    search-worthy" signal (2026-08-02; elevated-tone turns never teach).
     """
     try:
         from utils.turn_telemetry import record_turn
@@ -583,6 +601,21 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len):
         record_turn(rec)
     except Exception as e:
         logger.debug(f"[Telemetry] turn record skipped: {e}")
+    try:
+        if response_text and "[WEB_" in response_text and ctx.user_text:
+            from core.agentic.gate import _tone_is_elevated
+            rec_tone = None
+            try:
+                rec_tone = (getattr(ctx.orchestrator, "_last_turn_signals", {}) or {}).get("tone_level")
+            except Exception:
+                pass
+            if not _tone_is_elevated(rec_tone):
+                from utils.adaptive_exemplars import get_store
+                get_store().record(
+                    "web_search", "search_worthy", ctx.user_text, "citation"
+                )
+    except Exception as e:
+        logger.debug(f"[Telemetry] search-worthy learning skipped: {e}")
 
 
 async def _silent_agentic_retry(
@@ -1096,6 +1129,7 @@ async def _run_duel(ctx, gens, sels, features_duel):
         _write_turn_telemetry(
             ctx, 'best-of-duel', _duel_session_id, f"{m1} vs {m2}",
             len(final_output or ""),
+            response_text=final_output,
         )
 
         ctx.handled = True
@@ -1953,6 +1987,7 @@ async def _run_agentic_search(ctx):
             ctx, 'agentic-search', _agentic_session_id,
             model_name if 'model_name' in dir() else None,
             len(final_output_sanitized or ""),
+            response_text=final_output_sanitized,
         )
 
         ctx.handled = True
@@ -2047,6 +2082,17 @@ async def _run_enhanced(ctx):
 
             # Detect incomplete thinking block (opening tag arrived, closing hasn't yet)
             if ResponseParser.has_incomplete_thinking_block(final_output):
+                thinking_started = True
+                display_output = "💭 **Thinking...**"
+                yield {"role": "assistant", "content": display_output, "is_thinking": True}
+                continue
+
+            # Closed-but-empty synthetic shell: reasoning ended (</thinking>
+            # marker arrived) but the first real content token hasn't yet.
+            # parse_thinking_block returns ("", "") for "<thinking></thinking>",
+            # so the fallthrough below would display the literal tags for the
+            # gap between reasoning end and first token (observed 2026-08-03).
+            if ResponseParser.is_empty_thinking_shell(final_output):
                 thinking_started = True
                 display_output = "💭 **Thinking...**"
                 yield {"role": "assistant", "content": display_output, "is_thinking": True}
@@ -2514,6 +2560,7 @@ async def _run_enhanced(ctx):
                     ctx, _store_mode, _store_session_id,
                     model_name if 'model_name' in dir() else None,
                     len(final_output or ""),
+                    response_text=final_output,
                 )
 
                 # No mid-session consolidation: summaries are generated at shutdown
@@ -2563,6 +2610,18 @@ async def handle_submit(
     if not user_text.strip():
         yield {"role": "assistant", "content": "⚠️ Empty input received."}
         return
+
+    # Pacing metrics: mark the turn at INGRESS, before prompt build. This
+    # previously happened inside ResponseGenerator (after the prompt — with
+    # its [TIME CONTEXT] block — was already assembled) and never on agentic
+    # turns, so "Time since last message" lagged one turn and froze across
+    # agentic responses ("53 m" shown for a 2-minute gap, 2026-07-25).
+    try:
+        _tm = getattr(orchestrator, 'time_manager', None)
+        if _tm is not None:
+            _tm.mark_query_time()
+    except Exception as e:
+        logger.debug(f"[Handle Submit] mark_query_time failed: {e}")
 
     # Process files using security-hardened FileProcessor
     # Supports .txt, .md, .json, .yaml, .yml, .log, .html, .xml, .csv, .py, .docx, .xlsx, .pdf files and .png, .jpg, .jpeg, .gif, .webp images
@@ -2692,7 +2751,10 @@ async def handle_submit(
             )
         # Post-hoc intent veto with the context pipeline's classification.
         _gate_decision = apply_intent_veto(
-            _gate_decision, raw_context.get("intent") if raw_context else None
+            _gate_decision,
+            raw_context.get("intent") if raw_context else None,
+            tone_level=raw_context.get("tone_level") if raw_context else None,
+            query=user_text,
         )
         should_use_agentic = _gate_decision.should_trigger
         search_terms = _gate_decision.search_terms

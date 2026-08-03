@@ -30,6 +30,14 @@ Module Contract:
     - source: str ("llm" | "heuristic" | "explicit")
     - needs_memory_search: bool (LLM detected memory/recall intent) [NEW 2026-03-15]
     - needs_knowledge_search: bool (LLM detected encyclopedic/wiki intent) [NEW 2026-03-31]
+- Adaptive anchors [NEW 2026-08-03]:
+  - _get_search_anchors() merges learned exemplars (utils.adaptive_exemplars,
+    domain "web_search") into the semantic anchor sets: "search_worthy" → positive,
+    "no_search" → negative; anchor-embedding cache is keyed on the store version.
+  - Teachers are OUTCOME-based (never this module's own semantic signal): a response
+    that actually cited [WEB_ markers teaches search_worthy (hook in
+    handlers._write_turn_telemetry; elevated-tone turns never teach), and a
+    tone-corroborated agentic-gate veto teaches no_search (gate.apply_intent_veto).
 - Side effects:
   - LLM API call when using analyze_for_web_search_llm() (async)
   - None for heuristic-only path
@@ -400,25 +408,47 @@ _NO_SEARCH_ANCHOR_PHRASES = [
 
 _search_anchor_embs = None
 _no_search_anchor_embs = None
+_search_anchor_version = None
 
 
 def _get_search_anchors():
-    """Lazily compute and cache search anchor embeddings."""
-    global _search_anchor_embs, _no_search_anchor_embs
-    if _search_anchor_embs is not None:
+    """Lazily compute and cache search anchor embeddings.
+
+    Anchors = code seeds merged with per-user LEARNED phrases from
+    utils.adaptive_exemplars (domain "web_search", 2026-08-02): queries whose
+    responses actually cited [WEB_N] results teach "search_worthy"; queries
+    the tone-corroborated gate veto stood down teach "no_search" (an
+    emotional vent that once fired a search stops semantically boosting
+    future vents). Cache is keyed on the adaptive store version.
+    """
+    global _search_anchor_embs, _no_search_anchor_embs, _search_anchor_version
+    try:
+        from utils.adaptive_exemplars import get_store
+        _version = get_store().version
+    except Exception:
+        _version = -1
+    if _search_anchor_embs is not None and _search_anchor_version == _version:
         return _search_anchor_embs, _no_search_anchor_embs
     try:
         from models.model_manager import ModelManager
         embedder = ModelManager._get_cached_embedder()
         if embedder is None:
             return None, None
-        import numpy as np
+        pos = list(_SEARCH_ANCHOR_PHRASES)
+        neg = list(_NO_SEARCH_ANCHOR_PHRASES)
+        try:
+            from utils.adaptive_exemplars import get_store
+            pos += get_store().get_learned("web_search", "search_worthy")
+            neg += get_store().get_learned("web_search", "no_search")
+        except Exception:
+            pass
         _search_anchor_embs = embedder.encode(
-            _SEARCH_ANCHOR_PHRASES, convert_to_numpy=True, normalize_embeddings=True
+            pos, convert_to_numpy=True, normalize_embeddings=True
         )
         _no_search_anchor_embs = embedder.encode(
-            _NO_SEARCH_ANCHOR_PHRASES, convert_to_numpy=True, normalize_embeddings=True
+            neg, convert_to_numpy=True, normalize_embeddings=True
         )
+        _search_anchor_version = _version
         return _search_anchor_embs, _no_search_anchor_embs
     except Exception:
         return None, None
@@ -927,10 +957,13 @@ MEMORY SEARCH CRITERIA (needs_memory_search):
 - FALSE if: general knowledge question, web search query, casual chat, or creative request
 
 KNOWLEDGE SEARCH CRITERIA (needs_knowledge_search):
-- TRUE if: the user asks an in-depth factual, scientific, historical, or encyclopedic question that would benefit from consulting reference material (Wikipedia, textbooks, documentation)
+- TRUE if: the user asks an in-depth factual, scientific, historical, or encyclopedic QUESTION that would benefit from consulting reference material (Wikipedia, textbooks, documentation)
 - Examples: "explain nuclear fission vs fusion", "how does photosynthesis work", "what is the history of the Roman Empire", "compare TCP and UDP", "consult Wikipedia about X", "tell me about quantum entanglement in depth"
 - Also TRUE if: user explicitly asks to consult Wikipedia, look something up, or requests a detailed/in-depth explanation of a concept
 - FALSE if: casual chat, simple yes/no questions, personal/emotional topics, creative writing, or questions answerable in one sentence without references
+- NEVER for COLLABORATIVE / PERSONAL-TASK work — helping with the user's OWN materials: writing, editing, formatting, or restructuring their resume, cover letter, email, essay, code, or documents. "I need my resume in ATS-friendly format", "make the intro punchier", "also give me a healthcare version" are task instructions to ACT ON, not encyclopedic questions. Naming a concept (ATS, STAR method, SQL) while directing work on the user's material is NOT a knowledge request.
+- NEVER for FOLLOW-UP CONTINUATIONS of an ongoing task ("yeah and…", "also…", "I'll also need…", "plus…") — these extend the current collaborative work; answer them directly.
+- The trigger must be an actual QUESTION or an explicit "explain / what is / how does / tell me about" request. A task statement ("I need X in Y format", "make it Z") is never knowledge search.
 
 DOCUMENT GENERATION CRITERIA (needs_document_generation):
 - TRUE if: the user wants a document SAVED to disk — a report, summary, or research document written and stored as a file

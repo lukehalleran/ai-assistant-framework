@@ -269,6 +269,14 @@ class AgenticSearchSection(BaseModel):
     memory_search_limit: int = Field(default=7, ge=1)
     reuse_decision_answer: bool = True
     decision_max_tokens: int = Field(default=1600, ge=100)
+    # Per-round decision-LLM timeout (backstop against a stalled connection /
+    # a genuinely hung provider call). Generous so it never cuts a legitimate
+    # full-length decision round; on timeout the loop answers with gathered ctx.
+    round_timeout_s: float = Field(default=75.0, ge=5.0)
+    # Wall-clock budget for the rounds-2-N loop. Once exceeded, no new round is
+    # started and the loop falls through to final synthesis. Bounds a runaway
+    # multi-round session (max_rounds × slow-model latency) hanging the turn.
+    loop_timeout_s: float = Field(default=120.0, ge=10.0)
 
 
 class FileAccessSection(BaseModel):

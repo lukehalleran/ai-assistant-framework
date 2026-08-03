@@ -107,3 +107,13 @@ web/dist/
 
 # Gzipped debug-log archives (log_rotation gzips daemon_debug logs >7d; *.log rule misses .gz)
 *.log.gz
+
+# Dead-code-analysis artifacts (one-off vulture + cross-ref session, 2026-07-18;
+# deadcode_xref.py regenerates the xref_* files from a vulture report)
+vulture_report*.txt
+vulture_err.txt
+xref_candidates.json
+xref_table.tsv
+xref_stderr.txt
+deadcode_xref.py
+coverage*.json

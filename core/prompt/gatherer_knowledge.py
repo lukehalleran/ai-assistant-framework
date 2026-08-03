@@ -21,6 +21,9 @@ Methods:
   - _get_wiki_snippet_cached(query) -> Optional[Dict]
   - _get_semantic_chunks(query, k, max_results) -> List[Dict]
   - _get_dreams(limit) -> List[Dict]
+  - _note_text_substance(content) -> int  [2026-07-25: real prose length after stripping image
+    embeds/links; get_personal_notes drops chunks under PERSONAL_NOTES_MIN_CHARS (60) — image-only
+    vault chunks embed as noise and scored 0.64 on unrelated queries]
 
 Visual memory retrieval (get_visual_memories) uses a multi-step gated pipeline:
   0. Visual-intent gate (_query_wants_visual): require an explicit visual-intent
@@ -55,6 +58,24 @@ from knowledge.semantic_search import semantic_search_with_neighbors
 from .formatter import _parse_bool
 
 logger = logging.getLogger("prompt_context_gatherer")
+
+# Obsidian image embeds — wiki-style ![[...]] and markdown ![...](...) forms.
+_NOTE_IMAGE_EMBED_RE = re.compile(r"!\[\[[^\]]*\]\]|!\[[^\]]*\]\([^)]*\)")
+
+# Minimum chars of real prose for a note chunk to be retrievable. Image-only
+# note chunks ("![[Pasted image 20241117122358.png]]" plus a heading) embed as
+# near-empty text, which is NOISE in embedding space — they scored 0.64
+# "relevance" against "The cats are here at least" (2026-07-25), sailing over
+# the 0.45 gate on completely unrelated turns.
+PERSONAL_NOTES_MIN_CHARS = int(os.getenv("PERSONAL_NOTES_MIN_CHARS", "60"))
+
+
+def _note_text_substance(content) -> int:
+    """Chars of real prose in a note chunk after stripping image embeds."""
+    if not content:
+        return 0
+    text = _NOTE_IMAGE_EMBED_RE.sub("", str(content))
+    return len(" ".join(text.split()))
 
 # Configuration loading
 try:
@@ -262,6 +283,22 @@ class KnowledgeRetrievalMixin:
             if notes:
                 total_images = sum(len(n.get('image_data', [])) for n in notes)
                 logger.warning(f"[ContextGatherer] IMAGE DEBUG: Got {len(notes)} notes with {total_images} total images")
+
+            # Substance filter (2026-07-25): image-only/near-empty note chunks
+            # embed as noise and outscore real matches on unrelated queries.
+            # Kept when the visual-intent gate loaded actual images for them.
+            if notes:
+                _before = len(notes)
+                notes = [
+                    n for n in notes
+                    if _note_text_substance(n.get('content', '')) >= PERSONAL_NOTES_MIN_CHARS
+                    or (include_images and n.get('image_data'))
+                ]
+                if len(notes) < _before:
+                    logger.info(
+                        f"[ContextGatherer] Dropped {_before - len(notes)} near-empty note chunk(s) "
+                        f"(< {PERSONAL_NOTES_MIN_CHARS} chars of prose)"
+                    )
 
             # Track note IDs for citations
             if notes:

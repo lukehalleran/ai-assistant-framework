@@ -68,7 +68,10 @@ class ResponseGenerator:
         """
         self.logger.debug(f"[GENERATE] Starting async generation with model: {model_name}")
         start_time = time.time()
-        self.time_manager.mark_query_time()
+        # NOTE: mark_query_time() moved to handle_submit ingress (2026-07-25).
+        # Marking here — after the prompt (with its [TIME CONTEXT] block) was
+        # already assembled, and never on agentic turns — made "Time since
+        # last message" lag one turn and freeze across agentic responses.
         self.logger.debug(f"[TIME] Since last query: {self.time_manager.elapsed_since_last()}")
         self.logger.debug(f"[TIME] Previous response time: {self.time_manager.last_response()}")
 

@@ -568,6 +568,58 @@ class TestTier4LLMFallback:
         assert d.should_trigger
         assert d.search_terms == ["python tutorials 2026"]
 
+    @pytest.mark.asyncio
+    async def test_llm_knowledge_search_suppressed_for_task_followup(self):
+        """Incident 2026-07-24: the LLM trigger set needs_knowledge_search=True on a
+        collaborative-task follow-up ("...ats friendly format"), routing it into the
+        agentic knowledge loop where a slow model hung the turn ~2 min. With no
+        knowledge-QUESTION signal in the query, the gate must suppress it."""
+        mm = MagicMock()
+        decision = MagicMock(
+            should_search=False,
+            search_terms=[],
+            needs_memory_search=False,
+            needs_knowledge_search=True,
+            needs_document_generation=False,
+        )
+        with patch(
+            "utils.web_search_trigger.analyze_for_web_search_llm",
+            new_callable=AsyncMock,
+            return_value=decision,
+        ):
+            d = await evaluate_agentic_gate(
+                "Yeah and I will need both in my current format but also them "
+                "in ats friendly format",
+                model_manager=mm,
+            )
+        assert "knowledge" not in d.modes
+        assert not d.should_trigger
+
+    @pytest.mark.asyncio
+    async def test_llm_knowledge_search_honored_with_question_signal(self):
+        """The suppression must NOT block a genuine knowledge question — one with an
+        explicit explain/how/what signal but no keyword (so it reaches Tier 4)."""
+        mm = MagicMock()
+        decision = MagicMock(
+            should_search=False,
+            search_terms=[],
+            needs_memory_search=False,
+            needs_knowledge_search=True,
+            needs_document_generation=False,
+        )
+        with patch(
+            "utils.web_search_trigger.analyze_for_web_search_llm",
+            new_callable=AsyncMock,
+            return_value=decision,
+        ):
+            d = await evaluate_agentic_gate(
+                "explain the practical tradeoffs between optimistic and pessimistic "
+                "locking in a busy multi user database system",
+                model_manager=mm,
+            )
+        assert d.should_trigger
+        assert "knowledge" in d.modes
+
 
 # ===========================================================================
 # Special intents

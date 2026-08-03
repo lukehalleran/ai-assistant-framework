@@ -13,8 +13,13 @@ exact synonym table (RELATION_SYNONYMS), hygiene (spaces/hyphens →
 underscores, punctuation stripped, repeats collapsed), then conservative
 family-collapse patterns ("asked_about_wakeup_time" → "asked_about") —
 per-fact specifics belong in the object, not the relation name.
-Historical edges predating a pattern can be re-canonicalized with
-scripts/graph_relation_normalize.py (dry-run-first).
+Extended 2026-08-02 (630/696 stored relations were single-use inventions):
+synonym table grew (drinks/attends/completed/likes_*/dislikes_*/...) and the
+family patterns cover talked_about_*/mentioned_* — with a negative lookahead
+excluding `mentioned_alongside`, a code-level structural relation used by
+wiki enrichment. Historical edges predating a pattern can be re-canonicalized
+with scripts/graph_relation_normalize.py (dry-run-first; --apply run 08-02,
+24 edges renamed).
 
 Persistence (entity_aliases.json): atomic write (utils.safe_json) and
 strict load — an existing-but-corrupt file is quarantined and raises
@@ -44,11 +49,15 @@ RELATION_SYNONYMS: dict[str, list[str]] = {
     "created": ["created", "built", "made", "authored", "wrote"],
     "works_at": ["works at", "works for", "employed at", "employed by"],
     "wants_to_move_to": ["wants to move to", "plans to move to", "moving to"],
-    "wants_to": ["wants to", "plans to", "intends to", "hopes to"],
+    "wants_to": ["wants to", "plans to", "intends to", "hopes to", "desire",
+                 "desires", "aspiration", "aspires_to", "hopes_to", "hoping_to"],
     "studies_at": ["studies at", "enrolled in", "attending", "enrolled at"],
-    "studies": ["studies", "studying", "learning", "taking"],
-    "likes": ["likes", "enjoys", "loves", "fond of", "appreciates"],
-    "dislikes": ["dislikes", "hates", "doesn't like", "avoids"],
+    "studies": ["studies", "studying", "learning", "taking", "course",
+                "course_enrollment", "coursework"],
+    "likes": ["likes", "enjoys", "loves", "fond of", "appreciates",
+              "appreciation", "enjoyed", "enjoying"],
+    "dislikes": ["dislikes", "hates", "doesn't like", "avoids", "dislike",
+                 "event_disinterest"],
     "owns": ["owns", "has", "possesses"],
     "is_a": ["is a", "is an"],
     "part_of": ["part of", "member of", "belongs to"],
@@ -67,6 +76,18 @@ RELATION_SYNONYMS: dict[str, list[str]] = {
                     "inquired_about", "inquires_about"],
     "concerned_about": ["concerned about", "worried about", "worried_about",
                         "worries_about"],
+    # 2026-08-02 long-tail collapse (696 distinct relations over 904 edges,
+    # 630 singletons — LLM-invented variants). Only synonyms where the object
+    # carries the specifics.
+    "drinks": ["drank_alcohol", "drinks_alcohol", "drink_preference", "beverage"],
+    # (bare "attending" is already claimed by studies_at above — not repeated
+    # here, since a later duplicate synonym would silently override it)
+    "attends": ["attended", "attends_activity", "attending_event",
+                "attends_event", "attending_activity"],
+    "completed": ["completes", "finished", "completed_course",
+                  "completed_activity", "completed_tasks"],
+    "celebrates": ["celebrated", "celebration"],
+    "cleans_up": ["cleaned_up", "cleaning_up"],
 }
 
 # Build reverse lookup for fast matching
@@ -88,6 +109,20 @@ _RELATION_FAMILY_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"^concern(s|ed)?_about_.+$"), "concerned_about"),
     (re.compile(r"^worrie[sd]_about_.+$"), "concerned_about"),
     (re.compile(r"^class(es)?_start(s|ed)?(_(date|time|on|day))?$"), "classes_start"),
+    # 2026-08-02 additions — same conservative rule: the stripped tail must be
+    # per-fact specifics the object/value already carries.
+    (re.compile(r"^like[sd]?_.+$"), "likes"),
+    (re.compile(r"^enjoy(s|ed)?_.+$"), "likes"),
+    (re.compile(r"^dislike[sd]?_.+$"), "dislikes"),
+    (re.compile(r"^hate[sd]?_.+$"), "dislikes"),
+    (re.compile(r"^interested_in_.+$"), "interested_in"),
+    (re.compile(r"^excited_(about|for)_.+$"), "excited_about"),
+    (re.compile(r"^talk(s|ed)?_about_.+$"), "talked_about"),
+    # negative lookahead: mentioned_alongside is a code-level structural
+    # relation (wiki_enrichment/graph_memory) and must never collapse
+    (re.compile(r"^mention(s|ed)?_(?!alongside\b).+$"), "mentioned"),
+    (re.compile(r"^complet(es|ed)_.+$"), "completed"),
+    (re.compile(r"^attend(s|ed|ing)_.+$"), "attends"),
 ]
 
 

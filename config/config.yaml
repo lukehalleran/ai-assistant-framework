@@ -65,7 +65,9 @@ models:
   api_model_context_limit: 128000
   default_max_tokens: 9984
   heavy_topic_max_tokens: 4096
-  default_top_p: 0.9
+  # 0.95 satisfies the strictest current endpoint (Kimi K3 rejects any other value);
+  # per-model mandates are enforced regardless via MODEL_CAPABILITIES forced_top_p.
+  default_top_p: 0.95
   default_top_k: 5
   default_temperature: 0.75
   openai_api_key: ''
@@ -155,6 +157,8 @@ agentic_search:
   memory_search_limit: 7
   reuse_decision_answer: true
   decision_max_tokens: 1600
+  round_timeout_s: 75      # per-round decision-LLM timeout (backstop vs. stalled call)
+  loop_timeout_s: 120      # wall-clock budget for rounds 2-N; then synthesize from context
 uncertainty_fallback:
   enabled: true
   semantic_threshold: 0.7

@@ -4,11 +4,17 @@ from utils.tone_detector import detect_crisis_level, CrisisLevel
 
 
 class MockModelManager:
-    """Mock model manager for testing LLM fallback."""
+    """Mock model manager for testing LLM fallback.
 
-    async def generate_async(self, prompt, max_tokens=None, temperature=None):
-        """Mock LLM response based on prompt content."""
-        # Check what's being asked
+    The arbiter calls generate_once (2026-07-25 fix — generate_async returns a
+    stream object for API models, so .strip() on it crashed every borderline
+    call), so the mock implements that interface with the kwargs the deployed
+    call passes (system_prompt / max_tokens / temperature / disable_reasoning).
+    """
+
+    async def generate_once(self, prompt, system_prompt=None, max_tokens=None,
+                            temperature=None, disable_reasoning=False, **kwargs):
+        """Mock LLM verdict based on prompt content."""
         if "Everything would be better if I just wasn't here" in prompt:
             return "HIGH"
         elif "Everything feels pointless" in prompt:

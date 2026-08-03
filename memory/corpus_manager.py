@@ -20,6 +20,8 @@ Module Contract
   - Narrative context cached to separate file (NARRATIVE_CONTEXT_PATH) [NEW 2026-01-17]
   - Narrative save/read both reject API-error sentinel text (API_ERROR_PREFIXES) —
     a failed LLM call must never persist or surface as temporal grounding [2026-07-09]
+  - add_summary rejects junk summaries at storage time (memory.utils.is_junk_summary —
+    "-"/truncated fragments), mirroring the Chroma-side add_summary guard [2026-07-25]
 - Side effects:
   - Writes to CORPUS_FILE JSON on each add.
   - Writes to NARRATIVE_CONTEXT_PATH for temporal grounding cache [NEW 2026-01-17]
@@ -283,6 +285,19 @@ class CorpusManager:
                 "tags": (tags or []) + ["@summary"],
                 "type": "summary"
             }
+        # Storage-time junk guard (2026-07-25): mirror the Chroma-side
+        # add_summary guard so "-"/truncated fragments can't enter either store.
+        from memory.utils import is_junk_summary
+        from core.response_parser import ResponseParser
+        # Endpoint artifact guard (2026-08-03): mirror the Chroma-side stray-'e' strip.
+        summary["content"] = ResponseParser.strip_trailing_stream_artifact(
+            summary.get("content", "") or ""
+        )
+        if is_junk_summary(summary.get("content", "")):
+            logger.warning(
+                f"[CorpusManager] Rejected junk summary: {str(summary.get('content', ''))[:60]!r}"
+            )
+            return
         # persist in the same list/file that get_summaries() actually reads
         self.corpus.append(summary)
         self._episodic_cache = None  # Invalidate cache

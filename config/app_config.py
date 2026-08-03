@@ -1328,6 +1328,14 @@ AGENTIC_REUSE_DECISION_ANSWER: bool = bool(AGENTIC_CFG.get("reuse_decision_answe
 # check and falls back to the synthesis call. Tool-call rounds emit few
 # tokens regardless, so the ceiling doesn't slow them.
 AGENTIC_DECISION_MAX_TOKENS: int = int(AGENTIC_CFG.get("decision_max_tokens", 1600))
+# Latency guards for the agentic loop (2026-07-24). A slow/misbehaving model
+# (observed: kimi-3 narrating tool intent in prose instead of emitting XML
+# markers, ~55-60s/round) could run every round to max_rounds and hang the turn
+# for minutes with no ceiling. round_timeout_s wraps each decision-LLM call
+# (backstop vs. a stalled connection); loop_timeout_s bounds the whole rounds-2-N
+# loop — once exceeded, no new round starts and the loop synthesizes from context.
+AGENTIC_ROUND_TIMEOUT_S: float = float(AGENTIC_CFG.get("round_timeout_s", 75.0))
+AGENTIC_LOOP_TIMEOUT_S: float = float(AGENTIC_CFG.get("loop_timeout_s", 120.0))
 
 # --------------------------------------------------------------------
 # Uncertainty Fallback (retry via agentic search on "I don't know" responses)

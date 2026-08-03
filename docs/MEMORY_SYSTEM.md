@@ -50,7 +50,7 @@ resolved, and stale information is penalized in ranking.
 ### Fact & Truth Pipeline
 | File | Purpose |
 |------|---------|
-| `memory/fact_extractor.py` | Multi-stage extraction: corrections > spaCy > REBEL > regex, dual budget. Pre-canonicalization filters: ephemeral predicate blocking (config-driven), boolean-only value rejection |
+| `memory/fact_extractor.py` | Multi-stage extraction: corrections > spaCy > REBEL > regex, dual budget. Pre-canonicalization filters: ephemeral predicate blocking (config-driven), boolean-only value rejection, junk-object + polarity guards (2026-08-02) |
 | `memory/llm_fact_extractor.py` | LLM-assisted triple extraction with entity support; accepts existing profile facts for relation reuse; attaches source_excerpt via keyword matching. `_normalize_triple()` applies `_is_ephemeral_relation()` + `_is_boolean_noise()` guards; LLM prompt explicitly discourages transient state extraction |
 | `memory/fact_verification.py` | Pre-storage conflict checking: ephemeral > candidates > trust > LLM adjudication |
 | `memory/truth_scorer.py` | Stateless truth computation: initial score + adjustments + time decay |
@@ -174,7 +174,9 @@ UnifiedPromptBuilder.build_prompt()
   │     ├── semantic_memories (20)        ← ChromaDB [conversations, summaries, reflections]
   │     ├── user_profile (3000 tokens)    ← UserProfile (categorized facts)
   │     ├── facts (30)                    ← ChromaDB facts collection
-  │     ├── summaries (recent+semantic)   ← ChromaDB summaries
+  │     ├── summaries (recent+semantic)   ← ChromaDB summaries (recent side =
+  │     │     get_recent() timestamp-sorted + is_junk_summary filter since
+  │     │     2026-07-25 — was an empty-string semantic query returning junk)
   │     ├── reflections (recent+semantic) ← ChromaDB reflections
   │     ├── graph_context (12 sentences)  ← GraphMemory BFS traversal
   │     ├── procedural_skills (5, over-fetched 3x) ← ChromaDB procedural_skills
@@ -222,7 +224,10 @@ MemoryStorage.store_interaction(query, response)
   ├─ 0. Thinking-leak storage guard: ResponseParser.sanitize_for_storage()
   │     runs before ANY persistence; all-thinking responses skipped (return None)
   │     — final defense layer so reasoning artifacts can't persist and be replayed
-  │     (see docs/THINKING_BLOCKS_IMPLEMENTATION.md)
+  │     (see docs/THINKING_BLOCKS_IMPLEMENTATION.md). Since 2026-08-03 also strips
+  │     the kimi-3 trailing-'e' stream artifact ("…landed?e" was stored verbatim);
+  │     both add_summary paths (chroma + corpus) apply the same strip — the
+  │     endpoint's non-streaming outputs had it too ("…impress them.e")
   ├─ 1. Skip gate: reject file-error responses + API-error sentinels
   │     ("[API Error]", "[CREDITS EXHAUSTED]", "[RATE LIMITED]", ... — prefixes
   │      from model_manager._classify_api_error; transport failures are never
@@ -497,8 +502,19 @@ FactExtractor.extract_facts()
         │     PROFILE_EPHEMERAL_RELATIONS config list (loaded once per call).
         │     Blocks transient state like current_mood, woke_up_time, greeting, etc.
         │     Applied before canonicalization so raw relation names are caught.
-        └─ Boolean noise filter: objects that are just "true"/"false"/"yes"/"no"
-              are dropped — no informational content.
+        ├─ Boolean noise filter: objects that are just "true"/"false"/"yes"/"no"
+        │     are dropped — no informational content.
+        ├─ Junk-object filter (2026-08-02): _is_junk_object (in _clean_triple)
+        │     drops adverbial/temporal/negation-fragment objects ("for a bit",
+        │     "with food", "yesterday", "not good", profanity-intensifier rants);
+        │     schedule relations exempt.
+        └─ Polarity guard (2026-08-02): _polarity_conflict blocks positive-
+              preference triples the source text negates ("hate my fucking life"
+              had stored user | likes | my fucking life). The _canonicalize_preferences
+              "i like " rewrite is clause-scoped (a bare substring hit used to
+              rewrite ANY co-occurring triple to likes|obj). Historical junk:
+              scripts/purge_junk_facts.py (166 purged 2026-08-02, pre-image backup).
+              Tests: tests/unit/test_fact_junk_polarity_guard.py.
 
 Dual budget applied:
   User facts (cap 6): [user | brother | Sam]
@@ -578,6 +594,16 @@ duplicate edges from phrasing variations:
 
 Unknown relations pass through with spaces replaced by underscores
 (e.g., "favorite color" becomes "favorite_color").
+
+**2026-08-02 extension:** a scan found 630/696 stored relations were single-use
+inventions. The synonym table grew (drinks/attends/completed/celebrates/...),
+family-collapse patterns now cover `likes_*`/`dislikes_*`/`talked_about_*`/
+`mentioned_*` (with a negative lookahead protecting `mentioned_alongside`, a
+code-level structural relation used by wiki enrichment), and the LLM fact
+extractor prompt carries a ~40-relation core vocabulary plus a "specifics
+belong in the OBJECT" rule (inflow-side fix). Historical edges re-canonicalized
+via `scripts/graph_relation_normalize.py --apply` (24 renamed, 0 collisions).
+The remaining singleton tail is mostly content-bearing and can't collapse safely.
 
 Possessive alias patterns (`_POSSESSIVE_RE`) auto-detect phrases like
 "my cat", "my boss", "my brother" and register them as entity aliases

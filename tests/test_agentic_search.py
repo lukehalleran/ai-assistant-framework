@@ -1242,7 +1242,7 @@ class TestRecentConversationDigest:
             ]
         }
         digest = controller._compute_recent_conversation_digest(ctx)
-        assert "THIS SESSION" in digest
+        assert "RECENT CONVERSATION" in digest
         assert "Fable 5 available" in digest
         assert "404 across all providers" in digest
         # Carries the do-not-re-derive instruction.
@@ -1267,7 +1267,10 @@ class TestRecentConversationDigest:
         assert digest.count("- User:") == controller._DIGEST_MAX_TURNS
         # Each message is hard-truncated.
         assert "x" * 500 not in digest
-        assert "q9" in digest and "q0" not in digest
+        # 2026-08-02 order fix: without timestamps the gatherer contract
+        # (NEWEST-first) applies, so q0 is the newest turn and is kept while
+        # q9 (oldest) is dropped — the pre-fix tail-slice kept the oldest.
+        assert "q0" in digest and "q9" not in digest
 
     def test_digest_appears_in_iteration_prompt(self, controller):
         from core.agentic.types import AgenticSearchSession
@@ -1284,7 +1287,7 @@ class TestRecentConversationDigest:
             round_number=2,
             session=session,
         )
-        assert "THIS SESSION" in prompt
+        assert "RECENT CONVERSATION" in prompt
         assert "404 everywhere" in prompt
 
     def test_iteration_prompt_without_digest_unaffected(self, controller):
@@ -1294,7 +1297,7 @@ class TestRecentConversationDigest:
         prompt = controller._build_iteration_prompt(
             query="test", search_context="", round_number=2, session=session,
         )
-        assert "THIS SESSION" not in prompt
+        assert "RECENT CONVERSATION — EARLIER TURNS" not in prompt
 
 
 # =============================================================================

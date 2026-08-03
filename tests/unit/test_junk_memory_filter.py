@@ -51,6 +51,29 @@ class TestJunkPredicate:
     def test_bare_sentinel_content_no_assistant_marker(self):
         assert is_junk_conversation_doc(content="[API unavailable] Unable to reach the model.")
 
+    def test_box_test_battery_is_junk(self):
+        # The owner's standing 4-message test battery had accreted 547 stored
+        # conversation docs by 2026-07-25 and surfaced as [RELEVANT MEMORIES]
+        # inside unrelated emotional conversations. Exact-match only.
+        for q in (
+            "Hey, I'm working on a Python project",
+            "It's a RAG system with vector search",
+            "Using ChromaDB for the vector store",
+            "Should I add prompt caching?",
+        ):
+            assert is_junk_conversation_doc(
+                content=f"User: {q}\nAssistant: some reply"
+            ), q
+
+    def test_similar_but_genuine_message_is_not_junk(self):
+        # Near-misses must not match — the filter is exact-string only.
+        assert not is_junk_conversation_doc(
+            content="User: I'm working on my Python homework\nAssistant: what part?"
+        )
+        assert not is_junk_conversation_doc(
+            content="User: Should I add prompt caching to the wiki path?\nAssistant: ..."
+        )
+
     def test_empty_inputs_pass(self):
         assert not is_junk_conversation_doc()
 

@@ -12,6 +12,9 @@ Module Contract
   - analyze_query(q, model_manager) -> QueryAnalysis  [sync, runs all heuristics]
   - analyze_query_async(q, model_manager) -> QueryAnalysis  [async, adds LLM heavy-topic check]
   - is_deictic(query) -> bool  [deictic hints: "explain", "that", "it", "this", etc.]
+  - is_anaphoric_continuation(q) -> bool  [pronoun-anchored fragment or referent
+    correction ("No I mean...") whose subject lives in the PREVIOUS exchange —
+    drives topic inheritance + thread-shift suppression, 2026-07-28]
   - is_deictic_followup(q) -> bool  [alias]
   - is_question(q) -> bool  [starts with question word or ends with ?]
   - is_command(q) -> bool  [starts with /, "please", "do", etc.]
@@ -195,6 +198,61 @@ def is_continuation_answer(q: str, last_assistant_response: str, max_words: int 
     if any(m in ql for m in _REQUEST_MARKERS):
         return False
     return True
+
+
+# Markers that the user is repairing the assistant's reading of their OWN
+# previous message ("No I mean of being sick I wasn't talking about working
+# out") — the referent lives in the prior exchange, not in this message.
+_REFERENT_CORRECTION_MARKERS: tuple = (
+    "i mean", "i meant", "i didn't mean", "i didnt mean", "i don't mean",
+    "i dont mean", "i wasn't talking about", "i wasnt talking about",
+    "i was talking about", "not talking about", "that's not what i",
+    "thats not what i", "i was referring to", "i'm referring to",
+    "im referring to", "i was asking about", "not what i said",
+)
+
+# Bare referential openers whose subject is in the previous exchange.
+_ANAPHORIC_OPENERS: frozenset = frozenset({
+    "it", "that", "this", "they", "those", "these",
+})
+
+
+def is_anaphoric_continuation(q: str, max_words: int = 30) -> bool:
+    """
+    True when the message's SUBJECT lives in the previous exchange: it opens
+    with a bare referential pronoun ("It was maybe 3 years of...") or repairs
+    the assistant's reading of the user's own prior message ("No I mean of
+    being sick I wasn't talking about working out").
+
+    Fresh topic classification of such a message is unreliable by
+    construction — the classifier sees only surface keywords and the referent
+    isn't in the text. 2026-07-28 incident: mid long-covid conversation,
+    "It was maybe 3 years of twice a week then the year and a half of like
+    5 6 days a week" (illness frequency) was classified topic "Exercise
+    Routine"; the [THREAD CONTEXT] injection then asserted a topic shift
+    ("Follow the current query") and the response plan doubled down, so the
+    model answered about the gym. The explicit correction on the next turn
+    was classified as ANOTHER new topic ("Being Sick") and misread again.
+
+    Consumers: ContextPipeline._extract_topics (inherit the previous turn's
+    topic instead of fresh-classifying), orchestrator._thread_topic_shifted
+    (never assert a topic shift on such a turn).
+
+    Deliberately does NOT try to exclude expletive-"it" openers ("it's
+    raining") — inheriting the prior topic there is a soft, low-cost hint,
+    while a false topic-shift assertion on a real continuation was the
+    demonstrated failure.
+    """
+    ql = _normalize(q)
+    if not ql:
+        return False
+    words = ql.split()
+    if len(words) > max_words:
+        return False
+    if any(m in ql for m in _REFERENT_CORRECTION_MARKERS):
+        return True
+    first = words[0].strip(".,!…:;'\"")
+    return first in _ANAPHORIC_OPENERS
 
 
 def is_deictic(query: str) -> bool:

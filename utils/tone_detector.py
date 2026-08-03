@@ -23,10 +23,30 @@ Module Contract
   2. Composite harm scoring — _calculate_harm_score(): 250+ weighted keywords (HIGH=10pts, MEDIUM=5pts,
      CONCERN=2pts), pattern multipliers (1.2x-1.4x), routes: >=20 HIGH, >=10 MEDIUM, >=4 CONCERN
   3. Semantic similarity — _semantic_crisis_detection(): embedding comparison to crisis exemplars
-     using configurable thresholds (all-MiniLM-L6-v2)
-  4. LLM fallback — _llm_crisis_fallback(): for borderline cases near thresholds
-- Config: TONE_CONFIG dict with threshold_high/medium/concern, context_window, escalation_boost.
-  All overridable via TONE_THRESHOLD_* env vars.
+     using configurable thresholds (all-MiniLM-L6-v2). Prototypes = CODE seeds
+     (CRISIS_EXEMPLARS) + per-user LEARNED exemplars (utils.adaptive_exemplars,
+     2026-08-02): a classification confirmed by the keyword stage or the LLM
+     arbiter teaches the store (_learn_tone_exemplar), so future paraphrases
+     match semantically without hand-editing lists. The heuristic backstop and
+     conversational verdicts NEVER teach (self-reinforcement / poisoning guard).
+     Toggle: TONE_EXEMPLAR_LEARNING env (default on).
+  4. LLM fallback — _llm_crisis_fallback(): for borderline cases near thresholds.
+     Uses model_manager.generate_once (non-streaming; generate_async returns a
+     stream object and crashed every borderline call until 2026-07-25) under
+     llm_fallback_timeout_s, with disable_reasoning=True (2026-08-02: reasoning
+     models burned the tiny max_tokens budget in the reasoning channel and
+     returned empty content). An unrecognized arbiter reply is failure (None),
+     never a CONVERSATIONAL verdict. The rubric maps sadness/unhappiness/shame/
+     low self-worth to CONCERN and violent thoughts to MEDIUM. When the arbiter
+     is unavailable/fails OR returns CONVERSATIONAL against distress-dominant
+     semantics, a deterministic borderline backstop floors a distress-shaped
+     borderline to CONCERN (top distress score > conversational + 0.08 AND >=
+     backstop_min_score) instead of failing to CONVERSATIONAL; the arbiter can
+     raise the level but its CONVERSATIONAL cannot override that margin.
+- Config: TONE_CONFIG dict with threshold_high/medium/concern, context_window,
+  escalation_boost, llm_fallback_timeout_s, backstop_min_score.
+  All overridable via TONE_THRESHOLD_* / TONE_LLM_FALLBACK_TIMEOUT_S /
+  TONE_BACKSTOP_MIN_SCORE env vars.
 - Dependencies:
   - numpy (similarity computation)
   - models.model_manager (embedding + LLM for stages 3-4) [optional]
@@ -35,6 +55,7 @@ Module Contract
   - LLM API call for borderline cases only (stage 4)
 """
 
+import asyncio
 import os
 import numpy as np
 from enum import Enum
@@ -60,6 +81,21 @@ TONE_CONFIG = {
 
     # Escalation boost when prior context shows distress
     "escalation_boost": float(os.getenv("TONE_ESCALATION_BOOST", "1.2")),
+
+    # Upper bound on the borderline LLM-arbiter call (it sits in the hot
+    # context-pipeline path; on timeout the deterministic borderline backstop
+    # takes over)
+    "llm_fallback_timeout_s": float(os.getenv("TONE_LLM_FALLBACK_TIMEOUT_S", "4.0")),
+
+    # Absolute-score floor for the arbiter-unavailable borderline backstop.
+    # Sits below MIN_ABSOLUTE_SCORE (0.40, full class assignment) so the
+    # 2026-07-25 live miss (medium=0.390) is caught, but above situational
+    # weak matches ("That movie made me sad", concern=0.34) so margin alone
+    # can't promote them.
+    "backstop_min_score": float(os.getenv("TONE_BACKSTOP_MIN_SCORE", "0.37")),
+    # Grow per-user semantic exemplars from confirmed classifications
+    # (keyword stage + LLM arbiter) via utils.adaptive_exemplars.
+    "exemplar_learning": os.getenv("TONE_EXEMPLAR_LEARNING", "1") not in ("0", "false", "False"),
 }
 
 
@@ -175,6 +211,17 @@ MEDIUM_CRISIS_KEYWORDS = {
     # Relationship crisis
     "left me", "abandoned me", "walked out",
     "breakup", "divorce", "ended it",
+
+    # Violent ideation toward others (2026-08-02: "I would hurt them terribly
+    # if legal" scored harm 0.0 and semantic high=0.298 — a live miss).
+    # Negation-scoped deliberately: bare "deserve to be alive" must NOT match,
+    # or the user's own repair "I deserve to be alive" would floor to distress.
+    "i would hurt them", "i would hurt him", "i would hurt her",
+    "want to hurt them", "want to hurt him", "want to hurt her",
+    "want to hurt someone", "want to hurt people", "could hurt someone",
+    "not everyone deserves to be alive", "doesn't deserve to be alive",
+    "don't deserve to be alive", "doesn't deserve to live",
+    "don't deserve to live",
 }
 
 # Concern-level keywords (distress but not crisis)
@@ -340,6 +387,17 @@ CRISIS_EXEMPLARS = {
         "I'm shaking and can't calm down",
         "I feel like I'm suffocating",
         "I'm on the edge of losing it",
+        # Overwhelm (bare "I'm overwhelmed" must stay MEDIUM — the 2026-08-02
+        # exemplar additions diluted the prototype below its threshold)
+        "I'm overwhelmed",
+        "I'm completely overwhelmed",
+        # Other-directed violent ideation (2026-08-02: "I would hurt them
+        # terribly if legal" scored high=0.298 — below every threshold —
+        # because no exemplar covered anger-at-others distress)
+        "I want to hurt the people who wronged me",
+        "I would hurt them badly if I could get away with it",
+        "Some people don't deserve to be alive",
+        "I'm so angry I could hurt someone right now",
     ],
     "concern": [
         "I'm really anxious about this",
@@ -362,6 +420,15 @@ CRISIS_EXEMPLARS = {
         "I'm feeling helpless about this",
         "I'm really upset and don't know what to do",
         "I'm scared this won't work out",
+        # Plain sadness / shame / low self-worth (2026-08-02: "I am so
+        # unhappy" scored concern=0.349 — under the backstop floor — because
+        # every concern exemplar was anxiety-flavored)
+        "I am so unhappy",
+        "I feel so sad and I don't know why",
+        "I'm ashamed of myself",
+        "I feel worthless lately",
+        "I feel so lonely",
+        "I hate myself and I wanna cry",
     ],
     "conversational": [
         # Mild fatigue/tiredness (should NOT trigger crisis)
@@ -383,6 +450,16 @@ CRISIS_EXEMPLARS = {
         "I'm alright",
         "Pretty good",
         "I'm okay",
+        # Media/situational sadness — reacting to content is not distress
+        # (probe 2026-08-02: "this song always makes me cry" scored
+        # medium=0.413, ABOVE every real live miss)
+        "That movie made me sad",
+        "That song always makes me cry a little",
+        "The ending of that show was heartbreaking",
+        "That show was so depressing to watch",
+        # Strategy-game violence talk is play, not ideation (owner plays HOI4)
+        "I crushed everyone in my strategy game last night",
+        "I destroyed the enemy army in my game, total victory",
     ],
 }
 
@@ -420,12 +497,40 @@ def _get_embedder(model_manager=None):
         return None
 
 
+def _get_learned_exemplars(level: str) -> list:
+    """Learned per-user exemplars for a level (adaptive store; [] on failure)."""
+    try:
+        from utils.adaptive_exemplars import get_store
+        return get_store().get_learned("tone", level)
+    except Exception:
+        return []
+
+
+def _adaptive_store_version() -> int:
+    try:
+        from utils.adaptive_exemplars import get_store
+        return get_store().version
+    except Exception:
+        return -1
+
+
 def _get_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
-    """Get or compute cached exemplar embeddings."""
+    """Get or compute cached exemplar embeddings.
+
+    Prototypes are computed from the CODE seeds (CRISIS_EXEMPLARS) merged with
+    the per-user LEARNED exemplars from utils.adaptive_exemplars — confirmed
+    live classifications grow the semantic channel so future paraphrases match
+    without hand-editing lists. The cache is keyed on the adaptive store's
+    version and recomputes when new exemplars were learned.
+    """
     global _exemplar_embeddings_cache
 
-    if _exemplar_embeddings_cache is not None:
-        return _exemplar_embeddings_cache
+    _version = _adaptive_store_version()
+    if (
+        isinstance(_exemplar_embeddings_cache, tuple)
+        and _exemplar_embeddings_cache[0] == _version
+    ):
+        return _exemplar_embeddings_cache[1]
 
     embedder = _get_embedder(model_manager)
     if embedder is None:
@@ -434,23 +539,50 @@ def _get_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
 
     logger.info("[ToneDetector] Computing exemplar embeddings (one-time setup)...")
 
-    _exemplar_embeddings_cache = {}
-
+    prototypes: Dict[str, np.ndarray] = {}
     for level, examples in CRISIS_EXEMPLARS.items():
         try:
-            # Encode all examples for this level
-            embeddings = embedder.encode(examples, convert_to_numpy=True)
+            merged = list(examples) + _get_learned_exemplars(level)
+            embeddings = embedder.encode(merged, convert_to_numpy=True)
             # Compute mean embedding as the prototype
-            mean_embedding = np.mean(embeddings, axis=0)
-            _exemplar_embeddings_cache[level] = mean_embedding
-            logger.debug(f"[ToneDetector] Computed {level} exemplar from {len(examples)} examples")
+            prototypes[level] = np.mean(embeddings, axis=0)
+            logger.debug(
+                f"[ToneDetector] Computed {level} exemplar from {len(examples)} seed "
+                f"+ {len(merged) - len(examples)} learned examples"
+            )
         except Exception as e:
             logger.error(f"[ToneDetector] Failed to compute {level} exemplar: {e}")
             # Use zero vector as fallback
-            _exemplar_embeddings_cache[level] = np.zeros(384)  # MiniLM embedding size
+            prototypes[level] = np.zeros(384)  # MiniLM embedding size
 
+    _exemplar_embeddings_cache = (_version, prototypes)
     logger.info("[ToneDetector] Exemplar embeddings ready")
-    return _exemplar_embeddings_cache
+    return prototypes
+
+
+def _learn_tone_exemplar(message: str, level_key: str, source: str,
+                         model_manager=None) -> None:
+    """Teach the adaptive store a CONFIRMED distress classification.
+
+    Poisoning guards: only distress levels are learned (a missed detection
+    labeled conversational must never TEACH the miss), and callers only invoke
+    this from channels independent of the semantic prototypes themselves —
+    the deterministic keyword stage and the LLM arbiter. The heuristic
+    borderline backstop never teaches (it would self-reinforce).
+    """
+    if not TONE_CONFIG.get("exemplar_learning", True):
+        return
+    if level_key not in ("concern", "medium", "high"):
+        return
+    try:
+        from utils.adaptive_exemplars import get_store
+        get_store().record(
+            "tone", level_key, message, source,
+            embedder=_get_embedder(model_manager),
+            seed_texts=CRISIS_EXEMPLARS.get(level_key, []),
+        )
+    except Exception as e:
+        logger.debug(f"[ToneDetector] exemplar learning skipped: {e}")
 
 
 # ===== Detection Functions =====
@@ -874,29 +1006,45 @@ async def _llm_crisis_fallback(message: str, model_manager=None) -> Optional[Tup
         return None
 
     try:
-        # Construct a simple classification prompt
+        # Construct a simple classification prompt. The rubric must cover plain
+        # sadness/shame/self-worth statements, not just anxiety — a literal
+        # "anxiety, worry, stress" rubric made the arbiter label "I am so
+        # unhappy" CONVERSATIONAL (2026-08-02).
         prompt = f"""Analyze this message and classify the crisis level. Respond with ONLY one word: HIGH, MEDIUM, CONCERN, or CONVERSATIONAL.
 
 HIGH: Suicidal ideation, self-harm, severe crisis requiring immediate intervention
-MEDIUM: Panic attack, breakdown, severe emotional distress
-CONCERN: Anxiety, worry, stress needing light support
-CONVERSATIONAL: Casual conversation, no crisis
+MEDIUM: Panic attack, breakdown, severe emotional distress, violent thoughts about self or others
+CONCERN: Anxiety, worry, stress, sadness, unhappiness, shame, loneliness, low self-worth, or emotional pain needing support
+CONVERSATIONAL: Casual conversation, no distress. Mild or momentary reactions to media/events ("that movie made me sad") are CONVERSATIONAL.
 
 Message: "{message}"
 
 Classification:"""
 
-        # Use async generation with small model preference
-        response = await model_manager.generate_async(
-            prompt,
-            max_tokens=10,
-            temperature=0.1
+        # generate_once returns a complete string; generate_async returns a
+        # stream object for API models (calling .strip() on it crashed every
+        # borderline classification until 2026-07-25, silently defaulting the
+        # exact ambiguous-distress cases this fallback exists for to
+        # CONVERSATIONAL). Bounded so a hung call can't stall the pipeline.
+        # disable_reasoning: on reasoning models (kimi-3) the reasoning channel
+        # ate the tiny max_tokens budget and returned empty content, silently
+        # dropping the arbiter verdict (2026-08-02).
+        response = await asyncio.wait_for(
+            model_manager.generate_once(
+                prompt,
+                system_prompt="You are a strict single-word classifier.",
+                max_tokens=16,
+                temperature=0.1,
+                disable_reasoning=True,
+            ),
+            timeout=TONE_CONFIG.get("llm_fallback_timeout_s", 4.0),
         )
 
-        if not response:
+        if not response or not isinstance(response, str):
             return None
 
-        # Parse response
+        # Parse response. An unrecognized reply is arbiter failure → None so
+        # the deterministic backstop applies — NOT a CONVERSATIONAL verdict.
         response_clean = response.strip().upper()
 
         if "HIGH" in response_clean:
@@ -905,8 +1053,13 @@ Classification:"""
             return (CrisisLevel.MEDIUM, 0.75)
         elif "CONCERN" in response_clean:
             return (CrisisLevel.CONCERN, 0.7)
-        else:
+        elif "CONVERSATIONAL" in response_clean:
             return (CrisisLevel.CONVERSATIONAL, 0.6)
+        else:
+            logger.debug(
+                f"[ToneDetector] LLM fallback returned unrecognized verdict: {response_clean[:60]!r}"
+            )
+            return None
 
     except Exception as e:
         logger.debug(f"[ToneDetector] LLM fallback failed: {e}")
@@ -949,6 +1102,15 @@ async def detect_crisis_level(
     keyword_result = _check_keyword_crisis(message)
     if keyword_result:
         level, trigger = keyword_result
+        # Deterministic confirmation → teach the semantic channel, so future
+        # PARAPHRASES of this user's distress phrasing match without keywords.
+        _LEVEL_KEYS = {
+            CrisisLevel.HIGH: "high",
+            CrisisLevel.MEDIUM: "medium",
+            CrisisLevel.CONCERN: "concern",
+        }
+        if level in _LEVEL_KEYS:
+            _learn_tone_exemplar(message, _LEVEL_KEYS[level], "keyword", model_manager)
         return ToneAnalysis(
             level=level,
             confidence=1.0,
@@ -1030,19 +1192,83 @@ async def detect_crisis_level(
             use_llm_fallback = True
             logger.debug(f"[ToneDetector] Borderline CONVERSATIONAL: highest={highest_score:.2f}, threshold-0.15={concern_threshold-0.15:.2f}")
 
+    _arbiter_said_conversational = False
     if use_llm_fallback and model_manager:
         logger.debug(f"[ToneDetector] Attempting LLM fallback for: {message[:50]}...")
         llm_result = await _llm_crisis_fallback(message, model_manager)
         if llm_result:
             llm_level, llm_confidence = llm_result
             logger.info(f"[ToneDetector] LLM fallback: {llm_level.value} (confidence: {llm_confidence:.2f})")
-            return ToneAnalysis(
-                level=llm_level,
-                confidence=llm_confidence,
-                trigger="llm_fallback",
-                raw_scores=raw_scores,
-                explanation=f"LLM classification: {llm_level.value}"
+            # An arbiter CONVERSATIONAL verdict on a distress-dominant borderline
+            # falls through to the deterministic backstop below instead of
+            # returning — the arbiter can raise the level, but its low-confidence
+            # "no crisis" cannot override semantics that clearly favor distress.
+            if llm_level == CrisisLevel.CONVERSATIONAL:
+                _arbiter_said_conversational = True
+            else:
+                # Independent-channel confirmation → teach the semantic channel
+                # (this borderline shape then scores ABOVE borderline next time,
+                # no arbiter round-trip needed).
+                _ARB_KEYS = {
+                    CrisisLevel.HIGH: "high",
+                    CrisisLevel.MEDIUM: "medium",
+                    CrisisLevel.CONCERN: "concern",
+                }
+                if llm_level in _ARB_KEYS:
+                    _learn_tone_exemplar(
+                        message, _ARB_KEYS[llm_level], "arbiter", model_manager
+                    )
+                return ToneAnalysis(
+                    level=llm_level,
+                    confidence=llm_confidence,
+                    trigger="llm_fallback",
+                    raw_scores=raw_scores,
+                    explanation=f"LLM classification: {llm_level.value}"
+                )
+
+    # Deterministic borderline backstop: the arbiter is unavailable (no model
+    # manager, timeout, or error) or returned a contradicted CONVERSATIONAL,
+    # so a distress-shaped borderline must not default to CONVERSATIONAL. If
+    # the strongest distress class outranks conversational by the semantic
+    # margin, floor to CONCERN — never higher, because the full class
+    # assignment still requires the absolute-score bar or a working arbiter.
+    # (Fail-conversational was the live failure mode while the arbiter was
+    # broken: "I keep thinking I am a stupid piece of shit ... I wanna cry"
+    # scored medium=0.39 > conversational=0.30 and was labeled CONVERSATIONAL.)
+    if use_llm_fallback and level == CrisisLevel.CONVERSATIONAL and raw_scores:
+        _conv = raw_scores.get("conversational", 0.0)
+        _top_distress = max(
+            (raw_scores.get(k, 0.0) for k in ("high", "medium", "concern")),
+            default=0.0,
+        )
+        if (
+            _top_distress > _conv + 0.08
+            and _top_distress >= TONE_CONFIG.get("backstop_min_score", 0.37)
+        ):
+            _why = (
+                "arbiter said conversational but was overridden"
+                if _arbiter_said_conversational else "arbiter unavailable"
             )
+            logger.info(
+                f"[ToneDetector] Borderline backstop: distress={_top_distress:.2f} > "
+                f"conversational={_conv:.2f} with {_why} → CONCERN"
+            )
+            return ToneAnalysis(
+                level=CrisisLevel.CONCERN,
+                confidence=_top_distress,
+                trigger="borderline_backstop",
+                raw_scores=raw_scores,
+                explanation=f"Distress outranked conversational on a borderline case; {_why}",
+            )
+
+    if _arbiter_said_conversational:
+        return ToneAnalysis(
+            level=CrisisLevel.CONVERSATIONAL,
+            confidence=0.6,
+            trigger="llm_fallback",
+            raw_scores=raw_scores,
+            explanation="LLM classification: conversational"
+        )
 
     # Build explanation
     if level == CrisisLevel.CONVERSATIONAL:

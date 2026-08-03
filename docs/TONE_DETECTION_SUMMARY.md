@@ -147,7 +147,94 @@ TONE_THRESHOLD_CONCERN=0.43   # Concern level threshold
 # Context window
 TONE_CONTEXT_WINDOW=3         # Recent turns to check for escalation
 TONE_ESCALATION_BOOST=1.2     # Multiplier when prior context shows distress
+
+# Borderline arbitration (2026-07-25)
+TONE_LLM_FALLBACK_TIMEOUT_S=4.0  # Bound on the borderline LLM-arbiter call
+TONE_BACKSTOP_MIN_SCORE=0.37     # Absolute floor for the arbiter-unavailable backstop
 ```
+
+## Borderline Arbitration Fix (2026-07-25)
+
+The Stage-4 LLM fallback (arbiter for semantically borderline cases) had been
+DEAD since it shipped: it called `model_manager.generate_async` — which returns
+a **stream object** for API models — then `.strip()` on it, crashing every
+call. All borderline cases silently defaulted to CONVERSATIONAL, which starved
+downstream safety systems on exactly the ambiguous-distress turns the fallback
+exists for (same failure class as the 2026-07-21 anti-amplification incident).
+Live miss: "I keep thinking I am a stupid piece of shit ... I wanna cry"
+scored medium=0.390 (top) vs conversational=0.302 (last), missed the 0.40
+absolute-class floor by 0.01, hit the broken arbiter → CONVERSATIONAL.
+
+Fix is two-layered:
+1. **Arbiter repaired** — `_llm_crisis_fallback` now uses `generate_once`
+   (non-streaming str) under `llm_fallback_timeout_s`.
+2. **Deterministic backstop** — when the arbiter is unavailable (no model
+   manager, error, timeout), a borderline-CONVERSATIONAL result where the top
+   distress score beats conversational by >= 0.08 AND clears
+   `backstop_min_score` (0.37) is floored to **CONCERN** (never higher —
+   full class assignment still requires the 0.40 bar or a working arbiter).
+   The 0.37 floor keeps situational weak matches ("That movie made me sad",
+   concern=0.34) conversational.
+
+Regression tests: `tests/unit/test_tone_borderline_fallback.py` (18 tests,
+including the tone-corroborated agentic-gate veto — see AGENTIC_SEARCH.md).
+
+## Arbiter Hardening (2026-08-02)
+
+Three live borderline misses in one day drove a second pass:
+
+1. **Reasoning-channel starvation** — the kimi-3 arbiter's reasoning channel ate
+   the 10-token budget and returned EMPTY content ("Not everyone deserves to be
+   alive like me ... I would hurt them terribly if legal" fell through). The
+   arbiter now calls `generate_once(disable_reasoning=True, max_tokens=16)`.
+2. **Literal rubric** — "anxiety, worry, stress" phrasing made the arbiter label
+   "I am so unhappy" CONVERSATIONAL. The rubric now maps sadness/unhappiness/
+   shame/low self-worth → CONCERN and violent thoughts → MEDIUM (media-sadness
+   stays conversational).
+3. **Arbiter can no longer override distress-dominant semantics** — the
+   deterministic backstop (same margins/floor) also applies to a contradicted
+   arbiter "no crisis", and unrecognized arbiter output is treated as failure
+   (None → backstop), not parsed as CONVERSATIONAL.
+
+Probe calibration (`scripts/probe_tone_backstop.py`, MISS/WEAK/GAMING/CASUAL
+sets through the deployed `_semantic_crisis_detection`): the 0.37 floor could
+NOT be lowered — media-sadness probes overlap and even exceed real misses
+("this song always makes me cry" scored 0.413 vs miss range 0.298–0.390). So
+coverage moved into the exemplars and keywords instead: `CRISIS_EXEMPLARS`
+gained sadness/shame/low-worth (concern), other-directed violent ideation +
+bare overwhelm (medium), media-sadness + strategy-game violence
+(conversational); `MEDIUM_CRISIS_KEYWORDS` gained a negation-scoped
+other-directed group ("i would hurt them", "not everyone deserves to be
+alive" — bare "deserve to be alive" deliberately excluded so "I deserve to be
+alive" can't match). Post-change probe: zero non-MISS fires at 0.37.
+Tests: `tests/unit/test_tone_arbiter_hardening.py` (17).
+
+## Adaptive Exemplar Learning (2026-08-02/03)
+
+Hand-editing exemplar/keyword lists after each miss is retired as the
+maintenance model. Semantic tone prototypes = `CRISIS_EXEMPLARS` seeds +
+per-user LEARNED exemplars from `utils/adaptive_exemplars`
+(`AdaptiveExemplarStore`, `data/adaptive_exemplars.json`: atomic write +
+lenient load, per-label cap 40, exact + cosine ≥ 0.92 near-dup gates,
+embedding cache keyed on store version). Learning fires ONLY from channels
+independent of the semantic prototypes — the deterministic keyword stage and a
+non-conversational LLM-arbiter verdict; the heuristic backstop and
+conversational verdicts NEVER teach (self-reinforcement/poisoning guards).
+A fresh instance starts from seeds only; a confirmed borderline shape scores
+above-borderline next time with no arbiter round-trip. `TONE_EXEMPLAR_LEARNING`
+env (default on); tests sandbox the store via an autouse conftest fixture.
+The store is domain-generic and also backs need detection, web-search anchors,
+and the intent classifier's semantic tier.
+Tests: `tests/unit/test_adaptive_exemplars.py` (14).
+
+## Cross-Restart Tone Carryover (2026-08-02)
+
+`ContextPipeline` persists each turn's tone level to `data/tone_state.json`
+(atomic, best-effort) and seeds `_last_tone_level` on init when the saved level
+is ELEVATED and within `TONE_STICKINESS_MAX_GAP_MINUTES` — restarts minutes
+apart no longer cold-start the sticky-distress signal (CONCERN at 12:13 was
+gone by the 12:33 restart). Lenient load: corrupt file = cold start, never an
+abort. Tests: `tests/unit/test_tone_carryover_persistence.py`.
 
 ## Usage
 

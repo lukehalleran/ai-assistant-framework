@@ -19,7 +19,12 @@ Module Contract:
     thinking during streaming before parse_thinking_block() can find a clean split.
   - has_incomplete_thinking_block(response) → bool: Streaming suppression (open tag, no close tag yet)
   - extract_incomplete_thinking(response) → str: Extract in-progress thinking for streaming indicator
+  - is_empty_thinking_shell(text) → bool: Streaming-time check for a buffer that is ONLY thinking-tag
+    markers (the synthetic <thinking></thinking> pair before the first content token) — display code
+    keeps the thinking indicator up instead of showing literal tags
   - strip_thinking_tag_leaks(text) → str: Remove partial/malformed thinking tags
+  - strip_trailing_stream_artifact(text) → str: Remove the kimi-3 endpoint's stray trailing 'e'
+    (lone content token before EOS: "…landed?e" / "…them.e"); "i.e"-style abbreviations preserved
   - sanitize_for_storage(text) → str: Final pre-persistence defense — removes empty
     <thinking></thinking> pairs (synthetic streaming markers), leading tagged thinking
     blocks, unclosed leading thinking (returns ""), stray tag fragments, and reflection
@@ -74,6 +79,16 @@ class ResponseParser:
         re.IGNORECASE,
     )
 
+    # Trailing stream artifact — the OpenRouter kimi-3 endpoint sometimes emits a
+    # lone literal 'e' as its final content token right before finish_reason=stop
+    # (observed 2026-08-02/03 on BOTH streaming turns "…landed?e" / "…still out?e"
+    # and non-streaming summaries "…impress them.e"). A letter glued directly to
+    # sentence-final punctuation at end-of-text never occurs in real prose, with
+    # one exception — "i.e"-shaped single-letter abbreviations, which the guard
+    # below preserves.
+    _TRAILING_STREAM_ARTIFACT_RE = re.compile(r"[.!?…]['\"”’)\]]*e$")
+    _SINGLE_LETTER_ABBREV_RE = re.compile(r"(?:^|[\s(\[])[A-Za-z]\.e$")
+
     @staticmethod
     def has_incomplete_thinking_block(response: str) -> bool:
         """Check if response has an opening think tag but no closing tag yet.
@@ -105,6 +120,39 @@ class ResponseParser:
             if idx >= 0:
                 return response[idx + len(open_tag):].strip()
         return ""
+
+    @staticmethod
+    def is_empty_thinking_shell(text: str) -> bool:
+        """True when text contains ONLY thinking-tag markers (± whitespace).
+
+        During streaming, the synthetic <thinking></thinking> markers around
+        API-separated reasoning arrive before the first real content token, so
+        the accumulated buffer is exactly the closed empty pair for a moment.
+        parse_thinking_block() returns ("", "") for it, which makes display
+        code fall through to the "no thinking block" branch and show the
+        literal tags until content arrives (observed 2026-08-03).
+        """
+        if not text or not text.strip():
+            return False
+        return not ResponseParser._THINK_TAG_LEAK_RE.sub('', text).strip()
+
+    @staticmethod
+    def strip_trailing_stream_artifact(text: str) -> str:
+        """Remove a stray trailing 'e' glued to terminal punctuation.
+
+        Endpoint-level artifact (kimi-3 via OpenRouter): a lone 'e' content
+        token emitted just before EOS produces endings like "…landed?e".
+        Strips exactly that one character; "i.e"-style abbreviations and
+        ordinary words ending in 'e' are untouched.
+        """
+        if not text or not isinstance(text, str):
+            return text or ""
+        stripped = text.rstrip()
+        if not ResponseParser._TRAILING_STREAM_ARTIFACT_RE.search(stripped):
+            return text
+        if ResponseParser._SINGLE_LETTER_ABBREV_RE.search(stripped):
+            return text
+        return stripped[:-1]
 
     @staticmethod
     def strip_thinking_tag_leaks(text: str) -> str:
@@ -386,6 +434,7 @@ class ResponseParser:
         3. Unclosed leading thinking (whole text is reasoning → returns "")
         4. Stray/partial tag fragments
         5. Reflection blocks
+        6. Trailing stream artifact (kimi-3 lone 'e' glued to final punctuation)
 
         Deliberately does NOT apply the untagged-thinking heuristics — those can
         false-positive, and losing real conversation content at the storage
@@ -414,6 +463,9 @@ class ResponseParser:
 
         # 5. Reflection blocks
         cleaned = ResponseParser.strip_reflection_blocks(cleaned)
+
+        # 6. Trailing stream artifact (kimi-3 lone 'e' before EOS)
+        cleaned = ResponseParser.strip_trailing_stream_artifact(cleaned)
 
         return cleaned.strip()
 

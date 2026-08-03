@@ -12,6 +12,8 @@ Module Contract
   - generate_narrative_context(weeklies?, monthlies?, max_tokens?) -> str [NEW 2026-01-17]
 - Outputs:
   - Creates a new summary node via corpus_manager.add_summary when due.
+    SUMMARY_MAX_TOKENS=360 (2026-07-25, raised from 220 — mid-sentence truncation class);
+    both storage paths reject junk/fragment summaries via memory.utils.is_junk_summary.
   - Synthesized narrative context string (temporal grounding) [NEW 2026-01-17]
 - Dependencies:
   - models.model_manager for generate_once
@@ -44,7 +46,11 @@ SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))
 SUMMARY_LOOKBACK = int(os.getenv("SUMMARY_LOOKBACK", "40"))
 SUMMARY_MIN_GAP_MIN = int(os.getenv("SUMMARY_MIN_GAP_MIN", "20"))
 SUMMARY_MODEL_ALIAS = os.getenv("LLM_SUMMARY_ALIAS", "gpt-4o-mini")
-SUMMARY_MAX_TOKENS = int(os.getenv("SUMMARY_MAX_TOKENS", "220"))
+# 220 truncated 3-5 bullet summaries mid-sentence ("The user tried a Samson
+# 1795 Czech") — the same truncation class the synthesis prompts fixed by
+# raising caps. 360 gives ~5 full bullets headroom; the storage-time
+# is_junk_summary guard rejects fragments that still slip through.
+SUMMARY_MAX_TOKENS = int(os.getenv("SUMMARY_MAX_TOKENS", "360"))
 
 # Single source of truth for the extractive block-summary prompt. Referenced by
 # MemoryConsolidator.consolidate_memories() (the mid-session + shutdown paths) so

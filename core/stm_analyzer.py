@@ -17,6 +17,10 @@ Module Contract
 - Outputs:
   - Dict with: topic, user_question, intent, tone, reference_type, temporal_facts, open_threads, constraints
   - reference_type ∈ {new_event, recall, clarification, correction, unclear} — disambiguates whether the current message is a new report or a restatement of prior context. Defaults to "unclear" when uncertain.
+  - Disambiguation rule 5 [2026-07-28]: bare-pronoun openers ("It was...") and referent
+    corrections ("No I mean...") resolve from the IMMEDIATELY PRECEDING exchange — the topic
+    continues; never re-derived from surface keywords (pairs with
+    query_checker.is_anaphoric_continuation topic inheritance in ContextPipeline).
   - temporal_facts: normalized facts about user's current state, with collapse-toward-fewer-events disambiguation rule applied.
 - Key pieces:
   - analyze(): Main async method that calls LLM to analyze context
@@ -119,6 +123,7 @@ CRITICAL DISAMBIGUATION RULES:
 2. Resolve ambiguous temporal phrases by collapsing toward fewer events. "Did not sleep" + "fight mode all night" on the same morning = ONE bad night, not two.
 3. Do NOT invent a count or pattern. If you only have evidence of one occurrence of something, say so explicitly in temporal_facts.
 4. When the user uses phrases like "told them what happened", "this situation", "that thing" without naming a new event, assume they are referencing something already known — classify as "recall" or "unclear".
+5. If the current message opens with a bare pronoun ("It was...", "That's...") or corrects your reading ("No I mean...", "I wasn't talking about X"), resolve the pronoun from the IMMEDIATELY PRECEDING exchange — the topic CONTINUES that exchange's topic. Do not re-derive the topic from surface keywords: "It was 3 years of twice a week" mid-illness-conversation is about the illness, not exercise. A correction re-scopes the user's own previous message; it is NOT a new event or a new topic.
 
 Example (new event):
 {{

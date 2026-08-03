@@ -78,10 +78,17 @@ def test_get_recent_memories_with_data(corpus_manager):
     assert recent[1]["query"] == "Q2"
 
 
+# Storage-time junk guard (2026-07-25): add_summary rejects fragments under
+# SUMMARY_MIN_CHARS (40) / under 20 letters — summaries in these tests must be
+# substantive prose or they are (correctly) dropped.
+REAL_SUMMARY = "The user worked through the retrieval pipeline bug and fixed the scoring issue."
+REAL_SUMMARY_2 = "Discussed the upcoming exam schedule and planned study sessions for the week."
+
+
 def test_get_recent_memories_filters_summaries(corpus_manager):
     """Test get_recent_memories excludes summaries."""
     corpus_manager.add_entry("Q1", "A1")
-    corpus_manager.add_summary("Summary text")
+    corpus_manager.add_summary(REAL_SUMMARY)
     corpus_manager.add_entry("Q2", "A2")
 
     recent = corpus_manager.get_recent_memories(count=10)
@@ -94,7 +101,7 @@ def test_get_recent_memories_filters_summaries(corpus_manager):
 def test_add_summary(corpus_manager):
     """Test adding a summary."""
     corpus_manager.add_summary(
-        content="This is a summary",
+        content=REAL_SUMMARY,
         tags=["test"]
     )
 
@@ -108,7 +115,7 @@ def test_add_summary_with_timestamp(corpus_manager):
     """Test adding summary with custom timestamp."""
     ts = datetime(2024, 1, 15, 12, 0, 0)
 
-    corpus_manager.add_summary("Summary", timestamp=ts)
+    corpus_manager.add_summary(REAL_SUMMARY, timestamp=ts)
 
     assert len(corpus_manager.corpus) == 1
 
@@ -124,8 +131,8 @@ def test_get_summaries_empty(corpus_manager):
 def test_get_summaries_returns_summaries(corpus_manager):
     """Test get_summaries returns summary entries."""
     corpus_manager.add_entry("Q1", "A1")
-    corpus_manager.add_summary("Summary 1")
-    corpus_manager.add_summary("Summary 2")
+    corpus_manager.add_summary(REAL_SUMMARY)
+    corpus_manager.add_summary(REAL_SUMMARY_2)
     corpus_manager.add_entry("Q2", "A2")
 
     summaries = corpus_manager.get_summaries(count=10)
@@ -150,7 +157,7 @@ def test_save_and_load_corpus(temp_corpus_file):
 def test_clear_corpus_keep_summaries(corpus_manager):
     """Test clear_corpus keeps summaries."""
     corpus_manager.add_entry("Q1", "A1")
-    corpus_manager.add_summary("Summary 1")
+    corpus_manager.add_summary(REAL_SUMMARY)
     corpus_manager.add_entry("Q2", "A2")
 
     corpus_manager.clear_corpus(keep_summaries=True)
@@ -162,7 +169,7 @@ def test_clear_corpus_keep_summaries(corpus_manager):
 def test_clear_corpus_delete_all(corpus_manager):
     """Test clear_corpus removes everything."""
     corpus_manager.add_entry("Q1", "A1")
-    corpus_manager.add_summary("Summary 1")
+    corpus_manager.add_summary(REAL_SUMMARY)
     corpus_manager.add_entry("Q2", "A2")
 
     corpus_manager.clear_corpus(keep_summaries=False)
@@ -184,7 +191,7 @@ def test_prune_corpus_preserve_summaries(corpus_manager):
     """Test pruning preserves summaries."""
     for i in range(5):
         corpus_manager.add_entry(f"Q{i}", f"A{i}")
-    corpus_manager.add_summary("Important summary")
+    corpus_manager.add_summary(REAL_SUMMARY)
 
     corpus_manager.prune_corpus(keep=3, preserve_summaries=True)
 
@@ -254,10 +261,13 @@ def test_add_entry_with_none_response(corpus_manager):
 
 
 def test_add_summary_empty_content(corpus_manager):
-    """Test adding summary with empty content."""
+    """Empty/fragment summaries are rejected by the storage-time junk guard
+    (2026-07-25) — they must never enter the corpus."""
     corpus_manager.add_summary("")
+    corpus_manager.add_summary("-")
+    corpus_manager.add_summary("short fragment")
 
-    assert len(corpus_manager.corpus) == 1
+    assert len(corpus_manager.corpus) == 0
 
 
 def test_corpus_persistence(temp_corpus_file):

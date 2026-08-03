@@ -413,6 +413,37 @@ distress, `[RELEVANT MEMORIES]` is capped at 50% negative-affect and backfilled
 with lower-affect hits, so mood-congruent recall can't saturate the prompt into a
 rumination amplifier. See `docs/postmortems/2026-07-tone-flatline.md`.
 
+**Borderline arbitration + backstop (2026-07-25, hardened 08-02).** The Stage-4
+borderline LLM fallback had been dead since it shipped (`generate_async` returns
+a stream; `.strip()` crashed every call, so borderline cases silently defaulted
+CONVERSATIONAL). It now uses `generate_once(disable_reasoning=True, max_tokens=16)`
+under `TONE_LLM_FALLBACK_TIMEOUT_S=4s` with a rubric that maps sadness/shame/low
+self-worth → CONCERN and violent thoughts → MEDIUM. A deterministic backstop
+floors to CONCERN when the top distress score beats conversational by ≥ 0.08 and
+clears `TONE_BACKSTOP_MIN_SCORE=0.37` — applied when the arbiter is unavailable,
+returns unrecognized output, or contradicts distress-dominant semantics.
+Probe-calibrated (`scripts/probe_tone_backstop.py`): the 0.37 floor cannot be
+lowered (media-sadness overlaps real misses), so coverage lives in the exemplars
+and keywords instead.
+
+**Adaptive exemplar learning (2026-08-02/03).** Semantic tone prototypes =
+`CRISIS_EXEMPLARS` seeds + per-user learned exemplars from
+`utils/adaptive_exemplars` (`AdaptiveExemplarStore`, `data/adaptive_exemplars.json`;
+per-label cap 40, exact + cosine ≥ 0.92 near-dup gates, version-keyed embedding
+cache). Learning fires ONLY from channels independent of the prototypes — the
+deterministic keyword stage and a non-conversational arbiter verdict; the
+heuristic backstop and conversational verdicts never teach (poisoning guard).
+The same store backs need detection (domain `need`), web-search anchors (domain
+`web_search`, outcome-based teachers) and the intent semantic tier (domain
+`intent`). A fresh instance starts from seeds only and personalizes to the
+owner's phrasing over time.
+
+**Cross-restart carryover (2026-08-02).** `ContextPipeline` persists each turn's
+tone level to `data/tone_state.json` (atomic, best-effort) and re-seeds
+`_last_tone_level` on init when the saved level is elevated and within
+`TONE_STICKINESS_MAX_GAP_MINUTES` — a restart minutes into a distress session no
+longer cold-starts the sticky signal. Lenient load: corrupt file = cold start.
+
 ### STM Analysis
 
 Short-term memory analysis runs an LLM pass over a 24-hour time-windowed
@@ -514,10 +545,23 @@ keeps classification fast (~0ms) and deterministic.
 Tone bias: when the tone detector reports HIGH or MEDIUM crisis level,
 ambiguous queries are biased toward EMOTIONAL_SUPPORT.
 
+**Semantic tier (2026-08-03):** when regex confidence < 0.50, the query is
+scored against per-intent exemplar prototypes — `INTENT_EXEMPLARS` seeds plus
+per-user learned exemplars from `utils/adaptive_exemplars` (domain `intent`;
+GENERAL has no prototype, it is the fallback). A clear winner (cosine ≥ 0.45,
+margin ≥ 0.05) classifies at confidence 0.60 with `source="semantic"`.
+Teachers are independent channels only (regex hits ≥ 0.85, STM refinements);
+the tier never teaches itself and GENERAL is never learned. This closed the
+class where a distress vent with no regex hit landed general@0.00 and starved
+the tone-corroborated agentic veto. Envs: `INTENT_SEMANTIC_TIER`,
+`INTENT_SEMANTIC_MIN_SIM`, `INTENT_EXEMPLAR_LEARNING`.
+
 Low-confidence results (< 0.50) can be refined by STM analysis at
 stage 6b of the context pipeline. Refined intents get confidence
 `INTENT_STM_REFINED_CONFIDENCE` (0.60) — enough to reach the 0.60
 routing floors, deliberately below the 0.75 agentic-veto floor.
+STM refinements also teach the learned-exemplar store
+(`refine_with_stm(query=...)`).
 
 ### Downstream Consumers Read `.intent_type` (2026-07-03)
 
@@ -1155,6 +1199,8 @@ After generation, responses pass through `ResponseParser`:
   2. **Heuristic fallback**: `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning phrases, instruction echoes). Requires ≥2 distinct pattern hits and a clean split point.
   3. **Tag cleanup**: `strip_thinking_tag_leaks()` removes partial/malformed tags
 - `likely_untagged_thinking()` — Fast streaming-time check (no split required). Returns True when ≥2 heuristic patterns are present. Used by `handlers.py` to suppress thinking before `parse_thinking_block()` can find a clean split.
+- `is_empty_thinking_shell()` — Streaming-time check for a buffer that is ONLY the synthetic `<thinking></thinking>` pair (reasoning ended, first content token pending); `handlers.py` keeps the 💭 indicator up instead of flashing the literal tags **[2026-08-03]**
+- `strip_trailing_stream_artifact()` — Remove the kimi-3 endpoint's stray trailing `e` (lone content token before EOS); applied in `sanitize_for_storage()` and both `add_summary` paths **[2026-08-03]**
 - `strip_reflection_blocks()` — Remove `<reflect>` and quality reflection blocks
 - `strip_xml_wrappers()` — Remove `<result>`, `<answer>`, `<output>` wrappers
 - `strip_agentic_tool_tags()` — Strip entire `<tool>...</tool>` blocks leaked into non-agentic responses
@@ -1173,7 +1219,9 @@ last line of defense is at persistence: `memory_storage.store_interaction()`
 runs the response through `ResponseParser.sanitize_for_storage()` before ANY
 storage (corpus, ChromaDB, conversation context). It removes empty synthetic
 `<thinking></thinking>` pairs, a leading tagged thinking block, stray tag
-fragments, and reflection blocks; an unclosed leading thinking block means the
+fragments, reflection blocks, and (2026-08-03) the kimi-3 trailing stream
+artifact — that endpoint emits a lone `e` content token before EOS, so turns
+were stored ending "…landed?e"; an unclosed leading thinking block means the
 whole text is reasoning, which returns `""`. A response that sanitizes to empty
 is **skipped entirely** (`store_interaction` returns `None`). This matters
 because a persisted leak gets replayed into later prompts as conversation
@@ -1519,6 +1567,18 @@ filters run in both `fact_extractor.py` and `llm_fact_extractor.py`:
   state, not durable facts.
 - **Boolean-only value block** — Objects that are just "true"/"false"/"yes"/"no"
   carry no informational content and are dropped.
+- **Junk-object guard (2026-08-02)** — `fact_extractor._is_junk_object` (wired
+  into `_clean_triple`) drops adverbial/temporal/negation-fragment objects
+  ("for a bit", "with food", "yesterday", "not good", profanity-intensifier
+  rants); schedule relations are exempt.
+- **Polarity guard (2026-08-02)** — `_polarity_conflict` blocks
+  positive-preference triples the source text negates ("Feel like I hate my
+  fucking life" had stored `user | likes | my fucking life`). The
+  `_canonicalize_preferences` "i like " rewrite now requires the object in the
+  clause directly after the trigger — a bare substring hit used to rewrite ANY
+  co-occurring triple to `likes|obj`. Historical junk purged via
+  `scripts/purge_junk_facts.py` (dry-run-first, pre-image backup; 166 purged
+  2026-08-02). Tests: `tests/unit/test_fact_junk_polarity_guard.py`.
 
 See [Section 31: Ephemeral Fact Filtering](#31-ephemeral-fact-filtering)
 for the full dual-layer system including retrieval-time TTL expiry.
@@ -2339,7 +2399,12 @@ The system prompt is composed from two separate text files:
   "Personality" tab.
 - **Operating principles** (`operating_principles.txt`) — Immutable
   behavioral rules: AI limitations, facts handling, claim grounding,
-  response modes, knowledge source instructions.
+  response modes, knowledge source instructions. Since 2026-08-02 the
+  per-section guidance blocks ([USER'S PERSONAL NOTES]/[DAEMON
+  DOCUMENTATION]/[TEMPORAL GROUNDING], ~1.2K tokens) live in
+  `core/prompt/section_instructions.py` instead and are appended to the
+  system-prompt tail (post-cache-breakpoint) only when the corresponding
+  context section is present in the turn's prompt.
 
 Placeholder substitution replaces `{USER_NAME}`, `{USER_PRONOUNS}`,
 `{PRONOUN_SUBJ}`, `{PRONOUN_OBJ}`, `{PRONOUN_POSS}` with actual user

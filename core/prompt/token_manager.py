@@ -14,8 +14,15 @@ Module Contract
 - Behavior:
   - Extracts text from various context sections (conversations, memories, facts, reference_docs, narrative_state, etc.)
   - Applies priority-based trimming when content exceeds token budget
-  - Uses middle-out compression for mildly oversized text blocks (1x-3x over limit)
+  - Uses middle-out compression for mildly oversized text blocks (1x-3x over limit).
+    _middle_out never returns a result larger than its input (829→900 "compression" observed
+    pre-2026-07-25) and its snip marker emits real newlines (was a literal "\\n")
   - Heavily oversized items (≥3x) are pre-compressed by LLM in builder._llm_compress_oversized() [NEW 2026-03-26]
+  - Budget resolution (2026-07-25): API-model budgets cap at PROMPT_TOKEN_BUDGET_DEFAULT (the
+    ctx-fraction path can only LOWER it — it previously overrode the experiment-validated 10000
+    up to 15360); context limits resolve via model_manager.MODEL_CONTEXT_LIMITS (no hardcoded 128K)
+  - Logs the TRUE context total including unmetered sections (metered usage under-reports ~25%)
+    without changing trim semantics
   - Preserves most important content while respecting limits
   - narrative_state: Priority 8 (high), capped at NARRATIVE_STATE_MAX_TOKENS (500) [NEW 2026-01-17]
 - Dependencies:
@@ -145,8 +152,10 @@ class TokenManager:
             if self._prompt_token_usage < self.token_budget:
                 return text
 
+        model_name = "default"
         try:
-            model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
+            if hasattr(self.model_manager, "get_active_model_name"):
+                model_name = self.model_manager.get_active_model_name()
             toks = self.get_token_count(text or "", model_name)
         except (AttributeError, RuntimeError):
             toks = len((text or "").split())
@@ -160,8 +169,21 @@ class TokenManager:
         # Always compress if we're over the token limit (removed character length check)
         head = s[:head_chars]
         tail = s[-tail_chars:] if tail_chars > 0 else ""
-        snip = f"\\n… [middle-out snipped {len(s) - (head_chars + tail_chars)} chars] …\\n"
-        return head + snip + tail
+        # Real newlines — this used to emit literal "\n" characters into the
+        # prompt around every snip marker (visible in live prompt dumps).
+        snip = f"\n… [middle-out snipped {len(s) - (head_chars + tail_chars)} chars] …\n"
+        result = head + snip + tail
+        # The ~4-chars/token heuristic overshoots on token-dense text —
+        # "compression" once grew git_commits 829 → 900 tokens (2026-07-25).
+        # Never return a result that isn't actually smaller than the input.
+        if len(result) >= len(s):
+            return s
+        try:
+            if self.get_token_count(result, model_name) >= toks:
+                return s
+        except (AttributeError, RuntimeError):
+            pass
+        return result
 
     def _manage_token_budget(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -303,4 +325,32 @@ class TokenManager:
 
         logger.debug(f"[PROMPT] Token budget: {usage}/{self.token_budget}")
         self._prompt_token_usage = usage
+
+        # Visibility-only true total: PRIORITY_ORDER misses some sections
+        # entirely and stm_summary is deliberately unmetered, so the metered
+        # usage under-reports the real prompt by ~25% (15.2K counted vs 20.8K
+        # measured, 2026-07-25). Log the discrepancy; do NOT change trim
+        # semantics here — the 2026-07-15 budget experiment validated the
+        # metered semantics, so tightening what counts requires a re-run.
+        try:
+            metered_names = {name for name, _ in PRIORITY_ORDER}
+            unmetered = 0
+            for key, v in trimmed.items():
+                if key in metered_names and key != "stm_summary":
+                    continue
+                if not v:
+                    continue
+                if isinstance(v, list):
+                    unmetered += sum(_item_tokens(it) for it in v)
+                elif isinstance(v, (str, dict)):
+                    unmetered += self.get_token_count(
+                        self._extract_text(v) if isinstance(v, dict) else v, model_name
+                    )
+            if unmetered:
+                logger.info(
+                    f"[TOKEN BUDGET] True context total ≈ {usage + unmetered} tokens "
+                    f"(metered {usage}/{self.token_budget} + {unmetered} unmetered)"
+                )
+        except Exception as e:
+            logger.debug(f"[TOKEN BUDGET] True-total accounting failed (non-fatal): {e}")
         return trimmed

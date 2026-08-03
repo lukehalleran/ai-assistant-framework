@@ -138,7 +138,25 @@ These systems are complete and working. Listed here for context, not as active w
 
 ---
 
-## Recent Completions (April-May 2026)
+## Recent Completions (June-August 2026)
+
+### Adaptive Exemplar Learning (2026-08-02/03)
+- `utils/adaptive_exemplars.py` — per-user learned exemplars replacing hand-maintained keyword/exemplar lists as the maintenance model. Domains: tone, need, web_search anchors, intent. Teachers are channels independent of the semantic prototypes (keyword stage, LLM arbiter, [WEB_ citation outcomes, gate vetoes, confident regex, STM refinements); heuristic backstops and negative labels never teach.
+- Intent classifier semantic tier (`INTENT_EXEMPLARS`, regex conf < 0.50 → prototype match at 0.60) + `scripts/auto_label_intents.py` LLM auto-labeler (dual-model `--verify` agreement) — confusion-matrix work no longer requires hand-labeling.
+
+### Safety + Latency Hardening (2026-07)
+- Anti-amplification batch (tone stickiness, escalation reachability, valence-capped retrieval), borderline-arbiter fix + deterministic backstop, arbiter hardening, tone-statement veto, cross-restart tone carryover.
+- Agentic turn latency: gate precision, decision-answer reuse, concurrent gate, round/loop timeouts, GPU-detected gate embedder, retrieval pool caps; token budget 15000→10000 via preregistered experiment (and the 07-25 fix that made it operative for API models).
+- Data hygiene applied 2026-08-02 (owner-authorized, pre-image backups): 166 junk facts, 15,336 duplicate reference-doc chunks, 774+279 error/box-test docs, 764 thinking-leak repairs, 105 junk graph nodes.
+
+### FastAPI + React Web Frontend (2026-07-14)
+- `python main.py` now serves the React SPA at :8000 (FastAPI owns the process; Gradio mounted at `/admin`; `--legacy-gui` preserves the old path). Chat streams over SSE wrapping THE deployed `handle_submit`.
+- Production hardening: safe JSON stores (atomic writes, strict loads, quarantine), startup preflight, shutdown backups + restore/export scripts, log rotation, packaging (pyproject + lockfile).
+
+### Synthesis Validation Instruments (2026-06/07)
+- Pooled concept generator as sole discovery generator; literature oracle built; reflection 3-axis scorer complete. Generators currently OFF (API-cost pause) — Settings-controlled. Remaining gates are owner validation, not building.
+
+## Earlier Completions (April-May 2026)
 
 ### Google OAuth2 + Calendar + Gmail Integration (2026-05)
 - **Google OAuth2**: `core/actions/google_auth.py` — OAuth2 flow with 6 scopes (`gmail.send`, `gmail.readonly`, `calendar.readonly`, `calendar.events`, `contacts.readonly`, `contacts.other.readonly`). Token persistence at `data/google_token.json`, automatic refresh, scope-upgrade detection (re-auth when new scopes needed). Contact resolution via `google_contacts.py` + `gmail_search.py`.

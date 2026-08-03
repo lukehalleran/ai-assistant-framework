@@ -9,11 +9,17 @@ Module Contract
   - AgenticDecision (dataclass): structured gate result (incl. veto_exempt)
   - evaluate_agentic_gate(user_text, entity_resolver, model_manager,
     corpus_manager, intent_info) -> AgenticDecision
-  - apply_intent_veto(decision, intent_info) -> AgenticDecision — the intent
-    veto, extracted so handle_submit can run the gate CONCURRENTLY with
-    prepare_prompt (intent_info=None at launch, veto applied post-hoc once
+  - apply_intent_veto(decision, intent_info, tone_level=None, query=None) -> AgenticDecision
+    (query enables the tone-statement veto: elevated tone + non-info-seeking
+    statement stands the gate down regardless of intent, 2026-08-02)
+    — the intent veto, extracted so handle_submit can run the gate CONCURRENTLY
+    with prepare_prompt (intent_info=None at launch, veto applied post-hoc once
     the context pipeline's classification exists). evaluate_agentic_gate
-    still applies it inline when intent_info is passed.
+    still applies it inline when intent_info is passed. tone_level enables the
+    corroborated veto: emotional_support at the STM-refined floor (>=0.60,
+    below the 0.75 hard veto floor) vetoes ONLY when the tone detector
+    independently reads the turn as CONCERN or above — two weak signals
+    agreeing that this is an emotional turn, not a search task.
 - Dependencies:
   - memory.graph_utils.extract_graph_entities (Tier 2 entity match)
   - utils.web_search_trigger.analyze_for_web_search_llm (Tier 4 LLM fallback)
@@ -48,6 +54,17 @@ Module Contract
   analyze_for_web_search_llm, so elliptical follow-ups ("check the news", "any
   updates on that") resolve to topic-specific search terms instead of generic
   ones. No corpus_manager / no history → None → legacy (context-free) behavior.
+- Knowledge-search backstop [2026-07-24]: the Tier-4 LLM sometimes sets
+  needs_knowledge_search=True on collaborative-task follow-ups that merely NAME a
+  concept ("Yeah and I'll need it in ATS-friendly format") — the user is directing
+  work on their OWN materials, not asking an encyclopedic question. Routing those
+  into the agentic knowledge loop hung a turn ~2 min (kimi-3 slow-round incident).
+  needs_knowledge_search is now honored only when the query carries an actual
+  knowledge-QUESTION signal (KNOWLEDGE_QUESTION_SIGNAL — interrogative / "explain"
+  / "tell me about" / "?"); else it falls back to normal generation (which still
+  carries wiki-RAG context). Fails OPEN — only a genuinely signal-less task
+  statement is suppressed. The web_search_trigger prompt's KNOWLEDGE criteria were
+  tightened in parallel (prompt-only guards don't hold — belt and suspenders).
 """
 
 import logging
@@ -138,6 +155,29 @@ KNOWLEDGE_KEYWORDS = [
     'what is a ', 'what are ', 'what causes ',
     'history of ', 'science behind', 'mechanism of ',
 ]
+
+# Deterministic backstop for the Tier-4 LLM knowledge-search decision. Every
+# KNOWLEDGE_KEYWORDS entry and every prompt example is a QUESTION or explicit
+# explain-request ("how does X work", "what is Y", "explain Z", "compare A and
+# B", "tell me about W", "consult Wikipedia"). The LLM trigger over-fires
+# needs_knowledge on collaborative-task follow-ups that merely NAME a concept
+# ("Yeah and I'll need it in ATS-friendly format") — the user is directing work
+# on their OWN materials, not asking an encyclopedic question. Routing those
+# into the agentic knowledge loop cost a ~2-minute hang (2026-07-24, kimi-3
+# slow-round incident). Before honoring needs_knowledge_search we require this
+# signal; absent it the turn falls back to normal generation (which still
+# carries wiki-RAG context). Deliberately FAIL OPEN — a generous match trusts
+# the LLM; only a genuinely signal-less query (a bare task statement) is
+# suppressed.
+KNOWLEDGE_QUESTION_SIGNAL = re.compile(
+    r'\?'                                              # any question mark
+    r'|\b(?:what|whats|how|why|who|whom|when|where|which)\b'
+    r'|\bexplain\b|\bdefine\b|\bdefinition\b|\bcompare\b|\bcontrast\b'
+    r'|\btell me about\b|\bdifference between\b|\bhistory of\b'
+    r'|\bconsult\b|\blook (?:it|this|that|them|these) up\b'
+    r'|\bin[- ]depth\b|\bmechanism of\b|\bscience behind\b',
+    re.IGNORECASE,
+)
 
 # File / saved-document RETRIEVAL intent (distinct from doc *generation* in
 # Tier 3). These route to the agentic loop so the file_read / file_list /
@@ -261,6 +301,25 @@ EXPLICIT_SEARCH_KEYWORDS = [
 ]
 
 VETO_INTENTS = {'meta_conversational', 'casual_social'}
+
+# Elevated-tone markers for the corroborated emotional-support veto. Tone
+# arrives in mixed encodings depending on the caller ("light_support" /
+# "elevated_support" / "crisis_support" enum values, or "CrisisLevel.CONCERN"
+# style strings) — match on uppercase substrings.
+_ELEVATED_TONE_MARKERS = (
+    "CONCERN", "MEDIUM", "HIGH",
+    "LIGHT_SUPPORT", "ELEVATED_SUPPORT", "CRISIS_SUPPORT",
+)
+
+
+def _tone_is_elevated(tone_level) -> bool:
+    """True when a tone/crisis level string indicates CONCERN or above."""
+    if not tone_level:
+        return False
+    _t = str(getattr(tone_level, "value", tone_level)).upper()
+    if "CONVERSATIONAL" in _t:
+        return False
+    return any(marker in _t for marker in _ELEVATED_TONE_MARKERS)
 
 
 def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
@@ -554,11 +613,23 @@ async def evaluate_agentic_gate(
                     needs_memory = True
                     search_terms = []
                 elif getattr(trigger_decision, 'needs_knowledge_search', False):
-                    if not should_trigger:
-                        logger.debug("[Agentic Gate] LLM detected knowledge search intent")
-                        should_trigger = True
-                    needs_knowledge = True
-                    search_terms = []
+                    # Deterministic backstop: honor knowledge search only when the
+                    # query actually reads as a knowledge QUESTION. A collaborative-
+                    # task follow-up ("Yeah and I'll need it in ATS format") has no
+                    # such signal — suppress it to normal generation rather than
+                    # spin up the agentic knowledge loop.
+                    if KNOWLEDGE_QUESTION_SIGNAL.search(user_text):
+                        if not should_trigger:
+                            logger.debug("[Agentic Gate] LLM detected knowledge search intent")
+                            should_trigger = True
+                        needs_knowledge = True
+                        search_terms = []
+                    else:
+                        logger.debug(
+                            "[Agentic Gate] LLM knowledge-search suppressed — no "
+                            "knowledge-question signal (collaborative-task/follow-up): "
+                            f"{user_text[:60]!r}"
+                        )
                 elif getattr(trigger_decision, 'needs_document_generation', False):
                     logger.info("[Agentic Gate] LLM detected document generation intent")
                     should_trigger = True
@@ -658,7 +729,43 @@ async def evaluate_agentic_gate(
     return decision
 
 
-def apply_intent_veto(decision: AgenticDecision, intent_info) -> AgenticDecision:
+# Interrogative/command shapes and explicit lookup cues. A query with any of
+# these is info-seeking — the tone-statement veto below must never suppress it.
+_INTERROGATIVE_OPENERS = (
+    "what", "when", "where", "who", "why", "how", "which",
+    "can you", "could you", "would you", "will you", "do you", "did ",
+    "does ", "is ", "are ", "was ", "were ", "should", "tell me", "show me",
+    "find ", "search", "look up", "remind me", "any idea", "help me",
+)
+_INFO_SEEKING_CUES = (
+    "search", "look up", "google", "find out", "remember when", "what did",
+    "recall", "look for", "look into", "research", "check the", "check my",
+)
+
+
+def _is_info_seeking(query: str) -> bool:
+    """True when the query has question/command/lookup shape. Fail-open on
+    empty input (no veto without evidence)."""
+    q = (query or "").strip().lower()
+    if not q:
+        return True
+    if "?" in q:
+        return True
+    if q.startswith(_INTERROGATIVE_OPENERS):
+        return True
+    return any(c in q for c in _INFO_SEEKING_CUES)
+
+
+# Confident retrieval-flavored intents are respected even on elevated-tone
+# statements — the user is asking the system to go get something.
+_RETRIEVAL_INTENTS = {
+    "factual_recall", "temporal_recall", "technical_help", "project_work",
+    "meta_conversational",
+}
+
+
+def apply_intent_veto(decision: AgenticDecision, intent_info, tone_level=None,
+                      query: str = None) -> AgenticDecision:
     """Apply the intent-classifier veto to a gate decision (idempotent).
 
     Extracted so the gate can run concurrently with the context pipeline:
@@ -666,6 +773,22 @@ def apply_intent_veto(decision: AgenticDecision, intent_info) -> AgenticDecision
     available when the gate is launched early. Explicit requests (search
     keywords, URL, file access, doc-gen, self-note — recorded on
     decision.veto_exempt) are never suppressed.
+
+    tone_level (optional): the pipeline's detected tone/crisis level. An
+    emotional_support intent alone can't veto — STM-refined intents cap at
+    0.60, under the 0.75 veto floor — but when the tone detector
+    INDEPENDENTLY reads the turn as CONCERN or above, the two weak signals
+    corroborate and the gate stands down: an emotional vent mid-distress
+    should never pay for a multi-round search loop ("when I was moaning and
+    crying in bed my mom ignored me" ran a 22s agentic loop, 2026-07-25).
+
+    query (optional): the raw user text. When tone is elevated and the query
+    has NO info-seeking shape (question mark, interrogative opener, lookup
+    cue), the gate stands down REGARDLESS of intent — the intent classifier
+    read every 2026-08-02 distress vent as general@0.00, so the
+    emotional_support corroboration above was starved exactly when needed
+    ("I am embarrassed for how I reacted earlier … I am so unhappy" ran a
+    31s agentic memory loop). Confident retrieval intents (≥0.75) still win.
     """
     if decision is None or not decision.should_trigger or intent_info is None:
         return decision
@@ -682,12 +805,41 @@ def apply_intent_veto(decision: AgenticDecision, intent_info) -> AgenticDecision
         else intent_info.get('confidence', 0)
     )
     _type_val = getattr(_intent_type, 'value', str(_intent_type)) if _intent_type else ''
+    _veto_reason = None
     if _type_val in VETO_INTENTS and _intent_conf >= 0.75:
-        logger.info(
-            f"[Agentic Gate] VETOED by intent classifier: "
-            f"{_intent_type} (conf={_intent_conf:.2f})"
+        _veto_reason = f"intent-veto: {_type_val}@{_intent_conf:.2f}"
+    elif (
+        _type_val == 'emotional_support'
+        and _intent_conf >= 0.60
+        and _tone_is_elevated(tone_level)
+    ):
+        _veto_reason = (
+            f"intent-veto: emotional_support@{_intent_conf:.2f} + elevated tone ({tone_level})"
         )
+    elif (
+        _tone_is_elevated(tone_level)
+        and query
+        and not _is_info_seeking(query)
+        and not (_type_val in _RETRIEVAL_INTENTS and _intent_conf >= 0.75)
+    ):
+        _veto_reason = (
+            f"tone-veto: elevated tone ({tone_level}) + non-info-seeking statement"
+        )
+    if _veto_reason:
+        logger.info(f"[Agentic Gate] VETOED by intent classifier: {_veto_reason}")
         decision.should_trigger = False
         decision.search_terms = []
-        decision.reason = f"intent-veto: {_type_val}@{_intent_conf:.2f}"
+        decision.reason = _veto_reason
+        # Deterministic confirmation that this query should NOT search →
+        # teach the web-trigger's negative anchors (adaptive store), so the
+        # semantic boost stops pushing this user's vent phrasing toward
+        # search BEFORE the gate has to veto it (2026-08-02).
+        if query and _tone_is_elevated(tone_level):
+            try:
+                from utils.adaptive_exemplars import get_store
+                get_store().record(
+                    "web_search", "no_search", query, "gate_veto"
+                )
+            except Exception as e:
+                logger.debug(f"[Agentic Gate] no_search learning skipped: {e}")
     return decision

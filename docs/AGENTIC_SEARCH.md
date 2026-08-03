@@ -52,7 +52,9 @@ Agentic search activates when ALL conditions are met:
    - Tier 4: LLM fallback — piggybacks on web search trigger call (`needs_memory_search`, `needs_knowledge_search`, `needs_document_generation`)
    - Casual skip filter, continuation override, and intent-based veto all handled inside gate
    - **Continuation override** [tightened 2026-07-15]: requires a TERSE affirmation (≤ `CONTINUATION_MAX_WORDS`=6 words containing a continuation phrase) AND ground truth that the prior turn was agentic — corpus entries now store `response_mode` (written from provenance); a word-boundary keyword fallback covers only legacy entries. Long messages merely containing "yeah"/"sure" are new statements (the benzo-turn incident: 'yeah' substring + "sleep **issues**" matching the GitHub word list burned a 60s loop on a vibe remark).
-   - **Concurrent evaluation** [2026-07-15]: `handle_submit` launches the gate as an asyncio task BEFORE `prepare_prompt`, hiding the Tier-4 LLM call (~2s) behind prompt building. The intent veto needs the context pipeline's classification, so the gate is launched with `intent_info=None` and the dispatcher applies `gate.apply_intent_veto(decision, intent)` post-hoc; `AgenticDecision.veto_exempt` records explicit requests (search keywords / URL / file access / doc-gen / self-note) the veto must never suppress.
+   - **Concurrent evaluation** [2026-07-15]: `handle_submit` launches the gate as an asyncio task BEFORE `prepare_prompt`, hiding the Tier-4 LLM call (~2s) behind prompt building. The intent veto needs the context pipeline's classification, so the gate is launched with `intent_info=None` and the dispatcher applies `gate.apply_intent_veto(decision, intent, tone_level=...)` post-hoc; `AgenticDecision.veto_exempt` records explicit requests (search keywords / URL / file access / doc-gen / self-note) the veto must never suppress.
+   - **Tone-corroborated veto** [2026-07-25]: `VETO_INTENTS` (`meta_conversational`, `casual_social`) veto unconditionally at conf >= 0.75. `emotional_support` additionally vetoes at the STM-refined floor (conf >= 0.60) when the tone detector INDEPENDENTLY reads the turn as CONCERN or above (`_tone_is_elevated`, handles both `light_support`-style enum values and `CrisisLevel.X` string encodings) — two weak signals corroborating that the turn is an emotional vent, not a search task. The orchestrator forwards `prompt_ctx['tone_level']` (from `context.crisis_level_str`) for this. Regression it guards: "When I was moaning and crying in bed my mom ignored me" ran a 22s agentic memory loop mid-distress (2026-07-25). Tests: `tests/unit/test_tone_borderline_fallback.py`.
+   - **Tone-statement veto** [2026-08-02]: `apply_intent_veto(..., query=...)` — elevated tone (CONCERN+) plus a NON-info-seeking statement (`gate._is_info_seeking`: no "?", no interrogative opener, no lookup cue; fail-open on empty) stands the gate down REGARDLESS of intent. Every 08-02 distress vent classified general@0.00, so the intent-keyed corroboration veto above never fired and a vent ran a 31s memory loop. Confident retrieval intents (>= 0.75) and `veto_exempt` still win. A fired tone veto also teaches "no_search" to the adaptive web-search anchors (`utils/adaptive_exemplars`). Tests: `tests/unit/test_tone_arbiter_hardening.py`.
    - `AgenticDecision.skip_initial_search` computed by gate (True for computation, memory, knowledge, tools modes — or whenever no seed search terms were distilled, so the controller never blind-searches the raw message verbatim)
 
 The controller is lazy-initialized on first use via the orchestrator's
@@ -123,6 +125,17 @@ Loop continues while `session.can_continue AND session.current_round <= self.max
 - `not model_signaled_done`
 - `current_round <= max_rounds`
 - `state not in (DONE, ERROR)`
+
+**Latency guards (2026-07-24):** each decision-LLM call runs inside
+`asyncio.wait_for(AGENTIC_ROUND_TIMEOUT_S)` (default 75s) — on timeout the
+loop answers with whatever context it has instead of hanging on a stalled
+provider connection. A wall-clock budget `AGENTIC_LOOP_TIMEOUT_S` (default
+120s) is checked at the top of each round; once exceeded, no new round starts
+and the loop falls through to final synthesis. (Incident: kimi-3 narrated its
+tool intent in prose instead of emitting markers, each round streamed ~55-60s,
+and the loop could run all 5 rounds with no ceiling — the user hit Retry after
+~2 minutes.) Config: `agentic_search.round_timeout_s` / `loop_timeout_s`.
+Tests: `tests/unit/test_agentic_loop_timeout.py`.
 
 The `current_round <= max_rounds` guard (default 5) is also checked
 explicitly (redundantly) in the `while` condition alongside `can_continue`.

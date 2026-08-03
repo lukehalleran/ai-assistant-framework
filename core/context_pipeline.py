@@ -3,8 +3,14 @@ Context Pipeline - Builder pattern for prompt preparation.
 
 Purpose: Transform raw user input into fully processed context ready for prompt building.
 Inputs: User query, optional files, configuration flags
-Outputs: ContextResult with all context components
+Outputs: ContextResult with all context components (incl. last_exchange — the
+newest prior turn, for downstream anaphora resolution by the ResponsePlanner)
 Side effects: May call LLM for tone detection, query rewriting, STM analysis.
+Topic stage: anaphoric continuations / referent corrections ("It was...",
+"No I mean...") INHERIT the previous turn's topic instead of being
+fresh-classified (query_checker.is_anaphoric_continuation, 2026-07-28 —
+surface-keyword classification of an unresolvable fragment mislabeled an
+illness-frequency message as "Exercise Routine" and derailed the turn).
 Publishes live stage-progress lines to utils.turn_progress (no-op outside a turn)
 so the streaming UI shows pipeline activity instead of a single "Thinking..." stall.
 
@@ -147,6 +153,12 @@ class ContextResult:
     # Small talk flag (set when CASUAL_SOCIAL intent with high confidence)
     is_small_talk: bool = False
 
+    # Newest prior turn ({query, response, ...}) from conversation_history.
+    # Lets downstream consumers that see ONLY the raw query (ResponsePlanner)
+    # resolve pronoun-anchored fragments ("It was maybe 3 years of...")
+    # against the exchange they actually refer to.
+    last_exchange: Optional[Dict[str, Any]] = None
+
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -238,8 +250,12 @@ class ContextPipeline:
         # Session tone memory: the prior turn's detected crisis level, fed back
         # into tone detection so distress stays sticky across short/terse turns
         # (prevents a spiral built from brief messages from flatlining at
-        # CONVERSATIONAL). Reset on new session via reset_session_tone().
-        self._last_tone_level: Optional[object] = None
+        # CONVERSATIONAL). Dropped when the gap since the last stored turn
+        # exceeds TONE_STICKINESS_MAX_GAP_MINUTES (_should_reset_tone_stickiness).
+        # Seeded from data/tone_state.json so a RESTART doesn't cold-start the
+        # signal (2026-08-02: sessions minutes apart — CONCERN at 12:13, restart,
+        # flat semantic at 12:33 had no floor because the carry was process-local).
+        self._last_tone_level: Optional[object] = self._load_persisted_tone()
 
         # Configuration with defaults
         self._use_stm = self.config.get("USE_STM_PASS", USE_STM_PASS)
@@ -304,6 +320,14 @@ class ContextPipeline:
         identity_block = ""
         user_name = None
         intent_result: Optional[IntentResult] = None
+
+        # Newest prior turn — carried on the result so consumers that only see
+        # the raw query (ResponsePlanner) can resolve anaphoric fragments.
+        last_exchange: Optional[Dict] = None
+        if conversation_history:
+            first = conversation_history[0]
+            if isinstance(first, dict):
+                last_exchange = first
 
         # Stages 1+2: Topic Extraction + Tone Detection (parallelized — independent)
         if not use_raw_mode:
@@ -433,7 +457,7 @@ class ContextPipeline:
         if stm_summary and intent_result and self._intent_classifier:
             stm_intent_str = stm_summary.get("intent") if isinstance(stm_summary, dict) else None
             intent_result = self._intent_classifier.refine_with_stm(
-                intent_result, stm_intent_str
+                intent_result, stm_intent_str, query=user_input
             )
 
         # Stage 7: Identity Injection
@@ -467,6 +491,7 @@ class ContextPipeline:
             is_heavy_topic=is_heavy_topic,
             extracted_facts=extracted_facts,
             query_analysis=query_analysis,
+            last_exchange=last_exchange,
             intent=intent_result,
             is_small_talk=is_small_talk,
             metadata={
@@ -493,6 +518,28 @@ class ContextPipeline:
             return None, []
 
         try:
+            # Anaphoric continuations INHERIT the previous turn's topic instead
+            # of being fresh-classified. The classifier sees only the message
+            # text, so a pronoun-anchored fragment gets labeled by surface
+            # keywords while its actual subject sits in the prior exchange
+            # (2026-07-28: "It was maybe 3 years of twice a week..." — long
+            # covid frequency — became topic "Exercise Routine", which then
+            # drove a false [THREAD CONTEXT] shift assertion and a wrong
+            # response plan). Inheriting keeps topic, thread continuity, and
+            # the planner's Topics: signal aligned with the real referent.
+            from utils.query_checker import is_anaphoric_continuation
+            prev_topic = getattr(self.topic_manager, "last_topic", None)
+            if (
+                prev_topic
+                and prev_topic.strip().lower() != "general"
+                and is_anaphoric_continuation(query)
+            ):
+                logger.debug(
+                    f"[ContextPipeline] Anaphoric continuation — inheriting "
+                    f"previous topic '{prev_topic}' instead of fresh-classifying"
+                )
+                return prev_topic, [prev_topic]
+
             # Get primary topic (also updates internal state + has LLM cache)
             primary = self.topic_manager.get_primary_topic(query)
 
@@ -567,6 +614,7 @@ class ContextPipeline:
                 tone_level = ToneLevel.from_string(level_str)
                 # Remember this turn's crisis level for the next call's stickiness.
                 self._last_tone_level = emotional_ctx.crisis_level
+                self._persist_tone(level_str)
             else:
                 tone_level = ToneLevel.CONVERSATIONAL
 
@@ -578,6 +626,62 @@ class ContextPipeline:
         except Exception as e:
             logger.warning(f"Tone detection failed: {e}")
             return ToneLevel.CONVERSATIONAL, None
+
+    # Tone carryover persistence. This is DERIVED, self-healing state (next
+    # turn rewrites it), so unlike real stores it loads leniently — a missing
+    # or corrupt file just means a cold start, never a startup abort.
+    _TONE_STATE_PATH = "data/tone_state.json"
+
+    _ELEVATED_TONE_MARKERS = (
+        "concern", "medium", "high", "light_support", "elevated_support",
+        "crisis_support", "crisis",
+    )
+
+    def _load_persisted_tone(self):
+        """Seed `_last_tone_level` from the previous process's last turn.
+
+        Only an ELEVATED level within TONE_STICKINESS_MAX_GAP_MINUTES is
+        carried — conversational carries no floor, and stale distress must
+        not resurface hours later (same window the in-process gap check uses).
+        Returns the level's string encoding (tone detection accepts CrisisLevel
+        or string for previous_tone).
+        """
+        try:
+            import json as _json
+            from datetime import datetime, timedelta
+            from pathlib import Path
+            from config.app_config import TONE_STICKINESS_MAX_GAP_MINUTES
+            p = Path(self._TONE_STATE_PATH)
+            if not p.exists():
+                return None
+            state = _json.loads(p.read_text())
+            level = str(state.get("level", "") or "")
+            ts = datetime.fromisoformat(str(state.get("ts", "")))
+            if datetime.now() - ts > timedelta(minutes=TONE_STICKINESS_MAX_GAP_MINUTES):
+                return None
+            low = level.lower()
+            if not any(m in low for m in self._ELEVATED_TONE_MARKERS):
+                return None
+            logger.info(
+                f"[ContextPipeline] Carried tone across restart: {level} "
+                f"(from {ts.isoformat(timespec='minutes')})"
+            )
+            return level
+        except Exception as e:
+            logger.debug(f"[ContextPipeline] tone-state load skipped: {e}")
+            return None
+
+    def _persist_tone(self, level_str: str) -> None:
+        """Write this turn's tone level + timestamp (atomic, best-effort)."""
+        try:
+            from datetime import datetime
+            from utils.safe_json import atomic_write_json
+            atomic_write_json(
+                self._TONE_STATE_PATH,
+                {"level": str(level_str), "ts": datetime.now().isoformat()},
+            )
+        except Exception as e:
+            logger.debug(f"[ContextPipeline] tone-state persist skipped: {e}")
 
     def _should_reset_tone_stickiness(self, recent_memories) -> bool:
         """

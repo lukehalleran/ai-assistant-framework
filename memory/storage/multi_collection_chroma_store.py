@@ -13,7 +13,9 @@ Module Contract
     injected into the gate system so memory gating scores in the retrieval space]
   - add_to_collection(name, text, metadata) -> str  [generic add, returns doc_id]
   - add_conversation_memory(query, response, metadata) -> str
-  - add_summary(summary, period, metadata) -> str
+  - add_summary(summary, period, metadata) -> str  [2026-07-25: rejects junk summaries at
+    storage time via memory.utils.is_junk_summary — returns "" instead of storing "-"/fragments;
+    2026-08-03: strips the kimi-3 trailing-'e' stream artifact ("…them.e") before storing]
   - add_wiki_chunk(chunk) -> str
   - add_fact(fact_text, source, confidence, extra_metadata) -> str  [with dedup check]
   - add_reflection(reflection, source_ids, reflection_type) -> str
@@ -419,6 +421,20 @@ class MultiCollectionChromaStore:
 
     # Methods for summaries
     def add_summary(self, summary: str, period: str, metadata: Dict = None) -> str:
+        # Storage-time junk guard (2026-07-25): "-" and truncated one-line
+        # fragments were stored as summaries and later dominated retrieval.
+        from memory.utils import is_junk_summary
+        from core.response_parser import ResponseParser
+        # Endpoint artifact guard (2026-08-03): kimi-3 appends a stray 'e' to
+        # its final token ("…impress them.e") on the non-streaming path too.
+        summary = ResponseParser.strip_trailing_stream_artifact(summary or "")
+        if is_junk_summary(summary):
+            logger.warning(
+                f"[ChromaStore] Rejected junk summary (len={len(str(summary or '').strip())}): "
+                f"{str(summary or '')[:60]!r}"
+            )
+            return ""
+
         memory_id = self._generate_id(summary, "summ")
 
         metadata = metadata or {}

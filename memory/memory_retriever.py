@@ -13,7 +13,9 @@ Module Contract
   - get_recent_facts(limit) -> List[Dict]
   - get_reflections(limit) -> List[Dict]  [corpus-first, semantic fallback]
   - get_reflections_hybrid(query, limit) -> List[Dict]  [n/3 recent + 2n/3 semantic]
-  - get_summaries(limit) -> List[Dict]  [ChromaDB first, corpus fallback]
+  - get_summaries(limit) -> List[Dict]  [ChromaDB get_recent() timestamp-sorted + is_junk_summary
+      filter (fetches a 3x buffer), corpus fallback — 2026-07-25: was a SEMANTIC query with an
+      EMPTY string, i.e. "nearest the null embedding", so [RECENT SUMMARIES] surfaced junk]
   - get_summaries_hybrid(query, limit) -> List[Dict]  [n/4 recent + 3n/4 semantic]
   - get_skills(query, limit) -> List[Dict]  [hybrid: 1/3 recent + 2/3 semantic, bumps times_retrieved]
   - get_dreams(limit) -> List[Dict]
@@ -842,17 +844,27 @@ class MemoryRetriever:
         return pool[:limit]
 
     def get_summaries(self, limit: int = 3) -> List[Dict]:
-        """Retrieve recent summaries."""
+        """Retrieve recent summaries — most recent first, junk filtered.
+
+        Until 2026-07-25 this ran a SEMANTIC query with an EMPTY string
+        ("nearest to the null embedding"), which systematically surfaced the
+        junkiest stored summaries ("-", truncated Feb fragments) as "recent"
+        while same-day summaries sat unread in the collection.
+        get_recent() sorts by the timestamp metadata instead.
+        """
+        from memory.utils import is_junk_summary
+
         # Try ChromaDB first
         try:
-            results = self.chroma_store.query_collection('summaries', '', n_results=limit)
+            # Fetch a buffer so historical junk docs don't eat the limit.
+            results = self.chroma_store.get_recent('summaries', limit=limit * 3)
             chroma_summaries = [{
                 'content': r.get('content', ''),
                 'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
                 'type': 'summary'
-            } for r in results]
+            } for r in results if not is_junk_summary(r.get('content', ''))]
             if chroma_summaries:
-                return chroma_summaries
+                return chroma_summaries[:limit]
         except Exception:
             pass
 

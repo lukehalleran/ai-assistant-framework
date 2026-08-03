@@ -69,6 +69,14 @@ a context dict ready for formatting.
   injects a short per-intent style block into the system-prompt tail
   (after `PROMPT_CACHE_BREAKPOINT`; confidence ≥ 0.60, CONVERSATIONAL
   tone only — crisis suppresses; `INTENT_STYLE_INSTRUCTIONS_ENABLED`)
+- **Conditional section instructions (2026-08-02):** the [USER'S PERSONAL
+  NOTES]/[DAEMON DOCUMENTATION]/[TEMPORAL GROUNDING] guidance blocks
+  (~1.2K tokens) were moved OUT of `config/prompts/operating_principles.txt`
+  into `core/prompt/section_instructions.py`; the orchestrator's
+  `build_full_prompt()` appends each via `conditional_instruction_tail(prompt_ctx)`
+  to the system-prompt tail (post-cache-breakpoint) only when its section
+  (`personal_notes`/`reference_docs`/`narrative_state`) actually exists in the
+  gathered context. Tests: `tests/unit/test_section_instructions.py`.
 
 ### Step 3.5 — Response Planning (parallel with Step 4)
 
@@ -93,13 +101,13 @@ default to `[]` without affecting other sections.
 | recent | `_get_recent_conversations()` | 15 |
 | memories | `_get_semantic_memories()` | 15 |
 | user_profile | `get_user_profile_context()` | 3000 tokens |
-| summaries | `_get_summaries_separate()` | 5 recent + 5 semantic |
+| summaries | `_get_summaries_separate()` | 5 recent + 5 semantic (recent side is `chroma.get_recent()` timestamp-sorted + `is_junk_summary` filter since 2026-07-25 — it was a semantic query with an EMPTY string, i.e. "nearest the null embedding", so [RECENT SUMMARIES] surfaced junk while same-day summaries sat unread) |
 | dreams | `_get_dreams()` | 3 |
 | semantic | `_get_semantic_chunks()` | 8 (dedicated 2-worker executor + non-blocking in-flight semaphore [2026-07-15] — a USB-stalled search that outlives SEM_TIMEOUT_S can't starve the shared default executor, and a saturated pool makes the turn SKIP wiki chunks instead of queuing; warmup touch at startup via `_run_model_warmup`) |
 | reflections | `_get_reflections_separate()` | 5 recent + 5 semantic |
 | wiki | `_get_wiki_content()` | 3 |
-| personal_notes | `get_personal_notes()` | 5 |
-| reference_docs | `get_reference_docs()` | 5 |
+| personal_notes | `get_personal_notes()` | 5 (chunks with < `PERSONAL_NOTES_MIN_CHARS`=60 chars of real prose after stripping image embeds are dropped — image-only vault chunks embed as noise [2026-07-25]) |
+| reference_docs | `get_reference_docs()` | 5 (task skipped entirely on distress/emotional_support turns via `builder._should_suppress_reference_docs` — Daemon's own tone docs semantically match distress language and leaked crisis keyword lists into distress prompts [2026-07-25]) |
 | user_uploads | `get_user_uploads()` | 5 (skipped via ~ms metadata existence probe when no uploads exist — was ~0.9s/turn; negative cached 60s, positive for session) |
 | git_commits | `get_git_commits()` | varies |
 | procedural_skills | `get_procedural_skills()` | 5 (over-fetched 3x, filtered by SkillActivationPolicy) |
@@ -193,10 +201,19 @@ Priority: env override > model-aware > default
 
 Model-aware = 0.12 of context window
   Local models:  max(8000, min(computed, 12000))
-  API models:    max(8000, min(computed, 16000))
+  API models:    max(8000, min(computed, PROMPT_TOKEN_BUDGET_DEFAULT))
   Default:       10000
   Floor:         8000
 ```
+
+**2026-07-25 fix:** the model-aware fraction for API models can only LOWER the
+budget — it previously capped at the 16K ceiling, so with `get_context_limit()`
+hardcoding 128K for every API model, prod ran budget=15360 ≈ the arm the
+2026-07-15 preregistered experiment REJECTED. Context limits now resolve via
+`MODEL_CONTEXT_LIMITS` in `model_manager` (registry beside `MODEL_CAPABILITIES`;
+`DEFAULT_API_CONTEXT_LIMIT=128000` fallback). The budget manager also logs the
+TRUE context total including unmetered sections (metered usage under-reports
+~25%). Tests: `tests/unit/test_token_budget_cap.py`.
 
 ### Priority Ordering (10 levels)
 
@@ -216,7 +233,10 @@ Model-aware = 0.12 of context window
 ### Compression Algorithm
 
 **Phase 1 — Per-item middle-out.** Items exceeding `max_item_tokens` get
-60% head + 40% tail preserved, middle snipped with marker.
+60% head + 40% tail preserved, middle snipped with marker. Since 2026-07-25
+`_middle_out` never returns a result larger than its input (an 829→900
+"compression" had been observed) and the snip marker emits real newlines
+(was a literal `\n`). Tests: `tests/unit/test_middle_out_no_grow.py`.
 
 **Phase 2 — Iterative section trimming** (max 3 passes). Starting from
 lowest priority, drop 25% of items per pass. String sections blanked

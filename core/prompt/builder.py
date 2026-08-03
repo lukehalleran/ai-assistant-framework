@@ -29,6 +29,10 @@ Module Contract
   - Visual memory gating: passes `intent_type` into `get_visual_memories()` so image retrieval is
     gated by a visual/recall intent signal (a "show me"-type request), not a bare entity-name match
     (see gatherer_knowledge._query_wants_visual).
+  - Reference-docs distress gate (2026-07-25): _should_suppress_reference_docs() drops the
+    [DAEMON DOCUMENTATION] self-docs task on distress/emotional_support turns — Daemon's own
+    tone-detection docs semantically match distress language and were leaking crisis keyword
+    lists + response-length rules into distress prompts.
 - Outputs:
   - Context dictionary with all assembled data, metadata, and performance metrics
   - Formatted prompt string via _assemble_prompt delegation
@@ -267,7 +271,17 @@ def _compute_token_budget(model_manager) -> int:
         if is_local:
             budget = max(PROMPT_TOKEN_BUDGET_FLOOR, min(raw, PROMPT_TOKEN_BUDGET_LOCAL))
         else:
-            budget = max(PROMPT_TOKEN_BUDGET_FLOOR, min(raw, PROMPT_TOKEN_BUDGET_CEILING))
+            # The experiment-adopted default (token_budget.default, 10000 as of
+            # the 2026-07-15 preregistered budget experiment) is the OPERATIVE
+            # cap for API models — the context fraction may only lower the
+            # budget below it (small-ctx models), never raise it above. Before
+            # 2026-07-25 the fraction path capped only at the 16K ceiling, so
+            # any model with ctx >= ~84K silently ran ~15360 — the losing
+            # 15K experiment arm — and the adopted 10000 was dead config.
+            budget = max(
+                PROMPT_TOKEN_BUDGET_FLOOR,
+                min(raw, PROMPT_TOKEN_BUDGET_DEFAULT, PROMPT_TOKEN_BUDGET_CEILING),
+            )
 
         logger.info(
             f"[PromptBuilder] Token budget: {budget} "
@@ -307,6 +321,22 @@ PROMPT_MIN_RECENT_FLOOR = _cfg_int("prompt_min_recent_floor", 5)
 
 # _staleness_prefix, _is_multimodal_model, _load_upload_image moved to formatter.py
 # Re-exported above via: from .formatter import _staleness_prefix, _is_multimodal_model, _load_upload_image
+
+
+def _should_suppress_reference_docs(files_suppress: bool, distress_active: bool, intent_type=None) -> bool:
+    """Whether to skip the self-docs (reference_docs) retrieval task.
+
+    Self-docs serve meta/technical queries about Daemon itself. On distress or
+    emotional-support turns they are suppressed (2026-07-25): the tone-detection
+    docs' crisis keyword lists semantically match distress language, so doc
+    chunks — including the model's own response-length rules — were retrieved
+    into every distress prompt (token waste + meta-leak).
+    """
+    return bool(
+        files_suppress
+        or distress_active
+        or str(intent_type or "").lower() == "emotional_support"
+    )
 
 
 def _should_include_note_images(model_name: str, query: str, intent_type=None) -> bool:
@@ -989,8 +1019,19 @@ class UnifiedPromptBuilder:
                 )
 
             # Reference documents (system docs, project outlines - excludes user uploads)
-            # Suppressed when user uploads files so file content dominates context
-            if not kwargs.get("_suppress_reference_docs", False) and eff_max_reference_docs > 0:
+            # Suppressed when user uploads files (file content dominates) and on
+            # distress/emotional turns (see _should_suppress_reference_docs).
+            _suppress_self_docs = _should_suppress_reference_docs(
+                kwargs.get("_suppress_reference_docs", False),
+                _distress_active,
+                intent_type,
+            )
+            if _suppress_self_docs and not kwargs.get("_suppress_reference_docs", False):
+                logger.info(
+                    f"[BUILD_PROMPT] Suppressing reference_docs "
+                    f"(distress={_distress_active}, intent={intent_type})"
+                )
+            if not _suppress_self_docs and eff_max_reference_docs > 0:
                 tasks["reference_docs"] = asyncio.create_task(
                     _timed_task("reference_docs", self.context_gatherer.get_reference_docs(user_input, eff_max_reference_docs))
                 )

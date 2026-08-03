@@ -244,7 +244,7 @@ def test_get_recent_memories_excludes_summaries(corpus_manager):
     corpus_manager.add_entry("Question", "Answer")
 
     # Add summary
-    corpus_manager.add_summary("This is a summary")
+    corpus_manager.add_summary("This is a summary covering the session's main discussion points")
 
     recent = corpus_manager.get_recent_memories(count=10)
 
@@ -276,10 +276,10 @@ def test_add_summary_string(corpus_manager):
 
 def test_add_summary_with_tags(corpus_manager):
     """add_summary accepts tags parameter"""
-    corpus_manager.add_summary("Summary content", tags=["manual", "test"])
+    corpus_manager.add_summary("Summary content covering the session's main discussion points", tags=["manual", "test"])
 
     assert len(corpus_manager.corpus) == 1
-    assert corpus_manager.corpus[0]["content"] == "Summary content"
+    assert corpus_manager.corpus[0]["content"] == "Summary content covering the session's main discussion points"
     assert "manual" in corpus_manager.corpus[0]["tags"]
     assert "test" in corpus_manager.corpus[0]["tags"]
     assert "@summary" in corpus_manager.corpus[0]["tags"]
@@ -288,14 +288,14 @@ def test_add_summary_with_tags(corpus_manager):
 def test_add_summary_with_timestamp(corpus_manager):
     """add_summary uses provided timestamp"""
     test_time = datetime(2024, 1, 1, 12, 0, 0)
-    corpus_manager.add_summary("Summary", timestamp=test_time)
+    corpus_manager.add_summary("Summary covering the session's main discussion points", timestamp=test_time)
 
     assert corpus_manager.corpus[0]["timestamp"] == test_time
 
 
 def test_add_summary_saves_to_file(corpus_manager):
     """add_summary persists to file"""
-    corpus_manager.add_summary("Test summary")
+    corpus_manager.add_summary("Test summary covering the session's main discussion points")
 
     assert os.path.exists(corpus_manager.corpus_file)
 
@@ -310,8 +310,8 @@ def test_get_summaries_basic(corpus_manager):
     corpus_manager.add_entry("Question", "Answer")
 
     # Add summaries
-    corpus_manager.add_summary("Summary 1")
-    corpus_manager.add_summary("Summary 2")
+    corpus_manager.add_summary("Summary 1 covering the session's main discussion points")
+    corpus_manager.add_summary("Summary 2 covering the session's main discussion points")
 
     summaries = corpus_manager.get_summaries(count=10)
 
@@ -322,21 +322,21 @@ def test_get_summaries_most_recent_first(corpus_manager):
     """get_summaries returns most recent first"""
     import time
 
-    corpus_manager.add_summary("Old summary")
+    corpus_manager.add_summary("Old summary covering the session's main discussion points")
     time.sleep(0.01)  # Ensure different timestamps
-    corpus_manager.add_summary("New summary")
+    corpus_manager.add_summary("New summary covering the session's main discussion points")
 
     summaries = corpus_manager.get_summaries(count=2)
 
-    assert summaries[0]["content"] == "New summary"
-    assert summaries[1]["content"] == "Old summary"
+    assert summaries[0]["content"] == "New summary covering the session's main discussion points"
+    assert summaries[1]["content"] == "Old summary covering the session's main discussion points"
 
 
 def test_get_summaries_limited_count(corpus_manager):
     """get_summaries respects count limit"""
-    corpus_manager.add_summary("Summary 1")
-    corpus_manager.add_summary("Summary 2")
-    corpus_manager.add_summary("Summary 3")
+    corpus_manager.add_summary("Summary 1 covering the session's main discussion points")
+    corpus_manager.add_summary("Summary 2 covering the session's main discussion points")
+    corpus_manager.add_summary("Summary 3 covering the session's main discussion points")
 
     summaries = corpus_manager.get_summaries(count=2)
 
@@ -434,7 +434,7 @@ def test_clear_corpus_keep_summaries(corpus_manager):
     corpus_manager.add_entry("Q2", "A2")
 
     # Add summary
-    corpus_manager.add_summary("Summary")
+    corpus_manager.add_summary("Summary covering the session's main discussion points")
 
     corpus_manager.clear_corpus(keep_summaries=True)
 
@@ -466,7 +466,7 @@ def test_prune_corpus_preserve_summaries(corpus_manager):
     corpus_manager.add_entry("Q3", "A3")
 
     # Add summary
-    corpus_manager.add_summary("Summary")
+    corpus_manager.add_summary("Summary covering the session's main discussion points")
 
     # Prune to 1 entry but preserve summaries
     corpus_manager.prune_corpus(keep=1, preserve_summaries=True)

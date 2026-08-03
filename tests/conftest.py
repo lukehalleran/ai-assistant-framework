@@ -88,3 +88,21 @@ def pytest_collection_modifyitems(config, items):
             "remove the skip. The tone-flatline incident survived on a silent skip.\n"
             + "\n".join(sorted(set(violations)))
         )
+
+
+# ---------------------------------------------------------------------------
+# Adaptive exemplar store sandbox (2026-08-02). Tone tests exercise messages
+# that hit the keyword/arbiter confirmation hooks, which LEARN exemplars via
+# utils.adaptive_exemplars — without this fixture every test run would write
+# test phrases into the user's real data/adaptive_exemplars.json.
+# ---------------------------------------------------------------------------
+import pytest as _pytest_ae
+
+
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_adaptive_exemplars(tmp_path, monkeypatch):
+    import utils.adaptive_exemplars as _ae
+    monkeypatch.setattr(_ae, "_STORE_PATH", str(tmp_path / "adaptive_exemplars.json"))
+    monkeypatch.setattr(_ae, "_store", None)  # fresh singleton per test
+    yield
+    _ae._store = None

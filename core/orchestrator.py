@@ -31,8 +31,9 @@ Module Contract
   - The outer try/except logs, sets debug_info["error"], and re-raises.
 - System prompt flow:
   - Composed from file-based personality (config/prompts/default_personality.txt or custom_personality.txt) + immutable operating principles (config/prompts/operating_principles.txt) via load_personality_text() + load_operating_principles(). Falls back to load_system_prompt() if files fail.
+  - Conditional section instructions (2026-08-02): build_full_prompt() appends core/prompt/section_instructions.conditional_instruction_tail(prompt_ctx) to the system prompt AFTER the cache breakpoint — the [USER'S PERSONAL NOTES]/[DAEMON DOCUMENTATION]/[TEMPORAL GROUNDING] guidance blocks (moved out of operating_principles.txt) are injected only when their section exists in the gathered context (~1.2K tok saved on turns without those sections).
   - Performs placeholder substitution: {USER_NAME}, {USER_PRONOUNS}, {PRONOUN_SUBJ}, {PRONOUN_OBJ}, {PRONOUN_POSS}. Forwarded to response generation as system role message.
-  - Appends [THREAD CONTEXT] to system prompt for ongoing conversation threads (depth, topic, heavy-topic flag)
+  - Appends [THREAD CONTEXT] to system prompt for ongoing conversation threads (depth, topic, heavy-topic flag). Honesty guard (2026-07-25/28): thread metadata is read off the PREVIOUS turn, so on a clear topic shift (_topics_related/_thread_topic_shifted) the injection says so instead of claiming "message #N about <last topic>"; anaphoric-continuation turns (query_checker.is_anaphoric_continuation) never assert a shift.
   - Proactive thread surfacing: on first message of session, appends instruction to naturally reference [UNRESOLVED THREADS] from prior sessions
 - Side effects:
   - Writes conversation+metadata to corpus DB/Chroma via memory_system; logs events.
@@ -58,6 +59,43 @@ from dataclasses import dataclass, field
 from core.response_parser import ResponseParser
 from utils.logging_utils import get_logger
 logger = get_logger("orchestrator")
+
+
+def _topics_related(thread_topic: str, current_topic: str) -> bool:
+    """Loose continuity check between the (previous turn's) thread topic and
+    the current query topic. Related when either contains the other or they
+    share a substantive (>3-char) word. Unclassified topics ("general", empty)
+    give no signal → treated as related so the thread wording is preserved
+    rather than asserting a shift we can't support.
+    """
+    a = (thread_topic or "").strip().lower()
+    b = (current_topic or "").strip().lower()
+    if not a or not b or a == "general" or b == "general":
+        return True
+    if a == b or a in b or b in a:
+        return True
+    a_words = {w for w in re.split(r"\W+", a) if len(w) > 3}
+    b_words = {w for w in re.split(r"\W+", b) if len(w) > 3}
+    return bool(a_words & b_words)
+
+
+def _thread_topic_shifted(thread_topic: str, current_topic: str, original_query: str) -> bool:
+    """Whether the [THREAD CONTEXT] injection should assert a topic shift.
+
+    Never assert a shift on an anaphoric continuation or a referent
+    correction ("It was...", "No I mean...") — the current topic label for
+    such a message is derived from surface keywords with the referent
+    missing, so a divergence from the thread topic is evidence of a
+    CLASSIFIER miss, not a real shift. Asserting the shift plus "Follow the
+    current query" actively steered the model away from the correct anaphora
+    resolution (2026-07-28 long-covid/"Exercise Routine" incident).
+    """
+    from utils.query_checker import is_anaphoric_continuation
+    if is_anaphoric_continuation(original_query or ""):
+        return False
+    return not _topics_related(thread_topic, current_topic)
+
+
 from integrations.wikipedia_api import WikipediaAPI
 from utils.tone_detector import CrisisLevel
 from utils.emotional_context import EmotionalContext
@@ -1012,19 +1050,35 @@ class DaemonOrchestrator:
         system_prompt = system_prompt.rstrip() + f"\n\nQuery topic: {topic_str}"
 
         # --- Thread context injection ---
+        # thread_context is read off the PREVIOUS stored turn (the current
+        # message isn't threaded until storage), so it is structurally one
+        # turn behind. When the current topic clearly diverges from the
+        # thread topic, say so honestly instead of asserting "this is message
+        # #N about <last turn's topic>" (live prompts claimed "message #1 …
+        # about Forearm Pain" on a self-criticism turn, 2026-07-25).
         if not use_raw_mode and context.has_thread:
             thread_ctx = context.thread_context
             thread_depth = thread_ctx.get("thread_depth", 1)
             is_heavy = thread_ctx.get("is_heavy_topic", False)
             thread_topic = thread_ctx.get("thread_topic", "")
 
+            _shifted = thread_topic and _thread_topic_shifted(
+                thread_topic, topic_str, context.original_query
+            )
             thread_msg = f"\n\n[THREAD CONTEXT]"
-            thread_msg += f"\nThis is message #{thread_depth} in an ongoing conversation thread"
-            if thread_topic:
-                thread_msg += f" about {thread_topic}"
+            if _shifted:
+                thread_msg += (
+                    f"\nThe previous message was #{thread_depth} in a thread about "
+                    f"{thread_topic}; the current message appears to shift topic "
+                    f"({topic_str}). Follow the current query."
+                )
+            else:
+                thread_msg += f"\nThis is message #{thread_depth} in an ongoing conversation thread"
+                if thread_topic:
+                    thread_msg += f" about {thread_topic}"
             if is_heavy:
                 thread_msg += "\nThis is a sensitive/heavy topic. Be empathetic and specific."
-            elif thread_depth >= 3:
+            elif thread_depth >= 3 and not _shifted:
                 thread_msg += "\nMaintain conversational continuity."
 
             system_prompt = system_prompt.rstrip() + thread_msg
@@ -1237,6 +1291,15 @@ class DaemonOrchestrator:
                 "intent_confidence": getattr(_intent_obj, "confidence", None),
                 "intent_source": getattr(_intent_obj, "source", None),
                 "tone_level": getattr(getattr(context, "tone_level", None), "value", None),
+                # Which detector path produced the tone (semantic / llm_fallback /
+                # borderline_backstop / distress_sticky_floor / keyword…) — the
+                # signal needed to audit tone calibration from telemetry alone.
+                "tone_trigger": getattr(
+                    getattr(context, "emotional_context", None), "tone_trigger", None
+                ),
+                "tone_confidence": getattr(
+                    getattr(context, "emotional_context", None), "tone_confidence", None
+                ),
                 "is_small_talk": bool(getattr(context, "is_small_talk", False)),
                 "plan_points": len(_plan_result.key_points) if _plan_result else None,
                 "plan_tone": getattr(_plan_result, "tone", None) if _plan_result else None,
@@ -1253,6 +1316,23 @@ class DaemonOrchestrator:
         # Forward intent classification to prompt_ctx for agentic gate decisions
         if context.intent is not None:
             prompt_ctx['intent'] = context.intent
+        # Forward detected tone alongside it — the post-hoc veto corroborates
+        # a sub-floor emotional_support intent with an elevated tone reading.
+        prompt_ctx['tone_level'] = context.crisis_level_str
+
+        # --- 2b) Conditional section-usage instructions ---
+        # The per-section guidance blocks (Obsidian notes / self-docs /
+        # temporal grounding) moved out of the static operating principles
+        # (2026-08-02 trim, ~1.2K tokens): each is appended here ONLY when its
+        # section exists in this turn's context. This lands after the
+        # PROMPT_CACHE_BREAKPOINT, so the cached stable prefix is unaffected.
+        try:
+            from core.prompt.section_instructions import conditional_instruction_tail
+            _cond_tail = conditional_instruction_tail(prompt_ctx)
+            if _cond_tail:
+                system_prompt = system_prompt.rstrip() + _cond_tail
+        except Exception as e:
+            logger.debug(f"[BUILD_FULL_PROMPT] conditional instructions skipped: {e}")
 
         # --- 3) Assemble final prompt ---
         user_input = context.file_context if context.has_files else context.original_query
