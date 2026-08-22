@@ -801,6 +801,69 @@ class TestReferentialFollowupBypass:
         assert decision.source == "llm"
 
     @pytest.mark.asyncio
+    async def test_personal_state_statement_never_reaches_llm(self):
+        """2026-08-05 misfire: "I was taking about 900 mg... I don't want to
+        start it again unless a doctor says I should" — the bare pronoun made
+        it a "referential follow-up", the LLM was consulted, and a 3.5s search
+        ran on a first-person medication statement. First-person state
+        statements with no info-seeking shape must skip the LLM entirely."""
+        from unittest.mock import AsyncMock, patch
+        import utils.web_search_trigger as wst
+        wst._llm_trigger_cache.clear()
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value='{"should_search": true, "confidence": 0.9}')
+
+        with patch.object(wst, "should_search_heuristic", return_value=self._zero_heuristic()), \
+             patch.object(wst, "LLM_FIRST_ENABLED", True):
+            decision = await wst.analyze_for_web_search_llm(
+                query=(
+                    "I was taking about 900 mg a day for a week or so. I don't "
+                    "want to start it again unless a doctor says I should I "
+                    "only took it out of absolute desperation"
+                ),
+                model_manager=mock_manager,
+                conversation_context="User: lorvatin talk\nAssistant: context",
+            )
+
+        assert not mock_manager.generate_once.called
+        assert decision.should_search is False
+
+    def test_is_personal_state_statement_shapes(self):
+        from utils.web_search_trigger import is_personal_state_statement
+        assert is_personal_state_statement("I was taking about 900 mg a day for a week")
+        assert is_personal_state_statement("My doctor doesn't care about me and they aren't even open")
+        assert is_personal_state_statement("I've been feeling better since I stopped it")
+        # Third-party elliptical follow-up — the case the referential bypass exists for.
+        assert not is_personal_state_statement("They're only letting us use it for 7 days")
+        # Info-seeking shapes are not state statements.
+        assert not is_personal_state_statement("I wonder what the latest news on it is")
+        assert not is_personal_state_statement("Is it safe to restart lorvatin?")
+        assert not is_personal_state_statement("should I restart it")
+        assert not is_personal_state_statement("I want you to look up the interactions")
+
+    @pytest.mark.asyncio
+    async def test_personal_state_statement_teaches_no_search(self):
+        from unittest.mock import AsyncMock, patch
+        import utils.web_search_trigger as wst
+        from utils.adaptive_exemplars import get_store
+        wst._llm_trigger_cache.clear()
+
+        mock_manager = MagicMock()
+        mock_manager.generate_once = AsyncMock(return_value='{"should_search": true}')
+
+        q = "I was taking about 900 mg a day and I don't want to start it again"
+        with patch.object(wst, "should_search_heuristic", return_value=self._zero_heuristic()), \
+             patch.object(wst, "LLM_FIRST_ENABLED", True):
+            await wst.analyze_for_web_search_llm(
+                query=q, model_manager=mock_manager,
+                conversation_context="User: context\nAssistant: reply",
+            )
+
+        learned = get_store().get_learned("web_search", "no_search")
+        assert any(q in ex for ex in learned) or q in learned
+
+    @pytest.mark.asyncio
     async def test_conf_zero_without_context_still_short_circuits(self):
         from unittest.mock import AsyncMock, patch
         import utils.web_search_trigger as wst

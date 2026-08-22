@@ -28,6 +28,10 @@ Module Contract:
       * per-label cap (40) — oldest evicted
   - store.version — increments on every accepted record; callers cache
     derived artifacts (exemplar prototype embeddings) keyed on it.
+  - encode_texts_cached(embedder, texts, cache, normalize=False) — shared
+    per-text embedding cache (2026-08-21): adopters re-encode only NEW texts
+    on a version bump instead of the whole seed+learned set. The cache dict is
+    owned by the caller, one per module (never share across embedding spaces).
 - Poisoning guard (callers' contract): only record labels confirmed by a
   deterministic or independent channel. Never record from the check's own
   semantic verdict (self-reinforcement) and never record "safe"/negative
@@ -132,6 +136,35 @@ class AdaptiveExemplarStore:
 
 
 _store: Optional[AdaptiveExemplarStore] = None
+
+
+def encode_texts_cached(embedder, texts, cache: dict, normalize: bool = False):
+    """Encode `texts`, re-using per-text cached vectors — only NEW texts hit
+    the encoder.
+
+    Adopters' prototype caches are keyed on store.version, so every accepted
+    exemplar used to recompute the WHOLE seed+learned embedding set (the
+    "one-time setup" log line ran on every learning event); with a per-text
+    cache a version bump re-encodes only the newly learned texts (2026-08-21).
+
+    cache is a dict OWNED BY THE CALLER, one per module — different adopters
+    embed in different spaces (normalized vs raw, potentially different
+    models); never share a cache across embedders. Returns a
+    (len(texts), dim) numpy array in input order.
+    """
+    if not texts:
+        return np.zeros((0, 384))
+    missing = [t for t in texts if t not in cache]
+    if missing:
+        if normalize:
+            embs = embedder.encode(
+                missing, convert_to_numpy=True, normalize_embeddings=True
+            )
+        else:
+            embs = embedder.encode(missing, convert_to_numpy=True)
+        for t, e in zip(missing, embs):
+            cache[t] = e
+    return np.stack([cache[t] for t in texts])
 
 
 def get_store() -> AdaptiveExemplarStore:

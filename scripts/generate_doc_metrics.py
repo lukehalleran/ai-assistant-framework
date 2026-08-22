@@ -27,6 +27,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+# Run as `python scripts/generate_doc_metrics.py`, sys.path[0] is scripts/ —
+# the tool-count import (core.agentic.tools) needs the repo root on the path.
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 SNAPSHOT = REPO / "docs" / "METRICS_SNAPSHOT.md"
 BEGIN = "<!-- METRICS:BEGIN -->"
 END = "<!-- METRICS:END -->"

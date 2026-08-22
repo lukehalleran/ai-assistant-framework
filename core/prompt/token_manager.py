@@ -31,17 +31,23 @@ Module Contract
 - Side effects:
   - Logging of token usage and trimming actions
 
-Priority Order (highest to lowest):
+Priority Order (highest to lowest — 2026-08-14: meters the keys the formatter
+RENDERS; the combined summaries/reflections keys were dead-metered before, so
+the four rendered summary/reflection sections were unmetered AND untrimmable):
   - stm_summary: 10 (metadata only, never trimmed)
   - user_profile: 9 (critical identity, naturally bounded)
-  - narrative_state: 8 (temporal grounding, 500 token cap)
+  - narrative_state: 8 (temporal grounding, 500 token cap) / web_search_results: 8
   - recent_conversations / graph_context / unresolved_threads: 7
-  - semantic_chunks / personal_notes / user_uploads: 6
-  - reference_docs / memories / web_search_results: 5
+  - google_calendar / upcoming_schedule: 7
+  - semantic_chunks / personal_notes / user_uploads / disambiguation_notes: 6
+  - reference_docs / memories: 5
   - procedural_skills / facts: 4
-  - summaries / proposed_features / git_commits / proactive_insights: 3
-  - reflections / dreams / codebase_changes: 2
+  - recent_summaries / semantic_summaries / proposed_features / git_commits / proactive_insights: 3
+  - recent_reflections / semantic_reflections / daemon_self_notes / dreams / codebase_changes: 2
   - wiki: 1
+UNRENDERED_CONTEXT_KEYS (summaries, reflections, stm_summary, memory_id_map) are
+excluded from metering AND the true-total log; test_budget_meters_rendered_sections.py
+asserts formatter↔PRIORITY_ORDER parity so a new rendered section can't go unmetered.
 """
 
 import os
@@ -64,17 +70,37 @@ PRIORITY_ORDER = [
     ("reference_docs",        5),  # User uploaded reference documents
     ("memories",              5),
     ("web_search_results",    8),  # Real-time web content — high priority, user explicitly asked for current info
+    ("google_calendar",       7),  # Real-time calendar events, small + time-sensitive
+    ("upcoming_schedule",     7),  # Gated schedule events, small
+    ("disambiguation_notes",  6),  # Cross-session phrase disambiguation, small
     ("procedural_skills",     4),  # Adaptive workflows
     ("facts",                 4),
-    ("summaries",             3),
+    # The formatter renders the SPLIT summary/reflection keys; the combined
+    # "summaries"/"reflections" keys are never rendered. Until 2026-08-14 the
+    # combined keys were metered here instead — so the four rendered sections
+    # were invisible to the budget AND untrimmable (turn observed at 17.5K
+    # true tokens against a 10K budget).
+    ("recent_summaries",      3),
+    ("semantic_summaries",    3),
     ("proposed_features",     3),  # Code proposals (trimmed before core context)
     ("git_commits",           3),  # Project commit history
     ("proactive_insights",    3),  # Cross-domain insights, naturally bounded
-    ("reflections",           2),  # Below summaries
+    ("recent_reflections",    2),  # Below summaries
+    ("semantic_reflections",  2),
+    ("daemon_self_notes",     2),  # Non-ground-truth self notes, small
     ("dreams",                2),  # Still included; trimmed early if needed
     ("codebase_changes",      2),  # First message only, session diff
     ("wiki",                  1),
 ]
+
+# Context keys that are inputs/intermediates the formatter never renders —
+# excluded from both metering and the true-total visibility log so unrendered
+# content can't inflate either number. ("summaries"/"reflections" are the
+# legacy combined keys kept for back-compat; the split keys above are the
+# rendered ones.)
+UNRENDERED_CONTEXT_KEYS = frozenset({
+    "summaries", "reflections", "stm_summary", "memory_id_map",
+})
 
 # Max tokens for narrative_state section (temporal grounding)
 NARRATIVE_STATE_MAX_TOKENS = int(os.getenv("NARRATIVE_STATE_MAX_TOKENS", "500"))
@@ -326,17 +352,22 @@ class TokenManager:
         logger.debug(f"[PROMPT] Token budget: {usage}/{self.token_budget}")
         self._prompt_token_usage = usage
 
-        # Visibility-only true total: PRIORITY_ORDER misses some sections
-        # entirely and stm_summary is deliberately unmetered, so the metered
-        # usage under-reports the real prompt by ~25% (15.2K counted vs 20.8K
-        # measured, 2026-07-25). Log the discrepancy; do NOT change trim
-        # semantics here — the 2026-07-15 budget experiment validated the
-        # metered semantics, so tightening what counts requires a re-run.
+        # Visibility-only true total for anything still outside PRIORITY_ORDER
+        # (visual_memories, note_images, …) plus the deliberately-unmetered
+        # stm_summary. 2026-08-14: the four rendered summary/reflection split
+        # keys + calendar/schedule moved INTO metering (they were the bulk of
+        # the ~25%-and-worse under-report — a 17.5K true prompt against a 10K
+        # budget), so this residual should now be small; a large number here
+        # means a new rendered section was added without a PRIORITY_ORDER row.
         try:
             metered_names = {name for name, _ in PRIORITY_ORDER}
             unmetered = 0
             for key, v in trimmed.items():
                 if key in metered_names and key != "stm_summary":
+                    continue
+                # Unrendered inputs and _-prefixed metadata never reach the
+                # prompt — counting them would inflate the "true total".
+                if key in UNRENDERED_CONTEXT_KEYS or key.startswith("_"):
                     continue
                 if not v:
                     continue

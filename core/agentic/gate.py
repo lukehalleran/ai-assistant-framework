@@ -10,8 +10,11 @@ Module Contract
   - evaluate_agentic_gate(user_text, entity_resolver, model_manager,
     corpus_manager, intent_info) -> AgenticDecision
   - apply_intent_veto(decision, intent_info, tone_level=None, query=None) -> AgenticDecision
-    (query enables the tone-statement veto: elevated tone + non-info-seeking
-    statement stands the gate down regardless of intent, 2026-08-02)
+    (query enables the tone-statement veto: elevated tone + first-person
+    vent-shaped statement stands the gate down regardless of intent,
+    2026-08-02; narrowed to vent shape 2026-08-15 — third-party/news
+    statements and pronoun-split lookups ("look it up") are never vetoed
+    or taught as no_search)
     — the intent veto, extracted so handle_submit can run the gate CONCURRENTLY
     with prepare_prompt (intent_info=None at launch, veto applied post-hoc once
     the context pipeline's classification exists). evaluate_agentic_gate
@@ -42,6 +45,15 @@ Module Contract
   suppress it. The enhanced (tool-less) streaming path carries a matching
   [ACTION HONESTY] note so a gate miss degrades to an honest "I can't this turn"
   + offer, never a confabulated reason.
+- Tone-deferral clarify loop (2026-08-21): a TONE arm vetoing a
+  REQUEST-shaped, non-vent query (imperative without a lookup cue — "review
+  the tuesday logs"; lookup-cue and interrogative shapes escape the veto
+  instead) sets decision.deferred_request and arms a ONE-SHOT module slot.
+  handlers append a [DEFERRED REQUEST] system-prompt note (acknowledge +
+  offer, never confabulate), and a terse affirmation on the immediately
+  following turn re-runs the ORIGINAL query veto-exempt (explicit consent).
+  Vent-shaped turns never get the offer (anti-excavation), and
+  request-shaped queries never teach no_search.
 - Continuation override: a terse affirmation (≤ CONTINUATION_MAX_WORDS words
   containing a CONTINUATION_PHRASES entry) after an agentic turn bypasses the
   casual skip. "Previous turn was agentic" is read from the corpus entry's
@@ -95,6 +107,11 @@ class AgenticDecision:
     # suppress. Lets apply_intent_veto() run post-hoc without recomputing
     # gate internals.
     veto_exempt: bool = False
+    # Set when a TONE arm vetoed a request-shaped (non-vent) query
+    # (2026-08-21): handlers inject a "acknowledge + offer to proceed" note
+    # into the system prompt, and a terse affirmation on the NEXT turn
+    # re-runs the original query veto-exempt (see _arm_deferred_request).
+    deferred_request: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +339,23 @@ def _tone_is_elevated(tone_level) -> bool:
     return any(marker in _t for marker in _ELEVATED_TONE_MARKERS)
 
 
+# Acute crisis markers: MEDIUM/HIGH (and their support-mode encodings), i.e.
+# strictly above the CONCERN/light_support tier the sticky floor can hold for
+# a whole session.
+_ACUTE_TONE_MARKERS = ("MEDIUM", "HIGH", "ELEVATED_SUPPORT", "CRISIS_SUPPORT")
+
+
+def _tone_is_acute(tone_level) -> bool:
+    """True for MEDIUM/HIGH crisis levels — the tier where a confident
+    retrieval intent must no longer defeat the safety veto (2026-08-21: a
+    MEDIUM suicide-mention turn regex-classified temporal_recall@0.85 ran a
+    49s agentic loop and was abandoned by the user)."""
+    if not tone_level:
+        return False
+    _t = str(getattr(tone_level, "value", tone_level)).upper()
+    return any(marker in _t for marker in _ACUTE_TONE_MARKERS)
+
+
 def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
     """Build a compact recent-conversation digest for the web-search trigger.
 
@@ -389,6 +423,42 @@ async def evaluate_agentic_gate(
     _lower = user_text.lower().strip()
     _words = _lower.split()
     _has_url = 'http://' in _lower or 'https://' in _lower
+
+    # ── Deferred-request affirmation (2026-08-21) ────────────────────
+    # If the PREVIOUS turn tone-deferred a request-shaped query (the model
+    # acknowledged and offered), a terse affirmation now re-runs the ORIGINAL
+    # query veto-exempt. The slot is one-shot: consumed on every call, so
+    # only the immediately-following turn can affirm — anything else drops it.
+    _deferred_query = _consume_deferred_request()
+    if _deferred_query:
+        _is_affirm = (
+            len(_words) <= CONTINUATION_MAX_WORDS
+            and any(p in _lower for p in CONTINUATION_PHRASES)
+        )
+        if _is_affirm:
+            logger.info(
+                f"[Agentic Gate] Affirmation after tone-deferral — re-running "
+                f"deferred request veto-exempt: '{_deferred_query[:60]}'"
+            )
+            _redo = await evaluate_agentic_gate(
+                user_text=_deferred_query,
+                entity_resolver=entity_resolver,
+                model_manager=model_manager,
+                corpus_manager=corpus_manager,
+                intent_info=None,  # explicit user consent — no re-veto
+            )
+            _redo.veto_exempt = True
+            if not _redo.should_trigger:
+                # The original query triggered once (that's why it was
+                # vetoed); if re-evaluation flakes, honor the user's consent.
+                _redo.should_trigger = True
+                if not _redo.modes:
+                    _redo.modes = ["web_search", "memory"]
+            _redo.reason = (
+                f"deferred-request affirmation: '{_deferred_query[:80]}' "
+                f"({_redo.reason or 'triggered'})"
+            )
+            return _redo
 
     modes: List[str] = []
     search_terms: List[str] = []
@@ -741,6 +811,12 @@ _INFO_SEEKING_CUES = (
     "search", "look up", "google", "find out", "remember when", "what did",
     "recall", "look for", "look into", "research", "check the", "check my",
 )
+# Pronoun-split lookup commands: "look IT up", "pull THAT up". The contiguous
+# "look up" cue missed them — "Look it up it's pretty funny" was vetoed AND
+# learned as a no_search exemplar (2026-08-15).
+_LOOKUP_CUE_RE = re.compile(
+    r"\b(?:look|pull)\s+(?:(?:it|this|that|them|these|those)\s+)?up\b"
+)
 
 
 def _is_info_seeking(query: str) -> bool:
@@ -753,7 +829,104 @@ def _is_info_seeking(query: str) -> bool:
         return True
     if q.startswith(_INTERROGATIVE_OPENERS):
         return True
+    if _LOOKUP_CUE_RE.search(q):
+        return True
     return any(c in q for c in _INFO_SEEKING_CUES)
+
+
+# First-person pronoun anywhere in the text — the marker that a non-info-seeking
+# statement is about the USER'S OWN state (a vent) rather than the outside world.
+_FIRST_PERSON_RE = re.compile(r"\b(?:i|i'm|im|i've|ive|i'd|id|me|my|mine|myself)\b")
+
+# Epistemic-stance / reporting markers: first-person phrases that frame a claim
+# about the OUTSIDE WORLD rather than express the speaker's own state. "I think
+# people would be arrested…", "I mean it seems possible this was censored…",
+# "i would say most people are unaware…" all carry a first-person pronoun but
+# are opinions about third parties — during a sticky-CONCERN session (2026-08-18
+# evening) seven such political/news statements passed the first-person-anywhere
+# test, were vetoed, AND were taught as no_search exemplars (the 08-15 poisoning
+# class through a new hole). Strip these markers first; vent shape then requires
+# a first-person pronoun in what REMAINS ("I think I'm getting sick" stays a
+# vent via the second "I'm"; "I think it's censored" does not).
+_EPISTEMIC_MARKER_RE = re.compile(
+    r"\b(?:"
+    r"i\s+(?:mean|think|thought|guess|suppose|bet|believe|reckon|figure|assume|"
+    r"heard|read|saw|watched|imagine|swear|doubt)"
+    r"|i\s+(?:do\s+not|don'?t)\s+(?:think|believe|know|get|understand|buy)"
+    r"|i\s*(?:'d|\s+would)\s+(?:say|think|guess|bet|imagine|assume)"
+    r"|i\s*(?:'m|\s+am)\s+(?:sure|positive|certain|pretty\s+sure)"
+    r"|i\s*(?:'ve|\s+have)\s+(?:heard|read|seen)"
+    r"|idk|imo|imho|afaik|iirc"
+    r")\b"
+)
+
+
+def strip_epistemic_markers(text: str) -> str:
+    """Remove first-person epistemic/reporting markers ("i think", "i mean",
+    "i would say", "i heard", …) so first-person checks see only SUBSTANTIVE
+    self-reference. Shared doctrine — utils.web_search_trigger's
+    personal-state check imports this (lazily) too."""
+    return _EPISTEMIC_MARKER_RE.sub(" ", (text or "").lower())
+
+
+# Request shape (2026-08-21): an imperative ("check the docs for what
+# changed", "pull up the logs") or a second-person ask ("can you run it")
+# is a REQUEST even though it has no "?" / interrogative opener / lookup cue,
+# so _is_info_seeking misses it and a tone arm can veto it. Such a veto
+# should be a visible DEFERRAL (acknowledge + offer), never a silent decline
+# — and never a no_search teaching event. The (?!,) guard keeps discourse
+# markers ("Look, I'm just tired") out: comma after the verb = not a command.
+_REQUEST_SHAPED_RE = re.compile(
+    r"^(?:please\s+)?(?:check|look|pull|show|run|search|find|read|open|list|"
+    r"verify|fetch|grab|review|summarize|summarise|scan|test|compare)\b(?!,)"
+    r"|\b(?:can|could|would|will)\s+you\b",
+    re.IGNORECASE,
+)
+
+
+def _is_request_shaped(text: str) -> bool:
+    return bool(_REQUEST_SHAPED_RE.search((text or "").strip()))
+
+
+# One-shot cross-turn slot for a tone-deferred request. Armed by
+# apply_intent_veto, consumed (read + cleared) at the TOP of the next
+# evaluate_agentic_gate call — so exactly the immediately-following turn can
+# affirm it. Module-level state is fine here: single-user app, same pattern
+# as the module embed caches.
+_DEFERRED_REQUEST_SLOT: Dict[str, str] = {}
+
+
+def _arm_deferred_request(query: str) -> None:
+    _DEFERRED_REQUEST_SLOT.clear()
+    _DEFERRED_REQUEST_SLOT["query"] = query
+
+
+def _consume_deferred_request() -> Optional[str]:
+    q = _DEFERRED_REQUEST_SLOT.get("query")
+    _DEFERRED_REQUEST_SLOT.clear()
+    return q
+
+
+def _is_vent_shaped(query: str) -> bool:
+    """True for a first-person, non-info-seeking statement — the shape of the
+    emotional vents the tone-corroborated veto exists for.
+
+    Third-party/news statements are deliberately NOT vent-shaped: mid-distress
+    the sticky tone floor keeps every turn at CONCERN, and a topic shift to the
+    outside world ("The president 'declared' the strait of hormuz to be us
+    land lmfao") is a searchable share, not a vent — the old any-statement test
+    vetoed it against the LLM trigger's should_search=0.8 (2026-08-15).
+    First-person is checked ANYWHERE, not just as opener: real vents open with
+    "Yeah...", "Ugh...", "It feels like..." as often as with "I". But an
+    epistemic marker ("I think/I mean/i would say …") is NOT self-reference —
+    it frames a claim about the world (2026-08-21 narrowing; see
+    _EPISTEMIC_MARKER_RE)."""
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    if _is_info_seeking(q):
+        return False
+    return bool(_FIRST_PERSON_RE.search(strip_epistemic_markers(q)))
 
 
 # Confident retrieval-flavored intents are respected even on elevated-tone
@@ -783,12 +956,17 @@ def apply_intent_veto(decision: AgenticDecision, intent_info, tone_level=None,
     crying in bed my mom ignored me" ran a 22s agentic loop, 2026-07-25).
 
     query (optional): the raw user text. When tone is elevated and the query
-    has NO info-seeking shape (question mark, interrogative opener, lookup
-    cue), the gate stands down REGARDLESS of intent — the intent classifier
-    read every 2026-08-02 distress vent as general@0.00, so the
-    emotional_support corroboration above was starved exactly when needed
-    ("I am embarrassed for how I reacted earlier … I am so unhappy" ran a
-    31s agentic memory loop). Confident retrieval intents (≥0.75) still win.
+    is VENT-SHAPED (first-person, no info-seeking shape — question mark,
+    interrogative opener, lookup cue), the gate stands down REGARDLESS of
+    intent — the intent classifier read every 2026-08-02 distress vent as
+    general@0.00, so the emotional_support corroboration above was starved
+    exactly when needed ("I am embarrassed for how I reacted earlier … I am
+    so unhappy" ran a 31s agentic memory loop). Confident retrieval intents
+    (≥0.75) still win. 2026-08-15: narrowed from ANY non-info-seeking
+    statement to vent shape — the sticky tone floor holds CONCERN across a
+    long distress session, and a third-party news share mid-session was
+    vetoed against the LLM trigger's should_search=0.8. Tone corroborates a
+    vent; it must not disable search for statements about the outside world.
     """
     if decision is None or not decision.should_trigger or intent_info is None:
         return decision
@@ -805,36 +983,91 @@ def apply_intent_veto(decision: AgenticDecision, intent_info, tone_level=None,
         else intent_info.get('confidence', 0)
     )
     _type_val = getattr(_intent_type, 'value', str(_intent_type)) if _intent_type else ''
+    # Explicit info-seeking shape (question mark, interrogative opener, lookup
+    # cue incl. pronoun-split "look it up") escapes every TONE-based arm: the
+    # user directly asking the system to go get something wins over tone
+    # corroboration. 2026-08-18 14:25: "Look it up on Wikipedia" was Tier-1
+    # triggered and then killed by the emotional_support arm — the 08-15
+    # info-seeking escape existed only inside _is_vent_shaped, so it never
+    # reached this arm. (Confident VETO_INTENTS below are intent-driven, not
+    # tone-driven, and keep their semantics.)
+    _info_seeking = bool(query) and _is_info_seeking(query)
+    # Captured BEFORE the veto clears them: trigger-proposed search terms are
+    # conflicting evidence for the no_search teacher below.
+    _proposed_terms = bool(decision.search_terms)
     _veto_reason = None
+    _tone_driven = False
     if _type_val in VETO_INTENTS and _intent_conf >= 0.75:
         _veto_reason = f"intent-veto: {_type_val}@{_intent_conf:.2f}"
+    elif _tone_is_acute(tone_level) and query and not _info_seeking:
+        # Acute ceiling (2026-08-21): at MEDIUM/HIGH a confident retrieval
+        # intent no longer defeats the veto — a MEDIUM suicide-mention turn
+        # regex-classified temporal_recall@0.85 paid for a 49s decision round
+        # the user abandoned. Explicit info-seeking shape and veto_exempt
+        # (handled above) still win.
+        _veto_reason = (
+            f"tone-veto: acute tone ({tone_level}) — statement mid-crisis, "
+            f"intent {_type_val or 'unknown'}@{_intent_conf:.2f} overridden"
+        )
+        _tone_driven = True
     elif (
         _type_val == 'emotional_support'
         and _intent_conf >= 0.60
         and _tone_is_elevated(tone_level)
+        and not _info_seeking
     ):
         _veto_reason = (
             f"intent-veto: emotional_support@{_intent_conf:.2f} + elevated tone ({tone_level})"
         )
+        _tone_driven = True
     elif (
         _tone_is_elevated(tone_level)
         and query
-        and not _is_info_seeking(query)
+        and _is_vent_shaped(query)
         and not (_type_val in _RETRIEVAL_INTENTS and _intent_conf >= 0.75)
     ):
         _veto_reason = (
-            f"tone-veto: elevated tone ({tone_level}) + non-info-seeking statement"
+            f"tone-veto: elevated tone ({tone_level}) + first-person vent-shaped statement"
         )
     if _veto_reason:
         logger.info(f"[Agentic Gate] VETOED by intent classifier: {_veto_reason}")
         decision.should_trigger = False
         decision.search_terms = []
         decision.reason = _veto_reason
+        # Visible deferral (2026-08-21): a TONE arm declining a REQUEST-shaped
+        # (non-vent) query must not fail silently — mark the decision so
+        # handlers tell the model to acknowledge + offer, and arm the one-shot
+        # slot so a terse affirmation next turn re-runs the original query
+        # veto-exempt. Vent-shaped turns never get the offer (anti-excavation:
+        # don't advertise suppressed tooling mid-distress).
+        if (
+            _tone_driven and query and _is_request_shaped(query)
+            and not _is_vent_shaped(query)
+        ):
+            decision.deferred_request = query
+            _arm_deferred_request(query)
+            logger.info(
+                "[Agentic Gate] Tone-vetoed a request-shaped query — deferral "
+                "armed for next-turn affirmation"
+            )
         # Deterministic confirmation that this query should NOT search →
         # teach the web-trigger's negative anchors (adaptive store), so the
         # semantic boost stops pushing this user's vent phrasing toward
-        # search BEFORE the gate has to veto it (2026-08-02).
-        if query and _tone_is_elevated(tone_level):
+        # search BEFORE the gate has to veto it (2026-08-02). Vent shape is
+        # required for TEACHING regardless of which arm vetoed: an explicit
+        # lookup or third-party statement must never become a no_search
+        # anchor (2026-08-15: "Look it up it's pretty funny" was learned).
+        # 2026-08-21: additionally require that the trigger pipeline proposed
+        # NO search terms — proposed terms mean an independent channel judged
+        # the turn searchable, and a veto under conflicting evidence must not
+        # become a durable anchor (08-18: medication-withdrawal phrasing with
+        # live "kavarin withdrawal" terms was taught; under a sticky-CONCERN
+        # session the learning channel is one-sided, so bad no_search anchors
+        # can never be offset by search_worthy ones).
+        if (
+            query and _tone_is_elevated(tone_level) and _is_vent_shaped(query)
+            and not _is_request_shaped(query) and not _proposed_terms
+        ):
             try:
                 from utils.adaptive_exemplars import get_store
                 get_store().record(

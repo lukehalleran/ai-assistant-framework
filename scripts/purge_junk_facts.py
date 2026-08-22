@@ -45,6 +45,13 @@ from memory.fact_extractor import _is_junk_object, _polarity_conflict
 
 def _daemon_running() -> bool:
     try:
+        from utils.daemon_guard import daemon_running
+        return daemon_running()
+    except Exception:
+        pass
+    # Fallback (guard module unavailable): old cmdline heuristic. Known hole:
+    # a relative-path launch has no repo name in its cmdline (2026-08-21).
+    try:
         out = subprocess.run(
             ["pgrep", "-af", "main.py"], capture_output=True, text=True
         ).stdout

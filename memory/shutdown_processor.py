@@ -577,18 +577,23 @@ class ShutdownProcessor:
         if not _enabled or not self.model_manager:
             return
 
+        # Coverage defaults raised 2026-08-05 (were 12 turns / 10 triples /
+        # 6000 chars): with FULL responses in each entry the old budget fit
+        # ~4-5 pairs and dropped the newest — weeks of "my doctor doesn't
+        # respond" never reached the extractor. Responses are now truncated
+        # to a snippet inside _build_prompt, so 9000 chars covers ~30 turns.
         try:
-            last_turns = int(os.getenv("LLM_FACTS_LAST_TURNS", "12"))
+            last_turns = int(os.getenv("LLM_FACTS_LAST_TURNS", "30"))
         except (ValueError, TypeError):
-            last_turns = 12
+            last_turns = 30
         try:
-            max_triples = int(os.getenv("LLM_FACTS_MAX_TRIPLES", "10"))
+            max_triples = int(os.getenv("LLM_FACTS_MAX_TRIPLES", "16"))
         except (ValueError, TypeError):
-            max_triples = 10
+            max_triples = 16
         try:
-            max_chars = int(os.getenv("LLM_FACTS_MAX_INPUT_CHARS", "6000"))
+            max_chars = int(os.getenv("LLM_FACTS_MAX_INPUT_CHARS", "9000"))
         except (ValueError, TypeError):
-            max_chars = 6000
+            max_chars = 9000
         model_alias = os.getenv("LLM_FACTS_MODEL", "gpt-4o-mini")
 
         if isinstance(session_conversations, list) and session_conversations:

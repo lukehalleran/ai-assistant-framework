@@ -73,6 +73,14 @@ class TestApiErrorStorageGuard:
         assert not corpus_manager.add_entry.called
 
     @pytest.mark.asyncio
+    async def test_empty_response_not_stored(self, storage):
+        ms, corpus_manager, chroma_store = storage
+        result = await ms.store_interaction(query="q", response="")
+        assert result is None
+        assert not corpus_manager.add_entry.called
+        assert not chroma_store.add_conversation_memory.called
+
+    @pytest.mark.asyncio
     async def test_leading_whitespace_still_blocked(self, storage):
         ms, corpus_manager, _ = storage
         result = await ms.store_interaction(

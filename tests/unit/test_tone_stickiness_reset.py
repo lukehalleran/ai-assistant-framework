@@ -10,7 +10,7 @@ carried tone once the gap since the last turn exceeds the threshold.
 from datetime import datetime, timedelta
 
 from core.context_pipeline import ContextPipeline
-from utils.tone_detector import CrisisLevel
+from utils.tone_detector import CrisisLevel, _recent_distress_from_history
 
 
 def _pipeline_with_carried_tone(tone=CrisisLevel.CONCERN):
@@ -68,3 +68,23 @@ def test_threshold_boundary_configurable(monkeypatch):
     just_over = datetime.now() - timedelta(minutes=35)
     assert p._should_reset_tone_stickiness(_recent(just_under)) is False
     assert p._should_reset_tone_stickiness(_recent(just_over)) is True
+
+
+def test_history_distress_ignores_stale_heavy_turn(monkeypatch):
+    import config.app_config as cfg
+    monkeypatch.setattr(cfg, "TONE_STICKINESS_MAX_GAP_MINUTES", 30, raising=False)
+
+    stale = {
+        "query": "old heavy turn",
+        "response": "...",
+        "is_heavy_topic": True,
+        "timestamp": datetime.now() - timedelta(hours=12),
+    }
+    fresh = dict(stale, timestamp=datetime.now() - timedelta(minutes=2))
+
+    assert _recent_distress_from_history([stale]) is False
+    assert _recent_distress_from_history([fresh]) is True
+
+
+def test_history_distress_missing_timestamp_fails_closed():
+    assert _recent_distress_from_history([{"is_heavy_topic": True}]) is True

@@ -5,7 +5,9 @@ Module Contract
   and graceful threshold fallback. Handles both normal and meta-conversational queries.
 - Inputs:
   - MemoryRetriever(corpus_manager, chroma_store, gate_system, scorer, hybrid_retriever, time_manager)
-  - get_memories(query, limit, topic_filter) -> List[Dict]  [main pipeline]
+  - get_memories(query, limit, topic_filter, min_gated=None) -> List[Dict]  [main pipeline;
+      min_gated (2026-08-21) caps the gate's forced-minimum fail-soft floor to the caller's
+      intent budget so below-threshold memories aren't forced in beyond it]
   - get_semantic_top_memories(query, limit) -> List[Dict]  [gated semantic across collections]
   - get_facts(query, limit) -> List[Dict]  [semantic-primary ranked facts with confidence/recency tiebreak;
       drops facts marked is_current=False / superseded_by, and ages out transient relations past their
@@ -1149,9 +1151,11 @@ class MemoryRetriever:
         hierarchical: List[Dict],
         query: str,
         config: Dict,
-        bypass_gate: bool = False
+        bypass_gate: bool = False,
+        min_gated: Optional[int] = None,
     ) -> List[Dict]:
-        """Combine memory pools with optional gating."""
+        """Combine memory pools with optional gating. min_gated caps the
+        gate's forced-minimum floor (see MultiStageGateSystem)."""
         combined: List[Dict] = []
         candidates: List[Dict] = []
         seen = set()
@@ -1194,7 +1198,7 @@ class MemoryRetriever:
         use_gate_system = self.gate_system and candidates and not bypass_gate
 
         if use_gate_system:
-            gated = await self._gate_memories(query, candidates)
+            gated = await self._gate_memories(query, candidates, min_results=min_gated)
             for mem in gated:
                 mem['gated'] = True
                 combined.append(mem)
@@ -1206,7 +1210,9 @@ class MemoryRetriever:
 
         return combined
 
-    async def _gate_memories(self, query: str, memories: List[Dict]) -> List[Dict]:
+    async def _gate_memories(
+        self, query: str, memories: List[Dict], min_results: Optional[int] = None
+    ) -> List[Dict]:
         """Apply gate while preserving original metadata."""
         try:
             def _gate_text(m: Dict) -> str:
@@ -1227,7 +1233,9 @@ class MemoryRetriever:
                 }
             } for m in memories]
 
-            filtered = await self.gate_system.filter_memories(query, chunks)
+            filtered = await self.gate_system.filter_memories(
+                query, chunks, min_results=min_results
+            )
 
             gated: List[Dict] = []
             for ch in filtered:
@@ -1246,10 +1254,15 @@ class MemoryRetriever:
         self,
         query: str,
         limit: int = 20,
-        topic_filter: Optional[str] = None
+        topic_filter: Optional[str] = None,
+        min_gated: Optional[int] = None,
     ) -> List[Dict]:
         """
         Main retrieval pipeline: gather -> combine -> gate -> rank -> threshold -> update -> slice
+
+        min_gated: optional cap on the gate's forced-minimum fail-soft floor —
+        callers with a small real budget (intent max_mems) pass it so the gate
+        never forces below-threshold memories in beyond that budget (2026-08-21).
         """
         # Import here to avoid circular imports
         from utils.query_checker import is_meta_conversational, _is_heavy_topic_heuristic
@@ -1340,7 +1353,8 @@ class MemoryRetriever:
             hierarchical=hierarchical,
             query=retrieval_query,
             config={'max_memories': max(limit * 2, 30)},
-            bypass_gate=is_gym_health_query
+            bypass_gate=is_gym_health_query,
+            min_gated=min_gated,
         )
 
         # Rank memories

@@ -130,6 +130,55 @@ _DURABLE_OVERRIDES = frozenset({
 })
 
 # --------------------------------------------------------------------------
+# Multi-valued relations — several simultaneous values are LEGITIMATE, so a
+# same-(subject, relation) pair with different objects is NOT a contradiction.
+# 2026-08-03: the cross-dedup contradiction arm assumed single-valued and
+# queued `medication_name=Zelphex` for deletion because `kavarin` was newer,
+# 5 distinct sent emails as "contradicting" the newest one, and 17 distinct
+# goals. Consumed by cross_deduplicator._find_fact_contradictions; anything
+# here is left to per-fact supersession (is_current=False) driven by the
+# extractor/verifier, never bulk contradiction resolution.
+# --------------------------------------------------------------------------
+
+MULTI_VALUED_RELATIONS = frozenset({
+    # health — people take multiple meds, have multiple symptoms/conditions
+    "medication_name", "medication_dose", "medication", "medications",
+    "medications_taken", "symptom", "condition", "supplement", "supplements",
+    "previous_addiction",
+    # preferences/activities — inherently plural
+    "likes", "dislikes", "interested_in", "enjoys", "plays", "uses",
+    "drinks", "eats", "owns", "watches", "reads", "listens_to", "hobby",
+    # events/accomplishments — each instance is a distinct fact
+    "email_sent", "emails_sent", "completed", "attends", "attended",
+    "talked_about", "asked_about", "mentioned", "visited",
+    # people/relations — one can have many friends, siblings, pets
+    "friend_of", "sibling_of", "parent_of", "child_of", "knows",
+    "works_with", "has_cat", "has_dog", "has_pet",
+    # open-ended state/aims — plural by nature
+    "goal", "wants_to", "concerned_about", "anxiety_trigger",
+    "coping_strategy", "skilled_at", "studies",
+})
+
+# Generic catch-all predicates ("user is X", "user has Y") — near-zero
+# information in the relation name, so same-relation ≠ same claim. A
+# contradiction pass over these deleted-or-superseded 71 distinct emotional
+# states in one cluster. They are junk-class extraction residue: excluded
+# from contradiction resolution here, removed wholesale (dry-run-first) by
+# scripts/purge_junk_facts.py.
+GENERIC_PREDICATES = frozenset({
+    "is", "was", "are", "has", "had", "does", "did", "thinks", "wants",
+    "needs", "plans", "says", "said", "feels", "gets", "got", "goes", "went",
+    "is_a", "was_a", "has_a",
+})
+
+
+def is_multi_valued_relation(relation: str) -> bool:
+    """True when several simultaneous values of this relation can all be true
+    (never treat same-relation/different-object as a contradiction)."""
+    rel = (relation or "").lower().strip()
+    return rel in MULTI_VALUED_RELATIONS
+
+# --------------------------------------------------------------------------
 # Free-text health-framing patterns (narrative memories — conversations,
 # reflections, summaries, notes). Narrative text has no structured predicate,
 # so we match curated transient-illness *phrases*. The TTL horizon is the same

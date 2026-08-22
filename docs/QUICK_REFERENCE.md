@@ -130,8 +130,24 @@ class MemoryRetriever:
         Pool caps (2026-07-15): hybrid retriever per-collection n_results =
         min(limit*3, 200); gym/health semantic_count capped at 120. Junk guard:
         memory/utils.is_junk_conversation_doc drops API-error-sentinel turns +
-        bare "test" exchanges at retrieval (purge stored docs:
-        scripts/purge_error_memories.py, dry-run first).
+        bare "test" exchanges at retrieval; is_junk_summary additionally rejects
+        API-error sentinels [2026-08-03] + bracketed harness/truncation wrappers
+        like "[Wafer: response was truncated...]" [2026-08-05] (purge stored docs:
+        scripts/purge_error_memories.py — scans conversations, corpus, AND the
+        summaries collection since 2026-08-03; dry-run first).
+
+        Profile fact maintenance (2026-08-05): scripts/add_profile_fact.py asserts
+        an owner-curated fact via THE deployed UserProfile.add_fact (dry-run
+        default); scripts/purge_profile_facts.py deletes curated fact_ids from the
+        profile (dry-run + pre-image backup; no other profile deletion API).
+
+        Quick Profile fixes (2026-08-21): _update_quick_profile no longer gated
+        on category==IDENTITY — the 08-05 timezone correction (categorized
+        "preferences") never refreshed it, so junk timezone="your time" kept
+        rendering every prompt (the in-function relation filter is the real
+        test); school + program added to quick keys — durable identity facts
+        belong in the always-rendered Quick Profile block, not the semantic
+        fact lottery (tests/unit/test_profile_confirmation_recurrent.py).
         """
 
     async def get_semantic_top_memories(query, limit=10) -> List[Dict]:
@@ -224,12 +240,22 @@ class CrossCollectionDeduplicator:
         2. Compute embeddings via chroma_store.embedding_fn
         3. Pairwise cosine → find duplicates >= 0.92 threshold
         4. Group facts by (subject, predicate) → find contradictions (different objects)
-        5. Skip ephemeral predicates (current_feeling, is, has, thinks, etc.)
-        6. If not dry_run: execute deletions
+        5. Cluster exclusions [2026-08-03]: ephemeral predicates (current_feeling...),
+           MULTI-VALUED relations (relation_classifier.MULTI_VALUED_RELATIONS —
+           medication_name, goal, email_sent, likes...; plural values are legitimate,
+           the live queue had medication_name=Zelphex scheduled for deletion because
+           kavarin was newer), GENERIC catch-all predicates (is/has/thinks... — a
+           71-entry `user | is` cluster of distinct emotional states), junk
+           function-word subjects, and already-superseded facts (is_current=False)
+        6. If not dry_run: DELETE duplicate copies; contradiction losers are
+           SUPERSEDED (is_current=False + superseded_by=<keep_id>) — never deleted;
+           retrieval already drops superseded facts and the mark is reversible.
+           Collection access via store._get_collection() (raw `collections` dict =
+           None placeholders pre-open — the refdocs silent-no-op bug class)
         Returns DedupPlan with full audit trail.
         """
 
-    # Keep/delete priority: summaries(5) > reflections(4) > skills(3) > proposals(2) > facts(1)
+    # Keep/delete priority (duplicate arm): summaries(5) > reflections(4) > skills(3) > proposals(2) > facts(1)
     # Protected (never scanned): conversations, obsidian_notes, reference_docs, wiki_knowledge
     # GUI: Status tab → "Preview Dedup" (dry_run) / "Run Dedup" (live)
 
@@ -288,6 +314,16 @@ class EscalationTracker:
 # tracker.get_token_budget_override() → override tone-based budget
 # tracker.record_response(response) → after generation
 
+# GUI-path wiring [FIXED 2026-08-21]: the update site lived only on the unused
+# process_user_query path — in production GUI use the tracker (and the safety
+# canary) NEVER updated, so GROUNDING_PRESENCE/QUIET_COMPANIONSHIP never fired.
+# orchestrator.build_full_prompt() now calls _update_safety_trackers(context)
+# (tracker.update + safety_canary.observe) before building the system prompt
+# (the old _build_prompt_phase site removed — would double-count), and
+# gui/handlers._write_turn_telemetry() calls tracker.record_response(response)
+# so ignored-suggestion detection works.
+# Tests: tests/unit/test_escalation_gui_wiring.py (11)
+
 # Config (app_config.py):
 ESCALATION_ENABLED = True
 ESCALATION_THRESHOLD = 3          # Consecutive ELEVATED/CRISIS before strategy shift
@@ -311,6 +347,12 @@ VALENCE_MAX_NEGATIVE_FRACTION = 0.5   # max negative memories per prompt in dist
 VALENCE_NEGATIVE_THRESHOLD = 0.30
 # Tests: tests/unit/test_anti_amplification.py
 
+# Session-gap reset [2026-08-21]: _recent_distress_from_history applies the same
+# TONE_STICKINESS_MAX_GAP_MINUTES boundary as previous_tone stickiness — a stale
+# heavy turn from yesterday could re-latch the CONCERN floor after the gap-clear.
+# Timestamp-less legacy rows still count as fresh (errs toward the safety floor).
+# Tests: tests/unit/test_tone_stickiness_reset.py
+
 # Borderline arbitration [FIXED 2026-07-25] — the Stage-4 borderline LLM
 # fallback was dead since it shipped (generate_async returns a stream;
 # .strip() crashed every call → borderline cases silently defaulted
@@ -322,6 +364,29 @@ TONE_BACKSTOP_MIN_SCORE = 0.37
 # Tone-corroborated agentic veto: emotional_support @>=0.60 + tone >= CONCERN
 # vetoes the agentic gate (gate.apply_intent_veto(..., tone_level=...)).
 # Tests: tests/unit/test_tone_borderline_fallback.py
+
+# Vent-shape narrowing [2026-08-15, extended 2026-08-21]: the tone vetoes and
+# the no_search teacher require a first-person VENT — gate._is_vent_shaped now
+# strips epistemic-stance markers ("I mean/I think/I'd say/idk/imo…") before the
+# first-person test, so political/news commentary framed in first person is not
+# a vent (7 no_search exemplars were wrongly taught on 08-18). New acute arm:
+# MEDIUM/HIGH tone + non-info-seeking statement vetoes regardless of intent
+# confidence; the emotional_support arm gained an info-seeking escape ("Look it
+# up on Wikipedia" mid-distress still searches). no_search teaching requires
+# elevated tone AND vent shape AND no proposed search_terms; mis-taught entries
+# removable via scripts/purge_adaptive_exemplars.py --non-vent (scores stored
+# entries against THE deployed _is_vent_shaped; dry-run first).
+# web_search_trigger.is_personal_state_statement shares the epistemic stripping.
+# Tests: tests/unit/test_tone_arbiter_hardening.py
+
+# Tone-deferral clarify loop [NEW 2026-08-21]: a tone arm vetoing a REQUEST-shaped
+# non-vent query (imperative without a lookup cue, e.g. "review the tuesday logs" —
+# lookup-cue/interrogative shapes escape the veto instead) sets
+# AgenticDecision.deferred_request + arms a one-shot module slot; handlers append a
+# [DEFERRED REQUEST] system-prompt note (acknowledge + offer, never claim it ran);
+# a terse affirmation on the next turn re-runs the ORIGINAL query veto-exempt.
+# Vent-shaped turns never get the offer (anti-excavation); request-shaped queries
+# never teach no_search. Tests: tests/unit/test_deferred_request_clarify.py (15)
 ```
 
 ---
@@ -395,6 +460,12 @@ class IntentClassifier:
 # confusion matrix: scripts/auto_label_intents.py (LLM labels turn_records,
 # --verify = dual-model agreement); scripts/label_intents.py = optional audit.
 # Tests: tests/unit/test_intent_semantic_tier.py
+# Elevated-tone teaching guard [2026-08-21]: _tone_is_elevated() (matches both
+# tone encodings) — the confident-regex (>=0.85) and STM-refinement teachers
+# never teach when tone is elevated (crisis vents were becoming learned
+# temporal_recall prototypes on 08-18); refine_with_stm gained a tone_level
+# param, threaded from context_pipeline. Classification/routing unchanged.
+# Tests: tests/unit/test_intent_semantic_tier.py::TestElevatedToneNeverTeaches
 
 # Config (app_config.py):
 INTENT_ENABLED = True
@@ -407,6 +478,11 @@ INTENT_STYLE_INSTRUCTIONS_ENABLED = True  # [NEW 2026-07-03] per-intent style bl
 #   INTENT_SEMANTIC_MIN_MARGIN=0.05, INTENT_EXEMPLAR_LEARNING (default on)
 # Sibling adaptive-learning envs: TONE_EXEMPLAR_LEARNING, NEED_EXEMPLAR_LEARNING
 #   (store: data/adaptive_exemplars.json via utils/adaptive_exemplars)
+# encode_texts_cached(embedder, texts, cache, normalize=False) [2026-08-21]:
+#   per-text embedding cache in utils/adaptive_exemplars — all four adopters
+#   (tone, need, intent semantic tier, web-search anchors) re-encode only NEWLY
+#   learned texts on a store-version bump instead of the whole seed+learned set;
+#   each adopter owns its own cache dict (different embedding spaces never share)
 
 # Intent → response style [NEW 2026-07-03]:
 # core/tone_instructions.py:get_intent_style_instructions(intent, conf, crisis)
@@ -445,6 +521,15 @@ class MultiStageGateSystem:
                    GATE_REL_THRESHOLD_RETRIEVAL (0.60; deictic floor 0.61)
         Stage 3: optional cross-encoder rerank when many items survive
         """
+
+    # min_results [2026-08-21]: batch_gate_memories/filter_memories accept
+    # min_results — the GATE_MIN_MEMORIES=8 fail-soft floor is clamped to it
+    # (the floor can only LOWER). Threaded from gatherer_memory.
+    # _get_semantic_memories(min_gated=limit — the intent max_mems budget) →
+    # memory_coordinator.get_memories(min_gated=) → memory_retriever → gate.
+    # On 08-18 a bare "Hey" (casual_social max_mems=3) got 8 below-threshold
+    # memories forced in and 21 rendered.
+    # Tests: tests/unit/test_gate_min_results_cap.py (9)
 
     async def filter_semantic_chunks(query, chunks) -> List[Dict]: ...
     async def filter_wiki_content(query, wiki_content) -> Tuple[bool, str]: ...
@@ -494,6 +579,10 @@ class UnifiedPromptBuilder:
         reference_docs (self-docs) suppressed on distress/emotional_support
         turns (_should_suppress_reference_docs); near-empty Obsidian note
         chunks dropped (PERSONAL_NOTES_MIN_CHARS=60).
+        Self-docs allow-gate cue extension (2026-08-21): _SELF_REFERENTIAL_CUE_RE
+        gains "your updates/fixes/changes/changelog" + "fixes/updates/changes
+        on|to|in you" — "check out your updates based on docs" classified general
+        and never opened the allow-gate (TestSelfDocsAllowGate).
         retrieval_overrides / weight_overrides / intent_type come from IntentClassifier.
         Light-prompt path (2026-07-15): terse casual acks (QueryAnalysis.is_small_talk,
         set by query_checker.is_casual_acknowledgment; YAML light_prompt) short-circuit
@@ -578,6 +667,16 @@ class ResponseParser:
         before EOS: "…landed?e" / "…them.e"). Only strips a letter glued to
         terminal punctuation at end-of-text; "i.e"-abbreviations preserved.
         Wired into sanitize_for_storage() + both add_summary paths."""
+
+    @staticmethod
+    def strip_stream_special_tokens(text: str) -> str:  # [NEW 2026-08-21]
+        """Remove edge runs of <|token|> special-token markers — kimi-3
+        intermittently emits <|sep|> as the FIRST content chunk (11 stored
+        corpus replies + 11 chroma docs since 08-18); mid-text mentions
+        preserved. Folded into strip_trailing_stream_artifact so all 9
+        display/storage call sites inherit. Historical repair:
+        scripts/strip_special_token_artifacts.py (dry-run-first, daemon-guard,
+        pre-image backup, applies THE deployed strip; --apply owner-gated)."""
 ```
 
 ---
@@ -598,7 +697,12 @@ class ResponseGenerator:
         """Recovery retry when streaming returned reasoning but empty visible content
         (some reasoning models swallow the whole answer into the reasoning channel).
         Retries once non-streaming via generate_once(disable_reasoning=True), forcing
-        the answer into normal content. Yields recovered text or nothing."""
+        the answer into normal content. Yields recovered text or nothing.
+        Quality floor [2026-08-21]: _usable_reasoning_recovery — recovered text
+        must be >=12 chars and sentence-shaped (terminal punctuation or newline),
+        else discarded with a warning ('dy won't'-class garbage was stored as a
+        response on 08-18); memory_storage never stores an empty assistant
+        response either. Tests: tests/unit/test_reasoning_only_recovery.py"""
 
     # core/reasoning_stream_filter.py [NEW 2026-06]: filters INTERLEAVED reasoning/answer
     #   fragments within a streaming response — a reasoning model fusing a discarded draft
@@ -682,6 +786,12 @@ class CorpusManager:
         """Return last N episodic entries (timestamp-sorted)."""
 
     def get_recent_within_hours(hours: int = 24, max_count: int = 30) -> List[Dict]: ...
+
+    def add_summary(content):  # [2026-08-21] accepts dict payloads too
+        """Append a summary/reflection. Dict payloads are normalized
+        (content/timestamp/created_at/type) — memory_storage.py passes a dict,
+        and the old str-only path crashed so reflections never reached the
+        in-memory corpus."""
 
     def save_corpus():
         """Atomic write: temp file → os.replace()"""
@@ -898,7 +1008,10 @@ async def _persist_uploads(orchestrator, files_result):
 
 # core/prompt/gatherer_knowledge.py — Retrieval (KnowledgeRetrievalMixin)
 async def get_user_uploads(query, limit=5) -> List[Dict]:
-    """Fetch from reference_docs, filter to type='user_upload' only."""
+    """Fetch from reference_docs, filter to type='user_upload' only.
+    Staleness gate (2026-08-05): _upload_is_live keeps an upload only if fresh
+    (<= USER_UPLOADS_MAX_AGE_DAYS=7) or relevance >= USER_UPLOADS_MIN_RELEVANCE=0.62
+    (recalibrated 0.5->0.62 2026-08-14: rel=1/(1+2(1-cos)) in bge space; 0.5 ~ cos 0.5 = any-text)."""
 async def get_reference_docs(query, limit) -> List[Dict]:
     """Fetch from reference_docs, filter OUT type='user_upload'."""
 
@@ -950,6 +1063,15 @@ set_agent_mode(active: bool)
 # Copy functions check DESTINATION only (reading source is safe)
 # Always-blocked targets cannot be unlocked
 # scripts/bin/usercustomize.py auto-activates guard in child Python interpreters
+
+# utils/daemon_guard.py — Live-Daemon detection for store-writing scripts [NEW 2026-08-21]
+daemon_running(repo_root=None) -> bool   # Resolves each main.py candidate's /proc/<pid>/cwd
+                                         #   against the repo root — a relative-path launch
+                                         #   (python main.py inside the repo) can't hide it
+# Replaces the per-script pgrep-cmdline "Daemon_v1" grep (defeated 2026-08-21 by a
+# relative-path launch; an --apply ran against a live store). All 8 store-writing
+# scripts delegate; old heuristic kept as import-failure fallback.
+# Tests: tests/unit/test_daemon_guard.py (14)
 #   (when scripts/bin/ on PYTHONPATH; skipped during pytest/coverage; disable with DISABLE_FS_GUARD=1)
 
 # Shell scripts:
@@ -1053,6 +1175,9 @@ class FactExtractor:
 # ephemeral_ttl_hours(relation) -> Optional[float]; is_ephemeral_relation(relation) -> bool
 #   Used by user_profile.get_category() (profile TTL) AND memory_retriever (facts TTL) — ends an
 #   earlier 3-way drift. _DURABLE_OVERRIDES pins disability/chronic_condition/diagnosis durable.
+#   [2026-08-03] Also hosts MULTI_VALUED_RELATIONS + GENERIC_PREDICATES +
+#   is_multi_valued_relation() — cross-dedup contradiction-cluster exclusions
+#   (plural values are not conflicts; is/has relation names carry no claim identity).
 
 # Helper functions [NEW 2026-03]:
 def _detect_entity_type(subject, nlp) -> str:
@@ -1338,7 +1463,7 @@ class ContextSurfacer:
 # Integration:
 # gatherer_knowledge.py → get_proactive_insights() → context_surfacer.generate_insights()
 # Prompt: [PROACTIVE INSIGHTS] after [UNRESOLVED THREADS]
-# Parallel task in build_prompt()
+# Parallel task in build_prompt(); suppressed when _distress_active (2026-08-05)
 
 # Config:
 PROACTIVE_SURFACING_ENABLED = True
@@ -1385,7 +1510,7 @@ class ReviewResult(BaseModel):
 
 class ResponsePlanner:
     def should_plan(context) -> bool:
-        """Skips for: small-talk, crisis/elevated tone, CASUAL_SOCIAL intent, <8 word queries, disabled config."""
+        """Skips for: small-talk, crisis/elevated/concern tone (CONCERN = LIGHT SUPPORT mode, a plan contradicts it — 2026-08-05), CASUAL_SOCIAL intent, <8 word queries, disabled config."""
 
     async def create_plan(query, context_signals) -> Optional[ResponsePlan]:
         """Lightweight LLM call (~200 tokens, 5s timeout) → ResponsePlan."""
@@ -1435,7 +1560,7 @@ def extract_claims_from_text(text, entity_resolver=None) -> List[ClaimKey]
 
 # Cascade triggers:
 # 1. Orchestrator: after correction detection
-# 2. Cross-deduplicator: after contradiction clusters
+# 2. Cross-deduplicator: after contradiction clusters (losers SUPERSEDED, not deleted [2026-08-03])
 # 3. Shutdown: claims extracted at summary creation time
 
 # Config:
@@ -2374,6 +2499,11 @@ WEB_SEARCH_DAILY_CREDIT_LIMIT = 100
 WEB_SEARCH_CACHE_TTL_HOURS = 72
 # Fixes [2026-03-23]: Tavily 400-char query truncation (web_search_manager.py),
 #   long paste prefilter >500 chars skips LLM (web_search_trigger.py:quick_prefilter_should_skip)
+# Personal-state guard [2026-08-05]: is_personal_state_statement() — a first-person
+#   state statement with no question/lookup shape ("I was taking 900mg... don't want
+#   to start it again") never reaches the LLM trigger via the referential-followup
+#   bypass (the bare "it" is the user's own situation, not a search target), and
+#   teaches adaptive no_search through the deterministic channel.
 
 # User Location (query localization) [NEW 2026-07-02]
 LOCATION_ENABLED = True                 # master switch (YAML section `location`)
@@ -3160,6 +3290,14 @@ async def generate_once(prompt, model_name=None, system_prompt=..., max_tokens=2
 #   (used internally by reasoning-only recovery; not a normal-call knob). [NEW 2026-06]
 #   native reasoning is also suppressed automatically w/ tools.
 # is_tool_capable() handles aliases + resolved names; adds "deepseek-v4" pattern.
+# _classify_api_error [2026-08-21]: [CREDITS EXHAUSTED] classification added for
+#   HTTP 402 / "requires more credits" (OpenRouter payment errors).
+# Streaming API-error fail-fast [2026-08-21]: gui/handlers checks the
+#   accumulated stream head (first <=5 chunks) against API_ERROR_PREFIXES —
+#   an error-sentinel head aborts the stream display and shows the friendly
+#   module-level _API_ERROR_DISPLAY template instead (raw OpenRouter HTTP-402
+#   JSON was streamed verbatim to the user 3x on 08-18); same guard on the
+#   agentic path. Tests: tests/unit/test_api_error_fail_fast.py (11)
 
 # memory/memory_consolidator.py — single extractive path (mid-session + shutdown)
 EXTRACTIVE_SUMMARY_PROMPT                  # one copy of the extractive prompt

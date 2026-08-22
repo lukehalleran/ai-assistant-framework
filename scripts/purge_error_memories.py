@@ -12,8 +12,13 @@ Selection uses THE deployed retrieval predicate
 (memory.utils.is_junk_conversation_doc) — the same function that now hides
 these docs at retrieval time — never a re-derivation.
 
-Scans BOTH stores:
+Scans the stores:
   - ChromaDB `conversations` collection (CHROMA_PATH)
+  - ChromaDB `summaries` collection [2026-08-03: the cross-dedup queue review
+    found ~a dozen "[API Error] 402" docs stored as summaries — long and
+    letter-rich, they evaded the length/letter-based junk guard; selection
+    uses the deployed memory.utils.is_junk_summary, which now rejects
+    API-error sentinels]
   - the corpus JSON (CORPUS_FILE)
 
 Safety:
@@ -39,10 +44,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from memory.utils import is_junk_conversation_doc  # THE deployed predicate
+from memory.utils import is_junk_conversation_doc, is_junk_summary  # THE deployed predicates
 
 
 def _daemon_running() -> bool:
+    try:
+        from utils.daemon_guard import daemon_running
+        return daemon_running()
+    except Exception:
+        pass
+    # Fallback (guard module unavailable): old cmdline heuristic. Known hole:
+    # a relative-path launch has no repo name in its cmdline (2026-08-21).
     try:
         out = subprocess.run(
             ["pgrep", "-af", "main.py"], capture_output=True, text=True
@@ -60,6 +72,12 @@ def _scan_chroma():
     docs = store.list_all("conversations")
     hits = [d for d in docs if is_junk_conversation_doc(content=d.get("content", ""))]
     return store, docs, hits
+
+
+def _scan_summaries(store):
+    docs = store.list_all("summaries")
+    hits = [d for d in docs if is_junk_summary(d.get("content", ""))]
+    return docs, hits
 
 
 def _scan_corpus():
@@ -103,11 +121,14 @@ def main() -> int:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     store, chroma_docs, chroma_hits = _scan_chroma()
+    summary_docs, summary_hits = _scan_summaries(store)
     cm, corpus_entries, corpus_hits = _scan_corpus()
 
     print(f"Scanned {len(chroma_docs)} chroma conversation docs, "
+          f"{len(summary_docs)} chroma summaries, "
           f"{len(corpus_entries)} corpus entries.")
     _preview("Chroma `conversations`", chroma_hits, lambda d: d.get("content"))
+    _preview("Chroma `summaries`", summary_hits, lambda d: d.get("content"))
     _preview("Corpus JSON", corpus_hits,
              lambda e: f"User: {e.get('query','')} / Assistant: {e.get('response','')}")
 
@@ -115,11 +136,13 @@ def main() -> int:
     with open(candidates_path, "w") as f:
         for d in chroma_hits:
             f.write(json.dumps({"store": "chroma", **d}, default=str) + "\n")
+        for d in summary_hits:
+            f.write(json.dumps({"store": "chroma_summaries", **d}, default=str) + "\n")
         for e in corpus_hits:
             f.write(json.dumps({"store": "corpus", "entry": e}, default=str) + "\n")
     print(f"\nFull candidate list written to {candidates_path}")
 
-    if not chroma_hits and not corpus_hits:
+    if not chroma_hits and not summary_hits and not corpus_hits:
         print("Nothing to purge.")
         return 0
 
@@ -135,6 +158,8 @@ def main() -> int:
     with open(preimage, "w") as f:
         for d in chroma_hits:
             f.write(json.dumps({"store": "chroma", **d}, default=str) + "\n")
+        for d in summary_hits:
+            f.write(json.dumps({"store": "chroma_summaries", **d}, default=str) + "\n")
         for e in corpus_hits:
             f.write(json.dumps({"store": "corpus", "entry": e}, default=str) + "\n")
     print(f"Pre-image backup written to {preimage}")
@@ -146,6 +171,13 @@ def main() -> int:
         for i in range(0, len(ids), 200):
             coll.delete(ids=ids[i : i + 200])
         print(f"Deleted {len(ids)} docs from chroma `conversations`.")
+
+    sum_ids = [d["id"] for d in summary_hits if d.get("id")]
+    if sum_ids:
+        coll = store._get_collection("summaries")
+        for i in range(0, len(sum_ids), 200):
+            coll.delete(ids=sum_ids[i : i + 200])
+        print(f"Deleted {len(sum_ids)} docs from chroma `summaries`.")
 
     # Corpus: drop hit entries, save through the manager's atomic write
     if corpus_hits:

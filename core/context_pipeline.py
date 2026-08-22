@@ -11,6 +11,11 @@ Topic stage: anaphoric continuations / referent corrections ("It was...",
 fresh-classified (query_checker.is_anaphoric_continuation, 2026-07-28 —
 surface-keyword classification of an unresolvable fragment mislabeled an
 illness-frequency message as "Exercise Routine" and derailed the turn).
+STM gate (2026-08-05): _should_run_stm() honors the depth counter OR recent
+corpus history (≤6h) — depth is in-process state, so a mid-day restart used
+to drop the [SHORT-TERM CONTEXT SUMMARY] from the first messages exactly when
+the model reconstructs a timeline across a gap (a first-message agentic
+answer asserted "3+ days of pain" for a ~2-day episode).
 Publishes live stage-progress lines to utils.turn_progress (no-op outside a turn)
 so the streaming UI shows pipeline activity instead of a single "Thinking..." stall.
 
@@ -36,6 +41,7 @@ from typing import List, Dict, Any, Optional, Protocol, Union, TYPE_CHECKING
 from enum import Enum
 import asyncio
 import logging
+from datetime import datetime, timedelta
 
 from config.app_config import (
     USE_STM_PASS,
@@ -409,7 +415,7 @@ class ContextPipeline:
             and not is_small_talk
             and (intent_result is None or intent_result.intent not in _skip_rewrite_intents)
         )
-        run_stm = not use_raw_mode and self._should_run_stm()
+        run_stm = not use_raw_mode and self._should_run_stm(conversation_history)
 
         if run_rewrite and run_stm:
             # Both needed — run in parallel for ~1-2s savings
@@ -457,7 +463,8 @@ class ContextPipeline:
         if stm_summary and intent_result and self._intent_classifier:
             stm_intent_str = stm_summary.get("intent") if isinstance(stm_summary, dict) else None
             intent_result = self._intent_classifier.refine_with_stm(
-                intent_result, stm_intent_str, query=user_input
+                intent_result, stm_intent_str, query=user_input,
+                tone_level=tone_level.value,
             )
 
         # Stage 7: Identity Injection
@@ -863,13 +870,52 @@ Rewritten query (just the rewritten text, no explanation):"""
 
         return None
 
-    def _should_run_stm(self) -> bool:
-        """Check if STM analysis should run based on config and conversation depth."""
+    def _should_run_stm(self, conversation_history: Optional[List[Dict]] = None) -> bool:
+        """Check if STM analysis should run.
+
+        Depth gate PLUS recent-history override (2026-08-05): the depth
+        counter is IN-PROCESS state — a mid-day restart zeroes it, so the
+        first `stm_min_depth` messages after every restart ran WITHOUT the
+        [SHORT-TERM CONTEXT SUMMARY] (no temporal_facts, no restate-warning)
+        exactly when the model has to reconstruct "where were we" across a
+        gap. Live miss: a first-message-of-session agentic answer asserted
+        "three-plus days of documented pain" for a ~2-day episode, blending
+        the current episode with July pain memories. When the corpus shows a
+        recent conversation (same-day continuity), there IS short-term
+        context worth reading — run STM regardless of process depth.
+        """
         if not self._use_stm:
             return False
         if not self.stm_analyzer:
             return False
-        return self._conversation_depth >= self._stm_min_depth
+        if self._conversation_depth >= self._stm_min_depth:
+            return True
+        return self._has_recent_history(conversation_history)
+
+    @staticmethod
+    def _has_recent_history(
+        history: Optional[List[Dict]], max_gap_hours: float = 6.0
+    ) -> bool:
+        """True when the newest history entry is within max_gap_hours."""
+        if not history:
+            return False
+        newest = None
+        for e in history:
+            ts = e.get("timestamp") if isinstance(e, dict) else None
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except ValueError:
+                    continue
+            if isinstance(ts, datetime) and ts.tzinfo is None:
+                if newest is None or ts > newest:
+                    newest = ts
+        if newest is None:
+            return False
+        try:
+            return (datetime.now() - newest) <= timedelta(hours=max_gap_hours)
+        except TypeError:
+            return False
 
     async def _analyze_stm(
         self,

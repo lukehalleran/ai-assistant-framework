@@ -245,6 +245,13 @@ generation. Eval generation must bypass ALL of these:
 9. Thread extraction/resolution (shutdown) — updates thread store
 10. Summary generation (shutdown) — creates compressed summaries
 
+**2026-08-21:** `escalation_tracker.record_response()` now runs in
+`gui/handlers._write_turn_telemetry()` (the production GUI path), and
+`build_full_prompt()` itself updates the EscalationTracker + SafetyCanary via
+`_update_safety_trackers(context)` before composing the system prompt. Both are
+in-memory-only (no persistence), but replay through `build_full_prompt` is no
+longer state-neutral within a single process — fresh-process runs are unaffected.
+
 ---
 
 ## Phase 1: Instrumentation & Snapshot Replay [COMPLETE]

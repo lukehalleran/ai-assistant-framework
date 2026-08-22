@@ -291,7 +291,7 @@ class CorpusManager:
         from core.response_parser import ResponseParser
         # Endpoint artifact guard (2026-08-03): mirror the Chroma-side stray-'e' strip.
         summary["content"] = ResponseParser.strip_trailing_stream_artifact(
-            summary.get("content", "") or ""
+            str(summary.get("content", "") or "")
         )
         if is_junk_summary(summary.get("content", "")):
             logger.warning(
@@ -305,7 +305,7 @@ class CorpusManager:
         if len(self.corpus) > self.max_entries:
             self.corpus = self.corpus[-self.max_entries:]
         self.save_corpus()
-        logger.debug(f"[CorpusManager] Added summary: {content[:50]}...")
+        logger.debug(f"[CorpusManager] Added summary: {summary.get('content', '')[:50]}...")
 
     # Maintenance helpers
     def clear_corpus(self, keep_summaries: bool = True):

@@ -22,13 +22,26 @@ Module Contract
   - _backfill_recent_conversations(...) -> List
     Delegates to ContentHygiene._backfill_recent_conversations().
   - Post-budget floors (Step 7.1): Guarantees minimum recent_conversations (PROMPT_MIN_RECENT_FLOOR=5),
-    summaries (PROMPT_MAX_SUMMARIES), and reflections (PROMPT_MAX_REFLECTIONS) survive budget trimming.
+    recent_summaries (PROMPT_MIN_SUMMARIES_FLOOR=2), and recent_reflections
+    (PROMPT_MIN_REFLECTIONS_FLOOR=1) survive budget trimming. 2026-08-14: floors target the
+    RENDERED split keys (the combined summaries/reflections keys are never rendered — the old
+    floors topped up dead keys with retrieval calls whose output never reached the prompt) and
+    are survival MINIMUMS, not restore-to-max (which would undo the trim).
   - Skill activation (Step 5): Creates SkillActivationPolicy in __init__, over-fetches procedural
     skills by SKILL_ACTIVATION_FETCH_MULTIPLIER (3x), applies policy after parallel gather completes
     (intent suppression, score threshold, STM bonus, cooldown filter, cap to max_skills).
   - Visual memory gating: passes `intent_type` into `get_visual_memories()` so image retrieval is
     gated by a visual/recall intent signal (a "show me"-type request), not a bare entity-name match
     (see gatherer_knowledge._query_wants_visual).
+  - Proactive-insights distress gate (2026-08-05): _distress_active also suppresses the
+    proactive_insights task — speculative cross-domain suggestions were landing in
+    distress-adjacent conversations (same class as the reference-docs gate below).
+  - Reference-docs ALLOW-gate (2026-08-05): _should_include_reference_docs() — self-docs
+    surface only on meta_conversational/technical_help/project_work intents or a
+    self-referential query cue (_SELF_REFERENTIAL_CUE_RE: "daemon", "your memory",
+    "how do you score", ...); a conversational-tone personal pain turn had pulled 15
+    [DAEMON DOCUMENTATION] chunks because the docs semantically match emotional language.
+    The 2026-07-25 suppressions below always win.
   - Reference-docs distress gate (2026-07-25): _should_suppress_reference_docs() drops the
     [DAEMON DOCUMENTATION] self-docs task on distress/emotional_support turns — Daemon's own
     tone-detection docs semantically match distress language and were leaking crisis keyword
@@ -57,6 +70,7 @@ Module Contract
 """
 
 import os
+import re
 import time
 import asyncio
 from typing import Dict, List, Optional, Any
@@ -318,6 +332,12 @@ WIKI_SEMANTIC_SUPPRESS_INTENTS = frozenset({
 USER_PROFILE_FACTS_PER_CATEGORY = _cfg_int("user_profile_facts_per_category", 3)
 PROMPT_MAX_PERSONAL_NOTES = _cfg_int("prompt_max_personal_notes", 5)
 PROMPT_MIN_RECENT_FLOOR = _cfg_int("prompt_min_recent_floor", 5)
+# Post-budget survival floors for the rendered summary/reflection sections
+# (2026-08-14): the budget can now trim recent_summaries/recent_reflections
+# (they were unmetered dead keys before), so the Step-7.1 floors guarantee a
+# minimum survives — but only a minimum; restoring to MAX would undo the trim.
+PROMPT_MIN_SUMMARIES_FLOOR = _cfg_int("prompt_min_summaries_floor", 2)
+PROMPT_MIN_REFLECTIONS_FLOOR = _cfg_int("prompt_min_reflections_floor", 1)
 
 # _staleness_prefix, _is_multimodal_model, _load_upload_image moved to formatter.py
 # Re-exported above via: from .formatter import _staleness_prefix, _is_multimodal_model, _load_upload_image
@@ -337,6 +357,43 @@ def _should_suppress_reference_docs(files_suppress: bool, distress_active: bool,
         or distress_active
         or str(intent_type or "").lower() == "emotional_support"
     )
+
+
+# Self-docs are ALLOW-listed, not just distress-suppressed (2026-08-05): a
+# conversational-tone personal pain turn pulled 15 [DAEMON DOCUMENTATION]
+# chunks (tone-detection docs, synthesis notes, even a lecture transcript)
+# because distress suppression didn't fire and the docs semantically match
+# emotional language. Self-docs exist for meta/technical queries about Daemon
+# itself — they surface only for those intents or an explicit self-referential
+# query cue.
+_SELF_DOC_INTENTS = {"meta_conversational", "technical_help", "project_work"}
+_SELF_REFERENTIAL_CUE_RE = re.compile(
+    r"\b(?:daemon|agentic|chroma(?:db)?|"
+    r"your\s+(?:memory|memories|code|codebase|prompt|prompts|architecture|"
+    r"retrieval|scoring|pipeline|system|tools?|docs|documentation|gate|collections?|"
+    r"updates?|fixes|changes|changelog)|"
+    r"(?:fixes|updates?|changes)\s+(?:on|to|in)\s+you|"
+    r"how\s+(?:do|does|did)\s+you\s+(?:work|remember|retrieve|score|decide|search)|"
+    r"truth[_ ]scores?|knowledge\s+graph)\b",
+    re.IGNORECASE,
+)
+
+
+def _should_include_reference_docs(
+    query: str, intent_type=None, files_suppress: bool = False, distress_active: bool = False
+) -> bool:
+    """Allow-list gate for the self-docs (reference_docs) retrieval task.
+
+    Order matters: the 2026-07-25 suppressions (file uploads, distress,
+    emotional_support intent) always win; otherwise self-docs surface only
+    when the turn is plausibly ABOUT Daemon — meta/technical/project intent
+    or a self-referential cue in the query.
+    """
+    if _should_suppress_reference_docs(files_suppress, distress_active, intent_type):
+        return False
+    if str(intent_type or "").lower() in _SELF_DOC_INTENTS:
+        return True
+    return bool(_SELF_REFERENTIAL_CUE_RE.search(query or ""))
 
 
 def _should_include_note_images(model_name: str, query: str, intent_type=None) -> bool:
@@ -1019,19 +1076,23 @@ class UnifiedPromptBuilder:
                 )
 
             # Reference documents (system docs, project outlines - excludes user uploads)
-            # Suppressed when user uploads files (file content dominates) and on
-            # distress/emotional turns (see _should_suppress_reference_docs).
-            _suppress_self_docs = _should_suppress_reference_docs(
+            # Allow-list gate (2026-08-05): self-docs surface only on
+            # meta/technical/project turns or a self-referential query cue;
+            # the 2026-07-25 suppressions (file uploads, distress,
+            # emotional_support) still always win. See
+            # _should_include_reference_docs.
+            _include_self_docs = _should_include_reference_docs(
+                user_input,
+                intent_type,
                 kwargs.get("_suppress_reference_docs", False),
                 _distress_active,
-                intent_type,
             )
-            if _suppress_self_docs and not kwargs.get("_suppress_reference_docs", False):
+            if not _include_self_docs and not kwargs.get("_suppress_reference_docs", False):
                 logger.info(
-                    f"[BUILD_PROMPT] Suppressing reference_docs "
-                    f"(distress={_distress_active}, intent={intent_type})"
+                    f"[BUILD_PROMPT] Skipping reference_docs "
+                    f"(distress={_distress_active}, intent={intent_type} — not a self-docs turn)"
                 )
-            if not _suppress_self_docs and eff_max_reference_docs > 0:
+            if _include_self_docs and eff_max_reference_docs > 0:
                 tasks["reference_docs"] = asyncio.create_task(
                     _timed_task("reference_docs", self.context_gatherer.get_reference_docs(user_input, eff_max_reference_docs))
                 )
@@ -1072,8 +1133,15 @@ class UnifiedPromptBuilder:
                 _timed_task("unresolved_threads", self.context_gatherer.get_unresolved_threads(eff_max_surfaced_threads))
             )
 
-            # Proactive cross-domain insights (non-blocking: warm cache or background warmup)
-            if eff_max_proactive > 0:
+            # Proactive cross-domain insights (non-blocking: warm cache or background warmup).
+            # Distress gate (2026-08-05): speculative cross-domain suggestions
+            # ("D&D could enhance your teamwork skills") were injected into
+            # distress-adjacent medical conversations — same class as the
+            # reference-docs distress suppression. Elevated tone gets no
+            # proactive insights; they return when the session is conversational.
+            if eff_max_proactive > 0 and _distress_active:
+                logger.info("[BUILD_PROMPT] Proactive insights suppressed (distress session)")
+            elif eff_max_proactive > 0:
                 _surfacer = getattr(self.memory_coordinator, 'context_surfacer', None)
                 if _surfacer and _surfacer._session_insights is not None:
                     # Cache warm — retrieve instantly via gatherer (adds attribution + citations)
@@ -1407,9 +1475,14 @@ class UnifiedPromptBuilder:
             try:
                 mems = context.get("memories", []) or []
                 recents = context.get("recent_conversations", []) or []
-                if len(mems) < PROMPT_MAX_MEMS:
+                # Respect intent-specific memory caps. Pre-2026-08-21 this
+                # top-up used the global PROMPT_MAX_MEMS, so a casual_social
+                # profile with max_mems=3 could be inflated back to the global
+                # target after hygiene/dedup.
+                target_mems = max(0, int(eff_max_mems or 0))
+                if len(mems) < target_mems:
                     # Pull extra recent conversations beyond the ones already shown
-                    extra_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MAX_RECENT + PROMPT_MAX_MEMS)
+                    extra_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MAX_RECENT + target_mems)
                     # Build keys for already used items
                     def _key(x):
                         return (str(x.get("query", "")) + str(x.get("response", ""))).strip().lower()
@@ -1427,11 +1500,11 @@ class UnifiedPromptBuilder:
                         else:
                             skipped_count += 1
 
-                    needed = max(0, PROMPT_MAX_MEMS - len(mems))
+                    needed = max(0, target_mems - len(mems))
                     if needed:
                         mems.extend(filler[:needed])
                         context["memories"] = mems
-                        logger.debug(f"MEMORY TOP-UP: Added {min(needed, len(filler))} new memories (had {len(mems) - min(needed, len(filler))}, target {PROMPT_MAX_MEMS}), skipped {skipped_count} duplicates")
+                        logger.debug(f"MEMORY TOP-UP: Added {min(needed, len(filler))} new memories (had {len(mems) - min(needed, len(filler))}, target {target_mems}), skipped {skipped_count} duplicates")
             except Exception as e:
                 logger.warning(f"Memory top-up failed: {e}")
 
@@ -1440,9 +1513,12 @@ class UnifiedPromptBuilder:
             # Step 6.2: Ensure minimum summaries and reflections by pulling directly from storage
             try:
                 logger.debug(f"START OF SUMMARIES BLOCK: memories count = {len(context.get('memories', []))}")
-                # Summaries — if we have too few, pull most recent without gating
-                if len(context.get("summaries", []) or []) < PROMPT_MAX_SUMMARIES:
-                    needed = PROMPT_MAX_SUMMARIES - len(context.get("summaries", []))
+                # Summaries — if we have too few, pull most recent without gating.
+                # Targets recent_summaries: the formatter renders the SPLIT keys
+                # only, so topping up the combined "summaries" key (pre-2026-08-14)
+                # added content that never reached the prompt.
+                if len(context.get("recent_summaries", []) or []) < PROMPT_MAX_RECENT_SUMMARIES:
+                    needed = PROMPT_MAX_RECENT_SUMMARIES - len(context.get("recent_summaries", []))
                     try:
                         # try memory_coordinator first (supports sync or async)
                         if hasattr(self.memory_coordinator, 'get_summaries'):
@@ -1471,7 +1547,9 @@ class UnifiedPromptBuilder:
                         norm.append(s)
                     stored = norm
 
-                    have = { (s.get('content') or '').strip() for s in (context.get('summaries') or []) if isinstance(s, dict) }
+                    have = { (s.get('content') or '').strip()
+                             for key in ('recent_summaries', 'semantic_summaries')
+                             for s in (context.get(key) or []) if isinstance(s, dict) }
                     add = []
                     for s in (stored or [])[::-1]:  # assume stored oldest->newest; reverse to pick newest first
                         if isinstance(s, dict) and (s.get('content') or '').strip() and (s.get('content').strip() not in have):
@@ -1480,11 +1558,12 @@ class UnifiedPromptBuilder:
                         if len(add) >= needed:
                             break
                     if add:
-                        context['summaries'] = (context.get('summaries') or []) + add
+                        context['recent_summaries'] = (context.get('recent_summaries') or []) + add
 
                 # Reflections — if too few, pull most recent historical reflections
-                if len(context.get("reflections", []) or []) < PROMPT_MAX_REFLECTIONS:
-                    needed = PROMPT_MAX_REFLECTIONS - len(context.get("reflections", []))
+                # (recent_reflections is the rendered key; see summaries note above)
+                if len(context.get("recent_reflections", []) or []) < PROMPT_MAX_RECENT_REFLECTIONS:
+                    needed = PROMPT_MAX_RECENT_REFLECTIONS - len(context.get("recent_reflections", []))
                     stored_refl = []
                     try:
                         if hasattr(self.memory_coordinator, 'get_reflections'):
@@ -1501,7 +1580,9 @@ class UnifiedPromptBuilder:
                         logger.warning(f"[PromptBuilder] Reflection retrieval failed: {e}")
                         stored_refl = []
 
-                    have_refl = { (r.get('content') or '').strip() for r in (context.get('reflections') or []) if isinstance(r, dict) }
+                    have_refl = { (r.get('content') or '').strip()
+                                  for key in ('recent_reflections', 'semantic_reflections')
+                                  for r in (context.get(key) or []) if isinstance(r, dict) }
                     add_refl = []
                     for r in (stored_refl or [])[::-1]:
                         if isinstance(r, dict):
@@ -1512,7 +1593,7 @@ class UnifiedPromptBuilder:
                             if len(add_refl) >= needed:
                                 break
                     if add_refl:
-                        context['reflections'] = (context.get('reflections') or []) + add_refl
+                        context['recent_reflections'] = (context.get('recent_reflections') or []) + add_refl
             except (TypeError, AttributeError, KeyError) as e:
                 logger.debug(f"Reflection pre-budget top-up failed: {e}")
 
@@ -1554,9 +1635,10 @@ class UnifiedPromptBuilder:
                             context['recent_conversations'] = (context.get('recent_conversations') or []) + add_recent
                             logger.info(f"[POST-BUDGET FLOOR] Restored {len(add_recent)} recent conversations (had {len(recent_convos)}, floor={PROMPT_MIN_RECENT_FLOOR})")
 
-                # Summaries floor
-                if len(context.get("summaries", []) or []) < PROMPT_MAX_SUMMARIES:
-                    needed = PROMPT_MAX_SUMMARIES - len(context.get("summaries", []))
+                # Summaries floor — survival minimum for the rendered key only
+                # (restoring to MAX here would undo the budget trim)
+                if len(context.get("recent_summaries", []) or []) < PROMPT_MIN_SUMMARIES_FLOOR:
+                    needed = PROMPT_MIN_SUMMARIES_FLOOR - len(context.get("recent_summaries", []))
                     stored = []
                     try:
                         if hasattr(self.memory_coordinator, 'get_summaries'):
@@ -1581,7 +1663,9 @@ class UnifiedPromptBuilder:
                         norm.append(s)
                     stored = norm
 
-                    have = { (s.get('content') or '').strip() for s in (context.get('summaries') or []) if isinstance(s, dict) }
+                    have = { (s.get('content') or '').strip()
+                             for key in ('recent_summaries', 'semantic_summaries')
+                             for s in (context.get(key) or []) if isinstance(s, dict) }
                     add = []
                     for s in (stored or [])[::-1]:
                         if isinstance(s, dict):
@@ -1592,13 +1676,13 @@ class UnifiedPromptBuilder:
                             if len(add) >= needed:
                                 break
                     if add:
-                        context['summaries'] = (context.get('summaries') or []) + add
+                        context['recent_summaries'] = (context.get('recent_summaries') or []) + add
 
                 logger.warning(f"AFTER SUMMARIES TOP-UP: memories count = {len(context.get('memories', []))}")
 
-                # Reflections floor
-                if len(context.get("reflections", []) or []) < PROMPT_MAX_REFLECTIONS:
-                    needed = PROMPT_MAX_REFLECTIONS - len(context.get("reflections", []))
+                # Reflections floor — survival minimum for the rendered key only
+                if len(context.get("recent_reflections", []) or []) < PROMPT_MIN_REFLECTIONS_FLOOR:
+                    needed = PROMPT_MIN_REFLECTIONS_FLOOR - len(context.get("recent_reflections", []))
                     stored_refl = []
                     try:
                         if hasattr(self.memory_coordinator, 'get_reflections'):
@@ -1625,7 +1709,9 @@ class UnifiedPromptBuilder:
                         norm_r.append(r)
                     stored_refl = norm_r
 
-                    have_refl = { (r.get('content') or '').strip() for r in (context.get('reflections') or []) if isinstance(r, dict) }
+                    have_refl = { (r.get('content') or '').strip()
+                                  for key in ('recent_reflections', 'semantic_reflections')
+                                  for r in (context.get(key) or []) if isinstance(r, dict) }
                     add_refl = []
                     for r in (stored_refl or [])[::-1]:
                         if isinstance(r, dict):
@@ -1636,7 +1722,7 @@ class UnifiedPromptBuilder:
                             if len(add_refl) >= needed:
                                 break
                     if add_refl:
-                        context['reflections'] = (context.get('reflections') or []) + add_refl
+                        context['recent_reflections'] = (context.get('recent_reflections') or []) + add_refl
             except (TypeError, AttributeError, KeyError) as e:
                 logger.debug(f"Post-budget floor top-up failed: {e}")
 

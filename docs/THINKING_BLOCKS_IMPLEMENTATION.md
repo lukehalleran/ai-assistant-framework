@@ -162,7 +162,7 @@ A **streaming-layer** defense for reasoning models (via OpenRouter) that interle
 
 Shared by `core/response_generator.py` (`generate_streaming_response`) and `core/agentic/controller.py` (`_generate_final_response`) so the two streaming paths cannot drift.
 
-**Reasoning-only recovery (`ResponseGenerator._recover_reasoning_only()`, NEW 2026-06):** the complementary failure — a reasoning model swallows the *entire* answer into the hidden reasoning channel and streams **empty** visible content. When the filter reports `reasoning_seen` but not `content_emitted`, the generator closes the dangling `<thinking>` marker and retries **once** non-streaming via `generate_once(disable_reasoning=True)`, forcing the answer into normal content instead of resolving to an empty/dead response.
+**Reasoning-only recovery (`ResponseGenerator._recover_reasoning_only()`, NEW 2026-06):** the complementary failure — a reasoning model swallows the *entire* answer into the hidden reasoning channel and streams **empty** visible content. When the filter reports `reasoning_seen` but not `content_emitted`, the generator closes the dangling `<thinking>` marker and retries **once** non-streaming via `generate_once(disable_reasoning=True)`, forcing the answer into normal content instead of resolving to an empty/dead response. **Quality floor (2026-08-21):** the recovered text must pass `_usable_reasoning_recovery` — ≥12 chars and sentence-shaped (terminal punctuation or newline) — otherwise it is discarded with a warning ("dy won't"-class garbage had been recovered and stored as a response on 08-18); `memory/memory_storage.py` also never stores an empty assistant response.
 
 ### 7. Test Suite (`tests/test_thinking_blocks.py`)
 

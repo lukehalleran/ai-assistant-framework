@@ -20,6 +20,11 @@ Workflow:
     #   ... review / edit data/graph_junk_candidates.txt ...
     python scripts/graph_junk_cleanup.py --apply         # remove uncommented ids (backs up first)
 
+A dry run never overwrites an existing candidate file (it may hold curation);
+fresh scans go to a timestamped `.rescan-<ts>` sibling instead. (2026-08-14: a
+pre-apply dry run clobbered a curated file's uncommented ids, so --apply
+silently removed nothing.)
+
 Tiers in the candidate file:
     T1 (uncommented) — high-confidence mechanical junk: numeric/temporal/
                        measurement fragments, bare stopwords, verb-phrase
@@ -200,7 +205,18 @@ def main():
 
     if not args.apply:
         tiers = classify(gm)
-        write_candidates(tiers, args.candidates)
+        # NEVER overwrite an existing candidate file — it may hold the
+        # owner's curation (2026-08-14: a pre-apply dry run clobbered a
+        # curated file's uncommented ids, so the subsequent --apply removed
+        # nothing). Fresh scans go to a timestamped sibling instead.
+        out_path = args.candidates
+        if os.path.exists(out_path):
+            from datetime import datetime
+            base, ext = os.path.splitext(out_path)
+            out_path = f"{base}.rescan-{datetime.now():%Y%m%d_%H%M%S}{ext}"
+            print(f"[candidates] {args.candidates} exists (possibly curated) — "
+                  f"writing fresh scan to {out_path} instead")
+        write_candidates(tiers, out_path)
         print("\n=== DRY-RUN (no changes made) ===")
         print(f"  T1 mechanical junk (remove by default): {len(tiers['T1'])}")
         print(f"  T2 conversational snippets (review):     {len(tiers['T2'])}")
@@ -211,7 +227,7 @@ def main():
                 print(f"\n  {t} sample:")
                 for nid, dn, deg, es in sample:
                     print(f"    {nid!r:34} dn={dn!r:30} deg={deg}")
-        print(f"\nCandidate file written: {args.candidates}")
+        print(f"\nCandidate file written: {out_path}")
         print("Review/edit it, then re-run with --apply to remove uncommented ids.")
         return
 

@@ -24,11 +24,17 @@ Module Contract:
     keeps the thinking indicator up instead of showing literal tags
   - strip_thinking_tag_leaks(text) → str: Remove partial/malformed thinking tags
   - strip_trailing_stream_artifact(text) → str: Remove the kimi-3 endpoint's stray trailing 'e'
-    (lone content token before EOS: "…landed?e" / "…them.e"); "i.e"-style abbreviations preserved
+    (lone content token before EOS: "…landed?e" / "…them.e"); "i.e"-style abbreviations preserved.
+    Also applied at the DISPLAY boundary by the agentic/raw/duel handler paths (2026-08-14 —
+    the enhanced path sanitizes via _sanitize_response_text already).
+  - strip_trailing_stream_error(text) → str: Remove a "[Streaming Error...]" marker APPENDED
+    after partial content (stream died mid-generation); a marker-ONLY response is left intact
+    so memory_storage's API-error guard catches and logs it as the transport failure it is.
   - sanitize_for_storage(text) → str: Final pre-persistence defense — removes empty
     <thinking></thinking> pairs (synthetic streaming markers), leading tagged thinking
-    blocks, unclosed leading thinking (returns ""), stray tag fragments, and reflection
-    blocks. Called by memory_storage.store_interaction() so NO storage path can persist
+    blocks, unclosed leading thinking (returns ""), stray tag fragments, reflection
+    blocks, the trailing stream artifact, and a trailing streaming-error marker.
+    Called by memory_storage.store_interaction() so NO storage path can persist
     reasoning artifacts into memory (where they get replayed into prompts and imitated).
   - strip_reflection_blocks(response) → str: Remove <reflect> and [SYSTEM QUALITY REFLECTION] blocks
   - strip_xml_wrappers(text) → str: Unwrap <result>/<answer>/<output>/<response> wrappers
@@ -89,6 +95,15 @@ class ResponseParser:
     _TRAILING_STREAM_ARTIFACT_RE = re.compile(r"[.!?…]['\"”’)\]]*e$")
     _SINGLE_LETTER_ABBREV_RE = re.compile(r"(?:^|[\s(\[])[A-Za-z]\.e$")
 
+    # ResponseGenerator's streaming catch-all appends its sentinel to whatever
+    # already streamed, in two shapes: "[Streaming Error: <msg>]" (bracketed,
+    # possibly truncated) and "[Streaming Error] <msg>" (message outside the
+    # bracket, rest of line). Anchored at end-of-text so a QUOTED marker
+    # mid-conversation is untouched.
+    _TRAILING_STREAM_ERROR_RE = re.compile(
+        r"\s*\[Streaming Error(?::[^\]\n]*\]?|\][^\n]*)\s*$"
+    )
+
     @staticmethod
     def has_incomplete_thinking_block(response: str) -> bool:
         """Check if response has an opening think tag but no closing tag yet.
@@ -136,9 +151,30 @@ class ResponseParser:
             return False
         return not ResponseParser._THINK_TAG_LEAK_RE.sub('', text).strip()
 
+    # Chat-template special tokens leaking into the content stream at the
+    # BOUNDARIES of a response (2026-08-21: kimi-3 intermittently emits
+    # <|sep|> as the first content chunk — 11 stored corpus replies began
+    # "<|sep|>That's ..."). Leading/trailing runs only: mid-text occurrences
+    # are left alone so a conversation ABOUT the token isn't mangled (same
+    # quoted-content lesson as the thinking-leak repair).
+    _EDGE_SPECIAL_TOKEN_RE = __import__("re").compile(
+        r"^(?:\s*<\|[a-z_]+\|>)+\s*|(?:\s*<\|[a-z_]+\|>)+\s*$"
+    )
+
+    @staticmethod
+    def strip_stream_special_tokens(text: str) -> str:
+        """Remove chat-template special tokens (<|sep|>, <|eos|>, ...) from
+        the leading/trailing edges of a response."""
+        if not text or not isinstance(text, str):
+            return text or ""
+        return ResponseParser._EDGE_SPECIAL_TOKEN_RE.sub("", text)
+
     @staticmethod
     def strip_trailing_stream_artifact(text: str) -> str:
-        """Remove a stray trailing 'e' glued to terminal punctuation.
+        """Remove a stray trailing 'e' glued to terminal punctuation, plus
+        edge special-token leaks (<|sep|> etc. — see
+        strip_stream_special_tokens; folded in here so every existing
+        display/storage call site inherits the fix).
 
         Endpoint-level artifact (kimi-3 via OpenRouter): a lone 'e' content
         token emitted just before EOS produces endings like "…landed?e".
@@ -147,12 +183,35 @@ class ResponseParser:
         """
         if not text or not isinstance(text, str):
             return text or ""
+        text = ResponseParser.strip_stream_special_tokens(text)
         stripped = text.rstrip()
         if not ResponseParser._TRAILING_STREAM_ARTIFACT_RE.search(stripped):
             return text
         if ResponseParser._SINGLE_LETTER_ABBREV_RE.search(stripped):
             return text
         return stripped[:-1]
+
+    @staticmethod
+    def strip_trailing_stream_error(text: str) -> str:
+        """Remove a "[Streaming Error...]" marker appended after real content.
+
+        When the stream dies mid-generation, ResponseGenerator yields the
+        sentinel AFTER whatever partial answer already streamed — the partial
+        answer is worth keeping, the marker is not. A marker-only response is
+        deliberately left intact so memory_storage's API-error guard catches
+        it (and logs it as the transport failure it is) instead of the
+        empty-after-sanitize path.
+        """
+        if not text or not isinstance(text, str):
+            return text or ""
+        m = ResponseParser._TRAILING_STREAM_ERROR_RE.search(text)
+        if not m:
+            return text
+        head = text[:m.start()]
+        if not head.strip():
+            # Whole text is the marker — the storage-time error guard's job.
+            return text
+        return head.rstrip()
 
     @staticmethod
     def strip_thinking_tag_leaks(text: str) -> str:
@@ -435,6 +494,8 @@ class ResponseParser:
         4. Stray/partial tag fragments
         5. Reflection blocks
         6. Trailing stream artifact (kimi-3 lone 'e' glued to final punctuation)
+        7. Trailing "[Streaming Error...]" marker appended after partial content
+           (marker-only responses are left for the API-error storage guard)
 
         Deliberately does NOT apply the untagged-thinking heuristics — those can
         false-positive, and losing real conversation content at the storage
@@ -466,6 +527,10 @@ class ResponseParser:
 
         # 6. Trailing stream artifact (kimi-3 lone 'e' before EOS)
         cleaned = ResponseParser.strip_trailing_stream_artifact(cleaned)
+
+        # 7. Appended streaming-error marker after partial content (a
+        #    marker-ONLY response is left for the API-error storage guard)
+        cleaned = ResponseParser.strip_trailing_stream_error(cleaned)
 
         return cleaned.strip()
 

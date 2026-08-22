@@ -22,7 +22,10 @@ Methods:
   - _get_semantic_chunks(query, k, max_results) -> List[Dict]
   - _get_dreams(limit) -> List[Dict]
   - _note_text_substance(content) -> int  [2026-07-25: real prose length after stripping image
-    embeds/links; get_personal_notes drops chunks under PERSONAL_NOTES_MIN_CHARS (60) — image-only
+    embeds/links; get_user_uploads drops stale uploads (>USER_UPLOADS_MAX_AGE_DAYS=7 old AND
+    relevance < USER_UPLOADS_MIN_RELEVANCE=0.62 — months-old homework docs were injected every
+    turn, 2026-08-05; bar recalibrated 0.5→0.62 on 2026-08-14: rel=1/(1+2(1−cos)) in bge space,
+    0.5 ≈ cos 0.5 = any-text, 0.62 ≈ cos 0.69); get_personal_notes drops chunks under PERSONAL_NOTES_MIN_CHARS (60) — image-only
     vault chunks embed as noise and scored 0.64 on unrelated queries]
 
 Visual memory retrieval (get_visual_memories) uses a multi-step gated pipeline:
@@ -68,6 +71,36 @@ _NOTE_IMAGE_EMBED_RE = re.compile(r"!\[\[[^\]]*\]\]|!\[[^\]]*\]\([^)]*\)")
 # "relevance" against "The cats are here at least" (2026-07-25), sailing over
 # the 0.45 gate on completely unrelated turns.
 PERSONAL_NOTES_MIN_CHARS = int(os.getenv("PERSONAL_NOTES_MIN_CHARS", "60"))
+
+# [USER UPLOADED ITEMS] staleness gate (2026-08-05): months-old homework docs
+# and phone photos were injected into every turn regardless of topic — hybrid
+# retrieval always returns SOME top-N. An upload now surfaces only while it's
+# fresh (you upload a file to talk about it NOW) or when it's genuinely
+# relevant to the current query.
+#
+# Relevance calibration (2026-08-14): the store's relevance_score is
+# 1/(1+d) with d = chroma squared-L2 over normalized bge vectors, i.e.
+# rel = 1/(1+2(1-cos)). The original 0.5 bar = cosine 0.5 — bge sims run
+# ~0.35 hot, so that's any-text-vs-any-text territory (a homework docx and
+# two year-old photos cleared it on an emotional check-in turn). 0.62 ≈
+# cosine 0.69 — above the memory gate's 0.60 ordinary-relevance bar, which
+# is the right posture for OVERRIDING the staleness cutoff.
+USER_UPLOADS_MAX_AGE_DAYS = int(os.getenv("USER_UPLOADS_MAX_AGE_DAYS", "7"))
+USER_UPLOADS_MIN_RELEVANCE = float(os.getenv("USER_UPLOADS_MIN_RELEVANCE", "0.62"))
+
+
+def _upload_is_live(doc: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    """An upload surfaces while fresh (recent = active working material) OR
+    when clearly relevant to the current query. Undated legacy docs must
+    clear the relevance bar."""
+    if doc.get('relevance_score', 0.0) >= USER_UPLOADS_MIN_RELEVANCE:
+        return True
+    ts_raw = doc.get('metadata', {}).get('timestamp', '')
+    try:
+        ts = datetime.fromisoformat(str(ts_raw))
+        return ((now or datetime.now()) - ts).days <= USER_UPLOADS_MAX_AGE_DAYS
+    except (ValueError, TypeError):
+        return False
 
 
 def _note_text_substance(content) -> int:
@@ -431,6 +464,17 @@ class KnowledgeRetrievalMixin:
 
             # Filter to only user uploads
             uploads = [d for d in docs if d.get('metadata', {}).get('type') == 'user_upload']
+
+            # Staleness gate (2026-08-05): months-old homework docs/photos
+            # were injected every turn — see _upload_is_live.
+            before = len(uploads)
+            uploads = [d for d in uploads if _upload_is_live(d)]
+            if len(uploads) < before:
+                logger.debug(
+                    f"[ContextGatherer] Dropped {before - len(uploads)} stale/irrelevant "
+                    f"user uploads (>{USER_UPLOADS_MAX_AGE_DAYS}d old and "
+                    f"relevance < {USER_UPLOADS_MIN_RELEVANCE})"
+                )
             uploads = uploads[:limit]
 
             # Track for citations

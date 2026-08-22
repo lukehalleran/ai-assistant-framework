@@ -41,6 +41,44 @@ class TestIsJunkSummary:
     def test_real_summary_passes(self):
         assert not is_junk_summary(GOOD_SUMMARY)
 
+    def test_api_error_sentinel_rejected(self):
+        # 2026-08-03: ~a dozen "[API Error] 402" docs found stored as
+        # summaries by the cross-dedup queue review — long and letter-rich,
+        # they passed the length/letter checks.
+        assert is_junk_summary(
+            "[API Error] Error code: 402 - {'error': {'message': 'Prompt "
+            "tokens limit exceeded: 7748 > 6704. To increase, visit "
+            "https://openrouter.ai/settings'}}"
+        )
+        assert is_junk_summary(
+            "[API unavailable] The model endpoint timed out while processing "
+            "the request; please retry in a few moments."
+        )
+
+    def test_harness_truncation_sentinel_rejected(self):
+        # 2026-08-05: a "[Wafer: response was truncated ...]" doc (local
+        # inference-server wrapper, not in API_ERROR_PREFIXES) surfaced under
+        # [SEMANTIC SUMMARIES] in a live prompt.
+        assert is_junk_summary(
+            "[Wafer: response was truncated before the model finished its "
+            "internal reasoning. Increase max_tokens, or disable thinking on "
+            "this model (e.g. chat_template_kwargs.enable_thinking=false), "
+            "then retry.]"
+        )
+        assert is_junk_summary(
+            "[Provider XYZ: request timed out waiting for upstream — please "
+            "retry the request with a longer timeout window configured.]"
+        )
+
+    def test_bracketed_but_benign_opening_passes(self):
+        # A leading bracketed block WITHOUT infra-failure keywords is not junk
+        # (e.g. a dated header) as long as the doc is a real summary.
+        assert not is_junk_summary(
+            "[Generated: 2026-08-04 18:32] The user completed the exam with a "
+            "score of 87.86 and discussed course grade scenarios with the "
+            "assistant over several turns."
+        )
+
     def test_threshold_documented(self):
         assert SUMMARY_MIN_CHARS == 40
 

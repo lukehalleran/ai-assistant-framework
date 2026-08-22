@@ -119,6 +119,25 @@ async def test_streaming_reasoning_only_failed_recovery_shows_error(response_gen
 
 
 @pytest.mark.asyncio
+async def test_streaming_reasoning_only_tiny_recovery_rejected(response_generator, monkeypatch):
+    """Tiny/no-sentence recovery like the live 'dy won't' artifact is not usable."""
+    async def reasoning_then_stop():
+        yield _Chunk(reasoning_content="thinking...")
+        yield _Chunk(content="", finish_reason="stop")
+
+    monkeypatch.setattr(response_generator.model_manager, "generate_async",
+                        _async_returning(reasoning_then_stop()))
+    monkeypatch.setattr(response_generator.model_manager, "generate_once",
+                        _async_returning("dy won't"))
+
+    full = "".join([c async for c in
+                    response_generator.generate_streaming_response("q", "deepseek-v4")])
+
+    assert "dy won't" not in full
+    assert "empty response" in full.lower()
+
+
+@pytest.mark.asyncio
 async def test_streaming_normal_content_no_recovery(response_generator, monkeypatch):
     """A normal content stream must not trigger a recovery retry."""
     async def normal_stream():
@@ -146,9 +165,9 @@ async def test_streaming_normal_content_no_recovery(response_generator, monkeypa
 @pytest.mark.asyncio
 async def test_recover_reasoning_only_helper_yields_text(response_generator, monkeypatch):
     monkeypatch.setattr(response_generator.model_manager, "generate_once",
-                        _async_returning("  recovered  "))
+                        _async_returning("  Recovered answer.  "))
     out = [c async for c in response_generator._recover_reasoning_only("p", "sp", 256)]
-    assert out == ["recovered"]
+    assert out == ["Recovered answer."]
 
 
 @pytest.mark.asyncio

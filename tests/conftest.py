@@ -104,5 +104,53 @@ def _sandbox_adaptive_exemplars(tmp_path, monkeypatch):
     import utils.adaptive_exemplars as _ae
     monkeypatch.setattr(_ae, "_STORE_PATH", str(tmp_path / "adaptive_exemplars.json"))
     monkeypatch.setattr(_ae, "_store", None)  # fresh singleton per test
+    # Per-text embedding caches (2026-08-21, encode_texts_cached): vectors
+    # from one test's fake embedder must not leak into the next test.
+    import sys as _sys
+    for _mod, _attr in (
+        ("utils.tone_detector", "_exemplar_text_emb_cache"),
+        ("utils.need_detector", "_need_text_emb_cache"),
+        ("core.intent_classifier", "_intent_text_emb_cache"),
+        ("utils.web_search_trigger", "_anchor_text_emb_cache"),
+    ):
+        _m = _sys.modules.get(_mod)  # only clear if already imported
+        if _m is not None:
+            try:
+                getattr(_m, _attr).clear()
+            except Exception:
+                pass
+    # Embedder singletons + version-keyed prototype caches must also reset:
+    # a test passing a MagicMock model_manager permanently captured the mock
+    # in tone_detector._embedder_cache, poisoning every later real-path test
+    # in the process (order-dependent — full-suite alphabetical order never
+    # hit it; 2026-08-21). And with the store sandboxed per test, store
+    # versions always restart at 0, so version-keyed prototype caches from
+    # one test read as fresh in the next.
+    for _mod, _attrs in (
+        ("utils.tone_detector", ("_embedder_cache", "_exemplar_embeddings_cache")),
+        ("utils.need_detector", ("_embedder_cache", "_need_exemplar_embeddings_cache")),
+        ("core.intent_classifier", ("_intent_prototype_cache",)),
+        ("utils.web_search_trigger",
+         ("_search_anchor_embs", "_no_search_anchor_embs", "_search_anchor_version")),
+    ):
+        _m = _sys.modules.get(_mod)
+        if _m is not None:
+            for _a in _attrs:
+                try:
+                    setattr(_m, _a, None)
+                except Exception:
+                    pass
     yield
     _ae._store = None
+
+
+# Same sandbox for the learned-relation store (2026-08-05): extractor tests
+# exercise triples with invented relations, which would otherwise be recorded
+# into the user's real data/learned_relations.json.
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_learned_relations(tmp_path, monkeypatch):
+    import memory.learned_relations as _lr
+    monkeypatch.setattr(_lr, "_STORE_PATH", str(tmp_path / "learned_relations.json"))
+    monkeypatch.setattr(_lr, "_store", None)  # fresh singleton per test
+    yield
+    _lr._store = None

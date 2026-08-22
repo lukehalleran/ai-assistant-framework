@@ -179,6 +179,9 @@ class UserProfile:
 
         Behavior:
         1. Same (relation, value) seen again: boost confidence by +0.05 (capped at 1.0). No duplicate appended.
+           If the confirmed fact had been superseded (is_current=False), it becomes CURRENT again and any
+           conflicting current facts for the relation are superseded with a truth correction (2026-08-05 —
+           previously a re-stated true value could never displace a later junk value).
         2. Same relation, different value: mark existing facts for that relation as is_current=False,
            append new fact with is_current=True and supersedes=old_fact_id.
         3. New relation: append with is_current=True.
@@ -274,6 +277,24 @@ class UserProfile:
                 # Ensure old fact has fact_id (migration compat)
                 if not facts_list[exact_match_idx].get("fact_id"):
                     facts_list[exact_match_idx]["fact_id"] = str(uuid.uuid4())
+                # 2026-08-05: a confirmed value must become CURRENT again.
+                # Previously a re-stated true value (age '33', timezone
+                # 'Central') only got a confidence boost while staying
+                # is_current=False — so a later junk value (age='19',
+                # timezone='your time') remained the current fact FOREVER;
+                # no number of user confirmations could displace it.
+                if not facts_list[exact_match_idx].get("is_current", True):
+                    for idx in same_relation_current:
+                        facts_list[idx]["is_current"] = False
+                        old_t = float(facts_list[idx].get("truth_score", 0.7))
+                        facts_list[idx]["truth_score"] = TruthScorer.apply_correction(old_t)
+                        if not facts_list[idx].get("fact_id"):
+                            facts_list[idx]["fact_id"] = str(uuid.uuid4())
+                    facts_list[exact_match_idx]["is_current"] = True
+                    logger.info(
+                        f"[UserProfile] Re-currented confirmed {relation}='{value}' "
+                        f"(superseded {len(same_relation_current)} conflicting current fact(s))"
+                    )
                 logger.debug(f"[UserProfile] Confirmed {relation}='{value}', confidence {old_conf:.2f} → {new_conf:.2f}")
             elif same_relation_current:
                 # Case 2: Same relation, different value — correction: penalize old, new gets corrected score
@@ -313,9 +334,13 @@ class UserProfile:
                 "confidence": confidence
             })
 
-            # Update quick_profile for key identity fields
-            if category == ProfileCategory.IDENTITY:
-                self._update_quick_profile(relation, value)
+            # Update quick_profile for key identity fields. Not gated on
+            # category (2026-08-21): the 08-05 timezone correction arrived
+            # categorized as "preferences", skipped this line, and the junk
+            # quick_profile value ("your time") kept rendering in every
+            # prompt's Quick Profile block. _update_quick_profile filters by
+            # relation itself — the category gate was redundant AND leaky.
+            self._update_quick_profile(relation, value)
 
             # Prune ephemeral facts if category exceeds soft cap
             self._prune_category(cat_key)
@@ -323,8 +348,15 @@ class UserProfile:
         return True
 
     def _update_quick_profile(self, relation: str, value: str) -> None:
-        """Update the quick-access profile fields."""
-        quick_keys = ["name", "first_name", "location", "lives_in", "age", "birthday", "timezone"]
+        """Update the quick-access profile fields.
+
+        school/program added 2026-08-21: the program fact ("Online Master of
+        Science in Analytics") rode the semantic fact lottery — it was even IN
+        the prompt when the model still assumed in-person campus classes.
+        Durable identity-grade facts belong in the always-rendered Quick
+        Profile block, not buried among topical facts."""
+        quick_keys = ["name", "first_name", "location", "lives_in", "age", "birthday",
+                      "timezone", "school", "program"]
         if relation in quick_keys:
             # Normalize key name
             key = "location" if relation == "lives_in" else relation

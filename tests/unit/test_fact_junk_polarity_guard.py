@@ -46,10 +46,51 @@ class TestJunkObject:
         assert not _is_junk_object("for a few hours", "work_schedule")
         assert not _is_junk_object("tomorrow", "exam_date")
 
+    def test_communication_relations_allow_negation_objects(self):
+        # 2026-08-05: the negation-fragment check was junk-killing the exact
+        # care-team fact class the vocab addition targets — for these
+        # relations the negation IS the content.
+        assert not _is_junk_object("no patient portal", "doctor_communication")
+        assert not _is_junk_object("not reachable by phone", "pharmacy_status")
+        assert not _is_junk_object("no online access", "portal_access")
+
+    def test_negation_still_junk_for_ordinary_relations(self):
+        assert _is_junk_object("not good", "dad_show_up")
+        assert _is_junk_object("no idea", "goal")
+
     def test_clean_triple_drops_junk_objects(self):
         assert _clean_triple("user", "dad_show_up", "for a bit") is None
         assert _clean_triple("user", "goal", "yesterday") is None
         assert _clean_triple("user", "previous_addiction", "kavarin") is not None
+
+
+class TestLLMPathJunkObject:
+    """The LLM extractor path had NO junk-object check until 2026-08-03 —
+    junk like `dad_show_up=for a bit` entered the profile through
+    _normalize_triple while the regex path blocked it."""
+
+    def test_llm_normalize_drops_junk_objects(self):
+        from memory.llm_fact_extractor import _normalize_triple
+        assert _normalize_triple(
+            {"subject": "user", "relation": "dad_show_up", "object": "for a bit"}
+        ) is None
+        assert _normalize_triple(
+            {"subject": "user", "relation": "felt", "object": "not good"}
+        ) is None
+
+    def test_llm_normalize_keeps_real_facts(self):
+        from memory.llm_fact_extractor import _normalize_triple
+        norm = _normalize_triple(
+            {"subject": "user", "relation": "takes_medication", "object": "zelphex"}
+        )
+        assert norm is not None and norm["object"] == "zelphex"
+
+    def test_llm_normalize_schedule_exempt(self):
+        from memory.llm_fact_extractor import _normalize_triple
+        norm = _normalize_triple(
+            {"subject": "user", "relation": "schedule", "object": "every monday at 9am"}
+        )
+        assert norm is not None
 
 
 class TestPolarityGuard:

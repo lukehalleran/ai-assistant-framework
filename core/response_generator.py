@@ -30,6 +30,7 @@ Module Contract
 from utils.logging_utils import get_logger
 import time
 import asyncio
+import re
 from typing import AsyncGenerator, List, Tuple, Optional, Sequence, Dict, Any
 from datetime import datetime
 from utils.time_manager import TimeManager
@@ -46,6 +47,17 @@ class ResponseGenerator:
         self.model_manager = model_manager
         self.time_manager = time_manager or TimeManager()
         self.logger = logger
+
+    _RECOVERY_MIN_CHARS = 12
+    _RECOVERY_SENTENCE_RE = re.compile(r"(?:[.!?][\"')\]]*(?:\s|$)|\n)")
+
+    @classmethod
+    def _usable_reasoning_recovery(cls, text: str) -> bool:
+        """Recovery retry output must look like a real visible answer."""
+        recovered = (text or "").strip()
+        if len(recovered) < cls._RECOVERY_MIN_CHARS:
+            return False
+        return bool(cls._RECOVERY_SENTENCE_RE.search(recovered))
 
     async def generate_streaming_response(
         self,
@@ -407,11 +419,17 @@ class ResponseGenerator:
             self.logger.error(f"[STREAMING] Reasoning-only recovery failed: {e}")
             return
         recovered = (recovered or "").strip()
-        if recovered:
-            self.logger.info(f"[STREAMING] Recovered {len(recovered)} chars via no-reasoning retry")
-            yield recovered
-        else:
+        if not recovered:
             self.logger.warning("[STREAMING] Reasoning-only recovery produced no content")
+            return
+        if not self._usable_reasoning_recovery(recovered):
+            self.logger.warning(
+                "[STREAMING] Reasoning-only recovery produced unusable output "
+                f"({len(recovered)} chars): {recovered[:40]!r}"
+            )
+            return
+        self.logger.info(f"[STREAMING] Recovered {len(recovered)} chars via no-reasoning retry")
+        yield recovered
 
     async def generate_full(self, prompt: str, model_name: str, system_prompt: str = None, temperature: float = None) -> str:
         """Generate a full, non-streamed response using generate_once."""

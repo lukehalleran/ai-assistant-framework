@@ -29,9 +29,10 @@ from utils.need_detector import (
 VENT = "I am embarrassed for how I reacted earlier. My dad came by for a bit. I am so unhappy"
 
 
-def _decision():
+def _decision(search_terms=None):
     return AgenticDecision(
-        should_trigger=True, modes=["web_search"], search_terms=["x"],
+        should_trigger=True, modes=["web_search"],
+        search_terms=search_terms if search_terms is not None else [],
         matched_entities=[], doc_gen_intent=None, self_note_intent=None,
         skip_initial_search=True, reason="triggered", veto_exempt=False,
     )
@@ -137,6 +138,18 @@ class TestVetoTeachesNoSearch:
             "so unhappy" in t
             for t in get_store().get_learned("web_search", "no_search")
         )
+
+    def test_veto_with_proposed_terms_does_not_teach(self):
+        # 2026-08-21: if the trigger extracted concrete search terms, the query
+        # has genuine search-shaped content — learning it as a no_search anchor
+        # is the 08-18 poisoning risk. Veto still stands; teaching is skipped.
+        d = apply_intent_veto(
+            _decision(search_terms=["x"]),
+            {"intent_type": "general", "confidence": 0.0},
+            tone_level="light_support", query=VENT,
+        )
+        assert d.should_trigger is False
+        assert get_store().get_learned("web_search", "no_search") == []
 
     def test_no_veto_no_learning(self):
         apply_intent_veto(

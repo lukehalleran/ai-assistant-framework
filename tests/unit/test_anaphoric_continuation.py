@@ -174,6 +174,49 @@ class TestThreadTopicShifted:
             "some standalone message about my covid fears",
         )
 
+    # --- STM continuity override (2026-08-05) -----------------------------
+    # One continuous health conversation was labeled Pain Management →
+    # Lorvatin Withdrawal → Medication Concerns → Medication Withdrawal,
+    # asserting a "shift" + "Follow the current query" on every reply even
+    # though STM classified each turn as recall/clarification.
+
+    def test_stm_recall_suppresses_shift(self):
+        from core.orchestrator import _thread_topic_shifted
+        assert not _thread_topic_shifted(
+            "Pain Management", "Lorvatin Withdrawal",
+            "Lorvatin which I stopped 3 days ago might actually have been helping.",
+            stm_reference_type="recall",
+        )
+
+    def test_stm_clarification_suppresses_shift(self):
+        from core.orchestrator import _thread_topic_shifted
+        assert not _thread_topic_shifted(
+            "Lorvatin Withdrawal", "Medication Concerns",
+            "I was taking about 900 mg a day for a week or so.",
+            stm_reference_type="clarification",
+        )
+
+    def test_stm_new_event_still_shifts(self):
+        from core.orchestrator import _thread_topic_shifted
+        assert _thread_topic_shifted(
+            "Forearm Pain", "Postgres Migration",
+            "thinking about switching to postgres",
+            stm_reference_type="new_event",
+        )
+
+    def test_stm_unclear_falls_through_to_labels(self):
+        from core.orchestrator import _thread_topic_shifted
+        assert _thread_topic_shifted(
+            "Forearm Pain", "Postgres Migration",
+            "thinking about switching to postgres",
+            stm_reference_type="unclear",
+        )
+        assert not _thread_topic_shifted(
+            "Long Covid Fears", "Fear Of Long Covid",
+            "some standalone message about my covid fears",
+            stm_reference_type="unclear",
+        )
+
 
 # ---------------------------------------------------------------------------
 # 4. Planner grounding

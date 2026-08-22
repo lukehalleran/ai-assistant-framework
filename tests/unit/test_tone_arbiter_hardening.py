@@ -25,7 +25,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from core.agentic.gate import AgenticDecision, apply_intent_veto, _is_info_seeking
+from core.agentic.gate import (
+    AgenticDecision,
+    apply_intent_veto,
+    _is_info_seeking,
+    _is_vent_shaped,
+)
 from utils.tone_detector import (
     CrisisLevel,
     _llm_crisis_fallback,
@@ -150,11 +155,11 @@ class TestArbiterContradictionBackstop:
 VENT = "I am embarrassed for how I reacted earlier. My dad came by for a bit. I am so unhappy"
 
 
-def _decision(veto_exempt=False):
+def _decision(veto_exempt=False, search_terms=None):
     return AgenticDecision(
         should_trigger=True,
         modes=["memory"],
-        search_terms=["something"],
+        search_terms=["something"] if search_terms is None else search_terms,
         matched_entities=[],
         doc_gen_intent=None,
         self_note_intent=None,
@@ -222,3 +227,90 @@ class TestToneStatementVeto:
         assert _is_info_seeking("so was it thursday we talked?")
         assert not _is_info_seeking(VENT)
         assert not _is_info_seeking("I just feel really off today.")
+
+    def test_pronoun_split_lookup_is_info_seeking(self):
+        # 2026-08-15: "Look it up it's pretty funny" was vetoed + learned as
+        # no_search — the contiguous "look up" cue missed the split form.
+        assert _is_info_seeking("Look it up it's pretty funny")
+        assert _is_info_seeking("look that up when you get a chance")
+        assert _is_info_seeking("pull it up")
+        assert _is_info_seeking("just look this up for me")
+
+
+# ---- Vent-shape narrowing (2026-08-15) --------------------------------------
+# The sticky tone floor holds CONCERN across a long distress session; the
+# any-statement test vetoed a third-party news share against the LLM trigger's
+# should_search=0.8 and taught it as a no_search exemplar.
+
+NEWS_SHARE = 'The president "declared" the strait of hormuz to be us land lmfao'
+
+
+class TestVentShapeNarrowing:
+    def test_vent_shape_predicate(self):
+        assert _is_vent_shaped(VENT)
+        assert _is_vent_shaped("Ugh. Either I'm dying or super fucking constipated.")
+        # first-person anywhere, not just as opener
+        assert _is_vent_shaped("Yeah that's like a warning sign I watch for.")
+        # third-party/news statement: no first-person pronoun → not a vent
+        assert not _is_vent_shaped(NEWS_SHARE)
+        # info-seeking shapes are never vent-shaped
+        assert not _is_vent_shaped("Look it up it's pretty funny")
+        assert not _is_vent_shaped("why do I keep doing this?")
+        assert not _is_vent_shaped("")
+        # epistemic CONTRACTIONS strip too — "I'd say" once survived because
+        # the regex required a space before 'd (2026-08-21 doc-review catch)
+        assert not _is_vent_shaped("I'd say most people are totally unaware here")
+        assert not _is_vent_shaped("I'd bet that story is exaggerated")
+        # contraction marker + real self-reference elsewhere stays a vent
+        assert _is_vent_shaped("I'd say I'm really not okay today")
+
+    def test_news_share_not_vetoed_despite_elevated_tone(self):
+        d = apply_intent_veto(
+            _decision(), _intent(), tone_level="light_support", query=NEWS_SHARE
+        )
+        assert d.should_trigger is True
+
+    def test_explicit_lookup_not_vetoed_despite_elevated_tone(self):
+        d = apply_intent_veto(
+            _decision(), _intent(), tone_level="light_support",
+            query="Look it up it's pretty funny",
+        )
+        assert d.should_trigger is True
+
+    def test_vent_still_vetoed(self):
+        d = apply_intent_veto(
+            _decision(), _intent(), tone_level="light_support", query=VENT
+        )
+        assert d.should_trigger is False
+        assert "tone-veto" in d.reason
+
+    def test_teacher_never_records_non_vent(self):
+        # Even when a veto fires via the strong-intent arm, a non-vent query
+        # must not become a no_search anchor.
+        store = MagicMock()
+        with patch("utils.adaptive_exemplars.get_store", return_value=store):
+            d = apply_intent_veto(
+                _decision(), _intent("casual_social", 0.90),
+                tone_level="light_support", query=NEWS_SHARE,
+            )
+        assert d.should_trigger is False  # intent arm vetoed…
+        store.record.assert_not_called()  # …but a non-vent never teaches
+
+    def test_teacher_records_vent(self):
+        store = MagicMock()
+        with patch("utils.adaptive_exemplars.get_store", return_value=store):
+            d = apply_intent_veto(
+                _decision(search_terms=[]), _intent(), tone_level="light_support", query=VENT
+            )
+        assert d.should_trigger is False
+        store.record.assert_called_once_with("web_search", "no_search", VENT, "gate_veto")
+
+    def test_teacher_skips_when_trigger_proposed_search_terms(self):
+        store = MagicMock()
+        with patch("utils.adaptive_exemplars.get_store", return_value=store):
+            d = apply_intent_veto(
+                _decision(search_terms=["kavarin withdrawal"]), _intent(),
+                tone_level="light_support", query=VENT,
+            )
+        assert d.should_trigger is False
+        store.record.assert_not_called()

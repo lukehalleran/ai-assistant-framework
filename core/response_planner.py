@@ -102,11 +102,16 @@ class ResponsePlanner:
         if qa and getattr(qa, "is_small_talk", False):
             return False
 
-        # Skip crisis / elevated tone
+        # Skip crisis / elevated / concern tone. CONCERN was added 2026-08-05:
+        # it selects the LIGHT SUPPORT response mode ("2-4 sentences, don't
+        # offer unsolicited advice"), while the planner injected a [RESPONSE
+        # PLAN] with "Cover: <advice topics> / Strategy: ..." into the SAME
+        # prompt — two contradictory instruction blocks the model had to
+        # paper over. LIGHT SUPPORT is an instruction not to plan.
         tone = getattr(context, "tone_level", None)
         if tone is not None:
             from core.context_pipeline import ToneLevel
-            if tone in (ToneLevel.CRISIS, ToneLevel.ELEVATED):
+            if tone in (ToneLevel.CRISIS, ToneLevel.ELEVATED, ToneLevel.CONCERN):
                 return False
 
         # Skip for casual social intent

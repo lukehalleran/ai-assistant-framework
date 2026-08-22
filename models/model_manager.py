@@ -94,6 +94,14 @@ API_ERROR_PREFIXES: tuple = (
     "[MODEL NOT SUPPORTED]",
     "[MODEL NOT FOUND]",
     "[SERVER ERROR]",
+    # ResponseGenerator's streaming catch-all ("[Streaming Error: ...]" and
+    # "[Streaming Error] ..."). Not produced by _classify_api_error but it is
+    # response-text-instead-of-raise all the same; before 2026-08-14 it was
+    # missing here and ~20 upstream-disconnect turns persisted as real replies.
+    "[Streaming Error",
+    # ResponseGenerator's reasoning-only recovery failed to produce visible
+    # content twice. This is a model/transport failure, not an assistant reply.
+    "[Error: Model returned empty response",
 )
 
 
@@ -120,6 +128,23 @@ def _classify_api_error(e: Exception) -> str:
             "[CREDITS EXHAUSTED] You've run out of API credits. "
             "Please add credits at your provider's billing page, "
             "or switch to a different model."
+        )
+
+    # --- Provider credit exhaustion (OpenRouter HTTP 402) ---
+    # "This request requires more credits, or fewer max_tokens. You requested
+    # up to 9984 tokens, but can only afford 1985." Before 2026-08-21 this fell
+    # through to the [API Error] fallback carrying the FULL raw error payload
+    # (~3.2K of JSON incl. previous_errors), which was then streamed into the
+    # chat bubble. Classify it and keep the message short and human.
+    if (
+        status_code == 402
+        or 'requires more credits' in err_str
+        or 'can only afford' in err_str
+    ):
+        return (
+            "[CREDITS EXHAUSTED] The provider reports insufficient credits "
+            "for this request (HTTP 402). Add credits at the provider's "
+            "billing page, or switch to a cheaper model."
         )
 
     # --- Rate limiting (temporary) ---

@@ -340,7 +340,9 @@ AGENT(q, s):
                                                   // retrieval task here, not post-generation
     pi_plan <- plan(q, x) if should_plan(x)      // response planning (parallel with d*)
                                                   // should_plan() bypasses: CASUAL_SOCIAL intent,
-                                                  // crisis/elevated tone, <8 word queries, disabled
+                                                  // crisis/elevated/concern tone (2026-08-05: CONCERN
+                                                  // selects LIGHT SUPPORT — a plan contradicts it),
+                                                  // <8 word queries, disabled
     p    <- beta(x, d*, iota, E_t, pi_plan)      // prompt construction (plan injection)
                                                   // Plan injected via format_plan_injection():
                                                   // appends [RESPONSE PLAN] section to system prompt
@@ -521,8 +523,9 @@ delta_shutdown(s):
             s'.C <- s'.C + {fact}
             mark_old_as_superseded(s'.C, fact)                // metadata flag, no deletion
 
-    // Step 3: LLM-assisted facts (last 12 turns, batch verified, ephemeral predicates blocked)
-    facts_llm <- llm_extract_triples(s.H[-12:])
+    // Step 3: LLM-assisted facts (last 30 turns since 2026-08-05 — responses truncated to
+    //         250-char snippets, newest-first budget selection; batch verified, ephemeral blocked)
+    facts_llm <- llm_extract_triples(s.H[-30:])
     verdicts <- fact_verify_batch(facts_llm, s'.C)
     for (fact, verdict) in zip(facts_llm, verdicts):
         if verdict != REJECT:
@@ -559,8 +562,13 @@ delta_shutdown(s):
     // Step 8: Cross-collection deduplication (mode-dependent)
     dedup_plan <- scan_duplicates(s'.C, threshold=0.92)       // cosine similarity
     contradictions <- scan_contradictions(s'.C)                // same subject+predicate, diff object
+    //   [2026-08-03] cluster exclusions: ephemeral predicates, MULTI_VALUED_RELATIONS
+    //   (plural values legitimate), GENERIC_PREDICATES (is/has/... — no claim identity),
+    //   junk function-word subjects, already-superseded facts.
+    //   Execution semantics: duplicates DELETED; contradiction losers SUPERSEDED
+    //   (is_current=False + superseded_by) — reversible, never deleted.
     // DAEMON_MODE=dev (current config.yaml): dry_run=True — log preview only, never auto-deletes;
-    //   live deletions require explicit GUI action (Preview/Run buttons)
+    //   live execution requires explicit GUI action (Preview/Run buttons)
     // DAEMON_MODE=user: CROSS_DEDUP_AUTO_EXECUTE=True — dedup plan auto-executes at shutdown
 
     // Step 9: Session-end reflection
@@ -651,7 +659,7 @@ The same retrieval infrastructure serves all 9 intent types — only the paramet
 
 **Classification is regex-first** (no LLM calls): patterns checked in priority order, highest confidence wins. Tone bias: HIGH/MEDIUM tone biases toward EMOTIONAL_SUPPORT for ambiguous queries. Low-confidence results (< 0.50) refined by STM free-text intent field.
 
-**Semantic tier (2026-08-03):** when regex confidence < 0.50, the query is additionally scored against per-intent exemplar prototypes (`INTENT_EXEMPLARS` seeds + per-user learned exemplars via `utils/adaptive_exemplars`; GENERAL deliberately has no prototype — it is the fallback). A clear winner (cosine ≥ 0.45, margin ≥ 0.05 over the runner-up) classifies at confidence 0.60 with `source="semantic"` — reaching the 0.60 routing floors while staying below the 0.75 agentic-veto floor. Learning teachers are channels independent of the prototypes (confident regex hits ≥ 0.85 and STM refinements); the semantic tier never teaches itself and GENERAL is never learned. Before this tier a distress vent with no regex hit landed general@0.00, starving intent-conditioned downstream paths.
+**Semantic tier (2026-08-03):** when regex confidence < 0.50, the query is additionally scored against per-intent exemplar prototypes (`INTENT_EXEMPLARS` seeds + per-user learned exemplars via `utils/adaptive_exemplars`; GENERAL deliberately has no prototype — it is the fallback). A clear winner (cosine ≥ 0.45, margin ≥ 0.05 over the runner-up) classifies at confidence 0.60 with `source="semantic"` — reaching the 0.60 routing floors while staying below the 0.75 agentic-veto floor. Learning teachers are channels independent of the prototypes (confident regex hits ≥ 0.85 and STM refinements); the semantic tier never teaches itself and GENERAL is never learned. Before this tier a distress vent with no regex hit landed general@0.00, starving intent-conditioned downstream paths. **2026-08-21:** both teachers are additionally tone-gated (`_tone_is_elevated()`, both tone encodings) — neither teaches when tone is elevated, and `refine_with_stm` takes a `tone_level` param threaded from the pipeline; crisis vents were becoming learned temporal_recall prototypes. Classification/routing itself is unchanged.
 
 **Code**: `intent_classifier.py`
 
@@ -706,6 +714,15 @@ as the `.name` scale — otherwise every level defaults to CONVERSATIONAL and th
 FSM is fed CONVERSATIONAL every turn (the tone-flatline incident; see
 `docs/postmortems/2026-07-tone-flatline.md`). GP/QC instructions also forbid
 excavating questions (each downward probe deepens the spiral).
+
+**Wiring caveat 2 (2026-08-21)**: the FSM also only works if `update` is CALLED
+on the production path. The update site lived on the unused `process_user_query`
+flow — the GUI path never invoked it, so E was frozen at VAS and GP/QC never
+fired in production. `orchestrator.build_full_prompt()` now calls
+`_update_safety_trackers(context)` (FSM update + safety-canary observe) before
+composing the system prompt, and `gui/handlers._write_turn_telemetry()` feeds
+`record_response` for ignored-suggestion tracking
+(`tests/unit/test_escalation_gui_wiring.py`).
 
 **FSM output modifies prompt construction**:
 

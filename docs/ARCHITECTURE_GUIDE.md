@@ -444,6 +444,15 @@ tone level to `data/tone_state.json` (atomic, best-effort) and re-seeds
 `TONE_STICKINESS_MAX_GAP_MINUTES` — a restart minutes into a distress session no
 longer cold-starts the sticky signal. Lenient load: corrupt file = cold start.
 
+**Gap-bounded history stickiness (2026-08-21).** (The same batch also wired the
+Escalation FSM + safety canary into the production GUI path — see the
+Production Wiring subsection in §17.)
+`_recent_distress_from_history` now honours the same
+`TONE_STICKINESS_MAX_GAP_MINUTES` session boundary as `previous_tone` stickiness
+— a stale heavy turn from yesterday could re-latch the CONCERN floor after the
+gap-clear; timestamp-less legacy rows still count as fresh (errs toward keeping
+the safety floor). Tests: `tests/unit/test_tone_stickiness_reset.py`.
+
 ### STM Analysis
 
 Short-term memory analysis runs an LLM pass over a 24-hour time-windowed
@@ -458,7 +467,15 @@ The structured output includes: topic, user_question, intent, tone,
 **reference_type**, **temporal_facts**, open_threads, constraints.
 `reference_type` ∈ {new_event, recall, clarification, correction, unclear}
 classifies whether the current message is a fresh report or a restatement
-of prior context — defaults to `unclear` when uncertain. `temporal_facts`
+of prior context — defaults to `unclear` when uncertain. A
+recall/clarification/correction verdict also suppresses the [THREAD
+CONTEXT] topic-shift assertion (2026-08-05 — divergent topic labels on a
+continuous conversation are classifier granularity noise, and the shift's
+"Follow the current query" instruction was firing on every reply of a
+five-turn health thread). STM prompt rule 6 (2026-08-05): substances/
+medications are named EXACTLY as in the current message, never substituted
+from surrounding context (a live summary rewrote "900 mg lorvatin" as
+"900 mg of kavarin daily"). `temporal_facts`
 is a list of normalized current-state facts produced under a
 collapse-toward-fewer-events disambiguation rule (e.g. "did not sleep" +
 "fight mode all night" same morning = ONE night, not two).
@@ -1471,6 +1488,11 @@ no content, it closes the dangling marker and retries once via
 separation so the model emits its answer as normal content.
 `disable_reasoning` is an internal recovery knob on
 `model_manager.generate_once()`/`generate_async()`, not a public API.
+**Quality floor (2026-08-21):** recovered text must clear
+`_usable_reasoning_recovery` — ≥12 chars and sentence-shaped (terminal
+punctuation or newline) — or it is discarded with a warning; a "dy won't"
+fragment had been recovered and stored as a full response on 08-18, and
+`memory_storage` now also refuses to store an empty assistant response.
 
 A distinct leak mode is *interleaved* reasoning and answer within the visible
 stream — a reasoning model fusing a discarded draft onto the answer with no
@@ -1783,6 +1805,15 @@ and overrides the token budget:
 | QC | "Max 1-2 sentences, just be present, no suggestions" | 300 |
 | GR | "2-4 sentences, ONE small concrete suggestion allowed" | 800 |
 
+### Production Wiring (2026-08-21)
+
+FSM updates run in `orchestrator.build_full_prompt()` (non-raw turns) via
+`_update_safety_trackers(context)` (tracker.update + safety-canary observe) —
+previously only the unused `process_user_query` path updated the FSM, so GP/QC
+never engaged on the production GUI path. `gui/handlers._write_turn_telemetry()`
+supplies `record_response()` for ignored-suggestion tracking. Tests:
+`tests/unit/test_escalation_gui_wiring.py` (11).
+
 ---
 
 ## 18. Thread Surfacing
@@ -1914,15 +1945,36 @@ For facts specifically: group by `(subject, predicate)` and find entries
 with different objects. For example: "user | lives_in | Atlanta" vs
 "user | lives_in | Denver".
 
-**Ephemeral skip**: Predicates in `PROFILE_EPHEMERAL_RELATIONS`
-(current_feeling, is, has, thinks, etc.) are excluded — their history
-is meaningful, not contradictory.
+**Cluster exclusions (2026-08-03 — the live queue had `medication_name=Zelphex`
+scheduled for deletion because `kavarin` was newer, and a 71-entry `user | is`
+cluster of distinct emotional states):**
+- **Ephemeral skip**: predicates in `PROFILE_EPHEMERAL_RELATIONS`
+  (current_feeling, current_mood, etc.) — their history is meaningful.
+- **Multi-valued skip**: `relation_classifier.MULTI_VALUED_RELATIONS`
+  (medication_name, goal, email_sent, likes, sibling_of, ...) — several
+  simultaneous values are legitimate, not a conflict.
+- **Generic-predicate skip**: `relation_classifier.GENERIC_PREDICATES`
+  (is/is_a/has/thinks/...) — the relation name carries no claim identity;
+  these are junk-class residue for `scripts/purge_junk_facts.py`, not
+  contradiction resolution.
+- **Junk-subject skip**: function-word subjects ("and", "done", "which") —
+  parser artifacts.
+- **Already-superseded facts** (`is_current=False`) are settled history and
+  never re-clustered.
+
+**Resolution = supersession, not deletion (2026-08-03)**: contradiction
+losers are marked `is_current=False` + `superseded_by=<keep_id>` — retrieval
+already drops superseded facts, and the mark is reversible. Only the
+duplicate arm deletes. All collection access resolves through
+`store._get_collection()` (the raw `collections` dict holds None
+placeholders pre-open — the reference_docs silent-no-op bug class).
 
 ### Safety Model
 
 **Shutdown runs dry_run=True only** — the deduplicator logs findings but
-never auto-deletes. Live deletions require explicit GUI action via
-Preview/Run buttons in the Status tab.
+never auto-deletes. Live execution requires explicit GUI action via
+Preview/Run buttons in the Status tab (deletes duplicate copies, supersedes
+contradiction losers).
 
 A double-run guard (`_dedup_ran` class-level flag) prevents the
 deduplicator from running twice per process.
@@ -2125,7 +2177,7 @@ Step 2:  Session fact extraction — Rule-based, last 10 turns
          Each fact passes through FactVerifier gate
          source_excerpt forwarded from MemoryNode metadata to ChromaDB
 
-Step 3:  LLM fact extraction — Neural triple extraction, last 12 turns
+Step 3:  LLM fact extraction — Neural triple extraction, last 30 turns (2026-08-05: responses truncated to 250-char snippets + newest-first budget selection — the old full-response/oldest-first fill fit only ~4-5 pairs and dropped the newest turns; recurring invented relations auto-promote into the prompt vocabulary via memory/learned_relations.py)
          Batch verification before storage
          source_excerpt attached via keyword matching (_attach_source_excerpts)
          Graph ingestion for entity-worthy facts
@@ -3078,11 +3130,20 @@ Arrows indicate "calls" or "data flows to."
 
 API errors are mapped to user-friendly categories:
 
-- `[CREDITS EXHAUSTED]` — quota/billing errors (429 with quota message)
+- `[CREDITS EXHAUSTED]` — quota/billing errors (429 with quota message; since
+  2026-08-21 also HTTP 402 / "requires more credits")
 - `[RATE LIMITED]` — standard rate limits (429)
 - `[AUTH ERROR]` — invalid API keys (401)
 - `[MODEL NOT FOUND]` — model not available (404)
 - `[SERVER ERROR]` — provider outage (500+)
+
+**Streaming fail-fast (2026-08-21):** `gui/handlers.py` checks the accumulated
+stream head (first ≤5 chunks) against `API_ERROR_PREFIXES` — an error-sentinel
+head aborts the stream display and shows a friendly template from the
+module-level `_API_ERROR_DISPLAY` map instead of relaying raw provider JSON
+(an OpenRouter HTTP-402 payload was streamed verbatim to the user 3× on
+2026-08-18); the agentic path carries the same guard. Tests:
+`tests/unit/test_api_error_fail_fast.py` (11).
 
 ### Graceful Degradation
 
@@ -3181,7 +3242,11 @@ goals, projects, identity, study, preferences.
 
 Each category stores facts as key-value pairs with timestamps. The
 profile is append-only — updates add new timestamped entries, old entries
-are preserved for temporal history.
+are preserved for temporal history. Confirming an exact value that had
+been superseded makes it CURRENT again and supersedes conflicting current
+values with a truth correction (2026-08-05 — previously a re-stated true
+value could never displace a later junk value: `age=19` sat current over
+the true `33` no matter how often the user restated it).
 
 ### Relation Categorization
 

@@ -36,7 +36,8 @@ Module Contract
   - POST-ANSWER REVIEW GATE: Checks response against ResponsePlan. Silent retry if confidence >= 0.90 (raised from 0.80). Skipped for responses < 120 chars. Same similarity guard (overlap < 70%).
   - ENHANCED: orchestrator.prepare_prompt → extract note_images → response_generator.generate_streaming_response(images=...) → store interaction
   - IMAGE SUPPORT [NEW 2026-01-30]: Extracts note_images from raw_context and passes to streaming for multimodal models
-  - API error classification: [CREDITS EXHAUSTED], [RATE LIMITED], [AUTH ERROR], [MODEL NOT FOUND], [SERVER ERROR] with user-friendly messages
+  - API error classification: [CREDITS EXHAUSTED], [RATE LIMITED], [AUTH ERROR], [MODEL NOT FOUND], [SERVER ERROR], [Streaming Error (2026-08-14)] with user-friendly messages + early return BEFORE storage
+  - Stream-artifact display strip (2026-08-14): agentic/raw/duel paths apply strip_trailing_stream_artifact to yielded/recorded text (enhanced path sanitizes via _sanitize_response_text)
 - Provenance [NEW 2026-03-26]:
   - All 5 response modes build provenance dicts (response_mode, model_name, thinking_block, cited_ids, prompt_hash, agentic_summary)
   - _background_store_interaction() accepts session_id, provenance, mode params and forwards to memory system
@@ -409,6 +410,15 @@ def _build_debug_record(
     phase_timings=None, task_timings=None, gather_elapsed=0.0,
 ):
     """Build a debug record dict for the Debug Trace tab."""
+    # A leading EMPTY reasoning shell ("<thinking></thinking>Answer…") is a
+    # stream artifact with zero diagnostic value — display and storage
+    # already strip it; keep the record aligned with what the user actually
+    # saw (2026-08-05: an agentic record's RESPONSE opened with the literal
+    # shell, reading as a leak that never reached the user).
+    if isinstance(response, str):
+        response = _re.sub(
+            r"^\s*<(thinking|think|reasoning|reason)>\s*</\1>\s*", "", response
+        )
     return {
         'mode': mode,
         'query': user_text,
@@ -573,6 +583,40 @@ def _dispatch_storage(
     return task
 
 
+# Friendly display templates for classified API-error payloads (the model
+# layer yields these AS response text instead of raising). Single map for all
+# display paths — enhanced streaming, agentic, and the mid-stream fail-fast.
+_API_ERROR_DISPLAY = {
+    "[CREDITS EXHAUSTED]": "💳 **Out of API Credits**\n\n{msg}\n\nYou can add credits at your provider's billing page or switch models in the dropdown above.",
+    "[RATE LIMITED]": "⏳ **Rate Limited**\n\n{msg}",
+    "[AUTH ERROR]": "🔑 **Authentication Error**\n\n{msg}",
+    "[MODEL NOT SUPPORTED]": "🚫 **Unsupported Input**\n\n{msg}\n\nTry switching to a multimodal model (e.g. GPT-4o, Claude) in the dropdown above.",
+    "[MODEL NOT FOUND]": "❓ **Model Not Found**\n\n{msg}",
+    "[SERVER ERROR]": "🔥 **Server Error**\n\n{msg}",
+    "[API Error]": "⚠️ **API Error**\n\n{msg}",
+    "[API unavailable]": "⚠️ **API Unavailable**\n\n{msg}",
+    "[Streaming Error": "🔥 **Stream Interrupted**\n\n{msg}\n\nThe provider dropped the connection mid-response — retrying your message usually works.",
+    "[Error: Model returned empty response": "⚠️ **Empty Response**\n\nThe model returned no usable answer after retrying without reasoning. Retry your message or switch models.",
+}
+
+
+def _friendly_api_error(text):
+    """Return the friendly display string for a classified API-error response,
+    or None if the text is not an error payload. Matches at the HEAD only —
+    a real answer with an appended trailing marker is not converted here
+    (the storage boundary strips the marker and keeps the partial answer)."""
+    stripped = (text or "").strip()
+    for prefix, template in _API_ERROR_DISPLAY.items():
+        if stripped.startswith(prefix):
+            msg = stripped[len(prefix):].strip()
+            if prefix == "[Streaming Error":
+                # This prefix doesn't include the closing bracket (two emit
+                # shapes: "[Streaming Error: msg]" / "[Streaming Error] msg")
+                msg = msg.lstrip(":]").strip().rstrip("]").strip()
+            return template.format(msg=msg)
+    return None
+
+
 def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
                           response_text=None):
     """Assemble + append the per-turn telemetry JSONL record (never raises).
@@ -616,6 +660,17 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
                 )
     except Exception as e:
         logger.debug(f"[Telemetry] search-worthy learning skipped: {e}")
+    try:
+        # Feed the final response to the escalation tracker so next turn's
+        # engagement detection (ignored-suggestion → QUIET_COMPANIONSHIP) has
+        # suggestions to compare against. The GUI path never called
+        # record_response before 2026-08-21 — only process_user_query did —
+        # so the QUIET tier was unreachable in production.
+        tracker = getattr(ctx.orchestrator, "escalation_tracker", None)
+        if tracker and response_text:
+            tracker.record_response(response_text)
+    except Exception as e:
+        logger.debug(f"[Telemetry] escalation record_response skipped: {e}")
 
 
 async def _silent_agentic_retry(
@@ -994,6 +1049,8 @@ async def _run_raw(ctx):
         use_raw_mode=True,
         personality=ctx.personality
     )
+    # kimi-3 lone-'e' stream artifact (display path — storage strips separately)
+    response_text = ResponseParser.strip_trailing_stream_artifact(response_text)
 
     # Log the raw mode conversation
     ctx.conversation_logger.log_interaction(
@@ -1092,6 +1149,10 @@ async def _run_duel(ctx, gens, sels, features_duel):
             final_output = str(best)
             _, final_answer = ResponseParser.parse_thinking_block(final_output)
             display_output = final_answer if final_answer else final_output
+
+        # kimi-3 lone-'e' stream artifact (display path — storage strips separately)
+        final_output = ResponseParser.strip_trailing_stream_artifact(final_output)
+        display_output = ResponseParser.strip_trailing_stream_artifact(display_output)
 
         # Token counts, citations, provenance, debug record
         model_name = orchestrator.model_manager.get_active_model_name()
@@ -1719,6 +1780,13 @@ async def _run_agentic_search(ctx):
             else:
                 # Response chunk - accumulate and stream
                 agentic_response += item
+                # Fail fast on a classified API-error payload at the stream
+                # head — never render raw error JSON into the bubble (same
+                # guard as the enhanced path, added 2026-08-21).
+                from models.model_manager import API_ERROR_PREFIXES as _api_err_prefixes
+                if agentic_response.lstrip().startswith(_api_err_prefixes):
+                    logger.warning("[Handle Submit] Agentic stream head is an API-error payload — suppressing raw display")
+                    break
                 # Hide incomplete thinking blocks during streaming
                 if ResponseParser.has_incomplete_thinking_block(agentic_response):
                     yield {"role": "assistant", "content": "💭 **Thinking...**", "is_thinking": True}
@@ -1738,6 +1806,17 @@ async def _run_agentic_search(ctx):
 
         # Final output from agentic search - strip thinking blocks
         final_output = agentic_response
+
+        # Classified API-error payload → friendly display, no storage dispatch
+        # (2026-08-21; the storage-time guard would also skip it, but the
+        # enhanced path's early-return semantics apply here too).
+        _agentic_friendly = _friendly_api_error(final_output)
+        if _agentic_friendly:
+            logger.warning("[Handle Submit] Agentic API error detected — showing friendly message")
+            yield {"role": "assistant", "content": _agentic_friendly}
+            ctx.handled = True
+            return
+
         thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
         # Also try untagged thinking detection
         if not thinking_part:
@@ -1751,6 +1830,13 @@ async def _run_agentic_search(ctx):
             display_output = ""
         display_output = ResponseParser.strip_thinking_tag_leaks(display_output)
         display_output = _strip_leaked_xml_blocks(display_output)
+        # kimi-3 lone-'e' stream artifact: storage strips it via
+        # sanitize_for_storage, but this display path never did — the stray
+        # 'e' showed in the chat bubble + debug record (seen live 2026-08-14
+        # on an agentic turn; the enhanced path sanitizes, this one didn't).
+        # final_output feeds the debug record, display_output the chat bubble.
+        final_output = ResponseParser.strip_trailing_stream_artifact(final_output)
+        display_output = ResponseParser.strip_trailing_stream_artifact(display_output)
 
         # If agentic loop ran but no tools were actually dispatched (model
         # just narrated what it would do), strip bare tool-call-like lines
@@ -2080,6 +2166,26 @@ async def _run_enhanced(ctx):
                 logger.info(f"[Handle Submit] Chunk #{chunk_count}: {str(chunk)[:50]}...")
             final_output = smart_join(final_output, chunk)
 
+            # Fail fast on classified API-error payloads. model_manager yields
+            # the classified error string AS stream content; before 2026-08-21
+            # it was rendered chunk-by-chunk into the chat bubble (a 402
+            # streamed ~3.2K of raw error JSON mid-distress, 3× on 08-18) and
+            # only converted to a friendly message after the stream ended.
+            # Break immediately — the post-loop prefix detection below turns
+            # the accumulated error into the friendly display and returns
+            # before storage. Only the stream HEAD can be an error payload
+            # (mid-stream errors append after real content and are handled by
+            # the trailing-strip at the storage boundary), so stop checking
+            # once real content is flowing.
+            if chunk_count <= 5:
+                from models.model_manager import API_ERROR_PREFIXES as _api_err_prefixes
+                if final_output.lstrip().startswith(_api_err_prefixes):
+                    logger.warning(
+                        "[Handle Submit] API-error payload at stream head — "
+                        "aborting stream display, converting to friendly error"
+                    )
+                    break
+
             # Detect incomplete thinking block (opening tag arrived, closing hasn't yet)
             if ResponseParser.has_incomplete_thinking_block(final_output):
                 thinking_started = True
@@ -2178,23 +2284,11 @@ async def _run_enhanced(ctx):
             return
 
         # Detect classified API errors from model_manager
-        _stripped = final_output.strip()
-        _API_ERROR_PREFIXES = {
-            "[CREDITS EXHAUSTED]": "💳 **Out of API Credits**\n\n{msg}\n\nYou can add credits at your provider's billing page or switch models in the dropdown above.",
-            "[RATE LIMITED]": "⏳ **Rate Limited**\n\n{msg}",
-            "[AUTH ERROR]": "🔑 **Authentication Error**\n\n{msg}",
-            "[MODEL NOT SUPPORTED]": "🚫 **Unsupported Input**\n\n{msg}\n\nTry switching to a multimodal model (e.g. GPT-4o, Claude) in the dropdown above.",
-            "[MODEL NOT FOUND]": "❓ **Model Not Found**\n\n{msg}",
-            "[SERVER ERROR]": "🔥 **Server Error**\n\n{msg}",
-            "[API Error]": "⚠️ **API Error**\n\n{msg}",
-            "[API unavailable]": "⚠️ **API Unavailable**\n\n{msg}",
-        }
-        for prefix, template in _API_ERROR_PREFIXES.items():
-            if _stripped.startswith(prefix):
-                friendly = template.format(msg=_stripped[len(prefix):].strip())
-                logger.warning(f"[Handle Submit] API error detected: {prefix}")
-                yield {"role": "assistant", "content": friendly}
-                return
+        _friendly = _friendly_api_error(final_output)
+        if _friendly:
+            logger.warning("[Handle Submit] API error detected — showing friendly message")
+            yield {"role": "assistant", "content": _friendly}
+            return
 
         thinking_part_stream, final_answer_stream = ResponseParser.parse_thinking_block(final_output)
         if thinking_part_stream:
@@ -2781,6 +2875,25 @@ async def handle_submit(
             "gate_modes": list(_gate_decision.modes or []),
             "gate_reason": getattr(_gate_decision, "reason", ""),
         })
+
+        # Tone-deferred request (2026-08-21): a tone arm stood the gate down
+        # on a request-shaped (non-vent) query. Never fail silently — tell
+        # the model so it acknowledges the request and offers to proceed; a
+        # terse affirmation next turn re-runs the original query veto-exempt
+        # (armed in gate.apply_intent_veto). Vent-shaped turns never get
+        # this note (anti-excavation).
+        _deferred_q = getattr(_gate_decision, "deferred_request", None)
+        if _deferred_q:
+            ctx.system_prompt = (ctx.system_prompt or "") + (
+                "\n\n[DEFERRED REQUEST] The user asked you to do something "
+                f"this turn ('{_deferred_q[:160]}') that needs tools, but tool "
+                "use was held back because the conversation register is heavy. "
+                "Do NOT pretend you did it or invent results. Briefly "
+                "acknowledge you can do it and ask if they'd like you to go "
+                "ahead — if they confirm, it will run next turn. Keep the "
+                "offer to one short sentence; the person comes first."
+            )
+            ctx.telemetry["gate_deferred_request"] = True
 
         # --- Direct document generation (bypasses agentic loop) ---
         if _doc_gen_intent and should_use_agentic:

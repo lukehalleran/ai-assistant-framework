@@ -10,6 +10,19 @@ Double-deletion guard [NEW 2026-03-26]: execute_plan() tracks deleted_ids set
 across duplicate + contradiction phases to prevent attempting to delete the
 same ChromaDB document twice. _apply_contradiction_truth_penalties() also
 skips truth updates for already-deleted documents.
+
+Contradiction-arm safety [2026-08-03]: contradiction "losers" are MARKED
+superseded (is_current=False, superseded_by) — never deleted; retrieval
+already drops superseded facts and the mark is reversible. Multi-valued
+relations (relation_classifier.MULTI_VALUED_RELATIONS — medication_name,
+goal, email_sent, ...), generic catch-all predicates (is/has/thinks/...),
+junk function-word subjects, and already-superseded facts are excluded from
+contradiction clustering entirely — the queue had `medication_name=Zelphex`
+scheduled for deletion because `kavarin` was newer, and a 71-entry `user | is`
+cluster of distinct emotional states. Duplicate-arm deletions and all
+collection access go through store._get_collection() (raw `collections`
+dict holds None placeholders pre-open — the reference_docs silent-no-op
+bug class).
 """
 
 import re
@@ -42,15 +55,32 @@ class CrossCollectionDeduplicator:
     Two detection modes:
     1. **Cross-duplicate detection** — finds semantically identical content
        across different collections (e.g., a fact already captured in a summary).
+       Execution DELETES the redundant copy.
     2. **Fact contradiction detection** — finds facts with matching
        subject+predicate but differing objects, keeps the most recent.
+       Execution (2026-08-03) MARKS the older facts superseded
+       (`is_current=False`, `superseded_by=<keep_id>`) instead of deleting —
+       retrieval already drops superseded facts, and supersession is
+       reversible where deletion is not. Multi-valued relations, generic
+       catch-all predicates, and junk subjects are excluded from
+       contradiction resolution entirely (see _find_fact_contradictions).
 
     Usage::
 
         dedup = CrossCollectionDeduplicator(chroma_store)
         plan = dedup.run(dry_run=True)   # preview
-        plan = dedup.run(dry_run=False)  # execute deletions
+        plan = dedup.run(dry_run=False)  # execute (delete dups, supersede contradictions)
     """
+
+    # Function-word / parser-artifact subjects — contradiction clusters keyed
+    # on these ("and | is", "done | is") are extraction residue, not entities.
+    _JUNK_SUBJECTS = frozenset({
+        "and", "or", "but", "so", "if", "then", "also", "just", "well", "now",
+        "it", "this", "that", "these", "those", "there", "here",
+        "he", "she", "they", "we", "you", "i", "me", "him", "her", "them",
+        "done", "yes", "no", "ok", "okay",
+        "what", "which", "why", "who", "whom", "when", "where", "how",
+    })
 
     def __init__(self, chroma_store, claim_index=None, entity_resolver=None):
         """
@@ -381,24 +411,57 @@ class CrossCollectionDeduplicator:
         Ephemeral relations (current_feeling, current_activity, etc.) are
         skipped — those are temporal facts where historical values carry
         meaning (e.g. "you were tired yesterday").
+
+        Also skipped (2026-08-03 — the queue had `medication_name=Zelphex`
+        marked for deletion because `kavarin` was newer, and a 71-entry
+        `user | is` cluster of distinct emotional states):
+        - MULTI-VALUED relations (relation_classifier.MULTI_VALUED_RELATIONS)
+          — several simultaneous values are legitimate, not a conflict.
+        - GENERIC catch-all predicates (is/has/thinks/...) — the relation name
+          carries no claim identity; such facts are junk-class residue handled
+          by scripts/purge_junk_facts.py, not contradiction resolution.
+        - JUNK subjects (function words: "and", "done", "it", ...) — parser
+          artifacts; resolving them keeps one junk fact instead of zero.
         """
         if not fact_docs:
             return []
 
         # Load ephemeral relations to exclude from contradiction detection
         ephemeral = self._get_ephemeral_relations()
+        try:
+            from memory.relation_classifier import (
+                GENERIC_PREDICATES, is_multi_valued_relation,
+            )
+        except ImportError:  # pragma: no cover - defensive
+            GENERIC_PREDICATES = frozenset()
+            is_multi_valued_relation = lambda r: False  # noqa: E731
 
         # Group facts by (subject, predicate)
         groups: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
 
         for doc in fact_docs:
+            # Already-superseded facts are settled history — clustering them
+            # again would re-resolve (and re-penalize) them on every run.
+            md = doc.get("metadata", {}) or {}
+            if md.get("is_current") is False or str(md.get("is_current", "")).lower() == "false":
+                continue
             subj, pred, obj = self._extract_triple(doc)
             if subj and pred:
                 pred_norm = pred.lower().strip()
+                subj_norm = subj.lower().strip()
                 # Skip ephemeral predicates — history matters
                 if pred_norm in ephemeral:
                     continue
-                key = (subj.lower().strip(), pred_norm)
+                # Skip multi-valued relations — plural values are not conflicts
+                if is_multi_valued_relation(pred_norm):
+                    continue
+                # Skip generic catch-alls — same relation name ≠ same claim
+                if pred_norm in GENERIC_PREDICATES:
+                    continue
+                # Skip junk/function-word subjects — parser artifacts
+                if subj_norm in self._JUNK_SUBJECTS:
+                    continue
+                key = (subj_norm, pred_norm)
                 groups[key].append({
                     "id": doc["id"],
                     "content": doc["content"],
@@ -517,10 +580,16 @@ class CrossCollectionDeduplicator:
     # ------------------------------------------------------------------
 
     def _execute_plan(self, plan: DedupPlan) -> int:
-        """Execute deletions from the plan.
+        """Execute the plan: DELETE duplicate copies, MARK contradiction
+        losers superseded (is_current=False — reversible; retrieval already
+        drops superseded facts).
+
+        Collections are resolved via the store's _get_collection() — reading
+        the raw `collections` dict returns the None placeholder before first
+        access and silently no-ops (the reference_docs bug class, 2026-08-02).
 
         Returns:
-            Number of successful deletions.
+            Number of documents acted on (deleted + superseded).
         """
         deleted = 0
         deleted_ids: set = set()  # Track IDs deleted in any phase
@@ -535,7 +604,7 @@ class CrossCollectionDeduplicator:
                     if pair.delete_id == pair.doc_id_b
                     else pair.collection_a
                 )
-                coll = self.chroma_store.collections.get(coll_name)
+                coll = self.chroma_store._get_collection(coll_name)
                 if coll:
                     coll.delete(ids=[pair.delete_id])
                     deleted += 1
@@ -551,7 +620,7 @@ class CrossCollectionDeduplicator:
                 logger.warning("[CrossDedup] %s", msg)
                 plan.errors.append(msg)
 
-        # Delete contradicting facts (keep most recent) + apply truth penalties
+        # Contradicting facts: mark superseded (never delete) + truth penalties
         for cluster in plan.contradiction_clusters:
             # Apply truth score penalties (skip IDs already deleted in dup phase)
             self._apply_contradiction_truth_penalties(cluster, deleted_ids)
@@ -560,18 +629,20 @@ class CrossCollectionDeduplicator:
                 if del_id in deleted_ids:
                     continue
                 try:
-                    coll = self.chroma_store.collections.get("facts")
-                    if coll:
-                        coll.delete(ids=[del_id])
+                    ok = self.chroma_store.update_metadata("facts", del_id, {
+                        "is_current": False,
+                        "superseded_by": cluster.keep_id,
+                    })
+                    if ok:
                         deleted += 1
                         deleted_ids.add(del_id)
                         logger.debug(
-                            "[CrossDedup] Deleted contradicting fact %s "
-                            "(subject=%s, pred=%s, keeping %s)",
+                            "[CrossDedup] Superseded contradicting fact %s "
+                            "(subject=%s, pred=%s, kept %s)",
                             del_id, cluster.subject, cluster.predicate, cluster.keep_id,
                         )
                 except Exception as e:
-                    msg = f"Failed to delete contradiction {del_id}: {e}"
+                    msg = f"Failed to supersede contradiction {del_id}: {e}"
                     logger.warning("[CrossDedup] %s", msg)
                     plan.errors.append(msg)
 
@@ -603,7 +674,7 @@ class CrossCollectionDeduplicator:
             # Small boost for the kept (most recent) fact
             if cluster.keep_id and cluster.keep_id not in already_deleted:
                 try:
-                    coll = self.chroma_store.collections.get("facts")
+                    coll = self.chroma_store._get_collection("facts")
                     if coll:
                         existing = coll.get(ids=[cluster.keep_id], include=["metadatas"])
                         if existing and existing.get("metadatas"):

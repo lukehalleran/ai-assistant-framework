@@ -134,13 +134,16 @@ These systems are complete and working. Listed here for context, not as active w
 - **Prompt eval system**: Snapshot/replay infrastructure, variant generation (LOO/AOI/bundle/reorder), pairwise judge, objective checks, 31-entry section registry, 246 tests (`eval/`)
 - **Production**: PyInstaller desktop build (v1.0.0 shipped 2026-04-08), Docker deployment, graceful shutdown
 - **Privacy**: All data local, API calls only for LLM generation, no telemetry
-- **Testing**: ~6,290 tests across 271 test files, retrieval quality benchmarks (296 cases; combined MRR 0.84, 2026-07-23 rerun — see `docs/BENCHMARK_METRICS.md`)
+- **Testing**: ~6,600 tests across 295 test files (full run 2026-08-03: 6,152 passed, 0 failures), retrieval quality benchmarks (296 cases; combined MRR 0.84, 2026-07-23 rerun — see `docs/BENCHMARK_METRICS.md`)
 
 ---
 
 ## Recent Completions (June-August 2026)
 
-### Adaptive Exemplar Learning (2026-08-02/03)
+### Usage-Audit Fix Batch (2026-08-21)
+- Safety wiring: EscalationTracker + SafetyCanary now update on the production GUI path (`build_full_prompt` → `_update_safety_trackers`; GROUNDING/QUIET escalation strategies had never fired in GUI use), `record_response` wired via handlers telemetry; history-based distress stickiness honours the session-gap boundary (`TONE_STICKINESS_MAX_GAP_MINUTES`).
+- Streaming robustness: API-error fail-fast in `gui/handlers.py` (error-sentinel stream head → friendly `_API_ERROR_DISPLAY` template, never raw provider JSON; `[CREDITS EXHAUSTED]` for HTTP 402); reasoning-only-recovery quality floor (`_usable_reasoning_recovery`); corpus `add_summary` accepts dict payloads so reflections reach the in-memory corpus.
+- Learning-loop guards: vent-shape narrowing (epistemic-stance stripping, acute MEDIUM/HIGH veto arm, info-seeking escape, stricter no_search teaching); intent exemplar teachers tone-gated; incremental per-text exemplar embedding cache (`encode_texts_cached`); forced-minimum memory backfill clamped to the intent budget (`min_results`).
 - `utils/adaptive_exemplars.py` — per-user learned exemplars replacing hand-maintained keyword/exemplar lists as the maintenance model. Domains: tone, need, web_search anchors, intent. Teachers are channels independent of the semantic prototypes (keyword stage, LLM arbiter, [WEB_ citation outcomes, gate vetoes, confident regex, STM refinements); heuristic backstops and negative labels never teach.
 - Intent classifier semantic tier (`INTENT_EXEMPLARS`, regex conf < 0.50 → prototype match at 0.60) + `scripts/auto_label_intents.py` LLM auto-labeler (dual-model `--verify` agreement) — confusion-matrix work no longer requires hand-labeling.
 

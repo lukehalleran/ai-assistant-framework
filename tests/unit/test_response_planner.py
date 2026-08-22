@@ -114,6 +114,15 @@ class TestShouldPlan:
             with patch.dict("sys.modules", {"core.context_pipeline": MagicMock(ToneLevel=_ToneLevel)}):
                 assert ResponsePlanner.should_plan(ctx) is False
 
+    def test_concern_skips(self):
+        # 2026-08-05: CONCERN selects the LIGHT SUPPORT mode ("don't offer
+        # unsolicited advice"), while the planner was injecting "Cover:
+        # <advice topics>" into the same prompt — contradictory blocks.
+        ctx = _FakeContext(tone_level=_ToneLevel.CONCERN)
+        with patch("config.app_config.RESPONSE_PLANNING_ENABLED", True):
+            with patch.dict("sys.modules", {"core.context_pipeline": MagicMock(ToneLevel=_ToneLevel)}):
+                assert ResponsePlanner.should_plan(ctx) is False
+
     def test_disabled_config_skips(self):
         ctx = _FakeContext()
         with patch("config.app_config.RESPONSE_PLANNING_ENABLED", False):

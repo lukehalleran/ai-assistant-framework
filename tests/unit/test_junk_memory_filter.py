@@ -28,6 +28,17 @@ class TestJunkPredicate:
     def test_credits_exhausted_response_field(self):
         assert is_junk_conversation_doc(response="[CREDITS EXHAUSTED] add credits")
 
+    def test_streaming_error_doc_is_junk(self):
+        # 2026-08-14: "[Streaming Error" wasn't in API_ERROR_PREFIXES — ~20
+        # upstream-disconnect turns persisted and surfaced at retrieval.
+        assert is_junk_conversation_doc(
+            content="User: I feel significantly more normal I think\n"
+            "Assistant: [Streaming Error: Upstream error from DigitalOcean: Connection closed.]"
+        )
+        assert is_junk_conversation_doc(
+            response="[Streaming Error] JSON error injected into SSE stream"
+        )
+
     def test_bare_test_exchange(self):
         assert is_junk_conversation_doc(content="User: test\nAssistant: Hello! How can I help?")
         assert is_junk_conversation_doc(query="Testing", response="I'm here!")

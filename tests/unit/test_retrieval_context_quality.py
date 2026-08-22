@@ -94,3 +94,113 @@ class TestReadTimeThinkingStrip:
         out = _strip_stored_thinking(text)
         assert "internal notes" not in out
         assert "The real answer." in out
+
+
+class TestUploadStalenessGate:
+    """2026-08-05: months-old homework docs and phone photos were injected
+    into every turn — hybrid retrieval always returns SOME top-N. An upload
+    now surfaces only while fresh (<= USER_UPLOADS_MAX_AGE_DAYS) or when
+    relevance clears USER_UPLOADS_MIN_RELEVANCE; undated legacy docs must
+    clear the relevance bar."""
+
+    def _doc(self, relevance=0.0, ts=None):
+        from datetime import datetime
+        meta = {"type": "user_upload"}
+        if ts is not None:
+            meta["timestamp"] = ts.isoformat() if isinstance(ts, datetime) else ts
+        return {"relevance_score": relevance, "metadata": meta}
+
+    def test_stale_irrelevant_upload_dropped(self):
+        from datetime import datetime, timedelta
+        from core.prompt.gatherer_knowledge import _upload_is_live
+        old = datetime.now() - timedelta(days=180)
+        assert not _upload_is_live(self._doc(relevance=0.2, ts=old))
+
+    def test_fresh_upload_survives_regardless_of_relevance(self):
+        from datetime import datetime, timedelta
+        from core.prompt.gatherer_knowledge import _upload_is_live
+        fresh = datetime.now() - timedelta(days=1)
+        assert _upload_is_live(self._doc(relevance=0.0, ts=fresh))
+
+    def test_relevant_old_upload_survives(self):
+        from datetime import datetime, timedelta
+        from core.prompt.gatherer_knowledge import _upload_is_live, USER_UPLOADS_MIN_RELEVANCE
+        old = datetime.now() - timedelta(days=180)
+        assert _upload_is_live(self._doc(relevance=USER_UPLOADS_MIN_RELEVANCE + 0.05, ts=old))
+
+    def test_undated_doc_needs_relevance(self):
+        from core.prompt.gatherer_knowledge import _upload_is_live
+        assert not _upload_is_live(self._doc(relevance=0.2))
+        assert _upload_is_live(self._doc(relevance=0.9))
+
+    def test_garbage_timestamp_treated_as_undated(self):
+        from core.prompt.gatherer_knowledge import _upload_is_live
+        assert not _upload_is_live(self._doc(relevance=0.1, ts="not-a-date"))
+
+    def test_relevance_bar_calibrated_for_bge_space(self):
+        # 2026-08-14: the original 0.5 bar = cosine 0.5 under the store's
+        # rel = 1/(1+2(1-cos)) mapping — any-text-vs-any-text in bge space.
+        # A homework docx and two year-old photos cleared it on an emotional
+        # check-in turn. The bar must sit above the memory gate's 0.60
+        # ordinary-relevance cosine (rel ≈ 0.556) to mean CLEARLY relevant.
+        from core.prompt.gatherer_knowledge import USER_UPLOADS_MIN_RELEVANCE
+        assert USER_UPLOADS_MIN_RELEVANCE >= 0.60
+
+    def test_old_upload_at_legacy_bar_now_dropped(self):
+        # The live-incident shape: months-old doc scoring in the 0.5s.
+        from datetime import datetime, timedelta
+        from core.prompt.gatherer_knowledge import _upload_is_live
+        old = datetime.now() - timedelta(days=200)
+        assert not _upload_is_live(self._doc(relevance=0.55, ts=old))
+
+
+class TestSelfDocsAllowGate:
+    """2026-08-05: a conversational-tone personal pain turn pulled 15
+    [DAEMON DOCUMENTATION] chunks (tone docs, synthesis notes, a lecture
+    transcript) — distress suppression didn't fire because tone classified
+    CONVERSATIONAL. Self-docs are now ALLOW-listed: meta/technical/project
+    intents or an explicit self-referential query cue."""
+
+    def _gate(self, query, intent=None, files=False, distress=False):
+        from core.prompt.builder import _should_include_reference_docs
+        return _should_include_reference_docs(query, intent, files, distress)
+
+    def test_personal_pain_turn_excluded(self):
+        # The live offender: general intent, conversational tone.
+        q = ("Yeah. Took more mit about and hour and a half ago and the pain "
+             "is probably worse. Ugh. It's so frustrating cuz my mind is working fine")
+        assert not self._gate(q, intent="general")
+
+    def test_meta_technical_project_intents_included(self):
+        assert self._gate("how did that go", intent="meta_conversational")
+        assert self._gate("getting a dimension mismatch error", intent="technical_help")
+        assert self._gate("let's work on the retriever", intent="project_work")
+
+    def test_self_referential_cue_includes_on_general_intent(self):
+        assert self._gate("how does your memory work?", intent="general")
+        assert self._gate("what's the truth score on that fact", intent="general")
+        assert self._gate("why did daemon pull that doc", intent=None)
+        assert self._gate("how do you decide when to search", intent="general")
+
+    def test_suppressions_still_win(self):
+        # Distress / uploads / emotional_support beat the allow-list.
+        assert not self._gate("how does your memory work?", intent="technical_help", distress=True)
+        assert not self._gate("how does your memory work?", intent="technical_help", files=True)
+        assert not self._gate("how does your memory work?", intent="emotional_support")
+
+    def test_ordinary_conversational_turns_excluded(self):
+        assert not self._gate("I slept okay, two 4 hour shifts", intent="general")
+        assert not self._gate("what should I make for dinner", intent="general")
+        assert not self._gate("my mom got home yesterday", intent="casual_social")
+
+    def test_update_fix_cues_included(self):
+        # 2026-08-21: the owner asked Daemon to "check out your updates based
+        # on docs" after a fix batch — general intent, no cue matched, so the
+        # freshly re-seeded self-docs never surfaced. "your updates/fixes/
+        # changes" and "fixes/updates on|to|in you" are now cues.
+        assert self._gate("check out your updates based on docs", intent="general")
+        assert self._gate("I did a decent amount of fixes on you today", intent="general")
+        assert self._gate("any updates to you from the audit?", intent="general")
+        # non-self uses stay excluded
+        assert not self._gate("I need to buy updates for my phone plan", intent="general")
+        assert not self._gate("the fixes on the car are done", intent="casual_social")

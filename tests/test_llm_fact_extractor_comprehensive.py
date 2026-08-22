@@ -103,7 +103,7 @@ def test_llm_extractor_init(llm_extractor):
     """Test LLMFactExtractor initialization."""
     assert llm_extractor is not None
     assert llm_extractor.model_alias == "gpt-4o-mini"
-    assert llm_extractor.max_input_chars == 4000
+    assert llm_extractor.max_input_chars == 9000  # 2026-08-05 coverage fix (was 4000)
     assert llm_extractor.max_triples == 15  # Increased from 10
 
 
@@ -229,6 +229,32 @@ async def test_extract_triples_with_valid_json(llm_extractor, monkeypatch):
     assert result[0]["subject"] == "user"
     assert result[0]["relation"] == "likes"
     assert result[0]["object"] == "Python"  # Preserves case
+
+
+@pytest.mark.asyncio
+async def test_extract_triples_blocks_unsupported_pet_species(llm_extractor, monkeypatch):
+    """A has_dog/has_cat relation must be supported by the matched source."""
+    async def mock_generate_pet_hallucination(*args, **kwargs):
+        return '''[
+            {"subject": "User", "relation": "has_dog", "object": "Biscuit"},
+            {"subject": "User", "relation": "has_dog", "object": "Daisy"}
+        ]'''
+
+    monkeypatch.setattr(llm_extractor.mm, "generate_once", mock_generate_pet_hallucination)
+
+    result = await llm_extractor.extract_triples([
+        {"query": "The cats Biscuit and Daisy are here at least", "response": ""}
+    ])
+    assert result == []
+
+
+def test_attach_source_keeps_supported_pet_species():
+    triples = [{"subject": "user", "relation": "has_cat", "object": "Biscuit"}]
+    LLMFactExtractor._attach_source_excerpts(
+        triples, [{"query": "My cat Biscuit is sitting here", "response": ""}]
+    )
+    assert len(triples) == 1
+    assert triples[0]["source_excerpt"].startswith("My cat Biscuit")
 
 
 @pytest.mark.asyncio

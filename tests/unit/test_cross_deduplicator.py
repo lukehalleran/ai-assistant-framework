@@ -59,13 +59,19 @@ def _make_chroma_store(collection_docs=None):
 
     store.list_all = MagicMock(side_effect=mock_list_all)
 
-    # Mock collections dict for deletion
+    # Mock collections for deletion. Execution resolves via _get_collection()
+    # (raw `collections` dict holds None placeholders pre-open in the real
+    # store — the reference_docs silent-no-op bug class, fixed 2026-08-03).
     mock_collections = {}
     for coll_name in collection_docs:
         mock_coll = MagicMock()
         mock_coll.delete = MagicMock()
         mock_collections[coll_name] = mock_coll
     store.collections = mock_collections
+    store._get_collection = MagicMock(
+        side_effect=lambda name: mock_collections.setdefault(name, MagicMock())
+    )
+    store.update_metadata = MagicMock(return_value=True)
 
     return store
 
@@ -673,7 +679,8 @@ class TestDeleteExecution:
     """Tests for live deletion execution."""
 
     def test_delete_contradiction_facts(self):
-        """Live run should delete contradicting facts."""
+        """Live run supersedes the losing fact (2026-08-03: contradiction
+        resolution marks is_current=False instead of deleting)."""
         store = _make_chroma_store({
             "facts": [
                 _make_doc("f1", "user lives_in NYC", "facts", {
@@ -693,8 +700,13 @@ class TestDeleteExecution:
         plan = dedup.run(dry_run=False)
 
         assert plan.contradictions_found == 1
-        # f1 (older) should be deleted
-        store.collections["facts"].delete.assert_called_once_with(ids=["f1"])
+        # f1 (older) is superseded, never deleted
+        store.collections["facts"].delete.assert_not_called()
+        supersessions = [
+            c for c in store.update_metadata.call_args_list
+            if c.args[:2] == ("facts", "f1") and "is_current" in c.args[2]
+        ]
+        assert supersessions and supersessions[0].args[2]["superseded_by"] == "f2"
 
     def test_delete_failure_logged(self):
         """Deletion errors should be captured in plan.errors, not raise."""
@@ -850,3 +862,121 @@ class TestConfigIntegration:
         assert dedup.max_docs == 500
         assert "facts" in dedup.collections
         assert "summaries" in dedup.collections
+
+
+class TestContradictionArmSafety:
+    """2026-08-03 safety changes — the live queue had `medication_name=Zelphex`
+    scheduled for deletion because `kavarin` was newer, a 71-entry `user | is`
+    cluster of distinct emotional states, and junk-subject clusters
+    (`and | is`). Multi-valued relations / generic predicates / junk subjects
+    are excluded from contradiction clustering, and execution MARKS losers
+    superseded instead of deleting them."""
+
+    def _make_dedup(self):
+        store = _make_chroma_store({})
+        store.embedding_fn = _make_embedding_fn()
+        return CrossCollectionDeduplicator(store), store
+
+    @staticmethod
+    def _fact(doc_id, subj, pred, obj, ts):
+        return _make_doc(doc_id, f"{subj} | {pred} | {obj}", "facts", {
+            "subject": subj, "predicate": pred, "object": obj, "timestamp": ts,
+        })
+
+    def test_multi_valued_relation_not_a_contradiction(self):
+        """Multiple medications are simultaneous truths, not conflicts —
+        the newest one must not supersede the others."""
+        dedup, _ = self._make_dedup()
+        docs = [
+            self._fact("f1", "user", "medication_name", "Zelphex", "2026-07-25T00:00:00"),
+            self._fact("f2", "user", "medication_name", "kavarin", "2026-07-30T00:00:00"),
+        ]
+        assert dedup._find_fact_contradictions(docs) == []
+
+    def test_multi_valued_goal_and_email_sent_skipped(self):
+        dedup, _ = self._make_dedup()
+        docs = [
+            self._fact("g1", "user", "goal", "finish thesis", "2026-07-01T00:00:00"),
+            self._fact("g2", "user", "goal", "get a job", "2026-07-02T00:00:00"),
+            self._fact("e1", "user", "email_sent", "email to TA", "2026-07-16T00:00:00"),
+            self._fact("e2", "user", "email_sent", "email to OMS", "2026-07-27T00:00:00"),
+        ]
+        assert dedup._find_fact_contradictions(docs) == []
+
+    def test_generic_predicate_skipped(self):
+        """`user | is | X` carries no claim identity in the relation — a pile
+        of distinct emotional states is a timeline, not a contradiction set."""
+        dedup, _ = self._make_dedup()
+        docs = [
+            self._fact("i1", "user", "is", "struggling immensely", "2026-08-03T00:00:00"),
+            self._fact("i2", "user", "is", "scared this won't stop", "2026-07-28T00:00:00"),
+        ]
+        assert dedup._find_fact_contradictions(docs) == []
+
+    def test_junk_subject_skipped(self):
+        dedup, _ = self._make_dedup()
+        docs = [
+            self._fact("a1", "and", "is", "reported as evidence", "2026-06-09T00:00:00"),
+            self._fact("a2", "and", "is", "avg_retail_elec_price", "2026-06-08T00:00:00"),
+            self._fact("d1", "done", "lives_in", "week 1", "2026-06-19T00:00:00"),
+            self._fact("d2", "done", "lives_in", "week 2", "2026-07-29T00:00:00"),
+        ]
+        assert dedup._find_fact_contradictions(docs) == []
+
+    def test_single_valued_contradiction_still_detected(self):
+        """The guards must not kill legitimate supersession (lives_in)."""
+        dedup, _ = self._make_dedup()
+        docs = [
+            self._fact("f1", "user", "lives_in", "NYC", "2025-01-01T00:00:00"),
+            self._fact("f2", "user", "lives_in", "LA", "2026-02-01T00:00:00"),
+        ]
+        clusters = dedup._find_fact_contradictions(docs)
+        assert len(clusters) == 1
+        assert clusters[0].keep_id == "f2"
+
+    def test_already_superseded_facts_not_reclustered(self):
+        """A fact already marked is_current=False is settled history."""
+        dedup, _ = self._make_dedup()
+        old = self._fact("f1", "user", "lives_in", "NYC", "2025-01-01T00:00:00")
+        old["metadata"]["is_current"] = False
+        docs = [
+            old,
+            self._fact("f2", "user", "lives_in", "LA", "2026-02-01T00:00:00"),
+        ]
+        assert dedup._find_fact_contradictions(docs) == []
+
+    def test_execution_supersedes_instead_of_deleting(self):
+        """Contradiction losers get is_current=False + superseded_by —
+        the facts collection delete() must never be called for them."""
+        dedup, store = self._make_dedup()
+        plan = DedupPlan(dry_run=False)
+        plan.contradiction_clusters.append(ContradictionCluster(
+            subject="user", predicate="lives_in",
+            entries=[], keep_id="f2", delete_ids=["f1"],
+        ))
+        acted = dedup._execute_plan(plan)
+        assert acted == 1
+        # The truth-penalty pass also calls update_metadata — filter for the
+        # supersession call specifically.
+        calls = [c for c in store.update_metadata.call_args_list
+                 if c.args[:2] == ("facts", "f1") and "is_current" in c.args[2]]
+        assert calls, "expected update_metadata('facts', 'f1', {is_current...})"
+        updates = calls[0].args[2]
+        assert updates["is_current"] is False
+        assert updates["superseded_by"] == "f2"
+        store._get_collection("facts").delete.assert_not_called()
+
+    def test_duplicate_arm_still_deletes_via_lazy_collection(self):
+        """Duplicate copies are still deleted — resolved via _get_collection()
+        (raw collections dict = None placeholders pre-open)."""
+        dedup, store = self._make_dedup()
+        plan = DedupPlan(dry_run=False)
+        plan.duplicate_pairs.append(DuplicatePair(
+            doc_id_a="r1", doc_id_b="r2",
+            collection_a="reflections", collection_b="reflections",
+            similarity=0.97, keep_id="r1", delete_id="r2",
+        ))
+        acted = dedup._execute_plan(plan)
+        assert acted == 1
+        store._get_collection.assert_any_call("reflections")
+        store._get_collection("reflections").delete.assert_called_once_with(ids=["r2"])

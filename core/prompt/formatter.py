@@ -1661,12 +1661,16 @@ class PromptFormatter:
 
         final_prompt = "\n\n".join(sections)
 
-        # Count how many times "[RECENT CONVERSATION]" appears in final assembled prompt
-        recent_conv_count = final_prompt.count("[RECENT CONVERSATION]")
+        # Count [RECENT CONVERSATION] HEADERS in the final assembled prompt.
+        # Anchored to line starts (2026-08-21): a stored conversation that
+        # QUOTES the header mid-line (e.g. the user pasting a prompt dump)
+        # used to trip this as a false-positive duplicate.
+        _recent_header_re = re.compile(r'^\[RECENT CONVERSATION\]', re.MULTILINE)
+        recent_conv_count = len(_recent_header_re.findall(final_prompt))
         if recent_conv_count > 1:
             logger.error(f"[DEBUG RECENT] FINAL PROMPT HAS {recent_conv_count} [RECENT CONVERSATION] HEADERS!")
             # Find positions
-            matches = [(m.start(), m.end()) for m in re.finditer(r'\[RECENT CONVERSATION\]', final_prompt)]
+            matches = [(m.start(), m.end()) for m in _recent_header_re.finditer(final_prompt)]
             logger.error(f"[DEBUG RECENT] Found at positions: {matches}")
             for i, (start, end) in enumerate(matches):
                 context_start = max(0, start - 50)

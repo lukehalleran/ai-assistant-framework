@@ -5,7 +5,8 @@ Mixin providing memory retrieval methods for ContextGatherer.
 
 Methods:
   - _get_recent_conversations(limit) -> List[Dict]
-  - _get_semantic_memories(query, limit) -> List[Dict]
+  - _get_semantic_memories(query, limit) -> List[Dict]  [passes min_gated=limit so the
+      gate's forced-minimum backfill respects the intent max_mems budget, 2026-08-21]
   - _deduplicate_memories(memories) -> List[Dict]
   - _expand_query_with_graph(query, max_terms) -> str
   - _get_summaries_separated(query, limit) -> Dict[str, List]
@@ -449,9 +450,20 @@ class MemoryRetrievalMixin:
 
                 logger.debug(f"[CONTEXT_GATHERER] About to call memory_coordinator.get_memories with query='{search_query[:50]}...', limit={retrieval_limit}")
 
-                all_memories = await self.memory_coordinator.get_memories(
-                    search_query, limit=retrieval_limit, topic_filter=None
-                )
+                try:
+                    # min_gated=limit: the gate's forced-minimum fail-soft
+                    # floor must never exceed this turn's intent budget
+                    # (casual_social max_mems=3 was getting 8 forced
+                    # below-threshold memories — 2026-08-18 audit).
+                    all_memories = await self.memory_coordinator.get_memories(
+                        search_query, limit=retrieval_limit, topic_filter=None,
+                        min_gated=limit,
+                    )
+                except TypeError:
+                    # Coordinator double (tests/mocks) without min_gated support.
+                    all_memories = await self.memory_coordinator.get_memories(
+                        search_query, limit=retrieval_limit, topic_filter=None
+                    )
 
                 logger.debug(f"[CONTEXT_GATHERER] Retrieved {len(all_memories)} memories from coordinator (requested {retrieval_limit})")
                 logger.debug(f"[CONTEXT_GATHERER] Memory coordinator type: {type(self.memory_coordinator)}")

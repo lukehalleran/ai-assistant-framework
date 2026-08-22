@@ -21,6 +21,13 @@ Module Contract
     corrections ("No I mean...") resolve from the IMMEDIATELY PRECEDING exchange — the topic
     continues; never re-derived from surface keywords (pairs with
     query_checker.is_anaphoric_continuation topic inheritance in ContextPipeline).
+  - Disambiguation rule 6 [2026-08-05]: substances/medications/proper nouns are named EXACTLY
+    as in the CURRENT message — never substituted from earlier context (a live STM summary
+    rewrote "900 mg lorvatin" as "900 mg of kavarin daily" because kavarin dominated the
+    surrounding turns).
+  - Rule 3 extension [2026-08-05]: no invented DURATIONS — "stopped the medication 3 days
+    ago" is a timeline marker, not a symptom duration; similar older episodes are PREVIOUS
+    episodes (pairs with the episode-boundary block in tone_instructions session headers).
   - temporal_facts: normalized facts about user's current state, with collapse-toward-fewer-events disambiguation rule applied.
 - Key pieces:
   - analyze(): Main async method that calls LLM to analyze context
@@ -121,9 +128,10 @@ Return ONLY valid JSON with these fields:
 CRITICAL DISAMBIGUATION RULES:
 1. If the current message names the same actors + action + outcome as something in recent conversation, classify as "recall" — not a new event.
 2. Resolve ambiguous temporal phrases by collapsing toward fewer events. "Did not sleep" + "fight mode all night" on the same morning = ONE bad night, not two.
-3. Do NOT invent a count or pattern. If you only have evidence of one occurrence of something, say so explicitly in temporal_facts.
+3. Do NOT invent a count, pattern, or DURATION. If you only have evidence of one occurrence of something, say so explicitly in temporal_facts. Never state how long a symptom/situation has lasted unless the user said it for THIS episode — "stopped the medication 3 days ago" is a timeline marker, not a symptom duration; a similar episode in older context is a PREVIOUS episode, not the current one.
 4. When the user uses phrases like "told them what happened", "this situation", "that thing" without naming a new event, assume they are referencing something already known — classify as "recall" or "unclear".
 5. If the current message opens with a bare pronoun ("It was...", "That's...") or corrects your reading ("No I mean...", "I wasn't talking about X"), resolve the pronoun from the IMMEDIATELY PRECEDING exchange — the topic CONTINUES that exchange's topic. Do not re-derive the topic from surface keywords: "It was 3 years of twice a week" mid-illness-conversation is about the illness, not exercise. A correction re-scopes the user's own previous message; it is NOT a new event or a new topic.
+6. Name substances, medications, and proper nouns EXACTLY as the user did in the CURRENT message. Never substitute a different drug/entity from earlier context: if the user says "900 mg of lorvatin" but earlier turns discussed kavarin, the fact is about lorvatin. When the current message names no substance and the referent is ambiguous, write "the medication" rather than guessing a name.
 
 Example (new event):
 {{

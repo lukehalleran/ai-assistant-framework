@@ -29,8 +29,10 @@ Integration:
     produced an intent string, refine_with_stm() maps the free-text intent to a
     categorical IntentType, upgrading confidence to INTENT_STM_REFINED_CONFIDENCE
     (0.60 default — reaches the 0.60 routing floors, stays below the 0.75
-    agentic-veto floor). refine_with_stm(query=...) also teaches the learned
-    exemplar store when a refinement lands.
+    agentic-veto floor). refine_with_stm(query=..., tone_level=...) also teaches
+    the learned exemplar store when a refinement lands — but NEVER on an
+    elevated-tone turn (2026-08-21): crisis vents must not become learned
+    intent prototypes (same guard on the confident-regex teacher).
   - ContextResult carries the IntentResult in its .intent field.
   - PromptBuilder reads intent.retrieval_overrides to adjust max_* counts.
   - MemoryScorer reads intent.weight_overrides via rank_memories(weight_overrides=...).
@@ -541,6 +543,9 @@ _SEMANTIC_TIER_CONFIG = {
 _intent_prototype_cache = None
 
 
+_intent_text_emb_cache: dict = {}
+
+
 def _intent_store_version() -> int:
     try:
         from utils.adaptive_exemplars import get_store
@@ -572,8 +577,10 @@ def _get_intent_prototypes():
                 merged += get_store().get_learned("intent", label)
             except Exception:
                 pass
-            vecs = embedder.encode(merged, convert_to_numpy=True,
-                                   normalize_embeddings=True)
+            from utils.adaptive_exemplars import encode_texts_cached
+            vecs = encode_texts_cached(
+                embedder, merged, _intent_text_emb_cache, normalize=True
+            )
             proto = np.mean(vecs, axis=0)
             protos[label] = proto / (np.linalg.norm(proto) + 1e-9)
         _intent_prototype_cache = (_version, protos)
@@ -609,12 +616,31 @@ def _semantic_intent(query: str):
     return None
 
 
+# Both tone encodings arrive here: CrisisLevel.name ("HIGH"/"MEDIUM"/"CONCERN")
+# from ContextPipeline, or CrisisLevel.value ("crisis_support"/"elevated_support"/
+# "light_support") from other callers. Matched as uppercase substrings.
+_ELEVATED_TONE_MARKERS = (
+    "CONCERN", "MEDIUM", "HIGH",
+    "LIGHT_SUPPORT", "ELEVATED_SUPPORT", "CRISIS_SUPPORT",
+)
+
+
+def _tone_is_elevated(tone_level) -> bool:
+    if not tone_level:
+        return False
+    tl = str(tone_level).upper()
+    return any(m in tl for m in _ELEVATED_TONE_MARKERS)
+
+
 def _learn_intent_exemplar(query: str, label: str, source: str) -> None:
     """Teach the adaptive store a CONFIRMED intent classification.
 
     Teachers are channels independent of the semantic prototypes: confident
     regex hits and STM refinements. GENERAL is never learned (fallback, not
-    a phrasing), and the semantic tier never teaches itself.
+    a phrasing), and the semantic tier never teaches itself. Callers must
+    also gate on tone: elevated-tone turns never teach (2026-08-21 — the
+    08-18 crisis vents taught temporal_recall through both channels, so
+    crisis phrasing was becoming the intent prototype for ordinary recall).
     """
     if not _SEMANTIC_TIER_CONFIG.get("exemplar_learning", True):
         return
@@ -715,7 +741,13 @@ class IntentClassifier:
 
         # Teach the adaptive store from CONFIDENT regex hits only — an
         # independent lexical channel; the semantic tier never teaches itself.
-        if result.source == "regex" and best_conf >= 0.85:
+        # Elevated-tone turns never teach: a crisis vent that happens to hit a
+        # regex must not become the learned prototype for that intent.
+        if (
+            result.source == "regex"
+            and best_conf >= 0.85
+            and not _tone_is_elevated(tone_level)
+        ):
             _learn_intent_exemplar(query_stripped, best_intent.value, "regex")
 
         # Thread temporal anchor for TEMPORAL_RECALL so the scorer can
@@ -748,6 +780,7 @@ class IntentClassifier:
         result: IntentResult,
         stm_intent: Optional[str],
         query: Optional[str] = None,
+        tone_level: Optional[str] = None,
     ) -> IntentResult:
         """
         Optionally refine a low-confidence classification using STM's
@@ -763,6 +796,9 @@ class IntentClassifier:
             query: The raw user query — when provided, a successful refinement
                 teaches the semantic tier's adaptive store (STM is an
                 LLM-derived channel independent of the prototypes).
+            tone_level: Tone for the turn (either encoding). Elevated tone
+                suppresses teaching — crisis vents must not become learned
+                intent exemplars (they still refine THIS turn's routing).
 
         Returns:
             Possibly upgraded IntentResult (source="stm_refined").
@@ -788,7 +824,7 @@ class IntentClassifier:
                     f"STM refined {result.intent.value}→{intent_type.value} "
                     f"(stm_intent='{stm_intent}', conf={refined_conf:.2f})"
                 )
-                if query:
+                if query and not _tone_is_elevated(tone_level):
                     _learn_intent_exemplar(query, intent_type.value, "stm_refined")
                 return refined
 

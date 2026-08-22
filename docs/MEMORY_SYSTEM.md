@@ -33,7 +33,7 @@ resolved, and stale information is penalized in ranking.
 |------|---------|
 | `memory/memory_coordinator.py` | Thin orchestrator (~639 lines), creates all components, delegates to retriever/storage/shutdown |
 | `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks, supersession + per-relation TTL filter |
-| `memory/relation_classifier.py` | Single source of truth for relation→TTL: health-transient vs standard-ephemeral vs durable (+ permanent-condition overrides). Used by user_profile + memory_retriever |
+| `memory/relation_classifier.py` | Single source of truth for relation→TTL: health-transient vs standard-ephemeral vs durable (+ permanent-condition overrides). Used by user_profile + memory_retriever. 2026-08-03: also hosts `MULTI_VALUED_RELATIONS` + `GENERIC_PREDICATES` + `is_multi_valued_relation()` — the cross-dedup contradiction arm's cluster exclusions (plural values are not conflicts; generic `is`/`has` relation names carry no claim identity) |
 | `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 8 additive bonuses/penalties incl. health-framing decay + timeline bonus) with intent overrides, graph boost, size penalty |
 | `memory/memory_storage.py` | Storage: ChromaDB + corpus writes, fact extraction hook, graph ingestion, reflection embedding cleanup |
 | `memory/skill_activation.py` | SkillActivationPolicy (post-retrieval skill filter) + SkillCooldownStore (JSON-backed TTL) |
@@ -51,7 +51,7 @@ resolved, and stale information is penalized in ranking.
 | File | Purpose |
 |------|---------|
 | `memory/fact_extractor.py` | Multi-stage extraction: corrections > spaCy > REBEL > regex, dual budget. Pre-canonicalization filters: ephemeral predicate blocking (config-driven), boolean-only value rejection, junk-object + polarity guards (2026-08-02) |
-| `memory/llm_fact_extractor.py` | LLM-assisted triple extraction with entity support; accepts existing profile facts for relation reuse; attaches source_excerpt via keyword matching. `_normalize_triple()` applies `_is_ephemeral_relation()` + `_is_boolean_noise()` guards; LLM prompt explicitly discourages transient state extraction |
+| `memory/llm_fact_extractor.py` | LLM-assisted triple extraction with entity support; accepts existing profile facts for relation reuse; attaches source_excerpt via keyword matching. `_normalize_triple()` applies `_is_ephemeral_relation()` + `_is_boolean_noise()` guards; LLM prompt explicitly discourages transient state extraction. 2026-08-05: 30-turn window, newest-first budget (see "Extraction coverage" below); `CORE_RELATIONS` constant + learned-relation promotion |
 | `memory/fact_verification.py` | Pre-storage conflict checking: ephemeral > candidates > trust > LLM adjudication |
 | `memory/truth_scorer.py` | Stateless truth computation: initial score + adjustments + time decay |
 | `memory/claim_tracker.py` | Claim extraction, hashing, reverse index, staleness cascade |
@@ -232,8 +232,14 @@ MemoryStorage.store_interaction(query, response)
   │     ("[API Error]", "[CREDITS EXHAUSTED]", "[RATE LIMITED]", ... — prefixes
   │      from model_manager._classify_api_error; transport failures are never
   │      persisted as Daemon replies) [NEW 2026-07-03]
+  │      2026-08-21: an EMPTY assistant response is likewise never stored
+  │      (pairs with the reasoning-only-recovery quality floor in
+  │      response_generator — "dy won't"-class recovered garbage is discarded)
   ├─ 2. Thread detection: assign thread_id + depth
-  ├─ 3. Corpus storage: JSON persistence (immediate)
+  ├─ 3. Corpus storage: JSON persistence (immediate; corpus add_summary accepts
+  │     dict payloads since 2026-08-21, normalizing content/timestamp/
+  │     created_at/type — memory_storage passes a dict and reflections
+  │     previously crashed out of the in-memory corpus)
   ├─ 4. Topic detection: primary topic → tag enrichment
   ├─ 5. Score calculation: truth_score + importance_score
   ├─ 6. Metadata assembly: timestamp, tags, thread, provenance
@@ -293,9 +299,12 @@ ShutdownProcessor.process_shutdown_memory()
   │  └─ Cross-collection dedup
   │        Mode depends on DAEMON_MODE (config.yaml currently sets mode: dev;
   │        the code-level default when unset is "user"):
-  │          Dev mode: dry_run=True — preview/log only, never auto-deletes
-  │          User mode: auto-executes deletions (CROSS_DEDUP_AUTO_EXECUTE=True)
-  │        Live deletions also available via GUI Preview/Run buttons in Status tab
+  │          Dev mode: dry_run=True — preview/log only, never auto-executes
+  │          User mode: auto-executes (CROSS_DEDUP_AUTO_EXECUTE=True)
+  │        Execution [2026-08-03]: duplicates DELETED; contradiction losers
+  │        SUPERSEDED (is_current=False + superseded_by — reversible, never deleted);
+  │        clusters exclude multi-valued/generic/junk-subject/superseded facts
+  │        Live execution also available via GUI Preview/Run buttons in Status tab
   │        Double-run guard: class-level _dedup_ran flag prevents running twice per process
   │
   └─ Consolidation trigger (if threshold met and not shutdown-only)
@@ -504,10 +513,14 @@ FactExtractor.extract_facts()
         │     Applied before canonicalization so raw relation names are caught.
         ├─ Boolean noise filter: objects that are just "true"/"false"/"yes"/"no"
         │     are dropped — no informational content.
-        ├─ Junk-object filter (2026-08-02): _is_junk_object (in _clean_triple)
+        ├─ Junk-object filter (2026-08-02): _is_junk_object (in _clean_triple
+        │     AND llm_fact_extractor._normalize_triple since 2026-08-03 — the LLM
+        │     path had no junk check and let dad_show_up=for a bit-class junk in)
         │     drops adverbial/temporal/negation-fragment objects ("for a bit",
         │     "with food", "yesterday", "not good", profanity-intensifier rants);
-        │     schedule relations exempt.
+        │     schedule relations exempt; communication/status/access relations
+        │     exempt from the NEGATION check only (2026-08-05 —
+        │     "doctor_communication | no patient portal": the negation IS the content).
         └─ Polarity guard (2026-08-02): _polarity_conflict blocks positive-
               preference triples the source text negates ("hate my fucking life"
               had stored user | likes | my fucking life). The _canonicalize_preferences
@@ -755,6 +768,30 @@ User says: "I'm a software engineer now"
 Old facts are never deleted. `is_current=False` facts serve as historical record
 and are excluded from active profile injection.
 
+**Extraction coverage + learned relations (2026-08-05):** the shutdown LLM
+extractor now sees ~30 turns per shutdown (responses truncated to a 250-char
+context snippet; newest-first budget selection — previously full responses +
+oldest-first `break` meant ~4-5 pairs and the newest turns dropped, which is
+why weeks of "my doctor doesn't respond" never produced a fact). Recurring
+invented relations that survive the extraction gates are tracked in
+`memory/learned_relations.py` (`data/learned_relations.json`) and promoted
+into the extractor prompt's preferred-vocabulary list after appearing on ≥3
+distinct days — the vocabulary grows itself; guards (gate-surviving triples
+only, canonicalization collapse first, shape check, ephemeral exclusion,
+multi-day recurrence, cap 15) keep the 2026-08-02 single-use-relation
+explosion from returning through this door.
+
+**Confirmation re-currents (2026-08-05):** re-stating an exact value that was
+previously superseded doesn't just boost its confidence — the confirmed fact
+becomes `is_current=True` again and any conflicting current facts for the
+relation are superseded with a truth correction. Before this, a later junk
+value (live: `age=19` over the true `33`, `timezone="your time"` over
+`Central`) stayed current forever; no number of user confirmations could
+displace it. Owner-curated facts can be asserted through the same deployed
+path via `scripts/add_profile_fact.py` (dry-run by default); curated
+deletions by fact_id via `scripts/purge_profile_facts.py` (dry-run +
+pre-image backup, owner-gated `--apply`).
+
 ### Temporal Resolution
 
 When a fact value contains relative temporal references ("tomorrow", "next Monday",
@@ -803,6 +840,11 @@ Stage 2: Blended Scoring (retrieval space)
 
 Stage 3: Forced Minimum
   If < 8 passed, force-add highest-scoring non-passed items
+  (clamped to min_results since 2026-08-21 — the caller's intent budget:
+   gatherer_memory passes min_gated=limit → memory_coordinator →
+   memory_retriever → gate; the floor can only LOWER, so a bare "Hey" at
+   casual_social max_mems=3 no longer gets 8 below-threshold memories forced
+   in. Tests: tests/unit/test_gate_min_results_cap.py)
 
 Stage 4: Cross-Encoder Reranking (if available, > 5 items)
   Rerank by cross-encoder score

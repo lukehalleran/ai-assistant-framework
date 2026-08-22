@@ -108,6 +108,12 @@ def scrub_tags_only(text: str) -> str:
 
 def daemon_is_running() -> bool:
     try:
+        from utils.daemon_guard import daemon_running
+        return daemon_running()
+    except Exception:
+        pass
+    # Fallback (guard module unavailable): old cmdline heuristic.
+    try:
         out = subprocess.run(
             ["pgrep", "-af", "python.*main.py"], capture_output=True, text=True
         ).stdout

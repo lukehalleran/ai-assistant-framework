@@ -33,7 +33,7 @@ Module Contract
   - Composed from file-based personality (config/prompts/default_personality.txt or custom_personality.txt) + immutable operating principles (config/prompts/operating_principles.txt) via load_personality_text() + load_operating_principles(). Falls back to load_system_prompt() if files fail.
   - Conditional section instructions (2026-08-02): build_full_prompt() appends core/prompt/section_instructions.conditional_instruction_tail(prompt_ctx) to the system prompt AFTER the cache breakpoint — the [USER'S PERSONAL NOTES]/[DAEMON DOCUMENTATION]/[TEMPORAL GROUNDING] guidance blocks (moved out of operating_principles.txt) are injected only when their section exists in the gathered context (~1.2K tok saved on turns without those sections).
   - Performs placeholder substitution: {USER_NAME}, {USER_PRONOUNS}, {PRONOUN_SUBJ}, {PRONOUN_OBJ}, {PRONOUN_POSS}. Forwarded to response generation as system role message.
-  - Appends [THREAD CONTEXT] to system prompt for ongoing conversation threads (depth, topic, heavy-topic flag). Honesty guard (2026-07-25/28): thread metadata is read off the PREVIOUS turn, so on a clear topic shift (_topics_related/_thread_topic_shifted) the injection says so instead of claiming "message #N about <last topic>"; anaphoric-continuation turns (query_checker.is_anaphoric_continuation) never assert a shift.
+  - Appends [THREAD CONTEXT] to system prompt for ongoing conversation threads (depth, topic, heavy-topic flag). Honesty guard (2026-07-25/28): thread metadata is read off the PREVIOUS turn, so on a clear topic shift (_topics_related/_thread_topic_shifted) the injection says so instead of claiming "message #N about <last topic>"; anaphoric-continuation turns (query_checker.is_anaphoric_continuation) never assert a shift. STM continuity override (2026-08-05): an STM reference_type of recall/clarification/correction also never asserts a shift — divergent topic LABELS on a continuous conversation are classifier granularity noise (one health thread was labeled 4 different topics across 5 turns, asserting "Follow the current query" every reply).
   - Proactive thread surfacing: on first message of session, appends instruction to naturally reference [UNRESOLVED THREADS] from prior sessions
 - Side effects:
   - Writes conversation+metadata to corpus DB/Chroma via memory_system; logs events.
@@ -79,7 +79,12 @@ def _topics_related(thread_topic: str, current_topic: str) -> bool:
     return bool(a_words & b_words)
 
 
-def _thread_topic_shifted(thread_topic: str, current_topic: str, original_query: str) -> bool:
+def _thread_topic_shifted(
+    thread_topic: str,
+    current_topic: str,
+    original_query: str,
+    stm_reference_type: Optional[str] = None,
+) -> bool:
     """Whether the [THREAD CONTEXT] injection should assert a topic shift.
 
     Never assert a shift on an anaphoric continuation or a referent
@@ -89,9 +94,19 @@ def _thread_topic_shifted(thread_topic: str, current_topic: str, original_query:
     CLASSIFIER miss, not a real shift. Asserting the shift plus "Follow the
     current query" actively steered the model away from the correct anaphora
     resolution (2026-07-28 long-covid/"Exercise Routine" incident).
+
+    STM continuity override (2026-08-05): when the STM analyzer classified
+    this turn as "recall"/"clarification"/"correction", the user is by
+    definition continuing existing context — a divergent topic LABEL is
+    classifier granularity noise, not a shift. One continuous health
+    conversation had been labeled Pain Management → Lorvatin Withdrawal →
+    Medication Concerns → Medication Withdrawal, asserting a fresh "shift"
+    (plus "Follow the current query") on every reply of a five-turn thread.
     """
     from utils.query_checker import is_anaphoric_continuation
     if is_anaphoric_continuation(original_query or ""):
+        return False
+    if (stm_reference_type or "").strip().lower() in ("recall", "clarification", "correction"):
         return False
     return not _topics_related(thread_topic, current_topic)
 
@@ -1062,8 +1077,11 @@ class DaemonOrchestrator:
             is_heavy = thread_ctx.get("is_heavy_topic", False)
             thread_topic = thread_ctx.get("thread_topic", "")
 
+            _stm_ref = None
+            if isinstance(getattr(context, "stm_summary", None), dict):
+                _stm_ref = context.stm_summary.get("reference_type")
             _shifted = thread_topic and _thread_topic_shifted(
-                thread_topic, topic_str, context.original_query
+                thread_topic, topic_str, context.original_query, stm_reference_type=_stm_ref
             )
             thread_msg = f"\n\n[THREAD CONTEXT]"
             if _shifted:
@@ -1197,6 +1215,43 @@ class DaemonOrchestrator:
                 system_prompt = system_prompt.rstrip() + thinking_instruction
         return system_prompt
 
+    def _update_safety_trackers(self, context: ContextResult) -> None:
+        """Feed this turn's tone into the escalation tracker + safety canary.
+
+        Called once per turn from build_full_prompt (both the GUI
+        prepare_prompt path and process_user_query's _build_prompt_phase
+        reach it there — callers must NOT update the trackers themselves or
+        turns double-count). Never raises: a safety tripwire must not break
+        a turn.
+        """
+        if self.escalation_tracker:
+            try:
+                need_type_str = None
+                if context.emotional_context and hasattr(context.emotional_context, 'need_type'):
+                    need_type_str = (
+                        context.emotional_context.need_type.value
+                        if hasattr(context.emotional_context.need_type, 'value')
+                        else str(context.emotional_context.need_type)
+                    )
+                self.escalation_tracker.update(
+                    context.tone_level,
+                    context.original_query or "",
+                    need_type=need_type_str,
+                )
+            except Exception as _esc_exc:
+                self.logger.debug(f"[EscalationTracker] update skipped: {_esc_exc}")
+
+        # Runtime safety canary (log only): flags a sustained negative-affect
+        # streak that the tone/safety path is reading as CONVERSATIONAL — a
+        # cheap tripwire for the NEXT unknown miswire. No behavior change.
+        # getattr guard: must never break a turn, even under a partially-
+        # constructed orchestrator (e.g. __new__-based test fixtures).
+        if getattr(self, "safety_canary", None):
+            try:
+                self.safety_canary.observe(context.original_query or "", context.tone_level)
+            except Exception as _canary_exc:
+                self.logger.debug(f"[SafetyCanary] skipped: {_canary_exc}")
+
     async def build_full_prompt(
         self,
         context: ContextResult,
@@ -1222,6 +1277,17 @@ class DaemonOrchestrator:
         """
         import time
         _t_start = time.perf_counter()
+
+        # --- 0) Update session-level safety trackers ---
+        # Must run BEFORE _build_system_prompt so get_strategy_instructions()
+        # reflects THIS turn's tone (the current turn counts toward the
+        # sustained-distress threshold). Living here — not in a caller — is
+        # what fixes the 2026-08-18 dead wiring: the GUI path reaches
+        # build_full_prompt via prepare_prompt and never ran the update, so
+        # the tracker's counters stayed at zero and GROUNDING_PRESENCE never
+        # fired across a ~50-turn CONCERN spiral.
+        if not use_raw_mode:
+            self._update_safety_trackers(context)
 
         # --- 1) Build System Prompt ---
         system_prompt = self._build_system_prompt(context, use_raw_mode)
@@ -1625,31 +1691,9 @@ class DaemonOrchestrator:
             else:
                 self.logger.warning(f"[Orchestrator] IMAGE DEBUG: No images in prompt_ctx. Keys={list(prompt_ctx.keys()) if prompt_ctx else 'None'}")
 
-        # Update escalation tracker with detected tone
-        if self.escalation_tracker:
-            need_type_str = None
-            if context.emotional_context and hasattr(context.emotional_context, 'need_type'):
-                need_type_str = (
-                    context.emotional_context.need_type.value
-                    if hasattr(context.emotional_context.need_type, 'value')
-                    else str(context.emotional_context.need_type)
-                )
-            self.escalation_tracker.update(
-                context.tone_level,
-                user_input,
-                need_type=need_type_str,
-            )
-
-        # Runtime safety canary (log only): flags a sustained negative-affect
-        # streak that the tone/safety path is reading as CONVERSATIONAL — a
-        # cheap tripwire for the NEXT unknown miswire. No behavior change.
-        # getattr guard: a safety tripwire must never break a turn, even under a
-        # partially-constructed orchestrator (e.g. __new__-based test fixtures).
-        if getattr(self, "safety_canary", None):
-            try:
-                self.safety_canary.observe(user_input, context.tone_level)
-            except Exception as _canary_exc:
-                self.logger.debug(f"[SafetyCanary] skipped: {_canary_exc}")
+        # Escalation tracker + safety canary updates happen inside
+        # build_full_prompt (_update_safety_trackers) — updating here too
+        # would double-count the turn.
 
         debug_info["context_pipeline"] = {
             "tone_level": context.tone_level.value,

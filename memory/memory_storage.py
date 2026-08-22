@@ -747,6 +747,9 @@ class MemoryStorage:
                     f"({len(_raw_response)} chars) — skipping storage to avoid memory pollution"
                 )
                 return None
+            if not response.strip():
+                logger.warning("[MemoryStorage] Skipped storing empty assistant response")
+                return None
 
             # SKIP STORAGE: Don't persist file error responses
             # These are ephemeral technical issues that create false memories

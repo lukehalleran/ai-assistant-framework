@@ -6,7 +6,8 @@ Module Contract
 - Inputs:
   - store_interaction(query, response, tags?, session_id=?, provenance=?): adds a turn to corpus + Chroma (with provenance metadata) [ENHANCED 2026-03-26]
   - session_id (property): stable session identifier derived from session_start timestamp [NEW 2026-03-26]
-  - get_memories(query, limit, topic_filter?): unified retrieval/gating/ranking
+  - get_memories(query, limit, topic_filter?, min_gated?): unified retrieval/gating/ranking
+      (min_gated caps the gate's forced-minimum floor to the caller's intent budget, 2026-08-21)
   - get_unresolved_threads(max_results): returns top-priority open threads for prompt surfacing
   - process_shutdown_memory(): summarize blocks (size N) and extract end‑of‑session facts and procedural skills → UPDATED: also populates UserProfile with categorized facts
   - run_shutdown_reflection(...): generate a short reflection at session end
@@ -430,15 +431,23 @@ class MemoryCoordinator:
     # Public API: retrieve
     # ---------------------------
 
-    async def get_memories(self, query: str, limit: int = 20, topic_filter: Optional[str] = None) -> List[Dict]:
+    async def get_memories(
+        self,
+        query: str,
+        limit: int = 20,
+        topic_filter: Optional[str] = None,
+        min_gated: Optional[int] = None,
+    ) -> List[Dict]:
         """Unified retrieval pipeline.
 
-        Delegates to MemoryRetriever component.
+        Delegates to MemoryRetriever component. min_gated caps the gate's
+        forced-minimum fail-soft floor to the caller's real budget (intent
+        max_mems) so below-threshold memories aren't forced in beyond it.
         """
         # Sync state before delegation
         self._retriever.current_topic = self.current_topic
         self._retriever.conversation_context = list(self.conversation_context)
-        return await self._retriever.get_memories(query, limit, topic_filter)
+        return await self._retriever.get_memories(query, limit, topic_filter, min_gated=min_gated)
 
     # ---------------------------
     # Shutdown processing

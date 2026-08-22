@@ -81,7 +81,9 @@ a context dict ready for formatting.
 ### Step 3.5 — Response Planning (parallel with Step 4)
 
 If `RESPONSE_PLANNING_ENABLED` and `ResponsePlanner.should_plan()` passes
-(skips small-talk, crisis/elevated tone, disabled config), the planner
+(skips small-talk, crisis/elevated/CONCERN tone, disabled config — CONCERN
+added 2026-08-05: it selects the LIGHT SUPPORT mode whose instructions a
+[RESPONSE PLAN] contradicts), the planner
 runs in parallel with the retrieval tasks below via `asyncio.wait()` in
 the orchestrator's `build_full_prompt()`. The planner makes a lightweight
 LLM call (~200 tokens, 5s timeout) producing a `ResponsePlan` with
@@ -99,7 +101,7 @@ default to `[]` without affecting other sections.
 | Task | Method | Default Limit |
 |------|--------|---------------|
 | recent | `_get_recent_conversations()` | 15 |
-| memories | `_get_semantic_memories()` | 15 |
+| memories | `_get_semantic_memories()` | 15 (passes `min_gated=limit` so the `GATE_MIN_MEMORIES=8` forced-minimum floor is clamped to the intent budget — lower only [2026-08-21]; incident detail in MEMORY_SYSTEM Stage 3. `tests/unit/test_gate_min_results_cap.py`) |
 | user_profile | `get_user_profile_context()` | 3000 tokens |
 | summaries | `_get_summaries_separate()` | 5 recent + 5 semantic (recent side is `chroma.get_recent()` timestamp-sorted + `is_junk_summary` filter since 2026-07-25 — it was a semantic query with an EMPTY string, i.e. "nearest the null embedding", so [RECENT SUMMARIES] surfaced junk while same-day summaries sat unread) |
 | dreams | `_get_dreams()` | 3 |
@@ -107,14 +109,14 @@ default to `[]` without affecting other sections.
 | reflections | `_get_reflections_separate()` | 5 recent + 5 semantic |
 | wiki | `_get_wiki_content()` | 3 |
 | personal_notes | `get_personal_notes()` | 5 (chunks with < `PERSONAL_NOTES_MIN_CHARS`=60 chars of real prose after stripping image embeds are dropped — image-only vault chunks embed as noise [2026-07-25]) |
-| reference_docs | `get_reference_docs()` | 5 (task skipped entirely on distress/emotional_support turns via `builder._should_suppress_reference_docs` — Daemon's own tone docs semantically match distress language and leaked crisis keyword lists into distress prompts [2026-07-25]) |
-| user_uploads | `get_user_uploads()` | 5 (skipped via ~ms metadata existence probe when no uploads exist — was ~0.9s/turn; negative cached 60s, positive for session) |
+| reference_docs | `get_reference_docs()` | 5 (ALLOW-gated [2026-08-05]: `builder._should_include_reference_docs` — self-docs surface only on meta_conversational/technical_help/project_work intents or a self-referential query cue ("daemon", "your memory", "how do you score"…); a conversational-tone personal pain turn had pulled 15 doc chunks incl. a lecture transcript. The 2026-07-25 suppressions still always win: distress/emotional_support turns and file-upload turns drop the task entirely — Daemon's own tone docs semantically match distress language) |
+| user_uploads | `get_user_uploads()` | 5 (skipped via ~ms metadata existence probe when no uploads exist — was ~0.9s/turn; negative cached 60s, positive for session; staleness gate [2026-08-05]: `_upload_is_live` keeps an upload only if fresh (≤ `USER_UPLOADS_MAX_AGE_DAYS`=7) OR relevance ≥ `USER_UPLOADS_MIN_RELEVANCE`=0.62 — months-old homework docs/photos were injected every turn, undated legacy docs must clear the relevance bar; bar recalibrated 0.5→0.62 on 2026-08-14: store rel=1/(1+2(1−cos)) in bge space, so 0.5 ≈ cosine 0.5 = any-text, 0.62 ≈ cosine 0.69, above the memory gate's 0.60) |
 | git_commits | `get_git_commits()` | varies |
 | procedural_skills | `get_procedural_skills()` | 5 (over-fetched 3x, filtered by SkillActivationPolicy) |
 | proposed_features | `get_proposed_features()` | 3 |
 | graph_context | `get_graph_context()` | 12 sentences |
 | unresolved_threads | `get_unresolved_threads()` | 3 |
-| proactive_insights | `get_proactive_insights()` | 2 |
+| proactive_insights | `get_proactive_insights()` | 2 (task suppressed when `_distress_active` [2026-08-05] — speculative cross-domain suggestions were landing in distress-adjacent conversations; same class as the reference_docs distress gate) |
 | visual_memories | `get_visual_memories()` | varies |
 | web_search | `_get_web_search_results()` | 5 results |
 | upcoming_schedule | `get_upcoming_schedule()` | 5 events (gated by TEMPORAL_RECALL/PROJECT_WORK intent) |
@@ -157,7 +159,7 @@ still renders either way; user uploads are unaffected. Regression:
 `ContentHygiene._hygiene_and_caps(context, stm_summary)` (in `hygiene.py`):
 
 - **Per-section dedup** (by content field or query+response)
-- **Cross-section dedup** (prevent duplicates across recent/memories/notes)
+- **Cross-section dedup** (prevent duplicates across recent/memories/notes; keys canonicalize role labels — "Daemon:" vs "Assistant:" mid-string variance let the session's own turns re-surface in [RELEVANT MEMORIES] until 2026-08-05 — and collapse whitespace)
 - **Semantic chunk stitching** (combine chunks by title, up to 4000 chars)
 - **Backfill recent** if dedup drops count below target
 - **Memory top-up** (Step 6.1) — fetch extra if memories < `PROMPT_MAX_MEMS`
@@ -212,23 +214,43 @@ hardcoding 128K for every API model, prod ran budget=15360 ≈ the arm the
 2026-07-15 preregistered experiment REJECTED. Context limits now resolve via
 `MODEL_CONTEXT_LIMITS` in `model_manager` (registry beside `MODEL_CAPABILITIES`;
 `DEFAULT_API_CONTEXT_LIMIT=128000` fallback). The budget manager also logs the
-TRUE context total including unmetered sections (metered usage under-reports
-~25%). Tests: `tests/unit/test_token_budget_cap.py`.
+TRUE context total for anything still outside PRIORITY_ORDER (small since the
+2026-08-14 rendered-keys fix below — a large residual means a new rendered
+section is missing a metering row). Tests: `tests/unit/test_token_budget_cap.py`,
+`tests/unit/test_budget_meters_rendered_sections.py`.
 
 ### Priority Ordering (10 levels)
+
+**2026-08-14 fix — meter the RENDERED keys:** the formatter renders the SPLIT
+summary/reflection keys, but `PRIORITY_ORDER` metered the combined
+`summaries`/`reflections` keys, which nothing renders — so the four rendered
+summary/reflection sections (plus google_calendar, upcoming_schedule,
+daemon_self_notes, disambiguation_notes) were invisible to the budget AND
+untrimmable (live: 17.5K true prompt vs a 10K budget), and the builder's
+floors topped up dead keys with retrieval output that never reached the
+prompt. The table now meters rendered keys; `UNRENDERED_CONTEXT_KEYS`
+(summaries, reflections, stm_summary, memory_id_map) are excluded from
+metering and the true-total log. A formatter-parity test
+(`tests/unit/test_budget_meters_rendered_sections.py`) fails loudly when a
+rendered context key lacks a PRIORITY_ORDER row.
 
 | Priority | Sections |
 |----------|----------|
 | 10 | stm_summary (metadata, never trimmed) |
 | 9 | user_profile |
 | 8 | narrative_state (capped at 500 tokens), web_search_results |
-| 7 | recent_conversations, graph_context, unresolved_threads |
-| 6 | semantic_chunks, personal_notes, user_uploads |
+| 7 | recent_conversations, graph_context, unresolved_threads, google_calendar, upcoming_schedule |
+| 6 | semantic_chunks, personal_notes, user_uploads, disambiguation_notes |
 | 5 | reference_docs, memories |
 | 4 | procedural_skills, facts |
-| 3 | summaries, proposed_features, git_commits, proactive_insights |
-| 2 | reflections, dreams, codebase_changes |
+| 3 | recent_summaries, semantic_summaries, proposed_features, git_commits, proactive_insights |
+| 2 | recent_reflections, semantic_reflections, daemon_self_notes, dreams, codebase_changes |
 | 1 | wiki |
+
+Post-budget floors are survival MINIMUMS on the rendered keys —
+`PROMPT_MIN_RECENT_FLOOR`=5 recent conversations, `PROMPT_MIN_SUMMARIES_FLOOR`=2
+recent summaries, `PROMPT_MIN_REFLECTIONS_FLOOR`=1 recent reflections
+(restore-to-max would undo the trim).
 
 ### Compression Algorithm
 

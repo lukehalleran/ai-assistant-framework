@@ -215,6 +215,9 @@ def _get_embedder(model_manager=None):
         return None
 
 
+_need_text_emb_cache: Dict[str, np.ndarray] = {}
+
+
 def _adaptive_store_version() -> int:
     try:
         from utils.adaptive_exemplars import get_store
@@ -256,7 +259,10 @@ def _get_need_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
                 merged += get_store().get_learned("need", need_type)
             except Exception:
                 pass
-            embeddings = embedder.encode(merged, convert_to_numpy=True)
+            from utils.adaptive_exemplars import encode_texts_cached
+            embeddings = encode_texts_cached(
+                embedder, merged, _need_text_emb_cache
+            )
             prototypes[need_type] = np.mean(embeddings, axis=0)
             logger.debug(
                 f"[NeedDetector] Computed {need_type} exemplar from {len(examples)} seed "

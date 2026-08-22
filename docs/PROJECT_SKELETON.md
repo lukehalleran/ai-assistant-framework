@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-07-07 (accuracy audit pass)
+**Last Updated**: 2026-08-21 (usage-audit fix batch)
 
 ---
 
@@ -66,6 +66,7 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `memory/procedural_skill.py` - ProceduralSkill dataclass + SkillCategory enum
 - `memory/skill_activation.py` - SkillActivationPolicy (post-retrieval filter: intent suppression, min score, STM bonus, cooldown, cap) + SkillCooldownStore (JSON-backed TTL) **[NEW 2026-05]**
 - `memory/cross_deduplicator.py` - Cross-collection dedup (duplicates + fact contradictions, dry-run only on shutdown)
+- `memory/learned_relations.py` - Auto-growing relation vocabulary for the LLM fact extractor (gate-surviving invented relations recurring ≥3 distinct days → promoted into the PREFER list; floodgate guards) **[NEW 2026-08-05]**
 - `memory/dedup_models.py` - Pydantic models: DedupPlan, DuplicatePair, ContradictionCluster
 - `memory/graph_memory.py` - Knowledge graph (NetworkX DiGraph, JSON persistence); `remove_entity()` removes a node + incident edges, keeping the alias/edge indexes consistent **[ENHANCED 2026-06]**
 - `memory/graph_models.py` - Pydantic models: GraphNode, GraphEdge
@@ -125,6 +126,8 @@ The incomplete V2 `memory/coordinator.py` has been deleted.
   - Appends immutable `operating_principles.txt` via `load_operating_principles()`
   - Performs placeholder substitution: `{USER_NAME}`, `{USER_PRONOUNS}`, `{PRONOUN_SUBJ}`, `{PRONOUN_OBJ}`, `{PRONOUN_POSS}`
   - Falls back to monolithic `load_system_prompt()` if files fail
+
+- `build_full_prompt()` calls `_update_safety_trackers(context)` (EscalationTracker.update + SafetyCanary.observe) before building the system prompt **[NEW 2026-08-21]** — see 2.1.3 for why
 
 - `build_context(user_input, files, use_raw_mode, personality)` → Context building **[NEW 2026-01-23]**
   - Uses ContextPipeline for clean separation of concerns
@@ -186,6 +189,7 @@ Side effects: None (pure functions)
 - `sanitize_for_storage(text)` → str - Storage-boundary cleaner called from `memory_storage.store_interaction()`; strips thinking/reasoning blocks and artifacts (incl. the kimi-3 trailing-`e` stream artifact since 2026-08-03) so leaks can never persist into memory **[NEW 2026-07-03]**
 - `is_empty_thinking_shell(text)` → bool - True when text is ONLY thinking-tag markers — the `<thinking></thinking>` shell between reasoning end and first content token; handlers keep the 💭 indicator up instead of flashing literal tags **[NEW 2026-08-03]**
 - `strip_trailing_stream_artifact(text)` → str - Removes the kimi-3 endpoint's stray trailing `e` (lone content token before EOS, "…landed?e"); letter-glued-to-terminal-punctuation only, "i.e" preserved; also applied in both `add_summary` paths **[NEW 2026-08-03]**
+- `strip_stream_special_tokens(text)` → str - Removes edge runs of `<|token|>` special-token markers — kimi-3 intermittently emits `<|sep|>` as the FIRST content chunk (11 corpus + 11 chroma docs since 08-18); mid-text mentions preserved; folded into `strip_trailing_stream_artifact` so all 9 display/storage call sites inherit. Historical repair: `scripts/strip_special_token_artifacts.py` (dry-run-first, daemon-guard, pre-image backup) **[NEW 2026-08-21]**
 - `likely_untagged_thinking(response)` → bool - Cheap check for untagged chain-of-thought (used by streaming paths)
 - `_detect_untagged_thinking(response)` → Tuple[str, str] - Heuristic fallback: pattern-based detection of untagged chain-of-thought (meta-reasoning, instruction echoes). Requires ≥2 distinct pattern hits, ≥20 char remaining answer **[NEW 2026-04-05]**
 - `has_incomplete_thinking_block(response)` → bool - Returns True if opening `<thinking>`/`<think>` tag present but closing tag not yet (for streaming suppression) **[NEW 2026-03-26]**
@@ -618,9 +622,15 @@ class DedupPlan(BaseModel):      # duplicate_pairs[], contradiction_clusters[], 
   2. Compute embeddings (chroma_store.embedding_fn), L2-normalize
   3. Pairwise cosine similarity → find duplicates >= 0.92 threshold
   4. Group facts by (subject, predicate) → find contradictions (differing objects)
-  5. Skip ephemeral predicates (from PROFILE_EPHEMERAL_RELATIONS config)
+  5. Cluster exclusions [2026-08-03]: ephemeral predicates (PROFILE_EPHEMERAL_RELATIONS),
+     MULTI-VALUED relations (relation_classifier.MULTI_VALUED_RELATIONS — plural values
+     are legitimate; live queue had medication_name=Zelphex queued for deletion because
+     kavarin was newer), GENERIC catch-all predicates (is/has/thinks — a 71-entry
+     `user | is` cluster), junk function-word subjects, already-superseded facts
   6. If STALENESS_ENABLED and claim_index: cascade staleness for contradiction losers [NEW 2026-03-25]
-  7. If not dry_run: execute deletions via collection.delete(ids=[...])
+  7. If not dry_run: DELETE duplicate copies; contradiction losers SUPERSEDED
+     (is_current=False + superseded_by=<keep_id>, never deleted) [2026-08-03];
+     collection access via store._get_collection() (raw dict = None placeholders pre-open)
      - Double-deletion guard: tracks `deleted_ids` set across phases; IDs deleted in duplicate phase skipped in contradiction phase [FIXED 2026-03-26]
   ```
 
@@ -630,8 +640,11 @@ class DedupPlan(BaseModel):      # duplicate_pairs[], contradiction_clusters[], 
   - Float clamping: `score = min(float(sim_matrix[i, j]), 1.0)` for fp32 overshoot
 
 - `_find_fact_contradictions(fact_docs) -> List[ContradictionCluster]` → Subject+predicate grouping
-  - Skips predicates in `PROFILE_EPHEMERAL_RELATIONS` (current_feeling, is, has, thinks, etc.)
-  - Keeps most recent entry per group (by timestamp)
+  - Skips [2026-08-03]: `PROFILE_EPHEMERAL_RELATIONS` predicates, `MULTI_VALUED_RELATIONS`
+    (plural values legitimate), `GENERIC_PREDICATES` (is/has/thinks — NOT previously
+    skipped; `is`/`has` were never in the ephemeral list), junk function-word subjects
+    (`_JUNK_SUBJECTS`), and already-superseded facts (is_current=False)
+  - Keeps most recent entry per group (by timestamp); losers are SUPERSEDED, never deleted
 
 - `_pick_keep_delete(doc_a, doc_b) -> (keep, delete)` → Priority-based selection
   - Collection priority: summaries(5) > reflections(4) > skills(3) > proposals(2) > facts(1)
@@ -665,7 +678,7 @@ CROSS_DEDUP_ON_SHUTDOWN = True              # Enable shutdown preview (dry_run o
 CROSS_DEDUP_COLLECTIONS = ["facts", "summaries", "procedural_skills", "proposals", "reflections"]
 ```
 
-**Tests**: `tests/unit/test_cross_deduplicator.py` — 47 tests across 11 classes
+**Tests**: `tests/unit/test_cross_deduplicator.py` — 55 tests (contradiction-arm safety additions 2026-08-03)
 
 ---
 
@@ -730,6 +743,8 @@ VALIDATE_AND_SUGGEST  (back to normal)
 # After generation: tracker.record_response(response_text)
 ```
 
+**GUI-path wiring [FIXED 2026-08-21]**: the integration above only ran on the unused `process_user_query` path — in production GUI use the tracker (and the safety canary) were never updated, so GROUNDING_PRESENCE/QUIET_COMPANIONSHIP never fired. `orchestrator.build_full_prompt()` now calls `_update_safety_trackers(context)` (tracker.update + `safety_canary.observe`) before building the system prompt (the old `_build_prompt_phase` update site was removed — it would double-count), and `gui/handlers._write_turn_telemetry()` calls `escalation_tracker.record_response(response_text)` so ignored-suggestion detection works. Tests: `tests/unit/test_escalation_gui_wiring.py` (11).
+
 **Configuration** (`config/app_config.py`):
 ```python
 ESCALATION_ENABLED = True
@@ -785,6 +800,8 @@ class IntentResult:
 **Key Methods**:
 - `classify(query, tone_level=None) -> IntentResult` → Regex patterns checked in order, highest confidence wins. Tone bias: HIGH/MEDIUM tone biases toward EMOTIONAL_SUPPORT for ambiguous queries. For TEMPORAL_RECALL, extracts temporal anchor via `extract_temporal_window()` and adds `_temporal_anchor_hours` to weight_overrides. **[UPDATED 2026-02-17]**
 - `refine_with_stm(result, stm_intent) -> IntentResult` → Upgrades low-confidence results (< 0.50) using STM's free-text intent via keyword matching. No extra LLM call. Refined confidence = `INTENT_STM_REFINED_CONFIDENCE` (0.60 default — reaches the 0.60 routing floors, deliberately below the 0.75 agentic-veto floor); CASUAL_SOCIAL now has STM keywords (previously zero). **[UPDATED 2026-07-03]**
+
+**Elevated-tone teaching guard [2026-08-21]**: `_tone_is_elevated()` (matches both tone encodings); the confident-regex teacher (≥ 0.85) and the STM-refinement teacher never teach the exemplar store when tone is elevated — crisis vents were becoming learned intent prototypes (temporal_recall) on 08-18. `refine_with_stm` gained a `tone_level` param, threaded from `core/context_pipeline.py`. Classification/routing itself is unchanged. Tests: `tests/unit/test_intent_semantic_tier.py::TestElevatedToneNeverTeaches`.
 
 **Temporal Anchor Extraction** **[NEW 2026-02-17]**:
 When TEMPORAL_RECALL is classified, `classify()` calls `extract_temporal_window()` from `utils/query_checker.py` to convert temporal phrases ("last week" → 7 days, "yesterday" → 1 day, "last month" → 30 days) into hours. The value is added as `_temporal_anchor_hours` in `weight_overrides`, flowing automatically through the existing builder → scorer pipeline. `MemoryScorer.rank_memories()` pops this key and uses it to reshape the recency decay curve (see Section 2.3.0).
@@ -1030,6 +1047,7 @@ Query → get_user_profile_context(query) → hybrid retrieval → [USER PROFILE
 - `get_fact_history(relation, category=None)` → Chronological list of all values a relation has had **[NEW v2]**
 - `export_markdown()` → Markdown export (current facts only per category)
 - `get_quick_profile()` → Extract identity fields (name, location, age)
+- Quick Profile fixes **[2026-08-21]**: `_update_quick_profile` no longer gated on category==IDENTITY — the 08-05 timezone correction (categorized "preferences") never refreshed it, so junk `timezone="your time"` kept rendering in every prompt's Quick Profile block (the relation filter inside the function is the real test); `school` + `program` added to quick keys — durable identity facts belong in the always-rendered Quick Profile, not the semantic fact lottery. Tests in `tests/unit/test_profile_confirmation_recurrent.py`
 - `_is_temporal_query(query)` → Detect temporal keywords (history, progress, over time, used to, etc.) **[NEW v2]**
 - `_prune_category(cat_key)` → Ephemeral relation pruning when category exceeds soft cap **[NEW v2]**
 - `migrate_schema()` → Auto-migrate v1.0 → v2.0 (adds fact_id, is_current, supersedes chain) **[NEW v2]**
@@ -1120,6 +1138,7 @@ PROFILE_EPHEMERAL_RELATIONS = [          # Relations whose history gets pruned
 
 **Key Methods**:
 - `add_memory(memory, memory_type)` → Append to JSON
+- `add_summary(content)` → Append summary/reflection; accepts dict payloads (normalizes content/timestamp/created_at/type) **[2026-08-21]** — `memory_storage.py` passes a dict; the old str-only path crashed and reflections never reached the in-memory corpus
 - `get_recent_memories(n, memory_type)` → Last N entries
 - `save()` → Write to disk (atomic with temp file)
 
@@ -1165,6 +1184,7 @@ Stage 3: Cross-encoder reranking
 **Key Classes/Methods**:
 - `CosineSimilarityGateSystem` — cosine gate core: `batch_cosine_gate_memories()`, `gate_content_async()`, per-model embedding cache (`_EmbeddingCache`), `effective_retrieval_threshold`
 - `MultiStageGateSystem` — wraps the cosine gate: `batch_gate_memories()`, `filter_memories(query, memories)`, `cosine_filter_summaries()`, `filter_wiki_content()`, `filter_semantic_chunks()`
+- `batch_gate_memories()`/`filter_memories()` accept `min_results` **[2026-08-21]** — the `GATE_MIN_MEMORIES=8` fail-soft forced-minimum floor is clamped to it (the floor can only LOWER). Threaded from `gatherer_memory._get_semantic_memories(min_gated=limit)` (the intent max_mems budget) → `memory_coordinator.get_memories(min_gated=)` → `memory_retriever.get_memories/_combine_memories/_gate_memories` → gate; `memory/memory_interface.py` Protocol updated. On 08-18 a bare "Hey" (casual_social max_mems=3) got 8 below-threshold memories forced in and 21 rendered. Tests: `tests/unit/test_gate_min_results_cap.py` (9)
 - `GatedPromptBuilder.build_gated_prompt()` — gating + prompt building wrapper
 - Constructed with `retrieval_embedder=` (the store's bge SentenceTransformer) so memory gating scores in the same space as retrieval **[2026-07-02]**
 
@@ -1280,6 +1300,7 @@ Post-budget floors (Step 7.1) [ENHANCED 2026-03-28]:
 - `token_manager.py::_manage_token_budget(context)` → Budget enforcement
 - `gatherer_memory.py::_get_summaries_separate()` → Hybrid recent+semantic retrieval
 - `summarizer.py::_reflect_on_demand()` → Generate reflections if below threshold
+- `formatter.py` duplicate-header debug check anchored to line starts (`^\[RECENT CONVERSATION\]` MULTILINE) — a quoted header mid-line no longer false-positives the duplicate warning **[2026-08-21]**
 - `formatter.py::_sanitize_embedded_headers(text)` → Escape section headers in memory content **[NEW 2026-01-08]**
   - Prevents prompt pollution when conversations discuss prompt structure
   - Converts `[RECENT CONVERSATION]` → `(RECENT CONVERSATION)` in stored memories
@@ -1429,6 +1450,7 @@ User input here
 - Timeout protection (60s per chunk)
 - Critical fix: `buffer += delta_content` must execute for ALL non-empty chunks (not inside else block)
 - **Reasoning/thinking content detection** **[NEW 2026-03-26]**: Extracts `reasoning_content`/`reasoning` from streaming chunks (OpenAI-style delta). Emits synthetic `<thinking>`/`</thinking>` wrapper tags around reasoning blocks so `handlers.py` can detect and suppress them during streaming.
+- **Reasoning-only recovery quality floor [2026-08-21]**: `_usable_reasoning_recovery` — recovered text must be ≥12 chars and sentence-shaped (terminal punctuation or newline), else discarded with a warning ("dy won't"-class garbage was stored as a response on 08-18); `memory/memory_storage.py` also never stores an empty assistant response.
 
 **Dependencies**: ModelManager, CompetitiveScorer
 
@@ -1644,6 +1666,8 @@ agentic_search:
       - Tier 3: Document generation + self-note intent detection (instant)
       - Tier 4: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call
     - Casual skip filter + continuation override + intent-based veto all handled inside gate
+    - Vent-shape veto narrowing **[2026-08-15, extended 2026-08-21]**: tone-corroborated vetoes + the no_search teacher require a first-person VENT (`_is_vent_shaped` — epistemic-stance markers "I mean/I think/idk…" stripped before the first-person test); acute arm: MEDIUM/HIGH tone + non-info-seeking statement vetoes regardless of intent confidence; info-seeking escape for the emotional_support arm; no_search teaching also needs no proposed search_terms (see docs/AGENTIC_SEARCH.md)
+    - Tone-deferral clarify loop **[NEW 2026-08-21]**: a tone arm vetoing a REQUEST-shaped non-vent query (imperative without a lookup cue, e.g. "review the tuesday logs" — lookup-cue/interrogative shapes escape the veto instead) sets `AgenticDecision.deferred_request` and arms a one-shot module slot; handlers append a [DEFERRED REQUEST] system-prompt note (acknowledge + offer, never claim it ran); a terse affirmation on the immediately following turn re-runs the ORIGINAL query veto-exempt. Vent-shaped turns never get the offer (anti-excavation); request-shaped queries never teach no_search. Tests: `tests/unit/test_deferred_request_clarify.py` (15)
     - `skip_initial_search` computed by gate (True for computation, memory, knowledge, tools modes)
     - Routes through `AgenticSearchController.run_agentic_search()`
     - Yields progress events (🔍 searching, 🧠 searching memory, 📄 found results, ✨ synthesizing)
@@ -1722,6 +1746,7 @@ Gradio renders updated chat_history
 - `_background_store_interaction()` accepts `session_id`, `provenance`, `mode` params
 - API errors classified and shown as user-friendly messages: `[CREDITS EXHAUSTED]`, `[RATE LIMITED]`, `[AUTH ERROR]`, etc.
 - Empty response detection with explicit error messages
+- **API-error fail-fast in streaming [2026-08-21]**: if the accumulated stream head (first ≤5 chunks) starts with any `models.model_manager.API_ERROR_PREFIXES`, the stream display is aborted and a friendly template from the module-level `_API_ERROR_DISPLAY` map is shown instead — raw provider JSON (OpenRouter HTTP 402) was streamed verbatim to the user 3× on 08-18; same guard on the agentic path. `_classify_api_error` gained a `[CREDITS EXHAUSTED]` classification for HTTP 402 / "requires more credits". `_write_turn_telemetry()` also calls `escalation_tracker.record_response(response_text)` (ignored-suggestion detection — see 2.1.3). Tests: `tests/unit/test_api_error_fail_fast.py` (11)
 
 **GUI Personality Tab** **[NEW 2026-03-26]**:
 - Textbox (25 lines) pre-loaded with current personality text
@@ -2461,6 +2486,7 @@ REFERENCE_DOCS_SEED_PATHS = ["docs"]      # Directories/files to auto-seed
 - Builder adds `[DAEMON DOCUMENTATION]` section in prompt (self-knowledge about architecture)
 - TokenManager includes `reference_docs` at priority 5
 - Documents filtered through 3-stage gate system (Cosine → Blended → CrossEncoder)
+- Self-docs allow-gate cue extension **[2026-08-21]**: builder's `_SELF_REFERENTIAL_CUE_RE` gains "your updates/fixes/changes/changelog" + "fixes/updates/changes on|to|in you" — "check out your updates based on docs" classified general and never opened the allow-gate (`TestSelfDocsAllowGate::test_update_fix_cues_included`)
 
 ---
 
@@ -4105,6 +4131,8 @@ Total multiplier: 1.56x
 Final score: 25 × 1.56 = 39 pts → HIGH crisis (≥20)
 ```
 
+**Session-gap reset [2026-08-21]**: `_recent_distress_from_history` applies the same `TONE_STICKINESS_MAX_GAP_MINUTES` boundary as `previous_tone` stickiness — a stale heavy turn from yesterday could re-latch the CONCERN floor after the gap-clear. Timestamp-less legacy rows still count as fresh (errs toward keeping the safety floor). Tests: `tests/unit/test_tone_stickiness_reset.py`.
+
 **Configuration** (env vars):
 ```python
 # Semantic thresholds (for fallback when harm score < 4)
@@ -4990,7 +5018,8 @@ daemon/
 │   ├── corpus_manager.py          # JSON persistence
 │   ├── memory_consolidator.py     # Summarization
 │   ├── fact_extractor.py          # Pattern-based extraction + ephemeral predicate blocking + boolean filtering [ENHANCED 2026-05-27]
-│   ├── llm_fact_extractor.py      # LLM-based extraction + ephemeral/boolean filtering [ENHANCED 2026-05-27]
+│   ├── llm_fact_extractor.py      # LLM-based extraction + ephemeral/boolean filtering [ENHANCED 2026-05-27; 2026-08-05 coverage fix: 250-char response snippets, newest-first budget, 30-turn window; CORE_RELATIONS constant + learned-relation promotion]
+│   ├── learned_relations.py       # Auto-growing relation vocabulary: gate-surviving invented relations recurring ≥3 distinct days are promoted into the extractor PREFER list (cap 15, floodgate guards) [NEW 2026-08-05]
 │   ├── graph_models.py            # Pydantic models: GraphNode, GraphEdge [NEW 2026-03]
 │   ├── graph_memory.py            # NetworkX DiGraph: CRUD, BFS, JSON persistence [NEW 2026-03]
 │   ├── graph_utils.py             # Shared graph helpers: entity extraction, neighbor lookups [NEW 2026-03]
@@ -5010,7 +5039,7 @@ daemon/
 │   ├── truth_scorer.py            # TruthScorer: evidence-based truth scoring (confirmation/correction) [NEW 2026-03]
 │   ├── user_profile.py            # UserProfile: profile facts + source excerpts + per-relation transient TTL
 │   ├── user_profile_schema.py     # 5-layer relation categorization (direct/prefix/token/embedding/LLM) [ENHANCED 2026-04]
-│   ├── relation_classifier.py     # Single source of truth: relation→TTL (health-transient/ephemeral/durable)
+│   ├── relation_classifier.py     # Single source of truth: relation→TTL (health-transient/ephemeral/durable) + MULTI_VALUED_RELATIONS/GENERIC_PREDICATES cross-dedup cluster exclusions [ENHANCED 2026-08-03]
 │   ├── cross_deduplicator.py      # Cross-collection dedup (dry-run only on shutdown) [NEW 2026-02-13]
 │   ├── dedup_models.py            # Pydantic: DedupPlan, DuplicatePair, ContradictionCluster [NEW 2026-02-13]
 │   ├── skill_activation.py        # Post-retrieval procedural-skill filtering + cooldown
@@ -5057,7 +5086,7 @@ daemon/
 │   ├── topic_manager.py       # Topic extraction
 │   ├── time_manager.py        # Temporal utilities
 │   ├── tone_detector.py       # Crisis detection (harm scoring + semantic + LLM arbiter + backstop)
-│   ├── adaptive_exemplars.py  # AdaptiveExemplarStore: per-user learned exemplars (tone/need/web_search/intent domains), independent-channel teachers only [NEW 2026-08-02]
+│   ├── adaptive_exemplars.py  # AdaptiveExemplarStore: per-user learned exemplars (tone/need/web_search/intent domains), independent-channel teachers only [NEW 2026-08-02]; encode_texts_cached per-text embedding cache — adopters re-encode only newly learned texts on a store-version bump [2026-08-21]
 │   ├── need_detector.py       # Need-type detection (PRESENCE vs PERSPECTIVE) [NEW]
 │   ├── emotional_context.py   # Combined emotional analysis (tone + need) [NEW]
 │   ├── query_checker.py       # Query analysis + heavy topic + thread detection
@@ -5083,6 +5112,7 @@ daemon/
 │   ├── preflight.py           # Startup preflight: data-dir writable (fatal), API keys / spaCy model (warn) [NEW 2026-07-14]
 │   ├── backup_manager.py      # Shutdown-phase backups of the memory stores (JSON always, chroma interval-throttled, retention+prune) [NEW 2026-07-14]
 │   ├── log_rotation.py        # Startup log bounding: rotate turn_records/daily_notes, archive audit log, gzip+prune daemon_debug archives [NEW 2026-07-14]
+│   ├── daemon_guard.py        # Live-Daemon detection for store-writing scripts: daemon_running() resolves each main.py candidate's /proc/<pid>/cwd against the repo root (replaces the pgrep-cmdline "Daemon_v1" grep a relative-path launch defeated); all 8 store-writing scripts delegate, old heuristic kept as import-failure fallback [NEW 2026-08-21]
 │   └── python_fs_guard.py     # Python filesystem guard: 10 monkey-patches (os/shutil delete/move/copy-overwrite), ContextVar agent mode [NEW 2026-05]
 │
 ├── knowledge/
@@ -5205,6 +5235,8 @@ daemon/
 │   ├── backfill_visual_memory.py  # Backfill visual memories from image directories [NEW 2026-05]
 │   ├── benchmark_retrieval.py # Retrieval quality & latency benchmark runner [NEW 2026-05]
 │   ├── backup_data.sh        # Daily backup + B2 upload via rclone [ENHANCED 2026-05-27]
+│   ├── purge_adaptive_exemplars.py  # Remove mis-taught adaptive exemplars (--non-vent scores stored entries against THE deployed _is_vent_shaped; dry-run-first, daemon-guard, pre-image backup) [NEW 2026-08-15]
+│   ├── strip_special_token_artifacts.py  # Repair stored <|sep|>-polluted docs via THE deployed strip_stream_special_tokens (dry-run-first, daemon-guard, pre-image backup; --apply owner-gated) [NEW 2026-08-21]
 │   ├── *.sh                  # Shell scripts
 │   └── ...
 │
@@ -5246,6 +5278,7 @@ daemon/
 │   ├── BUILD_GUIDE.md        # Desktop executable build guide [NEW 2025-12-12]
 │   ├── DOCKER_README.md      # Docker setup
 │   ├── BENCHMARK_METRICS.md  # Retrieval benchmark metrics tracking [NEW 2026-05]
+│   ├── GENERALIZATION_AUDIT.md # Owner-shape audit + de-personalization plan [NEW 2026-08-21]
 │   └── ...
 │
 ├── main.py                    # Entry point (GUI/CLI/wizard + maintenance subcommands)
@@ -5396,10 +5429,10 @@ except Exception as e:
 - **Purpose**: Verify tests catch code mutations
 
 ### 8.4 Test Suite Status (Current)
-**Last Full Unit Run**: 2026-06-27 — 3658 passed, 0 failures (~77s)
+**Last Full Run**: 2026-08-03 — 6,152 passed, 20 skipped, 0 failures (slow+benchmark excluded; 282 files in memory-capped batches)
 
 **Test Collection**:
-- ~271 test files, ~6,290 test functions total
+- 303 test files, 6,725 collected test cases (live count: `docs/METRICS_SNAPSHOT.md`)
 - Unit tests in `tests/unit/`, integration/other tests in `tests/`
 - Benchmark suite (296 cases) in `tests/benchmarks/` — not re-run every pass
 
@@ -5996,6 +6029,7 @@ Mechanical safeguards for AI coding agent sessions: pre-session snapshots, post-
 | `utils/destructive_op_guard.py` | Git command classifier: `classify_git_args(args)`, `is_destructive_git_args(args)`, `unlock_allowed(env, root)` |
 | `utils/shell_cmd_guard.py` | Shell command classifier (rm, mv, rmdir, chmod, truncate, find). Classifies commands as safe/destructive/blocked. |
 | `utils/python_fs_guard.py` | Python filesystem guard. Monkey-patches 10 functions: os.remove, os.unlink, os.rmdir, os.rename, os.replace, shutil.rmtree, shutil.move, shutil.copyfile, shutil.copy, shutil.copy2 (copy functions check destination only). ContextVar-based agent mode. |
+| `utils/daemon_guard.py` | Live-Daemon detection for store-writing scripts: `daemon_running()` resolves each `main.py` candidate's /proc/<pid>/cwd against the repo root — launch style can't hide the working directory (the old per-script pgrep-cmdline "Daemon_v1" grep was defeated by a relative-path launch; an `--apply` ran against a live store 2026-08-21). All 8 store-writing scripts delegate. [NEW 2026-08-21] |
 | `scripts/bin/usercustomize.py` | Subprocess guard: auto-activates python_fs_guard in child Python interpreters (via PYTHONPATH). Skipped during pytest/coverage. Disable with DISABLE_FS_GUARD=1. |
 | `scripts/agent_session_start.sh` | Pre-agent snapshot: git state + manifest + filtered untracked tarball, 10-snapshot rotation |
 | `scripts/agent_session_audit.sh` | Post-agent audit: branch/HEAD diff, git status, manifest diff, large file detection |
@@ -6026,6 +6060,7 @@ Mechanical safeguards for AI coding agent sessions: pre-session snapshots, post-
 - `tests/unit/test_destructive_op_guard.py` — 15 tests (safe/destructive classification, unlock mechanisms)
 - `tests/unit/test_shell_cmd_guard.py` — 92 tests (shell command classification, safe/destructive/blocked)
 - `tests/unit/test_python_fs_guard.py` — 85 tests (monkey-patched fs ops, agent mode, ContextVar gating, copy-overwrite guards)
+- `tests/unit/test_daemon_guard.py` — 14 tests (cwd-based live-Daemon detection, incl. a spawned relative-path-launch reproduction) [NEW 2026-08-21]
 
 See `docs/AGENT_SAFETY.md` for full workflow documentation.
 

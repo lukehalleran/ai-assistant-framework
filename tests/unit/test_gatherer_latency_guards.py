@@ -7,10 +7,28 @@
 2. user_uploads existence gate: the ~0.9s hybrid retrieval is skipped
    entirely when a cheap metadata probe shows no uploads exist.
 """
+import threading
+
 import pytest
 from unittest.mock import Mock, AsyncMock
 
 import core.prompt.gatherer_knowledge as gk
+
+
+@pytest.fixture(autouse=True)
+def _fresh_inflight_semaphore(monkeypatch):
+    """Isolate the module-level in-flight semaphore per test.
+
+    Other test files (e.g. test_prompt_internal_methods) exercise real prompt
+    builders whose wiki search can block past SEM_TIMEOUT_S in the test env —
+    the worker thread then holds a slot for the REST OF THE PYTEST PROCESS
+    (that's the by-design production behavior). The all-slots-free assertions
+    here were failing only in batch runs because of that leaked slot
+    (pre-existing; confirmed on a clean HEAD worktree 2026-08-05).
+    """
+    monkeypatch.setattr(
+        gk, "_WIKI_SEM_INFLIGHT", threading.Semaphore(gk._WIKI_SEM_MAX_CONCURRENT)
+    )
 
 
 def _bare_gatherer():

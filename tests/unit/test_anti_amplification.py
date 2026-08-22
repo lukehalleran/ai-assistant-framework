@@ -91,6 +91,57 @@ async def test_session_replay_does_not_flatline():
 
 
 # ---------------------------------------------------------------------------
+# 1b. Positive recovery reports relax the sticky floor (2026-08-14)
+# ---------------------------------------------------------------------------
+
+# Live incident: day after a flat/depressed session, "I feel significantly
+# more normal I think" was sticky-floored to CONCERN and the reply carried
+# LIGHT SUPPORT ("let them vent, don't offer advice") against a message
+# reporting recovery. A first-person improvement report with no negation
+# may decay like an explicit casual marker.
+
+async def test_positive_recovery_report_decays_during_distress():
+    for msg in [
+        "I feel significantly more normal I think",
+        "Feeling much better today",
+        "I'm doing a lot better",
+    ]:
+        result = await detect_crisis_level(msg, previous_tone=CrisisLevel.CONCERN)
+        assert result.level == CrisisLevel.CONVERSATIONAL, (
+            f"{msg!r} stayed at {result.level}"
+        )
+
+
+async def test_masking_and_negated_reports_keep_the_floor():
+    # "I'm fine" is the classic masking shape; negated/hedged improvement is
+    # not improvement. All must stay CONCERN-or-higher mid-distress.
+    for msg in [
+        "I'm fine",
+        "I don't feel better",
+        "I wish I felt normal",
+        "I feel better but still awful",
+    ]:
+        result = await detect_crisis_level(msg, previous_tone=CrisisLevel.CONCERN)
+        assert result.level in _DISTRESS, f"{msg!r} decayed to {result.level}"
+
+
+def test_positive_state_report_predicate_edges():
+    from utils.tone_detector import _is_positive_state_report
+
+    assert _is_positive_state_report("I feel significantly more normal I think")
+    assert _is_positive_state_report("today is much better")
+    assert not _is_positive_state_report("I'm fine")
+    assert not _is_positive_state_report("ok")
+    assert not _is_positive_state_report("I feel worse")
+    assert not _is_positive_state_report("I feel like I will never be normal")
+    # Length-bounded: a long message about feeling better goes to semantic
+    assert not _is_positive_state_report(
+        "I feel better today but honestly the last few weeks have been such "
+        "a mess that I don't really trust it and everything still feels off"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 2. Escalation tracker — sustained CONCERN reaches grounding
 # ---------------------------------------------------------------------------
 

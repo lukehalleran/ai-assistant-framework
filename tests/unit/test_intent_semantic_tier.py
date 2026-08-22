@@ -153,3 +153,70 @@ class TestIntentLearning:
         assert set(protos) == set(ic.INTENT_EXEMPLARS)
         batch = next(b for b in seen if "dry run pass" in " ".join(b))
         assert set(ic.INTENT_EXEMPLARS["project_work"]).issubset(set(batch))
+
+
+class TestElevatedToneNeverTeaches:
+    """2026-08-21 (08-18 audit): crisis vents that hit a confident regex or an
+    STM refinement were being taught as intent exemplars — crisis phrasing was
+    becoming the learned prototype for ordinary intents (temporal_recall).
+    Elevated tone suppresses BOTH teachers; classification itself is unchanged."""
+
+    def test_regex_teacher_suppressed_on_elevated_tone(self):
+        clf = IntentClassifier()
+        baseline = clf.classify("What's my sister's name?")
+        if baseline.confidence < 0.85 or baseline.intent.value not in ic.INTENT_EXEMPLARS:
+            pytest.skip("query not regex-confident in this config")
+        # store is per-test sandboxed; re-check from clean state per encoding
+        for tone in ("MEDIUM", "CONCERN", "crisis_support", "CrisisLevel.CONCERN"):
+            result = clf.classify("What's my sister's name?", tone_level=tone)
+            assert result.intent == baseline.intent  # routing unchanged
+        assert get_store().get_learned("intent", baseline.intent.value) == [
+            "What's my sister's name?"
+        ] or get_store().get_learned("intent", baseline.intent.value) == []
+        # the ONLY entry (if any) must come from the baseline conversational call
+        learned = get_store().get_learned("intent", baseline.intent.value)
+        assert len(learned) <= 1
+
+    def test_regex_teacher_still_teaches_on_conversational(self):
+        clf = IntentClassifier()
+        result = clf.classify("What's my sister's name?", tone_level="CONVERSATIONAL")
+        if result.confidence < 0.85 or result.intent.value not in ic.INTENT_EXEMPLARS:
+            pytest.skip("query not regex-confident in this config")
+        assert any(
+            "sister" in t
+            for t in get_store().get_learned("intent", result.intent.value)
+        )
+
+    def test_stm_teacher_suppressed_on_elevated_tone(self):
+        clf = IntentClassifier()
+        weak = clf._build_result(IntentType.GENERAL, 0.0)
+        refined = clf.refine_with_stm(
+            weak, "seeking emotional support and comfort",
+            query="honestly today just broke me a little",
+            tone_level="MEDIUM",
+        )
+        # refinement still routes THIS turn...
+        assert refined.source == "stm_refined"
+        # ...but the crisis phrasing is never learned
+        assert get_store().get_learned("intent", refined.intent.value) == []
+
+    def test_stm_teacher_teaches_without_tone(self):
+        clf = IntentClassifier()
+        weak = clf._build_result(IntentType.GENERAL, 0.0)
+        refined = clf.refine_with_stm(
+            weak, "seeking emotional support and comfort",
+            query="honestly today just broke me a little",
+            tone_level="CONVERSATIONAL",
+        )
+        assert refined.source == "stm_refined"
+        assert any(
+            "broke me" in t
+            for t in get_store().get_learned("intent", refined.intent.value)
+        )
+
+    def test_tone_elevation_predicate_both_encodings(self):
+        for t in ("HIGH", "MEDIUM", "CONCERN", "light_support",
+                  "elevated_support", "crisis_support", "CrisisLevel.HIGH"):
+            assert ic._tone_is_elevated(t) is True
+        for t in (None, "", "CONVERSATIONAL", "conversational"):
+            assert ic._tone_is_elevated(t) is False

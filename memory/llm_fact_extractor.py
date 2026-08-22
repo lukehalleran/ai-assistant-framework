@@ -8,6 +8,20 @@ ENHANCED (2026-04): Accepts existing profile facts so LLM reuses relation names 
 ENHANCED (2026-07): Prompt explicitly requests entity–entity relations (both subject AND object
 are named entities, e.g. "Sam sibling_of Biscuit") — these become lateral knowledge-graph
 edges via the shutdown graph-ingestion hook.
+ENHANCED (2026-08-05): Core vocabulary gained care-team relations (has_doctor,
+doctor_communication) + an explicit capture rule — statements about how the user
+reaches (or fails to reach) a doctor/prescriber are durable facts ("contact your
+doctor" advice was given assuming a patient portal the prescriber doesn't have).
+COVERAGE FIX (2026-08-05): _build_prompt used to include FULL Daemon responses
+per entry and iterate oldest→newest with a hard break on the char budget — only
+~4-5 pairs of the window ever reached the LLM and the NEWEST turns were dropped
+(weeks of "my doctor doesn't respond" never entered a prompt). Responses are now
+truncated to RESPONSE_SNIPPET_CHARS, selection walks newest→oldest, and defaults
+rose (LLM_FACTS_LAST_TURNS 12→30, MAX_INPUT_CHARS 6000→9000, MAX_TRIPLES 10→16).
+LEARNED RELATIONS (2026-08-05): CORE_RELATIONS is a module constant; recurring
+invented relations that SURVIVE the gates are tracked by memory.learned_relations
+and auto-promoted into the prompt's PREFER list — the vocabulary grows itself
+instead of waiting for an owner edit after each observed coverage gap.
 ENHANCED (2026-08-02): Prompt carries a RELATION NAMING section — a ~40-relation core
 vocabulary plus the rule that specifics belong in the OBJECT, not the relation name
 (inflow-side fix for the single-use-relation explosion; pairs with
@@ -28,6 +42,12 @@ Contract
   - fact_scope: "user" or "entity" — indicates whether fact is about the user or a third-party entity
   - source_excerpt: keyword-matched user message that sourced the fact (200-char truncated);
     falls back to last message if no keyword match found
+- Junk/polarity guards (2026-08-03): _normalize_triple applies
+  fact_extractor._is_junk_object (adverbial/temporal/negation-fragment objects dropped,
+  schedule relations exempt), and _attach_source_excerpts applies
+  fact_extractor._polarity_conflict against the full matched source message
+  (positive-preference triples the source negates are dropped) — the LLM path
+  previously had neither guard, so junk/inverted facts entered the profile through it.
 """
 
 from __future__ import annotations
@@ -93,6 +113,16 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
         logger.debug(f"[LLM Facts] Blocked boolean noise: {subj}|{rel}|{obj}")
         return None
 
+    # Block adverbial/temporal/negation-fragment objects ("for a bit",
+    # "yesterday", "not good") — same guard the regex extractor applies in
+    # _clean_triple. Until 2026-08-03 the LLM path had no junk-object check,
+    # so junk like `dad_show_up=for a bit` entered the profile through here
+    # and later showed up only as "skipped as duplicate" of itself.
+    from memory.fact_extractor import _is_junk_object
+    if _is_junk_object(obj, rel):
+        logger.debug(f"[LLM Facts] Blocked junk object: {subj}|{rel}|{obj}")
+        return None
+
     # Auto-categorize
     category = categorize_relation(rel)
 
@@ -121,10 +151,49 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
     return result
 
 
+# The fixed core relation vocabulary shown to the LLM (PREFER list). Single
+# source of truth — also consumed by memory.learned_relations to decide which
+# invented relations are worth tracking for automatic promotion.
+CORE_RELATIONS = (
+    "name", "age", "lives_in", "works_at", "works_on", "occupation", "studies",
+    "studies_at", "completed", "attends", "likes", "dislikes", "wants_to",
+    "owns", "has_cat", "has_dog", "drinks", "eats", "plays", "uses",
+    "interested_in", "skilled_at", "concerned_about", "talked_about",
+    "friend_of", "sibling_of", "parent_of", "child_of", "spouse_of",
+    "works_with", "medication_name", "medication_dose", "condition", "symptom",
+    "sleep_quality", "gym_schedule", "work_schedule", "class_schedule",
+    "exam_date", "goal", "deadline", "has_doctor", "doctor_communication",
+)
+
+_PET_RELATION_SOURCE_RE = {
+    "has_cat": re.compile(r"\b(?:cat|cats|kitten|kittens|feline|felines)\b", re.I),
+    "has_dog": re.compile(r"\b(?:dog|dogs|puppy|puppies|canine|canines)\b", re.I),
+}
+
+
+def _pet_relation_supported_by_source(source: str, relation: str) -> bool:
+    """Species-specific pet ownership relations need source support.
+
+    A live extractor output produced user|has_dog|Biscuit and |Daisy even
+    though the matched excerpt only talked about cats. The relation name is
+    the claim here, so the source must contain the matching species word.
+    """
+    rel = (relation or "").strip().lower()
+    rx = _PET_RELATION_SOURCE_RE.get(rel)
+    if not rx:
+        return True
+    return bool(rx.search(source or ""))
+
+
 class LLMFactExtractor:
+    # Daemon responses are truncated to this many chars inside each prompt
+    # entry — facts are extracted from user inputs; the response snippet only
+    # anchors entity references (2026-08-05 coverage fix).
+    RESPONSE_SNIPPET_CHARS = 250
+
     def __init__(self, model_manager, *,
                  model_alias: str = None,
-                 max_input_chars: int = 4000,
+                 max_input_chars: int = 9000,
                  max_triples: int = 15):  # Increased from 10
         self.mm = model_manager
         self.model_alias = model_alias or "gpt-4o-mini"
@@ -159,12 +228,19 @@ class LLMFactExtractor:
         )
 
     def _build_prompt(self, user_messages: List, existing_facts: List[Dict[str, Any]] = None) -> str:
-        msgs = []
-        total = 0
-        # Accept either plain strings or conversation pair dicts
+        # Coverage fix (2026-08-05): the old loop iterated oldest→newest with
+        # FULL Daemon responses in each entry and `break`ed on budget — a
+        # ~1K-char response per pair meant ~4-5 pairs of the 12-turn window
+        # made it in, and the NEWEST turns were the ones dropped. Weeks of
+        # care-team facts ("my doctor doesn't care... they aren't even open")
+        # never reached the extractor. Now: responses are truncated to a
+        # context snippet (facts are extracted from USER inputs; the response
+        # snippet only anchors entity references), and selection walks
+        # NEWEST→oldest so budget exhaustion drops the oldest turns instead.
+        entries = []
         for m in user_messages[-50:]:  # hard cap safety
             if isinstance(m, dict):
-                # Conversation pair: include both query and response
+                # Conversation pair: include query + truncated response
                 q = (m.get("query") or "").strip()
                 r = (m.get("response") or "").strip()
                 # Skip API error responses
@@ -172,6 +248,8 @@ class LLMFactExtractor:
                     r = ""
                 if not q:
                     continue
+                if len(r) > self.RESPONSE_SNIPPET_CHARS:
+                    r = r[:self.RESPONSE_SNIPPET_CHARS].rstrip() + "…"
                 if r:
                     entry = f"User: {q}\nDaemon: {r}"
                 else:
@@ -182,10 +260,16 @@ class LLMFactExtractor:
                     continue
                 # Strip role prefixes if user text contained them
                 entry = re.sub(r"^(?:user|assistant)\s*:\s*", "", entry, flags=re.I)
+            entries.append(entry)
+
+        msgs = []
+        total = 0
+        for entry in reversed(entries):  # newest first — oldest drop off
             if total + len(entry) + 10 > self.max_input_chars:
                 break
             msgs.append(entry)
             total += len(entry) + 10
+        msgs.reverse()  # render chronologically
 
         joined = "\n".join(f"- {m}" for m in msgs)
 
@@ -248,13 +332,12 @@ OUTPUT FORMAT (strict JSON array):
 
 RELATION NAMING (keeps the knowledge graph queryable — 2026-08-02: 630 of 696
 stored relations were single-use inventions):
-- PREFER these core relations whenever one fits: name, age, lives_in, works_at,
-  works_on, occupation, studies, studies_at, completed, attends, likes,
-  dislikes, wants_to, owns, has_cat, has_dog, drinks, eats, plays, uses,
-  interested_in, skilled_at, concerned_about, talked_about, friend_of,
-  sibling_of, parent_of, child_of, spouse_of, works_with, medication_name,
-  medication_dose, condition, symptom, sleep_quality, gym_schedule,
-  work_schedule, class_schedule, exam_date, goal, deadline.
+- PREFER these core relations whenever one fits: {core_relations_text}.{learned_relations_line}
+- CARE TEAM: statements about how the user reaches (or fails to reach) a
+  doctor/prescriber/therapist are durable, actionable facts — capture them.
+  "My psych never answers messages and there's no portal" →
+  {{"relation": "doctor_communication", "object": "prescriber has no patient
+  portal and rarely responds to messages", "category": "health"}}.
 - The SPECIFICS belong in the OBJECT, not the relation name. Write
   {{"relation": "drinks", "object": "diet coke"}} — NOT
   {{"relation": "drink_preference", "object": "diet coke"}}.
@@ -323,10 +406,27 @@ MESSAGES (conversation pairs, newest last):
 
 JSON:"""
         today_str = datetime.now().strftime("%A, %Y-%m-%d")
+        # Learned relations: recurring non-core relations promoted from this
+        # user's own history (memory.learned_relations) join the PREFER list
+        # automatically — the vocabulary grows itself instead of waiting for
+        # an owner edit after each observed coverage gap (2026-08-05).
+        learned_line = ""
+        try:
+            from memory.learned_relations import get_learned_relation_store
+            promoted = get_learned_relation_store().promoted()
+            if promoted:
+                learned_line = (
+                    "\n- ALSO treat these LEARNED relations (recurring for this "
+                    "user) as core: " + ", ".join(promoted) + "."
+                )
+        except Exception as e:
+            logger.debug(f"[LLM Facts] learned relations unavailable: {e}")
         prompt = prompt_template.format(
             messages=joined,
             today=today_str,
             existing_facts=existing_facts_section,
+            core_relations_text=", ".join(CORE_RELATIONS),
+            learned_relations_line=learned_line,
         )
 
         # Always log the messages being processed (helps debug empty extractions)
@@ -349,7 +449,7 @@ JSON:"""
                 prompt=prompt,
                 model_name=self.model_alias,
                 system_prompt="You output only strict JSON arrays. No prose, no explanation.",
-                max_tokens=600,  # Increased from 400 for more facts
+                max_tokens=900,  # 2026-08-05: 600 capped output ~10-14 JSON triples; 900 fits max_triples=16
                 temperature=0.0,
                 top_p=1.0,
             )
@@ -401,6 +501,17 @@ JSON:"""
                 continue
             seen.add(key)
             triples.append(norm)
+            # Track surviving non-core relations for automatic vocabulary
+            # promotion — only triples that PASSED normalization/junk gates
+            # ever count (junk-relation floodgate guard).
+            if norm.get("relation") not in CORE_RELATIONS:
+                try:
+                    from memory.learned_relations import get_learned_relation_store
+                    get_learned_relation_store().record(
+                        norm["relation"], norm.get("object", "")
+                    )
+                except Exception as e:
+                    logger.debug(f"[LLM Facts] learned-relation record failed: {e}")
             if len(triples) >= self.max_triples:
                 break
 
@@ -418,7 +529,12 @@ JSON:"""
     @staticmethod
     def _attach_source_excerpts(triples: List[Dict[str, str]],
                                 user_messages: List) -> None:
-        """Match each triple to its most likely source message via keyword overlap."""
+        """Match each triple to its most likely source message via keyword overlap.
+
+        Also drops (in place) triples whose positive-preference relation the
+        matched source text negates (fact_extractor._polarity_conflict — the
+        LLM path had no polarity check until 2026-08-03).
+        """
         if not user_messages:
             return
         # Clean messages once — handle both plain strings and conversation pair dicts
@@ -434,6 +550,10 @@ JSON:"""
             else:
                 text = re.sub(r"^(?:user|assistant)\s*:\s*", "", (m or "").strip(), flags=re.I)
             cleaned.append(text)
+        # Polarity guard shared with the regex path — checked against the FULL
+        # matched message (the stored excerpt is truncated to 200 chars).
+        from memory.fact_extractor import _polarity_conflict
+        kept: List[Dict[str, str]] = []
         for triple in triples:
             # Build keyword set from object + relation words
             keywords = set()
@@ -460,4 +580,18 @@ JSON:"""
                     if msg:
                         best_msg = msg
                         break
+            if _polarity_conflict(best_msg, triple.get("relation", ""), triple.get("object", "")):
+                logger.info(
+                    f"[LLM Facts] Blocked polarity conflict: {triple.get('relation')}|"
+                    f"{triple.get('object')} vs source: {best_msg[:80]!r}"
+                )
+                continue
+            if not _pet_relation_supported_by_source(best_msg, triple.get("relation", "")):
+                logger.info(
+                    f"[LLM Facts] Blocked unsupported pet species relation: "
+                    f"{triple.get('relation')}|{triple.get('object')} vs source: {best_msg[:80]!r}"
+                )
+                continue
             triple["source_excerpt"] = best_msg[:200]
+            kept.append(triple)
+        triples[:] = kept

@@ -15,6 +15,11 @@ Module Contract
     session a non-casual terse reply is floored at CONCERN rather than resetting
     to CONVERSATIONAL. This closed the regression where a spiral built from terse
     messages flatlined at CONVERSATIONAL, starving the escalation tracker.
+    Positive-recovery exception (2026-08-14): a bounded first-person improvement
+    report (_is_positive_state_report — improvement lexicon, negation/hedge veto)
+    relaxes like an explicit casual marker AND downgrades a semantic CONCERN
+    verdict to CONVERSATIONAL (MEDIUM/HIGH never overridden; "I'm fine"-style
+    masking keeps the floor).
   - format_tone_log(analysis, message) -> str  [formatted log string]
   - should_log_tone_shift(prev_level, new_level) -> bool
   - format_tone_shift_log(prev_level, new_level, query) -> str
@@ -57,6 +62,7 @@ Module Contract
 
 import asyncio
 import os
+import re
 import numpy as np
 from enum import Enum
 from dataclasses import dataclass
@@ -460,6 +466,14 @@ CRISIS_EXEMPLARS = {
         # Strategy-game violence talk is play, not ideation (owner plays HOI4)
         "I crushed everyone in my strategy game last night",
         "I destroyed the enemy army in my game, total victory",
+        # NOTE (2026-08-14): do NOT add recovery-report exemplars ("I feel
+        # much better today") here without a probe run — these are CENTROID
+        # prototypes and the margin rule is knife-edge: adding three such
+        # lines moved conversational 0.404→0.428 and flipped the HIGH
+        # paraphrase "Everything would be better if I just wasn't here" to
+        # CONVERSATIONAL. Recovery reports are handled deterministically by
+        # _is_positive_state_report instead (semantic-CONCERN override +
+        # sticky-floor exemption).
     ],
 }
 
@@ -514,6 +528,11 @@ def _adaptive_store_version() -> int:
         return -1
 
 
+# Per-text embedding cache: a store-version bump re-encodes only NEW texts
+# (see adaptive_exemplars.encode_texts_cached). Never shared across modules.
+_exemplar_text_emb_cache: Dict[str, np.ndarray] = {}
+
+
 def _get_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
     """Get or compute cached exemplar embeddings.
 
@@ -543,7 +562,10 @@ def _get_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
     for level, examples in CRISIS_EXEMPLARS.items():
         try:
             merged = list(examples) + _get_learned_exemplars(level)
-            embeddings = embedder.encode(merged, convert_to_numpy=True)
+            from utils.adaptive_exemplars import encode_texts_cached
+            embeddings = encode_texts_cached(
+                embedder, merged, _exemplar_text_emb_cache
+            )
             # Compute mean embedding as the prototype
             prototypes[level] = np.mean(embeddings, axis=0)
             logger.debug(
@@ -628,6 +650,46 @@ def _is_explicit_casual(message: str) -> bool:
     return _normalize_short(message) in _CASUAL_SHORT_MARKERS
 
 
+# Positive recovery report (2026-08-14): first-person improvement statements.
+# During a distress session, "I feel significantly more normal I think" was
+# sticky-floored to CONCERN — the reply then carried LIGHT SUPPORT ("let them
+# vent, don't offer advice") against a message reporting recovery. A message
+# that (a) semantics already scored CONVERSATIONAL, (b) is a first-person
+# state report, and (c) names improvement WITHOUT negation/subjunctive hedges
+# may relax the floor exactly like an explicit casual marker. Bare masking
+# shapes ("I'm fine", "I'm ok") are deliberately NOT in the lexicon — they
+# keep the floor, per the anti-amplification design.
+_POSITIVE_STATE_OPENERS = re.compile(
+    r"\b(?:i(?:'m|m| am| feel| felt| was feeling| have been feeling|ve been feeling)|feeling|today (?:i(?:'m|m)?|is|was|has been))\b",
+    re.IGNORECASE,
+)
+_POSITIVE_STATE_WORDS = re.compile(
+    r"\b(?:better|more normal|normal(?: again)?|improved|improving|great|really good|pretty good|much better|clearer|lighter|calmer|recovered|myself again)\b",
+    re.IGNORECASE,
+)
+# Negation/subjunctive hedges anywhere in the message veto the positive read:
+# "I don't feel better", "I wish I felt normal", "less normal", "not great".
+_POSITIVE_STATE_VETO = re.compile(
+    r"\b(?:not|no|never|n't|dont|cant|wont|isnt|aint|wish|hope|hoping|want|wanted|need|needed|trying|if only|less|worse|barely|hardly|except|but)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_positive_state_report(message: str) -> bool:
+    """True for a bounded first-person improvement report ("I feel a lot more
+    normal today"). Only consulted to RELAX the distress-sticky floor when the
+    semantic tier already scored the message CONVERSATIONAL — it never
+    downgrades a message that scored distress on its own."""
+    text = (message or "").strip()
+    if not text or len(text.split()) > 20:
+        return False
+    if _POSITIVE_STATE_VETO.search(text):
+        return False
+    return bool(
+        _POSITIVE_STATE_OPENERS.search(text) and _POSITIVE_STATE_WORDS.search(text)
+    )
+
+
 def _is_casual_short_message(message: str) -> bool:
     """
     Broader casual check for the fast-path-skip decision (only consulted when
@@ -649,13 +711,35 @@ def _is_casual_short_message(message: str) -> bool:
 
 
 def _recent_distress_from_history(conversation_history: Optional[List[dict]]) -> bool:
-    """True if any of the recent turns was flagged as a heavy/crisis topic."""
+    """True if any recent in-session turn was flagged as heavy/crisis.
+
+    The history path must obey the same gap boundary as previous_tone
+    stickiness. Otherwise a stale heavy turn from yesterday can re-latch the
+    floor after ContextPipeline correctly cleared _last_tone_level.
+    """
     if not conversation_history:
         return False
     try:
+        from datetime import datetime, timedelta
+        from config.app_config import TONE_STICKINESS_MAX_GAP_MINUTES
+
+        def _fresh(turn: dict) -> bool:
+            ts = turn.get("timestamp") if isinstance(turn, dict) else None
+            if ts is None:
+                return True  # fail closed for legacy rows without timestamps
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except ValueError:
+                    return True
+            if not isinstance(ts, datetime):
+                return True
+            now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
+            return (now - ts) <= timedelta(minutes=TONE_STICKINESS_MAX_GAP_MINUTES)
+
         recent = conversation_history[-TONE_CONFIG["context_window"]:]
         for turn in recent:
-            if isinstance(turn, dict) and turn.get("is_heavy_topic", False):
+            if isinstance(turn, dict) and turn.get("is_heavy_topic", False) and _fresh(turn):
                 return True
     except Exception as e:  # pragma: no cover - defensive
         logger.debug(f"[ToneDetector] history distress check failed: {e}")
@@ -1151,6 +1235,23 @@ async def detect_crisis_level(
         message, conversation_history, model_manager, force_escalation=session_distress
     )
 
+    # Positive-recovery override (2026-08-14): first-person improvement
+    # statements sit semantically close to the "I feel…" distress prototypes
+    # ("I feel significantly more normal I think" scored concern=0.48 and got
+    # a LIGHT SUPPORT reply against a message reporting recovery). A bounded,
+    # negation-free positive state report downgrades a semantic CONCERN to
+    # CONVERSATIONAL. MEDIUM/HIGH are never overridden — any real harm signal
+    # outranks the phrasing.
+    if level == CrisisLevel.CONCERN and _is_positive_state_report(message):
+        logger.debug("[ToneDetector] Positive recovery report — semantic CONCERN → CONVERSATIONAL")
+        return ToneAnalysis(
+            level=CrisisLevel.CONVERSATIONAL,
+            confidence=confidence,
+            trigger="positive_state_report",
+            raw_scores=raw_scores,
+            explanation="First-person improvement report; concern-level semantic match overridden",
+        )
+
     # Sticky floor: during an established distress session, do not let a
     # non-casual terse reply collapse tone all the way back to CONVERSATIONAL
     # (that reset is what starved the escalation tracker across this class of
@@ -1160,6 +1261,7 @@ async def detect_crisis_level(
         session_distress
         and level == CrisisLevel.CONVERSATIONAL
         and not _is_explicit_casual(message)
+        and not _is_positive_state_report(message)
     ):
         logger.debug("[ToneDetector] Distress-sticky floor: CONVERSATIONAL → CONCERN")
         return ToneAnalysis(

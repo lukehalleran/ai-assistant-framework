@@ -244,15 +244,15 @@ async def test_multiple_interactions_ordering(memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_empty_response_handling(memory_coordinator):
-    """Test storing interaction with empty response."""
-    await memory_coordinator.store_interaction(
+    """Empty assistant responses are transport artifacts, not memories."""
+    result = await memory_coordinator.store_interaction(
         query="Test question",
         response=""
     )
 
-    # Should not crash
+    assert result is None
     recent = memory_coordinator.corpus_manager.get_recent_memories(1)
-    assert len(recent) > 0
+    assert len(recent) == 0
 
 
 @pytest.mark.asyncio

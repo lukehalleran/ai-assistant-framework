@@ -33,7 +33,9 @@ Module Contract:
 - Adaptive anchors [NEW 2026-08-03]:
   - _get_search_anchors() merges learned exemplars (utils.adaptive_exemplars,
     domain "web_search") into the semantic anchor sets: "search_worthy" → positive,
-    "no_search" → negative; anchor-embedding cache is keyed on the store version.
+    "no_search" → negative; anchor-embedding cache is keyed on the store version,
+    and per-text vectors are reused via adaptive_exemplars.encode_texts_cached
+    (2026-08-21) so a version bump re-encodes only newly learned texts.
   - Teachers are OUTCOME-based (never this module's own semantic signal): a response
     that actually cited [WEB_ markers teaches search_worthy (hook in
     handlers._write_turn_telemetry; elevated-tone turns never teach), and a
@@ -409,6 +411,7 @@ _NO_SEARCH_ANCHOR_PHRASES = [
 _search_anchor_embs = None
 _no_search_anchor_embs = None
 _search_anchor_version = None
+_anchor_text_emb_cache: dict = {}
 
 
 def _get_search_anchors():
@@ -442,11 +445,12 @@ def _get_search_anchors():
             neg += get_store().get_learned("web_search", "no_search")
         except Exception:
             pass
-        _search_anchor_embs = embedder.encode(
-            pos, convert_to_numpy=True, normalize_embeddings=True
+        from utils.adaptive_exemplars import encode_texts_cached
+        _search_anchor_embs = encode_texts_cached(
+            embedder, pos, _anchor_text_emb_cache, normalize=True
         )
-        _no_search_anchor_embs = embedder.encode(
-            neg, convert_to_numpy=True, normalize_embeddings=True
+        _no_search_anchor_embs = encode_texts_cached(
+            embedder, neg, _anchor_text_emb_cache, normalize=True
         )
         _search_anchor_version = _version
         return _search_anchor_embs, _no_search_anchor_embs
@@ -864,6 +868,49 @@ _REFERENTIAL_TOKEN_RE = re.compile(
 )
 
 
+_FIRST_PERSON_OPENER_RE = re.compile(r"^(?:i|i'm|im|i've|ive|i'd|id|my)\b", re.I)
+_INTERROGATIVE_OPENER_RE = re.compile(
+    r"^(?:what|what's|how|why|when|where|who|which|can|could|should|would|"
+    r"is|are|do|does|did|will|any\b)", re.I)
+_LOOKUP_CUE_RE = re.compile(
+    r"\b(?:look\s+up|search|google|find\s+out|latest|news|current|what'?s\s+the)\b", re.I)
+
+
+def is_personal_state_statement(query: str) -> bool:
+    """True for a first-person state statement with no info-seeking shape.
+
+    2026-08-05: "I was taking about 900 mg a day... I don't want to start it
+    again unless a doctor says I should" ran a 3.5s web search — the bare
+    pronoun ("start IT again") made query_depends_on_context() treat it as a
+    referential follow-up, which bypasses the decisive conf=0.0 skip and
+    consults the LLM trigger; the LLM said search. In a first-person state
+    statement the pronoun refers to the user's OWN situation, not an
+    unresolved search target — these never consult the LLM. Third-party
+    elliptical follow-ups ("they're only giving us 7 days") are unaffected.
+    """
+    q = (query or "").strip()
+    if not q or "?" in q:
+        return False
+    if _INTERROGATIVE_OPENER_RE.match(q):
+        return False
+    if _LOOKUP_CUE_RE.search(q):
+        return False
+    if not _FIRST_PERSON_OPENER_RE.match(q):
+        return False
+    # An epistemic-stance opener ("I think…", "I mean…", "I don't believe…")
+    # frames a claim about the OUTSIDE WORLD, not the user's own state — on
+    # 2026-08-18 political commentary like "I think people would be arrested
+    # if they were aware…" passed this check and was TAUGHT as a no_search
+    # exemplar (poisoning class). Strip the markers (shared doctrine with the
+    # gate's vent-shape test; lazy import — both modules import each other
+    # only inside functions) and require remaining substantive first person.
+    try:
+        from core.agentic.gate import strip_epistemic_markers, _FIRST_PERSON_RE
+        return bool(_FIRST_PERSON_RE.search(strip_epistemic_markers(q)))
+    except Exception:
+        return True
+
+
 def query_depends_on_context(query: str) -> bool:
     """True when the query's searchability hinges on the prior turn (referential).
 
@@ -1201,6 +1248,18 @@ async def analyze_for_web_search_llm(
             bool(conversation_context and conversation_context.strip())
             and query_depends_on_context(query)
         )
+        if _referential_followup and is_personal_state_statement(query):
+            # First-person state statement: the pronoun points at the user's
+            # own situation, not a search target — never consult the LLM.
+            # Teach no_search through this deterministic channel (independent
+            # of the semantic anchors, same pattern as the tone-veto teacher)
+            # so the phrasing stops semantically boosting future statements.
+            _referential_followup = False
+            try:
+                from utils.adaptive_exemplars import get_store
+                get_store().record("web_search", "no_search", query, "personal_state_statement")
+            except Exception:
+                pass
         if not _referential_followup:
             logger.debug("[WebSearchTrigger] Skipping LLM: heuristic confident no-search (conf=0.0, no keywords)")
             _llm_trigger_cache[cache_key] = (now, heuristic_result)

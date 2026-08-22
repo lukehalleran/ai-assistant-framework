@@ -8,7 +8,11 @@ Goals:
 - Be understandable: lots of comments explaining intent and trade-offs.
 
 Public entry points most call sites use:
-- MultiStageGateSystem.filter_memories(...)         -> batch gate memories
+- MultiStageGateSystem.filter_memories(query, memories, min_results=None)
+      -> batch gate memories. min_results (2026-08-21) caps the GATE_MIN_MEMORIES
+      fail-soft floor to the caller's real budget (intent max_mems) — the floor
+      can only be lowered, so below-threshold backfill never exceeds what the
+      caller will render.
 - MultiStageGateSystem.filter_wiki_content(...)     -> filter a wiki article
 - MultiStageGateSystem.filter_semantic_chunks(...)  -> score semantic chunks
 - GatedPromptBuilder.build_gated_prompt(...)        -> prompt build w/ gating
@@ -991,12 +995,20 @@ class MultiStageGateSystem:
         return self.gate_system.get_gating_model_name()
 
     @log_and_time("Batch Cosine Gate Memories")
-    async def batch_gate_memories(self, query: str, memories: List[Dict]) -> List[Dict]:
+    async def batch_gate_memories(
+        self, query: str, memories: List[Dict], min_results: Optional[int] = None
+    ) -> List[Dict]:
         """
         Batch gate memories using cosine similarity with:
           - Episodic bypass (via metadata.type == "episodic")
           - Blended score: 70% cosine + 30% memory.truth_score
           - Optional re-ranker (if many survived)
+
+        min_results: optional cap on the forced-minimum fail-soft floor. The
+        floor exists so over-aggressive gating can't starve an ordinary turn,
+        but it must never exceed what the caller will actually use — a
+        casual_social turn (intent max_mems=3) was getting 8 below-threshold
+        memories forced in (2026-08-18 audit: 21 rendered for "Hey").
         """
         if not memories:
             return []
@@ -1112,6 +1124,9 @@ class MultiStageGateSystem:
 
             # PHASE 1.3: Force minimum memories even if below threshold (fail-soft)
             MIN_GATED_MEMORIES = int(os.getenv("GATE_MIN_MEMORIES", "8"))
+            if min_results is not None:
+                # Never force more than the caller's budget (intent max_mems).
+                MIN_GATED_MEMORIES = min(MIN_GATED_MEMORIES, max(0, int(min_results)))
             original_gated_count = len(gated)
 
             if len(gated) < MIN_GATED_MEMORIES and len(to_gate) > 0:
@@ -1170,15 +1185,21 @@ class MultiStageGateSystem:
             return memories[:10]
 
     @log_and_time("Filter Memories")
-    async def filter_memories(self, query: str, memories: List[Dict]) -> List[Dict]:
+    async def filter_memories(
+        self, query: str, memories: List[Dict], min_results: Optional[int] = None
+    ) -> List[Dict]:
         """
         Main entry point for gating memories from the orchestrator.
+
+        min_results caps the forced-minimum fail-soft floor (see
+        batch_gate_memories) — pass the caller's real budget (e.g. intent
+        max_mems) so below-threshold memories are never forced in beyond it.
         """
         if not memories:
             logger.debug("[Memory Filter] No memories to filter")
             return []
         logger.info(f"[Memory Filter] Starting batch cosine gating for {len(memories)} memories")
-        filtered = await self.batch_gate_memories(query, memories)
+        filtered = await self.batch_gate_memories(query, memories, min_results=min_results)
         logger.info(f"[Memory Filter] Gating complete: {len(filtered)}/{len(memories)} memories passed")
         return filtered
 

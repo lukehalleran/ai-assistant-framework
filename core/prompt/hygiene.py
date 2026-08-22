@@ -9,6 +9,9 @@ Module Contract
   - _hygiene_and_caps(context, stm_summary) -> Dict
     Deduplication and caps enforcement across all context sections.
     Cross-section dedup with backfill for recent_conversations.
+    Cross-section dedup keys canonicalize role labels ("Daemon:" → "assistant:")
+    and collapse whitespace anywhere in the string (2026-08-05: the label-only
+    difference let the session's own turns re-surface in [RELEVANT MEMORIES]).
     Stitches semantic chunks by title. Adds STM summary.
   - _backfill_recent_conversations(existing_items, seen_embeddings, seen_content,
       target_count, offset, embedder, similarity_threshold) -> List
@@ -25,6 +28,7 @@ Module Contract
   - Logging of dedup actions and backfill progress
 """
 
+import re
 import numpy as np
 from typing import Dict, List, Optional, Any
 from utils.logging_utils import get_logger
@@ -129,9 +133,17 @@ class ContentHygiene:
                 else:
                     content = str(item)
 
-                # Normalize content for comparison
-                normalized = content.strip().lower()
-                for prefix in ["user:", "daemon:", "luke,"]:
+                # Normalize content for comparison. The same turn renders as
+                # "User: ...\nDaemon: ..." in recent_conversations but comes
+                # back from retrieval as "User: ...\nAssistant: ..." — the
+                # mid-string role label plus whitespace variance defeated the
+                # first-500-char key, so the session's OWN turns re-surfaced
+                # in [RELEVANT MEMORIES] (2026-08-05, three duplicates in one
+                # prompt). Canonicalize role labels everywhere in the string,
+                # not just as a leading prefix, and collapse whitespace.
+                normalized = re.sub(r"\bdaemon\s*:", "assistant:", content.strip().lower())
+                normalized = re.sub(r"\s+", " ", normalized)
+                for prefix in ["user:", "assistant:", "luke,"]:
                     if normalized.startswith(prefix):
                         normalized = normalized[len(prefix):].strip()
 

@@ -7,11 +7,14 @@ Retrieval/storage junk guards:
 - is_junk_conversation_doc(query, response) [2026-07-15, extended 07-25]: drops
   API-error-sentinel turns, bare "test" exchanges, and the owner's box-test
   battery (exact-match) at retrieval — hybrid + fallback paths both call it.
-- is_junk_summary(text) [2026-07-25]: rejects "-"/near-empty/truncated-fragment
-  summaries; enforced at BOTH storage (chroma add_summary, corpus add_summary)
-  and retrieval (MemoryRetriever.get_summaries).
+- is_junk_summary(text) [2026-07-25, ext 08-03]: rejects "-"/near-empty/
+  truncated-fragment summaries AND API-error sentinel text (long error strings
+  passed the length/letter checks and sat in the summaries collection);
+  enforced at BOTH storage (chroma add_summary, corpus add_summary) and
+  retrieval (MemoryRetriever.get_summaries).
 """
 
+import re
 import uuid
 from datetime import datetime
 from typing import List, Dict, Any
@@ -82,6 +85,18 @@ def is_junk_conversation_doc(content: str = "", query: str = "", response: str =
 # dominating "recent summaries" while the store held fresh full summaries.
 SUMMARY_MIN_CHARS = 40
 
+# Infra/harness sentinels stored as summaries: a doc that OPENS with a
+# bracketed block naming an infrastructure failure is a tool message, not a
+# summary. Seen live 2026-08-05: "[Wafer: response was truncated before the
+# model finished its internal reasoning. Increase max_tokens ... then retry.]"
+# surfacing under [SEMANTIC SUMMARIES]. API_ERROR_PREFIXES catches the known
+# prefix tags; this catches the long tail of provider-specific wrappers by
+# keyword instead of by exact prefix.
+_HARNESS_SENTINEL_RE = re.compile(
+    r"^\[[^\]]{0,200}?(?:error|truncat|timed?\s?out|unavailable|max_tokens|retry)",
+    re.IGNORECASE,
+)
+
 
 def is_junk_summary(text: Any) -> bool:
     """True for summary docs that should never be stored or surfaced.
@@ -97,6 +112,17 @@ def is_junk_summary(text: Any) -> bool:
         return True
     # Placeholder/divider docs ("-", "...", "***") carry no letters to speak of.
     if sum(1 for c in stripped if c.isalpha()) < 20:
+        return True
+    # API-error sentinels stored as summaries (2026-08-03: ~a dozen
+    # "[API Error] 402 ..." docs found in the summaries collection by the
+    # cross-dedup queue review — long and letter-rich, so the length/letter
+    # checks above pass them).
+    from models.model_manager import API_ERROR_PREFIXES
+    if stripped.startswith(API_ERROR_PREFIXES):
+        return True
+    # Provider/harness wrappers not covered by the fixed prefix list
+    # ("[Wafer: response was truncated ...]" and friends).
+    if _HARNESS_SENTINEL_RE.match(stripped):
         return True
     return False
 

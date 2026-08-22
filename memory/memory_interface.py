@@ -234,9 +234,13 @@ class MemoryRetrieverProtocol(Protocol):
         self,
         query: str,
         limit: int = 20,
-        topic_filter: Optional[str] = None
+        topic_filter: Optional[str] = None,
+        min_gated: Optional[int] = None,
     ) -> List[Dict]:
-        """Main retrieval pipeline - get relevant memories for query"""
+        """Main retrieval pipeline - get relevant memories for query.
+
+        min_gated caps the gate's forced-minimum fail-soft floor to the
+        caller's real budget (e.g. intent max_mems)."""
         ...
 
     async def get_facts(self, query: str, limit: int = 8) -> List[Dict]:

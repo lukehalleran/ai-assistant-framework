@@ -23,7 +23,9 @@ Module Contract:
     Controlled by ENTITY_FACTS_ENABLED toggle
   - JUNK/POLARITY GUARDS (2026-08-02): _is_junk_object() (wired into _clean_triple) drops
     adverbial/temporal/negation-fragment objects ("for a bit", "yesterday", "not good",
-    profanity-intensifier rants) — schedule relations exempt; _polarity_conflict() blocks
+    profanity-intensifier rants) — schedule relations exempt; communication/status/access
+    relations exempt from the NEGATION check only (2026-08-05: "doctor_communication |
+    no patient portal" was being junk-killed — for those relations the negation IS the content); _polarity_conflict() blocks
     positive-preference triples the source text negates ("hate my life" ≠ likes|my life);
     the _canonicalize_preferences "i like " rewrite requires the object in the clause
     directly after the trigger (a bare substring hit used to rewrite ANY co-occurring triple)
@@ -163,8 +165,6 @@ _JUNK_OBJECT_PATTERNS = [
     # Duration fragments: "a bit", "a while", "a few hours"
     re.compile(r"^(?:a|the)\s+(?:bit|while|lot)\b"),
     re.compile(r"^(?:a\s+)?few\s+(?:seconds|minutes|hours|days|weeks|months|years)\b"),
-    # Negation fragments: "not good", "not eaten yet", "no idea"
-    re.compile(r"^(?:not|no)\s"),
     # Bare temporal deictics as the whole object
     re.compile(r"^(?:yesterday|today|tomorrow|tonight|last night|this morning|"
                r"this afternoon|this evening|this week|last week|earlier|later|"
@@ -173,6 +173,15 @@ _JUNK_OBJECT_PATTERNS = [
     # ("my fucking life")
     re.compile(r"\b(?:fucking|fuckin|goddamn|damn)\b"),
 ]
+
+# Negation fragments ("not good", "no idea") are junk for ordinary relations —
+# but for communication/status/access relations the negation IS the content
+# ("doctor_communication | no patient portal", "| does not respond"). The
+# 2026-08-05 care-team vocab addition was being silently junk-killed by this
+# very check whenever the LLM phrased the object as "no ...".
+_NEGATION_JUNK_PATTERN = re.compile(r"^(?:not|no)\s")
+_NEGATION_OK_RELATIONS = {"doctor_communication", "has_doctor"}
+_NEGATION_OK_RELATION_SUFFIXES = ("_communication", "_status", "_access", "_availability")
 
 
 def _is_junk_object(obj: str, rel: str) -> bool:
@@ -186,6 +195,10 @@ def _is_junk_object(obj: str, rel: str) -> bool:
     if r in _TEMPORAL_OK_RELATIONS:
         return False
     if o in _FEELING_ADJ_OBJECTS:
+        return True
+    if _NEGATION_JUNK_PATTERN.match(o) and not (
+        r in _NEGATION_OK_RELATIONS or r.endswith(_NEGATION_OK_RELATION_SUFFIXES)
+    ):
         return True
     return any(p.match(o) for p in _JUNK_OBJECT_PATTERNS)
 
