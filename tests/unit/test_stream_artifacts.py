@@ -275,3 +275,107 @@ class TestSpecialTokenStrip:
         out = ResponseParser.sanitize_for_storage("<|sep|>A real answer here.")
         assert "<|sep|>" not in out
         assert "A real answer here." in out
+
+
+class TestEmptyShellThenContent:
+    """2026-08-22: kimi-3 emitted literal "<thinking>" + "</thinking>" as its
+    first two CONTENT chunks, then "<|sep|>Nice —...". The 08-03 empty-shell
+    hold covered the shell-only buffer, but once content followed,
+    parse_thinking_block found no thinking BODY and the streaming display
+    fell through to the RAW buffer — literal tags on screen until the
+    end-of-stream recovery (15s later, live turn 13:06). The shell is now
+    stripped from the buffer the moment content follows."""
+
+    def test_strip_leading_empty_shell_with_content(self):
+        from core.response_parser import ResponseParser as R
+        out = R.strip_leading_empty_thinking_shell(
+            "<thinking></thinking><|sep|>Nice — pushed and docs updated."
+        )
+        assert out == "<|sep|>Nice — pushed and docs updated."
+
+    def test_whitespace_and_variant_tags(self):
+        from core.response_parser import ResponseParser as R
+        assert R.strip_leading_empty_thinking_shell(
+            "<thinking>  </thinking>\nAnswer here."
+        ) == "Answer here."
+        assert R.strip_leading_empty_thinking_shell(
+            "<reasoning></reasoning>Answer."
+        ) == "Answer."
+
+    def test_nonempty_thinking_untouched(self):
+        # a REAL thinking block must go through parse_thinking_block, not this
+        from core.response_parser import ResponseParser as R
+        text = "<thinking>real chain of thought</thinking>The answer."
+        assert R.strip_leading_empty_thinking_shell(text) == text
+
+    def test_mid_text_shell_untouched(self):
+        from core.response_parser import ResponseParser as R
+        text = "Discussing the <thinking></thinking> marker pair itself."
+        assert R.strip_leading_empty_thinking_shell(text) == text
+
+    def test_live_chunk_sequence_ends_clean(self):
+        # chunk-by-chunk reproduction of the 13:06 turn: after shell strip +
+        # edge-token strip, what the display yields never contains tags or sep
+        from core.response_parser import ResponseParser as R
+        buf = ""
+        for chunk in ["<thinking>", "</thinking>", "<|sep|>Nice", " — pushed."]:
+            buf += chunk
+            stripped = R.strip_leading_empty_thinking_shell(buf)
+            if stripped != buf:
+                buf = stripped
+            visible = R.strip_trailing_stream_artifact(buf)
+            if buf not in ("<thinking>", ""):  # shell-only states show 💭, not text
+                assert "<thinking>" not in visible
+                assert "<|sep|>" not in visible
+        assert visible == "Nice — pushed."
+
+    def test_handlers_wire_shell_strip_and_display_strip(self):
+        import inspect
+        import gui.handlers as h
+        src = inspect.getsource(h)
+        assert "strip_leading_empty_thinking_shell" in src
+        assert src.count("strip_trailing_stream_artifact(display_output)") >= 4
+
+
+class TestShutdownSummaryPathSanitized:
+    """2026-08-22: shutdown _store_summary writes chroma via raw
+    add_to_collection, bypassing chroma_store.add_summary (where the strip +
+    junk check live) — two summaries landed with leading <|sep|> AFTER the
+    fix shipped. The third path now sanitizes + junk-rejects at entry."""
+
+    def _proc(self):
+        from memory.shutdown_processor import ShutdownProcessor
+        p = object.__new__(ShutdownProcessor)
+
+        class Corpus:
+            def __init__(self): self.added = []
+            def get_summaries(self, n): return []
+            def add_summary(self, node): self.added.append(node)
+
+        class Store:
+            def __init__(self): self.added = []
+            def add_to_collection(self, coll, text, md):
+                self.added.append((coll, text)); return "id1"
+
+        p.corpus_manager = Corpus()
+        p.chroma_store = Store()
+        p.claim_index = None
+        p.memory_coordinator = None
+        return p
+
+    def test_leading_sep_stripped_before_storage(self):
+        p = self._proc()
+        p._store_summary(
+            "<|sep|>- The user sent their ODS accommodations notice, which "
+            "includes extra time on exams, and has a meeting with ODS on "
+            "Wednesday to discuss next steps for the semester.", 20, 0, 0, 5, [])
+        assert p.chroma_store.added, "summary should store"
+        coll, text = p.chroma_store.added[0]
+        assert "<|sep|>" not in text
+        assert p.corpus_manager.added[0]["content"].startswith("- The user")
+
+    def test_junk_summary_rejected(self):
+        p = self._proc()
+        p._store_summary("[API Error] request failed", 20, 0, 0, 5, [])
+        assert not p.chroma_store.added
+        assert not p.corpus_manager.added

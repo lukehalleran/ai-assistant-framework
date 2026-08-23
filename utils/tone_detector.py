@@ -737,8 +737,11 @@ def _recent_distress_from_history(conversation_history: Optional[List[dict]]) ->
             now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
             return (now - ts) <= timedelta(minutes=TONE_STICKINESS_MAX_GAP_MINUTES)
 
-        recent = conversation_history[-TONE_CONFIG["context_window"]:]
-        for turn in recent:
+        # Order-agnostic (2026-08-22): callers pass corpus recents NEWEST-
+        # first, so the old [-window:] slice examined the OLDEST rows of the
+        # fetch (the digest-order bug class). The freshness bound above does
+        # the real limiting; scan every row passed (callers fetch <=5).
+        for turn in conversation_history:
             if isinstance(turn, dict) and turn.get("is_heavy_topic", False) and _fresh(turn):
                 return True
     except Exception as e:  # pragma: no cover - defensive

@@ -1036,3 +1036,48 @@ class TestUnjustifiedLocationStrip:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestRetryAfterInability:
+    """2026-08-22: 'Let's try again I fixed it. Okay: Tactical Taylors' after
+    the assistant said "I can't search right now" — the LLM trigger timed out
+    (5s, busy cold turn), heuristics saw 'no indicators', and the explicit
+    retry silently didn't search. The assistant's own inability disclosure +
+    a retry cue is now a DETERMINISTIC search signal (LLM-independent)."""
+
+    def _ctx(self):
+        return ("Daemon: If you actually meant 'Tactical Taylors' as a search "
+                "for the timeline news, I can't search right now — but given "
+                "today's trajectory...")
+
+    @pytest.mark.asyncio
+    async def test_retry_triggers_deterministically_without_llm(self):
+        from utils.web_search_trigger import analyze_for_web_search_llm
+        d = await analyze_for_web_search_llm(
+            "Let's try again I fixed it. Okay: Tactical Taylors",
+            model_manager=None,  # no LLM available at all
+            conversation_context=self._ctx(),
+        )
+        assert d.should_search is True
+        assert d.search_terms == ["Tactical Taylors"]
+        assert d.source == "explicit"
+
+    def test_colon_term_extraction(self):
+        from utils.web_search_trigger import _detect_retry_after_inability as det
+        assert det("try it now: kimi k3 release",
+                   "no search results came through") == "kimi k3 release"
+
+    def test_no_retry_cue_no_trigger(self):
+        from utils.web_search_trigger import _detect_retry_after_inability as det
+        assert det("Tactical Taylors", self._ctx()) is None
+
+    def test_no_inability_context_no_trigger(self):
+        from utils.web_search_trigger import _detect_retry_after_inability as det
+        assert det("Let's try again I fixed it. Okay: Tactical Taylors",
+                   "Daemon: nice weather today") is None
+
+    def test_preamble_strip_fallback(self):
+        from utils.web_search_trigger import _detect_retry_after_inability as det
+        out = det("ok try again tactical taylors news",
+                  "i can't search right now")
+        assert out and "tactical taylors news" in out

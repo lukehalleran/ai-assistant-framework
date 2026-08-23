@@ -277,3 +277,39 @@ class TestPlannerGrounding:
         prompt = self._run_plan(ctx)
         assert "x" * 401 not in prompt
         assert "y" * 401 not in prompt
+
+
+class TestFragmentContinuation:
+    """2026-08-22: mid Taylor-Greene/Taylor-Swift joke thread, the two-word
+    riff "Tactical Taylors" was fresh-classified topic "Tactical Gear", STM
+    invented "User Question: What are Tactical Taylors?" (the user asked
+    nothing), a new thread spawned, and the reply led with a MOLLE-gear brand
+    answer. Bare noun-phrase fragments now inherit like pronoun fragments."""
+
+    def test_bare_noun_phrase_fragments(self):
+        from utils.query_checker import is_fragment_continuation as f
+        assert f("Tactical Taylors")
+        assert f("the other one")
+        assert f("classic timeline stuff")
+
+    def test_questions_requests_acks_excluded(self):
+        from utils.query_checker import is_fragment_continuation as f
+        assert not f("what is a tactical taylor")
+        assert not f("pull up the veto logic")   # request → tools routing
+        assert not f("ok thanks")                 # ack → light path
+        assert not f("yeah ok cool")              # all-filler
+        assert not f("I am so unhappy with everything today honestly")  # too long
+
+    def test_thread_shift_never_asserted_on_fragment(self):
+        from core.orchestrator import _thread_topic_shifted
+        assert _thread_topic_shifted(
+            "Taylor Greene Mixup", "Tactical Gear",
+            original_query="Tactical Taylors",
+        ) is False
+
+    def test_stm_rule_seven_present(self):
+        import core.stm_analyzer as stm
+        import inspect
+        src = inspect.getsource(stm)
+        assert "SHORT FRAGMENT" in src
+        assert 'invent a "user_question"' in src

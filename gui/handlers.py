@@ -1830,6 +1830,7 @@ async def _run_agentic_search(ctx):
             display_output = ""
         display_output = ResponseParser.strip_thinking_tag_leaks(display_output)
         display_output = _strip_leaked_xml_blocks(display_output)
+        display_output = ResponseParser.strip_trailing_stream_artifact(display_output)  # edge <|sep|> + trailing-'e' (2026-08-22)
         # kimi-3 lone-'e' stream artifact: storage strips it via
         # sanitize_for_storage, but this display path never did — the stray
         # 'e' showed in the chat bubble + debug record (seen live 2026-08-14
@@ -2204,6 +2205,18 @@ async def _run_enhanced(ctx):
                 yield {"role": "assistant", "content": display_output, "is_thinking": True}
                 continue
 
+            # Empty shell FOLLOWED by content (2026-08-22): kimi-3 sent
+            # literal "<thinking>"+"</thinking>" as its first content chunks,
+            # then the answer. parse_thinking_block finds no thinking BODY in
+            # that buffer, so the fallthrough displayed the raw tags on
+            # screen until the end-of-stream recovery. Strip the shell from
+            # the accumulated buffer once and treat the rest as the answer.
+            if not thinking_complete:
+                _shell_stripped = ResponseParser.strip_leading_empty_thinking_shell(final_output)
+                if _shell_stripped != final_output:
+                    final_output = _shell_stripped
+                    thinking_complete = True
+
             # Parse in real-time to separate thinking from answer
             thinking_part, final_answer = ResponseParser.parse_thinking_block(final_output)
 
@@ -2240,6 +2253,7 @@ async def _run_enhanced(ctx):
                     except (IndexError, AttributeError):
                         display_output = final_answer
                     display_output = _strip_leaked_xml_blocks(display_output)
+                    display_output = ResponseParser.strip_trailing_stream_artifact(display_output)  # edge <|sep|> + trailing-'e' (2026-08-22)
                     yield {"role": "assistant", "content": display_output}
             else:
                 # No thinking block detected, stream normally
@@ -2251,6 +2265,7 @@ async def _run_enhanced(ctx):
                 except (IndexError, AttributeError):
                     display_output = final_output
                 display_output = _strip_leaked_xml_blocks(display_output)
+                display_output = ResponseParser.strip_trailing_stream_artifact(display_output)  # edge <|sep|> + trailing-'e' (2026-08-22)
                 yield {"role": "assistant", "content": display_output}
 
         # After streaming completes, if we're still showing "Thinking..." the user
@@ -2308,6 +2323,7 @@ async def _run_enhanced(ctx):
         # Use block-level stripping to remove entire <tool>content</tool> sequences.
         final_output = _strip_leaked_xml_blocks(final_output)
         display_output = _strip_leaked_xml_blocks(display_output)
+        display_output = ResponseParser.strip_trailing_stream_artifact(display_output)  # edge <|sep|> + trailing-'e' (2026-08-22)
 
         # ── Uncertainty Fallback: retry via agentic search if response is uncertain ──
         _uncertainty_retry_done = False

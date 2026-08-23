@@ -156,7 +156,20 @@ def is_casual_acknowledgment(q: str, max_words: int = 8) -> bool:
     if any(m in ql for m in _REQUEST_MARKERS):
         return False
     first = words[0].strip(".,!…:;'\"")
-    return first in ACK_STARTERS
+    if first not in ACK_STARTERS:
+        return False
+    # Ack-prefixed IMPERATIVES are requests, not acknowledgments (2026-08-22):
+    # "Alright, check it out now" opened with an ack starter, passed the
+    # command checks (which look at the raw opener), rode the light path to a
+    # 1K-token context, and the gate had nothing to work with. The deployed
+    # request-shape test tolerates leading discourse markers.
+    try:
+        from core.agentic.gate import _is_request_shaped
+        if _is_request_shaped(q):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def is_continuation_answer(q: str, last_assistant_response: str, max_words: int = 6) -> bool:
@@ -253,6 +266,46 @@ def is_anaphoric_continuation(q: str, max_words: int = 30) -> bool:
         return True
     first = words[0].strip(".,!…:;'\"")
     return first in _ANAPHORIC_OPENERS
+
+
+def is_fragment_continuation(q: str, max_words: int = 4) -> bool:
+    """True for a bare noun-phrase FRAGMENT mid-conversation ("Tactical
+    Taylors", "the other one") — no question shape, no request shape, not a
+    casual ack, just a few words riffing on the ongoing exchange.
+
+    2026-08-22 incident: mid Taylor-Greene/Taylor-Swift joke thread, the
+    two-word riff "Tactical Taylors" was fresh-classified topic "Tactical
+    Gear", STM INVENTED "User Question: What are Tactical Taylors?" (the
+    user asked nothing), a new thread spawned, and the reply led with a
+    MOLLE-gear brand encyclopedia answer. Same failure class as the 07-28
+    pronoun-fragment incident, without the pronoun.
+
+    Consumers treat it exactly like is_anaphoric_continuation: inherit the
+    previous turn's topic, never assert a thread shift. Soft, low-cost
+    inheritance — a genuinely fresh 3-word topic opener pays one turn of a
+    stale topic label; a fresh-classified riff derails the whole reply.
+    """
+    ql = _normalize(q)
+    if not ql:
+        return False
+    words = ql.split()
+    if len(words) > max_words:
+        return False
+    if "?" in ql or is_question(ql) or is_command(ql):
+        return False
+    if any(w in QUESTION_LEADS for w in words):
+        return False
+    first = words[0].strip(".,!…:;'\"")
+    if first in ACK_STARTERS:
+        return False  # casual acks have their own (light-path) routing
+    try:
+        from core.agentic.gate import _is_request_shaped
+        if _is_request_shaped(q):
+            return False  # imperatives route to tools, not topic inheritance
+    except Exception:
+        pass
+    # at least one substantive word (not all ack-type fillers)
+    return not all(w.strip(".,!…:;'\"") in ACK_STARTERS for w in words)
 
 
 def is_deictic(query: str) -> bool:

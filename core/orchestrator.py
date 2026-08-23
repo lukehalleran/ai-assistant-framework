@@ -103,8 +103,11 @@ def _thread_topic_shifted(
     Medication Concerns → Medication Withdrawal, asserting a fresh "shift"
     (plus "Follow the current query") on every reply of a five-turn thread.
     """
-    from utils.query_checker import is_anaphoric_continuation
+    from utils.query_checker import is_anaphoric_continuation, is_fragment_continuation
     if is_anaphoric_continuation(original_query or ""):
+        return False
+    if is_fragment_continuation(original_query or ""):
+        # a bare noun-phrase riff never asserts a thread shift (2026-08-22)
         return False
     if (stm_reference_type or "").strip().lower() in ("recall", "clarification", "correction"):
         return False

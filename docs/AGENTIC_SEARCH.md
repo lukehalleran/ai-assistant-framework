@@ -49,7 +49,7 @@ Agentic search activates when ALL conditions are met:
    - Tier 1: Keyword heuristic — computation, memory, knowledge, web search, and tool name keywords; also **file/saved-document retrieval** intent (so `file_read` / `file_list` / `get_full_document` are offered) and email-by-name patterns
    - Tier 2: Entity match — query mentions known knowledge graph entity + recall signal
    - Tier 3: Document *generation* or self-note intent detection
-   - Tier 4: LLM fallback — piggybacks on web search trigger call (`needs_memory_search`, `needs_knowledge_search`, `needs_document_generation`)
+   - Tier 4: LLM fallback — piggybacks on web search trigger call (`needs_memory_search`, `needs_knowledge_search`, `needs_document_generation`). **Retry-after-inability (2026-08-22)**: `analyze_for_web_search_llm` first checks the conversation context for the assistant's own search-inability disclosure ("I can't search right now") plus a retry cue in the query ("try again", "I fixed it") → deterministic search BEFORE the LLM-first gating (terms = text after the last colon, else the retry-preamble-stripped remainder; `source="explicit"`) — the live retry had hit the 5s LLM timeout and the heuristic fallback found no indicators. Tests: `tests/test_web_search_trigger.py::TestRetryAfterInability` (5).
    - Casual skip filter, continuation override, and intent-based veto all handled inside gate
    - **Continuation override** [tightened 2026-07-15]: requires a TERSE affirmation (≤ `CONTINUATION_MAX_WORDS`=6 words containing a continuation phrase) AND ground truth that the prior turn was agentic — corpus entries now store `response_mode` (written from provenance); a word-boundary keyword fallback covers only legacy entries. Long messages merely containing "yeah"/"sure" are new statements (the benzo-turn incident: 'yeah' substring + "sleep **issues**" matching the GitHub word list burned a 60s loop on a vibe remark).
    - **Concurrent evaluation** [2026-07-15]: `handle_submit` launches the gate as an asyncio task BEFORE `prepare_prompt`, hiding the Tier-4 LLM call (~2s) behind prompt building. The intent veto needs the context pipeline's classification, so the gate is launched with `intent_info=None` and the dispatcher applies `gate.apply_intent_veto(decision, intent, tone_level=...)` post-hoc; `AgenticDecision.veto_exempt` records explicit requests (search keywords / URL / file access / doc-gen / self-note) the veto must never suppress.
@@ -82,6 +82,19 @@ confabulates "I don't have file access". The gate detects this in three layers
   please") right after the model OFFERED to pull a file (`FILE_OFFER_MARKERS`).
   This is what lets the enhanced-mode honesty offer ("Want me to pull that up?")
   get carried out on the next turn.
+- **"Check it out" routing chain (2026-08-22)** — `FILE_RETRIEVAL_PRONOUN_PATTERN`
+  gained check/review/read/inspect/verify/examine/look verbs (+ optional "at" and a
+  "now" tail; first-person self-reports like "I checked it out" excluded);
+  `FILE_DOC_CONTEXT_WORDS` gained repo/repositor/commit/codebase/docs/pushed; a
+  REQUEST-shaped imperative after prior file/repo context routes to tools with NO
+  pronoun needed ("pull up the veto logic"); `_REQUEST_SHAPED_RE` tolerates leading
+  ack/discourse markers ("Alright, check it out now", incl. "sure"/"right") — and
+  `query_checker.is_casual_acknowledgment` disqualifies ack-prefixed imperatives via
+  THE deployed `_is_request_shaped`, so the light-prompt path can't swallow them;
+  affirmative-directive continuation: ack-opener + request-shaped ≤12 words right
+  after a stored-agentic turn continues the agentic session with tools (the
+  benzo-turn guard holds — statements aren't request-shaped).
+  Tests: `tests/unit/test_pronoun_retrieval_repo.py` (10).
 
 File access counts as an **explicit request**, so the intent-based veto cannot
 suppress it. Distinct from Tier 3 document *generation*. When the gate still

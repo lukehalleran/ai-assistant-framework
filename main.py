@@ -728,6 +728,17 @@ def update_activity_timestamp():
 
 
 if __name__ == "__main__":
+    # Alias the RUNNING module as `main` (2026-08-22): launched as
+    # `python main.py`, this script is module `__main__`; any later
+    # `import main` (api/app.py lifespan shutdown hook, handlers'
+    # update_activity_timestamp poke) would otherwise create a SECOND
+    # module instance with its OWN globals — the lifespan set
+    # _shutdown_requested on the copy, the real finally-block read False,
+    # and the full shutdown sequence (reflection, LLM fact extraction,
+    # graph save) ran TWICE, the second pass after the backup. The alias
+    # makes every `import main` resolve to this running instance.
+    import sys as _sys_alias
+    _sys_alias.modules["main"] = _sys_alias.modules[__name__]
     # ==========================================================================
     # NOTE: Bootstrap already ran at module level (for frozen mode)
     # ==========================================================================

@@ -143,7 +143,15 @@ During streaming, `handlers.py`:
    `</thinking>` marker and the first real content token the buffer is exactly
    `<thinking></thinking>`; `parse_thinking_block()` returns `("", "")` for it, so without
    this check the fallthrough displayed the literal tags for the gap (~1s flash observed
-   2026-08-03). The 💭 indicator stays up instead **[NEW 2026-08-03]**
+   2026-08-03). The 💭 indicator stays up instead **[NEW 2026-08-03]**. The shell-plus-content
+   complement **[NEW 2026-08-22]**: kimi-3 emitted literal `<thinking>`+`</thinking>` as its
+   first CONTENT chunks then the answer — with content following, the shell-only check never
+   releases and `parse_thinking_block()` finds no thinking body, so the RAW buffer (literal
+   tags) displayed ~15s until end-of-stream recovery (storage was clean).
+   `ResponseParser.strip_leading_empty_thinking_shell()` strips the shell from the accumulated
+   buffer the moment content follows (sets thinking_complete); all four enhanced-path display
+   yields also run `strip_trailing_stream_artifact` (edge `<|sep|>` no longer flashes
+   mid-stream). Tests: `tests/unit/test_stream_artifacts.py::TestEmptyShellThenContent` (6)
 3. Also checks `ResponseParser.likely_untagged_thinking(final_output)` to suppress untagged chain-of-thought before `parse_thinking_block()` can find a clean split point
 4. Shows "Thinking..." indicator while thinking block is incomplete
 5. Once `</thinking>` arrives, switches to displaying final answer
@@ -240,6 +248,7 @@ The answer to 2 + 2 is 4.
 | Interleaved | `InterleavedReasoningFilter.feed()` (`core/reasoning_stream_filter.py`) | Reasoning model fuses a discarded pre-answer draft onto the real answer with NO separator, e.g. `…system.Let me check…` — untagged, so tag/heuristic/storage strippers miss it [NEW 2026-06] |
 | Cleanup | `strip_thinking_tag_leaks()` | Partial/malformed tags (e.g., `/think>`, `<|think|>`) |
 | Empty shell | `is_empty_thinking_shell()` in the handlers streaming loop | Buffer that is ONLY the synthetic `<thinking></thinking>` pair (reasoning ended, first content token not yet arrived) — `parse_thinking_block()` returns `("", "")` for it and the fallthrough flashed the literal tags [NEW 2026-08-03] |
+| Empty shell + content | `strip_leading_empty_thinking_shell()` in the handlers streaming loop | kimi-3 emitted literal `<thinking>`+`</thinking>` as its first CONTENT chunks then the answer — the shell-ONLY check never released and `parse_thinking_block()` found no thinking body, so the RAW buffer displayed ~15s until end-of-stream recovery (storage was clean). Strips the leading shell from the buffer the moment content follows (sets thinking_complete) [NEW 2026-08-22] |
 | Stream artifact | `strip_trailing_stream_artifact()` (inside `sanitize_for_storage()` + both `add_summary` paths) | Endpoint-level quirk, not thinking-related: the OpenRouter kimi-3 endpoint emits a lone `e` content token before `finish_reason=stop` on both streaming ("…landed?e") and non-streaming (summaries "…them.e") paths. Strips a letter glued to terminal punctuation at end-of-text; "i.e"-abbreviations preserved [NEW 2026-08-03] |
 | **Storage boundary** | `ResponseParser.sanitize_for_storage()` in `memory_storage.store_interaction()` | ANY leak that survives display-layer defenses — never persisted. All-thinking responses skip storage entirely (returns None) [NEW 2026-06-10] |
 | **Retrieval boundary** | `formatter._strip_stored_thinking()` applies the sanitize transform to retrieved memory content during prompt assembly | Docs stored BEFORE the storage guard existed (pre-2026-06-10) — a Feb-07 stored `<thinking>` block surfaced verbatim in a live prompt on 2026-07-25. Historical repair (`repair_thinking_leaks.py --apply`) remains owner-gated; this layer makes retrieval safe either way [NEW 2026-07-25] |

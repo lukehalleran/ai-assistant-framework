@@ -1131,6 +1131,49 @@ async def _classify_with_llm_unified(
         return None
 
 
+_SEARCH_INABILITY_MARKERS = (
+    "can't search", "cannot search", "couldn't search", "unable to search",
+    "no search results came through", "search right now",
+    "can't pull anything live", "no lookup tools",
+)
+_RETRY_CUES = (
+    "try again", "retry", "one more time", "try it now", "fixed it",
+    "should be able", "should work now", "try that again",
+)
+
+
+def _detect_retry_after_inability(query: str, conversation_context) -> str:
+    """Return search terms when the user is retrying a search the assistant
+    said it couldn't perform; None otherwise. Terms = text after the last
+    colon when present ("Okay: Tactical Taylors"), else the query with retry
+    preamble words stripped."""
+    try:
+        q = (query or "").strip()
+        ctx = str(conversation_context or "").lower()
+        if not q or not ctx:
+            return None
+        if not any(m in ctx for m in _SEARCH_INABILITY_MARKERS):
+            return None
+        ql = q.lower()
+        if not any(c in ql for c in _RETRY_CUES):
+            return None
+        if ":" in q:
+            term = q.rsplit(":", 1)[1].strip()
+            if len(term.split()) >= 1 and term:
+                return term
+        # strip retry preamble words; keep the remainder if substantive
+        import re as _re
+        stripped = _re.sub(
+            r"\b(?:ok(?:ay)?|let'?s|try|again|retry|i|fixed|it|now|you|should|"
+            r"be|able|to|so|well|one|more|time|that)\b",
+            " ", ql,
+        )
+        stripped = " ".join(stripped.split()).strip(" .,!:")
+        return stripped if len(stripped) >= 3 else None
+    except Exception:
+        return None
+
+
 async def analyze_for_web_search_llm(
     query: str,
     model_manager=None,
@@ -1228,6 +1271,33 @@ async def analyze_for_web_search_llm(
 
     # Always compute heuristic result (used for blending and fallback)
     heuristic_result = should_search_heuristic(query)
+
+    # Retry-after-inability (2026-08-22, deterministic — LLM-independent):
+    # when the ASSISTANT's recent turn disclosed it couldn't search ("I can't
+    # search right now", "no search results came through") and the user comes
+    # back with a retry cue ("Let's try again I fixed it. Okay: Tactical
+    # Taylors"), the search contract is explicit in the conversation — but
+    # only the LLM channel could see it, and on a busy cold turn that call
+    # TIMED OUT (5s) and the heuristic fallback said "no indicators", so the
+    # explicit retry silently didn't search. The model's own inability
+    # disclosure + a retry cue IS the deterministic signal.
+    _retry_search = _detect_retry_after_inability(query, conversation_context)
+    if _retry_search is not None:
+        logger.info(
+            f"[WebSearchTrigger] Retry-after-inability — deterministic search: "
+            f"terms={_retry_search!r}"
+        )
+        return WebSearchDecision(
+            should_search=True,
+            depth=WebSearchDepth.QUICK,
+            confidence=0.85,
+            reason="user retried after assistant disclosed search inability",
+            matched_keywords=[],
+            matched_patterns=["retry_after_inability"],
+            search_terms=[_retry_search],
+            num_searches=1,
+            source="explicit",
+        )
 
     # If LLM-first mode is disabled or no model manager, use heuristics only
     if not LLM_FIRST_ENABLED or model_manager is None:

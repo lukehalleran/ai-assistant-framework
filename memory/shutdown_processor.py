@@ -397,6 +397,21 @@ class ShutdownProcessor:
 
     def _store_summary(self, summary_text: str, N: int, b: int, start: int, end: int, block: list):
         """Store summary into corpus and Chroma."""
+        # Third storage path (2026-08-22): this writes chroma via raw
+        # add_to_collection, BYPASSING chroma_store.add_summary — which is
+        # where the stream-artifact strip and junk check live. Two summaries
+        # created at 14:27/14:47 landed with kimi-3's leading "<|sep|>"
+        # despite the fix being live. Sanitize + junk-reject here so all
+        # three consumers (corpus, chroma, claim index) see clean text.
+        try:
+            from core.response_parser import ResponseParser
+            summary_text = ResponseParser.strip_trailing_stream_artifact(summary_text or "")
+            from memory.utils import is_junk_summary
+            if is_junk_summary(summary_text):
+                logger.warning("[Shutdown] Rejected junk summary at _store_summary")
+                return
+        except ImportError:
+            pass
         try:
             existing_texts = set()
             try:

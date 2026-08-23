@@ -236,6 +236,20 @@ apart no longer cold-start the sticky-distress signal (CONCERN at 12:13 was
 gone by the 12:33 restart). Lenient load: corrupt file = cold start, never an
 abort. Tests: `tests/unit/test_tone_carryover_persistence.py`.
 
+## Distress-Floor Self-Latch Fix (2026-08-22)
+
+The sticky floor's own CONCERN output fed `_last_tone_level` AND
+`data/tone_state.json`, chaining one latch indefinitely (LIGHT SUPPORT on
+every short technical message 10:41→14:36). Fixed: `tone_state.json` now
+carries the TRIGGER and floor-produced levels never seed across restart
+(legacy trigger-less files still seed); the in-process floor chains at most
+`TONE_FLOOR_CHAIN_MAX`=3 consecutive turns (the 07-21 anti-flatline preserved
+within budget); `_recent_distress_from_history` no longer slices `[-window:]`
+of a NEWEST-first list (it was reading the OLDEST rows). conftest sandboxes
+`_TONE_STATE_PATH` + `TURN_TELEMETRY_PATH` per test — pytest runs had been
+writing PROD tone state + telemetry.
+Tests: `tests/unit/test_tone_floor_self_latch.py` (11).
+
 ## Usage
 
 The system runs automatically in the orchestrator. No manual intervention needed.

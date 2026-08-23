@@ -132,6 +132,7 @@ CRITICAL DISAMBIGUATION RULES:
 4. When the user uses phrases like "told them what happened", "this situation", "that thing" without naming a new event, assume they are referencing something already known — classify as "recall" or "unclear".
 5. If the current message opens with a bare pronoun ("It was...", "That's...") or corrects your reading ("No I mean...", "I wasn't talking about X"), resolve the pronoun from the IMMEDIATELY PRECEDING exchange — the topic CONTINUES that exchange's topic. Do not re-derive the topic from surface keywords: "It was 3 years of twice a week" mid-illness-conversation is about the illness, not exercise. A correction re-scopes the user's own previous message; it is NOT a new event or a new topic.
 6. Name substances, medications, and proper nouns EXACTLY as the user did in the CURRENT message. Never substitute a different drug/entity from earlier context: if the user says "900 mg of lorvatin" but earlier turns discussed kavarin, the fact is about lorvatin. When the current message names no substance and the referent is ambiguous, write "the medication" rather than guessing a name.
+7. If the current message is a SHORT FRAGMENT (a few words, no verb, no question mark), do NOT invent a "user_question" or reframe it as an information request — it is almost always a riff or continuation of the immediately preceding exchange. Describe it as a continuation (e.g. "User is continuing the joke about X") and set reference_type to "recall" or "clarification", not "new_event".
 
 Example (new event):
 {{

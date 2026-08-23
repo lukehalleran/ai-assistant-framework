@@ -453,6 +453,18 @@ Production Wiring subsection in §17.)
 gap-clear; timestamp-less legacy rows still count as fresh (errs toward keeping
 the safety floor). Tests: `tests/unit/test_tone_stickiness_reset.py`.
 
+**Distress-floor self-latch (2026-08-22).** The sticky floor's own CONCERN output
+fed `_last_tone_level` AND `data/tone_state.json`, so one latch chained
+indefinitely (LIGHT SUPPORT on every short technical message 10:41→14:36).
+`tone_state.json` now carries the TRIGGER — floor-produced levels never re-seed
+across restart (legacy trigger-less files still seed) — and the in-process floor
+chains at most `TONE_FLOOR_CHAIN_MAX=3` consecutive turns (the 07-21
+anti-flatline preserved within budget). `_recent_distress_from_history` also
+stopped slicing `[-window:]` of a NEWEST-first list (it was reading the OLDEST
+rows), and conftest sandboxes `_TONE_STATE_PATH` + `TURN_TELEMETRY_PATH` per test
+(pytest runs had been writing PROD tone state).
+Tests: `tests/unit/test_tone_floor_self_latch.py` (11).
+
 ### STM Analysis
 
 Short-term memory analysis runs an LLM pass over a 24-hour time-windowed
@@ -1217,6 +1229,7 @@ After generation, responses pass through `ResponseParser`:
   3. **Tag cleanup**: `strip_thinking_tag_leaks()` removes partial/malformed tags
 - `likely_untagged_thinking()` — Fast streaming-time check (no split required). Returns True when ≥2 heuristic patterns are present. Used by `handlers.py` to suppress thinking before `parse_thinking_block()` can find a clean split.
 - `is_empty_thinking_shell()` — Streaming-time check for a buffer that is ONLY the synthetic `<thinking></thinking>` pair (reasoning ended, first content token pending); `handlers.py` keeps the 💭 indicator up instead of flashing the literal tags **[2026-08-03]**
+- `strip_leading_empty_thinking_shell()` — The shell-plus-content complement: kimi-3 emitted literal `<thinking>`+`</thinking>` as its first CONTENT chunks then the answer, so the shell-ONLY check above never released and the streaming display showed the RAW buffer (~15s of literal tags until end-of-stream recovery; storage was clean). The shell is stripped from the accumulated buffer the moment content follows (sets thinking_complete); all four enhanced-path display yields also run `strip_trailing_stream_artifact` so an edge `<|sep|>` can't flash mid-stream **[2026-08-22]**
 - `strip_trailing_stream_artifact()` — Remove the kimi-3 endpoint's stray trailing `e` (lone content token before EOS); applied in `sanitize_for_storage()` and both `add_summary` paths **[2026-08-03]**
 - `strip_reflection_blocks()` — Remove `<reflect>` and quality reflection blocks
 - `strip_xml_wrappers()` — Remove `<result>`, `<answer>`, `<output>` wrappers
@@ -2229,6 +2242,17 @@ Step 13: Backup [2026-07-14] — utils/backup_manager.py runs as the FINAL
          backup.min_interval_hours (sqlite files via the sqlite3 backup
          API). Retention: newest N + the newest chroma-including backup.
 ```
+
+**Single-instance module alias (2026-08-22)**: launched as `python main.py` the
+script is module `__main__`, and `api/app.py`'s lifespan `import main` had
+RE-EXECUTED main.py as a SECOND module instance with its own
+`_shutdown_requested` — the lifespan set the copy's flag, the real
+finally-block read False, and the full shutdown pipeline (reflection, LLM fact
+extraction, graph save) ran TWICE, the second pass after the backup. The entry
+block now aliases `sys.modules["main"] = sys.modules[__name__]` FIRST so every
+later `import main` (including the handlers → `main.update_activity_timestamp`
+idle poke) resolves to the running instance.
+Tests: `tests/unit/test_main_module_alias.py` (3).
 
 **Critical invariant**: No user data is auto-deleted at shutdown. Dedup
 runs dry-run only. Thread cap enforcement (Step 7c) is the only deletion,

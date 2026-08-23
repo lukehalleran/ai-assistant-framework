@@ -90,11 +90,35 @@ def main() -> int:
     except Exception as ex:
         print(f"Chroma scan failed: {ex}")
     print(f"Chroma conversations: {len(chroma_hits)} doc(s) with edge special tokens")
+
+    # ── Chroma summaries (third storage path leaked until 2026-08-22) ──
+    summary_hits = []
+    try:
+        if store is not None:
+            for d in store.list_all("summaries"):
+                doc = d.get("content") or ""
+                fixed = strip(doc)
+                if fixed != doc:
+                    summary_hits.append((d.get("id"), doc, fixed))
+    except Exception as ex:
+        print(f"Chroma summaries scan failed: {ex}")
+    print(f"Chroma summaries: {len(summary_hits)} doc(s) with edge special tokens")
+
+    # corpus summary entries store text under 'content'
+    corpus_content_hits = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        c = e.get("content") or ""
+        fixed = strip(c)
+        if fixed != c:
+            corpus_content_hits.append((e, c, fixed))
+    print(f"Corpus content entries: {len(corpus_content_hits)} with edge special tokens")
     for doc_id, old, new in chroma_hits[:20]:
         idx = old.find("<|")
         print(f"  - {doc_id[:12]}… ...{old[max(0, idx - 30):idx + 20]!r}...")
 
-    if not corpus_hits and not chroma_hits:
+    if not corpus_hits and not chroma_hits and not summary_hits and not corpus_content_hits:
         print("Nothing to repair.")
         return 0
     if not args.apply:
@@ -117,11 +141,17 @@ def main() -> int:
         for doc_id, old, _ in chroma_hits:
             f.write(json.dumps({"store": "chroma_conversations", "id": doc_id,
                                 "document": old}) + "\n")
+        for doc_id, old, _ in summary_hits:
+            f.write(json.dumps({"store": "chroma_summaries", "id": doc_id,
+                                "document": old}) + "\n")
+        for e, old, _ in corpus_content_hits:
+            f.write(json.dumps({"store": "corpus_content", "timestamp": str(e.get("timestamp")),
+                                "content": old}) + "\n")
     print(f"\nPre-image backup: {backup_path}")
 
+    from utils.safe_json import atomic_write_json
     for e, _, fixed in corpus_hits:
         e["response"] = fixed
-    from utils.safe_json import atomic_write_json
     atomic_write_json(str(CORPUS_PATH), corpus)
     print(f"Corpus: repaired {len(corpus_hits)} entr(ies), saved atomically.")
 
@@ -130,6 +160,16 @@ def main() -> int:
         for doc_id, _, fixed in chroma_hits:
             col.update(ids=[doc_id], documents=[fixed])
         print(f"Chroma: repaired {len(chroma_hits)} doc(s).")
+    if summary_hits:
+        scol = store._get_collection("summaries")
+        for doc_id, _, fixed in summary_hits:
+            scol.update(ids=[doc_id], documents=[fixed])
+        print(f"Chroma summaries: repaired {len(summary_hits)} doc(s).")
+    if corpus_content_hits:
+        for e, _, fixed in corpus_content_hits:
+            e["content"] = fixed
+        atomic_write_json(str(CORPUS_PATH), corpus)
+        print(f"Corpus content: repaired {len(corpus_content_hits)} entr(ies).")
     return 0
 
 

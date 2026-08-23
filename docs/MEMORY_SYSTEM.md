@@ -273,6 +273,13 @@ ShutdownProcessor.process_shutdown_memory()
   │     LLM consolidation → micro-summary fallback
   │     Claim extraction → ClaimIndex registration
   │     Source doc IDs via get_ids_by_timestamp_range() (not list_all scan)
+  │     [2026-08-22] _store_summary writes via raw add_to_collection('summaries',…),
+  │     bypassing chroma_store.add_summary (where the stream-artifact strip +
+  │     is_junk_summary check live) — 2 summaries landed with leading <|sep|>
+  │     after the 08-21 fix; it now sanitizes + junk-rejects at entry, and
+  │     scripts/strip_special_token_artifacts.py also scans/repairs the summaries
+  │     collection + corpus content fields
+  │     (tests/unit/test_stream_artifacts.py::TestShutdownSummaryPathSanitized)
   │
   ├─ Phase A (parallel via asyncio.gather) ────────────────────────
   │  ├─ Session fact extraction (rule-based, last 10 turns)

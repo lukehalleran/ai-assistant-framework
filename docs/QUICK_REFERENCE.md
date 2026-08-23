@@ -211,7 +211,12 @@ class ShutdownProcessor:
         After summary storage: extract claims → register in ClaimIndex → add staleness metadata
         NOTE: synthesis dreaming is NO LONGER in Phase B [CHANGED 2026-06-19] — it runs as a
         standalone step via run_synthesis_dreaming(), driven by main.py under its own
-        SYNTHESIS_DREAM_TIMEOUT_S (240s) budget, outside the shared SHUTDOWN_TASK_TIMEOUT_S (60s)."""
+        SYNTHESIS_DREAM_TIMEOUT_S (240s) budget, outside the shared SHUTDOWN_TASK_TIMEOUT_S (60s).
+        2026-08-22: _store_summary (raw add_to_collection('summaries',…) — bypasses
+        chroma_store.add_summary, where the stream-artifact strip + is_junk_summary
+        check live) now sanitizes + junk-rejects at entry; 2 summaries had landed with
+        leading <|sep|>. scripts/strip_special_token_artifacts.py also scans/repairs
+        the summaries collection + corpus content fields (dry run found exactly the 2)."""
 
     async def run_synthesis_dreaming():
         """Standalone shutdown step [NEW 2026-06-19]: candidate generation + filter.
@@ -352,6 +357,18 @@ VALENCE_NEGATIVE_THRESHOLD = 0.30
 # heavy turn from yesterday could re-latch the CONCERN floor after the gap-clear.
 # Timestamp-less legacy rows still count as fresh (errs toward the safety floor).
 # Tests: tests/unit/test_tone_stickiness_reset.py
+
+# Distress-floor self-latch fix [2026-08-22]: the sticky floor's own CONCERN
+# output fed _last_tone_level AND data/tone_state.json, chaining one latch
+# indefinitely (LIGHT SUPPORT on every short technical message 10:41→14:36).
+# tone_state.json now carries the TRIGGER — floor-produced levels never seed
+# across restart (legacy trigger-less files still seed) — and the in-process
+# floor chains at most TONE_FLOOR_CHAIN_MAX=3 consecutive turns (07-21
+# anti-flatline preserved within budget); _recent_distress_from_history no
+# longer slices [-window:] of a NEWEST-first list (was reading the OLDEST rows).
+# conftest sandboxes _TONE_STATE_PATH + TURN_TELEMETRY_PATH per test (pytest
+# runs had been writing PROD tone state + telemetry).
+# Tests: tests/unit/test_tone_floor_self_latch.py (11)
 
 # Borderline arbitration [FIXED 2026-07-25] — the Stage-4 borderline LLM
 # fallback was dead since it shipped (generate_async returns a stream;
@@ -588,6 +605,9 @@ class UnifiedPromptBuilder:
         set by query_checker.is_casual_acknowledgment; YAML light_prompt) short-circuit
         to _build_lightweight_context (recent 3 turns only) via _should_use_light_path —
         elevated tone always gets full context.
+        2026-08-22: is_casual_acknowledgment disqualifies ack-PREFIXED imperatives
+        via THE deployed gate._is_request_shaped ("Alright, check it out now" is a
+        request, not an ack — the light path no longer swallows it).
         """
 
     async def build_prompt_from_context(context: ContextResult, ...) -> Dict[str, Any]:
@@ -677,6 +697,18 @@ class ResponseParser:
         display/storage call sites inherit. Historical repair:
         scripts/strip_special_token_artifacts.py (dry-run-first, daemon-guard,
         pre-image backup, applies THE deployed strip; --apply owner-gated)."""
+
+    @staticmethod
+    def strip_leading_empty_thinking_shell(text: str) -> str:  # [NEW 2026-08-22]
+        """Strip a LEADING literal <thinking></thinking> shell once real content
+        follows — kimi-3 emitted the tags as its first CONTENT chunks then the
+        answer, so the shell-ONLY hold (is_empty_thinking_shell) never released
+        and streaming showed the RAW buffer (~15s of literal tags until
+        end-of-stream recovery; storage was clean). handlers strips the shell
+        the moment content follows (sets thinking_complete); all four
+        enhanced-path display yields also run strip_trailing_stream_artifact
+        (edge <|sep|> no longer flashes mid-stream).
+        Tests: tests/unit/test_stream_artifacts.py::TestEmptyShellThenContent (6)."""
 ```
 
 ---
@@ -2218,6 +2250,7 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 # core/agentic/tools.py — ToolExecutor: DISPATCH_TABLE routing (21 rows / 20 tools) + 18 _dispatch_* handlers + get_tool_health() (incl. lookup_contact + email recipient resolution)
 # core/agentic/gate.py — 4-tier agentic gate: keyword → entity → tool-name → LLM fallback, email-by-name patterns [NEW 2026-05]
 #   Tier 1 also routes file/saved-document RETRIEVAL → tools (FILE_ACCESS_KEYWORDS + regex + pronoun/affirmation continuation); counts as explicit request (bypasses intent veto) [2026-06-08]
+#   "Check it out" routing chain [2026-08-22]: FILE_RETRIEVAL_PRONOUN_PATTERN gains check/review/read/inspect/verify/examine/look verbs (+ optional "at", "now" tail; first-person self-reports "I checked it out" excluded); FILE_DOC_CONTEXT_WORDS gains repo/repositor/commit/codebase/docs/pushed; a REQUEST-shaped imperative after prior file/repo context routes to tools with NO pronoun needed ("pull up the veto logic"); _REQUEST_SHAPED_RE tolerates leading ack/discourse markers ("Alright, check it out now", incl. "sure"/"right"); affirmative-directive continuation: ack-opener + request-shaped ≤12 words after a stored-agentic turn continues the agentic session with tools (benzo-turn guard holds — statements aren't request-shaped). Tests: tests/unit/test_pronoun_retrieval_repo.py (10)
 # core/agentic/formatters.py — AgenticFormatter: 19 pure formatting methods
 # core/actions/ — Internet action executors: telegram.py, discord.py, email.py, google_auth.py, google_calendar.py, google_calendar_create.py, google_contacts.py, gmail_search.py, types.py, audit.py, executors.py [NEW 2026-05]
 class AgenticSearchController:
@@ -2504,6 +2537,14 @@ WEB_SEARCH_CACHE_TTL_HOURS = 72
 #   to start it again") never reaches the LLM trigger via the referential-followup
 #   bypass (the bare "it" is the user's own situation, not a search target), and
 #   teaches adaptive no_search through the deterministic channel.
+# Retry-after-inability [2026-08-22]: when conversation context contains the
+#   assistant's own search-inability disclosure ("I can't search right now" /
+#   "no search results came through") and the query carries a retry cue ("try
+#   again", "I fixed it"), search triggers deterministically BEFORE the
+#   LLM-first gating (terms = text after the last colon, else the
+#   retry-preamble-stripped remainder; source="explicit") — the live retry had
+#   hit the 5s LLM trigger timeout and the heuristic fallback said no indicators.
+#   Tests: tests/test_web_search_trigger.py::TestRetryAfterInability (5)
 
 # User Location (query localization) [NEW 2026-07-02]
 LOCATION_ENABLED = True                 # master switch (YAML section `location`)

@@ -262,6 +262,13 @@ class ContextPipeline:
         # signal (2026-08-02: sessions minutes apart — CONCERN at 12:13, restart,
         # flat semantic at 12:33 had no floor because the carry was process-local).
         self._last_tone_level: Optional[object] = self._load_persisted_tone()
+        # Consecutive distress-sticky-floor turns (2026-08-22): the floor's own
+        # CONCERN output was feeding _last_tone_level AND tone_state.json, so
+        # one latch chained indefinitely — every short technical message all
+        # afternoon got LIGHT SUPPORT. The floor may hold a genuine short-turn
+        # spiral (the 07-21 anti-flatline case) for up to TONE_FLOOR_CHAIN_MAX
+        # consecutive turns; beyond that, fresh organic evidence is required.
+        self._floor_chain: int = 0
 
         # Configuration with defaults
         self._use_stm = self.config.get("USE_STM_PASS", USE_STM_PASS)
@@ -534,12 +541,19 @@ class ContextPipeline:
             # drove a false [THREAD CONTEXT] shift assertion and a wrong
             # response plan). Inheriting keeps topic, thread continuity, and
             # the planner's Topics: signal aligned with the real referent.
-            from utils.query_checker import is_anaphoric_continuation
+            from utils.query_checker import (
+                is_anaphoric_continuation,
+                is_fragment_continuation,
+            )
             prev_topic = getattr(self.topic_manager, "last_topic", None)
             if (
                 prev_topic
                 and prev_topic.strip().lower() != "general"
-                and is_anaphoric_continuation(query)
+                # 2026-08-22: bare noun-phrase fragments ("Tactical Taylors")
+                # inherit like pronoun fragments — fresh classification of a
+                # 2-word riff mid-thread produced topic "Tactical Gear" and a
+                # gear-brand reply to a joke.
+                and (is_anaphoric_continuation(query) or is_fragment_continuation(query))
             ):
                 logger.debug(
                     f"[ContextPipeline] Anaphoric continuation — inheriting "
@@ -608,11 +622,19 @@ class ContextPipeline:
 
             # Analyze emotional context. previous_tone carries the prior turn's
             # crisis level so distress is sticky across short/terse messages.
+            import os as _os
+            _floor_chain_max = int(_os.getenv("TONE_FLOOR_CHAIN_MAX", "3"))
+            _prev_tone = self._last_tone_level
+            if self._floor_chain >= _floor_chain_max:
+                # The carried tone is floor-produced N turns deep — stop
+                # feeding it back as evidence; only organic signals (semantic/
+                # keyword/arbiter/backstop, or heavy history) may re-elevate.
+                _prev_tone = None
             emotional_ctx = await analyze_emotional_context(
                 message=query,
                 conversation_history=recent_memories,
                 model_manager=self.model_manager,
-                previous_tone=self._last_tone_level,
+                previous_tone=_prev_tone,
             )
 
             # Convert crisis level to ToneLevel
@@ -621,7 +643,12 @@ class ContextPipeline:
                 tone_level = ToneLevel.from_string(level_str)
                 # Remember this turn's crisis level for the next call's stickiness.
                 self._last_tone_level = emotional_ctx.crisis_level
-                self._persist_tone(level_str)
+                _trigger = str(getattr(emotional_ctx, 'trigger', '') or '')
+                if _trigger == "distress_sticky_floor":
+                    self._floor_chain += 1
+                else:
+                    self._floor_chain = 0
+                self._persist_tone(level_str, trigger=_trigger)
             else:
                 tone_level = ToneLevel.CONVERSATIONAL
 
@@ -669,6 +696,11 @@ class ContextPipeline:
             low = level.lower()
             if not any(m in low for m in self._ELEVATED_TONE_MARKERS):
                 return None
+            if str(state.get("trigger", "") or "") == "distress_sticky_floor":
+                # Floor-produced tone is the floor's OWN output, not evidence —
+                # seeding it re-latches the self-perpetuating chain across
+                # restarts (2026-08-22: light_support carried all afternoon).
+                return None
             logger.info(
                 f"[ContextPipeline] Carried tone across restart: {level} "
                 f"(from {ts.isoformat(timespec='minutes')})"
@@ -678,14 +710,15 @@ class ContextPipeline:
             logger.debug(f"[ContextPipeline] tone-state load skipped: {e}")
             return None
 
-    def _persist_tone(self, level_str: str) -> None:
-        """Write this turn's tone level + timestamp (atomic, best-effort)."""
+    def _persist_tone(self, level_str: str, trigger: str = "") -> None:
+        """Write this turn's tone level + trigger + timestamp (atomic, best-effort)."""
         try:
             from datetime import datetime
             from utils.safe_json import atomic_write_json
             atomic_write_json(
                 self._TONE_STATE_PATH,
-                {"level": str(level_str), "ts": datetime.now().isoformat()},
+                {"level": str(level_str), "trigger": str(trigger or ""),
+                 "ts": datetime.now().isoformat()},
             )
         except Exception as e:
             logger.debug(f"[ContextPipeline] tone-state persist skipped: {e}")

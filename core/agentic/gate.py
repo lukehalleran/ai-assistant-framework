@@ -241,8 +241,9 @@ FILE_ACCESS_PATTERNS = [
 # own ("pull it together"), so this only counts as file access when the PREVIOUS
 # turn was file/document themed (see the continuation handling below).
 FILE_RETRIEVAL_PRONOUN_PATTERN = re.compile(
-    r'\b(?:pull|print|fetch|grab|open|show|display|load|retriev|render|reprint|spit|bring)\w*'
-    r'\s+(?:it|that|this|them|those)(?:\s+(?:up|out|here|over|in))?\b',
+    r'\b(?:pull|print|fetch|grab|open|show|display|load|retriev|render|reprint|spit|bring'
+    r'|check|review|read|inspect|verify|examine|look)\w*'
+    r'(?:\s+at)?\s+(?:it|that|this|them|those)(?:\s+(?:up|out|here|over|in|now))?\b',
     re.IGNORECASE,
 )
 
@@ -252,6 +253,10 @@ FILE_DOC_CONTEXT_WORDS = (
     'document', 'doc ', ' doc.', 'file', '.md', 'markdown', 'pdf', '.txt',
     'saved', 'on disk', 'implementation plan', 'file_read', 'file access',
     'reconstruct', 'print',
+    # Repo/project vocabulary (2026-08-22): "Pushed yesterday's work, docs are
+    # updated — check it out" had NO context hit ('doc ' is not a substring of
+    # "docs are"), so the pronoun-retrieval continuation never routed to tools.
+    'repo', 'repositor', 'commit', 'codebase', 'docs', 'pushed',
 )
 
 # Markers that the model OFFERED to read/pull a file last turn ("Want me to pull
@@ -559,11 +564,22 @@ async def evaluate_agentic_gate(
 
     # ── Context-aware continuation override ───────────────────────────
     _prev_was_agentic = False
+    _request_continuation = False
     if any(_skip_patterns):
+        # Terse affirmation ("yes please", "run it") — the classic shape.
+        # OR (2026-08-22) an affirmative DIRECTIVE: "Sure check out the
+        # learning loop stuff" is 7 words — one over the cap — and carries a
+        # noun phrase no pronoun pattern can see, but it is request-shaped
+        # with an affirmation opener. After a stored-agentic turn that is a
+        # continuation, full stop. The 07-15 benzo-turn guard holds: "Yeah
+        # they seem like the worst drug..." is not request-shaped.
+        _request_continuation = (
+            len(_words) <= 12 and _is_request_shaped(user_text)
+        )
         _is_continuation = (
             len(_words) <= CONTINUATION_MAX_WORDS
             and any(p in _lower for p in CONTINUATION_PHRASES)
-        )
+        ) or _request_continuation
         if _is_continuation and corpus_manager is not None:
             try:
                 _recent = corpus_manager.get_recent_memories(2)
@@ -587,10 +603,16 @@ async def evaluate_agentic_gate(
                     ))
                     if _prev_had_signals or _prev_mentioned_tools:
                         _prev_was_agentic = True
+                        if _request_continuation:
+                            # An affirmative directive continuing an agentic
+                            # session gets the tool loop directly — Tier 4's
+                            # web-trigger LLM has no repo/file channel.
+                            needs_tools = True
                         logger.debug(
                             f"[Agentic Gate] Continuation after agentic-intent turn — "
                             f"overriding casual skip (query_signals={_prev_had_signals}, "
-                            f"response_tools={_prev_mentioned_tools})"
+                            f"response_tools={_prev_mentioned_tools}, "
+                            f"request_continuation={_request_continuation})"
                         )
                         break
             except Exception as e:
@@ -605,7 +627,25 @@ async def evaluate_agentic_gate(
     #     read/pull a file ("Want me to pull that up?") — makes the enhanced-mode
     #     honesty offer actually get carried out on the next turn.
     if not needs_files and corpus_manager is not None:
-        _is_pronoun_retrieval = bool(FILE_RETRIEVAL_PRONOUN_PATTERN.search(_lower))
+        # First-person self-reports ("I checked it out, kind of sucked") are
+        # the user narrating, not requesting — the widened verb set
+        # (check/review/read/look, 2026-08-22) would otherwise match them.
+        _self_report = bool(re.search(
+            r"\b(?:i|we)(?:'ve|'d|\s+(?:just|already|have|had|finally))?\s+"
+            r"(?:check|review|read|look|open|pull)\w*\b", _lower))
+        # Round 5 (2026-08-22): the pronoun requirement was the last brittle
+        # link — "pull up the veto logic" is the canonical retrieval
+        # imperative and has NO pronoun. A REQUEST-shaped message (imperative
+        # retrieval verb, ack-prefix tolerant, self-reports excluded) counts
+        # exactly like a pronoun retrieval; the prior-turn file/doc/repo
+        # context gate below is what prevents over-fire either way.
+        _is_pronoun_retrieval = (
+            not _self_report
+            and (
+                bool(FILE_RETRIEVAL_PRONOUN_PATTERN.search(_lower))
+                or _is_request_shaped(user_text)
+            )
+        )
         _is_affirmation = len(_words) <= CONTINUATION_MAX_WORDS and (
             any(p in _lower for p in CONTINUATION_PHRASES)
             or (bool(_words) and all(w in FILLER_WORDS for w in _words))
@@ -877,7 +917,8 @@ def strip_epistemic_markers(text: str) -> str:
 # — and never a no_search teaching event. The (?!,) guard keeps discourse
 # markers ("Look, I'm just tired") out: comma after the verb = not a command.
 _REQUEST_SHAPED_RE = re.compile(
-    r"^(?:please\s+)?(?:check|look|pull|show|run|search|find|read|open|list|"
+    r"^(?:(?:ok(?:ay)?|alright|all\s+right|cool|yeah|yes|sure|right|so|and|now|then|also|well|hey)[,\s]+){0,3}"
+    r"(?:please\s+)?(?:check|look|pull|show|run|search|find|read|open|list|"
     r"verify|fetch|grab|review|summarize|summarise|scan|test|compare)\b(?!,)"
     r"|\b(?:can|could|would|will)\s+you\b",
     re.IGNORECASE,

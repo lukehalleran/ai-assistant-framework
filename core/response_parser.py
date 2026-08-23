@@ -136,6 +136,25 @@ class ResponseParser:
                 return response[idx + len(open_tag):].strip()
         return ""
 
+    # Leading CLOSED-and-EMPTY thinking shell followed by real content
+    # (2026-08-22): kimi-3 emitted literal "<thinking>" + "</thinking>" as its
+    # first two CONTENT chunks, then the answer. is_empty_thinking_shell holds
+    # the indicator while the shell is the WHOLE buffer, but once content
+    # follows, parse_thinking_block finds no non-empty thinking body and the
+    # streaming display fell through to showing the RAW buffer — literal tags
+    # on screen until the end-of-stream recovery swapped in clean text.
+    _EMPTY_SHELL_PREFIX_RE = re.compile(
+        r"^\s*<\s*(think(?:ing)?|reason(?:ing)?)\s*>\s*<\s*/\s*\1\s*>\s*",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def strip_leading_empty_thinking_shell(text: str) -> str:
+        """Remove one leading closed-empty thinking/reasoning tag pair."""
+        if not text or not isinstance(text, str):
+            return text or ""
+        return ResponseParser._EMPTY_SHELL_PREFIX_RE.sub("", text, count=1)
+
     @staticmethod
     def is_empty_thinking_shell(text: str) -> bool:
         """True when text contains ONLY thinking-tag markers (± whitespace).

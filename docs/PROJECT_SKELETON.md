@@ -190,6 +190,7 @@ Side effects: None (pure functions)
 - `is_empty_thinking_shell(text)` → bool - True when text is ONLY thinking-tag markers — the `<thinking></thinking>` shell between reasoning end and first content token; handlers keep the 💭 indicator up instead of flashing literal tags **[NEW 2026-08-03]**
 - `strip_trailing_stream_artifact(text)` → str - Removes the kimi-3 endpoint's stray trailing `e` (lone content token before EOS, "…landed?e"); letter-glued-to-terminal-punctuation only, "i.e" preserved; also applied in both `add_summary` paths **[NEW 2026-08-03]**
 - `strip_stream_special_tokens(text)` → str - Removes edge runs of `<|token|>` special-token markers — kimi-3 intermittently emits `<|sep|>` as the FIRST content chunk (11 corpus + 11 chroma docs since 08-18); mid-text mentions preserved; folded into `strip_trailing_stream_artifact` so all 9 display/storage call sites inherit. Historical repair: `scripts/strip_special_token_artifacts.py` (dry-run-first, daemon-guard, pre-image backup) **[NEW 2026-08-21]**
+- `strip_leading_empty_thinking_shell(text)` → str - Strips a LEADING literal `<thinking></thinking>` shell once real content follows — kimi-3 emitted the tags as its first CONTENT chunks then the answer, so the shell-ONLY hold (`is_empty_thinking_shell`) never released and streaming showed the RAW buffer (~15s of literal tags until end-of-stream recovery; storage was clean); handlers strips the shell the moment content follows (sets thinking_complete), and all four enhanced-path display yields also run `strip_trailing_stream_artifact` (edge `<|sep|>` no longer flashes mid-stream). Tests: `tests/unit/test_stream_artifacts.py::TestEmptyShellThenContent` (6) **[NEW 2026-08-22]**
 - `likely_untagged_thinking(response)` → bool - Cheap check for untagged chain-of-thought (used by streaming paths)
 - `_detect_untagged_thinking(response)` → Tuple[str, str] - Heuristic fallback: pattern-based detection of untagged chain-of-thought (meta-reasoning, instruction echoes). Requires ≥2 distinct pattern hits, ≥20 char remaining answer **[NEW 2026-04-05]**
 - `has_incomplete_thinking_block(response)` → bool - Returns True if opening `<thinking>`/`<think>` tag present but closing tag not yet (for streaming suppression) **[NEW 2026-03-26]**
@@ -249,6 +250,8 @@ Side effects: May call LLM for tone detection, query rewriting, STM analysis
    - 6b. **STM Intent Refinement** - Low-confidence intents refined by STM free-text intent **[NEW 2026-02-15]**
 7. **Identity Injection** - Add user identity context via UserProfile
 8. **Thread Context** - Get active thread via memory_system
+
+**[2026-08-22]**: Stage 1 also inherits the previous turn's topic for bare noun-phrase fragments ≤4 words mid-thread (`query_checker.is_fragment_continuation` — "Tactical Taylors"; same consumers as the 07-28 anaphora fix: orchestrator never asserts a thread shift on such turns, STM prompt rule 7 forbids inventing a user_question for fragments). Stage 2's tone persistence now writes the TRIGGER into `data/tone_state.json` so floor-produced levels never re-seed across restart (see 2.16 self-latch fix).
 
 **Key Classes**:
 - `ToneLevel` - Enum mapping crisis levels (CRISIS/ELEVATED/CONCERN/CONVERSATIONAL).
@@ -549,6 +552,7 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
     7. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
   8. Log statistics
   ```
+  **[2026-08-22]** `_store_summary` (the raw `add_to_collection('summaries',…)` path — it bypasses `chroma_store.add_summary`, where the stream-artifact strip + `is_junk_summary` check live) now sanitizes + junk-rejects at entry; 2 summaries had landed with leading `<|sep|>` after the 08-21 fix. `scripts/strip_special_token_artifacts.py` also scans/repairs the summaries collection + corpus content fields. Tests: `tests/unit/test_stream_artifacts.py::TestShutdownSummaryPathSanitized`.
 
 - `async run_shutdown_reflection(session_conversations=None, session_summaries=None)` → End-of-session LLM reflection:
   ```python
@@ -1662,6 +1666,7 @@ agentic_search:
     - Gate logic extracted to `core/agentic/gate.py:evaluate_agentic_gate()` — returns `AgenticDecision` dataclass
     - 4-tier gate (keyword → entity → doc/note intent → LLM fallback):
       - Tier 1: Keyword heuristic — computation, memory, web search, tool name, and knowledge keywords; also file/saved-document RETRIEVAL intent (`FILE_ACCESS_KEYWORDS` + `FILE_ACCESS_PATTERNS` + pronoun/affirmation continuation) so `file_read`/`file_list`/`get_full_document` are offered; counts as an explicit request (bypasses the intent veto) **[2026-06-08]**
+      - "Check it out" routing chain **[2026-08-22]**: `FILE_RETRIEVAL_PRONOUN_PATTERN` gains check/review/read/inspect/verify/examine/look verbs (+ optional "at", "now" tail; first-person self-reports "I checked it out" excluded); `FILE_DOC_CONTEXT_WORDS` gains repo/repositor/commit/codebase/docs/pushed; a REQUEST-shaped imperative after prior file/repo context routes to tools with NO pronoun needed ("pull up the veto logic"); `_REQUEST_SHAPED_RE` tolerates leading ack/discourse markers ("Alright, check it out now", incl. "sure"/"right"); affirmative-directive continuation — ack-opener + request-shaped ≤12 words after a stored-agentic turn continues the agentic session with tools (benzo-turn guard holds: statements aren't request-shaped). `query_checker.is_casual_acknowledgment` disqualifies ack-prefixed imperatives via THE deployed `_is_request_shaped` so the light path can't swallow them. Tests: `tests/unit/test_pronoun_retrieval_repo.py` (10)
       - Tier 2: Entity match — `extract_graph_entities()` checks query against knowledge graph alias index
       - Tier 3: Document generation + self-note intent detection (instant)
       - Tier 4: LLM fallback — piggybacks on `analyze_for_web_search_llm()` call
@@ -2310,6 +2315,7 @@ WebSearchDecision(
 - `quick_prefilter_should_skip(query)` → Deictic follow-up detection **[ENHANCED 2026-01-08]**
   - Patterns: "watched it", "saw it", "read it", "just watched", etc.
 - Long paste prefilter: queries >500 chars without explicit search phrases skip web search **[NEW 2026-03-20]**
+- **Retry-after-inability [2026-08-22]**: when conversation context contains the assistant's own search-inability disclosure ("I can't search right now" / "no search results came through") and the query carries a retry cue ("try again", "I fixed it"), search triggers deterministically BEFORE the LLM-first gating (terms = text after the last colon, else the retry-preamble-stripped remainder; `source="explicit"`) — the live retry had hit the 5s LLM trigger timeout and the heuristic fallback found no indicators. Tests: `tests/test_web_search_trigger.py::TestRetryAfterInability` (5)
 
 **Depth Selection**:
 - `QUICK` (1 credit): Simple factual queries
@@ -4133,6 +4139,8 @@ Final score: 25 × 1.56 = 39 pts → HIGH crisis (≥20)
 
 **Session-gap reset [2026-08-21]**: `_recent_distress_from_history` applies the same `TONE_STICKINESS_MAX_GAP_MINUTES` boundary as `previous_tone` stickiness — a stale heavy turn from yesterday could re-latch the CONCERN floor after the gap-clear. Timestamp-less legacy rows still count as fresh (errs toward keeping the safety floor). Tests: `tests/unit/test_tone_stickiness_reset.py`.
 
+**Distress-floor self-latch fix [2026-08-22]**: the sticky floor's own CONCERN output fed `_last_tone_level` AND `data/tone_state.json`, chaining one latch indefinitely (LIGHT SUPPORT on every short technical message 10:41→14:36). `tone_state.json` now carries the TRIGGER — floor-produced levels never seed across restart (legacy trigger-less files still seed) — and the in-process floor chains at most `TONE_FLOOR_CHAIN_MAX`=3 consecutive turns (07-21 anti-flatline preserved within budget); `_recent_distress_from_history` no longer slices `[-window:]` of a NEWEST-first list (was reading the OLDEST rows). conftest sandboxes `_TONE_STATE_PATH` + `TURN_TELEMETRY_PATH` per test (pytest runs had been writing PROD tone state + telemetry). Tests: `tests/unit/test_tone_floor_self_latch.py` (11).
+
 **Configuration** (env vars):
 ```python
 # Semantic thresholds (for fallback when harm score < 4)
@@ -4271,6 +4279,8 @@ class EmotionalContext:
   - Threshold raised from 6 to 10 words for short follow-up detection
   - Added verb+pronoun patterns: "watched it", "saw it", "read it", "heard it", etc.
 - `is_meta_conversational(query)` → True if asking about conversation history
+- `is_fragment_continuation(query)` → True for bare noun-phrase fragments ≤4 words mid-thread ("Tactical Taylors") — context_pipeline inherits the previous topic, orchestrator never asserts a thread shift; question/request/ack/all-filler shapes excluded (each has its own routing). Tests: `tests/unit/test_anaphoric_continuation.py::TestFragmentContinuation` **[NEW 2026-08-22]**
+- `is_casual_acknowledgment(query)` → light-path trigger; since 2026-08-22 disqualifies ack-prefixed imperatives via THE deployed `gate._is_request_shaped` ("Alright, check it out now" is a request, not an ack)
 - `extract_temporal_window(query)` → Days to look back (e.g., "yesterday" → 1)
 - `_is_heavy_topic_heuristic(q)` → Fast keyword check for crisis/sensitive content
 - `analyze_query_async(q, model_manager)` → Async with LLM heavy topic classification
@@ -5281,7 +5291,7 @@ daemon/
 │   ├── GENERALIZATION_AUDIT.md # Owner-shape audit + de-personalization plan [NEW 2026-08-21]
 │   └── ...
 │
-├── main.py                    # Entry point (GUI/CLI/wizard + maintenance subcommands)
+├── main.py                    # Entry point (GUI/CLI/wizard + maintenance subcommands). 2026-08-22: entry block aliases sys.modules["main"] = sys.modules[__name__] FIRST — api/app.py's lifespan `import main` had RE-EXECUTED main.py as a second module instance with its own _shutdown_requested (lifespan set the copy's flag, the real finally read False → full shutdown ran TWICE, second pass after the backup; also fixes the handlers idle-poke hitting the copy). Tests: tests/unit/test_main_module_alias.py (3)
 ├── conftest.py                # Root pytest configuration
 ├── daemon.spec                # PyInstaller spec file [NEW 2025-12-12]
 │

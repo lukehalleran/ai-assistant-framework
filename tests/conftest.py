@@ -140,6 +140,23 @@ def _sandbox_adaptive_exemplars(tmp_path, monkeypatch):
                     setattr(_m, _a, None)
                 except Exception:
                     pass
+    # Tone-state + turn-telemetry sandbox (2026-08-22): tests that touch the
+    # real ContextPipeline/handlers were writing PROD state — light_support
+    # test rows landed in logs/turn_records.jsonl at 13:41/13:48, and a test-
+    # written data/tone_state.json seeded the live daemon's distress-sticky
+    # floor across the owner's restart (every technical message that afternoon
+    # got LIGHT SUPPORT). Same lesson as the adaptive-store sandbox: tests
+    # must never touch Daemon-owned state files.
+    _m = _sys.modules.get("core.context_pipeline")
+    if _m is not None:
+        monkeypatch.setattr(
+            _m.ContextPipeline, "_TONE_STATE_PATH",
+            str(tmp_path / "tone_state.json"), raising=False,
+        )
+    _cfg = _sys.modules.get("config.app_config")
+    if _cfg is not None:
+        monkeypatch.setattr(_cfg, "TURN_TELEMETRY_PATH",
+                            str(tmp_path / "turn_records.jsonl"), raising=False)
     yield
     _ae._store = None
 
